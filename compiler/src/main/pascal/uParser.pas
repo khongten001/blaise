@@ -3,32 +3,37 @@ unit uParser;
 {$mode objfpc}{$H+}
 
 // Recursive-descent parser for the Blaise grammar:
-//   Program      ::= 'program' Ident ';' [Uses] Block '.'
-//   Uses         ::= 'uses' Ident {',' Ident} ';'
-//   Block        ::= [TypeSection] [VarSection] 'begin' StmtList 'end'
-//   TypeSection  ::= 'type' TypeDecl {TypeDecl}
-//   TypeDecl     ::= Ident '=' (RecordDef | ClassDef) ';'
-//   RecordDef    ::= 'record' FieldList 'end'
-//   ClassDef     ::= 'class' ['(' Ident ')'] FieldList 'end'
-//   FieldList    ::= FieldDecl {FieldDecl}
-//   FieldDecl    ::= IdentList ':' TypeName ';'
-//   VarSection   ::= 'var' VarDecl {VarDecl}
-//   VarDecl      ::= IdentList ':' TypeName ';'
-//   StmtList     ::= Stmt {';' Stmt} [';']
-//   Stmt         ::= FieldAssignment | Assignment | ProcCall | empty
-//   FieldAssign  ::= Ident '.' Ident ':=' Expr
-//   Assignment   ::= Ident ':=' Expr
-//   ProcCall     ::= Ident ['(' [ExprList] ')']
-//   ExprList     ::= Expr {',' Expr}
-//   Expr         ::= Term (('+' | '-') Term)*
-//   Term         ::= Factor (('*' | '/' | 'div') Factor)*
-//   Factor       ::= IntLit | StringLit | Ident '.' Ident | Ident | '(' Expr ')'
-//   TypeName     ::= Ident
+//   Program        ::= 'program' Ident ';' [Uses] Block '.'
+//   Uses           ::= 'uses' Ident {',' Ident} ';'
+//   Block          ::= [TypeSection] [VarSection] 'begin' StmtList 'end'
+//   TypeSection    ::= 'type' TypeDecl {TypeDecl}
+//   TypeDecl       ::= Ident '=' (RecordDef | ClassDef) ';'
+//   RecordDef      ::= 'record' FieldList 'end'
+//   ClassDef       ::= 'class' ['(' Ident ')'] FieldList MethodList 'end'
+//   FieldList      ::= {FieldDecl}
+//   FieldDecl      ::= IdentList ':' TypeName ';'
+//   MethodList     ::= {MethodDecl}
+//   MethodDecl     ::= 'procedure' Ident ['(' ParamList ')'] ';' Block ';'
+//   ParamList      ::= ParamGroup {';' ParamGroup}
+//   ParamGroup     ::= IdentList ':' TypeName
+//   VarSection     ::= 'var' VarDecl {VarDecl}
+//   VarDecl        ::= IdentList ':' TypeName ';'
+//   StmtList       ::= Stmt {';' Stmt} [';']
+//   Stmt           ::= FieldAssignment | MethodCall | Assignment | ProcCall | empty
+//   FieldAssign    ::= Ident '.' Ident ':=' Expr
+//   MethodCall     ::= Ident '.' Ident ['(' [ExprList] ')']
+//   Assignment     ::= Ident ':=' Expr
+//   ProcCall       ::= Ident ['(' [ExprList] ')']
+//   ExprList       ::= Expr {',' Expr}
+//   Expr           ::= Term (('+' | '-') Term)*
+//   Term           ::= Factor (('*' | '/' | 'div') Factor)*
+//   Factor         ::= IntLit | StringLit | Ident '.' Ident | Ident | '(' Expr ')'
+//   TypeName       ::= Ident
 
 interface
 
 uses
-  SysUtils, contnrs, uLexer, uAST;
+  SysUtils, Classes, contnrs, uLexer, uAST;
 
 type
   EParseError = class(Exception);
@@ -50,6 +55,8 @@ type
     function  ParseRecordDef: TRecordTypeDef;
     function  ParseClassDef: TClassTypeDef;
     procedure ParseFieldDecl(AFields: TObjectList);
+    function  ParseMethodDecl: TMethodDecl;
+    procedure ParseParamList(AParams: TObjectList);
     procedure ParseVarBlock(ABlock: TBlock);
     procedure ParseVarDecl(ABlock: TBlock);
     procedure ParseStmtList(ABlock: TBlock);
@@ -58,6 +65,7 @@ type
     function  ParseTerm: TASTExpr;
     function  ParseFactor: TASTExpr;
     procedure ParseArgList(ACall: TProcCall);
+    procedure ParseMethodCallArgList(ACall: TMethodCallStmt);
   public
     constructor Create(ALexer: TLexer);
     function Parse: TProgram;
@@ -252,11 +260,88 @@ begin
     end;
     while Check(tkIdent) do
       ParseFieldDecl(Result.Fields);
+    while Check(tkProcedure) do
+      Result.Methods.Add(ParseMethodDecl);
     Expect(tkEnd);
   except
     Result.Free;
     raise;
   end;
+end;
+
+function TParser.ParseMethodDecl: TMethodDecl;
+begin
+  Result := TMethodDecl.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkProcedure);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected method name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.Name := FCurrent.Value;
+    Advance;
+    if Check(tkLParen) then
+    begin
+      Advance;
+      if not Check(tkRParen) then
+        ParseParamList(Result.Params);
+      Expect(tkRParen);
+    end;
+    Expect(tkSemicolon);
+    Result.Body := ParseBlock;
+    Expect(tkSemicolon);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TParser.ParseParamList(AParams: TObjectList);
+var
+  Par:   TMethodParam;
+  I:     Integer;
+  Names: TStringList;
+  TypeN: string;
+begin
+  repeat
+    Names := TStringList.Create;
+    try
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected parameter name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Names.Add(FCurrent.Value);
+      Advance;
+      while Check(tkComma) do
+      begin
+        Advance;
+        if not Check(tkIdent) then
+          raise EParseError.CreateFmt('Expected parameter name at line %d col %d',
+            [FCurrent.Line, FCurrent.Col]);
+        Names.Add(FCurrent.Value);
+        Advance;
+      end;
+      Expect(tkColon);
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected type name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      TypeN := FCurrent.Value;
+      Advance;
+      for I := 0 to Names.Count - 1 do
+      begin
+        Par           := TMethodParam.Create;
+        Par.ParamName := Names[I];
+        Par.TypeName  := TypeN;
+        AParams.Add(Par);
+      end;
+    finally
+      Names.Free;
+    end;
+    if Check(tkSemicolon) then
+      Advance
+    else
+      Break;
+  until False;
 end;
 
 procedure TParser.ParseFieldDecl(AFields: TObjectList);
@@ -364,11 +449,13 @@ end;
 
 function TParser.ParseStmt: TASTStmt;
 var
-  Name:       string;
-  Line, Col:  Integer;
-  Call:       TProcCall;
-  Assign:     TAssignment;
-  FldAssign:  TFieldAssignment;
+  Name:        string;
+  Line, Col:   Integer;
+  Call:        TProcCall;
+  Assign:      TAssignment;
+  FldAssign:   TFieldAssignment;
+  MCall:       TMethodCallStmt;
+  SecondIdent: string;
 begin
   Result := nil;
 
@@ -387,20 +474,42 @@ begin
 
   if Check(tkDot) then
   begin
-    { Field assignment: Ident '.' Ident ':=' Expr }
     Advance;
     if not Check(tkIdent) then
-      raise EParseError.CreateFmt('Expected field name at line %d col %d',
+      raise EParseError.CreateFmt('Expected field or method name at line %d col %d',
         [FCurrent.Line, FCurrent.Col]);
-    FldAssign           := TFieldAssignment.Create;
-    FldAssign.Line      := Line;
-    FldAssign.Col       := Col;
-    FldAssign.RecordName := Name;
-    FldAssign.FieldName  := FCurrent.Value;
+    SecondIdent := FCurrent.Value;
     Advance;
-    Expect(tkAssign);
-    FldAssign.Expr := ParseExpr;
-    Result := FldAssign;
+
+    if Check(tkAssign) then
+    begin
+      { Field assignment: Ident '.' Ident ':=' Expr }
+      FldAssign            := TFieldAssignment.Create;
+      FldAssign.Line       := Line;
+      FldAssign.Col        := Col;
+      FldAssign.RecordName := Name;
+      FldAssign.FieldName  := SecondIdent;
+      Expect(tkAssign);
+      FldAssign.Expr := ParseExpr;
+      Result := FldAssign;
+    end
+    else
+    begin
+      { Method call: Ident '.' Ident ['(' [args] ')'] }
+      MCall            := TMethodCallStmt.Create;
+      MCall.Line       := Line;
+      MCall.Col        := Col;
+      MCall.ObjectName := Name;
+      MCall.Name := SecondIdent;
+      if Check(tkLParen) then
+      begin
+        Advance;
+        if not Check(tkRParen) then
+          ParseMethodCallArgList(MCall);
+        Expect(tkRParen);
+      end;
+      Result := MCall;
+    end;
   end
   else if Check(tkAssign) then
   begin
@@ -430,6 +539,16 @@ begin
 end;
 
 procedure TParser.ParseArgList(ACall: TProcCall);
+begin
+  ACall.Args.Add(ParseExpr);
+  while Check(tkComma) do
+  begin
+    Advance;
+    ACall.Args.Add(ParseExpr);
+  end;
+end;
+
+procedure TParser.ParseMethodCallArgList(ACall: TMethodCallStmt);
 begin
   ACall.Args.Add(ParseExpr);
   while Check(tkComma) do

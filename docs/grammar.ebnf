@@ -99,10 +99,29 @@ RecordDef
     ;
 
 ClassDef
-    = CLASS [ LPAREN IDENT RPAREN ] FieldList END
+    = CLASS [ LPAREN IDENT RPAREN ] FieldList MethodList END
     ;
 
 (* LPAREN IDENT RPAREN — optional parent class name, e.g. class(TObject) *)
+
+MethodList
+    = { MethodDecl }
+    ;
+
+MethodDecl
+    = PROCEDURE IDENT [ LPAREN ParamList RPAREN ] SEMICOLON Block SEMICOLON
+    ;
+
+(* Body is declared inline in the class definition.
+ * An implicit 'Self' parameter of the class type is available inside the body. *)
+
+ParamList
+    = ParamGroup { SEMICOLON ParamGroup }
+    ;
+
+ParamGroup
+    = IdentList COLON TypeName
+    ;
 
 FieldList
     = { FieldDecl }
@@ -140,6 +159,7 @@ StmtList
 
 Stmt
     = FieldAssignment
+    | MethodCall
     | Assignment
     | ProcCall
     | (* empty *)
@@ -148,6 +168,14 @@ Stmt
 FieldAssignment
     = IDENT DOT IDENT ASSIGN Expr
     ;
+
+MethodCall
+    = IDENT DOT IDENT [ LPAREN [ ArgList ] RPAREN ]
+    ;
+
+(* Semantic disambiguation of  IDENT DOT IDENT  in Stmt:
+ *   - Followed by :=  → FieldAssignment
+ *   - Otherwise       → MethodCall                    *)
 
 (* Resolved by semantic analysis:
  *   - If IDENT names a record variable  → record field write

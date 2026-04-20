@@ -17,7 +17,8 @@ uses
   cp.test.semantic,
   cp.test.records,
   cp.test.classes,
-  cp.test.arc;
+  cp.test.arc,
+  cp.test.methods;
 
 var
   Application: TTestRunner;

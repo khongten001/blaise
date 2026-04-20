@@ -90,6 +90,18 @@ type
     destructor Destroy; override;
   end;
 
+  TMethodCallStmt = class(TASTStmt)
+  public
+    ObjectName: string;
+    Name:       string;   { method name }
+    Args:       TObjectList;   { owned TASTExpr items }
+    { Set by uSemantic: }
+    ResolvedClassType: TTypeDesc;   { not owned }
+    ResolvedMethod:    TObject;     { TMethodDecl — not owned; avoids forward ref }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   { ------------------------------------------------------------------ }
   {  Declarations                                                       }
   { ------------------------------------------------------------------ }
@@ -126,10 +138,29 @@ type
     destructor Destroy; override;
   end;
 
+  TBlock = class;  { forward — defined below after all declarations }
+
+  TMethodParam = class(TASTNode)
+  public
+    ParamName:    string;
+    TypeName:     string;
+    ResolvedType: TTypeDesc;  { set by uSemantic }
+  end;
+
+  TMethodDecl = class(TASTNode)
+  public
+    Name:   string;    { method name }
+    Params: TObjectList;  { owned TMethodParam }
+    Body:   TBlock;       { owned }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   TClassTypeDef = class(TASTTypeDef)
   public
     ParentName: string;
     Fields:     TObjectList;  { owned TFieldDecl }
+    Methods:    TObjectList;  { owned TMethodDecl }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -219,6 +250,20 @@ begin
   inherited Destroy;
 end;
 
+{ TMethodCallStmt }
+
+constructor TMethodCallStmt.Create;
+begin
+  inherited Create;
+  Args := TObjectList.Create(True);
+end;
+
+destructor TMethodCallStmt.Destroy;
+begin
+  Args.Free;
+  inherited Destroy;
+end;
+
 { TVarDecl }
 
 constructor TVarDecl.Create;
@@ -261,16 +306,33 @@ begin
   inherited Destroy;
 end;
 
+{ TMethodDecl }
+
+constructor TMethodDecl.Create;
+begin
+  inherited Create;
+  Params := TObjectList.Create(True);
+end;
+
+destructor TMethodDecl.Destroy;
+begin
+  Params.Free;
+  Body.Free;
+  inherited Destroy;
+end;
+
 { TClassTypeDef }
 
 constructor TClassTypeDef.Create;
 begin
   inherited Create;
-  Fields := TObjectList.Create(True);
+  Fields  := TObjectList.Create(True);
+  Methods := TObjectList.Create(True);
 end;
 
 destructor TClassTypeDef.Destroy;
 begin
+  Methods.Free;
   Fields.Free;
   inherited Destroy;
 end;

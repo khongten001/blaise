@@ -27,12 +27,16 @@ type
     procedure EmitDataSection;
     procedure EmitMainHeader;
     procedure EmitMainFooter;
+    procedure EmitMethodDefs(AProg: TProgram);
+    procedure EmitMethodDef(const ATypeName: string; AMethod: TMethodDecl);
     procedure EmitBlock(ABlock: TBlock);
     procedure EmitVarAllocs(ABlock: TBlock);
+    procedure EmitParamAllocs(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
     procedure EmitStringCleanup(ABlock: TBlock);
     procedure EmitStmt(AStmt: TASTStmt);
     procedure EmitAssignment(AAssign: TAssignment);
     procedure EmitFieldAssignment(AAssign: TFieldAssignment);
+    procedure EmitMethodCall(ACall: TMethodCallStmt);
     procedure EmitProcCall(ACall: TProcCall);
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     function  EmitExpr(AExpr: TASTExpr): string;
@@ -223,6 +227,8 @@ begin
     EmitFieldAssignment(TFieldAssignment(AStmt))
   else if AStmt is TAssignment then
     EmitAssignment(TAssignment(AStmt))
+  else if AStmt is TMethodCallStmt then
+    EmitMethodCall(TMethodCallStmt(AStmt))
   else if AStmt is TProcCall then
     EmitProcCall(TProcCall(AStmt))
   else
@@ -304,6 +310,129 @@ begin
   if QType = 'w' then StoreInstr := 'storew'
                  else StoreInstr := 'storel';
   EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, Ptr]));
+end;
+
+procedure TCodeGenQBE.EmitMethodCall(ACall: TMethodCallStmt);
+var
+  RT:       TRecordTypeDesc;
+  MDecl:    TMethodDecl;
+  SelfTemp: string;
+  Par:      TMethodParam;
+  ArgTemp:  string;
+  ArgLine:  string;
+  I:        Integer;
+  QType:    string;
+  FuncName: string;
+begin
+  RT     := TRecordTypeDesc(ACall.ResolvedClassType);
+  MDecl  := TMethodDecl(ACall.ResolvedMethod);
+
+  { Load the object pointer (Self) from the caller's variable slot }
+  SelfTemp := AllocTemp;
+  EmitLine(Format('  %s =l loadl %%_var_%s', [SelfTemp, ACall.ObjectName]));
+
+  FuncName := '$' + RT.Name + '_' + ACall.Name;
+
+  { Build argument string: l Self, then each explicit arg }
+  ArgLine := Format('l %s', [SelfTemp]);
+  for I := 0 to ACall.Args.Count - 1 do
+  begin
+    Par     := TMethodParam(MDecl.Params[I]);
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+    QType   := QbeTypeOf(Par.ResolvedType);
+    ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
+  end;
+
+  EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+end;
+
+procedure TCodeGenQBE.EmitParamAllocs(AMethod: TMethodDecl;
+  AClassType: TRecordTypeDesc);
+var
+  I:   Integer;
+  Par: TMethodParam;
+begin
+  { Self: store incoming pointer into a local slot }
+  EmitLine('  %_var_Self =l alloc8 1');
+  EmitLine('  storel %_par_Self, %_var_Self');
+
+  { Explicit params }
+  for I := 0 to AMethod.Params.Count - 1 do
+  begin
+    Par := TMethodParam(AMethod.Params[I]);
+    case Par.ResolvedType.Kind of
+      tyInteger, tyUInt32, tyBoolean, tyByte:
+        begin
+          EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
+          EmitLine(Format('  storew %%_par_%s, %%_var_%s',
+            [Par.ParamName, Par.ParamName]));
+        end;
+      tyInt64, tyString, tyClass:
+        begin
+          EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+          EmitLine(Format('  storel %%_par_%s, %%_var_%s',
+            [Par.ParamName, Par.ParamName]));
+        end;
+    else
+      EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+      EmitLine(Format('  storel %%_par_%s, %%_var_%s',
+        [Par.ParamName, Par.ParamName]));
+    end;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitMethodDef(const ATypeName: string;
+  AMethod: TMethodDecl);
+var
+  Sig:      string;
+  I:        Integer;
+  Par:      TMethodParam;
+  FuncName: string;
+  Sym:      TSymbol;
+  RT:       TRecordTypeDesc;
+begin
+  FuncName := '$' + ATypeName + '_' + AMethod.Name;
+
+  { Build parameter signature: l %_par_Self [, qtype %_par_Name ...] }
+  Sig := 'l %_par_Self';
+  for I := 0 to AMethod.Params.Count - 1 do
+  begin
+    Par := TMethodParam(AMethod.Params[I]);
+    Sig := Sig + Format(', %s %%_par_%s',
+      [QbeTypeOf(Par.ResolvedType), Par.ParamName]);
+  end;
+
+  EmitLine(Format('function %s(%s) {', [FuncName, Sig]));
+  EmitLine('@start');
+
+  { Allocate stack slots for Self and params, then emit body }
+  RT := nil;
+  { We need the class type descriptor for EmitParamAllocs — obtain from AMethod }
+  { AMethod.Body is already resolved; RT is referenced via Self symbol in the body.
+    We pass nil for RT here since EmitParamAllocs only needs it for Self size (always l). }
+  EmitParamAllocs(AMethod, nil);
+  EmitBlock(AMethod.Body);
+
+  EmitLine('  ret');
+  EmitLine('}');
+  EmitLine('');
+end;
+
+procedure TCodeGenQBE.EmitMethodDefs(AProg: TProgram);
+var
+  I, J: Integer;
+  TD:   TTypeDecl;
+  CD:   TClassTypeDef;
+begin
+  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    if not (TD.Def is TClassTypeDef) then
+      Continue;
+    CD := TClassTypeDef(TD.Def);
+    for J := 0 to CD.Methods.Count - 1 do
+      EmitMethodDef(TD.Name, TMethodDecl(CD.Methods[J]));
+  end;
 end;
 
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
@@ -488,6 +617,7 @@ begin
     SavedOutput := FOutput;
     FOutput := Body;
     try
+      EmitMethodDefs(AProg);
       EmitMainHeader;
       EmitBlock(AProg.Block);
       EmitMainFooter;
@@ -495,7 +625,7 @@ begin
       FOutput := SavedOutput;
     end;
 
-    EmitLine('# Generated by Blaise Compiler (Phase 1)');
+    EmitLine('# Generated by Blaise Compiler (Phase 2)');
     EmitLine('# Source: ' + AProg.Name);
     EmitLine('');
     EmitDataSection;

@@ -3,36 +3,44 @@ unit uSemantic;
 {$mode objfpc}{$H+}
 
 // Semantic analysis pass — walks the AST produced by uParser and:
-//   1. Resolves record type declarations and registers them in the symbol table.
-//   2. Resolves every identifier to a TSymbol in the symbol table.
-//   3. Infers and annotates every expression node with ResolvedType.
-//   4. Type-checks assignments and field assignments.
-//   5. Validates procedure/function calls.
-//   6. Raises ESemanticError with source position on any violation.
+//   1. Resolves record/class type declarations and registers them in the symbol table.
+//   2. Indexes class methods for dispatch lookup.
+//   3. Analyses method bodies with Self and explicit params in scope.
+//   4. Resolves every identifier to a TSymbol in the symbol table.
+//   5. Infers and annotates every expression node with ResolvedType.
+//   6. Type-checks assignments, field assignments, and method calls.
+//   7. Validates procedure/function calls.
+//   8. Raises ESemanticError with source position on any violation.
 
 interface
 
 uses
-  SysUtils, contnrs, uAST, uSymbolTable;
+  SysUtils, Classes, contnrs, uAST, uSymbolTable;
 
 type
   ESemanticError = class(Exception);
 
   TSemanticAnalyser = class
   private
-    FTable: TSymbolTable;
+    FTable:       TSymbolTable;
+    FMethodIndex: TStringList;  { 'TypeName.MethodName' → TMethodDecl (not owned) }
 
     procedure AnalyseBlock(ABlock: TBlock);
     procedure AnalyseTypeDecls(ABlock: TBlock);
+    procedure AnalyseMethodBodies(ABlock: TBlock);
+    procedure AnalyseMethodDecl(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
     procedure AnalyseVarDecls(ABlock: TBlock);
     procedure AnalyseStmts(ABlock: TBlock);
     procedure AnalyseStmt(AStmt: TASTStmt);
     procedure AnalyseAssignment(AAssign: TAssignment);
     procedure AnalyseFieldAssignment(AAssign: TFieldAssignment);
     procedure AnalyseProcCall(ACall: TProcCall);
+    procedure AnalyseMethodCall(ACall: TMethodCallStmt);
     function  AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
     function  AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
     function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
+
+    function  FindMethodDecl(const ATypeName, AMethodName: string): TMethodDecl;
 
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
     procedure CheckTypesMatch(AExpected, AActual: TTypeDesc;
@@ -48,11 +56,14 @@ implementation
 constructor TSemanticAnalyser.Create;
 begin
   inherited Create;
-  FTable := TSymbolTable.Create;
+  FTable       := TSymbolTable.Create;
+  FMethodIndex := TStringList.Create;
+  FMethodIndex.CaseSensitive := False;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
+  FMethodIndex.Free;
   FTable.Free;
   inherited Destroy;
 end;
@@ -88,6 +99,7 @@ begin
     after the block scope is popped — needed for var declarations and the
     transferred symbol table used by codegen. }
   AnalyseTypeDecls(ABlock);
+  AnalyseMethodBodies(ABlock);
   FTable.PushScope;
   try
     AnalyseVarDecls(ABlock);
@@ -99,14 +111,19 @@ end;
 
 procedure TSemanticAnalyser.AnalyseTypeDecls(ABlock: TBlock);
 var
-  I, J, K:   Integer;
-  TD:        TTypeDecl;
-  FieldList: TObjectList;
-  FDecl:     TFieldDecl;
-  RT:        TRecordTypeDesc;
-  FldType:   TTypeDesc;
-  FldName:   string;
-  Sym:       TSymbol;
+  I, J, K:    Integer;
+  TD:         TTypeDecl;
+  FieldList:  TObjectList;
+  MethodList: TObjectList;
+  FDecl:      TFieldDecl;
+  MDecl:      TMethodDecl;
+  Par:        TMethodParam;
+  ParType:    TTypeDesc;
+  RT:         TRecordTypeDesc;
+  FldType:    TTypeDesc;
+  FldName:    string;
+  Sym:        TSymbol;
+  Key:        string;
 begin
   for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
@@ -114,13 +131,15 @@ begin
 
     if TD.Def is TRecordTypeDef then
     begin
-      RT        := FTable.NewRecordType(TD.Name);
-      FieldList := TRecordTypeDef(TD.Def).Fields;
+      RT         := FTable.NewRecordType(TD.Name);
+      FieldList  := TRecordTypeDef(TD.Def).Fields;
+      MethodList := nil;
     end
     else if TD.Def is TClassTypeDef then
     begin
-      RT        := FTable.NewClassType(TD.Name);
-      FieldList := TClassTypeDef(TD.Def).Fields;
+      RT         := FTable.NewClassType(TD.Name);
+      FieldList  := TClassTypeDef(TD.Def).Fields;
+      MethodList := TClassTypeDef(TD.Def).Methods;
     end
     else
     begin
@@ -156,7 +175,103 @@ begin
         Format('Duplicate type name ''%s''', [TD.Name]),
         TD.Line, TD.Col);
     end;
+
+    { Index class methods and resolve param types }
+    if MethodList <> nil then
+      for J := 0 to MethodList.Count - 1 do
+      begin
+        MDecl := TMethodDecl(MethodList[J]);
+        Key   := TD.Name + '.' + MDecl.Name;
+        FMethodIndex.AddObject(Key, MDecl);
+
+        for K := 0 to MDecl.Params.Count - 1 do
+        begin
+          Par     := TMethodParam(MDecl.Params[K]);
+          ParType := FTable.FindType(Par.TypeName);
+          if ParType = nil then
+            SemanticError(
+              Format('Unknown type ''%s'' for parameter ''%s''',
+                [Par.TypeName, Par.ParamName]),
+              MDecl.Line, MDecl.Col);
+          Par.ResolvedType := ParType;
+        end;
+      end;
   end;
+end;
+
+procedure TSemanticAnalyser.AnalyseMethodBodies(ABlock: TBlock);
+var
+  I, J:  Integer;
+  TD:    TTypeDecl;
+  CD:    TClassTypeDef;
+  RT:    TRecordTypeDesc;
+  Sym:   TSymbol;
+begin
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls[I]);
+    if not (TD.Def is TClassTypeDef) then
+      Continue;
+    CD  := TClassTypeDef(TD.Def);
+    Sym := FTable.Lookup(TD.Name);
+    if (Sym = nil) or not (Sym.TypeDesc is TRecordTypeDesc) then
+      Continue;
+    RT := TRecordTypeDesc(Sym.TypeDesc);
+    for J := 0 to CD.Methods.Count - 1 do
+      AnalyseMethodDecl(TMethodDecl(CD.Methods[J]), RT);
+  end;
+end;
+
+procedure TSemanticAnalyser.AnalyseMethodDecl(
+  AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
+var
+  I:    Integer;
+  Par:  TMethodParam;
+  Sym:  TSymbol;
+begin
+  FTable.PushScope;
+  try
+    { Define Self as a variable of the class type }
+    Sym := TSymbol.Create('Self', skVariable, AClassType);
+    FTable.Define(Sym);
+
+    { Define explicit parameters }
+    for I := 0 to AMethod.Params.Count - 1 do
+    begin
+      Par := TMethodParam(AMethod.Params[I]);
+      if Par.ResolvedType = nil then
+        SemanticError(
+          Format('Parameter ''%s'' has unresolved type', [Par.ParamName]),
+          AMethod.Line, AMethod.Col);
+      Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
+      if not FTable.Define(Sym) then
+      begin
+        Sym.Free;
+        SemanticError(
+          Format('Duplicate parameter name ''%s''', [Par.ParamName]),
+          AMethod.Line, AMethod.Col);
+      end;
+    end;
+
+    { Analyse the method body block (pushes its own inner scope) }
+    AnalyseBlock(AMethod.Body);
+  finally
+    FTable.PopScope;
+  end;
+end;
+
+function TSemanticAnalyser.FindMethodDecl(
+  const ATypeName, AMethodName: string): TMethodDecl;
+var
+  Idx: Integer;
+  Key: string;
+begin
+  Key := ATypeName + '.' + AMethodName;
+  Idx := FMethodIndex.IndexOf(Key);
+  if Idx >= 0 then
+    Result := TMethodDecl(FMethodIndex.Objects[Idx])
+  else
+    Result := nil;
 end;
 
 procedure TSemanticAnalyser.AnalyseVarDecls(ABlock: TBlock);
@@ -208,8 +323,59 @@ begin
     AnalyseFieldAssignment(TFieldAssignment(AStmt))
   else if AStmt is TAssignment then
     AnalyseAssignment(TAssignment(AStmt))
+  else if AStmt is TMethodCallStmt then
+    AnalyseMethodCall(TMethodCallStmt(AStmt))
   else if AStmt is TProcCall then
     AnalyseProcCall(TProcCall(AStmt));
+end;
+
+procedure TSemanticAnalyser.AnalyseMethodCall(ACall: TMethodCallStmt);
+var
+  ObjSym:  TSymbol;
+  RT:      TRecordTypeDesc;
+  MDecl:   TMethodDecl;
+  Par:     TMethodParam;
+  ArgType: TTypeDesc;
+  I:       Integer;
+begin
+  ObjSym := FTable.Lookup(ACall.ObjectName);
+  if ObjSym = nil then
+    SemanticError(
+      Format('Undeclared variable ''%s''', [ACall.ObjectName]),
+      ACall.Line, ACall.Col);
+  if ObjSym.Kind <> skVariable then
+    SemanticError(
+      Format('''%s'' is not a variable', [ACall.ObjectName]),
+      ACall.Line, ACall.Col);
+  if ObjSym.TypeDesc.Kind <> tyClass then
+    SemanticError(
+      Format('''%s'' is not a class variable', [ACall.ObjectName]),
+      ACall.Line, ACall.Col);
+
+  RT    := TRecordTypeDesc(ObjSym.TypeDesc);
+  MDecl := FindMethodDecl(RT.Name, ACall.Name);
+  if MDecl = nil then
+    SemanticError(
+      Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
+      ACall.Line, ACall.Col);
+
+  if ACall.Args.Count <> MDecl.Params.Count then
+    SemanticError(
+      Format('Method ''%s.%s'' expects %d argument(s) but got %d',
+        [RT.Name, ACall.Name, MDecl.Params.Count, ACall.Args.Count]),
+      ACall.Line, ACall.Col);
+
+  for I := 0 to ACall.Args.Count - 1 do
+  begin
+    ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+    Par     := TMethodParam(MDecl.Params[I]);
+    CheckTypesMatch(Par.ResolvedType, ArgType,
+      Format('argument %d of ''%s''', [I + 1, ACall.Name]),
+      ACall.Line, ACall.Col);
+  end;
+
+  ACall.ResolvedClassType := RT;
+  ACall.ResolvedMethod    := MDecl;
 end;
 
 procedure TSemanticAnalyser.AnalyseAssignment(AAssign: TAssignment);

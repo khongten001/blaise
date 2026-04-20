@@ -23,6 +23,7 @@ type
     tkType,
     tkRecord,
     tkClass,
+    tkProcedure,
     tkVar,
     tkBegin,
     tkEnd,
@@ -88,8 +89,9 @@ begin
   else if AUpper = 'END'     then Result := tkEnd
   else if AUpper = 'TYPE'    then Result := tkType
   else if AUpper = 'RECORD'  then Result := tkRecord
-  else if AUpper = 'CLASS'   then Result := tkClass
-  else if AUpper = 'DIV'     then Result := tkDiv
+  else if AUpper = 'CLASS'     then Result := tkClass
+  else if AUpper = 'PROCEDURE' then Result := tkProcedure
+  else if AUpper = 'DIV'       then Result := tkDiv
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;
