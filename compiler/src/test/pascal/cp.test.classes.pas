@@ -1,0 +1,560 @@
+unit cp.test.classes;
+
+{$mode objfpc}{$H+}
+
+interface
+
+uses
+  Classes, SysUtils, fpcunit, testregistry,
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+
+type
+  TClassTests = class(TTestCase)
+  private
+    function ParseSrc(const ASrc: string): TProgram;
+    function AnalyseSrc(const ASrc: string): TProgram;
+    function GenIR(const ASrc: string): string;
+    procedure AnalyseExpectError(const ASrc: string);
+  published
+    { ------------------------------------------------------------------ }
+    { Lexer                                                                }
+    { ------------------------------------------------------------------ }
+    procedure TestLexer_Class_Keyword;
+
+    { ------------------------------------------------------------------ }
+    { Parser                                                               }
+    { ------------------------------------------------------------------ }
+    procedure TestParse_ClassSection_Exists;
+    procedure TestParse_ClassType_Name;
+    procedure TestParse_ClassType_SingleField;
+    procedure TestParse_ClassType_MultipleFields;
+    procedure TestParse_ClassType_WithParent;
+    procedure TestParse_ClassVar;
+    procedure TestParse_ClassConstructorCall;
+    procedure TestParse_ClassFieldAssignment;
+
+    { ------------------------------------------------------------------ }
+    { Semantic                                                             }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_ClassType_Registered;
+    procedure TestSemantic_ClassType_IsClass;
+    procedure TestSemantic_ClassVar_HasClassType;
+    procedure TestSemantic_Constructor_TypeIsClass;
+    procedure TestSemantic_ClassFieldAssign_OK;
+    procedure TestSemantic_ClassFieldAssign_TypeMismatch_RaisesError;
+    procedure TestSemantic_ClassFieldAccess_TypeIsFieldType;
+    procedure TestSemantic_ClassFieldAccess_UnknownField_RaisesError;
+
+    { ------------------------------------------------------------------ }
+    { Code generation                                                      }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_ClassVar_HasPointerAlloc;
+    procedure TestCodegen_ClassVar_ZeroInit;
+    procedure TestCodegen_Constructor_CallsMalloc;
+    procedure TestCodegen_ClassFieldStore_LoadsPointer;
+    procedure TestCodegen_ClassFieldLoad_LoadsPointer;
+  end;
+
+implementation
+
+{ ------------------------------------------------------------------ }
+{ Helpers                                                             }
+{ ------------------------------------------------------------------ }
+
+function TClassTests.ParseSrc(const ASrc: string): TProgram;
+var
+  L: TLexer;
+  P: TParser;
+begin
+  L := TLexer.Create(ASrc);
+  P := TParser.Create(L);
+  try
+    Result := P.Parse;
+  finally
+    P.Free;
+    L.Free;
+  end;
+end;
+
+function TClassTests.AnalyseSrc(const ASrc: string): TProgram;
+var
+  A: TSemanticAnalyser;
+begin
+  Result := ParseSrc(ASrc);
+  A := TSemanticAnalyser.Create;
+  try
+    A.Analyse(Result);
+  finally
+    A.Free;
+  end;
+end;
+
+function TClassTests.GenIR(const ASrc: string): string;
+var
+  Prog: TProgram;
+  CG:   TCodeGenQBE;
+begin
+  Prog := AnalyseSrc(ASrc);
+  try
+    CG := TCodeGenQBE.Create;
+    try
+      CG.Generate(Prog);
+      Result := CG.GetOutput;
+    finally
+      CG.Free;
+    end;
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.AnalyseExpectError(const ASrc: string);
+var
+  Prog: TProgram;
+begin
+  try
+    Prog := AnalyseSrc(ASrc);
+    Prog.Free;
+    Fail('Expected ESemanticError');
+  except
+    on E: ESemanticError do ; { expected }
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Lexer                                                               }
+{ ------------------------------------------------------------------ }
+
+procedure TClassTests.TestLexer_Class_Keyword;
+var
+  L: TLexer;
+  T: TToken;
+begin
+  L := TLexer.Create('class');
+  try
+    T := L.Next;
+    AssertEquals('class token', Ord(tkClass), Ord(T.Kind));
+  finally
+    L.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Parser                                                              }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSimpleClass =
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'begin end.';
+
+procedure TClassTests.TestParse_ClassSection_Exists;
+var
+  Prog: TProgram;
+begin
+  Prog := ParseSrc(SrcSimpleClass);
+  try
+    AssertEquals('1 type decl', 1, Prog.Block.TypeDecls.Count);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassType_Name;
+var
+  Prog: TProgram;
+  TD:   TTypeDecl;
+begin
+  Prog := ParseSrc(SrcSimpleClass);
+  try
+    TD := TTypeDecl(Prog.Block.TypeDecls[0]);
+    AssertEquals('Type name', 'TFoo', TD.Name);
+    AssertTrue('Is TClassTypeDef', TD.Def is TClassTypeDef);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassType_SingleField;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  Fld:  TFieldDecl;
+begin
+  Prog := ParseSrc(SrcSimpleClass);
+  try
+    CD  := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('1 field', 1, CD.Fields.Count);
+    Fld := TFieldDecl(CD.Fields[0]);
+    AssertEquals('Field name', 'X', Fld.Names[0]);
+    AssertEquals('Field type', 'Integer', Fld.TypeName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassType_MultipleFields;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+begin
+  Prog := ParseSrc(
+    'program P;'              + LineEnding +
+    'type'                    + LineEnding +
+    '  TPerson = class'       + LineEnding +
+    '    Name: string;'       + LineEnding +
+    '    Age: Integer;'       + LineEnding +
+    '  end;'                  + LineEnding +
+    'begin end.');
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('2 fields', 2, CD.Fields.Count);
+    AssertEquals('First field', 'Name', TFieldDecl(CD.Fields[0]).Names[0]);
+    AssertEquals('Second field', 'Age',  TFieldDecl(CD.Fields[1]).Names[0]);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassType_WithParent;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+begin
+  Prog := ParseSrc(
+    'program P;'                    + LineEnding +
+    'type'                          + LineEnding +
+    '  TAnimal = class'             + LineEnding +
+    '    Name: string;'             + LineEnding +
+    '  end;'                        + LineEnding +
+    '  TDog = class(TAnimal)'       + LineEnding +
+    '    Breed: string;'            + LineEnding +
+    '  end;'                        + LineEnding +
+    'begin end.');
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[1]).Def);
+    AssertEquals('Parent class', 'TAnimal', CD.ParentName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassVar;
+var
+  Prog: TProgram;
+  Decl: TVarDecl;
+begin
+  Prog := ParseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin end.');
+  try
+    Decl := TVarDecl(Prog.Block.Decls[0]);
+    AssertEquals('Var name', 'F', Decl.Names[0]);
+    AssertEquals('Var type', 'TFoo', Decl.TypeName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassConstructorCall;
+var
+  Prog:   TProgram;
+  Assign: TAssignment;
+  Expr:   TFieldAccessExpr;
+begin
+  Prog := ParseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F := TFoo.Create'  + LineEnding +
+    'end.');
+  try
+    Assign := TAssignment(Prog.Block.Stmts[0]);
+    AssertEquals('Assigns to F', 'F', Assign.Name);
+    AssertTrue('Expr is TFieldAccessExpr', Assign.Expr is TFieldAccessExpr);
+    Expr := TFieldAccessExpr(Assign.Expr);
+    AssertEquals('Type name', 'TFoo',   Expr.RecordName);
+    AssertEquals('Method',    'Create', Expr.FieldName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestParse_ClassFieldAssignment;
+var
+  Prog: TProgram;
+  Stmt: TFieldAssignment;
+begin
+  Prog := ParseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F.X := 99'         + LineEnding +
+    'end.');
+  try
+    Stmt := TFieldAssignment(Prog.Block.Stmts[0]);
+    AssertEquals('Record var',  'F',  Stmt.RecordName);
+    AssertEquals('Field name',  'X',  Stmt.FieldName);
+    AssertTrue('Expr is TIntLiteral', Stmt.Expr is TIntLiteral);
+  finally
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Semantic                                                            }
+{ ------------------------------------------------------------------ }
+
+procedure TClassTests.TestSemantic_ClassType_Registered;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(SrcSimpleClass);
+  try
+    AssertNotNull('TFoo in symbol table',
+      Prog.SymbolTable.FindType('TFoo'));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_ClassType_IsClass;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(SrcSimpleClass);
+  try
+    AssertEquals('TFoo is tyClass',
+      Ord(tyClass),
+      Ord(Prog.SymbolTable.FindType('TFoo').Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_ClassVar_HasClassType;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin end.');
+  try
+    AssertEquals('F is tyClass',
+      Ord(tyClass),
+      Ord(TVarDecl(Prog.Block.Decls[0]).ResolvedType.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_Constructor_TypeIsClass;
+var
+  Prog:   TProgram;
+  Assign: TAssignment;
+  Expr:   TFieldAccessExpr;
+begin
+  Prog := AnalyseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F := TFoo.Create'  + LineEnding +
+    'end.');
+  try
+    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Expr   := TFieldAccessExpr(Assign.Expr);
+    AssertTrue('IsConstructorCall', Expr.IsConstructorCall);
+    AssertEquals('ResolvedType is tyClass',
+      Ord(tyClass), Ord(Expr.ResolvedType.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_ClassFieldAssign_OK;
+begin
+  AnalyseSrc(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F.X := 42'         + LineEnding +
+    'end.'
+  ).Free;
+end;
+
+procedure TClassTests.TestSemantic_ClassFieldAssign_TypeMismatch_RaisesError;
+begin
+  AnalyseExpectError(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F.X := ''hello'''  + LineEnding +
+    'end.');
+end;
+
+procedure TClassTests.TestSemantic_ClassFieldAccess_TypeIsFieldType;
+var
+  Prog:   TProgram;
+  Access: TFieldAccessExpr;
+begin
+  Prog := AnalyseSrc(
+    'program P;'              + LineEnding +
+    'type'                    + LineEnding +
+    '  TFoo = class'          + LineEnding +
+    '    X: Integer;'         + LineEnding +
+    '  end;'                  + LineEnding +
+    'var F: TFoo; N: Integer;' + LineEnding +
+    'begin'                   + LineEnding +
+    '  N := F.X'              + LineEnding +
+    'end.');
+  try
+    Access := TFieldAccessExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    AssertTrue('IsClassAccess', Access.IsClassAccess);
+    AssertEquals('Field access type',
+      Ord(tyInteger), Ord(Access.ResolvedType.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_ClassFieldAccess_UnknownField_RaisesError;
+begin
+  AnalyseExpectError(
+    'program P;'              + LineEnding +
+    'type'                    + LineEnding +
+    '  TFoo = class'          + LineEnding +
+    '    X: Integer;'         + LineEnding +
+    '  end;'                  + LineEnding +
+    'var F: TFoo; N: Integer;' + LineEnding +
+    'begin'                   + LineEnding +
+    '  N := F.Z'              + LineEnding +
+    'end.');
+end;
+
+{ ------------------------------------------------------------------ }
+{ Code generation                                                     }
+{ ------------------------------------------------------------------ }
+
+procedure TClassTests.TestCodegen_ClassVar_HasPointerAlloc;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin end.');
+  AssertTrue('alloc8 for F', Pos('_var_F', IR) > 0);
+  AssertTrue('8-byte alloc', Pos('alloc8', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_ClassVar_ZeroInit;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin end.');
+  AssertTrue('zero init', Pos('storel 0', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_Constructor_CallsMalloc;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F := TFoo.Create'  + LineEnding +
+    'end.');
+  AssertTrue('calls malloc', Pos('call $malloc', IR) > 0);
+  AssertTrue('stores pointer', Pos('storel', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_ClassFieldStore_LoadsPointer;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'          + LineEnding +
+    'type'                + LineEnding +
+    '  TFoo = class'      + LineEnding +
+    '    X: Integer;'     + LineEnding +
+    '  end;'              + LineEnding +
+    'var F: TFoo;'        + LineEnding +
+    'begin'               + LineEnding +
+    '  F.X := 42'         + LineEnding +
+    'end.');
+  AssertTrue('loads pointer', Pos('loadl %_var_F', IR) > 0);
+  AssertTrue('stores value',  Pos('storew', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_ClassFieldLoad_LoadsPointer;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'              + LineEnding +
+    'type'                    + LineEnding +
+    '  TFoo = class'          + LineEnding +
+    '    X: Integer;'         + LineEnding +
+    '  end;'                  + LineEnding +
+    'var F: TFoo; N: Integer;' + LineEnding +
+    'begin'                   + LineEnding +
+    '  N := F.X'              + LineEnding +
+    'end.');
+  AssertTrue('loads pointer', Pos('loadl %_var_F', IR) > 0);
+  AssertTrue('loads field',   Pos('loadw', IR) > 0);
+end;
+
+initialization
+  RegisterTest(TClassTests);
+
+end.

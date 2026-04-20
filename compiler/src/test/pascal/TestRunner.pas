@@ -14,7 +14,10 @@ uses
   cp.test.parser,
   cp.test.codegen,
   cp.test.symtable,
-  cp.test.semantic;
+  cp.test.semantic,
+  cp.test.records,
+  cp.test.classes,
+  cp.test.arc;
 
 var
   Application: TTestRunner;

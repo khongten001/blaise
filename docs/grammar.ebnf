@@ -1,0 +1,225 @@
+(* Blaise Language Grammar — EBNF
+ *
+ * This grammar reflects the language as implemented in Phase 2 of the
+ * Blaise compiler.  It is derived directly from uParser.pas and serves
+ * as the authoritative reference for the parser, language tooling, and
+ * future extensions.
+ *
+ * Notation
+ * --------
+ *   { x }      zero or more repetitions of x
+ *   [ x ]      optional x (zero or one)
+ *   ( x | y )  alternation
+ *   "..."       terminal — literal token text
+ *   UPPER       terminal — token class defined in the Tokens section
+ *
+ * Tokens section defines the terminal vocabulary produced by the lexer.
+ * Grammar section defines the syntactic structure.
+ *)
+
+
+(* ═══════════════════════════════════════════════════════════════════════════
+ * TOKENS
+ * ═══════════════════════════════════════════════════════════════════════════ *)
+
+(* Literals *)
+INT_LIT    = digit { digit } ;
+STRING_LIT = "'" { char | "''" } "'" ;
+
+(* Identifiers and keywords (case-insensitive) *)
+IDENT    = letter { letter | digit | "_" } ;
+
+PROGRAM  = "program"  ;
+USES     = "uses"     ;
+TYPE     = "type"     ;
+RECORD   = "record"   ;
+CLASS    = "class"    ;
+VAR      = "var"      ;
+BEGIN    = "begin"    ;
+END      = "end"      ;
+DIV      = "div"      ;
+
+(* Operators and punctuation *)
+ASSIGN   = ":="  ;
+EQUALS   = "="   ;
+COLON    = ":"   ;
+PLUS     = "+"   ;
+MINUS    = "-"   ;
+STAR     = "*"   ;
+SLASH    = "/"   ;
+LPAREN   = "("   ;
+RPAREN   = ")"   ;
+COMMA    = ","   ;
+SEMICOLON = ";"  ;
+DOT      = "."   ;
+
+(* Ignored by the lexer *)
+WHITESPACE = { " " | "\t" | "\r" | "\n" } ;
+LINE_COMMENT = "//" { char } newline ;
+BLOCK_COMMENT = "{" { char } "}" | "(*" { char } "*)" ;
+
+
+(* ═══════════════════════════════════════════════════════════════════════════
+ * GRAMMAR
+ * ═══════════════════════════════════════════════════════════════════════════ *)
+
+(* ── Top level ──────────────────────────────────────────────────────────── *)
+
+Program
+    = PROGRAM IDENT SEMICOLON
+      [ UsesClause ]
+      Block
+      DOT
+    ;
+
+UsesClause
+    = USES IDENT { COMMA IDENT } SEMICOLON
+    ;
+
+(* ── Block ──────────────────────────────────────────────────────────────── *)
+
+Block
+    = [ TypeSection ]
+      [ VarSection ]
+      BEGIN StmtList END
+    ;
+
+(* ── Type section ───────────────────────────────────────────────────────── *)
+
+TypeSection
+    = TYPE TypeDecl { TypeDecl }
+    ;
+
+TypeDecl
+    = IDENT EQUALS ( RecordDef | ClassDef ) SEMICOLON
+    ;
+
+RecordDef
+    = RECORD FieldList END
+    ;
+
+ClassDef
+    = CLASS [ LPAREN IDENT RPAREN ] FieldList END
+    ;
+
+(* LPAREN IDENT RPAREN — optional parent class name, e.g. class(TObject) *)
+
+FieldList
+    = { FieldDecl }
+    ;
+
+FieldDecl
+    = IdentList COLON TypeName SEMICOLON
+    ;
+
+(* ── Variable section ───────────────────────────────────────────────────── *)
+
+VarSection
+    = VAR VarDecl { VarDecl }
+    ;
+
+VarDecl
+    = IdentList COLON TypeName SEMICOLON
+    ;
+
+(* ── Shared helpers ─────────────────────────────────────────────────────── *)
+
+IdentList
+    = IDENT { COMMA IDENT }
+    ;
+
+TypeName
+    = IDENT
+    ;
+
+(* ── Statements ─────────────────────────────────────────────────────────── *)
+
+StmtList
+    = { Stmt SEMICOLON } [ Stmt ]
+    ;
+
+Stmt
+    = FieldAssignment
+    | Assignment
+    | ProcCall
+    | (* empty *)
+    ;
+
+FieldAssignment
+    = IDENT DOT IDENT ASSIGN Expr
+    ;
+
+(* Resolved by semantic analysis:
+ *   - If IDENT names a record variable  → record field write
+ *   - If IDENT names a class variable   → heap pointer deref + field write   *)
+
+Assignment
+    = IDENT ASSIGN Expr
+    ;
+
+ProcCall
+    = IDENT [ LPAREN [ ArgList ] RPAREN ]
+    ;
+
+ArgList
+    = Expr { COMMA Expr }
+    ;
+
+(* ── Expressions ────────────────────────────────────────────────────────── *)
+
+Expr
+    = Term { ( PLUS | MINUS ) Term }
+    ;
+
+Term
+    = Factor { ( STAR | SLASH | DIV ) Factor }
+    ;
+
+Factor
+    = INT_LIT
+    | STRING_LIT
+    | IDENT DOT IDENT        (* field access  OR  constructor call     *)
+    | IDENT                  (* variable reference  OR  procedure name *)
+    | LPAREN Expr RPAREN
+    ;
+
+(* Semantic disambiguation of  IDENT DOT IDENT  in Factor:
+ *   - Left IDENT resolves to a type symbol   → constructor call (e.g. TFoo.Create)
+ *   - Left IDENT resolves to a class variable → class field read (heap deref)
+ *   - Left IDENT resolves to a record variable → record field read (inline)       *)
+
+
+(* ═══════════════════════════════════════════════════════════════════════════
+ * BUILT-IN PROCEDURES AND TYPES
+ * ═══════════════════════════════════════════════════════════════════════════ *)
+
+(* Built-in procedures (recognised by the code generator, not the parser)
+ *
+ *   WriteLn ( Expr { COMMA Expr } )
+ *
+ * Built-in types (pre-populated in the symbol table)
+ *
+ *   Integer   — 64-bit signed integer   (QBE type: l)
+ *   String    — ARC-managed UTF-8 string pointer (QBE type: l)
+ *)
+
+
+(* ═══════════════════════════════════════════════════════════════════════════
+ * ARC IMPLICIT OPERATIONS
+ * ═══════════════════════════════════════════════════════════════════════════ *)
+
+(* The compiler inserts reference-counting calls automatically around
+ * string assignments.  These are not visible in source syntax but are
+ * part of the language semantics:
+ *
+ *   On  Assignment  where the target has type String:
+ *       _StringAddRef  ( new_value )
+ *       _StringRelease ( old_value )
+ *       store new_value → target
+ *
+ *   On  block exit  for every String variable in scope:
+ *       _StringRelease ( variable )
+ *
+ * Phase 2: _StringAddRef and _StringRelease are no-op RTL stubs.
+ * Phase 3: real reference counting using the locked string header layout.
+ *)

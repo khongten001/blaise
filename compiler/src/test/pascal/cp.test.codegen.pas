@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, fpcunit, testregistry,
-  uLexer, uParser, uAST, uCodeGenQBE;
+  uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
 
 type
   TCodeGenTests = class(TTestCase)
@@ -47,11 +47,18 @@ var
   L:  TLexer;
   P:  TParser;
   Pr: TProgram;
+  A:  TSemanticAnalyser;
   CG: TCodeGenQBE;
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
   Pr := P.Parse;
+  A  := TSemanticAnalyser.Create;
+  try
+    A.Analyse(Pr);
+  finally
+    A.Free;
+  end;
   CG := TCodeGenQBE.Create;
   try
     CG.Generate(Pr);

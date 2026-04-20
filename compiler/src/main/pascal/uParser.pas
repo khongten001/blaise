@@ -2,26 +2,33 @@ unit uParser;
 
 {$mode objfpc}{$H+}
 
-// Recursive-descent parser for the Phase 1 grammar:
-//   Program    ::= 'program' Ident ';' [Uses] Block '.'
-//   Uses       ::= 'uses' Ident {',' Ident} ';'
-//   Block      ::= ['var' VarBlock] 'begin' StmtList 'end'
-//   VarBlock   ::= VarDecl {VarDecl}
-//   VarDecl    ::= IdentList ':' TypeName ';'
-//   StmtList   ::= Stmt {';' Stmt} [';']
-//   Stmt       ::= Assignment | ProcCall | empty
-//   Assignment ::= Ident ':=' Expr
-//   ProcCall   ::= Ident ['(' [ExprList] ')']
-//   ExprList   ::= Expr {',' Expr}
-//   Expr       ::= Term (('+' | '-') Term)*
-//   Term       ::= Factor (('*' | '/') Factor)*
-//   Factor     ::= IntLit | StringLit | Ident | '(' Expr ')'
-//   TypeName   ::= 'Integer' | 'Boolean' | 'string'
+// Recursive-descent parser for the Blaise grammar:
+//   Program      ::= 'program' Ident ';' [Uses] Block '.'
+//   Uses         ::= 'uses' Ident {',' Ident} ';'
+//   Block        ::= [TypeSection] [VarSection] 'begin' StmtList 'end'
+//   TypeSection  ::= 'type' TypeDecl {TypeDecl}
+//   TypeDecl     ::= Ident '=' (RecordDef | ClassDef) ';'
+//   RecordDef    ::= 'record' FieldList 'end'
+//   ClassDef     ::= 'class' ['(' Ident ')'] FieldList 'end'
+//   FieldList    ::= FieldDecl {FieldDecl}
+//   FieldDecl    ::= IdentList ':' TypeName ';'
+//   VarSection   ::= 'var' VarDecl {VarDecl}
+//   VarDecl      ::= IdentList ':' TypeName ';'
+//   StmtList     ::= Stmt {';' Stmt} [';']
+//   Stmt         ::= FieldAssignment | Assignment | ProcCall | empty
+//   FieldAssign  ::= Ident '.' Ident ':=' Expr
+//   Assignment   ::= Ident ':=' Expr
+//   ProcCall     ::= Ident ['(' [ExprList] ')']
+//   ExprList     ::= Expr {',' Expr}
+//   Expr         ::= Term (('+' | '-') Term)*
+//   Term         ::= Factor (('*' | '/' | 'div') Factor)*
+//   Factor       ::= IntLit | StringLit | Ident '.' Ident | Ident | '(' Expr ')'
+//   TypeName     ::= Ident
 
 interface
 
 uses
-  SysUtils, uLexer, uAST;
+  SysUtils, contnrs, uLexer, uAST;
 
 type
   EParseError = class(Exception);
@@ -38,6 +45,11 @@ type
     function  ParseProgram: TProgram;
     procedure ParseUses(AProg: TProgram);
     function  ParseBlock: TBlock;
+    procedure ParseTypeSection(ABlock: TBlock);
+    procedure ParseTypeDecl(ABlock: TBlock);
+    function  ParseRecordDef: TRecordTypeDef;
+    function  ParseClassDef: TClassTypeDef;
+    procedure ParseFieldDecl(AFields: TObjectList);
     procedure ParseVarBlock(ABlock: TBlock);
     procedure ParseVarDecl(ABlock: TBlock);
     procedure ParseStmtList(ABlock: TBlock);
@@ -56,7 +68,7 @@ implementation
 constructor TParser.Create(ALexer: TLexer);
 begin
   inherited Create;
-  FLexer := ALexer;
+  FLexer   := ALexer;
   FCurrent := FLexer.Next;
 end;
 
@@ -148,6 +160,9 @@ begin
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
 
+    if Check(tkType) then
+      ParseTypeSection(Result);
+
     if Check(tkVar) then
       ParseVarBlock(Result);
 
@@ -160,10 +175,133 @@ begin
   end;
 end;
 
+{ ------------------------------------------------------------------ }
+{ Type section                                                        }
+{ ------------------------------------------------------------------ }
+
+procedure TParser.ParseTypeSection(ABlock: TBlock);
+begin
+  Expect(tkType);
+  { At least one declaration required after 'type' }
+  while Check(tkIdent) do
+    ParseTypeDecl(ABlock);
+end;
+
+procedure TParser.ParseTypeDecl(ABlock: TBlock);
+var
+  TD: TTypeDecl;
+begin
+  TD := TTypeDecl.Create;
+  TD.Line := FCurrent.Line;
+  TD.Col  := FCurrent.Col;
+  try
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected type name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    TD.Name := FCurrent.Value;
+    Advance;
+    Expect(tkEquals);
+    if Check(tkRecord) then
+      TD.Def := ParseRecordDef
+    else if Check(tkClass) then
+      TD.Def := ParseClassDef
+    else
+      raise EParseError.CreateFmt(
+        'Expected ''record'' or ''class'' at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Expect(tkSemicolon);
+    ABlock.TypeDecls.Add(TD);
+  except
+    TD.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseRecordDef: TRecordTypeDef;
+begin
+  Result := TRecordTypeDef.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkRecord);
+    while Check(tkIdent) do
+      ParseFieldDecl(Result.Fields);
+    Expect(tkEnd);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseClassDef: TClassTypeDef;
+begin
+  Result := TClassTypeDef.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkClass);
+    if Check(tkLParen) then
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected parent class name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.ParentName := FCurrent.Value;
+      Advance;
+      Expect(tkRParen);
+    end;
+    while Check(tkIdent) do
+      ParseFieldDecl(Result.Fields);
+    Expect(tkEnd);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TParser.ParseFieldDecl(AFields: TObjectList);
+var
+  Fld: TFieldDecl;
+begin
+  Fld := TFieldDecl.Create;
+  Fld.Line := FCurrent.Line;
+  Fld.Col  := FCurrent.Col;
+  try
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected field name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Fld.Names.Add(FCurrent.Value);
+    Advance;
+    while Check(tkComma) do
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected field name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Fld.Names.Add(FCurrent.Value);
+      Advance;
+    end;
+    Expect(tkColon);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected type name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Fld.TypeName := FCurrent.Value;
+    Advance;
+    Expect(tkSemicolon);
+    AFields.Add(Fld);
+  except
+    Fld.Free;
+    raise;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Var section                                                         }
+{ ------------------------------------------------------------------ }
+
 procedure TParser.ParseVarBlock(ABlock: TBlock);
 begin
   Expect(tkVar);
-  { At least one declaration required after 'var' }
   while Check(tkIdent) do
     ParseVarDecl(ABlock);
 end;
@@ -176,7 +314,6 @@ begin
   Decl.Line := FCurrent.Line;
   Decl.Col  := FCurrent.Col;
   try
-    { IdentList: one or more names separated by commas }
     if not Check(tkIdent) then
       raise EParseError.CreateFmt('Expected variable name at line %d col %d',
         [FCurrent.Line, FCurrent.Col]);
@@ -205,11 +342,14 @@ begin
   end;
 end;
 
+{ ------------------------------------------------------------------ }
+{ Statements                                                          }
+{ ------------------------------------------------------------------ }
+
 procedure TParser.ParseStmtList(ABlock: TBlock);
 var
   Stmt: TASTStmt;
 begin
-  { Parse zero or more statements separated (or terminated) by semicolons }
   while not (Check(tkEnd) or Check(tkEOF)) do
   begin
     Stmt := ParseStmt;
@@ -224,14 +364,14 @@ end;
 
 function TParser.ParseStmt: TASTStmt;
 var
-  Name: string;
-  Line, Col: Integer;
-  Call: TProcCall;
-  Assign: TAssignment;
+  Name:       string;
+  Line, Col:  Integer;
+  Call:       TProcCall;
+  Assign:     TAssignment;
+  FldAssign:  TFieldAssignment;
 begin
   Result := nil;
 
-  { Empty statement }
   if Check(tkEnd) or Check(tkEOF) or Check(tkSemicolon) then
     Exit;
 
@@ -245,11 +385,27 @@ begin
   Col  := FCurrent.Col;
   Advance;
 
-  if Check(tkAssign) then
+  if Check(tkDot) then
   begin
-    { Assignment }
+    { Field assignment: Ident '.' Ident ':=' Expr }
     Advance;
-    Assign := TAssignment.Create;
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected field name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    FldAssign           := TFieldAssignment.Create;
+    FldAssign.Line      := Line;
+    FldAssign.Col       := Col;
+    FldAssign.RecordName := Name;
+    FldAssign.FieldName  := FCurrent.Value;
+    Advance;
+    Expect(tkAssign);
+    FldAssign.Expr := ParseExpr;
+    Result := FldAssign;
+  end
+  else if Check(tkAssign) then
+  begin
+    Advance;
+    Assign      := TAssignment.Create;
     Assign.Line := Line;
     Assign.Col  := Col;
     Assign.Name := Name;
@@ -258,8 +414,7 @@ begin
   end
   else
   begin
-    { Procedure call — parentheses optional for zero-arg calls }
-    Call := TProcCall.Create;
+    Call      := TProcCall.Create;
     Call.Line := Line;
     Call.Col  := Col;
     Call.Name := Name;
@@ -284,7 +439,9 @@ begin
   end;
 end;
 
-{ Expression parsing — standard precedence climbing }
+{ ------------------------------------------------------------------ }
+{ Expression parsing — standard precedence climbing                   }
+{ ------------------------------------------------------------------ }
 
 function TParser.ParseExpr: TASTExpr;
 var
@@ -328,15 +485,18 @@ end;
 
 function TParser.ParseFactor: TASTExpr;
 var
-  IntNode: TIntLiteral;
-  StrNode: TStringLiteral;
-  IdNode:  TIdentExpr;
-  Inner:   TASTExpr;
+  IntNode:    TIntLiteral;
+  StrNode:    TStringLiteral;
+  IdNode:     TIdentExpr;
+  FldNode:    TFieldAccessExpr;
+  Inner:      TASTExpr;
+  Name:       string;
+  Line, Col:  Integer;
 begin
   case FCurrent.Kind of
     tkIntLit:
       begin
-        IntNode := TIntLiteral.Create;
+        IntNode       := TIntLiteral.Create;
         IntNode.Line  := FCurrent.Line;
         IntNode.Col   := FCurrent.Col;
         IntNode.Value := StrToInt64(FCurrent.Value);
@@ -345,7 +505,7 @@ begin
       end;
     tkStringLit:
       begin
-        StrNode := TStringLiteral.Create;
+        StrNode       := TStringLiteral.Create;
         StrNode.Line  := FCurrent.Line;
         StrNode.Col   := FCurrent.Col;
         StrNode.Value := FCurrent.Value;
@@ -354,12 +514,33 @@ begin
       end;
     tkIdent:
       begin
-        IdNode := TIdentExpr.Create;
-        IdNode.Line := FCurrent.Line;
-        IdNode.Col  := FCurrent.Col;
-        IdNode.Name := FCurrent.Value;
+        Name := FCurrent.Value;
+        Line := FCurrent.Line;
+        Col  := FCurrent.Col;
         Advance;
-        Result := IdNode;
+        if Check(tkDot) then
+        begin
+          { Field access: Ident '.' Ident }
+          Advance;
+          if not Check(tkIdent) then
+            raise EParseError.CreateFmt('Expected field name at line %d col %d',
+              [FCurrent.Line, FCurrent.Col]);
+          FldNode            := TFieldAccessExpr.Create;
+          FldNode.Line       := Line;
+          FldNode.Col        := Col;
+          FldNode.RecordName := Name;
+          FldNode.FieldName  := FCurrent.Value;
+          Advance;
+          Result := FldNode;
+        end
+        else
+        begin
+          IdNode      := TIdentExpr.Create;
+          IdNode.Line := Line;
+          IdNode.Col  := Col;
+          IdNode.Name := Name;
+          Result := IdNode;
+        end;
       end;
     tkLParen:
       begin

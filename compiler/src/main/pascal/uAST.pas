@@ -40,6 +40,15 @@ type
     Name: string;
   end;
 
+  TFieldAccessExpr = class(TASTExpr)
+  public
+    RecordName:        string;
+    FieldName:         string;
+    FieldInfo:         TFieldInfo;  { set by uSemantic — nil for constructor calls }
+    IsConstructorCall: Boolean;     { set by uSemantic — TypeName.Create }
+    IsClassAccess:     Boolean;     { set by uSemantic — pointer deref needed }
+  end;
+
   TBinaryOp = (boAdd, boSub, boMul, boDiv);
 
   TBinaryExpr = class(TASTExpr)
@@ -60,6 +69,16 @@ type
   public
     Name: string;
     Expr: TASTExpr;  { owned }
+    destructor Destroy; override;
+  end;
+
+  TFieldAssignment = class(TASTStmt)
+  public
+    RecordName:    string;
+    FieldName:     string;
+    Expr:          TASTExpr;   { owned }
+    FieldInfo:     TFieldInfo; { set by uSemantic — carries offset + type }
+    IsClassAccess: Boolean;    { set by uSemantic — pointer deref needed }
     destructor Destroy; override;
   end;
 
@@ -85,13 +104,52 @@ type
   end;
 
   { ------------------------------------------------------------------ }
+  {  Type section                                                       }
+  { ------------------------------------------------------------------ }
+
+  { Abstract base for type definitions (currently only TRecordTypeDef). }
+  TASTTypeDef = class(TASTNode);
+
+  TFieldDecl = class(TASTNode)
+  public
+    Names:        TStringList;  { owned — e.g. X, Y: Integer }
+    TypeName:     string;
+    ResolvedType: TTypeDesc;    { set by uSemantic }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TRecordTypeDef = class(TASTTypeDef)
+  public
+    Fields: TObjectList;  { owned TFieldDecl }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TClassTypeDef = class(TASTTypeDef)
+  public
+    ParentName: string;
+    Fields:     TObjectList;  { owned TFieldDecl }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TTypeDecl = class(TASTNode)
+  public
+    Name: string;
+    Def:  TASTTypeDef;  { owned }
+    destructor Destroy; override;
+  end;
+
+  { ------------------------------------------------------------------ }
   {  Block and Program                                                  }
   { ------------------------------------------------------------------ }
 
   TBlock = class(TASTNode)
   public
-    Decls: TObjectList;  { owned TVarDecl }
-    Stmts: TObjectList;  { owned TASTStmt }
+    TypeDecls: TObjectList;  { owned TTypeDecl }
+    Decls:     TObjectList;  { owned TVarDecl }
+    Stmts:     TObjectList;  { owned TASTStmt }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -99,7 +157,7 @@ type
   TProgram = class(TASTNode)
   public
     Name:        string;
-    UsedUnits:   TStringList;   { owned — unit names from uses clause }
+    UsedUnits:   TStringList;   { owned }
     Block:       TBlock;        { owned }
     SymbolTable: TSymbolTable;  { owned after semantic analysis; nil before }
     constructor Create;
@@ -139,6 +197,14 @@ begin
   inherited Destroy;
 end;
 
+{ TFieldAssignment }
+
+destructor TFieldAssignment.Destroy;
+begin
+  Expr.Free;
+  inherited Destroy;
+end;
+
 { TProcCall }
 
 constructor TProcCall.Create;
@@ -167,17 +233,69 @@ begin
   inherited Destroy;
 end;
 
+{ TFieldDecl }
+
+constructor TFieldDecl.Create;
+begin
+  inherited Create;
+  Names := TStringList.Create;
+end;
+
+destructor TFieldDecl.Destroy;
+begin
+  Names.Free;
+  inherited Destroy;
+end;
+
+{ TRecordTypeDef }
+
+constructor TRecordTypeDef.Create;
+begin
+  inherited Create;
+  Fields := TObjectList.Create(True);
+end;
+
+destructor TRecordTypeDef.Destroy;
+begin
+  Fields.Free;
+  inherited Destroy;
+end;
+
+{ TClassTypeDef }
+
+constructor TClassTypeDef.Create;
+begin
+  inherited Create;
+  Fields := TObjectList.Create(True);
+end;
+
+destructor TClassTypeDef.Destroy;
+begin
+  Fields.Free;
+  inherited Destroy;
+end;
+
+{ TTypeDecl }
+
+destructor TTypeDecl.Destroy;
+begin
+  Def.Free;
+  inherited Destroy;
+end;
+
 { TBlock }
 
 constructor TBlock.Create;
 begin
   inherited Create;
-  Decls := TObjectList.Create(True);
-  Stmts := TObjectList.Create(True);
+  TypeDecls := TObjectList.Create(True);
+  Decls     := TObjectList.Create(True);
+  Stmts     := TObjectList.Create(True);
 end;
 
 destructor TBlock.Destroy;
 begin
+  TypeDecls.Free;
   Decls.Free;
   Stmts.Free;
   inherited Destroy;

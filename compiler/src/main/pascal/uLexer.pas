@@ -20,6 +20,9 @@ type
     { Keywords }
     tkProgram,
     tkUses,
+    tkType,
+    tkRecord,
+    tkClass,
     tkVar,
     tkBegin,
     tkEnd,
@@ -31,8 +34,9 @@ type
     tkStar,
     tkSlash,    { '/' — future: float division }
     tkDiv,      { 'div' keyword — integer division }
-    { Assignment and colon }
+    { Assignment and equality }
     tkAssign,     { := }
+    tkEquals,     { =  — used in type declarations }
     tkColon,      { :  }
     { Grouping and punctuation }
     tkLParen,
@@ -82,6 +86,9 @@ begin
   else if AUpper = 'VAR'     then Result := tkVar
   else if AUpper = 'BEGIN'   then Result := tkBegin
   else if AUpper = 'END'     then Result := tkEnd
+  else if AUpper = 'TYPE'    then Result := tkType
+  else if AUpper = 'RECORD'  then Result := tkRecord
+  else if AUpper = 'CLASS'   then Result := tkClass
   else if AUpper = 'DIV'     then Result := tkDiv
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
@@ -170,6 +177,7 @@ begin
       begin
         text := FTok.TokenText;
         if      text = ':=' then Result.Kind := tkAssign
+        else if text = '='  then Result.Kind := tkEquals
         else if text = ':'  then Result.Kind := tkColon
         else if text = '('  then Result.Kind := tkLParen
         else if text = ')'  then Result.Kind := tkRParen

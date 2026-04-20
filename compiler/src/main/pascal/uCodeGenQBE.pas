@@ -2,15 +2,15 @@ unit uCodeGenQBE;
 
 {$mode objfpc}{$H+}
 
-{ Phase 1 QBE IR emitter.
+{ QBE IR emitter for Blaise.
   String layout: Phase 1 uses raw NUL-terminated bytes (no ARC header).
-  The full refcount+length+capacity header is introduced in Phase 2.
-  WriteLn/Write are built-ins resolved directly to libc printf calls. }
+  WriteLn/Write are built-ins resolved directly to libc printf calls.
+  Records are stack-allocated; field access uses pointer arithmetic. }
 
 interface
 
 uses
-  SysUtils, StrUtils, Classes, uAST;
+  SysUtils, StrUtils, Classes, uAST, uSymbolTable;
 
 type
   ECodeGenError = class(Exception);
@@ -20,7 +20,6 @@ type
     FOutput:    TStringList;
     FStrLits:   TStringList;  { index → raw value; label = $__s<index> }
     FTempCount: Integer;
-    FVarTypes:  TStringList;  { name → type ('w'=integer, 'l'=string ptr) }
 
     function  AllocTemp: string;
     function  EmitStrLit(const AValue: string): string;
@@ -30,13 +29,15 @@ type
     procedure EmitMainFooter;
     procedure EmitBlock(ABlock: TBlock);
     procedure EmitVarAllocs(ABlock: TBlock);
+    procedure EmitStringCleanup(ABlock: TBlock);
     procedure EmitStmt(AStmt: TASTStmt);
     procedure EmitAssignment(AAssign: TAssignment);
+    procedure EmitFieldAssignment(AAssign: TFieldAssignment);
     procedure EmitProcCall(ACall: TProcCall);
-    procedure EmitWriteLn(ACall: TProcCall);
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     function  EmitExpr(AExpr: TASTExpr): string;
-    function  QbeTypeForVar(const AName: string): string;
+    function  FieldPtr(const ARecordVar: string; AOffset: Integer): string;
+    function  QbeTypeOf(AType: TTypeDesc): string;
     function  QbeEscapeString(const AStr: string): string;
   public
     constructor Create;
@@ -52,7 +53,6 @@ begin
   inherited Create;
   FOutput    := TStringList.Create;
   FStrLits   := TStringList.Create;
-  FVarTypes  := TStringList.Create;
   FTempCount := 0;
 end;
 
@@ -60,7 +60,6 @@ destructor TCodeGenQBE.Destroy;
 begin
   FOutput.Free;
   FStrLits.Free;
-  FVarTypes.Free;
   inherited Destroy;
 end;
 
@@ -71,7 +70,6 @@ begin
 end;
 
 function TCodeGenQBE.EmitStrLit(const AValue: string): string;
-{ Returns the global label for this string literal, e.g. $__s0 }
 var
   Idx: Integer;
 begin
@@ -116,38 +114,96 @@ begin
   EmitLine('}');
 end;
 
+function TCodeGenQBE.QbeTypeOf(AType: TTypeDesc): string;
+begin
+  case AType.Kind of
+    tyInteger, tyUInt32, tyBoolean, tyByte: Result := 'w';
+    tyInt64, tyString:                      Result := 'l';
+    tyRecord:                               Result := 'l';  { pointer to aggregate }
+    tyClass:                                Result := 'l';  { heap pointer }
+  else
+    Result := 'w';
+  end;
+end;
+
 procedure TCodeGenQBE.EmitVarAllocs(ABlock: TBlock);
 var
-  I, J: Integer;
-  Decl: TVarDecl;
-  VarName, Alloc: string;
+  I, J:     Integer;
+  Decl:     TVarDecl;
+  VarName:  string;
+  RT:       TRecordTypeDesc;
+  RecSize:  Integer;
+  RecAlign: Integer;
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
     Decl := TVarDecl(ABlock.Decls[I]);
+    if Decl.ResolvedType = nil then
+      raise ECodeGenError.CreateFmt(
+        'Variable ''%s'' has no resolved type — semantic pass required',
+        [Decl.Names[0]]);
+
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names[J];
-      if SameText(Decl.TypeName, 'Integer') or
-         SameText(Decl.TypeName, 'Boolean') then
-      begin
-        Alloc := Format('  %%_var_%s =l alloc4 1', [VarName]);
-        FVarTypes.Values[VarName] := 'w';
-      end
-      else if SameText(Decl.TypeName, 'string') then
-      begin
-        Alloc := Format('  %%_var_%s =l alloc8 1', [VarName]);
-        FVarTypes.Values[VarName] := 'l';
-        { Initialise string pointer to nil (0) }
-        EmitLine(Alloc);
-        EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
-        Continue;
-      end
+      case Decl.ResolvedType.Kind of
+        tyInteger, tyUInt32, tyBoolean, tyByte:
+          EmitLine(Format('  %%_var_%s =l alloc4 1', [VarName]));
+
+        tyInt64:
+          EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
+
+        tyString:
+          begin
+            EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
+            EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
+          end;
+
+        tyRecord:
+          begin
+            RT       := TRecordTypeDesc(Decl.ResolvedType);
+            RecSize  := RT.TotalSize;
+            RecAlign := RT.MaxAlign;
+            if RecAlign >= 8 then
+              EmitLine(Format('  %%_var_%s =l alloc8 %d', [VarName, RecSize]))
+            else
+              EmitLine(Format('  %%_var_%s =l alloc4 %d', [VarName, RecSize]));
+          end;
+
+        tyClass:
+          begin
+            { Class var holds a heap pointer — allocate one pointer slot, nil-init }
+            EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
+            EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
+          end;
+
       else
         raise ECodeGenError.CreateFmt(
-          'Unknown type ''%s'' for variable ''%s''', [Decl.TypeName, VarName]);
-      EmitLine(Alloc);
+          'Unsupported type kind %d for variable ''%s''',
+          [Ord(Decl.ResolvedType.Kind), VarName]);
+      end;
     end;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitStringCleanup(ABlock: TBlock);
+var
+  I, J:    Integer;
+  Decl:    TVarDecl;
+  VarName: string;
+  ValTemp: string;
+begin
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    Decl := TVarDecl(ABlock.Decls[I]);
+    if (Decl.ResolvedType <> nil) and Decl.ResolvedType.IsString then
+      for J := 0 to Decl.Names.Count - 1 do
+      begin
+        VarName := Decl.Names[J];
+        ValTemp := AllocTemp;
+        EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, VarName]));
+        EmitLine(Format('  call $_StringRelease(l %s)', [ValTemp]));
+      end;
   end;
 end;
 
@@ -158,11 +214,14 @@ begin
   EmitVarAllocs(ABlock);
   for I := 0 to ABlock.Stmts.Count - 1 do
     EmitStmt(TASTStmt(ABlock.Stmts[I]));
+  EmitStringCleanup(ABlock);
 end;
 
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 begin
-  if AStmt is TAssignment then
+  if AStmt is TFieldAssignment then
+    EmitFieldAssignment(TFieldAssignment(AStmt))
+  else if AStmt is TAssignment then
     EmitAssignment(TAssignment(AStmt))
   else if AStmt is TProcCall then
     EmitProcCall(TProcCall(AStmt))
@@ -172,15 +231,79 @@ end;
 
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
 var
-  ValTemp, QType, StoreInstr: string;
+  ValTemp, OldTemp, QType, StoreInstr: string;
 begin
-  QType    := QbeTypeForVar(AAssign.Name);
-  ValTemp  := EmitExpr(AAssign.Expr);
-  if QType = 'w' then
-    StoreInstr := 'storew'
+  if AAssign.Expr.ResolvedType = nil then
+    raise ECodeGenError.CreateFmt(
+      'Expression in assignment to ''%s'' has no resolved type', [AAssign.Name]);
+
+  if AAssign.Expr.ResolvedType.IsString then
+  begin
+    { ARC: load old, compute new, retain new, release old, store new }
+    OldTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_%s', [OldTemp, AAssign.Name]));
+    ValTemp := EmitExpr(AAssign.Expr);
+    EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+    EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
+    EmitLine(Format('  storel %s, %%_var_%s', [ValTemp, AAssign.Name]));
+  end
   else
-    StoreInstr := 'storel';
-  EmitLine(Format('  %s %s, %%_var_%s', [StoreInstr, ValTemp, AAssign.Name]));
+  begin
+    QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
+    ValTemp := EmitExpr(AAssign.Expr);
+    if QType = 'w' then StoreInstr := 'storew'
+                   else StoreInstr := 'storel';
+    EmitLine(Format('  %s %s, %%_var_%s', [StoreInstr, ValTemp, AAssign.Name]));
+  end;
+end;
+
+function TCodeGenQBE.FieldPtr(const ARecordVar: string; AOffset: Integer): string;
+var
+  PtrTemp: string;
+begin
+  if AOffset = 0 then
+  begin
+    Result := Format('%%_var_%s', [ARecordVar]);
+  end
+  else
+  begin
+    PtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l add %%_var_%s, %d', [PtrTemp, ARecordVar, AOffset]));
+    Result := PtrTemp;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitFieldAssignment(AAssign: TFieldAssignment);
+var
+  Ptr, PtrTemp, ValTemp, QType, StoreInstr: string;
+begin
+  if AAssign.FieldInfo = nil then
+    raise ECodeGenError.CreateFmt(
+      'Field assignment ''%s.%s'' has no resolved field info',
+      [AAssign.RecordName, AAssign.FieldName]);
+
+  ValTemp := EmitExpr(AAssign.Expr);
+
+  if AAssign.IsClassAccess then
+  begin
+    { Load the heap pointer stored in the class variable }
+    PtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_%s', [PtrTemp, AAssign.RecordName]));
+    if AAssign.FieldInfo.Offset > 0 then
+    begin
+      Ptr := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [Ptr, PtrTemp, AAssign.FieldInfo.Offset]));
+    end
+    else
+      Ptr := PtrTemp;
+  end
+  else
+    Ptr := FieldPtr(AAssign.RecordName, AAssign.FieldInfo.Offset);
+
+  QType := QbeTypeOf(AAssign.FieldInfo.TypeDesc);
+  if QType = 'w' then StoreInstr := 'storew'
+                 else StoreInstr := 'storel';
+  EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, Ptr]));
 end;
 
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
@@ -188,8 +311,8 @@ var
   UCaseName: string;
 begin
   UCaseName := UpperCase(ACall.Name);
-  if (UCaseName = 'WRITELN') then
-    EmitWriteLn(ACall)
+  if UCaseName = 'WRITELN' then
+    EmitWrite(ACall, True)
   else if UCaseName = 'WRITE' then
     EmitWrite(ACall, False)
   else
@@ -197,15 +320,10 @@ begin
       'Unknown procedure ''%s'' at line %d', [ACall.Name, ACall.Line]);
 end;
 
-procedure TCodeGenQBE.EmitWriteLn(ACall: TProcCall);
-begin
-  EmitWrite(ACall, True);
-end;
-
 procedure TCodeGenQBE.EmitWrite(ACall: TProcCall; ANewline: Boolean);
 var
-  ArgExpr: TASTExpr;
-  ArgTemp: string;
+  ArgExpr:  TASTExpr;
+  ArgTemp:  string;
   FmtLabel: string;
   IsString: Boolean;
 begin
@@ -218,14 +336,11 @@ begin
 
   if ACall.Args.Count > 1 then
     raise ECodeGenError.CreateFmt(
-      'Phase 1: Write/WriteLn takes at most 1 argument (line %d)', [ACall.Line]);
+      'Write/WriteLn takes at most 1 argument (line %d)', [ACall.Line]);
 
   ArgExpr  := TASTExpr(ACall.Args[0]);
-  IsString := (ArgExpr is TStringLiteral) or
-              ((ArgExpr is TIdentExpr) and
-               (QbeTypeForVar(TIdentExpr(ArgExpr).Name) = 'l'));
-
-  ArgTemp := EmitExpr(ArgExpr);
+  IsString := (ArgExpr.ResolvedType <> nil) and ArgExpr.ResolvedType.IsString;
+  ArgTemp  := EmitExpr(ArgExpr);
 
   if IsString then
     FmtLabel := IfThen(ANewline, '$__fmt_s_nl', '$__fmt_s')
@@ -240,10 +355,13 @@ end;
 
 function TCodeGenQBE.EmitExpr(AExpr: TASTExpr): string;
 var
-  T, L, R: string;
-  Op:      string;
-  BinExpr: TBinaryExpr;
-  QType:   string;
+  T, L, R:    string;
+  Op:         string;
+  BinExpr:    TBinaryExpr;
+  FldAccess:  TFieldAccessExpr;
+  Ptr:        string;
+  QType:      string;
+  LoadInstr:  string;
 begin
   if AExpr is TIntLiteral then
   begin
@@ -255,14 +373,63 @@ begin
   begin
     Result := EmitStrLit(TStringLiteral(AExpr).Value);
   end
+  else if AExpr is TFieldAccessExpr then
+  begin
+    FldAccess := TFieldAccessExpr(AExpr);
+    if FldAccess.IsConstructorCall then
+    begin
+      { TypeName.Create — allocate instance on heap }
+      T := AllocTemp;
+      EmitLine(Format('  %s =l call $malloc(l %d)',
+        [T, TRecordTypeDesc(FldAccess.ResolvedType).TotalSize]));
+      Result := T;
+    end
+    else if FldAccess.IsClassAccess then
+    begin
+      { Load heap pointer, then load field }
+      L := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [L, FldAccess.RecordName]));
+      if FldAccess.FieldInfo.Offset > 0 then
+      begin
+        Ptr := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d', [Ptr, L, FldAccess.FieldInfo.Offset]));
+      end
+      else
+        Ptr := L;
+      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      T     := AllocTemp;
+      if QType = 'w' then LoadInstr := 'loadw'
+                     else LoadInstr := 'loadl';
+      EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
+      Result := T;
+    end
+    else
+    begin
+      { Record field access }
+      if FldAccess.FieldInfo = nil then
+        raise ECodeGenError.CreateFmt(
+          'Field access ''%s.%s'' has no resolved field info',
+          [FldAccess.RecordName, FldAccess.FieldName]);
+      Ptr   := FieldPtr(FldAccess.RecordName, FldAccess.FieldInfo.Offset);
+      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      T     := AllocTemp;
+      if QType = 'w' then LoadInstr := 'loadw'
+                     else LoadInstr := 'loadl';
+      EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
+      Result := T;
+    end;
+  end
   else if AExpr is TIdentExpr then
   begin
-    T     := AllocTemp;
-    QType := QbeTypeForVar(TIdentExpr(AExpr).Name);
-    if QType = 'w' then
-      EmitLine(Format('  %s =w loadw %%_var_%s', [T, TIdentExpr(AExpr).Name]))
-    else
+    T := AllocTemp;
+    if (AExpr.ResolvedType <> nil) and (QbeTypeOf(AExpr.ResolvedType) = 'l') then
+    begin
       EmitLine(Format('  %s =l loadl %%_var_%s', [T, TIdentExpr(AExpr).Name]));
+    end
+    else
+    begin
+      EmitLine(Format('  %s =w loadw %%_var_%s', [T, TIdentExpr(AExpr).Name]));
+    end;
     Result := T;
   end
   else if AExpr is TBinaryExpr then
@@ -282,13 +449,6 @@ begin
   end
   else
     raise ECodeGenError.Create('Unknown expression node type');
-end;
-
-function TCodeGenQBE.QbeTypeForVar(const AName: string): string;
-begin
-  Result := FVarTypes.Values[AName];
-  if Result = '' then
-    Result := 'w';  { default to integer if unknown (e.g. undeclared) }
 end;
 
 function TCodeGenQBE.QbeEscapeString(const AStr: string): string;
@@ -321,11 +481,8 @@ var
 begin
   FOutput.Clear;
   FStrLits.Clear;
-  FVarTypes.Clear;
   FTempCount := 0;
 
-  { Two-pass emit: collect string literals by emitting the body first,
-    then prepend the data section. }
   Body := TStringList.Create;
   try
     SavedOutput := FOutput;

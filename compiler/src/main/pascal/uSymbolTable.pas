@@ -31,6 +31,34 @@ type
     function IsNumeric: Boolean;
     function IsString: Boolean;
     function IsOrdinal: Boolean;
+    function IsRecord: Boolean;
+    { Size in bytes for QBE allocation. }
+    function ByteSize: Integer;
+    { QBE alloc alignment: 4 for integer-only records, 8 for pointer/string. }
+    function AllocAlign: Integer;
+  end;
+
+  { Field entry inside a record type descriptor. }
+  TFieldInfo = class
+  public
+    Name:     string;
+    TypeDesc: TTypeDesc;  { not owned }
+    Offset:   Integer;    { byte offset from record base }
+  end;
+
+  { Extended type descriptor for record types. }
+  TRecordTypeDesc = class(TTypeDesc)
+  private
+    FFields: TObjectList;  { owned TFieldInfo }
+    FKeys:   TStringList;  { sorted, case-insensitive; Objects[] = TFieldInfo (not owned) }
+  public
+    constructor Create(const AName: string; AKind: TTypeKind = tyRecord);
+    destructor Destroy; override;
+    procedure AddField(const AName: string; AType: TTypeDesc);
+    function  FindField(const AName: string): TFieldInfo;
+    function  TotalSize: Integer;
+    function  MaxAlign: Integer;
+    property  Fields: TObjectList read FFields;
   end;
 
   { ------------------------------------------------------------------ }
@@ -120,6 +148,13 @@ type
     { Type lookup — case-insensitive, returns nil if not found }
     function FindType(const AName: string): TTypeDesc;
 
+    { Creates a new TRecordTypeDesc, registers it in FAllTypes, and returns it.
+      Caller must then add fields and register it as a skType symbol. }
+    function NewRecordType(const AName: string): TRecordTypeDesc;
+
+    { Creates a new class type descriptor (tyClass, heap-allocated). }
+    function NewClassType(const AName: string): TRecordTypeDesc;
+
     { Convenience type accessors }
     property TypeInteger: TTypeDesc read FTypeInteger;
     property TypeInt64:   TTypeDesc read FTypeInt64;
@@ -149,6 +184,105 @@ end;
 function TTypeDesc.IsOrdinal: Boolean;
 begin
   Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean];
+end;
+
+function TTypeDesc.IsRecord: Boolean;
+begin
+  Result := Kind = tyRecord;
+end;
+
+function TTypeDesc.ByteSize: Integer;
+begin
+  case Kind of
+    tyInteger, tyUInt32: Result := 4;
+    tyInt64:             Result := 8;
+    tyByte, tyBoolean:   Result := 1;
+    tyString:            Result := 8;  { pointer size on 64-bit }
+    tyRecord:            Result := TRecordTypeDesc(Self).TotalSize;
+  else
+    Result := 8;
+  end;
+end;
+
+function TTypeDesc.AllocAlign: Integer;
+begin
+  case Kind of
+    tyInteger, tyUInt32: Result := 4;
+    tyByte, tyBoolean:   Result := 4;  { round up to word boundary }
+    tyInt64, tyString:   Result := 8;
+    tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
+  else
+    Result := 8;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ TRecordTypeDesc                                                     }
+{ ------------------------------------------------------------------ }
+
+constructor TRecordTypeDesc.Create(const AName: string; AKind: TTypeKind = tyRecord);
+begin
+  inherited Create;
+  Kind   := AKind;
+  Name   := AName;
+  FFields := TObjectList.Create(True);
+  FKeys   := TStringList.Create;
+  FKeys.Sorted        := True;
+  FKeys.CaseSensitive := False;
+  FKeys.Duplicates    := dupIgnore;
+end;
+
+destructor TRecordTypeDesc.Destroy;
+begin
+  FKeys.Free;
+  FFields.Free;
+  inherited Destroy;
+end;
+
+procedure TRecordTypeDesc.AddField(const AName: string; AType: TTypeDesc);
+var
+  Info:   TFieldInfo;
+  Offset: Integer;
+begin
+  Offset := TotalSize;  { next available byte }
+  Info          := TFieldInfo.Create;
+  Info.Name     := AName;
+  Info.TypeDesc := AType;
+  Info.Offset   := Offset;
+  FFields.Add(Info);
+  FKeys.AddObject(AName, Info);
+end;
+
+function TRecordTypeDesc.FindField(const AName: string): TFieldInfo;
+var
+  Idx: Integer;
+begin
+  if FKeys.Find(AName, Idx) then
+    Result := TFieldInfo(FKeys.Objects[Idx])
+  else
+    Result := nil;
+end;
+
+function TRecordTypeDesc.TotalSize: Integer;
+var
+  I: Integer;
+begin
+  Result := 0;
+  for I := 0 to FFields.Count - 1 do
+    Inc(Result, TFieldInfo(FFields[I]).TypeDesc.ByteSize);
+end;
+
+function TRecordTypeDesc.MaxAlign: Integer;
+var
+  I, A: Integer;
+begin
+  Result := 4;
+  for I := 0 to FFields.Count - 1 do
+  begin
+    A := TFieldInfo(FFields[I]).TypeDesc.AllocAlign;
+    if A > Result then
+      Result := A;
+  end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -258,6 +392,18 @@ begin
   Result      := TTypeDesc.Create;
   Result.Kind := AKind;
   Result.Name := AName;
+  FAllTypes.Add(Result);
+end;
+
+function TSymbolTable.NewRecordType(const AName: string): TRecordTypeDesc;
+begin
+  Result := TRecordTypeDesc.Create(AName, tyRecord);
+  FAllTypes.Add(Result);
+end;
+
+function TSymbolTable.NewClassType(const AName: string): TRecordTypeDesc;
+begin
+  Result := TRecordTypeDesc.Create(AName, tyClass);
   FAllTypes.Add(Result);
 end;
 

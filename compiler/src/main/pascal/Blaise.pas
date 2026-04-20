@@ -241,13 +241,32 @@ begin
   end;
 end;
 
+{ Locate the Blaise RTL static library.
+  Search order:
+    1. BLAISE_RTL environment variable (explicit override)
+    2. Same directory as this compiler binary (installed layout) }
+function FindRTL: string;
+var
+  BinDir: string;
+begin
+  Result := GetEnvironmentVariable('BLAISE_RTL');
+  if (Result <> '') and FileExists(Result) then
+    Exit;
+  BinDir := ExtractFilePath(ParamStr(0));
+  Result  := IncludeTrailingPathDelimiter(BinDir) + 'blaise_rtl.a';
+  if FileExists(Result) then
+    Exit;
+  Result := '';
+end;
+
 procedure CompileToNative(const AIRFile, AOutputFile: string);
 var
-  AsmFile:    string;
-  Msg:        string;
-  ExitCode:   Integer;
+  AsmFile, RTLPath: string;
+  Msg:              string;
+  ExitCode:         Integer;
 begin
   AsmFile := ChangeFileExt(AIRFile, '.s');
+  RTLPath := FindRTL;
 
   ExitCode := RunProcess('qbe', ['-o', AsmFile, AIRFile], Msg);
   if ExitCode <> 0 then
@@ -257,7 +276,11 @@ begin
     Halt(1);
   end;
 
-  ExitCode := RunProcess('cc', ['-o', AOutputFile, AsmFile], Msg);
+  if RTLPath <> '' then
+    ExitCode := RunProcess('cc', ['-o', AOutputFile, AsmFile, RTLPath], Msg)
+  else
+    ExitCode := RunProcess('cc', ['-o', AOutputFile, AsmFile], Msg);
+
   if ExitCode <> 0 then
   begin
     WriteLn(StdErr, 'cc error (exit ', ExitCode, '):');

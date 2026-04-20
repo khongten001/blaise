@@ -599,18 +599,67 @@ These are not open for reconsideration:
 * *CI/CD:* GitHub Actions — build + test on push; release binaries on tag
 * *Package format:* TBD — extend PasBuild's `project.xml` with dependency declarations
 
-== Immediate Next Steps
+== Phase 2 — Implementation Status
 
-. Create GitHub repository with directories: `src/`, `tests/`, `rtl/`, `tools/`,
-  and a `project.xml` for PasBuild.
-. Spend 2–3 weeks writing QBE IR by hand — emit a Hello World, a function with a
-  `var` parameter, and a struct with a pointer field. Verify each links and runs.
-. Write the *Lexer unit* (`uLexer.pas`) with FPTest tests covering all token types.
-. Write the *AST node types* (`uAST.pas`) — just enough for a `program` block with `writeln`.
-. Write the *Parser* (`uParser.pas`) targeting that minimal AST.
-. Write the *QBE IR emitter* (`uCodeGenQBE.pas`) — emit enough QBE IR to call libc `printf`.
-. Wire it all together in the compiler's main program, invokable from PasBuild.
-. Write a `Hello.pas` test program and verify it compiles and runs.
+Phase 1 (bootstrap pipeline) is complete. Phase 2 type-system work is in progress:
+
+[cols="2,1,3", options="header"]
+|===
+| Item | Status | Notes
+
+| Symbol table with scope nesting
+| Done
+| `uSymbolTable.pas` — `TScope` chain, case-insensitive lookup, built-in types
+
+| Semantic analysis pass
+| Done
+| `uSemantic.pas` — type inference, type checking, `ResolvedType` annotation
+
+| Wire semantic pass into driver
+| Done
+| `Blaise.pas` — semantic step between parse and codegen
+
+| `record` types
+| Done
+| Stack-allocated aggregates; field access via pointer arithmetic
+
+| `class` types (fields only)
+| Done
+| Heap-allocated; pointer slot; `TypeName.Create` → `malloc`; field access via pointer deref
+
+| ARC call insertion (compiler side)
+| Done
+| `_StringAddRef`/`_StringRelease` emitted at string assignments and scope exit
+
+| ARC RTL implementations
+| Pending
+| Stub functions needed in RTL; real ref-counting in Phase 3
+
+| `class` methods and virtual dispatch
+| Pending
+| —
+
+| `try`/`except`/`finally`
+| Pending
+| —
+
+| Unit interface/implementation compilation
+| Pending
+| —
+
+| macOS ARM64 target
+| Pending
+| —
+|===
+
+=== Immediate Next Steps
+
+. Implement ARC RTL stubs (`_StringAddRef`, `_StringRelease`) in C or Blaise Pascal,
+  and wire the compiled RTL object into the link step.
+. Implement `class` methods (procedures/functions bound to a type) and `Self` parameter.
+. Implement virtual method dispatch (vtable generation + `callv` in QBE IR).
+. Implement `try`/`except`/`finally` with ARC cleanup on exception paths.
+. Implement unit `interface`/`implementation` sections and dependency ordering.
 
 == Landscape Notes
 

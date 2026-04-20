@@ -3,16 +3,17 @@ unit uSemantic;
 {$mode objfpc}{$H+}
 
 // Semantic analysis pass — walks the AST produced by uParser and:
-//   1. Resolves every identifier to a TSymbol in the symbol table.
-//   2. Infers and annotates every expression node with ResolvedType.
-//   3. Type-checks assignments (lhs type == rhs type).
-//   4. Validates procedure/function calls (callee exists, arg types valid).
-//   5. Raises ESemanticError with source position on any violation.
+//   1. Resolves record type declarations and registers them in the symbol table.
+//   2. Resolves every identifier to a TSymbol in the symbol table.
+//   3. Infers and annotates every expression node with ResolvedType.
+//   4. Type-checks assignments and field assignments.
+//   5. Validates procedure/function calls.
+//   6. Raises ESemanticError with source position on any violation.
 
 interface
 
 uses
-  SysUtils, uAST, uSymbolTable;
+  SysUtils, contnrs, uAST, uSymbolTable;
 
 type
   ESemanticError = class(Exception);
@@ -22,13 +23,16 @@ type
     FTable: TSymbolTable;
 
     procedure AnalyseBlock(ABlock: TBlock);
+    procedure AnalyseTypeDecls(ABlock: TBlock);
     procedure AnalyseVarDecls(ABlock: TBlock);
     procedure AnalyseStmts(ABlock: TBlock);
     procedure AnalyseStmt(AStmt: TASTStmt);
     procedure AnalyseAssignment(AAssign: TAssignment);
+    procedure AnalyseFieldAssignment(AAssign: TFieldAssignment);
     procedure AnalyseProcCall(ACall: TProcCall);
     function  AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
     function  AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
+    function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
 
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
     procedure CheckTypesMatch(AExpected, AActual: TTypeDesc;
@@ -80,12 +84,78 @@ end;
 
 procedure TSemanticAnalyser.AnalyseBlock(ABlock: TBlock);
 begin
+  { Type declarations are registered in the outer scope so they remain visible
+    after the block scope is popped — needed for var declarations and the
+    transferred symbol table used by codegen. }
+  AnalyseTypeDecls(ABlock);
   FTable.PushScope;
   try
     AnalyseVarDecls(ABlock);
     AnalyseStmts(ABlock);
   finally
     FTable.PopScope;
+  end;
+end;
+
+procedure TSemanticAnalyser.AnalyseTypeDecls(ABlock: TBlock);
+var
+  I, J, K:   Integer;
+  TD:        TTypeDecl;
+  FieldList: TObjectList;
+  FDecl:     TFieldDecl;
+  RT:        TRecordTypeDesc;
+  FldType:   TTypeDesc;
+  FldName:   string;
+  Sym:       TSymbol;
+begin
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls[I]);
+
+    if TD.Def is TRecordTypeDef then
+    begin
+      RT        := FTable.NewRecordType(TD.Name);
+      FieldList := TRecordTypeDef(TD.Def).Fields;
+    end
+    else if TD.Def is TClassTypeDef then
+    begin
+      RT        := FTable.NewClassType(TD.Name);
+      FieldList := TClassTypeDef(TD.Def).Fields;
+    end
+    else
+    begin
+      SemanticError('Only record and class type definitions are supported',
+        TD.Line, TD.Col);
+      Continue;
+    end;
+
+    { Resolve each field declaration }
+    for J := 0 to FieldList.Count - 1 do
+    begin
+      FDecl   := TFieldDecl(FieldList[J]);
+      FldType := FTable.FindType(FDecl.TypeName);
+      if FldType = nil then
+        SemanticError(
+          Format('Unknown type ''%s'' for field', [FDecl.TypeName]),
+          FDecl.Line, FDecl.Col);
+      FDecl.ResolvedType := FldType;
+
+      for K := 0 to FDecl.Names.Count - 1 do
+      begin
+        FldName := FDecl.Names[K];
+        RT.AddField(FldName, FldType);
+      end;
+    end;
+
+    { Register the type as a skType symbol }
+    Sym := TSymbol.Create(TD.Name, skType, RT);
+    if not FTable.Define(Sym) then
+    begin
+      Sym.Free;
+      SemanticError(
+        Format('Duplicate type name ''%s''', [TD.Name]),
+        TD.Line, TD.Col);
+    end;
   end;
 end;
 
@@ -134,7 +204,9 @@ end;
 
 procedure TSemanticAnalyser.AnalyseStmt(AStmt: TASTStmt);
 begin
-  if AStmt is TAssignment then
+  if AStmt is TFieldAssignment then
+    AnalyseFieldAssignment(TFieldAssignment(AStmt))
+  else if AStmt is TAssignment then
     AnalyseAssignment(TAssignment(AStmt))
   else if AStmt is TProcCall then
     AnalyseProcCall(TProcCall(AStmt));
@@ -159,6 +231,43 @@ begin
   CheckTypesMatch(VarSym.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
 end;
 
+procedure TSemanticAnalyser.AnalyseFieldAssignment(AAssign: TFieldAssignment);
+var
+  RecSym:   TSymbol;
+  RT:       TRecordTypeDesc;
+  FldInfo:  TFieldInfo;
+  ExprType: TTypeDesc;
+begin
+  RecSym := FTable.Lookup(AAssign.RecordName);
+  if RecSym = nil then
+    SemanticError(
+      Format('Undeclared variable ''%s''', [AAssign.RecordName]),
+      AAssign.Line, AAssign.Col);
+  if RecSym.Kind <> skVariable then
+    SemanticError(
+      Format('''%s'' is not a variable', [AAssign.RecordName]),
+      AAssign.Line, AAssign.Col);
+  if not (RecSym.TypeDesc.Kind in [tyRecord, tyClass]) then
+    SemanticError(
+      Format('''%s'' is not a record or class variable', [AAssign.RecordName]),
+      AAssign.Line, AAssign.Col);
+
+  AAssign.IsClassAccess := RecSym.TypeDesc.Kind = tyClass;
+
+  RT      := TRecordTypeDesc(RecSym.TypeDesc);
+  FldInfo := RT.FindField(AAssign.FieldName);
+  if FldInfo = nil then
+    SemanticError(
+      Format('Type ''%s'' has no field ''%s''',
+        [AAssign.RecordName, AAssign.FieldName]),
+      AAssign.Line, AAssign.Col);
+
+  AAssign.FieldInfo := FldInfo;
+  ExprType := AnalyseExpr(AAssign.Expr);
+  CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
+    AAssign.Line, AAssign.Col);
+end;
+
 procedure TSemanticAnalyser.AnalyseProcCall(ACall: TProcCall);
 var
   Sym: TSymbol;
@@ -174,9 +283,6 @@ begin
       Format('''%s'' is not a procedure or function', [ACall.Name]),
       ACall.Line, ACall.Col);
 
-  { Analyse argument expressions for type correctness.
-    Phase 1 built-ins (Write/WriteLn) accept any single argument —
-    detailed overload resolution is a Phase 2 enhancement. }
   for I := 0 to ACall.Args.Count - 1 do
     AnalyseExpr(TASTExpr(ACall.Args[I]));
 end;
@@ -198,12 +304,69 @@ begin
         AExpr.Line, AExpr.Col);
     Result := Sym.TypeDesc;
   end
+  else if AExpr is TFieldAccessExpr then
+    Result := AnalyseFieldAccess(TFieldAccessExpr(AExpr))
   else if AExpr is TBinaryExpr then
     Result := AnalyseBinaryExpr(TBinaryExpr(AExpr))
   else
     SemanticError('Unknown expression node', AExpr.Line, AExpr.Col);
 
   AExpr.ResolvedType := Result;
+end;
+
+function TSemanticAnalyser.AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
+var
+  RecSym:  TSymbol;
+  RT:      TRecordTypeDesc;
+  FldInfo: TFieldInfo;
+begin
+  RecSym := FTable.Lookup(AAccess.RecordName);
+  if RecSym = nil then
+    SemanticError(
+      Format('Undeclared identifier ''%s''', [AAccess.RecordName]),
+      AAccess.Line, AAccess.Col);
+
+  { Constructor call: TypeName.Create }
+  if RecSym.Kind = skType then
+  begin
+    if RecSym.TypeDesc.Kind <> tyClass then
+      SemanticError(
+        Format('Cannot call constructor on non-class type ''%s''',
+          [AAccess.RecordName]),
+        AAccess.Line, AAccess.Col);
+    if not SameText(AAccess.FieldName, 'Create') then
+      SemanticError(
+        Format('Unknown class method ''%s'' on type ''%s''',
+          [AAccess.FieldName, AAccess.RecordName]),
+        AAccess.Line, AAccess.Col);
+    AAccess.IsConstructorCall := True;
+    Result := RecSym.TypeDesc;
+    Exit;
+  end;
+
+  { Field access on variable }
+  if RecSym.Kind <> skVariable then
+    SemanticError(
+      Format('''%s'' is not a variable or type', [AAccess.RecordName]),
+      AAccess.Line, AAccess.Col);
+
+  if not (RecSym.TypeDesc.Kind in [tyRecord, tyClass]) then
+    SemanticError(
+      Format('''%s'' is not a record or class', [AAccess.RecordName]),
+      AAccess.Line, AAccess.Col);
+
+  AAccess.IsClassAccess := RecSym.TypeDesc.Kind = tyClass;
+
+  RT      := TRecordTypeDesc(RecSym.TypeDesc);
+  FldInfo := RT.FindField(AAccess.FieldName);
+  if FldInfo = nil then
+    SemanticError(
+      Format('Type ''%s'' has no field ''%s''',
+        [AAccess.RecordName, AAccess.FieldName]),
+      AAccess.Line, AAccess.Col);
+
+  AAccess.FieldInfo := FldInfo;
+  Result := FldInfo.TypeDesc;
 end;
 
 function TSemanticAnalyser.AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
@@ -213,7 +376,6 @@ begin
   LType := AnalyseExpr(ABin.Left);
   RType := AnalyseExpr(ABin.Right);
 
-  { Arithmetic operators require both operands to be numeric. }
   if not LType.IsNumeric then
     SemanticError(
       Format('Left operand of ''%s'' must be numeric, got ''%s''',
