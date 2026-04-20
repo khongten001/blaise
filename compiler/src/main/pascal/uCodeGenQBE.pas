@@ -420,7 +420,11 @@ begin
   SelfTemp := AllocTemp;
   EmitLine(Format('  %s =l loadl %%_var_%s', [SelfTemp, ACall.ObjectName]));
 
-  FuncName := '$' + RT.Name + '_' + ACall.Name;
+  { Use OwnerTypeName so inherited methods resolve to the defining class }
+  if MDecl.OwnerTypeName <> '' then
+    FuncName := '$' + MDecl.OwnerTypeName + '_' + ACall.Name
+  else
+    FuncName := '$' + RT.Name + '_' + ACall.Name;
 
   { Build argument string: l Self, then each explicit arg }
   ArgLine := Format('l %s', [SelfTemp]);
@@ -761,7 +765,10 @@ begin
     MCallExpr := TMethodCallExpr(AExpr);
     RT        := TRecordTypeDesc(MCallExpr.ResolvedClassType);
     MDecl     := TMethodDecl(MCallExpr.ResolvedMethod);
-    FuncName  := '$' + RT.Name + '_' + MCallExpr.Name;
+    if MDecl.OwnerTypeName <> '' then
+      FuncName := '$' + MDecl.OwnerTypeName + '_' + MCallExpr.Name
+    else
+      FuncName := '$' + RT.Name + '_' + MCallExpr.Name;
     QType     := QbeTypeOf(MDecl.ResolvedReturnType);
 
     { Load the object pointer (Self) }
@@ -779,6 +786,14 @@ begin
 
     T := AllocTemp;
     EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
+    Result := T;
+    Exit;
+  end;
+
+  if AExpr is TNilLiteral then
+  begin
+    T := AllocTemp;
+    EmitLine(Format('  %s =l copy 0', [T]));
     Result := T;
     Exit;
   end;
@@ -858,21 +873,36 @@ begin
     L := EmitExpr(BinExpr.Left);
     R := EmitExpr(BinExpr.Right);
     T := AllocTemp;
-    case BinExpr.Op of
-      boAdd: Op := 'add';
-      boSub: Op := 'sub';
-      boMul: Op := 'mul';
-      boDiv: Op := 'div';
-      boEQ:  Op := 'ceqw';
-      boNE:  Op := 'cnew';
-      boLT:  Op := 'csltw';
-      boGT:  Op := 'csgtw';
-      boLE:  Op := 'cslew';
-      boGE:  Op := 'csgew';
+    { Use long (pointer) comparison instructions when operands are class/nil }
+    if (BinExpr.Left.ResolvedType <> nil) and
+       (BinExpr.Left.ResolvedType.Kind in [tyClass, tyNil]) then
+    begin
+      case BinExpr.Op of
+        boEQ: Op := 'ceql';
+        boNE: Op := 'cnel';
+      else
+        Op := 'ceql';
+      end;
+      EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
+    end
     else
-      Op := 'add';
+    begin
+      case BinExpr.Op of
+        boAdd: Op := 'add';
+        boSub: Op := 'sub';
+        boMul: Op := 'mul';
+        boDiv: Op := 'div';
+        boEQ:  Op := 'ceqw';
+        boNE:  Op := 'cnew';
+        boLT:  Op := 'csltw';
+        boGT:  Op := 'csgtw';
+        boLE:  Op := 'cslew';
+        boGE:  Op := 'csgew';
+      else
+        Op := 'add';
+      end;
+      EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     end;
-    EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     Result := T;
   end
   else

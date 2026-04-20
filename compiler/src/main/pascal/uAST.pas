@@ -35,6 +35,8 @@ type
     Value: string;
   end;
 
+  TNilLiteral = class(TASTExpr);  { nil keyword — type is tyNil }
+
   TIdentExpr = class(TASTExpr)
   public
     Name: string;
@@ -182,6 +184,7 @@ type
   TMethodDecl = class(TASTNode)
   public
     Name:               string;      { method name }
+    OwnerTypeName:      string;      { set by uSemantic — class that defines this method }
     Params:             TObjectList; { owned TMethodParam }
     ReturnTypeName:     string;      { empty = procedure }
     ResolvedReturnType: TTypeDesc;   { set by uSemantic; nil = procedure }

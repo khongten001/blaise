@@ -21,7 +21,8 @@ type
     tyString,     { ARC-managed UTF-8 string }
     tyRecord,     { Stack-allocated aggregate (Phase 2) }
     tyClass,      { Heap-allocated, single-inheritance (Phase 2) }
-    tyVoid        { No value — used as procedure return type }
+    tyVoid,       { No value — used as procedure return type }
+    tyNil         { Pseudo-type for the nil literal; compatible with tyClass }
   );
 
   TTypeDesc = class
@@ -51,6 +52,7 @@ type
   private
     FFields: TObjectList;  { owned TFieldInfo }
     FKeys:   TStringList;  { sorted, case-insensitive; Objects[] = TFieldInfo (not owned) }
+    FParent: TRecordTypeDesc;  { not owned; nil for root classes }
   public
     constructor Create(const AName: string; AKind: TTypeKind = tyRecord);
     destructor Destroy; override;
@@ -59,6 +61,7 @@ type
     function  TotalSize: Integer;
     function  MaxAlign: Integer;
     property  Fields: TObjectList read FFields;
+    property  Parent: TRecordTypeDesc read FParent write FParent;
   end;
 
   { ------------------------------------------------------------------ }
@@ -126,6 +129,7 @@ type
     FTypeBoolean: TTypeDesc;
     FTypeString:  TTypeDesc;
     FTypeVoid:    TTypeDesc;
+    FTypeNil:     TTypeDesc;
 
     function GetCurrentScope: TScope;
     function GetScopeDepth: Integer;
@@ -163,6 +167,7 @@ type
     property TypeBoolean: TTypeDesc read FTypeBoolean;
     property TypeString:  TTypeDesc read FTypeString;
     property TypeVoid:    TTypeDesc read FTypeVoid;
+    property TypeNil:     TTypeDesc read FTypeNil;
   end;
 
 implementation
@@ -199,6 +204,7 @@ begin
     tyByte, tyBoolean:   Result := 1;
     tyString:            Result := 8;  { pointer size on 64-bit }
     tyRecord:            Result := TRecordTypeDesc(Self).TotalSize;
+    tyNil:               Result := 8;
   else
     Result := 8;
   end;
@@ -419,6 +425,7 @@ begin
   FTypeBoolean := NewType(tyBoolean, 'Boolean');
   FTypeString  := NewType(tyString,  'string');
   FTypeVoid    := NewType(tyVoid,    'void');
+  FTypeNil     := NewType(tyNil,     'nil');
 
   { Register type names as skType symbols in global scope }
   Define(TSymbol.Create('Integer', skType, FTypeInteger));

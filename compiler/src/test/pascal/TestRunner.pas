@@ -21,7 +21,8 @@ uses
   cp.test.methods,
   cp.test.functions,
   cp.test.procs,
-  cp.test.control;
+  cp.test.control,
+  cp.test.inherit;
 
 var
   Application: TTestRunner;

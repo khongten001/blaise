@@ -176,7 +176,7 @@ begin
     if Check(tkType) then
       ParseTypeSection(Result);
 
-    if Check(tkVar) then
+    while Check(tkVar) do
       ParseVarBlock(Result);
 
     while Check(tkProcedure) or Check(tkFunction) do
@@ -751,6 +751,7 @@ function TParser.ParseFactor: TASTExpr;
 var
   IntNode:    TIntLiteral;
   StrNode:    TStringLiteral;
+  NilNode:    TNilLiteral;
   IdNode:     TIdentExpr;
   FldNode:    TFieldAccessExpr;
   MCallNode:  TMethodCallExpr;
@@ -761,6 +762,14 @@ var
   Line, Col:  Integer;
 begin
   case FCurrent.Kind of
+    tkNil:
+      begin
+        NilNode      := TNilLiteral.Create;
+        NilNode.Line := FCurrent.Line;
+        NilNode.Col  := FCurrent.Col;
+        Advance;
+        Result := NilNode;
+      end;
     tkIntLit:
       begin
         IntNode       := TIntLiteral.Create;

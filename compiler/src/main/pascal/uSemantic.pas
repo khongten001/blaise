@@ -85,11 +85,15 @@ end;
 procedure TSemanticAnalyser.CheckTypesMatch(AExpected, AActual: TTypeDesc;
   const AContext: string; ALine, ACol: Integer);
 begin
-  if AExpected <> AActual then
-    SemanticError(
-      Format('Type mismatch in %s: expected ''%s'' but got ''%s''',
-        [AContext, AExpected.Name, AActual.Name]),
-      ALine, ACol);
+  if AExpected = AActual then
+    Exit;
+  { nil is compatible with any class type }
+  if (AActual.Kind = tyNil) and (AExpected.Kind = tyClass) then
+    Exit;
+  SemanticError(
+    Format('Type mismatch in %s: expected ''%s'' but got ''%s''',
+      [AContext, AExpected.Name, AActual.Name]),
+    ALine, ACol);
 end;
 
 procedure TSemanticAnalyser.Analyse(AProg: TProgram);
@@ -133,35 +137,75 @@ var
   Par:        TMethodParam;
   ParType:    TTypeDesc;
   RT:         TRecordTypeDesc;
+  ParentRT:   TRecordTypeDesc;
+  ParentSym:  TSymbol;
   FldType:    TTypeDesc;
   FldName:    string;
   Sym:        TSymbol;
   Key:        string;
+  FldInfo:    TFieldInfo;
 begin
+  { Pass 1 — register all type symbols with empty descriptors.
+    This allows self-referential field types to resolve in pass 2. }
   for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
     TD := TTypeDecl(ABlock.TypeDecls[I]);
-
     if TD.Def is TRecordTypeDef then
-    begin
-      RT         := FTable.NewRecordType(TD.Name);
-      FieldList  := TRecordTypeDef(TD.Def).Fields;
-      MethodList := nil;
-    end
+      RT := FTable.NewRecordType(TD.Name)
     else if TD.Def is TClassTypeDef then
-    begin
-      RT         := FTable.NewClassType(TD.Name);
-      FieldList  := TClassTypeDef(TD.Def).Fields;
-      MethodList := TClassTypeDef(TD.Def).Methods;
-    end
+      RT := FTable.NewClassType(TD.Name)
     else
     begin
       SemanticError('Only record and class type definitions are supported',
         TD.Line, TD.Col);
       Continue;
     end;
+    Sym := TSymbol.Create(TD.Name, skType, RT);
+    if not FTable.Define(Sym) then
+    begin
+      Sym.Free;
+      SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
+    end;
+  end;
 
-    { Resolve each field declaration }
+  { Pass 2 — resolve parent, fields, and method signatures for each type. }
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls[I]);
+
+    Sym := FTable.Lookup(TD.Name);
+    RT  := TRecordTypeDesc(Sym.TypeDesc);
+
+    if TD.Def is TRecordTypeDef then
+    begin
+      FieldList  := TRecordTypeDef(TD.Def).Fields;
+      MethodList := nil;
+    end
+    else
+    begin
+      FieldList  := TClassTypeDef(TD.Def).Fields;
+      MethodList := TClassTypeDef(TD.Def).Methods;
+
+      { Copy inherited fields from parent class first }
+      if TClassTypeDef(TD.Def).ParentName <> '' then
+      begin
+        ParentSym := FTable.Lookup(TClassTypeDef(TD.Def).ParentName);
+        if (ParentSym = nil) or not (ParentSym.TypeDesc is TRecordTypeDesc) then
+          SemanticError(
+            Format('Unknown parent class ''%s'' for ''%s''',
+              [TClassTypeDef(TD.Def).ParentName, TD.Name]),
+            TD.Line, TD.Col);
+        ParentRT     := TRecordTypeDesc(ParentSym.TypeDesc);
+        RT.Parent    := ParentRT;
+        for K := 0 to ParentRT.Fields.Count - 1 do
+        begin
+          FldInfo := TFieldInfo(ParentRT.Fields[K]);
+          RT.AddField(FldInfo.Name, FldInfo.TypeDesc);
+        end;
+      end;
+    end;
+
+    { Resolve own field declarations }
     for J := 0 to FieldList.Count - 1 do
     begin
       FDecl   := TFieldDecl(FieldList[J]);
@@ -171,7 +215,6 @@ begin
           Format('Unknown type ''%s'' for field', [FDecl.TypeName]),
           FDecl.Line, FDecl.Col);
       FDecl.ResolvedType := FldType;
-
       for K := 0 to FDecl.Names.Count - 1 do
       begin
         FldName := FDecl.Names[K];
@@ -179,22 +222,13 @@ begin
       end;
     end;
 
-    { Register the type as a skType symbol }
-    Sym := TSymbol.Create(TD.Name, skType, RT);
-    if not FTable.Define(Sym) then
-    begin
-      Sym.Free;
-      SemanticError(
-        Format('Duplicate type name ''%s''', [TD.Name]),
-        TD.Line, TD.Col);
-    end;
-
     { Index class methods and resolve param/return types }
     if MethodList <> nil then
       for J := 0 to MethodList.Count - 1 do
       begin
-        MDecl := TMethodDecl(MethodList[J]);
-        Key   := TD.Name + '.' + MDecl.Name;
+        MDecl               := TMethodDecl(MethodList[J]);
+        MDecl.OwnerTypeName := TD.Name;
+        Key                 := TD.Name + '.' + MDecl.Name;
         FMethodIndex.AddObject(Key, MDecl);
 
         for K := 0 to MDecl.Params.Count - 1 do
@@ -294,15 +328,36 @@ end;
 function TSemanticAnalyser.FindMethodDecl(
   const ATypeName, AMethodName: string): TMethodDecl;
 var
-  Idx: Integer;
-  Key: string;
+  CurrName: string;
+  Idx:      Integer;
+  Key:      string;
+  Sym:      TSymbol;
+  RT:       TRecordTypeDesc;
 begin
-  Key := ATypeName + '.' + AMethodName;
-  Idx := FMethodIndex.IndexOf(Key);
-  if Idx >= 0 then
-    Result := TMethodDecl(FMethodIndex.Objects[Idx])
-  else
-    Result := nil;
+  CurrName := ATypeName;
+  while CurrName <> '' do
+  begin
+    Key := CurrName + '.' + AMethodName;
+    Idx := FMethodIndex.IndexOf(Key);
+    if Idx >= 0 then
+    begin
+      Result := TMethodDecl(FMethodIndex.Objects[Idx]);
+      Exit;
+    end;
+    { Walk to parent }
+    Sym := FTable.Lookup(CurrName);
+    if (Sym <> nil) and (Sym.TypeDesc is TRecordTypeDesc) then
+    begin
+      RT := TRecordTypeDesc(Sym.TypeDesc);
+      if RT.Parent <> nil then
+        CurrName := RT.Parent.Name
+      else
+        Break;
+    end
+    else
+      Break;
+  end;
+  Result := nil;
 end;
 
 procedure TSemanticAnalyser.AnalyseStandaloneDecls(ABlock: TBlock);
@@ -752,7 +807,9 @@ function TSemanticAnalyser.AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
 var
   Sym: TSymbol;
 begin
-  if AExpr is TIntLiteral then
+  if AExpr is TNilLiteral then
+    Result := FTable.TypeNil
+  else if AExpr is TIntLiteral then
     Result := FTable.TypeInteger
   else if AExpr is TStringLiteral then
     Result := FTable.TypeString
@@ -843,10 +900,15 @@ begin
 
   if IsComparisonOp(ABin.Op) then
   begin
-    { Both operands must be the same type; result is Boolean }
-    CheckTypesMatch(LType, RType,
-      Format('comparison ''%s''', [BinaryOpName(ABin.Op)]),
-      ABin.Line, ABin.Col);
+    { nil can be compared with class types }
+    if not (
+      (LType = RType) or
+      ((LType.Kind = tyNil) and (RType.Kind = tyClass)) or
+      ((LType.Kind = tyClass) and (RType.Kind = tyNil))
+    ) then
+      CheckTypesMatch(LType, RType,
+        Format('comparison ''%s''', [BinaryOpName(ABin.Op)]),
+        ABin.Line, ABin.Col);
     Result := FTable.TypeBoolean;
   end
   else

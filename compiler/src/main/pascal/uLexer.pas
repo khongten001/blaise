@@ -33,6 +33,7 @@ type
     tkElse,
     tkWhile,
     tkDo,
+    tkNil,
     { Identifier }
     tkIdent,
     { Arithmetic operators }
@@ -109,6 +110,7 @@ begin
   else if AUpper = 'ELSE'      then Result := tkElse
   else if AUpper = 'WHILE'     then Result := tkWhile
   else if AUpper = 'DO'        then Result := tkDo
+  else if AUpper = 'NIL'       then Result := tkNil
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;
