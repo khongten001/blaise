@@ -23,7 +23,8 @@ uses
   cp.test.procs,
   cp.test.control,
   cp.test.inherit,
-  cp.test.forloop;
+  cp.test.forloop,
+  cp.test.exceptions;
 
 var
   Application: TTestRunner;

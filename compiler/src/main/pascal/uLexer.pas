@@ -36,6 +36,10 @@ type
     tkFor,
     tkTo,
     tkDownto,
+    tkTry,
+    tkFinally,
+    tkExcept,
+    tkRaise,
     tkNil,
     { Identifier }
     tkIdent,
@@ -116,6 +120,10 @@ begin
   else if AUpper = 'FOR'       then Result := tkFor
   else if AUpper = 'TO'        then Result := tkTo
   else if AUpper = 'DOWNTO'   then Result := tkDownto
+  else if AUpper = 'TRY'       then Result := tkTry
+  else if AUpper = 'FINALLY'   then Result := tkFinally
+  else if AUpper = 'EXCEPT'    then Result := tkExcept
+  else if AUpper = 'RAISE'     then Result := tkRaise
   else if AUpper = 'NIL'       then Result := tkNil
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }

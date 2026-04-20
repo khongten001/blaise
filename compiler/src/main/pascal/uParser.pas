@@ -65,6 +65,8 @@ type
     function  ParseIfStmt: TIfStmt;
     function  ParseWhileStmt: TWhileStmt;
     function  ParseForStmt: TForStmt;
+    function  ParseTryStmt: TASTStmt;
+    function  ParseRaiseStmt: TRaiseStmt;
     function  ParseCompoundStmt: TCompoundStmt;
     function  ParseExpr: TASTExpr;
     function  ParseAddSub: TASTExpr;
@@ -516,6 +518,18 @@ begin
     Exit;
   end;
 
+  if Check(tkTry) then
+  begin
+    Result := ParseTryStmt;
+    Exit;
+  end;
+
+  if Check(tkRaise) then
+  begin
+    Result := ParseRaiseStmt;
+    Exit;
+  end;
+
   if Check(tkBegin) then
   begin
     Result := ParseCompoundStmt;
@@ -666,6 +680,113 @@ begin
     Result.EndExpr := ParseExpr;
     Expect(tkDo);
     Result.Body := ParseStmt;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseTryStmt: TASTStmt;
+var
+  TryBody:     TCompoundStmt;
+  FinallyBody: TCompoundStmt;
+  ExceptBody:  TCompoundStmt;
+  Stmt:        TASTStmt;
+  TFS:         TTryFinallyStmt;
+  TES:         TTryExceptStmt;
+  Line, Col:   Integer;
+
+  procedure ParseBodyInto(ATarget: TCompoundStmt;
+    AStop1, AStop2: TTokenKind);
+  var S: TASTStmt;
+  begin
+    while not (Check(AStop1) or Check(AStop2) or
+               Check(tkEnd) or Check(tkEOF)) do
+    begin
+      S := ParseStmt;
+      if S <> nil then
+        ATarget.Stmts.Add(S);
+      if Check(tkSemicolon) then
+        Advance
+      else
+        Break;
+    end;
+  end;
+
+begin
+  Line := FCurrent.Line;
+  Col  := FCurrent.Col;
+  Expect(tkTry);
+
+  TryBody := TCompoundStmt.Create;
+  TryBody.Line := Line;
+  TryBody.Col  := Col;
+  try
+    ParseBodyInto(TryBody, tkFinally, tkExcept);
+
+    if Check(tkFinally) then
+    begin
+      Advance;
+      FinallyBody := TCompoundStmt.Create;
+      try
+        ParseBodyInto(FinallyBody, tkEnd, tkEnd);
+        Expect(tkEnd);
+        TFS             := TTryFinallyStmt.Create;
+        TFS.Line        := Line;
+        TFS.Col         := Col;
+        TFS.TryBody     := TryBody;
+        TFS.FinallyBody := FinallyBody;
+        TryBody     := nil;
+        FinallyBody := nil;
+        Result := TFS;
+      except
+        FinallyBody.Free;
+        raise;
+      end;
+    end
+    else if Check(tkExcept) then
+    begin
+      Advance;
+      ExceptBody := TCompoundStmt.Create;
+      try
+        ParseBodyInto(ExceptBody, tkEnd, tkEnd);
+        Expect(tkEnd);
+        TES            := TTryExceptStmt.Create;
+        TES.Line       := Line;
+        TES.Col        := Col;
+        TES.TryBody    := TryBody;
+        TES.ExceptBody := ExceptBody;
+        TryBody    := nil;
+        ExceptBody := nil;
+        Result := TES;
+      except
+        ExceptBody.Free;
+        raise;
+      end;
+    end
+    else
+    begin
+      raise EParseError.CreateFmt(
+        'Expected ''finally'' or ''except'' after try body at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    end;
+  except
+    TryBody.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseRaiseStmt: TRaiseStmt;
+begin
+  Result := TRaiseStmt.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkRaise);
+    { Bare raise has no expression; detect by checking statement terminators }
+    if not (Check(tkSemicolon) or Check(tkEnd) or Check(tkEOF) or
+            Check(tkFinally) or Check(tkExcept) or Check(tkElse)) then
+      Result.Expr := ParseExpr;
   except
     Result.Free;
     raise;

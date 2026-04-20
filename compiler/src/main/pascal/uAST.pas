@@ -106,6 +106,26 @@ type
     destructor Destroy; override;
   end;
 
+  TTryFinallyStmt = class(TASTStmt)
+  public
+    TryBody:     TCompoundStmt;  { owned }
+    FinallyBody: TCompoundStmt;  { owned }
+    destructor Destroy; override;
+  end;
+
+  TTryExceptStmt = class(TASTStmt)
+  public
+    TryBody:    TCompoundStmt;  { owned }
+    ExceptBody: TCompoundStmt;  { owned }
+    destructor Destroy; override;
+  end;
+
+  TRaiseStmt = class(TASTStmt)
+  public
+    Expr: TASTExpr;  { owned; nil = bare re-raise }
+    destructor Destroy; override;
+  end;
+
   TFieldAssignment = class(TASTStmt)
   public
     RecordName:    string;
@@ -322,6 +342,32 @@ begin
   StartExpr.Free;
   EndExpr.Free;
   Body.Free;
+  inherited Destroy;
+end;
+
+{ TTryFinallyStmt }
+
+destructor TTryFinallyStmt.Destroy;
+begin
+  TryBody.Free;
+  FinallyBody.Free;
+  inherited Destroy;
+end;
+
+{ TTryExceptStmt }
+
+destructor TTryExceptStmt.Destroy;
+begin
+  TryBody.Free;
+  ExceptBody.Free;
+  inherited Destroy;
+end;
+
+{ TRaiseStmt }
+
+destructor TRaiseStmt.Destroy;
+begin
+  Expr.Free;
   inherited Destroy;
 end;
 

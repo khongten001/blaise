@@ -46,6 +46,7 @@ type
     function  AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
     function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
 
+    procedure AnalyseCompoundBody(ABody: TCompoundStmt);
     function  FindMethodDecl(const ATypeName, AMethodName: string): TMethodDecl;
 
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
@@ -495,6 +496,14 @@ begin
   end;
 end;
 
+procedure TSemanticAnalyser.AnalyseCompoundBody(ABody: TCompoundStmt);
+var
+  I: Integer;
+begin
+  for I := 0 to ABody.Stmts.Count - 1 do
+    AnalyseStmt(TASTStmt(ABody.Stmts[I]));
+end;
+
 procedure TSemanticAnalyser.AnalyseStmts(ABlock: TBlock);
 var
   I: Integer;
@@ -568,6 +577,37 @@ begin
     CmpS := TCompoundStmt(AStmt);
     for I := 0 to CmpS.Stmts.Count - 1 do
       AnalyseStmt(TASTStmt(CmpS.Stmts[I]));
+  end
+  else if AStmt is TTryFinallyStmt then
+  begin
+    with TTryFinallyStmt(AStmt) do
+    begin
+      AnalyseCompoundBody(TryBody);
+      AnalyseCompoundBody(FinallyBody);
+    end;
+  end
+  else if AStmt is TTryExceptStmt then
+  begin
+    with TTryExceptStmt(AStmt) do
+    begin
+      AnalyseCompoundBody(TryBody);
+      AnalyseCompoundBody(ExceptBody);
+    end;
+  end
+  else if AStmt is TRaiseStmt then
+  begin
+    with TRaiseStmt(AStmt) do
+    begin
+      if Expr <> nil then
+      begin
+        CondType := AnalyseExpr(Expr);
+        if CondType.Kind <> tyClass then
+          SemanticError(
+            Format('raise expression must be a class instance, got ''%s''',
+              [CondType.Name]),
+            AStmt.Line, AStmt.Col);
+      end;
+    end;
   end
   else if AStmt is TFieldAssignment then
     AnalyseFieldAssignment(TFieldAssignment(AStmt))

@@ -41,6 +41,9 @@ type
     procedure EmitIfStmt(AStmt: TIfStmt);
     procedure EmitWhileStmt(AStmt: TWhileStmt);
     procedure EmitForStmt(AStmt: TForStmt);
+    procedure EmitTryFinallyStmt(AStmt: TTryFinallyStmt);
+    procedure EmitTryExceptStmt(AStmt: TTryExceptStmt);
+    procedure EmitRaiseStmt(AStmt: TRaiseStmt);
     procedure EmitCompoundStmt(AStmt: TCompoundStmt);
     procedure EmitAssignment(AAssign: TAssignment);
     procedure EmitFieldAssignment(AAssign: TFieldAssignment);
@@ -237,7 +240,13 @@ end;
 
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 begin
-  if AStmt is TForStmt then
+  if AStmt is TTryFinallyStmt then
+    EmitTryFinallyStmt(TTryFinallyStmt(AStmt))
+  else if AStmt is TTryExceptStmt then
+    EmitTryExceptStmt(TTryExceptStmt(AStmt))
+  else if AStmt is TRaiseStmt then
+    EmitRaiseStmt(TRaiseStmt(AStmt))
+  else if AStmt is TForStmt then
     EmitForStmt(TForStmt(AStmt))
   else if AStmt is TWhileStmt then
     EmitWhileStmt(TWhileStmt(AStmt))
@@ -289,6 +298,57 @@ begin
   end;
 
   EmitLine('@' + LblEnd);
+end;
+
+procedure TCodeGenQBE.EmitTryFinallyStmt(AStmt: TTryFinallyStmt);
+var
+  I: Integer;
+begin
+  { Simplified model: emit try body then finally body sequentially.
+    Full stack-unwinding requires RTL support (future phase). }
+  for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts[I]));
+  for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts[I]));
+end;
+
+procedure TCodeGenQBE.EmitTryExceptStmt(AStmt: TTryExceptStmt);
+var
+  LblExcept: string;
+  LblEnd:    string;
+  I:         Integer;
+begin
+  LblExcept := AllocLabel('except_handler');
+  LblEnd    := AllocLabel('except_end');
+
+  { Emit try body — exception dispatch requires RTL support (future phase) }
+  for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts[I]));
+
+  { Skip except handler in normal execution }
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  { Except handler block — reachable only via raise dispatch (future) }
+  EmitLine('@' + LblExcept);
+  for I := 0 to AStmt.ExceptBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.ExceptBody.Stmts[I]));
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  EmitLine('@' + LblEnd);
+end;
+
+procedure TCodeGenQBE.EmitRaiseStmt(AStmt: TRaiseStmt);
+var
+  ObjTemp: string;
+begin
+  if AStmt.Expr <> nil then
+  begin
+    ObjTemp := EmitExpr(AStmt.Expr);
+    EmitLine(Format('  call $_Raise(l %s)', [ObjTemp]));
+  end
+  else
+    { Bare re-raise: pass null; RTL retrieves current exception }
+    EmitLine('  call $_Raise(l 0)');
 end;
 
 procedure TCodeGenQBE.EmitForStmt(AStmt: TForStmt);
