@@ -29,6 +29,8 @@ type
     procedure EmitMainFooter;
     procedure EmitMethodDefs(AProg: TProgram);
     procedure EmitMethodDef(const ATypeName: string; AMethod: TMethodDecl);
+    procedure EmitStandaloneDefs(AProg: TProgram);
+    procedure EmitStandaloneDef(ADecl: TMethodDecl);
     procedure EmitBlock(ABlock: TBlock);
     procedure EmitVarAllocs(ABlock: TBlock);
     procedure EmitParamAllocs(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
@@ -465,10 +467,123 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitStandaloneDef(ADecl: TMethodDecl);
+var
+  Sig:      string;
+  I:        Integer;
+  Par:      TMethodParam;
+  FuncName: string;
+  IsFunc:   Boolean;
+  RetQType: string;
+  RetTemp:  string;
+begin
+  FuncName := '$' + ADecl.Name;
+  IsFunc   := ADecl.ResolvedReturnType <> nil;
+
+  { Build parameter signature: [qtype %_par_Name ...] }
+  Sig := '';
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params[I]);
+    if Sig <> '' then Sig := Sig + ', ';
+    Sig := Sig + Format('%s %%_par_%s', [QbeTypeOf(Par.ResolvedType), Par.ParamName]);
+  end;
+
+  if IsFunc then
+  begin
+    RetQType := QbeTypeOf(ADecl.ResolvedReturnType);
+    EmitLine(Format('function %s %s(%s) {', [RetQType, FuncName, Sig]));
+  end
+  else
+    EmitLine(Format('function %s(%s) {', [FuncName, Sig]));
+
+  EmitLine('@start');
+
+  { Spill explicit params into local slots }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params[I]);
+    case Par.ResolvedType.Kind of
+      tyInteger, tyUInt32, tyBoolean, tyByte:
+        begin
+          EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
+          EmitLine(Format('  storew %%_par_%s, %%_var_%s',
+            [Par.ParamName, Par.ParamName]));
+        end;
+    else
+      EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+      EmitLine(Format('  storel %%_par_%s, %%_var_%s',
+        [Par.ParamName, Par.ParamName]));
+    end;
+  end;
+
+  { For functions, allocate zero-initialised Result slot }
+  if IsFunc then
+  begin
+    if RetQType = 'w' then
+    begin
+      EmitLine('  %_var_Result =l alloc4 1');
+      EmitLine('  storew 0, %_var_Result');
+    end
+    else
+    begin
+      EmitLine('  %_var_Result =l alloc8 1');
+      EmitLine('  storel 0, %_var_Result');
+    end;
+  end;
+
+  EmitBlock(ADecl.Body);
+
+  if IsFunc then
+  begin
+    RetTemp := AllocTemp;
+    if RetQType = 'w' then
+      EmitLine(Format('  %s =w loadw %%_var_Result', [RetTemp]))
+    else
+      EmitLine(Format('  %s =l loadl %%_var_Result', [RetTemp]));
+    EmitLine(Format('  ret %s', [RetTemp]));
+  end
+  else
+    EmitLine('  ret');
+
+  EmitLine('}');
+  EmitLine('');
+end;
+
+procedure TCodeGenQBE.EmitStandaloneDefs(AProg: TProgram);
+var
+  I: Integer;
+begin
+  for I := 0 to AProg.Block.ProcDecls.Count - 1 do
+    EmitStandaloneDef(TMethodDecl(AProg.Block.ProcDecls[I]));
+end;
+
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
 var
   UCaseName: string;
+  MDecl:     TMethodDecl;
+  Par:       TMethodParam;
+  ArgTemp:   string;
+  ArgLine:   string;
+  I:         Integer;
 begin
+  { User-defined procedure }
+  if ACall.ResolvedDecl <> nil then
+  begin
+    MDecl   := TMethodDecl(ACall.ResolvedDecl);
+    ArgLine := '';
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      Par     := TMethodParam(MDecl.Params[I]);
+      ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+      if ArgLine <> '' then ArgLine := ArgLine + ', ';
+      ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+    end;
+    EmitLine(Format('  call $%s(%s)', [ACall.Name, ArgLine]));
+    Exit;
+  end;
+
+  { Built-in }
   UCaseName := UpperCase(ACall.Name);
   if UCaseName = 'WRITELN' then
     EmitWrite(ACall, True)
@@ -531,6 +646,29 @@ var
   FuncName:   string;
   I:          Integer;
 begin
+  if AExpr is TFuncCallExpr then
+  begin
+    { Standalone function call expression }
+    with TFuncCallExpr(AExpr) do
+    begin
+      MDecl    := TMethodDecl(ResolvedDecl);
+      QType    := QbeTypeOf(MDecl.ResolvedReturnType);
+      FuncName := '$' + Name;
+      ArgLine  := '';
+      for I := 0 to Args.Count - 1 do
+      begin
+        Par     := TMethodParam(MDecl.Params[I]);
+        ArgTemp := EmitExpr(TASTExpr(Args[I]));
+        if ArgLine <> '' then ArgLine := ArgLine + ', ';
+        ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+      end;
+      T := AllocTemp;
+      EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
+      Result := T;
+    end;
+    Exit;
+  end;
+
   if AExpr is TMethodCallExpr then
   begin
     MCallExpr := TMethodCallExpr(AExpr);
@@ -684,6 +822,7 @@ begin
     FOutput := Body;
     try
       EmitMethodDefs(AProg);
+      EmitStandaloneDefs(AProg);
       EmitMainHeader;
       EmitBlock(AProg.Block);
       EmitMainFooter;

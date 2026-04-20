@@ -84,8 +84,18 @@ type
 
   TProcCall = class(TASTStmt)
   public
-    Name: string;
-    Args: TObjectList;  { owned TASTExpr items }
+    Name:         string;
+    Args:         TObjectList;  { owned TASTExpr items }
+    ResolvedDecl: TObject;      { TMethodDecl — not owned; set by uSemantic for user-defined procs }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TFuncCallExpr = class(TASTExpr)
+  public
+    Name:         string;
+    Args:         TObjectList;  { owned TASTExpr items }
+    ResolvedDecl: TObject;      { TMethodDecl — not owned; set by uSemantic }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -193,6 +203,7 @@ type
   public
     TypeDecls: TObjectList;  { owned TTypeDecl }
     Decls:     TObjectList;  { owned TVarDecl }
+    ProcDecls: TObjectList;  { owned TMethodDecl — standalone procs/funcs }
     Stmts:     TObjectList;  { owned TASTStmt }
     constructor Create;
     destructor Destroy; override;
@@ -258,6 +269,20 @@ begin
 end;
 
 destructor TProcCall.Destroy;
+begin
+  Args.Free;
+  inherited Destroy;
+end;
+
+{ TFuncCallExpr }
+
+constructor TFuncCallExpr.Create;
+begin
+  inherited Create;
+  Args := TObjectList.Create(True);
+end;
+
+destructor TFuncCallExpr.Destroy;
 begin
   Args.Free;
   inherited Destroy;
@@ -379,6 +404,7 @@ begin
   inherited Create;
   TypeDecls := TObjectList.Create(True);
   Decls     := TObjectList.Create(True);
+  ProcDecls := TObjectList.Create(True);
   Stmts     := TObjectList.Create(True);
 end;
 
@@ -386,6 +412,7 @@ destructor TBlock.Destroy;
 begin
   TypeDecls.Free;
   Decls.Free;
+  ProcDecls.Free;
   Stmts.Free;
   inherited Destroy;
 end;

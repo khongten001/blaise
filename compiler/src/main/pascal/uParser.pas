@@ -57,6 +57,7 @@ type
     procedure ParseFieldDecl(AFields: TObjectList);
     function  ParseMethodDecl(IsFunction: Boolean): TMethodDecl;
     procedure ParseParamList(AParams: TObjectList);
+    procedure ParseStandaloneDecl(ABlock: TBlock);
     procedure ParseVarBlock(ABlock: TBlock);
     procedure ParseVarDecl(ABlock: TBlock);
     procedure ParseStmtList(ABlock: TBlock);
@@ -173,6 +174,9 @@ begin
 
     if Check(tkVar) then
       ParseVarBlock(Result);
+
+    while Check(tkProcedure) or Check(tkFunction) do
+      ParseStandaloneDecl(Result);
 
     Expect(tkBegin);
     ParseStmtList(Result);
@@ -359,6 +363,16 @@ begin
     else
       Break;
   until False;
+end;
+
+procedure TParser.ParseStandaloneDecl(ABlock: TBlock);
+var
+  IsFunc: Boolean;
+  MD:     TMethodDecl;
+begin
+  IsFunc := Check(tkFunction);
+  MD     := ParseMethodDecl(IsFunc);
+  ABlock.ProcDecls.Add(MD);
 end;
 
 procedure TParser.ParseFieldDecl(AFields: TObjectList);
@@ -626,6 +640,7 @@ var
   IdNode:     TIdentExpr;
   FldNode:    TFieldAccessExpr;
   MCallNode:  TMethodCallExpr;
+  FCallNode:  TFuncCallExpr;
   Inner:      TASTExpr;
   Name:       string;
   SecondName: string;
@@ -695,6 +710,26 @@ begin
             FldNode.FieldName  := SecondName;
             Result := FldNode;
           end;
+        end
+        else if Check(tkLParen) then
+        begin
+          { Standalone function call expression: Ident '(' [args] ')' }
+          FCallNode      := TFuncCallExpr.Create;
+          FCallNode.Line := Line;
+          FCallNode.Col  := Col;
+          FCallNode.Name := Name;
+          Advance;  { consume '(' }
+          if not Check(tkRParen) then
+          begin
+            FCallNode.Args.Add(ParseExpr);
+            while Check(tkComma) do
+            begin
+              Advance;
+              FCallNode.Args.Add(ParseExpr);
+            end;
+          end;
+          Expect(tkRParen);
+          Result := FCallNode;
         end
         else
         begin

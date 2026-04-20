@@ -19,7 +19,8 @@ uses
   cp.test.classes,
   cp.test.arc,
   cp.test.methods,
-  cp.test.functions;
+  cp.test.functions,
+  cp.test.procs;
 
 var
   Application: TTestRunner;

@@ -24,11 +24,15 @@ type
   private
     FTable:       TSymbolTable;
     FMethodIndex: TStringList;  { 'TypeName.MethodName' → TMethodDecl (not owned) }
+    FProcIndex:   TStringList;  { 'ProcName' → TMethodDecl (not owned) }
 
     procedure AnalyseBlock(ABlock: TBlock);
     procedure AnalyseTypeDecls(ABlock: TBlock);
     procedure AnalyseMethodBodies(ABlock: TBlock);
     procedure AnalyseMethodDecl(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
+    procedure AnalyseStandaloneDecls(ABlock: TBlock);
+    procedure AnalyseStandaloneBodies(ABlock: TBlock);
+    procedure AnalyseStandaloneDecl(ADecl: TMethodDecl);
     procedure AnalyseVarDecls(ABlock: TBlock);
     procedure AnalyseStmts(ABlock: TBlock);
     procedure AnalyseStmt(AStmt: TASTStmt);
@@ -37,6 +41,7 @@ type
     procedure AnalyseProcCall(ACall: TProcCall);
     procedure AnalyseMethodCall(ACall: TMethodCallStmt);
     function  AnalyseMethodCallExpr(AExpr: TMethodCallExpr): TTypeDesc;
+    function  AnalyseFuncCallExpr(AExpr: TFuncCallExpr): TTypeDesc;
     function  AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
     function  AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
     function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
@@ -60,10 +65,13 @@ begin
   FTable       := TSymbolTable.Create;
   FMethodIndex := TStringList.Create;
   FMethodIndex.CaseSensitive := False;
+  FProcIndex   := TStringList.Create;
+  FProcIndex.CaseSensitive := False;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
+  FProcIndex.Free;
   FMethodIndex.Free;
   FTable.Free;
   inherited Destroy;
@@ -104,6 +112,10 @@ begin
   FTable.PushScope;
   try
     AnalyseVarDecls(ABlock);
+    { Register standalone proc/func signatures before analysing bodies so that
+      mutually-recursive calls resolve correctly. }
+    AnalyseStandaloneDecls(ABlock);
+    AnalyseStandaloneBodies(ABlock);
     AnalyseStmts(ABlock);
   finally
     FTable.PopScope;
@@ -293,6 +305,106 @@ begin
     Result := nil;
 end;
 
+procedure TSemanticAnalyser.AnalyseStandaloneDecls(ABlock: TBlock);
+var
+  I, J:    Integer;
+  ADecl:   TMethodDecl;
+  Par:     TMethodParam;
+  ParType: TTypeDesc;
+  RetType: TTypeDesc;
+  Sym:     TSymbol;
+begin
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+  begin
+    ADecl := TMethodDecl(ABlock.ProcDecls[I]);
+
+    { Resolve parameter types }
+    for J := 0 to ADecl.Params.Count - 1 do
+    begin
+      Par     := TMethodParam(ADecl.Params[J]);
+      ParType := FTable.FindType(Par.TypeName);
+      if ParType = nil then
+        SemanticError(
+          Format('Unknown type ''%s'' for parameter ''%s'' of ''%s''',
+            [Par.TypeName, Par.ParamName, ADecl.Name]),
+          ADecl.Line, ADecl.Col);
+      Par.ResolvedType := ParType;
+    end;
+
+    { Resolve return type for functions }
+    if ADecl.ReturnTypeName <> '' then
+    begin
+      RetType := FTable.FindType(ADecl.ReturnTypeName);
+      if RetType = nil then
+        SemanticError(
+          Format('Unknown return type ''%s'' for function ''%s''',
+            [ADecl.ReturnTypeName, ADecl.Name]),
+          ADecl.Line, ADecl.Col);
+      ADecl.ResolvedReturnType := RetType;
+    end;
+
+    { Index for call resolution }
+    FProcIndex.AddObject(ADecl.Name, ADecl);
+
+    { Register in symbol table }
+    if ADecl.ReturnTypeName <> '' then
+      Sym := TSymbol.Create(ADecl.Name, skFunction, ADecl.ResolvedReturnType)
+    else
+      Sym := TSymbol.Create(ADecl.Name, skProcedure, nil);
+
+    if not FTable.Define(Sym) then
+    begin
+      Sym.Free;
+      SemanticError(
+        Format('Duplicate identifier ''%s''', [ADecl.Name]),
+        ADecl.Line, ADecl.Col);
+    end;
+  end;
+end;
+
+procedure TSemanticAnalyser.AnalyseStandaloneDecl(ADecl: TMethodDecl);
+var
+  I:   Integer;
+  Par: TMethodParam;
+  Sym: TSymbol;
+begin
+  FTable.PushScope;
+  try
+    { Define Result for functions }
+    if ADecl.ResolvedReturnType <> nil then
+    begin
+      Sym := TSymbol.Create('Result', skVariable, ADecl.ResolvedReturnType);
+      FTable.Define(Sym);
+    end;
+
+    { Define explicit parameters }
+    for I := 0 to ADecl.Params.Count - 1 do
+    begin
+      Par := TMethodParam(ADecl.Params[I]);
+      Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
+      if not FTable.Define(Sym) then
+      begin
+        Sym.Free;
+        SemanticError(
+          Format('Duplicate parameter name ''%s''', [Par.ParamName]),
+          ADecl.Line, ADecl.Col);
+      end;
+    end;
+
+    AnalyseBlock(ADecl.Body);
+  finally
+    FTable.PopScope;
+  end;
+end;
+
+procedure TSemanticAnalyser.AnalyseStandaloneBodies(ABlock: TBlock);
+var
+  I: Integer;
+begin
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+    AnalyseStandaloneDecl(TMethodDecl(ABlock.ProcDecls[I]));
+end;
+
 procedure TSemanticAnalyser.AnalyseVarDecls(ABlock: TBlock);
 var
   I, J:    Integer;
@@ -455,8 +567,12 @@ end;
 
 procedure TSemanticAnalyser.AnalyseProcCall(ACall: TProcCall);
 var
-  Sym: TSymbol;
-  I:   Integer;
+  Sym:     TSymbol;
+  MDecl:   TMethodDecl;
+  Par:     TMethodParam;
+  ArgType: TTypeDesc;
+  Idx:     Integer;
+  I:       Integer;
 begin
   Sym := FTable.Lookup(ACall.Name);
   if Sym = nil then
@@ -468,8 +584,78 @@ begin
       Format('''%s'' is not a procedure or function', [ACall.Name]),
       ACall.Line, ACall.Col);
 
-  for I := 0 to ACall.Args.Count - 1 do
-    AnalyseExpr(TASTExpr(ACall.Args[I]));
+  { For user-defined procs/funcs, validate arg count and types }
+  Idx := FProcIndex.IndexOf(ACall.Name);
+  if Idx >= 0 then
+  begin
+    MDecl := TMethodDecl(FProcIndex.Objects[Idx]);
+    if ACall.Args.Count <> MDecl.Params.Count then
+      SemanticError(
+        Format('Procedure ''%s'' expects %d argument(s) but got %d',
+          [ACall.Name, MDecl.Params.Count, ACall.Args.Count]),
+        ACall.Line, ACall.Col);
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+      Par     := TMethodParam(MDecl.Params[I]);
+      CheckTypesMatch(Par.ResolvedType, ArgType,
+        Format('argument %d of ''%s''', [I + 1, ACall.Name]),
+        ACall.Line, ACall.Col);
+    end;
+    ACall.ResolvedDecl := MDecl;
+  end
+  else
+  begin
+    { Built-in (WriteLn/Write) — just analyse arg expressions }
+    for I := 0 to ACall.Args.Count - 1 do
+      AnalyseExpr(TASTExpr(ACall.Args[I]));
+  end;
+end;
+
+function TSemanticAnalyser.AnalyseFuncCallExpr(AExpr: TFuncCallExpr): TTypeDesc;
+var
+  Sym:     TSymbol;
+  MDecl:   TMethodDecl;
+  Par:     TMethodParam;
+  ArgType: TTypeDesc;
+  Idx:     Integer;
+  I:       Integer;
+begin
+  Sym := FTable.Lookup(AExpr.Name);
+  if Sym = nil then
+    SemanticError(
+      Format('Undeclared function ''%s''', [AExpr.Name]),
+      AExpr.Line, AExpr.Col);
+  if Sym.Kind <> skFunction then
+    SemanticError(
+      Format('''%s'' is not a function', [AExpr.Name]),
+      AExpr.Line, AExpr.Col);
+
+  Idx := FProcIndex.IndexOf(AExpr.Name);
+  if Idx < 0 then
+    SemanticError(
+      Format('Cannot find declaration for function ''%s''', [AExpr.Name]),
+      AExpr.Line, AExpr.Col);
+
+  MDecl := TMethodDecl(FProcIndex.Objects[Idx]);
+
+  if AExpr.Args.Count <> MDecl.Params.Count then
+    SemanticError(
+      Format('Function ''%s'' expects %d argument(s) but got %d',
+        [AExpr.Name, MDecl.Params.Count, AExpr.Args.Count]),
+      AExpr.Line, AExpr.Col);
+
+  for I := 0 to AExpr.Args.Count - 1 do
+  begin
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
+    Par     := TMethodParam(MDecl.Params[I]);
+    CheckTypesMatch(Par.ResolvedType, ArgType,
+      Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
+      AExpr.Line, AExpr.Col);
+  end;
+
+  AExpr.ResolvedDecl := MDecl;
+  Result := MDecl.ResolvedReturnType;
 end;
 
 function TSemanticAnalyser.AnalyseMethodCallExpr(AExpr: TMethodCallExpr): TTypeDesc;
@@ -544,6 +730,8 @@ begin
         AExpr.Line, AExpr.Col);
     Result := Sym.TypeDesc;
   end
+  else if AExpr is TFuncCallExpr then
+    Result := AnalyseFuncCallExpr(TFuncCallExpr(AExpr))
   else if AExpr is TMethodCallExpr then
     Result := AnalyseMethodCallExpr(TMethodCallExpr(AExpr))
   else if AExpr is TFieldAccessExpr then
