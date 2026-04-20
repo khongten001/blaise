@@ -67,6 +67,7 @@ type
     function  ParseForStmt: TForStmt;
     function  ParseTryStmt: TASTStmt;
     function  ParseRaiseStmt: TRaiseStmt;
+    function  ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
     function  ParseCompoundStmt: TCompoundStmt;
     function  ParseExpr: TASTExpr;
     function  ParseAddSub: TASTExpr;
@@ -77,6 +78,7 @@ type
   public
     constructor Create(ALexer: TLexer);
     function Parse: TProgram;
+    function ParseUnit: TUnit;
   end;
 
 implementation
@@ -836,6 +838,99 @@ begin
   begin
     Advance;
     ACall.Args.Add(ParseExpr);
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Unit parsing                                                        }
+{ ------------------------------------------------------------------ }
+
+function TParser.ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
+begin
+  Result := TMethodDecl.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    if IsFunction then
+      Expect(tkFunction)
+    else
+      Expect(tkProcedure);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.Name := FCurrent.Value;
+    Advance;
+    if Check(tkLParen) then
+    begin
+      Advance;
+      if not Check(tkRParen) then
+        ParseParamList(Result.Params);
+      Expect(tkRParen);
+    end;
+    if IsFunction then
+    begin
+      Expect(tkColon);
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected return type at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.ReturnTypeName := FCurrent.Value;
+      Advance;
+    end;
+    Expect(tkSemicolon);
+    { Body remains nil — forward declaration }
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseUnit: TUnit;
+begin
+  Result := TUnit.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+
+    Expect(tkUnit);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected unit name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.Name := FCurrent.Value;
+    Advance;
+    Expect(tkSemicolon);
+
+    { Interface section }
+    Expect(tkIntf);
+    if Check(tkType) then
+      ParseTypeSection(Result.IntfBlock);
+    while Check(tkProcedure) or Check(tkFunction) do
+    begin
+      if Check(tkFunction) then
+        Result.IntfBlock.ProcDecls.Add(ParseForwardDecl(True))
+      else
+        Result.IntfBlock.ProcDecls.Add(ParseForwardDecl(False));
+    end;
+
+    { Implementation section }
+    Expect(tkImplementation);
+    while Check(tkProcedure) or Check(tkFunction) do
+    begin
+      if Check(tkFunction) then
+        Result.ImplBlock.ProcDecls.Add(ParseMethodDecl(True))
+      else
+        Result.ImplBlock.ProcDecls.Add(ParseMethodDecl(False));
+    end;
+
+    Expect(tkEnd);
+    Expect(tkDot);
+
+    if not Check(tkEOF) then
+      raise EParseError.CreateFmt(
+        'Unexpected tokens after unit end at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+  except
+    Result.Free;
+    raise;
   end;
 end;
 

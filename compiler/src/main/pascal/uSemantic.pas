@@ -56,6 +56,7 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Analyse(AProg: TProgram);
+    procedure AnalyseUnit(AUnit: TUnit);
   end;
 
 implementation
@@ -105,6 +106,141 @@ begin
     this analyser. }
   AProg.SymbolTable := FTable;
   FTable := nil;
+end;
+
+procedure TSemanticAnalyser.AnalyseUnit(AUnit: TUnit);
+var
+  I, J:     Integer;
+  MDecl:    TMethodDecl;
+  ImplDecl: TMethodDecl;
+  ImplIdx:  Integer;
+  Par:      TMethodParam;
+  ParType:  TTypeDesc;
+  Sym:      TSymbol;
+begin
+  FTable.PushScope;
+  try
+    { Resolve interface type declarations }
+    AnalyseTypeDecls(AUnit.IntfBlock);
+
+    { Register interface forward declaration signatures }
+    for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
+    begin
+      MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+
+      for J := 0 to MDecl.Params.Count - 1 do
+      begin
+        Par     := TMethodParam(MDecl.Params[J]);
+        ParType := FTable.FindType(Par.TypeName);
+        if ParType = nil then
+          SemanticError(
+            Format('Unknown type ''%s'' for parameter ''%s''',
+              [Par.TypeName, Par.ParamName]),
+            MDecl.Line, MDecl.Col);
+        Par.ResolvedType := ParType;
+      end;
+
+      if MDecl.ReturnTypeName <> '' then
+      begin
+        ParType := FTable.FindType(MDecl.ReturnTypeName);
+        if ParType = nil then
+          SemanticError(
+            Format('Unknown return type ''%s'' for ''%s''',
+              [MDecl.ReturnTypeName, MDecl.Name]),
+            MDecl.Line, MDecl.Col);
+        MDecl.ResolvedReturnType := ParType;
+      end;
+
+      FProcIndex.AddObject(MDecl.Name, MDecl);
+
+      if MDecl.ReturnTypeName <> '' then
+        Sym := TSymbol.Create(MDecl.Name, skFunction, MDecl.ResolvedReturnType)
+      else
+        Sym := TSymbol.Create(MDecl.Name, skProcedure, nil);
+      if not FTable.Define(Sym) then
+      begin
+        Sym.Free;
+        SemanticError(Format('Duplicate identifier ''%s''', [MDecl.Name]),
+          MDecl.Line, MDecl.Col);
+      end;
+    end;
+
+    { Process implementation declarations }
+    for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
+    begin
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+
+      for J := 0 to ImplDecl.Params.Count - 1 do
+      begin
+        Par     := TMethodParam(ImplDecl.Params[J]);
+        ParType := FTable.FindType(Par.TypeName);
+        if ParType = nil then
+          SemanticError(
+            Format('Unknown type ''%s'' for parameter ''%s''',
+              [Par.TypeName, Par.ParamName]),
+            ImplDecl.Line, ImplDecl.Col);
+        Par.ResolvedType := ParType;
+      end;
+
+      if ImplDecl.ReturnTypeName <> '' then
+      begin
+        ParType := FTable.FindType(ImplDecl.ReturnTypeName);
+        if ParType = nil then
+          SemanticError(
+            Format('Unknown return type ''%s'' for ''%s''',
+              [ImplDecl.ReturnTypeName, ImplDecl.Name]),
+            ImplDecl.Line, ImplDecl.Col);
+        ImplDecl.ResolvedReturnType := ParType;
+      end;
+
+      ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+      if ImplIdx >= 0 then
+      begin
+        { Matched an interface forward decl — verify param count }
+        MDecl := TMethodDecl(FProcIndex.Objects[ImplIdx]);
+        if MDecl.Params.Count <> ImplDecl.Params.Count then
+          SemanticError(
+            Format('Signature mismatch for ''%s'': interface has %d params, implementation has %d',
+              [ImplDecl.Name, MDecl.Params.Count, ImplDecl.Params.Count]),
+            ImplDecl.Line, ImplDecl.Col);
+        { Update index to point to the full implementation }
+        FProcIndex.Objects[ImplIdx] := ImplDecl;
+      end
+      else
+      begin
+        { Impl-only declaration — register symbol and index it }
+        FProcIndex.AddObject(ImplDecl.Name, ImplDecl);
+        if ImplDecl.ReturnTypeName <> '' then
+          Sym := TSymbol.Create(ImplDecl.Name, skFunction, ImplDecl.ResolvedReturnType)
+        else
+          Sym := TSymbol.Create(ImplDecl.Name, skProcedure, nil);
+        if not FTable.Define(Sym) then
+        begin
+          Sym.Free;
+          SemanticError(Format('Duplicate identifier ''%s''', [ImplDecl.Name]),
+            ImplDecl.Line, ImplDecl.Col);
+        end;
+      end;
+    end;
+
+    { Verify every interface declaration has a matching implementation }
+    for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
+    begin
+      MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
+      if (ImplIdx < 0) or
+         (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
+        SemanticError(
+          Format('Interface function ''%s'' has no implementation', [MDecl.Name]),
+          MDecl.Line, MDecl.Col);
+    end;
+
+    { Analyse all implementation bodies }
+    for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
+      AnalyseStandaloneDecl(TMethodDecl(AUnit.ImplBlock.ProcDecls[I]));
+  finally
+    FTable.PopScope;
+  end;
 end;
 
 procedure TSemanticAnalyser.AnalyseBlock(ABlock: TBlock);

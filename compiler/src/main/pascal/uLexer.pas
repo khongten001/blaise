@@ -41,6 +41,9 @@ type
     tkExcept,
     tkRaise,
     tkNil,
+    tkUnit,
+    tkIntf,
+    tkImplementation,
     { Identifier }
     tkIdent,
     { Arithmetic operators }
@@ -124,7 +127,10 @@ begin
   else if AUpper = 'FINALLY'   then Result := tkFinally
   else if AUpper = 'EXCEPT'    then Result := tkExcept
   else if AUpper = 'RAISE'     then Result := tkRaise
-  else if AUpper = 'NIL'       then Result := tkNil
+  else if AUpper = 'NIL'            then Result := tkNil
+  else if AUpper = 'UNIT'           then Result := tkUnit
+  else if AUpper = 'INTERFACE'      then Result := tkIntf
+  else if AUpper = 'IMPLEMENTATION' then Result := tkImplementation
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;

@@ -274,6 +274,15 @@ type
     destructor Destroy; override;
   end;
 
+  TUnit = class(TASTNode)
+  public
+    Name:      string;
+    IntfBlock: TBlock;  { owned — forward decls + type decls }
+    ImplBlock: TBlock;  { owned — full implementations }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
 function BinaryOpName(AOp: TBinaryOp): string;
 function IsComparisonOp(AOp: TBinaryOp): Boolean;
 
@@ -566,6 +575,22 @@ begin
   SymbolTable.Free;
   UsedUnits.Free;
   Block.Free;
+  inherited Destroy;
+end;
+
+{ TUnit }
+
+constructor TUnit.Create;
+begin
+  inherited Create;
+  IntfBlock := TBlock.Create;
+  ImplBlock := TBlock.Create;
+end;
+
+destructor TUnit.Destroy;
+begin
+  IntfBlock.Free;
+  ImplBlock.Free;
   inherited Destroy;
 end;
 
