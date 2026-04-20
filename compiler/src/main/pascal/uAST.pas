@@ -49,7 +49,7 @@ type
     IsClassAccess:     Boolean;     { set by uSemantic — pointer deref needed }
   end;
 
-  TBinaryOp = (boAdd, boSub, boMul, boDiv);
+  TBinaryOp = (boAdd, boSub, boMul, boDiv, boEQ, boNE, boLT, boGT, boLE, boGE);
 
   TBinaryExpr = class(TASTExpr)
   public
@@ -69,6 +69,21 @@ type
   public
     Name: string;
     Expr: TASTExpr;  { owned }
+    destructor Destroy; override;
+  end;
+
+  TIfStmt = class(TASTStmt)
+  public
+    Condition: TASTExpr;   { owned }
+    ThenStmt:  TASTStmt;   { owned }
+    ElseStmt:  TASTStmt;   { owned; nil if no else }
+    destructor Destroy; override;
+  end;
+
+  TCompoundStmt = class(TASTStmt)
+  public
+    Stmts: TObjectList;  { owned TASTStmt }
+    constructor Create;
     destructor Destroy; override;
   end;
 
@@ -220,6 +235,7 @@ type
   end;
 
 function BinaryOpName(AOp: TBinaryOp): string;
+function IsComparisonOp(AOp: TBinaryOp): Boolean;
 
 implementation
 
@@ -230,9 +246,44 @@ begin
     boSub: Result := '-';
     boMul: Result := '*';
     boDiv: Result := 'div';
+    boEQ:  Result := '=';
+    boNE:  Result := '<>';
+    boLT:  Result := '<';
+    boGT:  Result := '>';
+    boLE:  Result := '<=';
+    boGE:  Result := '>=';
   else
     Result := '?';
   end;
+end;
+
+function IsComparisonOp(AOp: TBinaryOp): Boolean;
+begin
+  Result := AOp in [boEQ, boNE, boLT, boGT, boLE, boGE];
+end;
+
+{ TIfStmt }
+
+destructor TIfStmt.Destroy;
+begin
+  Condition.Free;
+  ThenStmt.Free;
+  ElseStmt.Free;
+  inherited Destroy;
+end;
+
+{ TCompoundStmt }
+
+constructor TCompoundStmt.Create;
+begin
+  inherited Create;
+  Stmts := TObjectList.Create(True);
+end;
+
+destructor TCompoundStmt.Destroy;
+begin
+  Stmts.Free;
+  inherited Destroy;
 end;
 
 { TBinaryExpr }

@@ -62,7 +62,10 @@ type
     procedure ParseVarDecl(ABlock: TBlock);
     procedure ParseStmtList(ABlock: TBlock);
     function  ParseStmt: TASTStmt;
+    function  ParseIfStmt: TIfStmt;
+    function  ParseCompoundStmt: TCompoundStmt;
     function  ParseExpr: TASTExpr;
+    function  ParseAddSub: TASTExpr;
     function  ParseTerm: TASTExpr;
     function  ParseFactor: TASTExpr;
     procedure ParseArgList(ACall: TProcCall);
@@ -466,7 +469,7 @@ procedure TParser.ParseStmtList(ABlock: TBlock);
 var
   Stmt: TASTStmt;
 begin
-  while not (Check(tkEnd) or Check(tkEOF)) do
+  while not (Check(tkEnd) or Check(tkEOF) or Check(tkElse)) do
   begin
     Stmt := ParseStmt;
     if Stmt <> nil then
@@ -490,8 +493,20 @@ var
 begin
   Result := nil;
 
-  if Check(tkEnd) or Check(tkEOF) or Check(tkSemicolon) then
+  if Check(tkEnd) or Check(tkEOF) or Check(tkSemicolon) or Check(tkElse) then
     Exit;
+
+  if Check(tkIf) then
+  begin
+    Result := ParseIfStmt;
+    Exit;
+  end;
+
+  if Check(tkBegin) then
+  begin
+    Result := ParseCompoundStmt;
+    Exit;
+  end;
 
   if not Check(tkIdent) then
     raise EParseError.CreateFmt(
@@ -569,6 +584,53 @@ begin
   end;
 end;
 
+function TParser.ParseIfStmt: TIfStmt;
+begin
+  Result := TIfStmt.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkIf);
+    Result.Condition := ParseExpr;
+    Expect(tkThen);
+    Result.ThenStmt := ParseStmt;
+    if Check(tkElse) then
+    begin
+      Advance;
+      Result.ElseStmt := ParseStmt;
+    end;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseCompoundStmt: TCompoundStmt;
+var
+  Stmt: TASTStmt;
+begin
+  Result := TCompoundStmt.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkBegin);
+    while not (Check(tkEnd) or Check(tkEOF)) do
+    begin
+      Stmt := ParseStmt;
+      if Stmt <> nil then
+        Result.Stmts.Add(Stmt);
+      if Check(tkSemicolon) then
+        Advance
+      else
+        Break;
+    end;
+    Expect(tkEnd);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
 procedure TParser.ParseArgList(ACall: TProcCall);
 begin
   ACall.Args.Add(ParseExpr);
@@ -594,6 +656,35 @@ end;
 { ------------------------------------------------------------------ }
 
 function TParser.ParseExpr: TASTExpr;
+var
+  Right:  TASTExpr;
+  CmpOp:  TBinaryOp;
+  Node:   TBinaryExpr;
+begin
+  Result := ParseAddSub;
+
+  { Comparison — non-associative, one level only }
+  if Check(tkEquals) or Check(tkNotEquals) or
+     Check(tkLessThan) or Check(tkGreaterThan) or
+     Check(tkLessEqual) or Check(tkGreaterEqual) then
+  begin
+    if      Check(tkEquals)      then CmpOp := boEQ
+    else if Check(tkNotEquals)   then CmpOp := boNE
+    else if Check(tkLessThan)    then CmpOp := boLT
+    else if Check(tkGreaterThan) then CmpOp := boGT
+    else if Check(tkLessEqual)   then CmpOp := boLE
+    else                              CmpOp := boGE;
+    Advance;
+    Right       := ParseAddSub;
+    Node        := TBinaryExpr.Create;
+    Node.Op     := CmpOp;
+    Node.Left   := Result;
+    Node.Right  := Right;
+    Result      := Node;
+  end;
+end;
+
+function TParser.ParseAddSub: TASTExpr;
 var
   Right: TASTExpr;
   Op:    TBinaryOp;

@@ -17,11 +17,13 @@ type
 
   TCodeGenQBE = class
   private
-    FOutput:    TStringList;
-    FStrLits:   TStringList;  { index → raw value; label = $__s<index> }
-    FTempCount: Integer;
+    FOutput:     TStringList;
+    FStrLits:    TStringList;  { index → raw value; label = $__s<index> }
+    FTempCount:  Integer;
+    FLabelCount: Integer;
 
     function  AllocTemp: string;
+    function  AllocLabel(const APrefix: string): string;
     function  EmitStrLit(const AValue: string): string;
     procedure EmitLine(const ALine: string);
     procedure EmitDataSection;
@@ -36,6 +38,8 @@ type
     procedure EmitParamAllocs(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
     procedure EmitStringCleanup(ABlock: TBlock);
     procedure EmitStmt(AStmt: TASTStmt);
+    procedure EmitIfStmt(AStmt: TIfStmt);
+    procedure EmitCompoundStmt(AStmt: TCompoundStmt);
     procedure EmitAssignment(AAssign: TAssignment);
     procedure EmitFieldAssignment(AAssign: TFieldAssignment);
     procedure EmitMethodCall(ACall: TMethodCallStmt);
@@ -73,6 +77,12 @@ function TCodeGenQBE.AllocTemp: string;
 begin
   Result := Format('%%_t%d', [FTempCount]);
   Inc(FTempCount);
+end;
+
+function TCodeGenQBE.AllocLabel(const APrefix: string): string;
+begin
+  Result := Format('%s_%d', [APrefix, FLabelCount]);
+  Inc(FLabelCount);
 end;
 
 function TCodeGenQBE.EmitStrLit(const AValue: string): string;
@@ -225,7 +235,11 @@ end;
 
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 begin
-  if AStmt is TFieldAssignment then
+  if AStmt is TIfStmt then
+    EmitIfStmt(TIfStmt(AStmt))
+  else if AStmt is TCompoundStmt then
+    EmitCompoundStmt(TCompoundStmt(AStmt))
+  else if AStmt is TFieldAssignment then
     EmitFieldAssignment(TFieldAssignment(AStmt))
   else if AStmt is TAssignment then
     EmitAssignment(TAssignment(AStmt))
@@ -235,6 +249,48 @@ begin
     EmitProcCall(TProcCall(AStmt))
   else
     raise ECodeGenError.Create('Unknown statement node type');
+end;
+
+procedure TCodeGenQBE.EmitIfStmt(AStmt: TIfStmt);
+var
+  CondTemp:  string;
+  LblThen:   string;
+  LblElse:   string;
+  LblEnd:    string;
+begin
+  LblThen := AllocLabel('if_then');
+  LblEnd  := AllocLabel('if_end');
+
+  CondTemp := EmitExpr(AStmt.Condition);
+
+  if AStmt.ElseStmt <> nil then
+  begin
+    LblElse := AllocLabel('if_else');
+    EmitLine(Format('  jnz %s, @%s, @%s', [CondTemp, LblThen, LblElse]));
+    EmitLine('@' + LblThen);
+    EmitStmt(AStmt.ThenStmt);
+    EmitLine(Format('  jmp @%s', [LblEnd]));
+    EmitLine('@' + LblElse);
+    EmitStmt(AStmt.ElseStmt);
+    EmitLine(Format('  jmp @%s', [LblEnd]));
+  end
+  else
+  begin
+    EmitLine(Format('  jnz %s, @%s, @%s', [CondTemp, LblThen, LblEnd]));
+    EmitLine('@' + LblThen);
+    EmitStmt(AStmt.ThenStmt);
+    EmitLine(Format('  jmp @%s', [LblEnd]));
+  end;
+
+  EmitLine('@' + LblEnd);
+end;
+
+procedure TCodeGenQBE.EmitCompoundStmt(AStmt: TCompoundStmt);
+var
+  I: Integer;
+begin
+  for I := 0 to AStmt.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.Stmts[I]));
 end;
 
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
@@ -776,6 +832,14 @@ begin
       boSub: Op := 'sub';
       boMul: Op := 'mul';
       boDiv: Op := 'div';
+      boEQ:  Op := 'ceqw';
+      boNE:  Op := 'cnew';
+      boLT:  Op := 'csltw';
+      boGT:  Op := 'csgtw';
+      boLE:  Op := 'cslew';
+      boGE:  Op := 'csgew';
+    else
+      Op := 'add';
     end;
     EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     Result := T;
@@ -814,7 +878,8 @@ var
 begin
   FOutput.Clear;
   FStrLits.Clear;
-  FTempCount := 0;
+  FTempCount  := 0;
+  FLabelCount := 0;
 
   Body := TStringList.Create;
   try

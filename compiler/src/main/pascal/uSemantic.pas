@@ -449,8 +449,31 @@ begin
 end;
 
 procedure TSemanticAnalyser.AnalyseStmt(AStmt: TASTStmt);
+var
+  IfS:  TIfStmt;
+  CmpS: TCompoundStmt;
+  I:    Integer;
+  CondType: TTypeDesc;
 begin
-  if AStmt is TFieldAssignment then
+  if AStmt is TIfStmt then
+  begin
+    IfS      := TIfStmt(AStmt);
+    CondType := AnalyseExpr(IfS.Condition);
+    if CondType.Kind <> tyBoolean then
+      SemanticError(
+        Format('if condition must be Boolean, got ''%s''', [CondType.Name]),
+        IfS.Line, IfS.Col);
+    AnalyseStmt(IfS.ThenStmt);
+    if IfS.ElseStmt <> nil then
+      AnalyseStmt(IfS.ElseStmt);
+  end
+  else if AStmt is TCompoundStmt then
+  begin
+    CmpS := TCompoundStmt(AStmt);
+    for I := 0 to CmpS.Stmts.Count - 1 do
+      AnalyseStmt(TASTStmt(CmpS.Stmts[I]));
+  end
+  else if AStmt is TFieldAssignment then
     AnalyseFieldAssignment(TFieldAssignment(AStmt))
   else if AStmt is TAssignment then
     AnalyseAssignment(TAssignment(AStmt))
@@ -806,20 +829,29 @@ begin
   LType := AnalyseExpr(ABin.Left);
   RType := AnalyseExpr(ABin.Right);
 
-  if not LType.IsNumeric then
-    SemanticError(
-      Format('Left operand of ''%s'' must be numeric, got ''%s''',
-        [BinaryOpName(ABin.Op), LType.Name]),
+  if IsComparisonOp(ABin.Op) then
+  begin
+    { Both operands must be the same type; result is Boolean }
+    CheckTypesMatch(LType, RType,
+      Format('comparison ''%s''', [BinaryOpName(ABin.Op)]),
       ABin.Line, ABin.Col);
-  if not RType.IsNumeric then
-    SemanticError(
-      Format('Right operand of ''%s'' must be numeric, got ''%s''',
-        [BinaryOpName(ABin.Op), RType.Name]),
-      ABin.Line, ABin.Col);
-
-  CheckTypesMatch(LType, RType, 'binary expression', ABin.Line, ABin.Col);
-
-  Result := LType;
+    Result := FTable.TypeBoolean;
+  end
+  else
+  begin
+    if not LType.IsNumeric then
+      SemanticError(
+        Format('Left operand of ''%s'' must be numeric, got ''%s''',
+          [BinaryOpName(ABin.Op), LType.Name]),
+        ABin.Line, ABin.Col);
+    if not RType.IsNumeric then
+      SemanticError(
+        Format('Right operand of ''%s'' must be numeric, got ''%s''',
+          [BinaryOpName(ABin.Op), RType.Name]),
+        ABin.Line, ABin.Col);
+    CheckTypesMatch(LType, RType, 'binary expression', ABin.Line, ABin.Col);
+    Result := LType;
+  end;
 end;
 
 end.

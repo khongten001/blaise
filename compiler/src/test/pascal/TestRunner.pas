@@ -20,7 +20,8 @@ uses
   cp.test.arc,
   cp.test.methods,
   cp.test.functions,
-  cp.test.procs;
+  cp.test.procs,
+  cp.test.control;
 
 var
   Application: TTestRunner;

@@ -28,6 +28,9 @@ type
     tkVar,
     tkBegin,
     tkEnd,
+    tkIf,
+    tkThen,
+    tkElse,
     { Identifier }
     tkIdent,
     { Arithmetic operators }
@@ -37,9 +40,14 @@ type
     tkSlash,    { '/' — future: float division }
     tkDiv,      { 'div' keyword — integer division }
     { Assignment and equality }
-    tkAssign,     { := }
-    tkEquals,     { =  — used in type declarations }
-    tkColon,      { :  }
+    tkAssign,        { := }
+    tkEquals,        { =  — type declarations and equality comparison }
+    tkNotEquals,     { <> }
+    tkLessThan,      { <  }
+    tkGreaterThan,   { >  }
+    tkLessEqual,     { <= }
+    tkGreaterEqual,  { >= }
+    tkColon,         { :  }
     { Grouping and punctuation }
     tkLParen,
     tkRParen,
@@ -94,6 +102,9 @@ begin
   else if AUpper = 'PROCEDURE' then Result := tkProcedure
   else if AUpper = 'FUNCTION'  then Result := tkFunction
   else if AUpper = 'DIV'       then Result := tkDiv
+  else if AUpper = 'IF'        then Result := tkIf
+  else if AUpper = 'THEN'      then Result := tkThen
+  else if AUpper = 'ELSE'      then Result := tkElse
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;
@@ -182,6 +193,11 @@ begin
         text := FTok.TokenText;
         if      text = ':=' then Result.Kind := tkAssign
         else if text = '='  then Result.Kind := tkEquals
+        else if text = '<>' then Result.Kind := tkNotEquals
+        else if text = '<=' then Result.Kind := tkLessEqual
+        else if text = '>=' then Result.Kind := tkGreaterEqual
+        else if text = '<'  then Result.Kind := tkLessThan
+        else if text = '>'  then Result.Kind := tkGreaterThan
         else if text = ':'  then Result.Kind := tkColon
         else if text = '('  then Result.Kind := tkLParen
         else if text = ')'  then Result.Kind := tkRParen
