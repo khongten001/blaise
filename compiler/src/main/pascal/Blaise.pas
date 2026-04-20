@@ -5,18 +5,18 @@ program Blaise;
 { Blaise Compiler — main entry point.
 
   Usage:
-    cleanpascal --source Hello.pas --output hello
-    cleanpascal --source Hello.pas --emit-ir
-    cleanpascal --source Hello.pas --output hello --target linux-x86_64
+    blaise --source Hello.pas --output hello
+    blaise --source Hello.pas --emit-ir
+    blaise --source Hello.pas --output hello --target linux-x86_64
 
-  The compiler generates QBE IR, then shells out to qbe + cc to produce
-  the final binary. With --emit-ir, the IR is written to stdout and no
-  binary is produced.
+  Generates QBE IR, then shells out to qbe + cc to produce the final
+  binary. With --emit-ir, the IR is written to stdout and no binary
+  is produced.
 }
 
 uses
   SysUtils, Classes, Process,
-  uLexer, uParser, uCodeGenQBE;
+  uLexer, uParser, uAST, uCodeGenQBE;
 
 const
   Version = '0.1.0-alpha';

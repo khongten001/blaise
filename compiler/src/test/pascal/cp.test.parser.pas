@@ -98,8 +98,8 @@ var
 begin
   Prog := ParseSource('program P; uses System; begin end.');
   try
-    AssertEquals('Uses count', 1, Prog.Uses.Count);
-    AssertEquals('Unit name', 'System', Prog.Uses[0]);
+    AssertEquals('Uses count', 1, Prog.UsedUnits.Count);
+    AssertEquals('Unit name', 'System', Prog.UsedUnits[0]);
   finally
     Prog.Free;
   end;
@@ -111,9 +111,9 @@ var
 begin
   Prog := ParseSource('program P; uses System, SysUtils; begin end.');
   try
-    AssertEquals('Uses count', 2, Prog.Uses.Count);
-    AssertEquals('First', 'System', Prog.Uses[0]);
-    AssertEquals('Second', 'SysUtils', Prog.Uses[1]);
+    AssertEquals('Uses count', 2, Prog.UsedUnits.Count);
+    AssertEquals('First', 'System', Prog.UsedUnits[0]);
+    AssertEquals('Second', 'SysUtils', Prog.UsedUnits[1]);
   finally
     Prog.Free;
   end;

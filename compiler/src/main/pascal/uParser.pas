@@ -2,22 +2,21 @@ unit uParser;
 
 {$mode objfpc}{$H+}
 
-{ Recursive-descent parser for the Phase 1 grammar:
-    Program    ::= 'program' Ident ';' [Uses] Block '.'
-    Uses       ::= 'uses' Ident {',' Ident} ';'
-    Block      ::= ['var' VarBlock] 'begin' StmtList 'end'
-    VarBlock   ::= VarDecl {VarDecl}
-    VarDecl    ::= IdentList ':' TypeName ';'
-    StmtList   ::= Stmt {';' Stmt} [';']
-    Stmt       ::= Assignment | ProcCall | empty
-    Assignment ::= Ident ':=' Expr
-    ProcCall   ::= Ident ['(' [ExprList] ')']
-    ExprList   ::= Expr {',' Expr}
-    Expr       ::= Term (('+' | '-') Term)*
-    Term       ::= Factor (('*' | '/') Factor)*
-    Factor     ::= IntLit | StringLit | Ident | '(' Expr ')'
-    TypeName   ::= 'Integer' | 'Boolean' | 'string'
-}
+// Recursive-descent parser for the Phase 1 grammar:
+//   Program    ::= 'program' Ident ';' [Uses] Block '.'
+//   Uses       ::= 'uses' Ident {',' Ident} ';'
+//   Block      ::= ['var' VarBlock] 'begin' StmtList 'end'
+//   VarBlock   ::= VarDecl {VarDecl}
+//   VarDecl    ::= IdentList ':' TypeName ';'
+//   StmtList   ::= Stmt {';' Stmt} [';']
+//   Stmt       ::= Assignment | ProcCall | empty
+//   Assignment ::= Ident ':=' Expr
+//   ProcCall   ::= Ident ['(' [ExprList] ')']
+//   ExprList   ::= Expr {',' Expr}
+//   Expr       ::= Term (('+' | '-') Term)*
+//   Term       ::= Factor (('*' | '/') Factor)*
+//   Factor     ::= IntLit | StringLit | Ident | '(' Expr ')'
+//   TypeName   ::= 'Integer' | 'Boolean' | 'string'
 
 interface
 
@@ -128,7 +127,7 @@ begin
   if not Check(tkIdent) then
     raise EParseError.CreateFmt('Expected unit name after ''uses'' at line %d col %d',
       [FCurrent.Line, FCurrent.Col]);
-  AProg.Uses.Add(FCurrent.Value);
+  AProg.UsedUnits.Add(FCurrent.Value);
   Advance;
   while Check(tkComma) do
   begin
@@ -136,7 +135,7 @@ begin
     if not Check(tkIdent) then
       raise EParseError.CreateFmt('Expected unit name after '','' at line %d col %d',
         [FCurrent.Line, FCurrent.Col]);
-    AProg.Uses.Add(FCurrent.Value);
+    AProg.UsedUnits.Add(FCurrent.Value);
     Advance;
   end;
   Expect(tkSemicolon);

@@ -94,7 +94,7 @@ type
   TProgram = class(TASTNode)
   public
     Name:  string;
-    Uses:  TStringList;  { owned — unit names from uses clause }
+    UsedUnits: TStringList;  { owned — unit names from uses clause }
     Block: TBlock;       { owned }
     constructor Create;
     destructor Destroy; override;
@@ -168,12 +168,12 @@ end;
 constructor TProgram.Create;
 begin
   inherited Create;
-  Uses := TStringList.Create;
+  UsedUnits := TStringList.Create;
 end;
 
 destructor TProgram.Destroy;
 begin
-  Uses.Free;
+  UsedUnits.Free;
   Block.Free;
   inherited Destroy;
 end;
