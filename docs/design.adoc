@@ -1,4 +1,4 @@
-= Modern Object Pascal Compiler — Clean Pascal
+= Blaise — Modern Object Pascal Compiler
 :doctype: article
 :toc: left
 :toclevels: 3
@@ -250,14 +250,14 @@ PasBuild invokes the compiler binary as:
 
 [source,shell]
 ----
-cleanpascal --project project.xml --config debug --output bin/hello
+blaise --project project.xml --config debug --output bin/hello
 ----
 
 Or for single-file compilation during bootstrap:
 
 [source,shell]
 ----
-cleanpascal --source Hello.pas --output bin/hello --target linux-x86_64
+blaise --source Hello.pas --output bin/hello --target linux-x86_64
 ----
 
 Supported flags:

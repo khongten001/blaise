@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project>
-  <name>clean-pascal-compiler</name>
+  <name>blaise-compiler</name>
   <!-- version inherited from root aggregator -->
 
   <build>
     <packaging>application</packaging>
-    <mainSource>CleanPascal.pas</mainSource>
-    <executableName>cleanpascal</executableName>
+    <mainSource>Blaise.pas</mainSource>
+    <executableName>blaise</executableName>
   </build>
 
   <test>

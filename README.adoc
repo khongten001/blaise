@@ -1,4 +1,4 @@
-= Clean Pascal Compiler
+= Blaise
 :toc: left
 :toclevels: 2
 :icons: font
@@ -138,23 +138,23 @@ pasbuild test
 
 [source,shell]
 ----
-pasbuild compile -m clean-pascal-compiler
+pasbuild compile -m blaise-compiler
 ----
 
 === Running the compiler
 
-Once built, the compiler binary is at `compiler/target/cleanpascal`.
+Once built, the compiler binary is at `compiler/target/blaise`.
 
 [source,shell]
 ----
 # Compile a single file
-compiler/target/cleanpascal --source Hello.pas --output Hello
+compiler/target/blaise --source Hello.pas --output Hello
 
 # Compile via project.xml
-compiler/target/cleanpascal --project project.xml --config debug --output myapp
+compiler/target/blaise --project project.xml --config debug --output myapp
 
 # Emit QBE IR (useful for debugging the compiler itself)
-compiler/target/cleanpascal --source Hello.pas --emit-ir
+compiler/target/blaise --source Hello.pas --emit-ir
 ----
 
 == What Is Dropped From Classic Pascal
