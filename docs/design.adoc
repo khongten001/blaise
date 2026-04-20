@@ -623,29 +623,42 @@ Phase 1 (bootstrap pipeline) is complete. Phase 2 type-system work is in progres
 | Done
 | Stack-allocated aggregates; field access via pointer arithmetic
 
-| `class` types (fields only)
+| `class` types with fields and methods
 | Done
-| Heap-allocated; pointer slot; `TypeName.Create` → `malloc`; field access via pointer deref
+| Heap-allocated; `TypeName.Create` → `malloc`; field access via pointer deref;
+  methods with explicit `Self` parameter; single inheritance with field promotion
+
+| `var` parameters (pass-by-reference)
+| Done
+| Caller passes stack address; callee spills pointer, double-dereferences on read,
+  stores through pointer on write; `skVarParameter` in symbol table
+
+| Unit `interface`/`implementation` compilation
+| Done
+| `TUnit` AST node; `ParseUnit`; semantic signature matching (intf vs. impl);
+  `export` prefix on interface-declared functions in QBE IR
 
 | ARC call insertion (compiler side)
 | Done
-| `_StringAddRef`/`_StringRelease` emitted at string assignments and scope exit
+| `_StringAddRef`/`_StringRelease` at string assignments and scope exit;
+  addref on entry and release on exit for string value parameters;
+  `_StringConcat` emitted for `string + string` expressions
 
-| ARC RTL implementations
-| Pending
-| Stub functions needed in RTL; real ref-counting in Phase 3
+| ARC RTL (`blaise_arc.c`)
+| Done
+| Full ref-counting in C; 12-byte header (refcnt/length/capacity) at string pointer;
+  refcnt = −1 marks immortal static literals; `_StringConcat` allocates with
+  refcnt = 0 so the compiler-inserted addref at assignment brings it to 1;
+  `make install` copies `blaise_rtl.a` next to the compiler binary for auto-linking
 
-| `class` methods and virtual dispatch
-| Pending
-| —
+| `try`/`except`/`finally` (IR structure)
+| Partial
+| Basic block structure emitted; `_Raise` RTL stub called; real stack unwinding
+  and ARC cleanup on exception paths requires RTL support (Phase 3)
 
-| `try`/`except`/`finally`
+| Virtual method dispatch
 | Pending
-| —
-
-| Unit interface/implementation compilation
-| Pending
-| —
+| vtable generation and `callv` in QBE IR not yet implemented
 
 | macOS ARM64 target
 | Pending
@@ -654,12 +667,12 @@ Phase 1 (bootstrap pipeline) is complete. Phase 2 type-system work is in progres
 
 === Immediate Next Steps
 
-. Implement ARC RTL stubs (`_StringAddRef`, `_StringRelease`) in C or Blaise Pascal,
-  and wire the compiled RTL object into the link step.
-. Implement `class` methods (procedures/functions bound to a type) and `Self` parameter.
-. Implement virtual method dispatch (vtable generation + `callv` in QBE IR).
-. Implement `try`/`except`/`finally` with ARC cleanup on exception paths.
-. Implement unit `interface`/`implementation` sections and dependency ordering.
+. Implement virtual method dispatch — vtable layout per class, `callv` in QBE IR,
+  and `is`/`as` type tests.
+. Implement `try`/`except`/`finally` with real stack unwinding and ARC cleanup
+  on exception paths (requires RTL landing-pad support).
+. macOS ARM64 target — QBE supports it; compiler driver needs target detection
+  and Darwin-specific link flags.
 
 == Landscape Notes
 
