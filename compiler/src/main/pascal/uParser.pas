@@ -181,11 +181,13 @@ begin
     if Check(tkType) then
       ParseTypeSection(Result);
 
-    while Check(tkVar) do
-      ParseVarBlock(Result);
-
-    while Check(tkProcedure) or Check(tkFunction) do
-      ParseStandaloneDecl(Result);
+    while Check(tkVar) or Check(tkProcedure) or Check(tkFunction) do
+    begin
+      if Check(tkVar) then
+        ParseVarBlock(Result)
+      else
+        ParseStandaloneDecl(Result);
+    end;
 
     Expect(tkBegin);
     ParseStmtList(Result);
@@ -329,12 +331,15 @@ end;
 
 procedure TParser.ParseParamList(AParams: TObjectList);
 var
-  Par:   TMethodParam;
-  I:     Integer;
-  Names: TStringList;
-  TypeN: string;
+  Par:      TMethodParam;
+  I:        Integer;
+  Names:    TStringList;
+  TypeN:    string;
+  IsVarGrp: Boolean;
 begin
   repeat
+    IsVarGrp := Check(tkVar);
+    if IsVarGrp then Advance;
     Names := TStringList.Create;
     try
       if not Check(tkIdent) then
@@ -359,9 +364,10 @@ begin
       Advance;
       for I := 0 to Names.Count - 1 do
       begin
-        Par           := TMethodParam.Create;
-        Par.ParamName := Names[I];
-        Par.TypeName  := TypeN;
+        Par            := TMethodParam.Create;
+        Par.ParamName  := Names[I];
+        Par.TypeName   := TypeN;
+        Par.IsVarParam := IsVarGrp;
         AParams.Add(Par);
       end;
     finally

@@ -450,13 +450,24 @@ end;
 
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
 var
-  ValTemp, OldTemp, QType, StoreInstr: string;
+  ValTemp, OldTemp, QType, StoreInstr, PtrTemp: string;
 begin
   if AAssign.Expr.ResolvedType = nil then
     raise ECodeGenError.CreateFmt(
       'Expression in assignment to ''%s'' has no resolved type', [AAssign.Name]);
 
-  if AAssign.Expr.ResolvedType.IsString then
+  if AAssign.IsVarParam then
+  begin
+    { Var param: load the stored pointer, then store the value through it }
+    QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
+    ValTemp := EmitExpr(AAssign.Expr);
+    PtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_%s', [PtrTemp, AAssign.Name]));
+    if QType = 'w' then StoreInstr := 'storew'
+                   else StoreInstr := 'storel';
+    EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));
+  end
+  else if AAssign.Expr.ResolvedType.IsString then
   begin
     { ARC: load old, compute new, retain new, release old, store new }
     OldTemp := AllocTemp;
@@ -702,7 +713,10 @@ begin
   begin
     Par := TMethodParam(ADecl.Params[I]);
     if Sig <> '' then Sig := Sig + ', ';
-    Sig := Sig + Format('%s %%_par_%s', [QbeTypeOf(Par.ResolvedType), Par.ParamName]);
+    if Par.IsVarParam then
+      Sig := Sig + Format('l %%_par_%s', [Par.ParamName])
+    else
+      Sig := Sig + Format('%s %%_par_%s', [QbeTypeOf(Par.ResolvedType), Par.ParamName]);
   end;
 
   if IsFunc then
@@ -718,17 +732,27 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params[I]);
-    case Par.ResolvedType.Kind of
-      tyInteger, tyUInt32, tyBoolean, tyByte:
-        begin
-          EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
-          EmitLine(Format('  storew %%_par_%s, %%_var_%s',
-            [Par.ParamName, Par.ParamName]));
-        end;
-    else
+    if Par.IsVarParam then
+    begin
+      { Var param: spill the pointer into a local slot }
       EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
       EmitLine(Format('  storel %%_par_%s, %%_var_%s',
         [Par.ParamName, Par.ParamName]));
+    end
+    else
+    begin
+      case Par.ResolvedType.Kind of
+        tyInteger, tyUInt32, tyBoolean, tyByte:
+          begin
+            EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
+            EmitLine(Format('  storew %%_par_%s, %%_var_%s',
+              [Par.ParamName, Par.ParamName]));
+          end;
+      else
+        EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+        EmitLine(Format('  storel %%_par_%s, %%_var_%s',
+          [Par.ParamName, Par.ParamName]));
+      end;
     end;
   end;
 
@@ -793,10 +817,17 @@ begin
     ArgLine := '';
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      Par     := TMethodParam(MDecl.Params[I]);
-      ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+      Par := TMethodParam(MDecl.Params[I]);
       if ArgLine <> '' then ArgLine := ArgLine + ', ';
-      ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+      if Par.IsVarParam then
+        { Pass address of the variable — skip the load }
+        ArgLine := ArgLine + Format('l %%_var_%s',
+          [TIdentExpr(TASTExpr(ACall.Args[I])).Name])
+      else
+      begin
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+        ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+      end;
     end;
     EmitLine(Format('  call $%s(%s)', [ACall.Name, ArgLine]));
     Exit;
@@ -985,7 +1016,18 @@ begin
   else if AExpr is TIdentExpr then
   begin
     T := AllocTemp;
-    if (AExpr.ResolvedType <> nil) and (QbeTypeOf(AExpr.ResolvedType) = 'l') then
+    if TIdentExpr(AExpr).IsVarParam then
+    begin
+      { Var param: load pointer, then dereference }
+      Ptr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [Ptr, TIdentExpr(AExpr).Name]));
+      QType := QbeTypeOf(AExpr.ResolvedType);
+      if QType = 'l' then
+        EmitLine(Format('  %s =l loadl %s', [T, Ptr]))
+      else
+        EmitLine(Format('  %s =w loadw %s', [T, Ptr]));
+    end
+    else if (AExpr.ResolvedType <> nil) and (QbeTypeOf(AExpr.ResolvedType) = 'l') then
     begin
       EmitLine(Format('  %s =l loadl %%_var_%s', [T, TIdentExpr(AExpr).Name]));
     end

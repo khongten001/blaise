@@ -39,7 +39,8 @@ type
 
   TIdentExpr = class(TASTExpr)
   public
-    Name: string;
+    Name:       string;
+    IsVarParam: Boolean;  { set by uSemantic — True if this ident is a var parameter }
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -69,8 +70,9 @@ type
 
   TAssignment = class(TASTStmt)
   public
-    Name: string;
-    Expr: TASTExpr;  { owned }
+    Name:       string;
+    Expr:       TASTExpr;  { owned }
+    IsVarParam: Boolean;   { set by uSemantic — True if target is a var parameter }
     destructor Destroy; override;
   end;
 
@@ -208,6 +210,7 @@ type
   public
     ParamName:    string;
     TypeName:     string;
+    IsVarParam:   Boolean;    { True = passed by reference (var keyword) }
     ResolvedType: TTypeDesc;  { set by uSemantic }
   end;
 

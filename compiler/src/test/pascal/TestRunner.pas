@@ -25,7 +25,8 @@ uses
   cp.test.inherit,
   cp.test.forloop,
   cp.test.exceptions,
-  cp.test.units;
+  cp.test.units,
+  cp.test.varparams;
 
 var
   Application: TTestRunner;

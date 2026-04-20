@@ -445,7 +445,10 @@ begin
         SemanticError(
           Format('Parameter ''%s'' has unresolved type', [Par.ParamName]),
           AMethod.Line, AMethod.Col);
-      Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
+      if Par.IsVarParam then
+        Sym := TSymbol.Create(Par.ParamName, skVarParameter, Par.ResolvedType)
+      else
+        Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
       if not FTable.Define(Sym) then
       begin
         Sym.Free;
@@ -573,7 +576,10 @@ begin
     for I := 0 to ADecl.Params.Count - 1 do
     begin
       Par := TMethodParam(ADecl.Params[I]);
-      Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
+      if Par.IsVarParam then
+        Sym := TSymbol.Create(Par.ParamName, skVarParameter, Par.ResolvedType)
+      else
+        Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
       if not FTable.Define(Sym) then
       begin
         Sym.Free;
@@ -814,10 +820,12 @@ begin
     SemanticError(
       Format('Undeclared variable ''%s''', [AAssign.Name]),
       AAssign.Line, AAssign.Col);
-  if VarSym.Kind <> skVariable then
+  if not (VarSym.Kind in [skVariable, skVarParameter]) then
     SemanticError(
       Format('''%s'' is not a variable', [AAssign.Name]),
       AAssign.Line, AAssign.Col);
+
+  AAssign.IsVarParam := (VarSym.Kind = skVarParameter);
 
   ExprType := AnalyseExpr(AAssign.Expr);
   CheckTypesMatch(VarSym.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
@@ -891,11 +899,27 @@ begin
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
-      Par     := TMethodParam(MDecl.Params[I]);
-      CheckTypesMatch(Par.ResolvedType, ArgType,
-        Format('argument %d of ''%s''', [I + 1, ACall.Name]),
-        ACall.Line, ACall.Col);
+      Par := TMethodParam(MDecl.Params[I]);
+      if Par.IsVarParam then
+      begin
+        { var parameter: argument must be a simple variable }
+        if not (TASTExpr(ACall.Args[I]) is TIdentExpr) then
+          SemanticError(
+            Format('var argument %d of ''%s'' must be a variable',
+              [I + 1, ACall.Name]),
+            ACall.Line, ACall.Col);
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+        CheckTypesMatch(Par.ResolvedType, ArgType,
+          Format('var argument %d of ''%s''', [I + 1, ACall.Name]),
+          ACall.Line, ACall.Col);
+      end
+      else
+      begin
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+        CheckTypesMatch(Par.ResolvedType, ArgType,
+          Format('argument %d of ''%s''', [I + 1, ACall.Name]),
+          ACall.Line, ACall.Col);
+      end;
     end;
     ACall.ResolvedDecl := MDecl;
   end
@@ -1025,6 +1049,7 @@ begin
       SemanticError(
         Format('Undeclared identifier ''%s''', [TIdentExpr(AExpr).Name]),
         AExpr.Line, AExpr.Col);
+    TIdentExpr(AExpr).IsVarParam := (Sym.Kind = skVarParameter);
     Result := Sym.TypeDesc;
   end
   else if AExpr is TFuncCallExpr then

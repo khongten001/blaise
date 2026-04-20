@@ -73,7 +73,8 @@ type
     skType,
     skProcedure,
     skFunction,
-    skParameter
+    skParameter,
+    skVarParameter
   );
 
   TParamDesc = class
