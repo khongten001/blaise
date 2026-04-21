@@ -43,7 +43,7 @@ and an LSP server.
 
 * Bootstrap compiler written in FPC; intermediate FPC features (classes, generics) are
   permitted — the goal is "FPC toolchain is available," not "minimal FPC subset".
-* Phase 1 targets Linux x86_64 only. macOS ARM64 added in Phase 2. Windows in Phase 5 (LLVM).
+* Phase 1 targets Linux x86_64 only. macOS ARM64 added in Phase 5 alongside self-hosting. Windows in Phase 5 (LLVM).
 * TDD throughout: FPTest test suite grows alongside the compiler.
 * Self-hosting is a credibility milestone, not a day-one requirement.
 * No legacy Pascal baggage: no `with` statement, no old-style `object`, no COM GUIDs,
@@ -386,7 +386,6 @@ Integer literals: decimal only in Phase 1. Hex (`$FF`) added in Phase 2.
 * `Integer`, `Int64`, `UInt32`, `Boolean`, `Float64` — no legacy aliases
 * Unit interface/implementation sections with proper dependency ordering
 * Phase 2 RTL additions: `SysUtils` (string utilities), `Classes` (`TObject`, `TList` stub)
-* macOS ARM64 target added in this phase
 
 *Exception handling — ARC co-design:* `try`/`except`/`finally` with stack unwinding.
 ARC and exceptions are co-designed. Algorithm for stack-local ARC cleanup:
@@ -498,11 +497,13 @@ fundamental design incompatibilities too late.
 
 * Compile the compiler's own source with itself (self-hosting)
 * Add LLVM as a second backend (`TCodeGenLLVM implements ICodeGen` — adapter swap)
+* macOS ARM64 support via QBE (Darwin link flags, `libSystem`); fat-binary RTL for
+  `blaise_rtl.a` (x86_64 + ARM64 slices)
 * Windows x86_64 support via LLVM (LLVM handles the Microsoft x64 ABI automatically)
 * CI/CD pipeline: GitHub Actions building for Linux x86_64, macOS ARM64, Windows x86_64
 
-*Milestone:* Compiler binary produced by itself. LLVM backend producing correct
-binaries on all three platforms.
+*Milestone:* Compiler binary produced by itself. QBE backend producing correct
+binaries on Linux x86_64 and macOS ARM64; LLVM backend on Windows x86_64.
 
 === Phase 6 — LSP + VS Code Extension (Months 15–20)
 
@@ -695,15 +696,11 @@ Phase 1 (bootstrap pipeline) is complete. Phase 2 type-system work is in progres
   semantic pass sets `ResolvedMethod := nil` as signal; codegen handles nil
   method as built-in free before normal dispatch path
 
-| macOS ARM64 target
-| Pending
-| —
 |===
 
-=== Immediate Next Steps
-
-. macOS ARM64 target — QBE supports it; compiler driver needs target detection
-  and Darwin-specific link flags.
+Phase 2 is complete. The linked-list milestone (TObject subclass, separate method
+implementations, `Free`, zero valgrind leaks) has been verified on Linux x86_64.
+macOS ARM64 is deferred to Phase 5 alongside self-hosting.
 
 == Landscape Notes
 
