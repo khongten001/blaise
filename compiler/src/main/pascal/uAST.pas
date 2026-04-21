@@ -52,6 +52,20 @@ type
     IsClassAccess:     Boolean;     { set by uSemantic — pointer deref needed }
   end;
 
+  TIsExpr = class(TASTExpr)
+  public
+    Obj:      TASTExpr;  { owned — left-hand side; must be class instance }
+    TypeName: string;    { right-hand side type name; resolved by uSemantic }
+    destructor Destroy; override;
+  end;
+
+  TAsExpr = class(TASTExpr)
+  public
+    Obj:      TASTExpr;  { owned — left-hand side; must be class instance }
+    TypeName: string;    { right-hand side type name; resolved by uSemantic }
+    destructor Destroy; override;
+  end;
+
   TBinaryOp = (boAdd, boSub, boMul, boDiv, boEQ, boNE, boLT, boGT, boLE, boGE);
 
   TBinaryExpr = class(TASTExpr)
@@ -383,6 +397,22 @@ end;
 destructor TRaiseStmt.Destroy;
 begin
   Expr.Free;
+  inherited Destroy;
+end;
+
+{ TIsExpr }
+
+destructor TIsExpr.Destroy;
+begin
+  Obj.Free;
+  inherited Destroy;
+end;
+
+{ TAsExpr }
+
+destructor TAsExpr.Destroy;
+begin
+  Obj.Free;
   inherited Destroy;
 end;
 

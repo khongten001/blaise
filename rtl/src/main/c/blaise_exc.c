@@ -77,3 +77,43 @@ void* _CurrentException(void) {
 void _Reraise(void* exc) {
     _Raise(exc);
 }
+
+/* -----------------------------------------------------------------------
+ * Type identity — is / as operators
+ * ----------------------------------------------------------------------- */
+
+/*
+ * BlaiseTypeInfo — one per class, stored as vtable slot 0.
+ * parent = pointer to parent class TypeInfo, or NULL for root classes.
+ */
+typedef struct BlaiseTypeInfo {
+    const struct BlaiseTypeInfo* parent;
+} BlaiseTypeInfo;
+
+/*
+ * _IsInstance — runtime 'is' check.
+ * Walks the TypeInfo parent chain from the object's own TypeInfo upward.
+ * Returns 1 if the object is an instance of target (or a subclass), else 0.
+ * obj must be non-nil and point to an instance whose first field is the vptr.
+ */
+int _IsInstance(void* obj, const BlaiseTypeInfo* target) {
+    const BlaiseTypeInfo* ti;
+    void** vtable;
+    if (!obj || !target) return 0;
+    vtable = *(void***)obj;      /* obj[0] = vptr */
+    ti     = (const BlaiseTypeInfo*)vtable[0];  /* vtable[0] = typeinfo */
+    while (ti) {
+        if (ti == target) return 1;
+        ti = ti->parent;
+    }
+    return 0;
+}
+
+/*
+ * _Raise_InvalidCast — raised by the 'as' operator when the type check fails.
+ * Phase 2: aborts with a message. Phase 3 will raise EInvalidCast.
+ */
+void _Raise_InvalidCast(void) {
+    /* TODO Phase 3: create EInvalidCast object and call _Raise */
+    abort();
+}

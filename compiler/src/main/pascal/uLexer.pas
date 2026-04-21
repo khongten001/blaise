@@ -46,6 +46,8 @@ type
     tkImplementation,
     tkVirtual,
     tkOverride,
+    tkIs,
+    tkAs,
     { Identifier }
     tkIdent,
     { Arithmetic operators }
@@ -135,6 +137,8 @@ begin
   else if AUpper = 'IMPLEMENTATION' then Result := tkImplementation
   else if AUpper = 'VIRTUAL'        then Result := tkVirtual
   else if AUpper = 'OVERRIDE'       then Result := tkOverride
+  else if AUpper = 'IS'             then Result := tkIs
+  else if AUpper = 'AS'             then Result := tkAs
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;

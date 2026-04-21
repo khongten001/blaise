@@ -961,6 +961,8 @@ var
   Right:  TASTExpr;
   CmpOp:  TBinaryOp;
   Node:   TBinaryExpr;
+  IsNode: TIsExpr;
+  AsNode: TAsExpr;
 begin
   Result := ParseAddSub;
 
@@ -982,6 +984,24 @@ begin
     Node.Left   := Result;
     Node.Right  := Right;
     Result      := Node;
+  end
+  else if Check(tkIs) then
+  begin
+    Advance;
+    IsNode          := TIsExpr.Create;
+    IsNode.Obj      := Result;
+    IsNode.TypeName := FCurrent.Value;
+    Expect(tkIdent);
+    Result := IsNode;
+  end
+  else if Check(tkAs) then
+  begin
+    Advance;
+    AsNode          := TAsExpr.Create;
+    AsNode.Obj      := Result;
+    AsNode.TypeName := FCurrent.Value;
+    Expect(tkIdent);
+    Result := AsNode;
   end;
 end;
 

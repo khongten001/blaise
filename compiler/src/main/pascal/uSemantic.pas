@@ -45,6 +45,8 @@ type
     function  AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
     function  AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
     function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
+    function  AnalyseIsExpr(AExpr: TIsExpr): TTypeDesc;
+    function  AnalyseAsExpr(AExpr: TAsExpr): TTypeDesc;
 
     procedure AnalyseCompoundBody(ABody: TCompoundStmt);
     function  FindMethodDecl(const ATypeName, AMethodName: string): TMethodDecl;
@@ -1111,6 +1113,10 @@ begin
     Result := AnalyseFieldAccess(TFieldAccessExpr(AExpr))
   else if AExpr is TBinaryExpr then
     Result := AnalyseBinaryExpr(TBinaryExpr(AExpr))
+  else if AExpr is TIsExpr then
+    Result := AnalyseIsExpr(TIsExpr(AExpr))
+  else if AExpr is TAsExpr then
+    Result := AnalyseAsExpr(TAsExpr(AExpr))
   else
     SemanticError('Unknown expression node', AExpr.Line, AExpr.Col);
 
@@ -1214,6 +1220,50 @@ begin
     CheckTypesMatch(LType, RType, 'binary expression', ABin.Line, ABin.Col);
     Result := LType;
   end;
+end;
+
+function TSemanticAnalyser.AnalyseIsExpr(AExpr: TIsExpr): TTypeDesc;
+var
+  ObjType:    TTypeDesc;
+  TargetType: TTypeDesc;
+begin
+  ObjType := AnalyseExpr(AExpr.Obj);
+  if ObjType.Kind <> tyClass then
+    SemanticError(
+      Format('''is'' requires a class instance on the left, got ''%s''',
+        [ObjType.Name]),
+      AExpr.Line, AExpr.Col);
+
+  TargetType := FTable.FindType(AExpr.TypeName);
+  if (TargetType = nil) or (TargetType.Kind <> tyClass) then
+    SemanticError(
+      Format('''is'' requires a class type name on the right, got ''%s''',
+        [AExpr.TypeName]),
+      AExpr.Line, AExpr.Col);
+
+  Result := FTable.TypeBoolean;
+end;
+
+function TSemanticAnalyser.AnalyseAsExpr(AExpr: TAsExpr): TTypeDesc;
+var
+  ObjType:    TTypeDesc;
+  TargetType: TTypeDesc;
+begin
+  ObjType := AnalyseExpr(AExpr.Obj);
+  if ObjType.Kind <> tyClass then
+    SemanticError(
+      Format('''as'' requires a class instance on the left, got ''%s''',
+        [ObjType.Name]),
+      AExpr.Line, AExpr.Col);
+
+  TargetType := FTable.FindType(AExpr.TypeName);
+  if (TargetType = nil) or (TargetType.Kind <> tyClass) then
+    SemanticError(
+      Format('''as'' requires a class type name on the right, got ''%s''',
+        [AExpr.TypeName]),
+      AExpr.Line, AExpr.Col);
+
+  Result := TargetType;
 end;
 
 end.

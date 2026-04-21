@@ -29,6 +29,7 @@ type
     procedure EmitDataSection;
     procedure EmitMainHeader;
     procedure EmitMainFooter;
+    procedure EmitTypeInfoDefs(AProg: TProgram);
     procedure EmitVTableDefs(AProg: TProgram);
     procedure EmitMethodDefs(AProg: TProgram);
     procedure EmitMethodDef(const ATypeName: string; AMethod: TMethodDecl);
@@ -53,6 +54,8 @@ type
     procedure EmitProcCall(ACall: TProcCall);
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     function  EmitExpr(AExpr: TASTExpr): string;
+    function  EmitIsExpr(AExpr: TIsExpr): string;
+    function  EmitAsExpr(AExpr: TAsExpr): string;
     function  FieldPtr(const ARecordVar: string; AOffset: Integer): string;
     function  QbeTypeOf(AType: TTypeDesc): string;
     function  QbeEscapeString(const AStr: string): string;
@@ -626,19 +629,15 @@ begin
 
   if MDecl.VTableSlot >= 0 then
   begin
-    { Virtual dispatch: load vptr from instance[0], then load fptr from vtable[slot] }
+    { Virtual dispatch: load vptr from instance[0], then load fptr from vtable.
+      Slot 0 of vtable is typeinfo, so method N is at offset (N+1)*8. }
     VTblTemp := AllocTemp;
     EmitLine(Format('  %s =l loadl %s', [VTblTemp, SelfTemp]));
     FPtrTemp := AllocTemp;
-    SlotOff  := MDecl.VTableSlot * 8;
-    if SlotOff > 0 then
-    begin
-      ArgTemp := AllocTemp;
-      EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
-      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
-    end
-    else
-      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, VTblTemp]));
+    SlotOff  := (MDecl.VTableSlot + 1) * 8;
+    ArgTemp  := AllocTemp;
+    EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
+    EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
     EmitLine(Format('  call %%%s(%s)', [FPtrTemp, ArgLine]));
   end
   else
@@ -754,7 +753,35 @@ begin
   EmitLine('');
 end;
 
+procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
+{ Emit one $typeinfo_T data item per class type.
+  Layout: { l parent_typeinfo_or_zero }
+  TypeInfo is at vtable slot 0; _IsInstance walks parent chain via this ptr. }
+var
+  I:     Integer;
+  TD:    TTypeDecl;
+  TDesc: TTypeDesc;
+  RT:    TRecordTypeDesc;
+begin
+  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+    RT := TRecordTypeDesc(TDesc);
+    if RT.Parent <> nil then
+      EmitLine('data $typeinfo_' + TD.Name +
+               ' = { l $typeinfo_' + RT.Parent.Name + ' }')
+    else
+      EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
+  end;
+  EmitLine('');
+end;
+
 procedure TCodeGenQBE.EmitVTableDefs(AProg: TProgram);
+{ Vtable layout: slot 0 = $typeinfo_T pointer, slots 1..N = virtual method ptrs.
+  Dispatch uses (VTableSlot + 1) * 8 to skip the typeinfo slot. }
 var
   I, S:  Integer;
   TD:    TTypeDecl;
@@ -771,12 +798,12 @@ begin
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     if not RT.HasVTable then Continue;
-    Line := 'data $vtable_' + TD.Name + ' = {';
+    { TypeInfo pointer is always the first vtable entry }
+    Line := 'data $vtable_' + TD.Name + ' = { l $typeinfo_' + TD.Name;
     for S := 0 to RT.VTableCount - 1 do
     begin
-      E := RT.VTableEntryAt(S);
-      if S > 0 then Line := Line + ',';
-      Line := Line + ' l ' + E.ImplName;
+      E    := RT.VTableEntryAt(S);
+      Line := Line + ', l ' + E.ImplName;
     end;
     Line := Line + ' }';
     EmitLine(Line);
@@ -1227,8 +1254,62 @@ begin
     end;
     Result := T;
   end
+  else if AExpr is TIsExpr then
+    Result := EmitIsExpr(TIsExpr(AExpr))
+  else if AExpr is TAsExpr then
+    Result := EmitAsExpr(TAsExpr(AExpr))
   else
     raise ECodeGenError.Create('Unknown expression node type');
+end;
+
+function TCodeGenQBE.EmitIsExpr(AExpr: TIsExpr): string;
+var
+  ObjTemp: string;
+  ResTemp: string;
+begin
+  ObjTemp := EmitExpr(AExpr.Obj);
+  ResTemp := AllocTemp;
+  EmitLine(Format('  %s =w call $_IsInstance(l %s, l $typeinfo_%s)',
+    [ResTemp, ObjTemp, AExpr.TypeName]));
+  Result := ResTemp;
+end;
+
+function TCodeGenQBE.EmitAsExpr(AExpr: TAsExpr): string;
+var
+  ObjTemp:  string;
+  OkTemp:   string;
+  SlotTemp: string;
+  ResTemp:  string;
+  LblOk:    string;
+  LblFail:  string;
+  LblEnd:   string;
+begin
+  ObjTemp  := EmitExpr(AExpr.Obj);
+  SlotTemp := AllocTemp;
+  EmitLine(Format('  %s =l alloc8 1', [SlotTemp]));
+
+  OkTemp  := AllocTemp;
+  LblOk   := AllocLabel('as_ok');
+  LblFail := AllocLabel('as_fail');
+  LblEnd  := AllocLabel('as_end');
+
+  EmitLine(Format('  %s =w call $_IsInstance(l %s, l $typeinfo_%s)',
+    [OkTemp, ObjTemp, AExpr.TypeName]));
+  EmitLine(Format('  jnz %s, @%s, @%s', [OkTemp, LblOk, LblFail]));
+
+  EmitLine('@' + LblFail);
+  EmitLine('  call $_Raise_InvalidCast()');
+  EmitLine(Format('  storel 0, %s', [SlotTemp]));  { unreachable; satisfies SSA }
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  EmitLine('@' + LblOk);
+  EmitLine(Format('  storel %s, %s', [ObjTemp, SlotTemp]));
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  EmitLine('@' + LblEnd);
+  ResTemp := AllocTemp;
+  EmitLine(Format('  %s =l loadl %s', [ResTemp, SlotTemp]));
+  Result := ResTemp;
 end;
 
 function TCodeGenQBE.QbeEscapeString(const AStr: string): string;
@@ -1282,6 +1363,7 @@ begin
     EmitLine('# Source: ' + AProg.Name);
     EmitLine('');
     EmitDataSection;
+    EmitTypeInfoDefs(AProg);
     EmitVTableDefs(AProg);
     FOutput.AddStrings(Body);
   finally

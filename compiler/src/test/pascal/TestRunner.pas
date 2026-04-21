@@ -27,7 +27,8 @@ uses
   cp.test.exceptions,
   cp.test.units,
   cp.test.varparams,
-  cp.test.vtable;
+  cp.test.vtable,
+  cp.test.typetests;
 
 var
   Application: TTestRunner;
