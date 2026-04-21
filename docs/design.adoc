@@ -702,6 +702,110 @@ Phase 2 is complete. The linked-list milestone (TObject subclass, separate metho
 implementations, `Free`, zero valgrind leaks) has been verified on Linux x86_64.
 macOS ARM64 is deferred to Phase 5 alongside self-hosting.
 
+== Phase 3 — Implementation Status
+
+Phase 2 is complete. Phase 3 (type system extensions) is in progress.
+Implementation order: interfaces first, then generics (interface constraints
+are required for correct generic type bounds).
+
+=== Interfaces
+
+[cols="2,1,3", options="header"]
+|===
+| Item | Status | Notes
+
+| Interface declaration parsing
+| Pending
+| `type IFoo = interface ... end;` — methods only, no fields;
+  `interface(IParent)` for inheritance; `['{GUID}']` attribute silently ignored
+  (zero-GUID design)
+
+| TYPEID generation
+| Pending
+| `TYPEID = CRC32(UnitName + '.' + InterfaceName)` emitted as a data constant;
+  used for interface identity checks at runtime
+
+| Interface type in symbol table
+| Pending
+| `TInterfaceTypeDesc` alongside `TRecordTypeDesc`; method signature storage;
+  `implements` relationship on class types
+
+| Semantic: class implements interface
+| Pending
+| Verify all interface methods are present on the class with matching signatures;
+  record `implements` list on `TRecordTypeDesc` for codegen
+
+| Interface vtable (itab) generation
+| Pending
+| Per `(class, interface)` pair: `data $itab_TFoo_IBar = { l $TFoo_Method, ... }`;
+  itab pointer stored as a hidden field alongside the object pointer in interface
+  variable slots
+
+| Interface variable assignment
+| Pending
+| Assigning a class instance to an interface variable loads the matching itab;
+  ARC addref/release on interface variables (same RC string rules)
+
+| Interface method dispatch
+| Pending
+| Load itab pointer from interface var slot; index into itab by method slot;
+  indirect `call %fptr(l obj, ...)` — similar to virtual method dispatch
+
+| `as` cast to interface
+| Pending
+| Checked downcast: verify class implements interface via TYPEID lookup;
+  raise `EInvalidCast` on failure
+
+| `is` test against interface
+| Pending
+| Runtime check: walk class `implements` list for matching TYPEID; return boolean
+
+| RTL: `IInterface` base
+| Pending
+| Minimal `IInterface` declaration in `System.pas` stub:
+  `QueryInterface`, `_AddRef`, `_Release`; Blaise ARC replaces COM ref-counting
+
+|===
+
+=== Generics
+
+[cols="2,1,3", options="header"]
+|===
+| Item | Status | Notes
+
+| Generic type declaration parsing
+| Pending
+| `type TList<T> = class ... end;` — type parameter list; constraint syntax
+  `T: IComparable` (requires interfaces to be complete first)
+
+| Generic method declaration parsing
+| Pending
+| `function Min<T: IComparable>(A, B: T): T;`
+
+| Monomorphization: instantiation registry
+| Pending
+| Demand-driven: on first use of `TList<Integer>`, compiler creates a fully
+  substituted copy of the generic AST and analyses it; registry prevents
+  duplicate instantiations
+
+| Codegen: monomorphized type emission
+| Pending
+| Each instantiation emits its own QBE type and functions with mangled names
+  (e.g., `TList__Integer_`, `TList__Integer__Add`)
+
+| `TList<T>` in RTL
+| Pending
+| Standard dynamic array-backed list; `Add`, `Delete`, `Count`, `Items[I]`
+
+| `TDictionary<K, V>` in RTL
+| Pending
+| Hash-map backed; `Add`, `Remove`, `TryGetValue`, `ContainsKey`
+
+|===
+
+*Phase 3 milestone:* `TList<Integer>` and `TDictionary<string, Integer>` compile
+and pass a functional test suite. A program using both under valgrind shows zero leaks.
+
 == Landscape Notes
 
 * `lacsap`, `mselang`, `wanderlan/llvm-pascal` — all abandoned or incomplete.
