@@ -244,6 +244,7 @@ type
     IsVirtual:          Boolean;     { declared with 'virtual' directive }
     IsOverride:         Boolean;     { declared with 'override' directive }
     VTableSlot:         Integer;     { -1 = static; >=0 = vtable index (set by uSemantic) }
+    TypeParams:         TStringList; { non-nil = generic function template; owns param names }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -284,6 +285,16 @@ type
   public
     ParamNames: TStringList;   { owned — type parameter names, e.g. ['T'] or ['K','V'] }
     ClassDef:   TClassTypeDef; { owned — template class body with unresolved param types }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  { One concrete instantiation of a standalone generic function — stored on TProgram.
+    Codegen iterates this list to emit function bodies. }
+  TGenericFuncInstance = class
+  public
+    InstName:   string;       { raw name e.g. 'Identity<Integer>' }
+    MethodDecl: TMethodDecl;  { owned — concrete method decl with substituted types }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -330,11 +341,12 @@ type
 
   TProgram = class(TASTNode)
   public
-    Name:             string;
-    UsedUnits:        TStringList;    { owned }
-    Block:            TBlock;         { owned }
-    SymbolTable:      TSymbolTable;   { owned after semantic analysis; nil before }
-    GenericInstances: TObjectList;    { owned TGenericInstance — populated by uSemantic }
+    Name:                 string;
+    UsedUnits:            TStringList;    { owned }
+    Block:                TBlock;         { owned }
+    SymbolTable:          TSymbolTable;   { owned after semantic analysis; nil before }
+    GenericInstances:     TObjectList;    { owned TGenericInstance — populated by uSemantic }
+    GenericFuncInstances: TObjectList;    { owned TGenericFuncInstance — populated by uSemantic }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -583,6 +595,7 @@ end;
 destructor TMethodDecl.Destroy;
 begin
   Params.Free;
+  TypeParams.Free;
   if OwnBody then Body.Free;
   inherited Destroy;
 end;
@@ -653,6 +666,21 @@ end;
 
 { TGenericInstance }
 
+{ TGenericFuncInstance }
+
+constructor TGenericFuncInstance.Create;
+begin
+  inherited Create;
+end;
+
+destructor TGenericFuncInstance.Destroy;
+begin
+  MethodDecl.Free;
+  inherited Destroy;
+end;
+
+{ TGenericInstance }
+
 constructor TGenericInstance.Create;
 begin
   inherited Create;
@@ -698,12 +726,14 @@ end;
 constructor TProgram.Create;
 begin
   inherited Create;
-  UsedUnits        := TStringList.Create;
-  GenericInstances := TObjectList.Create(True);
+  UsedUnits            := TStringList.Create;
+  GenericInstances     := TObjectList.Create(True);
+  GenericFuncInstances := TObjectList.Create(True);
 end;
 
 destructor TProgram.Destroy;
 begin
+  GenericFuncInstances.Free;
   GenericInstances.Free;
   SymbolTable.Free;
   UsedUnits.Free;

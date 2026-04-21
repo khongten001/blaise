@@ -22,14 +22,18 @@ type
 
   TSemanticAnalyser = class
   private
-    FTable:       TSymbolTable;
-    FProg:        TProgram;      { current program being analysed; set in Analyse }
-    FMethodIndex: TStringList;  { 'TypeName.MethodName' → TMethodDecl (not owned) }
-    FProcIndex:   TStringList;  { 'ProcName' → TMethodDecl (not owned) }
+    FTable:                TSymbolTable;
+    FProg:                 TProgram;      { current program being analysed; set in Analyse }
+    FMethodIndex:          TStringList;  { 'TypeName.MethodName' → TMethodDecl (not owned) }
+    FProcIndex:            TStringList;  { 'ProcName' → TMethodDecl (not owned) }
+    FGenericFuncTemplates: TStringList;  { base name → TMethodDecl template (not owned) }
 
     { Generic type instantiation: resolves 'TBox<Integer>' on demand. }
     function  FindTypeOrInstantiate(const AName: string): TTypeDesc;
     function  InstantiateGeneric(const ATypeName: string): TRecordTypeDesc;
+
+    { Generic function instantiation: resolves 'Identity<Integer>' on demand. }
+    function  InstantiateGenericFunc(const AInstName: string): TMethodDecl;
 
     procedure AnalyseBlock(ABlock: TBlock);
     procedure AnalyseTypeDecls(ABlock: TBlock);
@@ -74,15 +78,18 @@ implementation
 constructor TSemanticAnalyser.Create;
 begin
   inherited Create;
-  FTable       := TSymbolTable.Create;
-  FMethodIndex := TStringList.Create;
+  FTable                := TSymbolTable.Create;
+  FMethodIndex          := TStringList.Create;
   FMethodIndex.CaseSensitive := False;
-  FProcIndex   := TStringList.Create;
+  FProcIndex            := TStringList.Create;
   FProcIndex.CaseSensitive := False;
+  FGenericFuncTemplates := TStringList.Create;
+  FGenericFuncTemplates.CaseSensitive := False;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
+  FGenericFuncTemplates.Free;
   FProcIndex.Free;
   FMethodIndex.Free;
   FTable.Free;
@@ -534,6 +541,115 @@ begin
   end;
 end;
 
+function TSemanticAnalyser.InstantiateGenericFunc(const AInstName: string): TMethodDecl;
+var
+  BracPos:     Integer;
+  BaseName:    string;
+  ArgsStr:     string;
+  Args:        TStringList;
+  Templ:       TMethodDecl;
+  TemplIdx:    Integer;
+  NewMDecl:    TMethodDecl;
+  NewPar:      TMethodParam;
+  OldPar:      TMethodParam;
+  ParTypeName: string;
+  RetTypeName: string;
+  SubstType:   TTypeDesc;
+  I, J:        Integer;
+  Sym:         TSymbol;
+  GFI:         TGenericFuncInstance;
+begin
+  Result := nil;
+
+  { Parse 'Identity<Integer>' → BaseName='Identity', ArgsStr='Integer' }
+  BracPos := Pos('<', AInstName);
+  if BracPos = 0 then Exit;
+
+  BaseName := Copy(AInstName, 1, BracPos - 1);
+  ArgsStr  := Copy(AInstName, BracPos + 1, Length(AInstName) - BracPos - 1);
+
+  TemplIdx := FGenericFuncTemplates.IndexOf(BaseName);
+  if TemplIdx < 0 then Exit;  { not a known generic function template }
+
+  Templ := TMethodDecl(FGenericFuncTemplates.Objects[TemplIdx]);
+
+  Args := TStringList.Create;
+  try
+    Args.StrictDelimiter := True;
+    Args.Delimiter       := ',';
+    Args.DelimitedText   := ArgsStr;
+    for I := 0 to Args.Count - 1 do
+      Args[I] := Trim(Args[I]);
+
+    if Args.Count <> Templ.TypeParams.Count then
+      SemanticError(
+        Format('Generic function ''%s'' expects %d type parameter(s) but got %d',
+          [BaseName, Templ.TypeParams.Count, Args.Count]),
+        0, 0);
+
+    NewMDecl         := TMethodDecl.Create;
+    NewMDecl.Name    := AInstName;
+    NewMDecl.OwnBody := False;   { share the template body }
+    NewMDecl.Body    := Templ.Body;
+
+    { Substitute return type }
+    RetTypeName := Templ.ReturnTypeName;
+    for I := 0 to Templ.TypeParams.Count - 1 do
+      if SameText(RetTypeName, Templ.TypeParams[I]) then
+        RetTypeName := Args[I];
+    NewMDecl.ReturnTypeName := RetTypeName;
+    if RetTypeName <> '' then
+    begin
+      SubstType := FindTypeOrInstantiate(RetTypeName);
+      if SubstType = nil then
+        SemanticError(Format('Unknown type ''%s'' in generic function instance ''%s''',
+          [RetTypeName, AInstName]), 0, 0);
+      NewMDecl.ResolvedReturnType := SubstType;
+    end;
+
+    { Clone params with substituted types }
+    for I := 0 to Templ.Params.Count - 1 do
+    begin
+      OldPar           := TMethodParam(Templ.Params[I]);
+      NewPar           := TMethodParam.Create;
+      NewPar.ParamName  := OldPar.ParamName;
+      NewPar.IsVarParam := OldPar.IsVarParam;
+      ParTypeName       := OldPar.TypeName;
+      for J := 0 to Templ.TypeParams.Count - 1 do
+        if SameText(ParTypeName, Templ.TypeParams[J]) then
+          ParTypeName := Args[J];
+      NewPar.TypeName := ParTypeName;
+      SubstType := FindTypeOrInstantiate(ParTypeName);
+      if SubstType = nil then
+        SemanticError(Format('Unknown type ''%s'' for parameter ''%s'' in ''%s''',
+          [ParTypeName, NewPar.ParamName, AInstName]), 0, 0);
+      NewPar.ResolvedType := SubstType;
+      NewMDecl.Params.Add(NewPar);
+    end;
+
+    { Analyse the shared body with concrete types in scope }
+    AnalyseStandaloneDecl(NewMDecl);
+
+    { Register in proc index and global symbol table }
+    FProcIndex.AddObject(AInstName, NewMDecl);
+    if NewMDecl.ReturnTypeName <> '' then
+      Sym := TSymbol.Create(AInstName, skFunction, NewMDecl.ResolvedReturnType)
+    else
+      Sym := TSymbol.Create(AInstName, skProcedure, nil);
+    FTable.DefineGlobal(Sym);
+
+    { Store for codegen }
+    GFI            := TGenericFuncInstance.Create;
+    GFI.InstName   := AInstName;
+    GFI.MethodDecl := NewMDecl;
+    FProg.GenericFuncInstances.Add(GFI);
+
+    Result := NewMDecl;
+  finally
+    Args.Free;
+  end;
+end;
+
 procedure TSemanticAnalyser.AnalyseBlock(ABlock: TBlock);
 begin
   { Type declarations are registered in the outer scope so they remain visible
@@ -953,6 +1069,12 @@ begin
     ADecl := TMethodDecl(ABlock.ProcDecls[I]);
     { Class method implementations have their body transferred; skip them here }
     if ADecl.OwnerTypeName <> '' then Continue;
+    { Generic function templates — registered for on-demand instantiation }
+    if ADecl.TypeParams <> nil then
+    begin
+      FGenericFuncTemplates.AddObject(ADecl.Name, ADecl);
+      Continue;
+    end;
 
     { Resolve parameter types }
     for J := 0 to ADecl.Params.Count - 1 do
@@ -1046,6 +1168,8 @@ begin
     ADecl := TMethodDecl(ABlock.ProcDecls[I]);
     { Class method implementations have their body transferred; skip them here }
     if ADecl.OwnerTypeName <> '' then Continue;
+    { Generic templates are instantiated on demand — skip until first call }
+    if ADecl.TypeParams <> nil then Continue;
     AnalyseStandaloneDecl(ADecl);
   end;
 end;
@@ -1374,9 +1498,16 @@ var
 begin
   Sym := FTable.Lookup(ACall.Name);
   if Sym = nil then
-    SemanticError(
-      Format('Undeclared procedure ''%s''', [ACall.Name]),
-      ACall.Line, ACall.Col);
+  begin
+    { Try on-demand instantiation of a generic function }
+    if Pos('<', ACall.Name) > 0 then
+      InstantiateGenericFunc(ACall.Name);
+    Sym := FTable.Lookup(ACall.Name);
+    if Sym = nil then
+      SemanticError(
+        Format('Undeclared procedure ''%s''', [ACall.Name]),
+        ACall.Line, ACall.Col);
+  end;
   if not (Sym.Kind in [skProcedure, skFunction]) then
     SemanticError(
       Format('''%s'' is not a procedure or function', [ACall.Name]),
@@ -1437,9 +1568,16 @@ var
 begin
   Sym := FTable.Lookup(AExpr.Name);
   if Sym = nil then
-    SemanticError(
-      Format('Undeclared function ''%s''', [AExpr.Name]),
-      AExpr.Line, AExpr.Col);
+  begin
+    { Try on-demand instantiation of a generic function }
+    if Pos('<', AExpr.Name) > 0 then
+      InstantiateGenericFunc(AExpr.Name);
+    Sym := FTable.Lookup(AExpr.Name);
+    if Sym = nil then
+      SemanticError(
+        Format('Undeclared function ''%s''', [AExpr.Name]),
+        AExpr.Line, AExpr.Col);
+  end;
   if Sym.Kind <> skFunction then
     SemanticError(
       Format('''%s'' is not a function', [AExpr.Name]),

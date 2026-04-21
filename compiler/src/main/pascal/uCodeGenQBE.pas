@@ -1095,7 +1095,7 @@ var
   ValTemp:  string;
   Prefix:   string;
 begin
-  FuncName := '$' + ADecl.Name;
+  FuncName := '$' + QBEMangle(ADecl.Name);
   IsFunc   := ADecl.ResolvedReturnType <> nil;
   if AExported then Prefix := 'export ' else Prefix := '';
 
@@ -1216,11 +1216,16 @@ begin
   for I := 0 to AProg.Block.ProcDecls.Count - 1 do
   begin
     Decl := TMethodDecl(AProg.Block.ProcDecls[I]);
-    { Class method impls (OwnerTypeName != '') had their body transferred to the
-      class method decl — skip them here; EmitMethodDefs handles them. }
+    { Class method impls had their body transferred — skip here. }
     if Decl.OwnerTypeName <> '' then Continue;
+    { Generic templates — concrete instances are emitted via GenericFuncInstances. }
+    if Decl.TypeParams <> nil then Continue;
     EmitStandaloneDef(Decl);
   end;
+  { Emit each concrete generic function instance }
+  for I := 0 to AProg.GenericFuncInstances.Count - 1 do
+    EmitStandaloneDef(
+      TGenericFuncInstance(AProg.GenericFuncInstances[I]).MethodDecl);
 end;
 
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
@@ -1251,7 +1256,7 @@ begin
         ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
-    EmitLine(Format('  call $%s(%s)', [ACall.Name, ArgLine]));
+    EmitLine(Format('  call $%s(%s)', [QBEMangle(ACall.Name), ArgLine]));
     Exit;
   end;
 
@@ -1331,7 +1336,7 @@ begin
     begin
       MDecl    := TMethodDecl(ResolvedDecl);
       QType    := QbeTypeOf(MDecl.ResolvedReturnType);
-      FuncName := '$' + Name;
+      FuncName := '$' + QBEMangle(Name);
       ArgLine  := '';
       for I := 0 to Args.Count - 1 do
       begin

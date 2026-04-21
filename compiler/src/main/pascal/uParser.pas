@@ -444,6 +444,27 @@ begin
         [FCurrent.Line, FCurrent.Col]);
     Result.Name := FCurrent.Value;
     Advance;
+    { Generic function: 'function Identity<T>(...)' — parse type param list }
+    if Check(tkLessThan) and (PeekKind = tkIdent) then
+    begin
+      Result.TypeParams := TStringList.Create;
+      Advance;  { consume '<' }
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected type parameter name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.TypeParams.Add(FCurrent.Value);
+      Advance;
+      while Check(tkComma) do
+      begin
+        Advance;
+        if not Check(tkIdent) then
+          raise EParseError.CreateFmt('Expected type parameter name at line %d col %d',
+            [FCurrent.Line, FCurrent.Col]);
+        Result.TypeParams.Add(FCurrent.Value);
+        Advance;
+      end;
+      Expect(tkGreaterThan);
+    end;
     { Qualified name: TypeName.MethodName (standalone class method implementation) }
     if Check(tkDot) then
     begin
@@ -1286,10 +1307,10 @@ begin
           end;
           Expect(tkGreaterThan);
           Name := Name + '>';
-          { Generic type args must be followed by '.' (constructor or class method) }
-          if not Check(tkDot) then
+          { Generic type args must be followed by '.' (type access) or '(' (generic func call) }
+          if not (Check(tkDot) or Check(tkLParen)) then
             raise EParseError.CreateFmt(
-              'Expected ''.'' after generic type arguments at line %d col %d',
+              'Expected ''.'' or ''('' after generic type arguments at line %d col %d',
               [FCurrent.Line, FCurrent.Col]);
         end;
         if Check(tkDot) then

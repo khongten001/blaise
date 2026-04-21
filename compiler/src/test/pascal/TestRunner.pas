@@ -31,7 +31,8 @@ uses
   cp.test.typetests,
   cp.test.interfaces,
   cp.test.generics,
-  cp.test.properties;
+  cp.test.properties,
+  cp.test.genericfuncs;
 
 var
   Application: TTestRunner;
