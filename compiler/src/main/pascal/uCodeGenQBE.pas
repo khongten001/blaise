@@ -1407,7 +1407,19 @@ begin
       { Store vtable pointer at offset 0 if this class has virtual methods }
       if TRecordTypeDesc(FldAccess.ResolvedType).HasVTable then
         EmitLine(Format('  storel $vtable_%s, %s',
-          [FldAccess.ResolvedType.Name, T]));
+          [QBEMangle(FldAccess.ResolvedType.Name), T]));
+      Result := T;
+    end
+    else if FldAccess.PropRead <> nil then
+    begin
+      { Method-backed property read: load Self pointer and call getter }
+      L := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [L, FldAccess.RecordName]));
+      T     := AllocTemp;
+      QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
+      EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+        [T, QType, QBEMangle(FldAccess.PropOwnerType),
+         FldAccess.PropRead.ReadMethod, L]));
       Result := T;
     end
     else if FldAccess.IsClassAccess then

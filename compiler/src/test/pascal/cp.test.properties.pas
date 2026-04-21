@@ -1,0 +1,424 @@
+unit cp.test.properties;
+
+{$mode objfpc}{$H+}
+
+{ Tests for Pascal property declarations — field-backed and method-backed.
+  Properties are transparent syntactic sugar: reads and writes redirect to
+  a backing field or method accessor. }
+
+interface
+
+uses
+  Classes, SysUtils, StrUtils, fpcunit, testregistry,
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+
+type
+  TPropertyTests = class(TTestCase)
+  private
+    function ParseSrc(const ASrc: string): TProgram;
+    function AnalyseSrc(const ASrc: string): TProgram;
+    function GenIR(const ASrc: string): string;
+    procedure AnalyseExpectError(const ASrc: string);
+  published
+    { ------------------------------------------------------------------ }
+    { Parser                                                               }
+    { ------------------------------------------------------------------ }
+    procedure TestParse_Property_FieldBackedReadOnly;
+    procedure TestParse_Property_FieldBackedReadWrite;
+    procedure TestParse_Property_MethodBackedRead;
+    procedure TestParse_Property_MethodBackedReadWrite;
+    procedure TestParse_Property_CountInClassDef;
+
+    { ------------------------------------------------------------------ }
+    { Semantic — field-backed                                              }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_Property_FieldBacked_OK;
+    procedure TestSemantic_Property_FieldBacked_TypeResolved;
+    procedure TestSemantic_Property_ReadOnly_WriteRaisesError;
+    procedure TestSemantic_Property_ReadWrite_OK;
+
+    { ------------------------------------------------------------------ }
+    { Semantic — method-backed                                             }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_Property_MethodBacked_OK;
+    procedure TestSemantic_Property_MethodBacked_TypeResolved;
+
+    { ------------------------------------------------------------------ }
+    { Codegen — field-backed                                               }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_Property_FieldBacked_Read_EmitsLoad;
+    procedure TestCodegen_Property_FieldBacked_Write_EmitsStore;
+
+    { ------------------------------------------------------------------ }
+    { Codegen — method-backed                                              }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_Property_MethodBacked_Read_EmitsCall;
+  end;
+
+implementation
+
+{ ------------------------------------------------------------------ }
+{ Source constants                                                     }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcFieldBackedReadOnly =
+    'program P;'                           + LineEnding +
+    'type'                                 + LineEnding +
+    '  TBox = class'                       + LineEnding +
+    '    FCount: Integer;'                 + LineEnding +
+    '    property Count: Integer read FCount;' + LineEnding +
+    '  end;'                               + LineEnding +
+    'begin'                                + LineEnding +
+    'end.';
+
+  SrcFieldBackedReadWrite =
+    'program P;'                                          + LineEnding +
+    'type'                                                + LineEnding +
+    '  TBox = class'                                      + LineEnding +
+    '    FValue: Integer;'                                + LineEnding +
+    '    property Value: Integer read FValue write FValue;' + LineEnding +
+    '  end;'                                              + LineEnding +
+    'begin'                                               + LineEnding +
+    'end.';
+
+  SrcMethodBackedRead =
+    'program P;'                               + LineEnding +
+    'type'                                     + LineEnding +
+    '  TBox = class'                           + LineEnding +
+    '    FCount: Integer;'                     + LineEnding +
+    '    function GetCount: Integer;'          + LineEnding +
+    '    begin'                                + LineEnding +
+    '      Result := Self.FCount'              + LineEnding +
+    '    end;'                                 + LineEnding +
+    '    property Count: Integer read GetCount;' + LineEnding +
+    '  end;'                                   + LineEnding +
+    'begin'                                    + LineEnding +
+    'end.';
+
+  SrcMethodBackedReadWrite =
+    'program P;'                                            + LineEnding +
+    'type'                                                  + LineEnding +
+    '  TBox = class'                                        + LineEnding +
+    '    FValue: Integer;'                                  + LineEnding +
+    '    function GetValue: Integer;'                       + LineEnding +
+    '    begin'                                             + LineEnding +
+    '      Result := Self.FValue'                           + LineEnding +
+    '    end;'                                              + LineEnding +
+    '    procedure SetValue(AVal: Integer);'                + LineEnding +
+    '    begin'                                             + LineEnding +
+    '      Self.FValue := AVal'                             + LineEnding +
+    '    end;'                                              + LineEnding +
+    '    property Value: Integer read GetValue write SetValue;' + LineEnding +
+    '  end;'                                                + LineEnding +
+    'begin'                                                 + LineEnding +
+    'end.';
+
+  SrcFieldBackedUsage =
+    'program P;'                                          + LineEnding +
+    'type'                                                + LineEnding +
+    '  TBox = class'                                      + LineEnding +
+    '    FValue: Integer;'                                + LineEnding +
+    '    property Value: Integer read FValue write FValue;' + LineEnding +
+    '  end;'                                              + LineEnding +
+    'var B: TBox;'                                        + LineEnding +
+    'begin'                                               + LineEnding +
+    '  B := TBox.Create;'                                 + LineEnding +
+    '  B.Value := 42;'                                    + LineEnding +
+    '  WriteLn(B.Value)'                                  + LineEnding +
+    'end.';
+
+  SrcMethodBackedReadUsage =
+    'program P;'                               + LineEnding +
+    'type'                                     + LineEnding +
+    '  TBox = class'                           + LineEnding +
+    '    FCount: Integer;'                     + LineEnding +
+    '    function GetCount: Integer;'          + LineEnding +
+    '    begin'                                + LineEnding +
+    '      Result := Self.FCount'              + LineEnding +
+    '    end;'                                 + LineEnding +
+    '    property Count: Integer read GetCount;' + LineEnding +
+    '  end;'                                   + LineEnding +
+    'var B: TBox;'                             + LineEnding +
+    'begin'                                    + LineEnding +
+    '  B := TBox.Create;'                      + LineEnding +
+    '  WriteLn(B.Count)'                       + LineEnding +
+    'end.';
+
+{ ------------------------------------------------------------------ }
+{ Helpers                                                             }
+{ ------------------------------------------------------------------ }
+
+function TPropertyTests.ParseSrc(const ASrc: string): TProgram;
+var
+  L: TLexer;
+  P: TParser;
+begin
+  L := TLexer.Create(ASrc);
+  P := TParser.Create(L);
+  try
+    Result := P.Parse;
+  finally
+    P.Free;
+    L.Free;
+  end;
+end;
+
+function TPropertyTests.AnalyseSrc(const ASrc: string): TProgram;
+var
+  SA: TSemanticAnalyser;
+begin
+  Result := ParseSrc(ASrc);
+  SA     := TSemanticAnalyser.Create;
+  try
+    SA.Analyse(Result);
+  finally
+    SA.Free;
+  end;
+end;
+
+function TPropertyTests.GenIR(const ASrc: string): string;
+var
+  CG:   TCodeGenQBE;
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(ASrc);
+  CG   := TCodeGenQBE.Create;
+  try
+    CG.Generate(Prog);
+    Result := CG.GetOutput;
+  finally
+    CG.Free;
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.AnalyseExpectError(const ASrc: string);
+var
+  Prog: TProgram;
+  SA:   TSemanticAnalyser;
+begin
+  Prog := ParseSrc(ASrc);
+  SA   := TSemanticAnalyser.Create;
+  try
+    try
+      SA.Analyse(Prog);
+      Fail('Expected ESemanticError but none was raised');
+    except
+      on E: ESemanticError do { expected };
+    end;
+  finally
+    SA.Free;
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Parser tests                                                         }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestParse_Property_FieldBackedReadOnly;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  PD:   TPropertyDecl;
+begin
+  Prog := ParseSrc(SrcFieldBackedReadOnly);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('one property', 1, CD.Properties.Count);
+    PD := TPropertyDecl(CD.Properties[0]);
+    AssertEquals('property name', 'Count', PD.Name);
+    AssertEquals('type name', 'Integer', PD.TypeName);
+    AssertEquals('read name', 'FCount', PD.ReadName);
+    AssertEquals('write name empty', '', PD.WriteName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestParse_Property_FieldBackedReadWrite;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  PD:   TPropertyDecl;
+begin
+  Prog := ParseSrc(SrcFieldBackedReadWrite);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    PD := TPropertyDecl(CD.Properties[0]);
+    AssertEquals('property name', 'Value', PD.Name);
+    AssertEquals('read name', 'FValue', PD.ReadName);
+    AssertEquals('write name', 'FValue', PD.WriteName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestParse_Property_MethodBackedRead;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  PD:   TPropertyDecl;
+begin
+  Prog := ParseSrc(SrcMethodBackedRead);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('one property', 1, CD.Properties.Count);
+    PD := TPropertyDecl(CD.Properties[0]);
+    AssertEquals('property name', 'Count', PD.Name);
+    AssertEquals('read name', 'GetCount', PD.ReadName);
+    AssertEquals('write name empty', '', PD.WriteName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestParse_Property_MethodBackedReadWrite;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  PD:   TPropertyDecl;
+begin
+  Prog := ParseSrc(SrcMethodBackedReadWrite);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    PD := TPropertyDecl(CD.Properties[0]);
+    AssertEquals('read name', 'GetValue', PD.ReadName);
+    AssertEquals('write name', 'SetValue', PD.WriteName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestParse_Property_CountInClassDef;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+begin
+  Prog := ParseSrc(SrcMethodBackedReadWrite);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('one field', 1, CD.Fields.Count);
+    AssertEquals('two methods', 2, CD.Methods.Count);
+    AssertEquals('one property', 1, CD.Properties.Count);
+  finally
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Semantic — field-backed                                              }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestSemantic_Property_FieldBacked_OK;
+begin
+  AnalyseSrc(SrcFieldBackedReadWrite).Free;
+end;
+
+procedure TPropertyTests.TestSemantic_Property_FieldBacked_TypeResolved;
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+  PI:   TPropertyInfo;
+begin
+  Prog := AnalyseSrc(SrcFieldBackedReadWrite);
+  try
+    RT := TRecordTypeDesc(Prog.SymbolTable.FindType('TBox'));
+    AssertNotNull('TBox found', RT);
+    PI := RT.FindProperty('Value');
+    AssertNotNull('Value property found', PI);
+    AssertEquals('type is tyInteger', Ord(tyInteger), Ord(PI.TypeDesc.Kind));
+    AssertEquals('read field is FValue', 'FValue', PI.ReadField);
+    AssertEquals('write field is FValue', 'FValue', PI.WriteField);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestSemantic_Property_ReadOnly_WriteRaisesError;
+begin
+  AnalyseExpectError(
+    'program P;'                                  + LineEnding +
+    'type TBox = class'                           + LineEnding +
+    '  FCount: Integer;'                          + LineEnding +
+    '  property Count: Integer read FCount;'      + LineEnding +
+    'end;'                                        + LineEnding +
+    'var B: TBox;'                                + LineEnding +
+    'begin B := TBox.Create; B.Count := 5 end.'
+  );
+end;
+
+procedure TPropertyTests.TestSemantic_Property_ReadWrite_OK;
+begin
+  AnalyseSrc(SrcFieldBackedUsage).Free;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Semantic — method-backed                                             }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestSemantic_Property_MethodBacked_OK;
+begin
+  AnalyseSrc(SrcMethodBackedReadUsage).Free;
+end;
+
+procedure TPropertyTests.TestSemantic_Property_MethodBacked_TypeResolved;
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+  PI:   TPropertyInfo;
+begin
+  Prog := AnalyseSrc(SrcMethodBackedRead);
+  try
+    RT := TRecordTypeDesc(Prog.SymbolTable.FindType('TBox'));
+    PI := RT.FindProperty('Count');
+    AssertNotNull('Count property found', PI);
+    AssertEquals('type is tyInteger', Ord(tyInteger), Ord(PI.TypeDesc.Kind));
+    AssertEquals('read field empty', '', PI.ReadField);
+    AssertEquals('read method is GetCount', 'GetCount', PI.ReadMethod);
+  finally
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Codegen — field-backed                                               }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestCodegen_Property_FieldBacked_Read_EmitsLoad;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcFieldBackedUsage);
+  { B.Value read → loads FValue field (offset=8, after vptr) }
+  AssertTrue('IR emitted for field-backed read', Pos('loadw', IR) > 0);
+end;
+
+procedure TPropertyTests.TestCodegen_Property_FieldBacked_Write_EmitsStore;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcFieldBackedUsage);
+  { B.Value := 42 → stores to FValue field }
+  AssertTrue('IR emitted for field-backed write', Pos('storew', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Codegen — method-backed                                              }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestCodegen_Property_MethodBacked_Read_EmitsCall;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcMethodBackedReadUsage);
+  { B.Count → calls $TBox_GetCount }
+  AssertTrue('method-backed read emits call to GetCount',
+    Pos('TBox_GetCount', IR) > 0);
+end;
+
+initialization
+  RegisterTest(TPropertyTests);
+
+end.

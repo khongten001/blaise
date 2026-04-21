@@ -59,6 +59,7 @@ type
     function  ParseClassDef: TClassTypeDef;
     function  ParseInterfaceDef: TInterfaceTypeDef;
     procedure ParseFieldDecl(AFields: TObjectList);
+    function  ParsePropertyDecl: TPropertyDecl;
     function  ParseMethodDecl(IsFunction: Boolean): TMethodDecl;
     procedure ParseParamList(AParams: TObjectList);
     procedure ParseStandaloneDecl(ABlock: TBlock);
@@ -377,15 +378,19 @@ begin
       end;
       Expect(tkRParen);
     end;
-    while Check(tkIdent) do
-      ParseFieldDecl(Result.Fields);
-    while Check(tkProcedure) or Check(tkFunction) do
-    begin
-      if Check(tkFunction) then
+    { Class body: fields, properties, and methods in any order }
+    repeat
+      if Check(tkIdent) and SameText(FCurrent.Value, 'property') then
+        Result.Properties.Add(ParsePropertyDecl)
+      else if Check(tkIdent) then
+        ParseFieldDecl(Result.Fields)
+      else if Check(tkFunction) then
         Result.Methods.Add(ParseMethodDecl(True))
+      else if Check(tkProcedure) then
+        Result.Methods.Add(ParseMethodDecl(False))
       else
-        Result.Methods.Add(ParseMethodDecl(False));
-    end;
+        Break;
+    until False;
     Expect(tkEnd);
   except
     Result.Free;
@@ -543,6 +548,47 @@ begin
   IsFunc := Check(tkFunction);
   MD     := ParseMethodDecl(IsFunc);
   ABlock.ProcDecls.Add(MD);
+end;
+
+function TParser.ParsePropertyDecl: TPropertyDecl;
+begin
+  Result := TPropertyDecl.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Advance;  { consume 'property' identifier }
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected property name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.Name := FCurrent.Value;
+    Advance;
+    Expect(tkColon);
+    Result.TypeName := ParseTypeName;
+    { Optional: read Accessor }
+    if Check(tkIdent) and SameText(FCurrent.Value, 'read') then
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected read accessor name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.ReadName := FCurrent.Value;
+      Advance;
+    end;
+    { Optional: write Accessor }
+    if Check(tkIdent) and SameText(FCurrent.Value, 'write') then
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected write accessor name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.WriteName := FCurrent.Value;
+      Advance;
+    end;
+    Expect(tkSemicolon);
+  except
+    Result.Free;
+    raise;
+  end;
 end;
 
 procedure TParser.ParseFieldDecl(AFields: TObjectList);

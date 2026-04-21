@@ -30,7 +30,8 @@ uses
   cp.test.vtable,
   cp.test.typetests,
   cp.test.interfaces,
-  cp.test.generics;
+  cp.test.generics,
+  cp.test.properties;
 
 var
   Application: TTestRunner;

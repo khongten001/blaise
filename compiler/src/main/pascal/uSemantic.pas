@@ -580,6 +580,9 @@ var
   IntfName:   string;
   IntfSym:    TSymbol;
   ITD:        TInterfaceTypeDef;
+  PropDecl:   TPropertyDecl;
+  PropInfo:   TPropertyInfo;
+  PropType:   TTypeDesc;
 begin
   { Pass 1 — register all type symbols with empty descriptors.
     This allows self-referential field types to resolve in pass 2. }
@@ -759,6 +762,37 @@ begin
               MDecl.Line, MDecl.Col);
           MDecl.ResolvedReturnType := ParType;
         end;
+      end;
+
+    { Resolve property declarations }
+    if TD.Def is TClassTypeDef then
+      for J := 0 to TClassTypeDef(TD.Def).Properties.Count - 1 do
+      begin
+        PropDecl := TPropertyDecl(TClassTypeDef(TD.Def).Properties[J]);
+        PropType := FTable.FindType(PropDecl.TypeName);
+        if PropType = nil then
+          SemanticError(
+            Format('Unknown type ''%s'' for property ''%s''',
+              [PropDecl.TypeName, PropDecl.Name]),
+            PropDecl.Line, PropDecl.Col);
+        PropInfo          := TPropertyInfo.Create;
+        PropInfo.Name     := PropDecl.Name;
+        PropInfo.TypeDesc := PropType;
+        if PropDecl.ReadName <> '' then
+        begin
+          if RT.FindField(PropDecl.ReadName) <> nil then
+            PropInfo.ReadField  := PropDecl.ReadName
+          else
+            PropInfo.ReadMethod := PropDecl.ReadName;
+        end;
+        if PropDecl.WriteName <> '' then
+        begin
+          if RT.FindField(PropDecl.WriteName) <> nil then
+            PropInfo.WriteField  := PropDecl.WriteName
+          else
+            PropInfo.WriteMethod := PropDecl.WriteName;
+        end;
+        RT.AddProperty(PropInfo);
       end;
 
     { Verify class implements all methods of each declared interface }
@@ -1273,6 +1307,7 @@ var
   RecSym:   TSymbol;
   RT:       TRecordTypeDesc;
   FldInfo:  TFieldInfo;
+  PropInfo: TPropertyInfo;
   ExprType: TTypeDesc;
 begin
   RecSym := FTable.Lookup(AAssign.RecordName);
@@ -1294,10 +1329,33 @@ begin
   RT      := TRecordTypeDesc(RecSym.TypeDesc);
   FldInfo := RT.FindField(AAssign.FieldName);
   if FldInfo = nil then
-    SemanticError(
-      Format('Type ''%s'' has no field ''%s''',
-        [AAssign.RecordName, AAssign.FieldName]),
-      AAssign.Line, AAssign.Col);
+  begin
+    { Check if this is a property write }
+    PropInfo := RT.FindProperty(AAssign.FieldName);
+    if PropInfo <> nil then
+    begin
+      if PropInfo.WriteField <> '' then
+      begin
+        { Field-backed write: redirect to the backing field }
+        AAssign.FieldName := PropInfo.WriteField;
+        FldInfo           := RT.FindField(PropInfo.WriteField);
+      end
+      else if PropInfo.WriteMethod <> '' then
+        SemanticError(
+          Format('Method-backed property write not yet supported for ''%s''',
+            [AAssign.FieldName]),
+          AAssign.Line, AAssign.Col)
+      else
+        SemanticError(
+          Format('Property ''%s'' is read-only', [AAssign.FieldName]),
+          AAssign.Line, AAssign.Col);
+    end
+    else
+      SemanticError(
+        Format('Type ''%s'' has no field ''%s''',
+          [AAssign.RecordName, AAssign.FieldName]),
+        AAssign.Line, AAssign.Col);
+  end;
 
   AAssign.FieldInfo := FldInfo;
   ExprType := AnalyseExpr(AAssign.Expr);
@@ -1509,9 +1567,10 @@ end;
 
 function TSemanticAnalyser.AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
 var
-  RecSym:  TSymbol;
-  RT:      TRecordTypeDesc;
-  FldInfo: TFieldInfo;
+  RecSym:   TSymbol;
+  RT:       TRecordTypeDesc;
+  FldInfo:  TFieldInfo;
+  PropInfo: TPropertyInfo;
 begin
   RecSym := FTable.Lookup(AAccess.RecordName);
   if RecSym = nil then
@@ -1553,10 +1612,35 @@ begin
   RT      := TRecordTypeDesc(RecSym.TypeDesc);
   FldInfo := RT.FindField(AAccess.FieldName);
   if FldInfo = nil then
+  begin
+    { Check if this is a property access }
+    PropInfo := RT.FindProperty(AAccess.FieldName);
+    if PropInfo <> nil then
+    begin
+      if PropInfo.ReadField <> '' then
+      begin
+        { Field-backed read: redirect to the backing field }
+        AAccess.FieldName := PropInfo.ReadField;
+        AAccess.FieldInfo := RT.FindField(PropInfo.ReadField);
+        Result := PropInfo.TypeDesc;
+        AAccess.ResolvedType := Result;
+        Exit;
+      end
+      else if PropInfo.ReadMethod <> '' then
+      begin
+        { Method-backed read: mark for method call in codegen }
+        AAccess.PropRead      := PropInfo;
+        AAccess.PropOwnerType := RT.Name;
+        Result := PropInfo.TypeDesc;
+        AAccess.ResolvedType := Result;
+        Exit;
+      end;
+    end;
     SemanticError(
       Format('Type ''%s'' has no field ''%s''',
         [AAccess.RecordName, AAccess.FieldName]),
       AAccess.Line, AAccess.Col);
+  end;
 
   AAccess.FieldInfo := FldInfo;
   Result := FldInfo.TypeDesc;

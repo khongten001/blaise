@@ -47,9 +47,11 @@ type
   public
     RecordName:        string;
     FieldName:         string;
-    FieldInfo:         TFieldInfo;  { set by uSemantic — nil for constructor calls }
-    IsConstructorCall: Boolean;     { set by uSemantic — TypeName.Create }
-    IsClassAccess:     Boolean;     { set by uSemantic — pointer deref needed }
+    FieldInfo:         TFieldInfo;    { set by uSemantic — nil for constructor calls }
+    IsConstructorCall: Boolean;       { set by uSemantic — TypeName.Create }
+    IsClassAccess:     Boolean;       { set by uSemantic — pointer deref needed }
+    PropRead:          TPropertyInfo; { non-nil if this is a method-backed property read }
+    PropOwnerType:     string;        { class type name for method-backed property calls }
   end;
 
   TIsExpr = class(TASTExpr)
@@ -257,12 +259,22 @@ type
     destructor Destroy; override;
   end;
 
+  { One property declaration inside a class body. }
+  TPropertyDecl = class(TASTNode)
+  public
+    Name:      string;  { property name }
+    TypeName:  string;  { declared type }
+    ReadName:  string;  { backing field or getter method; '' = no read accessor }
+    WriteName: string;  { backing field or setter method; '' = read-only }
+  end;
+
   TClassTypeDef = class(TASTTypeDef)
   public
     ParentName:      string;
     ImplementsNames: TStringList;  { owned — names of implemented interfaces }
     Fields:          TObjectList;  { owned TFieldDecl }
     Methods:         TObjectList;  { owned TMethodDecl }
+    Properties:      TObjectList;  { owned TPropertyDecl }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -597,10 +609,12 @@ begin
   ImplementsNames := TStringList.Create;
   Fields          := TObjectList.Create(True);
   Methods         := TObjectList.Create(True);
+  Properties      := TObjectList.Create(True);
 end;
 
 destructor TClassTypeDef.Destroy;
 begin
+  Properties.Free;
   Methods.Free;
   Fields.Free;
   ImplementsNames.Free;

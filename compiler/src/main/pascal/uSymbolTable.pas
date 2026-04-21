@@ -58,6 +58,17 @@ type
 
   TInterfaceTypeDesc = class;  { forward }
 
+  { Property descriptor — one per declared property on a class. }
+  TPropertyInfo = class
+  public
+    Name:        string;
+    TypeDesc:    TTypeDesc;   { not owned — resolved by semantic analysis }
+    ReadField:   string;      { '' if method-backed read }
+    ReadMethod:  string;      { '' if field-backed read }
+    WriteField:  string;      { '' if method-backed write or read-only }
+    WriteMethod: string;      { '' if field-backed write or read-only }
+  end;
+
   { Extended type descriptor for record types. }
   TRecordTypeDesc = class(TTypeDesc)
   private
@@ -66,6 +77,7 @@ type
     FParent:     TRecordTypeDesc;   { not owned; nil for root classes }
     FVTable:     TObjectList;  { owned TVTableEntry; nil if no virtual methods }
     FImplements: TObjectList;  { not owned — TInterfaceTypeDesc references }
+    FProperties: TObjectList;  { owned TPropertyInfo }
   public
     constructor Create(const AName: string; AKind: TTypeKind = tyRecord);
     destructor Destroy; override;
@@ -87,6 +99,10 @@ type
     procedure AddImplements(AIntf: TInterfaceTypeDesc);
     function  ImplementsCount: Integer;
     function  ImplementsIntfAt(AIndex: Integer): TInterfaceTypeDesc;
+
+    { Property tracking }
+    procedure AddProperty(AProp: TPropertyInfo);
+    function  FindProperty(const AName: string): TPropertyInfo;
 
     property  Fields: TObjectList read FFields;
     property  Parent: TRecordTypeDesc read FParent write FParent;
@@ -294,10 +310,12 @@ begin
   FKeys.Duplicates    := dupIgnore;
   FVTable     := nil;  { allocated on first use }
   FImplements := TObjectList.Create(False);  { not owned }
+  FProperties := TObjectList.Create(True);   { owned TPropertyInfo }
 end;
 
 destructor TRecordTypeDesc.Destroy;
 begin
+  FProperties.Free;
   FImplements.Free;
   FKeys.Free;
   FFields.Free;
@@ -453,6 +471,24 @@ end;
 { ------------------------------------------------------------------ }
 { TInterfaceTypeDesc                                                  }
 { ------------------------------------------------------------------ }
+
+procedure TRecordTypeDesc.AddProperty(AProp: TPropertyInfo);
+begin
+  FProperties.Add(AProp);
+end;
+
+function TRecordTypeDesc.FindProperty(const AName: string): TPropertyInfo;
+var
+  I: Integer;
+begin
+  for I := 0 to FProperties.Count - 1 do
+    if SameText(TPropertyInfo(FProperties[I]).Name, AName) then
+    begin
+      Result := TPropertyInfo(FProperties[I]);
+      Exit;
+    end;
+  Result := nil;
+end;
 
 constructor TInterfaceTypeDesc.Create(const AName: string);
 begin
