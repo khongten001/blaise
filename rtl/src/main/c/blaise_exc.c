@@ -83,15 +83,18 @@ void _Reraise(void* exc) {
  * ----------------------------------------------------------------------- */
 
 /*
- * BlaiseTypeInfo — one per class, stored as vtable slot 0.
- * parent = pointer to parent class TypeInfo, or NULL for root classes.
+ * BlaiseTypeInfo — one per class/interface, stored as vtable slot 0.
+ * parent   = pointer to parent class TypeInfo, or NULL for root classes.
+ * impllist = NULL-terminated array of {typeinfo_intf*, itab*} pairs, or NULL
+ *            if the class implements no interfaces.
  */
 typedef struct BlaiseTypeInfo {
     const struct BlaiseTypeInfo* parent;
+    const void**                 impllist;
 } BlaiseTypeInfo;
 
 /*
- * _IsInstance — runtime 'is' check.
+ * _IsInstance — runtime 'is' check for class inheritance.
  * Walks the TypeInfo parent chain from the object's own TypeInfo upward.
  * Returns 1 if the object is an instance of target (or a subclass), else 0.
  * obj must be non-nil and point to an instance whose first field is the vptr.
@@ -110,10 +113,56 @@ int _IsInstance(void* obj, const BlaiseTypeInfo* target) {
 }
 
 /*
+ * _ImplementsInterface — runtime 'is' check for interface membership.
+ * Walks the class TypeInfo chain; at each level searches the impllist for
+ * a matching interface TypeInfo pointer.
+ * Returns 1 if the object's class (or any ancestor) implements the interface.
+ */
+int _ImplementsInterface(void* obj, const BlaiseTypeInfo* intf_ti) {
+    const BlaiseTypeInfo* ti;
+    const void**          impl;
+    void**                vtable;
+    if (!obj || !intf_ti) return 0;
+    vtable = *(void***)obj;
+    ti     = (const BlaiseTypeInfo*)vtable[0];
+    while (ti) {
+        impl = ti->impllist;
+        while (impl && *impl) {
+            if ((const BlaiseTypeInfo*)(*impl) == intf_ti) return 1;
+            impl += 2;  /* each entry is {typeinfo*, itab*} — skip both */
+        }
+        ti = ti->parent;
+    }
+    return 0;
+}
+
+/*
+ * _GetItab — return the itab pointer for the given object/interface pair.
+ * Walks the class TypeInfo chain searching the impllist for a matching
+ * interface TypeInfo pointer; returns the associated itab on match.
+ * Returns NULL if the object's class does not implement the interface.
+ */
+const void* _GetItab(void* obj, const BlaiseTypeInfo* intf_ti) {
+    const BlaiseTypeInfo* ti;
+    const void**          impl;
+    void**                vtable;
+    if (!obj || !intf_ti) return 0;
+    vtable = *(void***)obj;
+    ti     = (const BlaiseTypeInfo*)vtable[0];
+    while (ti) {
+        impl = ti->impllist;
+        while (impl && *impl) {
+            if ((const BlaiseTypeInfo*)(*impl) == intf_ti) return *(impl + 1);
+            impl += 2;
+        }
+        ti = ti->parent;
+    }
+    return 0;
+}
+
+/*
  * _Raise_InvalidCast — raised by the 'as' operator when the type check fails.
- * Phase 2: aborts with a message. Phase 3 will raise EInvalidCast.
  */
 void _Raise_InvalidCast(void) {
-    /* TODO Phase 3: create EInvalidCast object and call _Raise */
     abort();
 }

@@ -35,6 +35,20 @@ type
     procedure TestSemantic_ClassImplements_MissingMethod_RaisesError;
 
     { ------------------------------------------------------------------ }
+    { Semantic — is/as with interface types                                }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_IsExpr_Interface_OK;
+    procedure TestSemantic_IsExpr_Interface_ResultIsBoolean;
+    procedure TestSemantic_AsExpr_Interface_OK;
+    procedure TestSemantic_AsExpr_Interface_ResultType;
+
+    { ------------------------------------------------------------------ }
+    { Semantic — IInterface built-in                                       }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_IInterface_Registered;
+    procedure TestSemantic_IInterface_IsInterfaceKind;
+
+    { ------------------------------------------------------------------ }
     { Code generation                                                      }
     { ------------------------------------------------------------------ }
     procedure TestCodegen_Interface_TypeInfo_Emitted;
@@ -42,6 +56,10 @@ type
     procedure TestCodegen_Itab_ContainsMethodPointer;
     procedure TestCodegen_InterfaceVar_AllocsTwoSlots;
     procedure TestCodegen_InterfaceMethodCall_IndirectDispatch;
+    procedure TestCodegen_Typeinfo_ClassHasImpllistField;
+    procedure TestCodegen_Impllist_Emitted;
+    procedure TestCodegen_IsExpr_Interface_CallsImplementsInterface;
+    procedure TestCodegen_AsExpr_Interface_CallsGetItab;
   end;
 
 implementation
@@ -129,6 +147,46 @@ const
     '  TFoo = class(TObject, IFoo)'            + LineEnding +
     '  end;'                                   + LineEnding +
     'begin'                                    + LineEnding +
+    'end.';
+
+  SrcIsExprInterface =
+    'program P;'                               + LineEnding +
+    'type'                                     + LineEnding +
+    '  IFoo = interface'                       + LineEnding +
+    '    procedure DoIt;'                      + LineEnding +
+    '  end;'                                   + LineEnding +
+    '  TFoo = class(TObject, IFoo)'            + LineEnding +
+    '    procedure DoIt;'                      + LineEnding +
+    '  end;'                                   + LineEnding +
+    'procedure TFoo.DoIt;'                     + LineEnding +
+    'begin'                                    + LineEnding +
+    'end;'                                     + LineEnding +
+    'var'                                      + LineEnding +
+    '  T: TFoo;'                               + LineEnding +
+    '  R: Boolean;'                            + LineEnding +
+    'begin'                                    + LineEnding +
+    '  T := TFoo.Create;'                      + LineEnding +
+    '  R := T is IFoo'                         + LineEnding +
+    'end.';
+
+  SrcAsExprInterface =
+    'program P;'                               + LineEnding +
+    'type'                                     + LineEnding +
+    '  IFoo = interface'                       + LineEnding +
+    '    procedure DoIt;'                      + LineEnding +
+    '  end;'                                   + LineEnding +
+    '  TFoo = class(TObject, IFoo)'            + LineEnding +
+    '    procedure DoIt;'                      + LineEnding +
+    '  end;'                                   + LineEnding +
+    'procedure TFoo.DoIt;'                     + LineEnding +
+    'begin'                                    + LineEnding +
+    'end;'                                     + LineEnding +
+    'var'                                      + LineEnding +
+    '  T: TFoo;'                               + LineEnding +
+    '  F: IFoo;'                               + LineEnding +
+    'begin'                                    + LineEnding +
+    '  T := TFoo.Create;'                      + LineEnding +
+    '  F := T as IFoo'                         + LineEnding +
     'end.';
 
   SrcInterfaceVar =
@@ -420,6 +478,133 @@ begin
   { Interface dispatch loads the itab pointer and calls indirectly }
   AssertTrue('loads itab pointer', Pos('_var_F_itab', IR) > 0);
   AssertTrue('indirect call via register', Pos('call %', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Semantic — is/as with interface types                                }
+{ ------------------------------------------------------------------ }
+
+procedure TInterfaceTests.TestSemantic_IsExpr_Interface_OK;
+begin
+  AnalyseSrc(SrcIsExprInterface).Free;
+end;
+
+procedure TInterfaceTests.TestSemantic_IsExpr_Interface_ResultIsBoolean;
+var
+  Prog: TProgram;
+  IE:   TIsExpr;
+begin
+  Prog := AnalyseSrc(SrcIsExprInterface);
+  try
+    { Stmts[0] = T := TFoo.Create; Stmts[1] = R := T is IFoo }
+    IE := TIsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
+    AssertNotNull('resolved type', IE.ResolvedType);
+    AssertEquals('result is Boolean', Ord(tyBoolean), Ord(IE.ResolvedType.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestSemantic_AsExpr_Interface_OK;
+begin
+  AnalyseSrc(SrcAsExprInterface).Free;
+end;
+
+procedure TInterfaceTests.TestSemantic_AsExpr_Interface_ResultType;
+var
+  Prog: TProgram;
+  AE:   TAsExpr;
+begin
+  Prog := AnalyseSrc(SrcAsExprInterface);
+  try
+    { Stmts[0] = T := TFoo.Create; Stmts[1] = F := T as IFoo }
+    AE := TAsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
+    AssertNotNull('resolved type', AE.ResolvedType);
+    AssertEquals('result kind is tyInterface', Ord(tyInterface), Ord(AE.ResolvedType.Kind));
+    AssertEquals('result type name is IFoo', 'IFoo', AE.ResolvedType.Name);
+  finally
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Semantic — IInterface built-in                                       }
+{ ------------------------------------------------------------------ }
+
+procedure TInterfaceTests.TestSemantic_IInterface_Registered;
+var
+  Prog: TProgram;
+  Sym:  TSymbol;
+begin
+  Prog := AnalyseSrc('program P; begin end.');
+  try
+    Sym := Prog.SymbolTable.Lookup('IInterface');
+    AssertNotNull('IInterface symbol exists', Sym);
+    AssertEquals('IInterface is skType', Ord(skType), Ord(Sym.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestSemantic_IInterface_IsInterfaceKind;
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+begin
+  Prog := AnalyseSrc('program P; begin end.');
+  try
+    TD := Prog.SymbolTable.FindType('IInterface');
+    AssertNotNull('IInterface type exists', TD);
+    AssertEquals('kind is tyInterface', Ord(tyInterface), Ord(TD.Kind));
+  finally
+    Prog.Free;
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Codegen — impllist and extended typeinfo                             }
+{ ------------------------------------------------------------------ }
+
+procedure TInterfaceTests.TestCodegen_Typeinfo_ClassHasImpllistField;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcClassImplements);
+  { Class with implements must have 2-field typeinfo: { l parent, l impllist } }
+  AssertTrue('TFoo typeinfo has impllist field',
+    Pos('$typeinfo_TFoo = { l $typeinfo_TObject, l $impllist_TFoo }', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_Impllist_Emitted;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcClassImplements);
+  AssertTrue('impllist_TFoo emitted', Pos('$impllist_TFoo', IR) > 0);
+  { Impllist contains typeinfo_IFoo and itab_TFoo_IFoo pointers }
+  AssertTrue('impllist references typeinfo_IFoo',
+    PosEx('$typeinfo_IFoo', IR,
+          Pos('$impllist_TFoo', IR)) > 0);
+  AssertTrue('impllist references itab_TFoo_IFoo',
+    PosEx('$itab_TFoo_IFoo', IR,
+          Pos('$impllist_TFoo', IR)) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_IsExpr_Interface_CallsImplementsInterface;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcIsExprInterface);
+  AssertTrue('is IFoo calls _ImplementsInterface',
+    Pos('call $_ImplementsInterface', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_AsExpr_Interface_CallsGetItab;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcAsExprInterface);
+  AssertTrue('as IFoo calls _GetItab', Pos('call $_GetItab', IR) > 0);
 end;
 
 initialization

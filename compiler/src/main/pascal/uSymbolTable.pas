@@ -640,6 +640,9 @@ begin
   { TObject — root of the class hierarchy; no fields, no parent }
   Define(TSymbol.Create('TObject', skType, NewClassType('TObject')));
 
+  { IInterface — root of the interface hierarchy; no methods }
+  Define(TSymbol.Create('IInterface', skType, NewInterfaceType('IInterface')));
+
   { Built-in I/O procedures }
   Sym := TSymbol.Create('Write',   skProcedure, nil);
   Define(Sym);

@@ -549,15 +549,50 @@ end;
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
 var
   ValTemp, OldTemp, QType, StoreInstr, PtrTemp: string;
-  IntfDesc: TInterfaceTypeDesc;
-  ClassRT:  TRecordTypeDesc;
-  ItabName: string;
+  IntfDesc:  TInterfaceTypeDesc;
+  ClassRT:   TRecordTypeDesc;
+  ItabName:  string;
+  AE:        TAsExpr;
+  ObjTemp:   string;
+  ItabTemp:  string;
+  CheckTemp: string;
+  LblOk:     string;
+  LblFail:   string;
+  LblEnd:    string;
 begin
   if AAssign.Expr.ResolvedType = nil then
     raise ECodeGenError.CreateFmt(
       'Expression in assignment to ''%s'' has no resolved type', [AAssign.Name]);
 
-  { Interface assignment: store obj pointer + itab pointer }
+  { Interface as-cast: F := T as IFoo — use _GetItab for runtime itab lookup }
+  if (AAssign.ResolvedLhsType <> nil) and
+     (AAssign.ResolvedLhsType.Kind = tyInterface) and
+     (AAssign.Expr is TAsExpr) and
+     (AAssign.Expr.ResolvedType.Kind = tyInterface) then
+  begin
+    AE        := TAsExpr(AAssign.Expr);
+    IntfDesc  := TInterfaceTypeDesc(AAssign.ResolvedLhsType);
+    ObjTemp   := EmitExpr(AE.Obj);
+    ItabTemp  := AllocTemp;
+    EmitLine(Format('  %s =l call $_GetItab(l %s, l $typeinfo_%s)',
+      [ItabTemp, ObjTemp, AE.TypeName]));
+    CheckTemp := AllocTemp;
+    LblOk   := AllocLabel('as_ok');
+    LblFail := AllocLabel('as_fail');
+    LblEnd  := AllocLabel('as_end');
+    EmitLine(Format('  %s =w cnel %s, 0', [CheckTemp, ItabTemp]));
+    EmitLine(Format('  jnz %s, @%s, @%s', [CheckTemp, LblOk, LblFail]));
+    EmitLine('@' + LblFail);
+    EmitLine('  call $_Raise_InvalidCast()');
+    EmitLine(Format('  jmp @%s', [LblEnd]));
+    EmitLine('@' + LblOk);
+    EmitLine(Format('  storel %s, %%_var_%s_obj',  [ObjTemp, AAssign.Name]));
+    EmitLine(Format('  storel %s, %%_var_%s_itab', [ItabTemp, AAssign.Name]));
+    EmitLine('@' + LblEnd);
+    Exit;
+  end;
+
+  { Interface direct assignment: F := T where T is a class implementing the interface }
   if (AAssign.ResolvedLhsType <> nil) and
      (AAssign.ResolvedLhsType.Kind = tyInterface) and
      (AAssign.Expr.ResolvedType.Kind = tyClass) then
@@ -844,13 +879,16 @@ end;
 
 procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
 { Emit one $typeinfo_T data item per class type.
-  Layout: { l parent_typeinfo_or_zero }
-  TypeInfo is at vtable slot 0; _IsInstance walks parent chain via this ptr. }
+  Layout: { l parent_typeinfo_or_zero, l impllist_or_zero }
+  TypeInfo is at vtable slot 0; _IsInstance walks parent chain.
+  impllist is NULL-terminated array of {typeinfo_intf, itab} pairs for _ImplementsInterface. }
 var
-  I:     Integer;
-  TD:    TTypeDecl;
-  TDesc: TTypeDesc;
-  RT:    TRecordTypeDesc;
+  I:         Integer;
+  TD:        TTypeDecl;
+  TDesc:     TTypeDesc;
+  RT:        TRecordTypeDesc;
+  ParentStr: string;
+  ImplStr:   string;
 begin
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
@@ -860,10 +898,15 @@ begin
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     if RT.Parent <> nil then
-      EmitLine('data $typeinfo_' + TD.Name +
-               ' = { l $typeinfo_' + RT.Parent.Name + ' }')
+      ParentStr := '$typeinfo_' + RT.Parent.Name
     else
-      EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
+      ParentStr := '0';
+    if RT.ImplementsCount > 0 then
+      ImplStr := '$impllist_' + TD.Name
+    else
+      ImplStr := '0';
+    EmitLine('data $typeinfo_' + TD.Name +
+             ' = { l ' + ParentStr + ', l ' + ImplStr + ' }');
   end;
   EmitLine('');
 end;
@@ -901,18 +944,20 @@ begin
 end;
 
 procedure TCodeGenQBE.EmitInterfaceDefs(AProg: TProgram);
-{ Emit typeinfo blocks for interfaces and itab blocks for class-interface pairs.
-  Interface typeinfo: data $typeinfo_IFoo = { l 0 }  (address IS the identity)
+{ Emit typeinfo blocks for interfaces and itab/impllist blocks for class-interface pairs.
+  Interface typeinfo: data $typeinfo_IFoo = { l 0 }  (address IS the identity token)
   Itab: data $itab_TFoo_IFoo = { l $TFoo_DoIt, l $TFoo_GetVal }
-  Methods appear in declaration order (itab slot N = interface method N). }
+  Impllist: data $impllist_TFoo = { l $typeinfo_IFoo, l $itab_TFoo_IFoo, l 0 }
+  Methods in declaration order; impllist is NULL-terminated {ti, itab} pair array. }
 var
-  I, J, K:  Integer;
-  TD:       TTypeDecl;
-  TDesc:    TTypeDesc;
-  IntfDesc: TInterfaceTypeDesc;
-  ClassRT:  TRecordTypeDesc;
-  ItabLine: string;
-  MethName: string;
+  I, J, K:     Integer;
+  TD:          TTypeDecl;
+  TDesc:       TTypeDesc;
+  IntfDesc:    TInterfaceTypeDesc;
+  ClassRT:     TRecordTypeDesc;
+  ItabLine:    string;
+  ImplLine:    string;
+  MethName:    string;
 begin
   { Typeinfo blocks for every interface }
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
@@ -922,7 +967,7 @@ begin
     EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
   end;
 
-  { Itab blocks for each (class, interface) pair }
+  { Itab and impllist blocks for each implementing class }
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls[I]);
@@ -930,6 +975,9 @@ begin
     TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     ClassRT := TRecordTypeDesc(TDesc);
+    if ClassRT.ImplementsCount = 0 then Continue;
+
+    { One itab per interface }
     for J := 0 to ClassRT.ImplementsCount - 1 do
     begin
       IntfDesc := ClassRT.ImplementsIntfAt(J);
@@ -945,6 +993,21 @@ begin
       ItabLine := ItabLine + ' }';
       EmitLine(ItabLine);
     end;
+
+    { One impllist per class: NULL-terminated {typeinfo_intf, itab} pairs }
+    ImplLine := 'data $impllist_' + TD.Name + ' = {';
+    for J := 0 to ClassRT.ImplementsCount - 1 do
+    begin
+      IntfDesc := ClassRT.ImplementsIntfAt(J);
+      if J = 0 then
+        ImplLine := ImplLine + ' l $typeinfo_' + IntfDesc.Name +
+                               ', l $itab_' + TD.Name + '_' + IntfDesc.Name
+      else
+        ImplLine := ImplLine + ', l $typeinfo_' + IntfDesc.Name +
+                               ', l $itab_' + TD.Name + '_' + IntfDesc.Name;
+    end;
+    ImplLine := ImplLine + ', l 0 }';
+    EmitLine(ImplLine);
   end;
   EmitLine('');
 end;
@@ -1415,8 +1478,13 @@ var
 begin
   ObjTemp := EmitExpr(AExpr.Obj);
   ResTemp := AllocTemp;
-  EmitLine(Format('  %s =w call $_IsInstance(l %s, l $typeinfo_%s)',
-    [ResTemp, ObjTemp, AExpr.TypeName]));
+  if (AExpr.ResolvedTargetType <> nil) and
+     (AExpr.ResolvedTargetType.Kind = tyInterface) then
+    EmitLine(Format('  %s =w call $_ImplementsInterface(l %s, l $typeinfo_%s)',
+      [ResTemp, ObjTemp, AExpr.TypeName]))
+  else
+    EmitLine(Format('  %s =w call $_IsInstance(l %s, l $typeinfo_%s)',
+      [ResTemp, ObjTemp, AExpr.TypeName]));
   Result := ResTemp;
 end;
 

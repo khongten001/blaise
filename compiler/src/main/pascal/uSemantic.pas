@@ -1389,12 +1389,14 @@ begin
       AExpr.Line, AExpr.Col);
 
   TargetType := FTable.FindType(AExpr.TypeName);
-  if (TargetType = nil) or (TargetType.Kind <> tyClass) then
+  if (TargetType = nil) or
+     ((TargetType.Kind <> tyClass) and (TargetType.Kind <> tyInterface)) then
     SemanticError(
-      Format('''is'' requires a class type name on the right, got ''%s''',
+      Format('''is'' requires a class or interface type name on the right, got ''%s''',
         [AExpr.TypeName]),
       AExpr.Line, AExpr.Col);
 
+  AExpr.ResolvedTargetType := TargetType;
   Result := FTable.TypeBoolean;
 end;
 
@@ -1411,9 +1413,10 @@ begin
       AExpr.Line, AExpr.Col);
 
   TargetType := FTable.FindType(AExpr.TypeName);
-  if (TargetType = nil) or (TargetType.Kind <> tyClass) then
+  if (TargetType = nil) or
+     ((TargetType.Kind <> tyClass) and (TargetType.Kind <> tyInterface)) then
     SemanticError(
-      Format('''as'' requires a class type name on the right, got ''%s''',
+      Format('''as'' requires a class or interface type name on the right, got ''%s''',
         [AExpr.TypeName]),
       AExpr.Line, AExpr.Col);
 

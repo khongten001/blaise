@@ -54,8 +54,9 @@ type
 
   TIsExpr = class(TASTExpr)
   public
-    Obj:      TASTExpr;  { owned — left-hand side; must be class instance }
-    TypeName: string;    { right-hand side type name; resolved by uSemantic }
+    Obj:                TASTExpr;   { owned — left-hand side; must be class instance }
+    TypeName:           string;     { right-hand side type name; resolved by uSemantic }
+    ResolvedTargetType: TTypeDesc;  { set by uSemantic — class or interface descriptor }
     destructor Destroy; override;
   end;
 

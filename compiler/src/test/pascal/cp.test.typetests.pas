@@ -320,19 +320,19 @@ end;
 procedure TTypeTestTests.TestCodegen_TypeInfo_ParentPtr_IsZero_ForRoot;
 var IR: string;
 begin
-  { Root class (no parent) must have parent pointer = 0 }
+  { Root class (no parent) must have parent pointer = 0; second field is impllist = 0 }
   IR := GenIR(SrcBase);
   AssertTrue('root typeinfo has zero parent ptr',
-    Pos('$typeinfo_TAnimal = { l 0 }', IR) > 0);
+    Pos('$typeinfo_TAnimal = { l 0, l 0 }', IR) > 0);
 end;
 
 procedure TTypeTestTests.TestCodegen_TypeInfo_ParentPtr_ForDerived;
 var IR: string;
 begin
-  { Derived class typeinfo must reference parent typeinfo }
+  { Derived class typeinfo must reference parent typeinfo; impllist = 0 (no interfaces) }
   IR := GenIR(SrcInherit);
   AssertTrue('derived typeinfo refs parent',
-    Pos('$typeinfo_TDog = { l $typeinfo_TAnimal }', IR) > 0);
+    Pos('$typeinfo_TDog = { l $typeinfo_TAnimal, l 0 }', IR) > 0);
 end;
 
 procedure TTypeTestTests.TestCodegen_Vtable_StartsWithTypeInfo;
