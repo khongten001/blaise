@@ -38,7 +38,8 @@ uses
   cp.test.genericintfs,
   cp.test.genericdefaults,
   cp.test.genericmethodimpls,
-  cp.test.tdictionary;
+  cp.test.tdictionary,
+  cp.test.e2e;
 
 var
   Application: TTestRunner;

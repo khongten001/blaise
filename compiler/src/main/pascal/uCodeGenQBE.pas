@@ -122,17 +122,23 @@ var
   I:       Integer;
   StrLen:  Integer;
 begin
-  if FStrLits.Count = 0 then
-    Exit;
-  EmitLine('# String literals');
   { Each literal has a 12-byte ARC header: refcnt=-1 (immortal), length, capacity.
     The string pointer IS the header pointer; char data begins at ptr+12. }
-  for I := 0 to FStrLits.Count - 1 do
+  if FStrLits.Count > 0 then
   begin
-    StrLen := Length(FStrLits[I]);
-    EmitLine(Format('data $__s%d = { w -1, w %d, w %d, b "%s", b 0 }',
-      [I, StrLen, StrLen, QbeEscapeString(FStrLits[I])]));
+    EmitLine('# String literals');
+    for I := 0 to FStrLits.Count - 1 do
+    begin
+      StrLen := Length(FStrLits[I]);
+      EmitLine(Format('data $__s%d = { w -1, w %d, w %d, b "%s", b 0 }',
+        [I, StrLen, StrLen, QbeEscapeString(FStrLits[I])]));
+    end;
   end;
+  { printf format strings. Always emitted: a program with no string literals
+    can still call WriteLn(Integer) or a bare WriteLn, and those reference
+    $__fmt_d_nl / $__fmt_nl unconditionally. Omitting these definitions
+    produces a link-time "undefined reference" failure that the IR-only test
+    harness cannot see. }
   EmitLine('data $__fmt_s_nl = { b "%s\n", b 0 }');
   EmitLine('data $__fmt_s    = { b "%s", b 0 }');
   EmitLine('data $__fmt_d_nl = { b "%d\n", b 0 }');
