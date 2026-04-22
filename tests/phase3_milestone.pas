@@ -118,10 +118,9 @@ begin
     if Ptr^ = Key then
     begin
       Result := I;
-      I      := Self.FCount
-    end
-    else
-      I := I + 1
+      break
+    end;
+    I := I + 1
   end
 end;
 

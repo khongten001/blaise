@@ -141,10 +141,9 @@ begin
     if Ptr^ = Key then
     begin
       Result := I;
-      I      := Self.FCount  { force loop exit }
-    end
-    else
-      I := I + 1
+      break
+    end;
+    I := I + 1
   end
 end;
 
