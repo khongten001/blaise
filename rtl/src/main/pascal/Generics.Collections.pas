@@ -172,13 +172,15 @@ var
   Idx:  Integer;
   VPtr: ^V;
 begin
-  Idx    := Self.FindKey(Key);
-  Result := Idx >= 0;
+  Idx := Self.FindKey(Key);
   if Idx >= 0 then
   begin
-    VPtr  := Self.FValues + Idx * SizeOf(V);
-    Value := VPtr^
+    VPtr   := Self.FValues + Idx * SizeOf(V);
+    Value  := VPtr^;
+    Result := True
   end
+  else
+    Result := False
 end;
 
 function TDictionary<K, V>.ContainsKey(Key: K): Boolean;

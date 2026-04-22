@@ -39,8 +39,10 @@ type
 
   TIdentExpr = class(TASTExpr)
   public
-    Name:       string;
-    IsVarParam: Boolean;  { set by uSemantic — True if this ident is a var parameter }
+    Name:        string;
+    IsVarParam:  Boolean;  { set by uSemantic — True if this ident is a var parameter }
+    IsConstant:  Boolean;  { set by uSemantic — True if this ident is a skConstant symbol }
+    ConstValue:  Int64;    { valid when IsConstant = True }
   end;
 
   TFieldAccessExpr = class(TASTExpr)

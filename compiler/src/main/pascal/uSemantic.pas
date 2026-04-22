@@ -1979,6 +1979,11 @@ begin
         Format('Undeclared identifier ''%s''', [TIdentExpr(AExpr).Name]),
         AExpr.Line, AExpr.Col);
     TIdentExpr(AExpr).IsVarParam := (Sym.Kind = skVarParameter);
+    if Sym.Kind = skConstant then
+    begin
+      TIdentExpr(AExpr).IsConstant := True;
+      TIdentExpr(AExpr).ConstValue := Sym.ConstValue;
+    end;
     Result := Sym.TypeDesc;
   end
   else if AExpr is TFuncCallExpr then

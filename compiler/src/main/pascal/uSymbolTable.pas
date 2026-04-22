@@ -145,7 +145,8 @@ type
     skProcedure,
     skFunction,
     skParameter,
-    skVarParameter
+    skVarParameter,
+    skConstant     { built-in or user-declared constant; ConstValue holds the integer value }
   );
 
   TParamDesc = class
@@ -158,10 +159,11 @@ type
 
   TSymbol = class
   public
-    Name:     string;
-    Kind:     TSymbolKind;
-    TypeDesc: TTypeDesc;    { not owned; nil for procedures }
-    Params:   TObjectList;  { owned TParamDesc; populated for procedures/functions }
+    Name:       string;
+    Kind:       TSymbolKind;
+    TypeDesc:   TTypeDesc;    { not owned; nil for procedures }
+    Params:     TObjectList;  { owned TParamDesc; populated for procedures/functions }
+    ConstValue: Int64;        { valid when Kind = skConstant }
     constructor Create(const AName: string; AKind: TSymbolKind; AType: TTypeDesc);
     destructor Destroy; override;
   end;
@@ -741,6 +743,14 @@ begin
 
   { IInterface — root of the interface hierarchy; no methods }
   Define(TSymbol.Create('IInterface', skType, NewInterfaceType('IInterface')));
+
+  { Boolean constants }
+  Sym := TSymbol.Create('True',  skConstant, FTypeBoolean);
+  Sym.ConstValue := 1;
+  Define(Sym);
+  Sym := TSymbol.Create('False', skConstant, FTypeBoolean);
+  Sym.ConstValue := 0;
+  Define(Sym);
 
   { Built-in I/O procedures }
   Sym := TSymbol.Create('Write',   skProcedure, nil);

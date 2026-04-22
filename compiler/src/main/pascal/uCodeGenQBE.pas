@@ -1596,7 +1596,11 @@ begin
   else if AExpr is TIdentExpr then
   begin
     T := AllocTemp;
-    if TIdentExpr(AExpr).IsVarParam then
+    if TIdentExpr(AExpr).IsConstant then
+    begin
+      EmitLine(Format('  %s =w copy %d', [T, TIdentExpr(AExpr).ConstValue]));
+    end
+    else if TIdentExpr(AExpr).IsVarParam then
     begin
       { Var param: load pointer, then dereference }
       Ptr := AllocTemp;
