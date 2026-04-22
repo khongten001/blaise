@@ -311,8 +311,11 @@ var IR: string;
 begin
   IR := GenIR(SrcSelfRef);
   { TNode has Integer (4 bytes) + TNode pointer (8 bytes) = 12 bytes,
-    but aligned to 8 → 12 bytes total. malloc(12) }
-  AssertTrue('calloc 12 bytes for TNode', Pos('call $calloc(l 1, l 12)', IR) > 0);
+    aligned to 8 → 12 bytes total.  The user-visible instance size passed
+    to _ClassAlloc is TotalSize; _ClassAlloc internally adds the 8-byte
+    refcount prefix. }
+  AssertTrue('_ClassAlloc 12 bytes for TNode',
+    Pos('call $_ClassAlloc(l 12)', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }
@@ -352,8 +355,10 @@ procedure TInheritTests.TestCodegen_Inherit_Create_AllocatesTotalSize;
 var IR: string;
 begin
   IR := GenIR(SrcInherit);
-  { TDog.Create should malloc 8 bytes (Age + Legs) }
-  AssertTrue('calloc 8 bytes for TDog', Pos('call $calloc(l 1, l 8)', IR) > 0);
+  { TDog.Create passes TotalSize (8 bytes: Age + Legs) to _ClassAlloc;
+    _ClassAlloc internally adds the 8-byte refcount prefix. }
+  AssertTrue('_ClassAlloc 8 bytes for TDog',
+    Pos('call $_ClassAlloc(l 8)', IR) > 0);
 end;
 
 procedure TInheritTests.TestCodegen_Inherit_ParentFieldOffset;

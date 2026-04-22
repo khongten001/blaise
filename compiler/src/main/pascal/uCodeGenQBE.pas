@@ -878,12 +878,15 @@ begin
     Exit;
   end;
 
-  { Built-in Free: load Self pointer and call C free() }
+  { Built-in Free: load Self pointer and release the instance.  _ClassFree
+    currently bypasses the refcount (legacy behaviour); Task 4 will switch
+    this to _ClassRelease so Free becomes a sanctioned synonym for immediate
+    release under the full ARC rules. }
   if (ACall.ResolvedMethod = nil) and SameText(ACall.Name, 'Free') then
   begin
     SelfTemp := AllocTemp;
     EmitLine(Format('  %s =l loadl %%_var_%s', [SelfTemp, ACall.ObjectName]));
-    EmitLine(Format('  call $free(l %s)', [SelfTemp]));
+    EmitLine(Format('  call $_ClassFree(l %s)', [SelfTemp]));
     Exit;
   end;
 
@@ -1744,9 +1747,12 @@ begin
     end;
     if FldAccess.IsConstructorCall then
     begin
-      { TypeName.Create — allocate zeroed instance on heap (calloc zeros all fields) }
+      { TypeName.Create — allocate zeroed instance on heap.  _ClassAlloc
+        prefixes an 8-byte refcount header before the returned pointer (see
+        blaise_arc.c).  The user pointer still points at the vptr, so field
+        offsets are unchanged. }
       T := AllocTemp;
-      EmitLine(Format('  %s =l call $calloc(l 1, l %d)',
+      EmitLine(Format('  %s =l call $_ClassAlloc(l %d)',
         [T, TRecordTypeDesc(FldAccess.ResolvedType).TotalSize]));
       { Store vtable pointer at offset 0 if this class has virtual methods }
       if TRecordTypeDesc(FldAccess.ResolvedType).HasVTable then

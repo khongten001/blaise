@@ -67,6 +67,48 @@ int32_t _StringEquals(void* s1, void* s2) {
 }
 
 /*
+ * Class instance ARC support.
+ *
+ * Every Blaise class instance carries a hidden 8-byte prefix before the user
+ * pointer: a 4-byte refcount and 4 bytes of padding to keep the user pointer
+ * 8-byte aligned (so the vptr at offset 0 remains naturally aligned).
+ *
+ *   +--[4 bytes]--+--[4 bytes]--+--[N bytes]-------+
+ *   | RefCount    | (padding)   | vptr + fields    |
+ *   +-------------+-------------+------------------+
+ *                               ^--- user pointer
+ *
+ * RefCount starts at 0; the compiler inserts _ClassAddRef on assignment
+ * (mirroring the string ARC convention).  Until the full ARC insertion pass
+ * lands, _ClassFree provides a legacy "free without refcount check" entry
+ * point for the existing Obj.Free code path — Task 4 rewires Obj.Free to
+ * _ClassRelease, at which point _ClassFree becomes internal.
+ */
+
+typedef struct {
+    int32_t refcnt;
+    int32_t _pad;
+} BlaiseObjHdr;
+
+#define CLASS_HDR_SIZE (sizeof(BlaiseObjHdr))
+
+static inline BlaiseObjHdr* obj_hdr(void* user_ptr) {
+    return (BlaiseObjHdr*)((char*)user_ptr - CLASS_HDR_SIZE);
+}
+
+void* _ClassAlloc(size_t size) {
+    char* base = (char*)calloc(1, size + CLASS_HDR_SIZE);
+    if (!base) return NULL;
+    /* refcnt starts at 0; first assignment's _ClassAddRef brings it to 1 */
+    return base + CLASS_HDR_SIZE;
+}
+
+void _ClassFree(void* user_ptr) {
+    if (!user_ptr) return;
+    free((char*)user_ptr - CLASS_HDR_SIZE);
+}
+
+/*
  * Concatenate two Blaise strings.  Either or both may be nil.
  * Returns a new header with RefCount = 0 (caller takes ownership via AddRef).
  * Returns nil if both inputs are nil.

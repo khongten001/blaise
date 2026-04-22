@@ -404,10 +404,12 @@ procedure TVTableTests.TestCodegen_MallocSize_IncludesVPtr;
 var
   IR: string;
 begin
-  { TPoint has one Integer field (4 bytes) + vptr (8 bytes) = 12 bytes }
+  { TPoint has one Integer field (4 bytes) + vptr (8 bytes) = 12 bytes.
+    _ClassAlloc receives TotalSize; the 8-byte refcount prefix is added
+    internally and does not appear in the TotalSize argument. }
   IR := GenIR(SrcBaseWithField);
-  AssertTrue('calloc includes vptr size',
-    IRContains(IR, 'call $calloc(l 1, l 12)'));
+  AssertTrue('_ClassAlloc includes vptr size',
+    IRContains(IR, 'call $_ClassAlloc(l 12)'));
 end;
 
 procedure TVTableTests.TestCodegen_FieldOffset_ShiftedByEight;

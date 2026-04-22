@@ -494,7 +494,8 @@ var
   IR: string;
 begin
   IR := GenIR(SrcGenericUsage);
-  AssertTrue('constructor calls calloc', Pos('call $calloc', IR) > 0);
+  AssertTrue('constructor calls _ClassAlloc',
+    Pos('call $_ClassAlloc', IR) > 0);
 end;
 
 procedure TGenericsTests.TestCodegen_Generic_MethodEmitted;

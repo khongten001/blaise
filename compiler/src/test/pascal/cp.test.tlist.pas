@@ -392,8 +392,8 @@ begin
   AssertTrue('Add emits storew', Pos('storew', IR) > 0);
   { Get method loads through a typed pointer }
   AssertTrue('Get emits loadw', Pos('loadw', IR) > 0);
-  { Memory allocation via calloc }
-  AssertTrue('Create emits calloc', Pos('calloc', IR) > 0);
+  { Memory allocation via _ClassAlloc (ARC-aware class allocator) }
+  AssertTrue('Create emits _ClassAlloc', Pos('_ClassAlloc', IR) > 0);
 end;
 
 procedure TTListTests.TestCodegen_TList_Grow_EmitsRealloc;

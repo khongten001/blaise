@@ -57,7 +57,7 @@ type
     { ------------------------------------------------------------------ }
     procedure TestCodegen_ClassVar_HasPointerAlloc;
     procedure TestCodegen_ClassVar_ZeroInit;
-    procedure TestCodegen_Constructor_CallsMalloc;
+    procedure TestCodegen_Constructor_CallsClassAlloc;
     procedure TestCodegen_ClassFieldStore_LoadsPointer;
     procedure TestCodegen_ClassFieldLoad_LoadsPointer;
 
@@ -73,7 +73,7 @@ type
     { Free built-in                                                        }
     { ------------------------------------------------------------------ }
     procedure TestSemantic_Free_OK;
-    procedure TestCodegen_Free_CallsCFree;
+    procedure TestCodegen_Free_CallsClassFree;
   end;
 
 implementation
@@ -521,10 +521,14 @@ begin
   AssertTrue('zero init', Pos('storel 0', IR) > 0);
 end;
 
-procedure TClassTests.TestCodegen_Constructor_CallsMalloc;
+procedure TClassTests.TestCodegen_Constructor_CallsClassAlloc;
 var
   IR: string;
 begin
+  { Class instances are allocated via _ClassAlloc, which prefixes an 8-byte
+    refcount header before the user pointer so every Blaise class carries the
+    bookkeeping needed for ARC.  The user pointer still points at the vptr
+    (offset 0); field offsets are unchanged. }
   IR := GenIR(
     'program P;'          + LineEnding +
     'type'                + LineEnding +
@@ -535,7 +539,8 @@ begin
     'begin'               + LineEnding +
     '  F := TFoo.Create'  + LineEnding +
     'end.');
-  AssertTrue('calls calloc', Pos('call $calloc', IR) > 0);
+  AssertTrue('calls _ClassAlloc', Pos('call $_ClassAlloc', IR) > 0);
+  AssertTrue('does not call calloc directly', Pos('call $calloc', IR) = 0);
   AssertTrue('stores pointer', Pos('storel', IR) > 0);
 end;
 
@@ -666,11 +671,16 @@ begin
   AnalyseSrc(SrcFree).Free;
 end;
 
-procedure TClassTests.TestCodegen_Free_CallsCFree;
+procedure TClassTests.TestCodegen_Free_CallsClassFree;
 var IR: string;
 begin
+  { Obj.Free is currently lowered to _ClassFree (an RTL helper that bypasses
+    the refcount).  Task 4 switches this to _ClassRelease once the full ARC
+    insertion pass lands; for now it preserves legacy "free immediately"
+    semantics while accounting for the hidden 8-byte header. }
   IR := GenIR(SrcFree);
-  AssertTrue('calls C free()', Pos('call $free', IR) > 0);
+  AssertTrue('calls _ClassFree', Pos('call $_ClassFree', IR) > 0);
+  AssertTrue('does not call C free() directly', Pos('call $free(', IR) = 0);
 end;
 
 initialization
