@@ -386,7 +386,7 @@ begin
     jbuf is at offset 0 so frame ptr can be passed directly to setjmp.
     512 bytes accommodates jmp_buf on Linux x86_64 (200 B) and macOS ARM64 (~312 B). }
   FrameTemp := AllocTemp;
-  EmitLine(Format('  %s =l alloc16 32', [FrameTemp]));
+  EmitLine(Format('  %s =l alloc16 512', [FrameTemp]));
   EmitLine(Format('  call $_PushExcFrame(l %s)', [FrameTemp]));
 
   SjrTemp := AllocTemp;
@@ -430,9 +430,11 @@ begin
   LblExcept := AllocLabel('except_handler');
   LblEnd    := AllocLabel('except_end');
 
-  { Stack-allocate exception frame }
+  { Stack-allocate exception frame (512 bytes, 16-byte aligned).
+    Matches the size contract in blaise_exc.c — must hold jmp_buf (200 B on
+    Linux x86_64, ~312 B on macOS ARM64) plus two pointer fields. }
   FrameTemp := AllocTemp;
-  EmitLine(Format('  %s =l alloc16 32', [FrameTemp]));
+  EmitLine(Format('  %s =l alloc16 512', [FrameTemp]));
   EmitLine(Format('  call $_PushExcFrame(l %s)', [FrameTemp]));
 
   SjrTemp := AllocTemp;
@@ -1532,7 +1534,20 @@ begin
     end;
 
     T := AllocTemp;
-    EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
+    if MDecl.VTableSlot >= 0 then
+    begin
+      { Virtual dispatch: load vptr then function pointer from vtable }
+      VTblTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [VTblTemp, SelfTemp]));
+      FPtrTemp := AllocTemp;
+      SlotOff  := (MDecl.VTableSlot + 1) * 8;
+      ArgTemp  := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
+      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
+      EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FPtrTemp, ArgLine]));
+    end
+    else
+      EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
     Result := T;
     Exit;
   end;

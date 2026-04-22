@@ -1,0 +1,153 @@
+program Phase2Milestone;
+
+{ Phase 2 milestone: singly-linked list using TObject descendants.
+  Exercises:
+    - Class inheritance (TNode → TMarkedNode)
+    - Virtual method dispatch (GetTag override)
+    - Properties (Value, Next, Count, Head)
+    - Self-referential class field (FNext: TNode)
+    - try/finally for guaranteed cleanup
+    - 'is' type test
+  Must compile, produce correct output, and show zero valgrind leaks. }
+
+type
+  { Base list node: integer value + link to next }
+  TNode = class
+    FValue: Integer;
+    FNext:  TNode;
+    function GetTag: Integer; virtual;
+    property Value: Integer read FValue;
+    property Next:  TNode   read FNext;
+  end;
+
+  { Marked node: identical to TNode but GetTag returns 1 instead of 0 }
+  TMarkedNode = class(TNode)
+    function GetTag: Integer; override;
+  end;
+
+  { Singly-linked list, push-at-front / pop-from-front }
+  TLinkedList = class
+    FHead:  TNode;
+    FCount: Integer;
+    procedure Push(Value: Integer);
+    procedure PushMarked(Value: Integer);
+    function  Pop: Integer;
+    procedure Walk;
+    procedure Clear;
+    property Count: Integer read FCount;
+    property Head:  TNode   read FHead;
+  end;
+
+{ ---- TNode ---- }
+
+function TNode.GetTag: Integer;
+begin
+  Result := 0
+end;
+
+{ ---- TMarkedNode ---- }
+
+function TMarkedNode.GetTag: Integer;
+begin
+  Result := 1
+end;
+
+{ ---- TLinkedList ---- }
+
+procedure TLinkedList.Push(Value: Integer);
+var
+  N: TNode;
+begin
+  N        := TNode.Create;
+  N.FValue := Value;
+  N.FNext  := Self.FHead;
+  Self.FHead  := N;
+  Self.FCount := Self.FCount + 1
+end;
+
+procedure TLinkedList.PushMarked(Value: Integer);
+var
+  N: TMarkedNode;
+begin
+  N        := TMarkedNode.Create;
+  N.FValue := Value;
+  N.FNext  := Self.FHead;
+  Self.FHead  := N;
+  Self.FCount := Self.FCount + 1
+end;
+
+function TLinkedList.Pop: Integer;
+var
+  N: TNode;
+begin
+  N           := Self.FHead;
+  Result      := N.FValue;
+  Self.FHead  := N.FNext;
+  Self.FCount := Self.FCount - 1;
+  N.Free
+end;
+
+procedure TLinkedList.Walk;
+var
+  N:      TNode;
+  Marked: Boolean;
+begin
+  N := Self.FHead;
+  while N <> nil do
+  begin
+    Write('  value=');  WriteLn(N.Value);
+    Write('  tag=');    WriteLn(N.GetTag());
+    Marked := N is TMarkedNode;
+    Write('  marked='); WriteLn(Marked);
+    N := N.Next
+  end
+end;
+
+procedure TLinkedList.Clear;
+var
+  N:    TNode;
+  Next: TNode;
+begin
+  N := Self.FHead;
+  while N <> nil do
+  begin
+    Next := N.FNext;
+    N.Free;
+    N := Next
+  end;
+  Self.FHead  := nil;
+  Self.FCount := 0
+end;
+
+{ ---- Main ---- }
+
+var
+  List: TLinkedList;
+  V:    Integer;
+
+begin
+  List := TLinkedList.Create;
+  try
+    { Build list: push 10, 20 (plain), 30 (marked), 40 (plain)
+      After four pushes the front is 40 → 30(marked) → 20 → 10 }
+    List.Push(10);
+    List.Push(20);
+    List.PushMarked(30);
+    List.Push(40);
+
+    Write('count='); WriteLn(List.Count);   { 4 }
+    WriteLn('--- walk ---');
+    List.Walk;                               { 40/tag0, 30/tag1/marked, 20/tag0, 10/tag0 }
+
+    { Pop two values off the front }
+    V := List.Pop();
+    Write('pop='); WriteLn(V);              { 40 }
+    V := List.Pop();
+    Write('pop='); WriteLn(V);              { 30 }
+
+    Write('count_after_pops='); WriteLn(List.Count);   { 2 }
+  finally
+    List.Clear;
+    List.Free
+  end
+end.

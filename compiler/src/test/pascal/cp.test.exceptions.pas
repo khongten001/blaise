@@ -85,6 +85,8 @@ type
     procedure TestCodegen_TryFinally_PushesExcFrame;
     procedure TestCodegen_TryFinally_CallsReraise;
     procedure TestCodegen_TryFinally_FinallyOnBothPaths;
+    procedure TestCodegen_TryExcept_FrameAllocSize;
+    procedure TestCodegen_TryFinally_FrameAllocSize;
 
     { ------------------------------------------------------------------ }
     { Codegen — ARC cleanup on exception paths                            }
@@ -542,6 +544,24 @@ begin
     Inc(Idx);
   end;
   AssertTrue('finally body appears on both paths (>= 2 occurrences)', N >= 2);
+end;
+
+{ Exception frame must be >= sizeof(BlaiseExcFrame) on every supported target.
+  The RTL (blaise_exc.c) fixes the contract at 512 bytes — jmp_buf alone is
+  200 B on Linux x86_64 / ~312 B on macOS ARM64, plus two pointer fields.
+  Undersizing silently corrupts the caller's stack when setjmp writes jbuf. }
+procedure TExceptionTests.TestCodegen_TryExcept_FrameAllocSize;
+var IR: string;
+begin
+  IR := GenIR(SrcTryExcept);
+  AssertTrue('try/except allocates 512-byte exc frame', Pos('alloc16 512', IR) > 0);
+end;
+
+procedure TExceptionTests.TestCodegen_TryFinally_FrameAllocSize;
+var IR: string;
+begin
+  IR := GenIR(SrcTryFinally);
+  AssertTrue('try/finally allocates 512-byte exc frame', Pos('alloc16 512', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

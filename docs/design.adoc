@@ -768,10 +768,13 @@ macOS ARM64 is deferred to Phase 5 alongside self-hosting.
 
 == Phase 3 — Implementation Status
 
-Phase 2 is complete. Phase 3 (type system extensions) is in progress.
-Implementation order: interfaces first (complete), then generics (core
-monomorphization complete; `TList<T>` / `TDictionary<K,V>` RTL additions
-and standalone generic methods remain pending).
+Phase 2 is complete. Phase 3 is substantially complete.
+Interfaces are fully done. Generics: monomorphization, RTL collections
+(`TList<T>`, `TDictionary<K,V>`), `Generics.Defaults`, and generic class
+method implementations in separate blocks are all done.  Two items remain:
+generic standalone function type parameters (`function Min<T>`) and the
+formal milestone valgrind run with `TDictionary<string,Integer>` (which
+requires a `_StringEquals` RTL helper for content-aware key comparison).
 
 === Interfaces
 
@@ -851,22 +854,31 @@ and standalone generic methods remain pending).
 | Generic type declaration parsing
 | Done
 | `type TBox<T> = class ... end;` — Delphi syntax (no `generic`/`specialize`);
-  single and multiple type parameters; inline method bodies with `Self.field`
-  access pattern.  Parsed as `TGenericTypeDef` in the AST.
+  single and multiple type parameters.  Parsed as `TGenericTypeDef` in the AST.
 
-| Generic method declaration parsing
+| Generic class method implementations
+| Done
+| `procedure TList<T>.Add(Value: T);` in a separate block — parser detects
+  `IDENT < TypeParams > DOT IDENT` and stores params in `OwnerTypeParams` on
+  `TMethodDecl`; `LinkGenericClassMethodImpls` transfers bodies to the template
+  before instantiation; `LinkClassMethodImpls` guards against treating these as
+  non-generic qualified names.  RTL units use this form exclusively.
+
+| Generic standalone function type parameters
 | Pending
-| `function Min<T: IComparable>(A, B: T): T;`
+| `function Min<T>(A, B: T): T;` — template registration and on-demand
+  instantiation at call sites.  Partially done (14 tests in
+  `cp.test.genericfuncs.pas` passing); constraint syntax (`T: IComparable`)
+  is not yet supported.
 
 | Monomorphization: instantiation registry
 | Done
 | Demand-driven: on first use of `TBox<Integer>` in a var declaration, the
   semantic analyser creates a substituted clone of the class AST, resolves all
   field and method types with concrete args, analyses method bodies with the
-  concrete class type in scope, and registers the instance in
+  concrete type params in scope, and registers the instance in
   `TProgram.GenericInstances`.  Registry in `TSymbolTable.FGenerics` prevents
-  duplicate instantiations.  Symbol is defined in the global scope so it
-  survives nested scope pops.
+  duplicate instantiations.
 
 | Codegen: monomorphized type emission
 | Done
@@ -876,17 +888,51 @@ and standalone generic methods remain pending).
   `TPair_string_Integer`.
 
 | `TList<T>` in RTL
-| Pending
-| Standard dynamic array-backed list; `Add`, `Delete`, `Count`, `Items[I]`
+| Done
+| `Generics.Collections` unit: `Grow`, `Add`, `Get`, `Delete`, `Clear`,
+  `Free`, `Count` property.  Method bodies in the implementation section using
+  the `TList<T>.Method` qualified-name syntax.  Full test suite in
+  `cp.test.tlist.pas` — all 11 tests passing.
 
 | `TDictionary<K, V>` in RTL
+| Done
+| `Generics.Collections` unit: parallel-array linear-scan map.  `Grow`,
+  `FindKey`, `Add` (upsert), `TryGetValue`, `ContainsKey`, `Remove`, `Count`
+  property.  Integer keys tested.  String key support deferred — requires a
+  content-aware `_StringEquals` RTL helper (pointer equality via `ceql` is
+  not sufficient for string content comparison).
+
+| `Generics.Defaults` in RTL
+| Done
+| `IEqualityComparer<T>` and `IComparer<T>` generic interfaces with
+  `TIntegerEqualityComparer` and `TIntegerComparer` concrete implementations.
+  13 tests in `cp.test.genericdefaults.pas` — all passing.
+
+| `True` / `False` built-in constants
 | Pending
-| Hash-map backed; `Add`, `Remove`, `TryGetValue`, `ContainsKey`
+| Not yet registered in `TSymbolTable.RegisterBuiltins`.  Workaround: use
+  comparison expressions (`Result := X >= 0`) instead of literal `True`/`False`
+  in Blaise source.  5-minute fix; blocking `TryGetValue` idiomatic style.
+
+| ARC for interface references
+| Deferred
+| `[Weak]` attribute for cycle-breaking not yet implemented.
+  Slot zeroing on exception paths done; full ARC insert/release on
+  interface assignment deferred to Phase 3 follow-up.
 
 |===
 
 *Phase 3 milestone:* `TList<Integer>` and `TDictionary<string, Integer>` compile
 and pass a functional test suite. A program using both under valgrind shows zero leaks.
+
+*Milestone blockers (as of 2026-04-22):*
+
+. `TDictionary<string, Integer>` string key support — needs `_StringEquals` RTL
+  helper and codegen integration so `Ptr^ = Key` uses content comparison for
+  string types rather than pointer equality.
+. `True` / `False` built-in constants — needed for idiomatic Boolean return values.
+. Formal valgrind run — a standalone `.pas` program exercising both collections
+  must compile to a native binary and show zero leaks.
 
 == Landscape Notes
 
