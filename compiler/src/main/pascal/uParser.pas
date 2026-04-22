@@ -206,21 +206,43 @@ begin
 end;
 
 procedure TParser.ParseUses(AProg: TProgram);
+var
+  UName: string;
 begin
   Expect(tkUses);
   if not Check(tkIdent) then
     raise EParseError.CreateFmt('Expected unit name after ''uses'' at line %d col %d',
       [FCurrent.Line, FCurrent.Col]);
-  AProg.UsedUnits.Add(FCurrent.Value);
+  UName := FCurrent.Value;
   Advance;
+  while Check(tkDot) do
+  begin
+    Advance;
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected identifier after ''.'' in unit name at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    UName := UName + '.' + FCurrent.Value;
+    Advance;
+  end;
+  AProg.UsedUnits.Add(UName);
   while Check(tkComma) do
   begin
     Advance;
     if not Check(tkIdent) then
       raise EParseError.CreateFmt('Expected unit name after '','' at line %d col %d',
         [FCurrent.Line, FCurrent.Col]);
-    AProg.UsedUnits.Add(FCurrent.Value);
+    UName := FCurrent.Value;
     Advance;
+    while Check(tkDot) do
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected identifier after ''.'' in unit name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      UName := UName + '.' + FCurrent.Value;
+      Advance;
+    end;
+    AProg.UsedUnits.Add(UName);
   end;
   Expect(tkSemicolon);
 end;

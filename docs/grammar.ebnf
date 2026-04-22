@@ -128,8 +128,16 @@ ImplementationSection
     ;
 
 UsesClause
-    = USES IDENT { COMMA IDENT } SEMICOLON
+    = USES UnitName { COMMA UnitName } SEMICOLON
     ;
+
+UnitName
+    = IDENT { DOT IDENT }
+    ;
+
+(* Dotted unit names map to path-separated files: Generics.Collections →
+ * Generics/Collections.pas.  The dot is part of the name, not a field
+ * access operator; it is only valid in the UsesClause position. *)
 
 
 (* ═══════════════════════════════════════════════════════════════════════════

@@ -1,6 +1,7 @@
-unit Collections;
+unit Generics.Collections;
 
-// Blaise RTL — generic collections.
+// Blaise RTL — generic collections (mirrors Delphi's System.Generics.Collections
+// and FPC's Generics.Collections for source-level compatibility).
 //
 // NOTE: This file is compiled by the Blaise compiler, not FPC.
 // It uses Blaise syntax and semantics.

@@ -18,6 +18,7 @@ type
     procedure TestProgramName;
     procedure TestProgramWithUses;
     procedure TestProgramWithMultipleUses;
+    procedure TestProgramWithDottedUnitName;
 
     { Var block }
     procedure TestSingleVarDecl;
@@ -114,6 +115,20 @@ begin
     AssertEquals('Uses count', 2, Prog.UsedUnits.Count);
     AssertEquals('First', 'System', Prog.UsedUnits[0]);
     AssertEquals('Second', 'SysUtils', Prog.UsedUnits[1]);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TParserTests.TestProgramWithDottedUnitName;
+var
+  Prog: TProgram;
+begin
+  Prog := ParseSource('program P; uses Generics.Collections, SysUtils; begin end.');
+  try
+    AssertEquals('Uses count', 2, Prog.UsedUnits.Count);
+    AssertEquals('Dotted unit name', 'Generics.Collections', Prog.UsedUnits[0]);
+    AssertEquals('Plain unit name', 'SysUtils', Prog.UsedUnits[1]);
   finally
     Prog.Free;
   end;
