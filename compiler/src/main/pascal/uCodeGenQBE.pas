@@ -67,6 +67,7 @@ type
     procedure EmitFieldAssignment(AAssign: TFieldAssignment);
     procedure EmitMethodCall(ACall: TMethodCallStmt);
     procedure EmitInheritedCall(ACall: TInheritedCallStmt);
+    procedure EmitCaseStmt(AStmt: TCaseStmt);
     procedure EmitProcCall(ACall: TProcCall);
     procedure EmitPointerWrite(AStmt: TPointerWriteStmt);
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
@@ -182,7 +183,7 @@ end;
 function TCodeGenQBE.QbeTypeOf(AType: TTypeDesc): string;
 begin
   case AType.Kind of
-    tyInteger, tyUInt32, tyBoolean, tyByte: Result := 'w';
+    tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum: Result := 'w';
     tyInt64, tyString:                      Result := 'l';
     tyRecord:                               Result := 'l';  { pointer to aggregate }
     tyClass:                                Result := 'l';  { heap pointer }
@@ -213,7 +214,7 @@ begin
     begin
       VarName := Decl.Names[J];
       case Decl.ResolvedType.Kind of
-        tyInteger, tyUInt32, tyBoolean, tyByte:
+        tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
           begin
             EmitLine(Format('  %%_var_%s =l alloc4 1', [VarName]));
             EmitLine(Format('  storew 0, %%_var_%s', [VarName]));
@@ -441,6 +442,8 @@ begin
     EmitMethodCall(TMethodCallStmt(AStmt))
   else if AStmt is TInheritedCallStmt then
     EmitInheritedCall(TInheritedCallStmt(AStmt))
+  else if AStmt is TCaseStmt then
+    EmitCaseStmt(TCaseStmt(AStmt))
   else if AStmt is TProcCall then
     EmitProcCall(TProcCall(AStmt))
   else if AStmt is TExitStmt then
@@ -1121,6 +1124,67 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitCaseStmt(AStmt: TCaseStmt);
+var
+  SelTemp:     string;
+  ValTemp:     string;
+  CmpTemp:     string;
+  NextLbl:     string;
+  BranchLbl:   string;
+  ElseLbl:     string;
+  EndLbl:      string;
+  Branch:      TCaseBranch;
+  I, J:        Integer;
+  BranchLabels: TStringList;
+begin
+  SelTemp  := EmitExpr(AStmt.Selector);
+  EndLbl   := AllocLabel('case_end');
+  ElseLbl  := AllocLabel('case_else');
+
+  BranchLabels := TStringList.Create;
+  try
+    for I := 0 to AStmt.Branches.Count - 1 do
+      BranchLabels.Add(AllocLabel('case_br'));
+
+    { Dispatch block: for each branch test all its values;
+      on no match fall through to next branch test or else }
+    for I := 0 to AStmt.Branches.Count - 1 do
+    begin
+      Branch    := TCaseBranch(AStmt.Branches[I]);
+      BranchLbl := BranchLabels[I];
+      for J := 0 to Branch.Values.Count - 1 do
+      begin
+        ValTemp := EmitExpr(TASTExpr(Branch.Values[J]));
+        CmpTemp := AllocTemp;
+        NextLbl := AllocLabel('case_next');
+        EmitLine(Format('  %s =w ceqw %s, %s', [CmpTemp, SelTemp, ValTemp]));
+        EmitLine(Format('  jnz %s, @%s, @%s', [CmpTemp, BranchLbl, NextLbl]));
+        EmitLine('@' + NextLbl);
+      end;
+    end;
+    EmitLine(Format('  jmp @%s', [ElseLbl]));
+
+    { Branch bodies }
+    for I := 0 to AStmt.Branches.Count - 1 do
+    begin
+      Branch    := TCaseBranch(AStmt.Branches[I]);
+      BranchLbl := BranchLabels[I];
+      EmitLine('@' + BranchLbl);
+      EmitStmt(Branch.Stmt);
+      EmitLine(Format('  jmp @%s', [EndLbl]));
+    end;
+
+    EmitLine('@' + ElseLbl);
+    if AStmt.ElseStmt <> nil then
+      EmitStmt(AStmt.ElseStmt);
+    EmitLine(Format('  jmp @%s', [EndLbl]));
+
+    EmitLine('@' + EndLbl);
+  finally
+    BranchLabels.Free;
+  end;
+end;
+
 procedure TCodeGenQBE.EmitInheritedCall(ACall: TInheritedCallStmt);
 var
   MDecl:    TMethodDecl;
@@ -1175,7 +1239,7 @@ begin
     end
     else
     case Par.ResolvedType.Kind of
-      tyInteger, tyUInt32, tyBoolean, tyByte:
+      tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
         begin
           EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
           EmitLine(Format('  storew %%_par_%s, %%_var_%s',
@@ -1664,7 +1728,7 @@ begin
     else
     begin
       case Par.ResolvedType.Kind of
-        tyInteger, tyUInt32, tyBoolean, tyByte:
+        tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
           begin
             EmitLine(Format('  %%_var_%s =l alloc4 1', [Par.ParamName]));
             EmitLine(Format('  storew %%_par_%s, %%_var_%s',
@@ -2086,7 +2150,7 @@ begin
         begin
           ArgTemp := EmitExpr(TASTExpr(Args[I]));
           if TASTExpr(Args[I]).ResolvedType.Kind in
-             [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64] then
+             [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum] then
             ArgLine := ArgLine + Format(', w 0, w %s', [ArgTemp])
           else
             ArgLine := ArgLine + Format(', w 1, l %s', [ArgTemp]);

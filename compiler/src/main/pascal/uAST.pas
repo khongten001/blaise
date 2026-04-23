@@ -175,6 +175,24 @@ type
   { 'break' statement — exits the innermost loop. }
   TBreakStmt = class(TASTStmt);
 
+  { One arm of a case statement: one or more ordinal values → body }
+  TCaseBranch = class
+  public
+    Values: TObjectList;  { owned list of TASTExpr (integer/enum literal values) }
+    Stmt:   TASTStmt;     { owned }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TCaseStmt = class(TASTStmt)
+  public
+    Selector: TASTExpr;    { owned — must be ordinal type }
+    Branches: TObjectList; { owned list of TCaseBranch }
+    ElseStmt: TASTStmt;    { owned; nil if no else clause }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   TFieldAssignment = class(TASTStmt)
   public
     RecordName:    string;
@@ -270,8 +288,16 @@ type
   {  Type section                                                       }
   { ------------------------------------------------------------------ }
 
-  { Abstract base for type definitions (currently only TRecordTypeDef). }
+  { Abstract base for type definitions. }
   TASTTypeDef = class(TASTNode);
+
+  { Enum type definition: type TDir = (dNorth, dSouth, dEast, dWest); }
+  TEnumTypeDef = class(TASTTypeDef)
+  public
+    Members: TStringList;  { owned — ordered member names }
+    constructor Create;
+    destructor Destroy; override;
+  end;
 
   TFieldDecl = class(TASTNode)
   public
@@ -904,6 +930,51 @@ begin
   Decls.Free;
   ProcDecls.Free;
   Stmts.Free;
+  inherited Destroy;
+end;
+
+{ TEnumTypeDef }
+
+constructor TEnumTypeDef.Create;
+begin
+  inherited Create;
+  Members := TStringList.Create;
+end;
+
+destructor TEnumTypeDef.Destroy;
+begin
+  Members.Free;
+  inherited Destroy;
+end;
+
+{ TCaseBranch }
+
+constructor TCaseBranch.Create;
+begin
+  inherited Create;
+  Values := TObjectList.Create(True);
+end;
+
+destructor TCaseBranch.Destroy;
+begin
+  Stmt.Free;
+  Values.Free;
+  inherited Destroy;
+end;
+
+{ TCaseStmt }
+
+constructor TCaseStmt.Create;
+begin
+  inherited Create;
+  Branches := TObjectList.Create(True);
+end;
+
+destructor TCaseStmt.Destroy;
+begin
+  ElseStmt.Free;
+  Branches.Free;
+  Selector.Free;
   inherited Destroy;
 end;
 

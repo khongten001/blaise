@@ -31,7 +31,8 @@ type
     tyInterface,  { Zero-GUID interface reference (Phase 3) }
     tyVoid,       { No value — used as procedure return type }
     tyNil,        { Pseudo-type for the nil literal; compatible with tyClass }
-    tyPointer     { Typed or untyped pointer — QBE 'l'; see TPointerTypeDesc }
+    tyPointer,    { Typed or untyped pointer — QBE 'l'; see TPointerTypeDesc }
+    tyEnum        { Enumeration type — stored as QBE 'w' (Integer); see TEnumTypeDesc }
   );
 
   TTypeDesc = class
@@ -53,6 +54,17 @@ type
   TPointerTypeDesc = class(TTypeDesc)
   public
     BaseType: TTypeDesc;  { not owned; nil = untyped Pointer }
+  end;
+
+  { Enum type descriptor.  Members are ordered; ordinal values are 0..N-1.
+    Stored as QBE 'w' (same as Integer).  Each member is also registered in
+    the symbol table as a skConstant with this type descriptor. }
+  TEnumTypeDesc = class(TTypeDesc)
+  public
+    Members: TStringList;  { owned — ordered member names }
+    constructor Create(const AName: string);
+    destructor  Destroy; override;
+    function    OrdinalOf(const AMember: string): Integer;
   end;
 
   { Field entry inside a record type descriptor. }
@@ -258,6 +270,7 @@ type
 
     { Creates a typed pointer descriptor '^BaseType'. Registered in FAllTypes. }
     function NewPointerType(const AName: string; ABase: TTypeDesc): TPointerTypeDesc;
+    function NewEnumType(const AName: string): TEnumTypeDesc;
 
     { Generic template registry — stores TGenericTypeDef as TObject to avoid
       circular unit dependency with uAST. Callers cast the result. }
@@ -284,7 +297,7 @@ implementation
 
 function TTypeDesc.IsNumeric: Boolean;
 begin
-  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte];
+  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyEnum];
 end;
 
 function TTypeDesc.IsString: Boolean;
@@ -294,7 +307,7 @@ end;
 
 function TTypeDesc.IsOrdinal: Boolean;
 begin
-  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean];
+  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean, tyEnum];
 end;
 
 function TTypeDesc.IsRecord: Boolean;
@@ -305,7 +318,7 @@ end;
 function TTypeDesc.ByteSize: Integer;
 begin
   case Kind of
-    tyInteger, tyUInt32: Result := 4;
+    tyInteger, tyUInt32, tyEnum: Result := 4;
     tyInt64:             Result := 8;
     tyByte, tyBoolean:   Result := 1;
     tyString:            Result := 8;  { pointer size on 64-bit }
@@ -319,7 +332,7 @@ end;
 function TTypeDesc.AllocAlign: Integer;
 begin
   case Kind of
-    tyInteger, tyUInt32: Result := 4;
+    tyInteger, tyUInt32, tyEnum: Result := 4;
     tyByte, tyBoolean:   Result := 4;  { round up to word boundary }
     tyInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
@@ -657,6 +670,37 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
+{ TEnumTypeDesc                                                       }
+{ ------------------------------------------------------------------ }
+
+constructor TEnumTypeDesc.Create(const AName: string);
+begin
+  inherited Create;
+  Kind    := tyEnum;
+  Name    := AName;
+  Members := TStringList.Create;
+end;
+
+destructor TEnumTypeDesc.Destroy;
+begin
+  Members.Free;
+  inherited Destroy;
+end;
+
+function TEnumTypeDesc.OrdinalOf(const AMember: string): Integer;
+var
+  I: Integer;
+begin
+  for I := 0 to Members.Count - 1 do
+    if SameText(Members[I], AMember) then
+    begin
+      Result := I;
+      Exit;
+    end;
+  Result := -1;
+end;
+
+{ ------------------------------------------------------------------ }
 { TSymbolTable                                                        }
 { ------------------------------------------------------------------ }
 
@@ -712,6 +756,12 @@ begin
   Result.Kind     := tyPointer;
   Result.Name     := AName;
   Result.BaseType := ABase;
+  FAllTypes.Add(Result);
+end;
+
+function TSymbolTable.NewEnumType(const AName: string): TEnumTypeDesc;
+begin
+  Result := TEnumTypeDesc.Create(AName);
   FAllTypes.Add(Result);
 end;
 

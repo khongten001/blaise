@@ -139,6 +139,13 @@ type
     procedure TestRun_GetEnvVar_Path;
     procedure TestRun_Halt_ExitCode;
     procedure TestRun_MultiTypeBlock_BothClassesWork;
+    { ------------------------------------------------------------------ }
+    { case statements and enum types                                       }
+    { ------------------------------------------------------------------ }
+    procedure TestRun_Case_IntegerBranch;
+    procedure TestRun_Case_ElseBranch;
+    procedure TestRun_Enum_OrdinalValues;
+    procedure TestRun_Enum_InCase;
   end;
 
 implementation
@@ -1870,6 +1877,111 @@ begin
   AssertTrue('compile+run',
     CompileAndRun(SrcMultiTypeBlock, Output, RCode, []));
   AssertEquals('TCounter(3).Double = 6', '6', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ case / enum e2e tests                                               }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcCaseInt =
+    'program P;'                           + LineEnding +
+    'var N: Integer;'                      + LineEnding +
+    'begin'                                + LineEnding +
+    '  N := 2;'                            + LineEnding +
+    '  case N of'                          + LineEnding +
+    '    1: WriteLn(11);'                  + LineEnding +
+    '    2: WriteLn(22);'                  + LineEnding +
+    '    3: WriteLn(33)'                   + LineEnding +
+    '  end'                                + LineEnding +
+    'end.';
+
+  SrcCaseElse =
+    'program P;'                           + LineEnding +
+    'var N: Integer;'                      + LineEnding +
+    'begin'                                + LineEnding +
+    '  N := 7;'                            + LineEnding +
+    '  case N of'                          + LineEnding +
+    '    1: WriteLn(1);'                   + LineEnding +
+    '    2: WriteLn(2)'                    + LineEnding +
+    '  else'                               + LineEnding +
+    '    WriteLn(99)'                      + LineEnding +
+    '  end'                                + LineEnding +
+    'end.';
+
+  SrcEnumOrdinal =
+    'program P;'                                        + LineEnding +
+    'type'                                              + LineEnding +
+    '  TColor = (cRed, cGreen, cBlue);'                + LineEnding +
+    'var C: TColor;'                                    + LineEnding +
+    'begin'                                             + LineEnding +
+    '  C := cRed;   WriteLn(C);'                       + LineEnding +
+    '  C := cGreen; WriteLn(C);'                       + LineEnding +
+    '  C := cBlue;  WriteLn(C)'                        + LineEnding +
+    'end.';
+
+  SrcEnumCase =
+    'program P;'                                        + LineEnding +
+    'type'                                              + LineEnding +
+    '  TDir = (dNorth, dSouth, dEast, dWest);'         + LineEnding +
+    'var D: TDir;'                                      + LineEnding +
+    'begin'                                             + LineEnding +
+    '  D := dEast;'                                     + LineEnding +
+    '  case D of'                                       + LineEnding +
+    '    dNorth: WriteLn(0);'                           + LineEnding +
+    '    dSouth: WriteLn(1);'                           + LineEnding +
+    '    dEast:  WriteLn(2);'                           + LineEnding +
+    '    dWest:  WriteLn(3)'                            + LineEnding +
+    '  end'                                             + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_Case_IntegerBranch;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcCaseInt, Output, RCode, []));
+  AssertEquals('case N=2 → 22', '22', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_Case_ElseBranch;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcCaseElse, Output, RCode, []));
+  AssertEquals('case N=7 → else → 99', '99', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_Enum_OrdinalValues;
+var
+  Output: string;
+  RCode:  Integer;
+  Lines:  TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcEnumOrdinal, Output, RCode, []));
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('cRed=0',   '0', Lines[0]);
+    AssertEquals('cGreen=1', '1', Lines[1]);
+    AssertEquals('cBlue=2',  '2', Lines[2]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ETests.TestRun_Enum_InCase;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcEnumCase, Output, RCode, []));
+  AssertEquals('dEast=2', '2', Trim(Output));
 end;
 
 initialization

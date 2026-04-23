@@ -64,6 +64,7 @@ type
     function  ParseBlock: TBlock;
     procedure ParseTypeSection(ABlock: TBlock);
     procedure ParseTypeDecl(ABlock: TBlock);
+    function  ParseEnumDef: TEnumTypeDef;
     function  ParseRecordDef: TRecordTypeDef;
     function  ParseGenericName: string;  { reads IDENT optionally followed by '<' TypeArgs '>' }
     function  ParseClassDef: TClassTypeDef;
@@ -84,6 +85,7 @@ type
     function  ParseTryStmt: TASTStmt;
     function  ParseRaiseStmt: TRaiseStmt;
     function  ParseInheritedStmt: TInheritedCallStmt;
+    function  ParseCaseStmt: TCaseStmt;
     function  ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
     function  ParseCompoundStmt: TCompoundStmt;
     function  ParseExpr: TASTExpr;
@@ -418,15 +420,45 @@ begin
         TD.Def := ParseClassDef
       else if Check(tkIntf) then
         TD.Def := ParseInterfaceDef
+      else if Check(tkLParen) then
+        TD.Def := ParseEnumDef
       else
         raise EParseError.CreateFmt(
-          'Expected ''record'', ''class'', or ''interface'' at line %d col %d',
+          'Expected ''record'', ''class'', ''interface'', or ''('' at line %d col %d',
           [FCurrent.Line, FCurrent.Col]);
     end;
     Expect(tkSemicolon);
     ABlock.TypeDecls.Add(TD);
   except
     TD.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseEnumDef: TEnumTypeDef;
+begin
+  Result := TEnumTypeDef.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkLParen);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt('Expected enum member at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.Members.Add(FCurrent.Value);
+    Advance;
+    while Check(tkComma) do
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt('Expected enum member at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.Members.Add(FCurrent.Value);
+      Advance;
+    end;
+    Expect(tkRParen);
+  except
+    Result.Free;
     raise;
   end;
 end;
@@ -991,6 +1023,12 @@ begin
     Exit;
   end;
 
+  if Check(tkCase) then
+  begin
+    Result := ParseCaseStmt;
+    Exit;
+  end;
+
   if Check(tkBegin) then
   begin
     Result := ParseCompoundStmt;
@@ -1321,6 +1359,51 @@ begin
         Advance
       else
         Break;
+    end;
+    Expect(tkEnd);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseCaseStmt: TCaseStmt;
+var
+  Branch: TCaseBranch;
+  Stmt:   TASTStmt;
+begin
+  Result := TCaseStmt.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkCase);
+    Result.Selector := ParseExpr;
+    Expect(tkOf);
+    { Parse branches: value [, value]* : stmt }
+    while not (Check(tkEnd) or Check(tkElse) or Check(tkEOF)) do
+    begin
+      Branch := TCaseBranch.Create;
+      Branch.Values.Add(ParseExpr);
+      while Check(tkComma) do
+      begin
+        Advance;
+        Branch.Values.Add(ParseExpr);
+      end;
+      Expect(tkColon);
+      Stmt := ParseStmt;
+      { consume optional trailing semicolon between branches }
+      if Check(tkSemicolon) then Advance;
+      if Stmt <> nil then
+        Branch.Stmt := Stmt
+      else
+        Branch.Stmt := TCompoundStmt.Create;  { empty branch }
+      Result.Branches.Add(Branch);
+    end;
+    if Check(tkElse) then
+    begin
+      Advance;  { consume 'else' }
+      Result.ElseStmt := ParseStmt;
+      if Check(tkSemicolon) then Advance;
     end;
     Expect(tkEnd);
   except

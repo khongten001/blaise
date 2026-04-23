@@ -61,6 +61,8 @@ type
     tkExit,
     tkBreak,
     tkInherited,
+    tkCase,
+    tkOf,
     { Identifier }
     tkIdent,
     { Arithmetic operators }
@@ -160,6 +162,8 @@ begin
   else if AUpper = 'NOT'            then Result := tkNot
   else if AUpper = 'EXIT'           then Result := tkExit
   else if AUpper = 'BREAK'          then Result := tkBreak
+  else if AUpper = 'CASE'           then Result := tkCase
+  else if AUpper = 'OF'             then Result := tkOf
   else if AUpper = 'INHERITED'      then Result := tkInherited
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
@@ -233,6 +237,8 @@ begin
         else if text = 'OVERRIDE' then Result.Kind := tkOverride
         else if text = 'EXIT'     then Result.Kind := tkExit
         else if text = 'BREAK'    then Result.Kind := tkBreak
+        else if text = 'CASE'     then Result.Kind := tkCase
+        else if text = 'OF'       then Result.Kind := tkOf
         else                           Result.Kind := tkIdent;
         Result.Value := FTok.TokenText;
       end;

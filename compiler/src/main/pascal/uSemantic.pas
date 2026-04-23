@@ -64,6 +64,7 @@ type
     procedure AnalyseProcCall(ACall: TProcCall);
     procedure AnalyseMethodCall(ACall: TMethodCallStmt);
     procedure AnalyseInheritedCall(ACall: TInheritedCallStmt);
+    procedure AnalyseCaseStmt(AStmt: TCaseStmt);
     function  AnalyseMethodCallExpr(AExpr: TMethodCallExpr): TTypeDesc;
     function  AnalyseFuncCallExpr(AExpr: TFuncCallExpr): TTypeDesc;
     function  AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
@@ -271,6 +272,10 @@ begin
        (TPointerTypeDesc(AExpected).BaseType = TPointerTypeDesc(AActual).BaseType) then
       Exit;
   end;
+  { enum ↔ enum (same type) already handled by = check above;
+    enum ↔ integer: allow assignment between enum and integer types }
+  if (AExpected.Kind = tyEnum) and AActual.IsNumeric then Exit;
+  if (AActual.Kind  = tyEnum) and AExpected.IsNumeric then Exit;
   { subtype assignment: TDerived → TBase is allowed }
   if IsSubtypeOf(AActual, AExpected) then
     Exit;
@@ -1038,6 +1043,10 @@ var
   PropDecl:   TPropertyDecl;
   PropInfo:   TPropertyInfo;
   PropType:   TTypeDesc;
+  EnumDesc:   TEnumTypeDesc;
+  EnumDef:    TEnumTypeDef;
+  MName:      string;
+  MSym:       TSymbol;
 begin
   { Pass 1 — register all type symbols with empty descriptors.
     This allows self-referential field types to resolve in pass 2. }
@@ -1071,9 +1080,31 @@ begin
       end;
       Continue;
     end
+    else if TD.Def is TEnumTypeDef then
+    begin
+      { Enum type: register the type AND each member as a skConstant }
+      EnumDef  := TEnumTypeDef(TD.Def);
+      EnumDesc := FTable.NewEnumType(TD.Name);
+      for K := 0 to EnumDef.Members.Count - 1 do
+      begin
+        MName           := EnumDef.Members[K];
+        EnumDesc.Members.Add(MName);
+        MSym            := TSymbol.Create(MName, skConstant, EnumDesc);
+        MSym.ConstValue := K;
+        if not FTable.Define(MSym) then
+          MSym.Free;
+      end;
+      Sym := TSymbol.Create(TD.Name, skType, EnumDesc);
+      if not FTable.Define(Sym) then
+      begin
+        Sym.Free;
+        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
+      end;
+      Continue;
+    end
     else
     begin
-      SemanticError('Only record, class, or interface type definitions are supported',
+      SemanticError('Only record, class, interface, or enum type definitions are supported',
         TD.Line, TD.Col);
       Continue;
     end;
@@ -1090,9 +1121,10 @@ begin
   begin
     TD := TTypeDecl(ABlock.TypeDecls[I]);
 
-    { Generic templates have no concrete descriptor — skip }
+    { Generic templates and enum types need no pass-2 processing — skip }
     if TD.Def is TGenericTypeDef then Continue;
     if TD.Def is TGenericInterfaceDef then Continue;
+    if TD.Def is TEnumTypeDef then Continue;
 
     { Interface types: register methods and resolve optional parent }
     if TD.Def is TInterfaceTypeDef then
@@ -1768,7 +1800,9 @@ begin
   else if AStmt is TPointerWriteStmt then
     AnalysePointerWriteStmt(TPointerWriteStmt(AStmt))
   else if AStmt is TProcCall then
-    AnalyseProcCall(TProcCall(AStmt));
+    AnalyseProcCall(TProcCall(AStmt))
+  else if AStmt is TCaseStmt then
+    AnalyseCaseStmt(TCaseStmt(AStmt));
 end;
 
 procedure TSemanticAnalyser.AnalyseMethodCall(ACall: TMethodCallStmt);
@@ -2683,6 +2717,32 @@ begin
       'Cannot dereference untyped ''Pointer'' — use a typed pointer (e.g. ^Integer)',
       AExpr.Line, AExpr.Col);
   Result := TPointerTypeDesc(PtrType).BaseType;
+end;
+
+procedure TSemanticAnalyser.AnalyseCaseStmt(AStmt: TCaseStmt);
+var
+  SelType:  TTypeDesc;
+  Branch:   TCaseBranch;
+  ValType:  TTypeDesc;
+  I, J:     Integer;
+begin
+  SelType := AnalyseExpr(AStmt.Selector);
+  if not SelType.IsOrdinal then
+    SemanticError(
+      Format('case selector must be ordinal type, got ''%s''', [SelType.Name]),
+      AStmt.Line, AStmt.Col);
+  for I := 0 to AStmt.Branches.Count - 1 do
+  begin
+    Branch := TCaseBranch(AStmt.Branches[I]);
+    for J := 0 to Branch.Values.Count - 1 do
+    begin
+      ValType := AnalyseExpr(TASTExpr(Branch.Values[J]));
+      CheckTypesMatch(SelType, ValType, 'case value', AStmt.Line, AStmt.Col);
+    end;
+    AnalyseStmt(Branch.Stmt);
+  end;
+  if AStmt.ElseStmt <> nil then
+    AnalyseStmt(AStmt.ElseStmt);
 end;
 
 procedure TSemanticAnalyser.AnalysePointerWriteStmt(AStmt: TPointerWriteStmt);
