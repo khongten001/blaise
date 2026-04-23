@@ -126,7 +126,7 @@ var
 begin
   IR := GenerateIR('program P; begin end.');
   AssertTrue('Has export function $main',
-    IRContains(IR, 'export function w $main()'));
+    IRContains(IR, 'export function w $main('));
 end;
 
 procedure TCodeGenTests.TestOutput_HasRetZero;

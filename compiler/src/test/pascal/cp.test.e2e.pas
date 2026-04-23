@@ -129,6 +129,16 @@ type
     procedure TestRun_TStringList_AddGet;
     procedure TestRun_TStringList_Find_Sorted;
     procedure TestRun_Collections_Valgrind;
+    { ------------------------------------------------------------------ }
+    { Self-hosting: file I/O, CLI args, multi-type blocks                 }
+    { ------------------------------------------------------------------ }
+    procedure TestRun_ParamStr_PrintsArg;
+    procedure TestRun_ParamCount_WithArgs;
+    procedure TestRun_ReadWriteFile_RoundTrip;
+    procedure TestRun_FileExists_TrueAndFalse;
+    procedure TestRun_GetEnvVar_Path;
+    procedure TestRun_Halt_ExitCode;
+    procedure TestRun_MultiTypeBlock_BothClassesWork;
   end;
 
 implementation
@@ -1686,6 +1696,180 @@ begin
     if Log = '' then Log := '(valgrind produced no output)';
     Fail('Collections Valgrind check failed:' + LineEnding + Log);
   end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Self-hosting e2e tests                                              }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcParamStrPrint =
+    'program P;'                                      + LineEnding +
+    'begin'                                           + LineEnding +
+    '  WriteLn(ParamStr(1))'                          + LineEnding +
+    'end.';
+
+  SrcParamCountPrint =
+    'program P;'                                      + LineEnding +
+    'begin'                                           + LineEnding +
+    '  WriteLn(ParamCount)'                           + LineEnding +
+    'end.';
+
+  SrcReadWriteFile =
+    'program P;'                                      + LineEnding +
+    'var S: string;'                                  + LineEnding +
+    'begin'                                           + LineEnding +
+    '  WriteFile(ParamStr(1), ''hello file'');'        + LineEnding +
+    '  S := ReadFile(ParamStr(1));'                   + LineEnding +
+    '  WriteLn(S)'                                    + LineEnding +
+    'end.';
+
+  SrcFileExistsTest =
+    'program P;'                                      + LineEnding +
+    'begin'                                           + LineEnding +
+    '  WriteLn(FileExists(ParamStr(1)));'             + LineEnding +
+    '  WriteLn(FileExists(''__no_such_file_xyz__''))' + LineEnding +
+    'end.';
+
+  SrcGetEnvVarTest =
+    'program P;'                                      + LineEnding +
+    'var S: string;'                                  + LineEnding +
+    'begin'                                           + LineEnding +
+    '  S := GetEnvVar(''BLAISE_TEST_VAR'');'          + LineEnding +
+    '  WriteLn(S)'                                    + LineEnding +
+    'end.';
+
+  SrcHaltTest =
+    'program P;'                                      + LineEnding +
+    'begin'                                           + LineEnding +
+    '  WriteLn(42);'                                  + LineEnding +
+    '  Halt(7)'                                       + LineEnding +
+    'end.';
+
+  SrcMultiTypeBlock =
+    'program P;'                                      + LineEnding +
+    'type'                                            + LineEnding +
+    '  TCounter = class'                              + LineEnding +
+    '    FN: Integer;'                                + LineEnding +
+    '    procedure Inc;'                              + LineEnding +
+    '    begin Self.FN := Self.FN + 1 end;'           + LineEnding +
+    '    property Value: Integer read FN;'            + LineEnding +
+    '  end;'                                          + LineEnding +
+    'var N: Integer;'                                 + LineEnding +
+    'type'                                            + LineEnding +
+    '  TDoubler = class'                              + LineEnding +
+    '    function Double(X: Integer): Integer;'       + LineEnding +
+    '    begin Result := X * 2 end;'                  + LineEnding +
+    '  end;'                                          + LineEnding +
+    'var'                                             + LineEnding +
+    '  C: TCounter;'                                  + LineEnding +
+    '  D: TDoubler;'                                  + LineEnding +
+    'begin'                                           + LineEnding +
+    '  C := TCounter.Create;'                         + LineEnding +
+    '  D := TDoubler.Create;'                         + LineEnding +
+    '  C.Inc; C.Inc; C.Inc;'                          + LineEnding +
+    '  N := D.Double(C.Value);'                       + LineEnding +
+    '  WriteLn(N)'                                    + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_ParamStr_PrintsArg;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcParamStrPrint, Output, RCode, ['hello']));
+  AssertEquals('ParamStr(1) = hello', 'hello', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_ParamCount_WithArgs;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcParamCountPrint, Output, RCode, ['a', 'b', 'c']));
+  AssertEquals('ParamCount = 3', '3', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_ReadWriteFile_RoundTrip;
+var
+  Output: string;
+  RCode:  Integer;
+  TmpFile: string;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  TmpFile := GetTempFileName('', 'blaise_rwtest');
+  try
+    AssertTrue('compile+run',
+      CompileAndRun(SrcReadWriteFile, Output, RCode, [TmpFile]));
+    AssertEquals('ReadFile content', 'hello file', Trim(Output));
+  finally
+    if FileExists(TmpFile) then DeleteFile(TmpFile);
+  end;
+end;
+
+procedure TE2ETests.TestRun_FileExists_TrueAndFalse;
+var
+  Output: string;
+  RCode:  Integer;
+  TmpFile: string;
+  Lines:   TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  TmpFile := GetTempFileName('', 'blaise_fe_test');
+  { Create the file so it exists }
+  with TStringList.Create do begin Add('x'); SaveToFile(TmpFile); Free; end;
+  try
+    AssertTrue('compile+run',
+      CompileAndRun(SrcFileExistsTest, Output, RCode, [TmpFile]));
+    Lines := TStringList.Create;
+    try
+      Lines.Text := Trim(Output);
+      AssertEquals('existing file = 1',     '1', Lines[0]);
+      AssertEquals('missing file = 0',      '0', Lines[1]);
+    finally
+      Lines.Free;
+    end;
+  finally
+    if FileExists(TmpFile) then DeleteFile(TmpFile);
+  end;
+end;
+
+procedure TE2ETests.TestRun_GetEnvVar_Path;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcGetEnvVarTest, Output, RCode, []));
+  AssertTrue('GetEnvVar(BLAISE_TEST_VAR) returns empty when unset',
+    Trim(Output) = '');
+end;
+
+procedure TE2ETests.TestRun_Halt_ExitCode;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  CompileAndRun(SrcHaltTest, Output, RCode, []);
+  AssertEquals('WriteLn before Halt', '42', Trim(Output));
+  AssertEquals('Halt(7) sets exit code', 7, RCode);
+end;
+
+procedure TE2ETests.TestRun_MultiTypeBlock_BothClassesWork;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcMultiTypeBlock, Output, RCode, []));
+  AssertEquals('TCounter(3).Double = 6', '6', Trim(Output));
 end;
 
 initialization

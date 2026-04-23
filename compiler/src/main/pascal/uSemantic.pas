@@ -2207,6 +2207,68 @@ begin
     Exit;
   end;
 
+  { CLI arguments }
+  if SameText(AExpr.Name, 'ParamCount') then
+  begin
+    if AExpr.Args.Count <> 0 then
+      SemanticError('ParamCount takes no arguments', AExpr.Line, AExpr.Col);
+    Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'ParamStr') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('ParamStr requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  { File I/O functions }
+  if SameText(AExpr.Name, 'ReadFile') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('ReadFile requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'FileExists') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('FileExists requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeBoolean;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  { Environment and process functions }
+  if SameText(AExpr.Name, 'GetEnvVar') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('GetEnvVar requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Exec') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('Exec requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
   Idx := FProcIndex.IndexOf(AExpr.Name);
   if Idx < 0 then
     SemanticError(
@@ -2334,6 +2396,10 @@ begin
       TIdentExpr(AExpr).IsConstant := True;
       TIdentExpr(AExpr).ConstValue := Sym.ConstValue;
     end;
+    { Bare builtin function used without parens (e.g. ParamCount) — mark for codegen }
+    if (Sym.Kind = skFunction) and (Sym.TypeDesc <> nil) and
+       (FProcIndex.IndexOf(TIdentExpr(AExpr).Name) < 0) then
+      TIdentExpr(AExpr).IsNoArgFuncCall := True;
     Result := Sym.TypeDesc;
   end
   else if AExpr is TFuncCallExpr then

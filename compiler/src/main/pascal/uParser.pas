@@ -273,12 +273,13 @@ begin
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
 
-    if Check(tkType) then
-      ParseTypeSection(Result);
-
-    while Check(tkVar) or Check(tkProcedure) or Check(tkFunction) do
+    { Accept any number of type/var/procedure/function sections in any order,
+      as required when concatenating multiple Pascal units into one file. }
+    while Check(tkType) or Check(tkVar) or Check(tkProcedure) or Check(tkFunction) do
     begin
-      if Check(tkVar) then
+      if Check(tkType) then
+        ParseTypeSection(Result)
+      else if Check(tkVar) then
         ParseVarBlock(Result)
       else
         ParseStandaloneDecl(Result);

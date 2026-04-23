@@ -54,6 +54,7 @@ uses
   cp.test.weakref,
   cp.test.stringops,
   cp.test.collections,
+  cp.test.selfhosting,
   cp.test.e2e;
 
 var

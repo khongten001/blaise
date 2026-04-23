@@ -810,6 +810,18 @@ begin
   Sym := TSymbol.Create('ZeroMem',      skProcedure, nil); Define(Sym);
   Sym := TSymbol.Create('_ClassAddRef', skProcedure, nil); Define(Sym);
   Sym := TSymbol.Create('_ClassRelease',skProcedure, nil); Define(Sym);
+  { CLI arguments }
+  Sym := TSymbol.Create('ParamCount', skFunction,  FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('ParamStr',   skFunction,  FTypeString);  Define(Sym);
+  { File I/O }
+  Sym := TSymbol.Create('ReadFile',   skFunction,  FTypeString);  Define(Sym);
+  Sym := TSymbol.Create('WriteFile',  skProcedure, nil);          Define(Sym);
+  Sym := TSymbol.Create('AppendFile', skProcedure, nil);          Define(Sym);
+  Sym := TSymbol.Create('FileExists', skFunction,  FTypeBoolean); Define(Sym);
+  { Environment and process }
+  Sym := TSymbol.Create('GetEnvVar',  skFunction,  FTypeString);  Define(Sym);
+  Sym := TSymbol.Create('Exec',       skFunction,  FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('Halt',       skProcedure, nil);          Define(Sym);
 end;
 
 function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;
