@@ -1902,14 +1902,30 @@ end;
 
 procedure TSemanticAnalyser.AnalyseAssignment(AAssign: TAssignment);
 var
-  VarSym:   TSymbol;
+  VarSym:  TSymbol;
+  FldInfo: TFieldInfo;
   ExprType: TTypeDesc;
 begin
   VarSym := FTable.Lookup(AAssign.Name);
   if VarSym = nil then
+  begin
+    { Try implicit Self.Field }
+    if FCurrentClass <> nil then
+    begin
+      FldInfo := FCurrentClass.FindField(AAssign.Name);
+      if FldInfo <> nil then
+      begin
+        AAssign.ImplicitSelfField := FldInfo;
+        AAssign.ResolvedLhsType   := FldInfo.TypeDesc;
+        ExprType := AnalyseExpr(AAssign.Expr);
+        CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
+        Exit;
+      end;
+    end;
     SemanticError(
       Format('Undeclared variable ''%s''', [AAssign.Name]),
       AAssign.Line, AAssign.Col);
+  end;
   if not (VarSym.Kind in [skVariable, skVarParameter]) then
     SemanticError(
       Format('''%s'' is not a variable', [AAssign.Name]),
@@ -2462,7 +2478,8 @@ end;
 
 function TSemanticAnalyser.AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
 var
-  Sym: TSymbol;
+  Sym:     TSymbol;
+  FldInfo: TFieldInfo;
 begin
   if AExpr is TNilLiteral then
     Result := FTable.TypeNil
@@ -2474,9 +2491,24 @@ begin
   begin
     Sym := FTable.Lookup(TIdentExpr(AExpr).Name);
     if Sym = nil then
+    begin
+      { Not in scope — try implicit Self.Field when inside a method }
+      if FCurrentClass <> nil then
+      begin
+        FldInfo := FCurrentClass.FindField(TIdentExpr(AExpr).Name);
+        if FldInfo <> nil then
+        begin
+          TIdentExpr(AExpr).IsImplicitSelf   := True;
+          TIdentExpr(AExpr).ImplicitFieldInfo := FldInfo;
+          Result := FldInfo.TypeDesc;
+          AExpr.ResolvedType := Result;
+          Exit;
+        end;
+      end;
       SemanticError(
         Format('Undeclared identifier ''%s''', [TIdentExpr(AExpr).Name]),
         AExpr.Line, AExpr.Col);
+    end;
     TIdentExpr(AExpr).IsVarParam := (Sym.Kind = skVarParameter);
     if Sym.Kind = skConstant then
     begin

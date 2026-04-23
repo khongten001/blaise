@@ -587,7 +587,13 @@ begin
       else
         Break;
     until False;
-    Expect(tkEnd);
+    { Empty class declaration: TFoo = class(TBase); has no body, no 'end' }
+    if Check(tkEnd) then
+      Advance
+    else if not (Check(tkSemicolon) or Check(tkEOF)) then
+      raise EParseError.CreateFmt(
+        'Expected ''end'' in class definition at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
   except
     Result.Free;
     raise;
@@ -777,7 +783,8 @@ var
 begin
   repeat
     IsVarGrp := Check(tkVar);
-    if IsVarGrp then Advance;
+    if IsVarGrp then Advance
+    else if Check(tkConst) then Advance;  { const params treated as value params }
     Names := TStringList.Create;
     try
       if not Check(tkIdent) then

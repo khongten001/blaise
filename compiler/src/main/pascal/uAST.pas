@@ -51,6 +51,8 @@ type
     IsConstant:        Boolean;  { set by uSemantic — True if this ident is a skConstant symbol }
     ConstValue:        Int64;    { valid when IsConstant = True }
     IsNoArgFuncCall:   Boolean;  { set by uSemantic — bare ident that resolves to a 0-arg function }
+    IsImplicitSelf:    Boolean;  { set by uSemantic — bare field name implicitly referencing Self }
+    ImplicitFieldInfo: TObject;  { TFieldInfo — not owned; valid when IsImplicitSelf }
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -114,6 +116,7 @@ type
                                    was declared [Weak]; codegen emits a
                                    _WeakAssign in place of the strong
                                    addref/release pattern. }
+    ImplicitSelfField: TObject;  { TFieldInfo — non-nil when LHS is bare field (implicit Self) }
     destructor Destroy; override;
   end;
 

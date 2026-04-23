@@ -1,85 +1,51 @@
 {
-  Blaise - An Object Pascal Compiler — Self-hosting source
+  Blaise - An Object Pascal Compiler
   Copyright (c) 2026 Graeme Geldenhuys
   SPDX-License-Identifier: BSD-3-Clause
+
+  blaise-compiler.pas - Self-hosting source.
+  Concatenated from all compiler units.
 }
 
 program BlaiseCompiler;
 
 const
-  { Character code constants replacing FPC char literals in uPasTokeniser }
-  CHR_QUOTE    = 39;    { ' }
-  CHR_HASH     = 35;    { # }
-  CHR_DOLLAR   = 36;    { $ }
-  CHR_LF       = 10;    { line feed }
-  CHR_CR       = 13;    { carriage return }
-  CHR_TAB      = 9;     { tab }
-  CHR_SPACE    = 32;    { space }
-  CHR_0        = 48;    { 0 }
-  CHR_9        = 57;    { 9 }
-  CHR_A_UP     = 65;    { A }
-  CHR_F_UP     = 70;    { F }
-  CHR_Z_UP     = 90;    { Z }
-  CHR_a_LO     = 97;    { a }
-  CHR_f_LO     = 102;   { f }
-  CHR_z_LO     = 122;   { z }
-  CHR_UNDER    = 95;    { _ }
-  CHR_CARET    = 94;    { ^ }
-  CHR_DOT      = 46;    { . }
-  CHR_AT       = 64;    { @ }
-  CHR_LT       = 60;    { < }
-  CHR_GT       = 62;    { > }
-  CHR_EQ       = 61;    { = }
-  CHR_PLUS     = 43;    { + }
-  CHR_MINUS    = 45;    { - }
-  CHR_STAR     = 42;    { * }
-  CHR_SLASH    = 47;    { / }
-  CHR_LPAREN   = 40;    { ( }
-  CHR_RPAREN   = 41;    { ) }
-  CHR_LBRACE   = 123;   (* open brace *)
-  CHR_RBRACE   = 125;   (* close brace *)
-  CHR_SEMI     = 59;    { ; }
-  CHR_COLON    = 58;    { : }
-  CHR_LBRACKET = 91;    { [ }
-  CHR_RBRACKET = 93;    { ] }
-  CHR_e_LO     = 101;   { e }
-  CHR_E_UP     = 69;    { E }
-  CHR_DQUOTE   = 34;    { " }
-
-{ ================================================================== }
-{ Exception hierarchy                                                 }
-{ ================================================================== }
+  CHR_QUOTE    = 39;    CHR_HASH     = 35;    CHR_DOLLAR   = 36;
+  CHR_LF       = 10;    CHR_CR       = 13;    CHR_TAB      = 9;
+  CHR_SPACE    = 32;    CHR_0        = 48;    CHR_9        = 57;
+  CHR_A_UP     = 65;    CHR_F_UP     = 70;    CHR_Z_UP     = 90;
+  CHR_a_LO     = 97;    CHR_f_LO     = 102;   CHR_z_LO     = 122;
+  CHR_UNDER    = 95;    CHR_CARET    = 94;    CHR_DOT      = 46;
+  CHR_AT       = 64;    CHR_LT       = 60;    CHR_GT       = 62;
+  CHR_EQ       = 61;    CHR_PLUS     = 43;    CHR_MINUS    = 45;
+  CHR_STAR     = 42;    CHR_SLASH    = 47;    CHR_LPAREN   = 40;
+  CHR_RPAREN   = 41;    CHR_SEMI     = 59;    CHR_COLON    = 58;
+  CHR_LBRACKET = 91;    CHR_RBRACKET = 93;    CHR_e_LO     = 101;
+  CHR_E_UP     = 69;    CHR_DQUOTE   = 34;
 
 type
   Exception = class
     FMessage: string;
-    constructor Create(AMessage: string);
-    constructor CreateFmt(const AFmt: string; AArg: Integer);
-    constructor CreateFmt(const AFmt: string; AStr: string);
+    procedure Create(AMessage: string);
+    procedure CreateFmt(const AFmt: string; AArg: Integer);
     property Message: string read FMessage;
   end;
   EParseError    = class(Exception);
   ESemanticError = class(Exception);
   ECodeGenError  = class(Exception);
 
-constructor Exception.Create(AMessage: string);
+procedure Exception.Create(AMessage: string);
 begin
   Self.FMessage := AMessage
 end;
 
-constructor Exception.CreateFmt(const AFmt: string; AArg: Integer);
+procedure Exception.CreateFmt(const AFmt: string; AArg: Integer);
 begin
   Self.FMessage := Format(AFmt, AArg)
 end;
 
-constructor Exception.CreateFmt(const AFmt: string; AStr: string);
-begin
-  Self.FMessage := Format(AFmt, AStr)
-end;
 
-{ ================================================================== }
-{ RTL Collections: TObjectList and TStringList                        }
-{ ================================================================== }
+{ === RTL: Collections === }
 
 {
   Blaise - An Object Pascal Compiler
@@ -123,7 +89,7 @@ type
     FCapacity:    Integer;
     FOwnsObjects: Boolean;
     procedure Grow;
-    constructor Create(AOwnsObjects: Boolean);
+    procedure Create(AOwnsObjects: Boolean);
     procedure   Destroy;
     function    Add(AObject: Pointer): Integer;
     function    Get(AIndex: Integer): Pointer;
@@ -149,7 +115,7 @@ type
     procedure Grow;
     function  Compare(S1: string; S2: string): Integer;
     function  FindSorted(S: string; var Idx: Integer): Boolean;
-    constructor Create;
+    procedure Create;
     procedure   Destroy;
     function    Add(S: string): Integer;
     procedure   AddObject(S: string; AObject: Pointer);
@@ -186,7 +152,7 @@ begin
   Self.FCapacity := NewCap
 end;
 
-constructor TObjectList.Create(AOwnsObjects: Boolean);
+procedure TObjectList.Create(AOwnsObjects: Boolean);
 begin
   Self.FOwnsObjects := AOwnsObjects
 end;
@@ -330,7 +296,7 @@ begin
   Result := False
 end;
 
-constructor TStringList.Create;
+procedure TStringList.Create;
 begin
   Self.FCaseSensitive := True;
   Self.FSorted        := False;
@@ -566,6 +532,589 @@ begin
     Sep    := #13#10;
     I      := I + 1
   end
+end;
+
+
+
+
+{ === uPasTokeniser === }
+
+
+var KwList: TStringList;
+
+procedure InitKeywords;
+begin
+  KwList := TStringList.Create;
+  KwList.Sorted := True;
+  KwList.CaseSensitive := True;
+  KwList.Add('ABSOLUTE');  KwList.Add('AND');       KwList.Add('ARRAY');
+  KwList.Add('AS');        KwList.Add('ASM');        KwList.Add('BEGIN');
+  KwList.Add('BITPACKED'); KwList.Add('CASE');       KwList.Add('CLASS');
+  KwList.Add('CONST');     KwList.Add('CONSTREF');   KwList.Add('CONSTRUCTOR');
+  KwList.Add('CONTAINS');  KwList.Add('DESTRUCTOR'); KwList.Add('DISPINTERFACE');
+  KwList.Add('DIV');       KwList.Add('DO');         KwList.Add('DOWNTO');
+  KwList.Add('ELSE');      KwList.Add('END');        KwList.Add('EXCEPT');
+  KwList.Add('EXPORTS');   KwList.Add('FALSE');      KwList.Add('FILE');
+  KwList.Add('FINALIZATION'); KwList.Add('FINALLY'); KwList.Add('FOR');
+  KwList.Add('FUNCTION');  KwList.Add('GENERIC');    KwList.Add('GOTO');
+  KwList.Add('IF');        KwList.Add('IMPLEMENTATION'); KwList.Add('IN');
+  KwList.Add('INHERITED'); KwList.Add('INITIALIZATION'); KwList.Add('INLINE');
+  KwList.Add('INTERFACE'); KwList.Add('IS');         KwList.Add('LABEL');
+  KwList.Add('LIBRARY');   KwList.Add('MOD');        KwList.Add('NIL');
+  KwList.Add('NOT');       KwList.Add('OBJCCATEGORY'); KwList.Add('OBJCCLASS');
+  KwList.Add('OBJCPROTOCOL'); KwList.Add('OBJECT'); KwList.Add('OF');
+  KwList.Add('OPERATOR');  KwList.Add('OR');         KwList.Add('OTHERWISE');
+  KwList.Add('PACKAGE');   KwList.Add('PACKED');     KwList.Add('PROCEDURE');
+  KwList.Add('PROGRAM');   KwList.Add('PROPERTY');   KwList.Add('RAISE');
+  KwList.Add('RECORD');    KwList.Add('REPEAT');     KwList.Add('REQUIRES');
+  KwList.Add('RESOURCESTRING'); KwList.Add('SELF'); KwList.Add('SET');
+  KwList.Add('SHL');       KwList.Add('SHR');        KwList.Add('SPECIALIZE');
+  KwList.Add('THEN');      KwList.Add('THREADVAR');  KwList.Add('TO');
+  KwList.Add('TRUE');      KwList.Add('TRY');        KwList.Add('TYPE');
+  KwList.Add('UNIT');      KwList.Add('UNTIL');      KwList.Add('USES');
+  KwList.Add('VAR');       KwList.Add('WHILE');      KwList.Add('WITH');
+  KwList.Add('XOR')
+end;
+
+function BinarySearchKeyword(const AText: string): Boolean;
+var
+  Idx: Integer;
+begin
+  Result := KwList.Find(AText, Idx)
+end;
+
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: BSD-3-Clause
+  See LICENSE file in the project root for full license terms.
+}
+
+{
+    Clean Pascal Compiler — General Pascal Tokeniser
+
+    Lightweight Object Pascal tokeniser. Operates on a string buffer and
+    yields tokens one at a time via NextToken. No exceptions on malformed
+    source — unrecognised characters produce fptkSymbol tokens of length 1,
+    and unterminated strings or comments consume to end-of-source.
+
+    Does NOT evaluate compiler directives or IFDEF branches — everything
+    is tokenised literally.
+
+    Ported from the fpGUI IDE tokeniser (same author).
+}
+
+
+
+
+type
+  TFpgPasTokenKind = (
+    fptkEOF,
+    fptkWhitespace,
+    fptkLineEnding,
+    fptkIdentifier,
+    fptkKeyword,
+    fptkNumber,
+    fptkString,
+    fptkComment,
+    fptkDirective,
+    fptkSymbol
+  );
+
+  TFpgPasToken = record
+    Kind: TFpgPasTokenKind;
+    Line: Integer;       { 1-based line number }
+    Column: Integer;     { 1-based column }
+    Len: Integer;        { character length in source }
+    TextStart: Integer;  { 1-based index into source string }
+  end;
+
+  { TFpgPascalTokeniser }
+
+  TFpgPascalTokeniser = class(TObject)
+
+    FSource: string;
+    FPos: Integer;
+    FLine: Integer;
+    FLineStart: Integer;  { FPos value at start of current line }
+    FToken: TFpgPasToken;
+    function Peek: Integer;
+    function PeekAt(AOffset: Integer): Integer;
+    procedure Advance;
+    procedure AdvanceLine;
+    procedure ReadWhitespace;
+    procedure ReadLineEnding;
+    procedure ReadIdentifierOrKeyword;
+    procedure ReadNumber;
+    procedure ReadString;
+    procedure ReadBraceCommentOrDirective;
+    procedure ReadParenStarCommentOrDirective;
+    procedure ReadLineComment;
+    procedure ReadSymbol;
+
+    procedure Create;
+    procedure SetSource(const ASource: string);
+    function NextToken: TFpgPasToken;
+    function TokenText: string;
+    function TokenTextUpper: string;
+    property Token: TFpgPasToken read FToken;
+    property Source: string read FSource;
+  end;
+
+{ Returns True if AText is a Pascal keyword (case-insensitive). }
+function PasIsKeyword(const AText: string): Boolean;
+
+
+
+
+function PasIsKeyword(const AText: string): Boolean;
+begin
+  if AText = '' then
+    begin Result := False; Exit end;
+  Result := BinarySearchKeyword(UpperCase(AText));
+end;
+
+{ TFpgPascalTokeniser }
+
+procedure TFpgPascalTokeniser.Create;
+begin
+  inherited Create;
+  FSource := '';
+  FPos := 1;
+  FLine := 1;
+  FLineStart := 1;
+end;
+
+procedure TFpgPascalTokeniser.SetSource(const ASource: string);
+begin
+  FSource := ASource;
+  FPos := 1;
+  FLine := 1;
+  FLineStart := 1;
+  FToken.Kind := fptkEOF;
+  FToken.Line := 1;
+  FToken.Column := 1;
+  FToken.Len := 0;
+  FToken.TextStart := 1;
+end;
+
+function TFpgPascalTokeniser.Peek: Integer;
+begin
+  if FPos <= Length(FSource) then
+    Result := OrdAt(FSource, FPos)
+  else
+    Result := 0;
+end;
+
+function TFpgPascalTokeniser.PeekAt(AOffset: Integer): Integer;
+var
+  p: Integer;
+begin
+  p := FPos + AOffset;
+  if (p >= 1) and (p <= Length(FSource)) then
+    Result := OrdAt(FSource, p)
+  else
+    Result := 0;
+end;
+
+procedure TFpgPascalTokeniser.Advance;
+begin
+  FPos := FPos + 1;
+end;
+
+procedure TFpgPascalTokeniser.AdvanceLine;
+begin
+  FLine := FLine + 1;
+  FLineStart := FPos;
+end;
+
+procedure TFpgPascalTokeniser.ReadWhitespace;
+begin
+  FToken.Kind := fptkWhitespace;
+  while (FPos <= Length(FSource)) and (((OrdAt(FSource, FPos) = 32) or (OrdAt(FSource, FPos) = 9))) do
+    Advance;
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadLineEnding;
+begin
+  FToken.Kind := fptkLineEnding;
+  if (OrdAt(FSource, FPos) = 13) and (PeekAt(1) = #10) then
+    Advance;  { consume CR of CRLF }
+  Advance;    { consume LF (or lone CR) }
+  FToken.Len := FPos - FToken.TextStart;
+  AdvanceLine;
+end;
+
+procedure TFpgPascalTokeniser.ReadIdentifierOrKeyword;
+begin
+  while (FPos <= Length(FSource)) and
+        ((((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 90)) or ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 122)) or ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) or (OrdAt(FSource, FPos) = 95))) do
+    Advance;
+  FToken.Len := FPos - FToken.TextStart;
+  if BinarySearchKeyword(UpperCase(TokenText)) then
+    FToken.Kind := fptkKeyword
+  else
+    FToken.Kind := fptkIdentifier;
+end;
+
+procedure TFpgPascalTokeniser.ReadNumber;
+var
+  c: Integer;
+begin
+  FToken.Kind := fptkNumber;
+  c := OrdAt(FSource, FPos);
+
+  if c = 36 then
+  begin
+    { Hex: $[0-9A-Fa-f]+ }
+    Advance;
+    while (FPos <= Length(FSource)) and
+          ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) or ((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 70)) or ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 102)))) do
+      Advance;
+    FToken.Len := FPos - FToken.TextStart;
+    Exit;
+  end;
+
+  if c = 37 then
+  begin
+    { Binary: %[01]+ }
+    Advance;
+    while (FPos <= Length(FSource)) and (((OrdAt(FSource, FPos) = 48) or (OrdAt(FSource, FPos) = 49))) do
+      Advance;
+    FToken.Len := FPos - FToken.TextStart;
+    Exit;
+  end;
+
+  if c = 38 then
+  begin
+    { Octal: &[0-7]+ }
+    Advance;
+    while (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 55)))) do
+      Advance;
+    FToken.Len := FPos - FToken.TextStart;
+    Exit;
+  end;
+
+  { Decimal integer or float }
+  while (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)))) do
+    Advance;
+
+  { Check for decimal point (but not '..') }
+  if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 46) and
+     (PeekAt(1) <> '.') then
+  begin
+    Advance;  { consume '.' }
+    while (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)))) do
+      Advance;
+  end;
+
+  { Check for exponent }
+  if (FPos <= Length(FSource)) and (((OrdAt(FSource, FPos) = 101) or (OrdAt(FSource, FPos) = 69))) then
+  begin
+    Advance;
+    if (FPos <= Length(FSource)) and (((OrdAt(FSource, FPos) = 43) or (OrdAt(FSource, FPos) = 45))) then
+      Advance;
+    while (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)))) do
+      Advance;
+  end;
+
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadString;
+var
+  c: Integer;
+begin
+  { Pascal string literals can be composed of:
+    - 'quoted text' (with '' for embedded quotes)
+    - #nn (decimal char code)
+    - #$nn (hex char code)
+    - ^A (control char)
+    These can be concatenated without operators: 'abc'#13#10'def' }
+  FToken.Kind := fptkString;
+
+  while True do
+begin
+    c := Peek;
+    if c = 39 then
+    begin
+      Advance;  { opening quote }
+      while FPos <= Length(FSource) do
+      begin
+        if OrdAt(FSource, FPos) = 39 then
+        begin
+          Advance;
+          { Embedded quote? '' }
+          if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 39) then
+            Advance
+          else
+            Break;  { closing quote }
+        end
+        else if ((OrdAt(FSource, FPos) = 10) or (OrdAt(FSource, FPos) = 13)) then
+          Break  { unterminated string at line end }
+        else
+          Advance;
+      end;
+    end
+    else if c = 35 then
+    begin
+      Advance;  { consume # }
+      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 36) then
+      begin
+        Advance;  { hex char code }
+        while (FPos <= Length(FSource)) and
+              ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) or ((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 70)) or ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 102)))) do
+          Advance;
+      end
+      else
+      begin
+        while (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)))) do
+          Advance;
+      end;
+    end
+    else if c = 94 then
+    begin
+      Advance;  { consume ^ }
+      if (FPos <= Length(FSource)) and ((((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 90)) or ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 122)))) then
+        Advance;
+    end
+    else
+      Break;  { not a string continuation }
+  end;
+
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadBraceCommentOrDirective;
+begin
+  // Already at open-brace. Check next char for '$'.
+  if PeekAt(1) = '$' then
+    FToken.Kind := fptkDirective
+  else
+    FToken.Kind := fptkComment;
+
+  Advance;  // consume open-brace
+  while FPos <= Length(FSource) do
+  begin
+    if OrdAt(FSource, FPos) = 125 then
+    begin
+      Advance;
+      Break;
+    end
+    else if OrdAt(FSource, FPos) = 13 then
+    begin
+      Advance;
+      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+        Advance;
+      AdvanceLine;
+    end
+    else if OrdAt(FSource, FPos) = 10 then
+    begin
+      Advance;
+      AdvanceLine;
+    end
+    else
+      Advance;
+  end;
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadParenStarCommentOrDirective;
+begin
+  { Already at '('. Next is '*'. Check char after '*' for '$'. }
+  if PeekAt(2) = '$' then
+    FToken.Kind := fptkDirective
+  else
+    FToken.Kind := fptkComment;
+
+  Advance;  { consume '(' }
+  Advance;  { consume '*' }
+  while FPos <= Length(FSource) do
+  begin
+    if (OrdAt(FSource, FPos) = 42) and (PeekAt(1) = ')') then
+    begin
+      Advance;  { consume '*' }
+      Advance;  { consume ')' }
+      Break;
+    end
+    else if OrdAt(FSource, FPos) = 13 then
+    begin
+      Advance;
+      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+        Advance;
+      AdvanceLine;
+    end
+    else if OrdAt(FSource, FPos) = 10 then
+    begin
+      Advance;
+      AdvanceLine;
+    end
+    else
+      Advance;
+  end;
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadLineComment;
+begin
+  FToken.Kind := fptkComment;
+  { Consume everything until end of line or end of source }
+  while (FPos <= Length(FSource)) and
+        not (((OrdAt(FSource, FPos) = 10) or (OrdAt(FSource, FPos) = 13))) do
+    Advance;
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+procedure TFpgPascalTokeniser.ReadSymbol;
+var
+  c, c2: Integer;
+begin
+  FToken.Kind := fptkSymbol;
+  c := OrdAt(FSource, FPos);
+  c2 := PeekAt(1);
+  Advance;
+
+  case c of
+    ':': if c2 = 61 then Advance;           // :=
+    '<': if ((c2 = 62) or (c2 = 61)) then Advance;   // <> or <=
+    '>': if ((c2 = 60) or (c2 = 61)) then Advance;   // >< or >=
+    '.': if c2 = 46 then Advance;           // ..
+    '*': if c2 = 42 then Advance;           // **
+    '@': if c2 = 64 then Advance;           // @@
+    '+': if c2 = 61 then Advance;           // +=
+    '-': if c2 = 61 then Advance;           // -=
+    '/': if c2 = 61 then Advance;           // /= (// handled separately)
+  end;
+
+  // Special: *= (if * was not followed by *)
+  if (c = 42) and (c2 <> 42) and (c2 = 61) then
+    Advance;
+
+  FToken.Len := FPos - FToken.TextStart;
+end;
+
+function TFpgPascalTokeniser.NextToken: TFpgPasToken;
+var
+  c, c2: Integer;
+begin
+  if FPos > Length(FSource) then
+  begin
+    FToken.Kind := fptkEOF;
+    FToken.Line := FLine;
+    FToken.Column := FPos - FLineStart + 1;
+    FToken.Len := 0;
+    FToken.TextStart := FPos;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Record token start position }
+  FToken.TextStart := FPos;
+  FToken.Line := FLine;
+  FToken.Column := FPos - FLineStart + 1;
+
+  c := OrdAt(FSource, FPos);
+
+  { Whitespace (not line endings) }
+  if ((c = 32) or (c = 9)) then
+  begin
+    ReadWhitespace;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Line endings }
+  if ((c = 13) or (c = 10)) then
+  begin
+    ReadLineEnding;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Identifiers and keywords }
+  if (((c >= 65) and (c <= 90)) or ((c >= 97) and (c <= 122)) or (c = 95)) then
+  begin
+    ReadIdentifierOrKeyword;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Numbers: digits or $ (hex) or % (binary) or & (octal) }
+  if (((c >= 48) and (c <= 57))) then
+  begin
+    ReadNumber;
+    Result := FToken;
+    Exit;
+  end;
+  if (c = 36) and ((((PeekAt(1) >= 48) and (PeekAt(1) <= 57)) or ((PeekAt(1) >= 65) and (PeekAt(1) <= 70)) or ((PeekAt(1) >= 97) and (PeekAt(1) <= 102)))) then
+  begin
+    ReadNumber;
+    Result := FToken;
+    Exit;
+  end;
+  if (c = 37) and (((PeekAt(1) = 48) or (PeekAt(1) = 49))) then
+  begin
+    ReadNumber;
+    Result := FToken;
+    Exit;
+  end;
+  if (c = 38) and ((((PeekAt(1) >= 48) and (PeekAt(1) <= 55)))) then
+  begin
+    ReadNumber;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Strings: ' or # — Clean Pascal does not support ^X control-char string escapes }
+  if ((c = 39) or (c = 35)) then
+  begin
+    ReadString;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Comments and directives }
+  if c = 123 then
+  begin
+    ReadBraceCommentOrDirective;
+    Result := FToken;
+    Exit;
+  end;
+
+  c2 := PeekAt(1);
+
+  if (c = 40) and (c2 = 42) then
+  begin
+    ReadParenStarCommentOrDirective;
+    Result := FToken;
+    Exit;
+  end;
+
+  if (c = 47) and (c2 = 47) then
+  begin
+    ReadLineComment;
+    Result := FToken;
+    Exit;
+  end;
+
+  { Symbols and operators }
+  ReadSymbol;
+  Result := FToken;
+end;
+
+function TFpgPascalTokeniser.TokenText: string;
+begin
+  if (FToken.TextStart >= 1) and (FToken.Len > 0) and
+     (FToken.TextStart + FToken.Len - 1 <= Length(FSource)) then
+    Result := Copy(FSource, FToken.TextStart, FToken.Len)
+  else
+    Result := '';
+end;
+
+function TFpgPascalTokeniser.TokenTextUpper: string;
+begin
+  Result := UpperCase(TokenText);
 end;
 
 

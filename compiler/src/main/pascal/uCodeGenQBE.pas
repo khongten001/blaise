@@ -725,10 +725,33 @@ var
   LblOk:     string;
   LblFail:   string;
   LblEnd:    string;
+  ISFld:     TFieldInfo;
+  ISAddrT:   string;
 begin
   if AAssign.Expr.ResolvedType = nil then
     raise ECodeGenError.CreateFmt(
       'Expression in assignment to ''%s'' has no resolved type', [AAssign.Name]);
+
+  { Implicit Self.Field assignment: bare field name like FPos := ... }
+  if AAssign.ImplicitSelfField <> nil then
+  begin
+    ISFld   := TFieldInfo(AAssign.ImplicitSelfField);
+    ValTemp := EmitExpr(AAssign.Expr);
+    ObjTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_Self', [ObjTemp]));
+    if ISFld.Offset > 0 then
+    begin
+      ISAddrT := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [ISAddrT, ObjTemp, ISFld.Offset]));
+      ObjTemp := ISAddrT;
+    end;
+    QType := QbeTypeOf(ISFld.TypeDesc);
+    if QType = 'w' then
+      EmitLine(Format('  storew %s, %s', [ValTemp, ObjTemp]))
+    else
+      EmitLine(Format('  storel %s, %s', [ValTemp, ObjTemp]));
+    Exit;
+  end;
 
   { Interface as-cast: F := T as IFoo — use _GetItab for runtime itab lookup.
     ARC: the obj slot holds a strong reference to the backing class instance,
@@ -2018,6 +2041,9 @@ var
   FPtrTemp:     string;
   SlotOff:      Integer;
   NoArgCall:    TFuncCallExpr;
+  ImplFld:      TFieldInfo;
+  SelfT:        string;
+  PtrT:         string;
 begin
   if AExpr is TFuncCallExpr then
   begin
@@ -2507,6 +2533,34 @@ begin
   else if AExpr is TIdentExpr then
   begin
     T := AllocTemp;
+    if TIdentExpr(AExpr).IsImplicitSelf then
+    begin
+      { Bare field name — equivalent to Self.FieldName: load Self, add offset }
+      ImplFld := TFieldInfo(TIdentExpr(AExpr).ImplicitFieldInfo);
+      SelfT   := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_Self', [SelfT]));
+      T := AllocTemp;
+      QType := QbeTypeOf(AExpr.ResolvedType);
+      if ImplFld.Offset > 0 then
+      begin
+        PtrT := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d', [PtrT, SelfT, ImplFld.Offset]));
+        if QType = 'w' then
+          EmitLine(Format('  %s =w loadw %s', [T, PtrT]))
+        else
+          EmitLine(Format('  %s =l loadl %s', [T, PtrT]));
+      end
+      else
+      begin
+        if QType = 'w' then
+          EmitLine(Format('  %s =w loadw %s', [T, SelfT]))
+        else
+          EmitLine(Format('  %s =l loadl %s', [T, SelfT]));
+      end;
+      Result := T;
+      Exit;
+    end;
+
     if TIdentExpr(AExpr).IsNoArgFuncCall then
     begin
       { Bare identifier resolving to a zero-arg function (no parens in source).
