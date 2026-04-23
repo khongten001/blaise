@@ -180,6 +180,34 @@ int32_t _StrToInt(void* s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* _StringCompare(s1, s2) : Integer  — case-sensitive (like strcmp)   */
+/* ------------------------------------------------------------------ */
+
+int32_t _StringCompare(void* s1, void* s2) {
+    const char* d1 = str_data(s1);
+    const char* d2 = str_data(s2);
+    while (*d1 && (*d1 == *d2)) { d1++; d2++; }
+    return (int32_t)((unsigned char)*d1 - (unsigned char)*d2);
+}
+
+/* ------------------------------------------------------------------ */
+/* _StringCompareText(s1, s2) : Integer  — case-insensitive           */
+/* ------------------------------------------------------------------ */
+
+int32_t _StringCompareText(void* s1, void* s2) {
+    const char* d1 = str_data(s1);
+    const char* d2 = str_data(s2);
+    int c1, c2;
+    while (*d1) {
+        c1 = tolower((unsigned char)*d1);
+        c2 = tolower((unsigned char)*d2);
+        if (c1 != c2) return (int32_t)(c1 - c2);
+        d1++; d2++;
+    }
+    return (int32_t)(0 - tolower((unsigned char)*d2));
+}
+
+/* ------------------------------------------------------------------ */
 /* _StringFormat(fmt, ...) : string                                     */
 /*                                                                      */
 /* Variadic: after the format string pointer, each format argument      */

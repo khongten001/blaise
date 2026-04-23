@@ -802,6 +802,14 @@ begin
   Define(Sym);
   Sym := TSymbol.Create('StrToInt',  skFunction, FTypeInteger);
   Define(Sym);
+  Sym := TSymbol.Create('CompareStr',  skFunction, FTypeInteger);
+  Define(Sym);
+  Sym := TSymbol.Create('CompareText', skFunction, FTypeInteger);
+  Define(Sym);
+  { Memory utilities }
+  Sym := TSymbol.Create('ZeroMem',      skProcedure, nil); Define(Sym);
+  Sym := TSymbol.Create('_ClassAddRef', skProcedure, nil); Define(Sym);
+  Sym := TSymbol.Create('_ClassRelease',skProcedure, nil); Define(Sym);
 end;
 
 function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;

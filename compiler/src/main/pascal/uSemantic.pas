@@ -258,8 +258,8 @@ var
 begin
   if AExpected = AActual then
     Exit;
-  { nil is compatible with any class, interface, or pointer type }
-  if (AActual.Kind = tyNil) and (AExpected.Kind in [tyClass, tyInterface, tyPointer]) then
+  { nil is compatible with any class, interface, pointer, or string type }
+  if (AActual.Kind = tyNil) and (AExpected.Kind in [tyClass, tyInterface, tyPointer, tyString]) then
     Exit;
   { Two pointer types are compatible when:
       - either is untyped (Pointer), or
@@ -2192,6 +2192,17 @@ begin
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args[I]));
     Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'CompareStr') or SameText(AExpr.Name, 'CompareText') then
+  begin
+    if AExpr.Args.Count <> 2 then
+      SemanticError(AExpr.Name + ' requires exactly 2 arguments', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
   end;

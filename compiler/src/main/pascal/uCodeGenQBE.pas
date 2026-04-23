@@ -1786,6 +1786,8 @@ var
   MDecl:     TMethodDecl;
   Par:       TMethodParam;
   ArgTemp:   string;
+  ArgTemp2:  string;
+  SizeTemp:  string;
   ArgLine:   string;
   I:         Integer;
 begin
@@ -1823,6 +1825,24 @@ begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
     EmitLine(Format('  call $free(l %s)', [ArgTemp]));
   end
+  else if UCaseName = 'ZEROMEM' then
+  begin
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    SizeTemp := AllocTemp;
+    EmitLine(Format('  %s =l extsw %s', [SizeTemp, ArgTemp2]));
+    EmitLine(Format('  call $memset(l %s, w 0, l %s)', [ArgTemp, SizeTemp]));
+  end
+  else if UCaseName = '_CLASSADDREF' then
+  begin
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    EmitLine(Format('  call $_ClassAddRef(l %s)', [ArgTemp]));
+  end
+  else if UCaseName = '_CLASSRELEASE' then
+  begin
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [ArgTemp]));
+  end
   else
     raise ECodeGenError.CreateFmt(
       'Unknown procedure ''%s'' at line %d', [ACall.Name, ACall.Line]);
@@ -1832,10 +1852,22 @@ procedure TCodeGenQBE.EmitPointerWrite(AStmt: TPointerWriteStmt);
 var
   PtrTemp:    string;
   ValTemp:    string;
+  OldTemp:    string;
   QType:      string;
   StoreInstr: string;
 begin
   PtrTemp := EmitExpr(AStmt.PtrExpr);
+  { ARC: string stored through a typed pointer needs retain/release }
+  if (AStmt.BaseTy <> nil) and AStmt.BaseTy.IsString then
+  begin
+    OldTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+    ValTemp := EmitExpr(AStmt.ValExpr);
+    EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+    EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
+    EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    Exit;
+  end;
   ValTemp := EmitExpr(AStmt.ValExpr);
   QType   := QbeTypeOf(AStmt.BaseTy);
   if QType = 'w' then StoreInstr := 'storew'
@@ -2042,6 +2074,26 @@ begin
         end;
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringFormat(%s)', [T, ArgLine]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(Name, 'CompareStr') then
+      begin
+        L := EmitExpr(TASTExpr(Args[0]));
+        R := EmitExpr(TASTExpr(Args[1]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =w call $_StringCompare(l %s, l %s)', [T, L, R]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(Name, 'CompareText') then
+      begin
+        L := EmitExpr(TASTExpr(Args[0]));
+        R := EmitExpr(TASTExpr(Args[1]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =w call $_StringCompareText(l %s, l %s)', [T, L, R]));
         Result := T;
         Exit;
       end;

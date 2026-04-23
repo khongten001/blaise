@@ -53,6 +53,7 @@ uses
   cp.test.genericconstraints,
   cp.test.weakref,
   cp.test.stringops,
+  cp.test.collections,
   cp.test.e2e;
 
 var

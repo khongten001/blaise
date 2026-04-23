@@ -121,6 +121,14 @@ type
     procedure TestRun_StringOps_Format_IntArg;
     procedure TestRun_StringOps_Format_StrArg;
     procedure TestRun_StringOps_Format_MixedArgs;
+    { ------------------------------------------------------------------ }
+    { Collections: TObjectList, TStringList                               }
+    { ------------------------------------------------------------------ }
+    procedure TestRun_TObjectList_AddGetCount;
+    procedure TestRun_TObjectList_Delete;
+    procedure TestRun_TStringList_AddGet;
+    procedure TestRun_TStringList_Find_Sorted;
+    procedure TestRun_Collections_Valgrind;
   end;
 
 implementation
@@ -1329,6 +1337,355 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcFormatMixedArgs, Output, RCode, []));
   AssertEquals('Format mixed args', 'Alice=30', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ Collections e2e tests                                               }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcTObjectListBase2 =
+    'type'                                                             + LineEnding +
+    '  TObjectList = class'                                            + LineEnding +
+    '    FData:     ^Pointer;'                                         + LineEnding +
+    '    FCount:    Integer;'                                          + LineEnding +
+    '    FCapacity: Integer;'                                          + LineEnding +
+    '    procedure Grow;'                                              + LineEnding +
+    '    var OldCap, NewCap: Integer;'                                 + LineEnding +
+    '    begin'                                                        + LineEnding +
+    '      OldCap := Self.FCapacity;'                                  + LineEnding +
+    '      if OldCap = 0 then NewCap := 4'                             + LineEnding +
+    '      else NewCap := OldCap * 2;'                                 + LineEnding +
+    '      Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(Pointer));' + LineEnding +
+    '      Self.FCapacity := NewCap'                                   + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    function Add(AObject: Pointer): Integer;'                     + LineEnding +
+    '    var Dest: ^Pointer;'                                          + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      if Self.FCount = Self.FCapacity then Self.Grow;'            + LineEnding +
+    '      Dest        := Self.FData + Self.FCount * SizeOf(Pointer);' + LineEnding +
+    '      Dest^       := AObject;'                                    + LineEnding +
+    '      Self.FCount := Self.FCount + 1;'                            + LineEnding +
+    '      Result      := Self.FCount - 1'                             + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    function Get(AIndex: Integer): Pointer;'                      + LineEnding +
+    '    var Src: ^Pointer;'                                           + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      Src    := Self.FData + AIndex * SizeOf(Pointer);'           + LineEnding +
+    '      Result := Src^'                                             + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    procedure Delete(AIndex: Integer);'                           + LineEnding +
+    '    var I: Integer; Dst, Src: ^Pointer;'                          + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      I := AIndex;'                                               + LineEnding +
+    '      while I < Self.FCount - 1 do'                               + LineEnding +
+    '      begin'                                                       + LineEnding +
+    '        Dst  := Self.FData + I * SizeOf(Pointer);'                + LineEnding +
+    '        Src  := Self.FData + (I + 1) * SizeOf(Pointer);'          + LineEnding +
+    '        Dst^ := Src^;'                                            + LineEnding +
+    '        I    := I + 1'                                            + LineEnding +
+    '      end;'                                                        + LineEnding +
+    '      Self.FCount := Self.FCount - 1'                             + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    property Count: Integer read FCount;'                         + LineEnding +
+    '  end;'                                                           + LineEnding;
+
+  SrcTObjectListAddGetCount =
+    'program P;'                                                       + LineEnding +
+    SrcTObjectListBase2 +
+    'var'                                                              + LineEnding +
+    '  L:  TObjectList;'                                               + LineEnding +
+    '  P1, P2: Pointer;'                                               + LineEnding +
+    'begin'                                                            + LineEnding +
+    '  L  := TObjectList.Create;'                                      + LineEnding +
+    '  P1 := GetMem(1);'                                               + LineEnding +
+    '  P2 := GetMem(1);'                                               + LineEnding +
+    '  L.Add(P1);'                                                     + LineEnding +
+    '  L.Add(P2);'                                                     + LineEnding +
+    '  L.Add(nil);'                                                    + LineEnding +
+    '  WriteLn(L.Count);'                                              + LineEnding +
+    '  WriteLn(L.Get(0) = P1);'                                        + LineEnding +
+    '  WriteLn(L.Get(1) = P2)'                                         + LineEnding +
+    'end.';
+
+  SrcTObjectListDelete =
+    'program P;'                                                       + LineEnding +
+    SrcTObjectListBase2 +
+    'var L: TObjectList;'                                              + LineEnding +
+    'begin'                                                            + LineEnding +
+    '  L := TObjectList.Create;'                                       + LineEnding +
+    '  L.Add(GetMem(1));'                                              + LineEnding +
+    '  L.Add(GetMem(1));'                                              + LineEnding +
+    '  L.Add(GetMem(1));'                                              + LineEnding +
+    '  L.Delete(1);'                                                   + LineEnding +
+    '  WriteLn(L.Count)'                                               + LineEnding +
+    'end.';
+
+  SrcTStringListBase2 =
+    'type'                                                             + LineEnding +
+    '  TStringList = class'                                            + LineEnding +
+    '    FStrings:  ^string;'                                          + LineEnding +
+    '    FObjects:  ^Pointer;'                                         + LineEnding +
+    '    FCount:    Integer;'                                          + LineEnding +
+    '    FCapacity: Integer;'                                          + LineEnding +
+    '    procedure Grow;'                                              + LineEnding +
+    '    var OldCap, NewCap: Integer;'                                 + LineEnding +
+    '    begin'                                                        + LineEnding +
+    '      OldCap := Self.FCapacity;'                                  + LineEnding +
+    '      if OldCap = 0 then NewCap := 4'                             + LineEnding +
+    '      else NewCap := OldCap * 2;'                                 + LineEnding +
+    '      Self.FStrings := ReallocMem(Self.FStrings, NewCap * SizeOf(string));'  + LineEnding +
+    '      Self.FObjects := ReallocMem(Self.FObjects, NewCap * SizeOf(Pointer));' + LineEnding +
+    '      ZeroMem(Self.FStrings + OldCap * SizeOf(string),'           + LineEnding +
+    '              (NewCap - OldCap) * SizeOf(string));'               + LineEnding +
+    '      Self.FCapacity := NewCap'                                   + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    procedure Destroy;'                                           + LineEnding +
+    '    var I: Integer; Ptr: ^string;'                                + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      I := 0;'                                                    + LineEnding +
+    '      while I < Self.FCount do'                                   + LineEnding +
+    '      begin'                                                       + LineEnding +
+    '        Ptr  := Self.FStrings + I * SizeOf(string);'              + LineEnding +
+    '        Ptr^ := nil;'                                             + LineEnding +
+    '        I    := I + 1'                                            + LineEnding +
+    '      end;'                                                        + LineEnding +
+    '      FreeMem(Self.FStrings);'                                    + LineEnding +
+    '      FreeMem(Self.FObjects);'                                    + LineEnding +
+    '      Self.FStrings  := nil;'                                     + LineEnding +
+    '      Self.FObjects  := nil;'                                     + LineEnding +
+    '      Self.FCount    := 0;'                                       + LineEnding +
+    '      Self.FCapacity := 0'                                        + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    function Add(S: string): Integer;'                            + LineEnding +
+    '    var StrP: ^string; ObjP: ^Pointer;'                           + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      if Self.FCount = Self.FCapacity then Self.Grow;'            + LineEnding +
+    '      StrP        := Self.FStrings + Self.FCount * SizeOf(string);' + LineEnding +
+    '      ObjP        := Self.FObjects + Self.FCount * SizeOf(Pointer);' + LineEnding +
+    '      StrP^       := S;'                                          + LineEnding +
+    '      ObjP^       := nil;'                                        + LineEnding +
+    '      Result      := Self.FCount;'                                + LineEnding +
+    '      Self.FCount := Self.FCount + 1'                             + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    function Get(AIndex: Integer): string;'                       + LineEnding +
+    '    var Ptr: ^string;'                                            + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      Ptr    := Self.FStrings + AIndex * SizeOf(string);'         + LineEnding +
+    '      Result := Ptr^'                                             + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    function Find(S: string; var Index: Integer): Boolean;'      + LineEnding +
+    '    var Lo, Hi, Mid, Cmp: Integer; Ptr: ^string; MStr: string;'  + LineEnding +
+    '    begin'                                                         + LineEnding +
+    '      Lo := 0; Hi := Self.FCount - 1;'                            + LineEnding +
+    '      while Lo <= Hi do'                                          + LineEnding +
+    '      begin'                                                       + LineEnding +
+    '        Mid  := (Lo + Hi) div 2;'                                 + LineEnding +
+    '        Ptr  := Self.FStrings + Mid * SizeOf(string);'            + LineEnding +
+    '        MStr := Ptr^;'                                            + LineEnding +
+    '        Cmp  := CompareText(S, MStr);'                            + LineEnding +
+    '        if Cmp = 0 then'                                          + LineEnding +
+    '        begin'                                                     + LineEnding +
+    '          Index := Mid; Result := True; Exit'                     + LineEnding +
+    '        end'                                                       + LineEnding +
+    '        else if Cmp < 0 then Hi := Mid - 1'                       + LineEnding +
+    '        else Lo := Mid + 1'                                        + LineEnding +
+    '      end;'                                                        + LineEnding +
+    '      Index := Lo; Result := False'                               + LineEnding +
+    '    end;'                                                         + LineEnding +
+    '    property Count: Integer read FCount;'                         + LineEnding +
+    '  end;'                                                           + LineEnding;
+
+  SrcTStringListAddGet =
+    'program P;'                                                       + LineEnding +
+    SrcTStringListBase2 +
+    'var'                                                              + LineEnding +
+    '  L: TStringList;'                                                + LineEnding +
+    'begin'                                                            + LineEnding +
+    '  L := TStringList.Create;'                                       + LineEnding +
+    '  L.Add(''hello'');'                                               + LineEnding +
+    '  L.Add(''world'');'                                               + LineEnding +
+    '  WriteLn(L.Count);'                                              + LineEnding +
+    '  WriteLn(L.Get(0));'                                             + LineEnding +
+    '  WriteLn(L.Get(1))'                                              + LineEnding +
+    'end.';
+
+  SrcTStringListFindSorted =
+    'program P;'                                                       + LineEnding +
+    SrcTStringListBase2 +
+    'var'                                                              + LineEnding +
+    '  L: TStringList;'                                                + LineEnding +
+    '  Idx: Integer;'                                                  + LineEnding +
+    '  Found: Boolean;'                                                + LineEnding +
+    'begin'                                                            + LineEnding +
+    '  L := TStringList.Create;'                                       + LineEnding +
+    '  L.Add(''alpha'');'                                               + LineEnding +
+    '  L.Add(''beta'');'                                                + LineEnding +
+    '  L.Add(''gamma'');'                                               + LineEnding +
+    '  Found := L.Find(''beta'', Idx);'                                 + LineEnding +
+    '  WriteLn(Found);'                                                + LineEnding +
+    '  WriteLn(Idx);'                                                  + LineEnding +
+    '  Found := L.Find(''delta'', Idx);'                                + LineEnding +
+    '  WriteLn(Found)'                                                 + LineEnding +
+    'end.';
+
+  { Combined program: both classes in a single type section }
+  SrcCollectionsValgrind =
+    'program P;'                                                                   + LineEnding +
+    'type'                                                                         + LineEnding +
+    '  TObjectList = class'                                                        + LineEnding +
+    '    FData: ^Pointer; FCount: Integer; FCapacity: Integer;'                    + LineEnding +
+    '    procedure Grow;'                                                          + LineEnding +
+    '    var OldCap, NewCap: Integer;'                                             + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      OldCap := Self.FCapacity;'                                              + LineEnding +
+    '      if OldCap = 0 then NewCap := 4 else NewCap := OldCap * 2;'             + LineEnding +
+    '      Self.FData := ReallocMem(Self.FData, NewCap * SizeOf(Pointer));'        + LineEnding +
+    '      Self.FCapacity := NewCap'                                               + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    function Add(AObject: Pointer): Integer;'                                 + LineEnding +
+    '    var Dest: ^Pointer;'                                                      + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      if Self.FCount = Self.FCapacity then Self.Grow;'                        + LineEnding +
+    '      Dest := Self.FData + Self.FCount * SizeOf(Pointer);'                    + LineEnding +
+    '      Dest^ := AObject;'                                                      + LineEnding +
+    '      Self.FCount := Self.FCount + 1;'                                        + LineEnding +
+    '      Result := Self.FCount - 1'                                              + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    procedure Destroy;'                                                       + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      FreeMem(Self.FData);'                                                   + LineEnding +
+    '      Self.FData := nil; Self.FCount := 0; Self.FCapacity := 0'               + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    property Count: Integer read FCount;'                                     + LineEnding +
+    '  end;'                                                                       + LineEnding +
+    '  TStringList = class'                                                        + LineEnding +
+    '    FStrings: ^string; FObjects: ^Pointer;'                                   + LineEnding +
+    '    FCount: Integer; FCapacity: Integer;'                                     + LineEnding +
+    '    procedure Grow;'                                                          + LineEnding +
+    '    var OldCap, NewCap: Integer;'                                             + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      OldCap := Self.FCapacity;'                                              + LineEnding +
+    '      if OldCap = 0 then NewCap := 4 else NewCap := OldCap * 2;'             + LineEnding +
+    '      Self.FStrings := ReallocMem(Self.FStrings, NewCap * SizeOf(string));'   + LineEnding +
+    '      Self.FObjects := ReallocMem(Self.FObjects, NewCap * SizeOf(Pointer));'  + LineEnding +
+    '      ZeroMem(Self.FStrings + OldCap * SizeOf(string),'                       + LineEnding +
+    '              (NewCap - OldCap) * SizeOf(string));'                           + LineEnding +
+    '      Self.FCapacity := NewCap'                                               + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    procedure Destroy;'                                                       + LineEnding +
+    '    var I: Integer; Ptr: ^string;'                                            + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      I := 0;'                                                                + LineEnding +
+    '      while I < Self.FCount do'                                               + LineEnding +
+    '      begin'                                                                  + LineEnding +
+    '        Ptr := Self.FStrings + I * SizeOf(string); Ptr^ := nil; I := I + 1'  + LineEnding +
+    '      end;'                                                                   + LineEnding +
+    '      FreeMem(Self.FStrings); FreeMem(Self.FObjects);'                        + LineEnding +
+    '      Self.FStrings := nil; Self.FObjects := nil;'                            + LineEnding +
+    '      Self.FCount := 0; Self.FCapacity := 0'                                 + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    function Add(S: string): Integer;'                                        + LineEnding +
+    '    var StrP: ^string; ObjP: ^Pointer;'                                       + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      if Self.FCount = Self.FCapacity then Self.Grow;'                        + LineEnding +
+    '      StrP := Self.FStrings + Self.FCount * SizeOf(string);'                  + LineEnding +
+    '      ObjP := Self.FObjects + Self.FCount * SizeOf(Pointer);'                 + LineEnding +
+    '      StrP^ := S; ObjP^ := nil;'                                             + LineEnding +
+    '      Result := Self.FCount; Self.FCount := Self.FCount + 1'                  + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    function Get(AIndex: Integer): string;'                                   + LineEnding +
+    '    var Ptr: ^string;'                                                        + LineEnding +
+    '    begin'                                                                    + LineEnding +
+    '      Ptr := Self.FStrings + AIndex * SizeOf(string); Result := Ptr^'         + LineEnding +
+    '    end;'                                                                     + LineEnding +
+    '    property Count: Integer read FCount;'                                     + LineEnding +
+    '  end;'                                                                       + LineEnding +
+    'var OL: TObjectList; SL: TStringList;'                                        + LineEnding +
+    'begin'                                                                        + LineEnding +
+    '  OL := TObjectList.Create;'                                                  + LineEnding +
+    '  OL.Add(nil); OL.Add(nil);'                                                  + LineEnding +
+    '  SL := TStringList.Create;'                                                  + LineEnding +
+    '  SL.Add(''hello''); SL.Add(''world'');'                                       + LineEnding +
+    '  WriteLn(OL.Count);'                                                         + LineEnding +
+    '  WriteLn(SL.Get(0))'                                                         + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_TObjectList_AddGetCount;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListAddGetCount, Output, RCode, []));
+  AssertEquals('count=3', '3', Trim(Copy(Output, 1, Pos(LineEnding, Output) - 1)));
+end;
+
+procedure TE2ETests.TestRun_TObjectList_Delete;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListDelete, Output, RCode, []));
+  AssertEquals('count after delete=2', '2', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_TStringList_AddGet;
+var
+  Output: string;
+  RCode:  Integer;
+  Lines:  TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTStringListAddGet, Output, RCode, []));
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('count=2',   '2',     Lines[0]);
+    AssertEquals('get(0)',    'hello', Lines[1]);
+    AssertEquals('get(1)',    'world', Lines[2]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ETests.TestRun_TStringList_Find_Sorted;
+var
+  Output: string;
+  RCode:  Integer;
+  Lines:  TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTStringListFindSorted, Output, RCode, []));
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('found=1 (true)',  '1', Lines[0]);
+    AssertEquals('idx=1',           '1', Lines[1]);
+    AssertEquals('not found=0',     '0', Lines[2]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ETests.TestRun_Collections_Valgrind;
+var
+  OK:  Boolean;
+  Log: string;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  if RunProc('valgrind', ['--version'], Log, True) <> 0 then
+  begin
+    Ignore('valgrind not installed');
+    Exit;
+  end;
+  OK := RunUnderValgrind(SrcCollectionsValgrind, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('Collections Valgrind check failed:' + LineEnding + Log);
+  end;
 end;
 
 initialization

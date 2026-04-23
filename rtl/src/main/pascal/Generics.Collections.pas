@@ -56,12 +56,15 @@ implementation
 procedure TList<T>.Grow;
 var
   NewCap: Integer;
+  OldCap: Integer;
 begin
-  if Self.FCapacity = 0 then
+  OldCap := Self.FCapacity;
+  if OldCap = 0 then
     NewCap := 4
   else
-    NewCap := Self.FCapacity * 2;
+    NewCap := OldCap * 2;
   Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(T));
+  ZeroMem(Self.FData + OldCap * SizeOf(T), (NewCap - OldCap) * SizeOf(T));
   Self.FCapacity := NewCap
 end;
 
@@ -121,13 +124,17 @@ end;
 procedure TDictionary<K, V>.Grow;
 var
   NewCap: Integer;
+  OldCap: Integer;
 begin
-  if Self.FCapacity = 0 then
+  OldCap := Self.FCapacity;
+  if OldCap = 0 then
     NewCap := 8
   else
-    NewCap := Self.FCapacity * 2;
+    NewCap := OldCap * 2;
   Self.FKeys     := ReallocMem(Self.FKeys,   NewCap * SizeOf(K));
+  ZeroMem(Self.FKeys + OldCap * SizeOf(K), (NewCap - OldCap) * SizeOf(K));
   Self.FValues   := ReallocMem(Self.FValues, NewCap * SizeOf(V));
+  ZeroMem(Self.FValues + OldCap * SizeOf(V), (NewCap - OldCap) * SizeOf(V));
   Self.FCapacity := NewCap
 end;
 

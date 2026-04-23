@@ -97,12 +97,17 @@ end;
 procedure TStrIntDict.Grow;
 var
   NewCap: Integer;
+  OldCap: Integer;
 begin
-  if Self.FCapacity = 0 then
+  OldCap := Self.FCapacity;
+  if OldCap = 0 then
     NewCap := 8
   else
-    NewCap := Self.FCapacity * 2;
+    NewCap := OldCap * 2;
   Self.FKeys   := ReallocMem(Self.FKeys,   NewCap * SizeOf(string));
+  { Zero-init new string slots so ARC Release of "old" value is safe }
+  ZeroMem(Self.FKeys + OldCap * SizeOf(string),
+          (NewCap - OldCap) * SizeOf(string));
   Self.FValues := ReallocMem(Self.FValues, NewCap * SizeOf(Integer));
   Self.FCapacity := NewCap
 end;
@@ -194,12 +199,26 @@ begin
       VDst^ := VSrc^;
       I     := I + 1
     end;
+    { Release the duplicate last string slot left behind by the shift }
+    KDst := Self.FKeys + (Self.FCount - 1) * SizeOf(string);
+    KDst^ := nil;
     Self.FCount := Self.FCount - 1
   end
 end;
 
 procedure TStrIntDict.Destroy;
+var
+  I:   Integer;
+  Ptr: ^string;
 begin
+  { Release all stored strings before freeing the backing store }
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Ptr  := Self.FKeys + I * SizeOf(string);
+    Ptr^ := nil;
+    I    := I + 1
+  end;
   FreeMem(Self.FKeys);
   FreeMem(Self.FValues);
   Self.FKeys     := nil;
