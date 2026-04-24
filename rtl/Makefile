@@ -7,7 +7,7 @@ LIB     = $(OBJ_DIR)/blaise_rtl.a
 
 # Where the compiler binary lives — install copies the RTL there so the
 # driver finds it automatically next to itself.
-COMPILER_BIN = ../compiler/target/bin
+COMPILER_BIN = ../compiler/target
 
 SRCS = $(SRC_DIR)/blaise_arc.c \
        $(SRC_DIR)/blaise_exc.c \

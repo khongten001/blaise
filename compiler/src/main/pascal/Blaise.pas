@@ -224,25 +224,30 @@ end;
 
 function RunProcess(const AExe: string; const AArgs: array of string;
   out AOutput: string): Integer;
+const
+  BufSize = 4096;
 var
-  Proc:  TProcess;
-  Lines: TStringList;
-  I:     Integer;
+  Proc: TProcess;
+  Buf:  array[0..BufSize-1] of Byte;
+  N:    Integer;
+  I:    Integer;
 begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := AExe;
     for I := Low(AArgs) to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Options := [poWaitOnExit, poUsePipes];
+    { Do NOT use poWaitOnExit with poUsePipes — if the child fills the pipe
+      buffer before we read, both sides deadlock.  Drain stderr in a loop. }
+    Proc.Options := [poUsePipes, poStderrToOutPut];
     Proc.Execute;
-    Lines := TStringList.Create;
-    try
-      Lines.LoadFromStream(Proc.Stderr);
-      AOutput := Lines.Text;
-    finally
-      Lines.Free;
-    end;
+    AOutput := '';
+    repeat
+      N := Proc.Output.Read(Buf, BufSize);
+      if N > 0 then
+        AOutput := AOutput + Copy(string(PChar(@Buf[0])), 1, N);
+    until (N = 0) and not Proc.Running;
+    Proc.WaitOnExit;
     Result := Proc.ExitCode;
   finally
     Proc.Free;
