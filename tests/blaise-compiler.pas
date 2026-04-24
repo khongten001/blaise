@@ -1605,10 +1605,12 @@ type
     function IsString: Boolean;
     function IsOrdinal: Boolean;
     function IsRecord: Boolean;
-    
+
     function ByteSize: Integer;
-    
+
     function AllocAlign: Integer;
+
+    procedure Destroy; virtual;
   end;
 
   
@@ -1623,10 +1625,10 @@ type
 
   TEnumTypeDesc = class(TTypeDesc)
 
-    Members: TStringList;  
+    Members: TStringList;
     procedure Create(const AName: string);
-    procedure  Destroy;
-    function    OrdinalOf(const AMember: string): Integer;
+    procedure Destroy; override;
+    function  OrdinalOf(const AMember: string): Integer;
   end;
 
   
@@ -1670,7 +1672,7 @@ type
     FHasDestroyMethod: Boolean;     
 
     procedure Create(const AName: string; AKind: TTypeKind);
-    procedure Destroy;
+    procedure Destroy; override;
     procedure AddField(const AName: string; AType: TTypeDesc);
     function  FindField(const AName: string): TFieldInfo;
     function  TotalSize: Integer;
@@ -1708,7 +1710,7 @@ type
     FParent:      TInterfaceTypeDesc;  
 
     procedure Create(const AName: string);
-    procedure Destroy;
+    procedure Destroy; override;
     procedure AddMethod(const AName: string;
                 const AReturnTypeName: string);
     function  HasMethod(const AName: string): Boolean;
@@ -1893,7 +1895,7 @@ function TTypeDesc.AllocAlign: Integer;
 begin
   case Kind of
     tyInteger, tyUInt32, tyEnum: Result := 4;
-    tyByte, tyBoolean:   Result := 4;  
+    tyByte, tyBoolean:   Result := 4;
     tyInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
   else
@@ -1901,6 +1903,9 @@ begin
   end;
 end;
 
+procedure TTypeDesc.Destroy;
+begin
+end;
 
 
 
@@ -11547,6 +11552,8 @@ begin
     begin
       SelfTemp := AllocTemp;
       EmitLine(Format('  %s =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)', SelfTemp, RT.TotalSize, RT.Name));
+      if RT.HasVTable then
+        EmitLine(Format('  storel $vtable_%s, %s', QBEMangle(RT.Name), SelfTemp));
       EmitLine(Format('  call $_ClassAddRef(l %s)', SelfTemp));
       
       if MCallExpr.ResolvedMethod <> nil then

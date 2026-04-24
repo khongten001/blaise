@@ -83,6 +83,12 @@ type
     procedure TestCodegen_ClassFieldAssign_InsertsAddRefRelease;
     procedure TestCodegen_FieldCleanup_EmittedPerClass;
     procedure TestCodegen_FieldCleanup_ReleasesClassField;
+
+    { ------------------------------------------------------------------ }
+    { vtable initialisation                                                }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_Constructor_NoArgs_StoresVTable;
+    procedure TestCodegen_Constructor_WithArgs_StoresVTable;
   end;
 
 implementation
@@ -793,6 +799,50 @@ begin
   OuterBody := Copy(OuterBody, 1, EndPos);
   AssertTrue('TOuter cleanup releases class-typed field',
     Pos('call $_ClassRelease', OuterBody) > 0);
+end;
+
+procedure TClassTests.TestCodegen_Constructor_NoArgs_StoresVTable;
+var IR: string;
+begin
+  { TFoo.Create (no args) — goes through TFieldAccessExpr.IsConstructorCall.
+    A class with a virtual method must get its vtable pointer stored at
+    offset 0 immediately after _ClassAlloc. }
+  IR := GenIR(
+    'program P;'                              + LineEnding +
+    'type'                                    + LineEnding +
+    '  TFoo = class'                          + LineEnding +
+    '    procedure Done; virtual;'            + LineEnding +
+    '  end;'                                  + LineEnding +
+    'procedure TFoo.Done; begin end;'         + LineEnding +
+    'var F: TFoo;'                            + LineEnding +
+    'begin'                                   + LineEnding +
+    '  F := TFoo.Create'                      + LineEnding +
+    'end.');
+  AssertTrue('no-arg ctor stores vtable', Pos('storel $vtable_TFoo', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_Constructor_WithArgs_StoresVTable;
+var IR: string;
+begin
+  { TFoo.Create(N) (args) — goes through TMethodCallExpr.IsConstructorCall.
+    The vtable pointer must still be stored at offset 0 even when a
+    user-defined Create method is called with arguments. }
+  IR := GenIR(
+    'program P;'                              + LineEnding +
+    'type'                                    + LineEnding +
+    '  TFoo = class'                          + LineEnding +
+    '    FN: Integer;'                        + LineEnding +
+    '    procedure Create(N: Integer);'       + LineEnding +
+    '    procedure Done; virtual;'            + LineEnding +
+    '  end;'                                  + LineEnding +
+    'procedure TFoo.Create(N: Integer);'      + LineEnding +
+    'begin FN := N end;'                      + LineEnding +
+    'procedure TFoo.Done; begin end;'         + LineEnding +
+    'var F: TFoo;'                            + LineEnding +
+    'begin'                                   + LineEnding +
+    '  F := TFoo.Create(42)'                  + LineEnding +
+    'end.');
+  AssertTrue('with-arg ctor stores vtable', Pos('storel $vtable_TFoo', IR) > 0);
 end;
 
 initialization
