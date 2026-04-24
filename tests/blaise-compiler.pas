@@ -242,7 +242,20 @@ begin
 end;
 
 procedure TObjectList.Destroy;
+var
+  I: Integer;
+  Src: ^Pointer;
 begin
+  if Self.FOwnsObjects then
+  begin
+    I := 0;
+    while I < Self.FCount do
+    begin
+      Src := Self.FData + I * SizeOf(Pointer);
+      _ClassRelease(Src^);
+      I := I + 1
+    end
+  end;
   FreeMem(Self.FData);
   Self.FData     := nil;
   Self.FCount    := 0;
@@ -257,6 +270,7 @@ begin
     Self.Grow;
   Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
   Dest^       := AObject;
+  _ClassAddRef(AObject);
   Self.FCount := Self.FCount + 1;
   Result      := Self.FCount - 1
 end;
@@ -274,6 +288,9 @@ var
   Dest: ^Pointer;
 begin
   Dest  := Self.FData + AIndex * SizeOf(Pointer);
+  _ClassAddRef(AObject);
+  if Self.FOwnsObjects then
+    _ClassRelease(Dest^);
   Dest^ := AObject
 end;
 
@@ -302,6 +319,11 @@ var
   Dst: ^Pointer;
   Src: ^Pointer;
 begin
+  if Self.FOwnsObjects then
+  begin
+    Src := Self.FData + AIndex * SizeOf(Pointer);
+    _ClassRelease(Src^);
+  end;
   I := AIndex;
   while I < Self.FCount - 1 do
   begin
@@ -314,7 +336,20 @@ begin
 end;
 
 procedure TObjectList.Clear;
+var
+  I: Integer;
+  Src: ^Pointer;
 begin
+  if Self.FOwnsObjects then
+  begin
+    I := 0;
+    while I < Self.FCount do
+    begin
+      Src := Self.FData + I * SizeOf(Pointer);
+      _ClassRelease(Src^);
+      I := I + 1
+    end
+  end;
   Self.FCount := 0
 end;
 
