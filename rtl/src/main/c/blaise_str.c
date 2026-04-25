@@ -99,7 +99,8 @@ void* _StringCopy(void* s, int32_t from, int32_t count) {
         return str_alloc(0);
     }
     if (count < 0) count = 0;
-    if (start + count > slen) count = slen - start;
+    /* Use 64-bit arithmetic to avoid signed overflow when count = MaxInt */
+    if ((int64_t)start + (int64_t)count > (int64_t)slen) count = slen - start;
 
     void* result = str_alloc(count);
     if (result && count > 0)

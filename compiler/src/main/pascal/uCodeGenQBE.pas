@@ -3558,7 +3558,21 @@ begin
        (BinExpr.Left.ResolvedType <> nil) and
        BinExpr.Left.ResolvedType.IsString then
     begin
+      { Temporarily own any unowned intermediate string temps so they can be
+        properly freed after the concat copies their bytes into the result. }
+      if BinExpr.Left is TBinaryExpr then
+        EmitLine(Format('  call $_StringAddRef(l %s)', [L]));
+      if (BinExpr.Right is TBinaryExpr) or
+         (BinExpr.Right is TFuncCallExpr) or
+         (BinExpr.Right is TMethodCallExpr) then
+        EmitLine(Format('  call $_StringAddRef(l %s)', [R]));
       EmitLine(Format('  %s =l call $_StringConcat(l %s, l %s)', [T, L, R]));
+      if BinExpr.Left is TBinaryExpr then
+        EmitLine(Format('  call $_StringRelease(l %s)', [L]));
+      if (BinExpr.Right is TBinaryExpr) or
+         (BinExpr.Right is TFuncCallExpr) or
+         (BinExpr.Right is TMethodCallExpr) then
+        EmitLine(Format('  call $_StringRelease(l %s)', [R]));
       Result := T;
       Exit;
     end;

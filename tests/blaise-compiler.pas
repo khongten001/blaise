@@ -7621,7 +7621,8 @@ begin
     if SameText(ACall.Name, 'Free') and (ACall.Args.Count = 0) then
     begin
       ACall.ResolvedClassType := RT;
-      ACall.ResolvedMethod    := nil;  
+      ACall.ResolvedMethod    := nil;
+      ACall.IsGlobal          := ObjSym.IsGlobal;
       Exit;
     end;
     SemanticError(
@@ -9021,6 +9022,7 @@ type
     
 
     function  VarRef(const AName: string; AIsGlobal: Boolean): string;
+    function  EmitVarArgAddr(AIdent: TIdentExpr): string;
     function  QbeTypeOf(AType: TTypeDesc): string;
     function  QbeEscapeString(const AStr: string): string;
     
@@ -10040,6 +10042,20 @@ begin
     Result := '%_var_' + AName;
 end;
 
+function TCodeGenQBE.EmitVarArgAddr(AIdent: TIdentExpr): string;
+var
+  T: string;
+begin
+  if AIdent.IsVarParam then
+  begin
+    T := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_%s', T, AIdent.Name));
+    Result := T;
+  end
+  else
+    Result := VarRef(AIdent.Name, AIdent.IsGlobal);
+end;
+
 procedure TCodeGenQBE.EmitFieldAssignment(AAssign: TFieldAssignment);
 var
   Ptr, PtrTemp, ValTemp, OldTemp, QType, StoreInstr, ExtTemp: string;
@@ -10209,10 +10225,15 @@ begin
     ArgLine := Format('l %s', SelfTemp);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      Par     := TMethodParam(MDecl.Params.Get(I));
-      ArgTemp := EmitExpr(TASTExpr(ACall.Args.Get(I)));
-      QType   := QbeTypeOf(Par.ResolvedType);
-      ArgLine := ArgLine + Format(', %s %s', QType, ArgTemp);
+      Par := TMethodParam(MDecl.Params.Get(I));
+      if Par.IsVarParam then
+        ArgLine := ArgLine + Format(', l %s', EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Get(I)))))
+      else
+      begin
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Get(I)));
+        QType   := QbeTypeOf(Par.ResolvedType);
+        ArgLine := ArgLine + Format(', %s %s', QType, ArgTemp);
+      end;
     end;
     if MDecl.OwnerTypeName <> '' then
       FuncName := '$' + MDecl.OwnerTypeName + '_' + ACall.Name
@@ -10280,10 +10301,15 @@ begin
   ArgLine := Format('l %s', SelfTemp);
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    Par     := TMethodParam(MDecl.Params.Get(I));
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Get(I)));
-    QType   := QbeTypeOf(Par.ResolvedType);
-    ArgLine := ArgLine + Format(', %s %s', QType, ArgTemp);
+    Par := TMethodParam(MDecl.Params.Get(I));
+    if Par.IsVarParam then
+      ArgLine := ArgLine + Format(', l %s', EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Get(I)))))
+    else
+    begin
+      ArgTemp := EmitExpr(TASTExpr(ACall.Args.Get(I)));
+      QType   := QbeTypeOf(Par.ResolvedType);
+      ArgLine := ArgLine + Format(', %s %s', QType, ArgTemp);
+    end;
   end;
 
   if MDecl.VTableSlot >= 0 then
@@ -11060,8 +11086,7 @@ begin
       Par := TMethodParam(MDecl.Params.Get(I));
       if ArgLine <> '' then ArgLine := ArgLine + ', ';
       if Par.IsVarParam then
-        
-        ArgLine := ArgLine + Format('l %%_var_%s', TIdentExpr(TASTExpr(ACall.Args.Get(I))).Name)
+        ArgLine := ArgLine + Format('l %s', EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Get(I)))))
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(ACall.Args.Get(I)));
@@ -11599,8 +11624,7 @@ begin
     begin
       Par := TMethodParam(MDecl.Params.Get(I));
       if Par.IsVarParam then
-        
-        ArgLine := ArgLine + Format(', l %%_var_%s', TIdentExpr(TASTExpr(MCallExpr.Args.Get(I))).Name)
+        ArgLine := ArgLine + Format(', l %s', EmitVarArgAddr(TIdentExpr(TASTExpr(MCallExpr.Args.Get(I)))))
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Get(I)));
@@ -11899,7 +11923,19 @@ begin
        (BinExpr.Left.ResolvedType <> nil) and
        BinExpr.Left.ResolvedType.IsString then
     begin
+      if BinExpr.Left is TBinaryExpr then
+        EmitLine(Format('  call $_StringAddRef(l %s)', L));
+      if (BinExpr.Right is TBinaryExpr) or
+         (BinExpr.Right is TFuncCallExpr) or
+         (BinExpr.Right is TMethodCallExpr) then
+        EmitLine(Format('  call $_StringAddRef(l %s)', R));
       EmitLine(Format('  %s =l call $_StringConcat(l %s, l %s)', T, L, R));
+      if BinExpr.Left is TBinaryExpr then
+        EmitLine(Format('  call $_StringRelease(l %s)', L));
+      if (BinExpr.Right is TBinaryExpr) or
+         (BinExpr.Right is TFuncCallExpr) or
+         (BinExpr.Right is TMethodCallExpr) then
+        EmitLine(Format('  call $_StringRelease(l %s)', R));
       Result := T;
       Exit;
     end;
