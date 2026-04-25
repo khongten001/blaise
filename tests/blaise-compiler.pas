@@ -1749,11 +1749,12 @@ type
     Kind:       TSymbolKind;
     TypeDesc:   TTypeDesc;    
     Params:     TObjectList;  
-    ConstValue: Int64;        
-    IsWeak:     Boolean;      
+    ConstValue:  Int64;
+    ConstString: string;
+    IsWeak:      Boolean;
 
 
-    IsGlobal:   Boolean;      
+    IsGlobal:   Boolean;
 
     procedure Create(const AName: string; AKind: TSymbolKind; AType: TTypeDesc);
     procedure Destroy;
@@ -2548,15 +2549,17 @@ type
   TIdentExpr = class(TASTExpr)
 
     Name:              string;
-    IsVarParam:        Boolean;  
-    IsConstant:        Boolean;  
-    ConstValue:        Int64;    
-    IsNoArgFuncCall:   Boolean;  
-    IsGlobal:          Boolean;  
-    IsImplicitSelf:    Boolean;  
-    ImplicitFieldInfo: TObject;  
-    IsImplicitSelfMethod: Boolean; 
-    ImplicitMethodDecl:   TObject;  
+    IsVarParam:        Boolean;
+    IsConstant:        Boolean;
+    ConstValue:        Int64;
+    ConstString:       string;
+    IsNoArgFuncCall:   Boolean;
+    NoArgFuncDecl:     TObject;
+    IsGlobal:          Boolean;
+    IsImplicitSelf:    Boolean;
+    ImplicitFieldInfo: TObject;
+    IsImplicitSelfMethod: Boolean;
+    ImplicitMethodDecl:   TObject;
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -6696,8 +6699,9 @@ begin
       TD := FTable.TypeString
     else
       TD := FTable.TypeInteger;
-    Sym            := TSymbol.Create(CD.Name, skConstant, TD);
-    Sym.ConstValue := CD.IntVal;
+    Sym             := TSymbol.Create(CD.Name, skConstant, TD);
+    Sym.ConstValue  := CD.IntVal;
+    Sym.ConstString := CD.StrVal;
     if not FTable.Define(Sym) then
       Sym.Free;  
   end;
@@ -8465,9 +8469,10 @@ end;
 
 function TSemanticAnalyser.AnalyseExpr(AExpr: TASTExpr): TTypeDesc;
 var
-  Sym:      TSymbol;
-  FldInfo:  TFieldInfo;
-  PropInfo: TPropertyInfo;
+  Sym:       TSymbol;
+  FldInfo:   TFieldInfo;
+  PropInfo:  TPropertyInfo;
+  NoArgIdx:  Integer;
 begin
   if AExpr is TNilLiteral then
     Result := FTable.TypeNil
@@ -8545,13 +8550,18 @@ begin
     TIdentExpr(AExpr).IsGlobal  := Sym.IsGlobal;
     if Sym.Kind = skConstant then
     begin
-      TIdentExpr(AExpr).IsConstant := True;
-      TIdentExpr(AExpr).ConstValue := Sym.ConstValue;
+      TIdentExpr(AExpr).IsConstant  := True;
+      TIdentExpr(AExpr).ConstValue  := Sym.ConstValue;
+      TIdentExpr(AExpr).ConstString := Sym.ConstString;
     end;
     
-    if (Sym.Kind = skFunction) and (Sym.TypeDesc <> nil) and
-       (FProcIndex.IndexOf(TIdentExpr(AExpr).Name) < 0) then
+    if (Sym.Kind = skFunction) and (Sym.TypeDesc <> nil) then
+    begin
       TIdentExpr(AExpr).IsNoArgFuncCall := True;
+      NoArgIdx := FProcIndex.IndexOf(TIdentExpr(AExpr).Name);
+      if NoArgIdx >= 0 then
+        TIdentExpr(AExpr).NoArgFuncDecl := FProcIndex.GetObject(NoArgIdx);
+    end;
     Result := Sym.TypeDesc;
   end
   else if AExpr is TFuncCallExpr then
@@ -11748,10 +11758,9 @@ begin
     end
     else if FldAccess.IsMethodCall then
     begin
-      
       MDecl := TMethodDecl(FldAccess.ResolvedMethod);
       L := AllocTemp;
-      EmitLine(Format('  %s =l loadl %%_var_%s', L, FldAccess.RecordName));
+      EmitLine(Format('  %s =l loadl %s', L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)));
       QType := QbeTypeOf(MDecl.ResolvedReturnType);
       T := AllocTemp;
       EmitLine(Format('  %s =%s call $%s_%s(l %s)', T, QType, MDecl.OwnerTypeName, FldAccess.FieldName, L));
@@ -11776,9 +11785,8 @@ begin
     end
     else if FldAccess.PropRead <> nil then
     begin
-      
       L := AllocTemp;
-      EmitLine(Format('  %s =l loadl %%_var_%s', L, FldAccess.RecordName));
+      EmitLine(Format('  %s =l loadl %s', L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)));
       T     := AllocTemp;
       QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
       EmitLine(Format('  %s =%s call $%s_%s(l %s)', T, QType, QBEMangle(FldAccess.PropOwnerType),
@@ -11787,9 +11795,8 @@ begin
     end
     else if FldAccess.IsClassAccess then
     begin
-      
       L := AllocTemp;
-      EmitLine(Format('  %s =l loadl %%_var_%s', L, FldAccess.RecordName));
+      EmitLine(Format('  %s =l loadl %s', L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)));
       if FldAccess.FieldInfo.Offset > 0 then
       begin
         Ptr := AllocTemp;
@@ -11866,13 +11873,11 @@ begin
     end
     else if TIdentExpr(AExpr).IsNoArgFuncCall then
     begin
-      
-
-
       NoArgCall := TFuncCallExpr.Create;
       try
         NoArgCall.Name         := TIdentExpr(AExpr).Name;
         NoArgCall.ResolvedType := AExpr.ResolvedType;
+        NoArgCall.ResolvedDecl := TIdentExpr(AExpr).NoArgFuncDecl;
         Result := EmitExpr(NoArgCall);
       finally
         NoArgCall.Free;
@@ -11881,7 +11886,10 @@ begin
     end
     else if TIdentExpr(AExpr).IsConstant then
     begin
-      EmitLine(Format('  %s =w copy %d', T, TIdentExpr(AExpr).ConstValue));
+      if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyString) then
+        EmitLine(Format('  %s =l copy %s', T, EmitStrLit(TIdentExpr(AExpr).ConstString)))
+      else
+        EmitLine(Format('  %s =w copy %d', T, TIdentExpr(AExpr).ConstValue));
     end
     else if TIdentExpr(AExpr).IsVarParam then
     begin
