@@ -319,6 +319,72 @@ Blaise compiler without modification.
 
 ---
 
+== Platform Interoperability
+
+=== POSIX and Xlib (Linux, macOS BSD layer)
+
+POSIX APIs accept `char*` — null-terminated byte strings. Modern Linux
+and macOS (POSIX layer) are universally UTF-8. Blaise's `PChar(str)` cast
+returns a pointer to the string's character data, which is already
+null-terminated by the RTL. This is a valid `char*` with no conversion
+required.
+
+Xlib provides two generations of text functions. The older functions
+(e.g. `XDrawString`) treat strings as Latin-1 bytes. The modern
+`Xutf8*` family (e.g. `Xutf8DrawString`) accept UTF-8 directly. Blaise
+code targeting Xlib should use the `Xutf8*` functions; `PChar(str)` is
+the correct way to obtain the argument.
+
+fpGUI already targets the Xlib UTF-8 functions on Linux. No conversion
+layer is needed.
+
+=== Windows Win32 / GDI
+
+Win32 provides two API variants:
+
+* `A` (ANSI) — accepts code-page-dependent byte strings. Not suitable
+  for Unicode-correct code; should not be targeted.
+* `W` (Wide) — accepts `wchar_t*`, which is UTF-16LE null-terminated.
+
+Blaise always targets the `W` variants. Since Blaise strings are UTF-8
+internally, a UTF-8 to UTF-16LE conversion is required at each Windows
+API call site.
+
+==== Chosen approach: RTL boundary conversion
+
+The conversion is handled entirely by the RTL, not the language. The
+language does not gain a UTF-16 string type. Instead:
+
+* The RTL provides a `PWideChar` pointer type (an opaque 64-bit pointer,
+  analogous to `PChar`).
+* An RTL function `_StringToWideZ(str: string): PWideChar` converts a
+  Blaise string to a temporary null-terminated UTF-16LE buffer using the
+  platform's `MultiByteToWideChar` or equivalent.
+* Windows RTL wrapper functions accept Blaise strings directly and perform
+  the conversion internally before forwarding to the `W` API.
+
+User code calls the RTL wrapper and passes a Blaise string; the UTF-16
+buffer is created, used, and freed within the wrapper. The conversion
+never surfaces in user code.
+
+==== Rationale for not adding a UTF-16 string type
+
+Every major cross-platform toolkit (Qt, Java, .NET, Go, Python, Swift)
+that adopted UTF-16 internally has accumulated conversion overhead and
+complexity at POSIX boundaries. The boundary conversion problem does not
+disappear — it simply moves from the Windows boundary to the POSIX
+boundary. Keeping UTF-8 as the single internal encoding and converting
+only at the Windows API boundary is strictly simpler and is the approach
+now recommended by Microsoft's own documentation for new cross-platform
+code.
+
+==== Status
+
+_Deferred to Phase 6 (LLVM backend + Windows target). No implementation
+required for the current Linux x86_64 target._
+
+---
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.
