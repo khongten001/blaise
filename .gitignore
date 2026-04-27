@@ -1,3 +1,6 @@
+# Local binary release archives (not tracked; see releases/ directory)
+releases/
+
 # FPC compiled output
 *.ppu
 *.o
