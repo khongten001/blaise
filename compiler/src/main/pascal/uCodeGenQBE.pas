@@ -2831,12 +2831,18 @@ begin
       { Open-array intrinsics }
       if SameText(Name, 'High') then
       begin
-        { Load the high-index slot and truncate to Integer (w) }
-        L := TIdentExpr(Args[0]).Name;
         T := AllocTemp;
-        R := AllocTemp;
-        EmitLine(Format('  %s =l loadl %%_var_%s_high', [R, L]));
-        EmitLine(Format('  %s =w truncl %s', [T, R]));
+        if TASTExpr(Args[0]).ResolvedType.Kind = tyStaticArray then
+          EmitLine(Format('  %s =w copy %d', [T,
+            TStaticArrayTypeDesc(TASTExpr(Args[0]).ResolvedType).HighBound]))
+        else
+        begin
+          { Open-array: load the high-index slot and truncate to Integer (w) }
+          L := TIdentExpr(Args[0]).Name;
+          R := AllocTemp;
+          EmitLine(Format('  %s =l loadl %%_var_%s_high', [R, L]));
+          EmitLine(Format('  %s =w truncl %s', [T, R]));
+        end;
         Result := T;
         Exit;
       end;
@@ -2844,7 +2850,11 @@ begin
       if SameText(Name, 'Low') then
       begin
         T := AllocTemp;
-        EmitLine(Format('  %s =w copy 0', [T]));
+        if TASTExpr(Args[0]).ResolvedType.Kind = tyStaticArray then
+          EmitLine(Format('  %s =w copy %d', [T,
+            TStaticArrayTypeDesc(TASTExpr(Args[0]).ResolvedType).LowBound]))
+        else
+          EmitLine(Format('  %s =w copy 0', [T]));
         Result := T;
         Exit;
       end;

@@ -49,6 +49,14 @@ type
     procedure TestCodegen_StaticArray_WriteEmitted;
     procedure TestCodegen_StaticArray_ReadEmitted;
     procedure TestCodegen_StaticArray_NonZero_OffsetSubtracted;
+
+    { ------------------------------------------------------------------ }
+    { Low / High                                                           }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_StaticArray_Low_ReturnsInteger;
+    procedure TestSemantic_StaticArray_High_ReturnsInteger;
+    procedure TestCodegen_StaticArray_Low_EmitsLowBound;
+    procedure TestCodegen_StaticArray_High_EmitsHighBound;
   end;
 
 implementation
@@ -137,6 +145,15 @@ const
     'var R: array[5..9] of Integer;'                       + LineEnding +
     'begin'                                                + LineEnding +
     '  R[5] := 1'                                         + LineEnding +
+    'end;'                                                 + LineEnding +
+    'begin end.';
+
+  SrcLowHigh =
+    'program SA;'                                          + LineEnding +
+    'function Len: Integer;'                               + LineEnding +
+    'var A: array[3..7] of Integer;'                       + LineEnding +
+    'begin'                                                + LineEnding +
+    '  Result := High(A) - Low(A) + 1'                    + LineEnding +
     'end;'                                                 + LineEnding +
     'begin end.';
 
@@ -290,6 +307,46 @@ begin
   IR := GenIR(SrcNonZero);
   { R[5] with LowBound=5: offset = (5-5)*4 = 0; sub instruction emitted }
   AssertTrue('sub for low-bound adjustment', Pos('=l sub', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Low / High tests                                                    }
+{ ------------------------------------------------------------------ }
+
+procedure TStaticArrayTests.TestSemantic_StaticArray_Low_ReturnsInteger;
+var P: TProgram;
+begin
+  { If Low(A) on a static array fails semantic analysis an exception is raised here }
+  P := AnalyseSrc(SrcLowHigh);
+  try
+    AssertNotNull('program analysed', P);
+  finally P.Free; end;
+end;
+
+procedure TStaticArrayTests.TestSemantic_StaticArray_High_ReturnsInteger;
+var P: TProgram;
+begin
+  { If High(A) on a static array fails semantic analysis an exception is raised here }
+  P := AnalyseSrc(SrcLowHigh);
+  try
+    AssertNotNull('program analysed', P);
+  finally P.Free; end;
+end;
+
+procedure TStaticArrayTests.TestCodegen_StaticArray_Low_EmitsLowBound;
+var IR: string;
+begin
+  IR := GenIR(SrcLowHigh);
+  { Low(A) on array[3..7] emits: copy 3 }
+  AssertTrue('copy 3 for Low(A)', Pos('copy 3', IR) > 0);
+end;
+
+procedure TStaticArrayTests.TestCodegen_StaticArray_High_EmitsHighBound;
+var IR: string;
+begin
+  IR := GenIR(SrcLowHigh);
+  { High(A) on array[3..7] emits: copy 7 }
+  AssertTrue('copy 7 for High(A)', Pos('copy 7', IR) > 0);
 end;
 
 initialization

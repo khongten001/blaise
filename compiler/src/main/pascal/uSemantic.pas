@@ -2553,8 +2553,8 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError('High requires exactly one argument', AExpr.Line, AExpr.Col);
     ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    if ArgType.Kind <> tyOpenArray then
-      SemanticError('High argument must be an open-array parameter', AExpr.Line, AExpr.Col);
+    if not (ArgType.Kind in [tyOpenArray, tyStaticArray]) then
+      SemanticError('High argument must be an array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2565,8 +2565,8 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Low requires exactly one argument', AExpr.Line, AExpr.Col);
     ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    if ArgType.Kind <> tyOpenArray then
-      SemanticError('Low argument must be an open-array parameter', AExpr.Line, AExpr.Col);
+    if not (ArgType.Kind in [tyOpenArray, tyStaticArray]) then
+      SemanticError('Low argument must be an array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
