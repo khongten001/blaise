@@ -1,0 +1,54 @@
+= Blaise Compiler — Future Improvements
+:toc:
+:toc-placement: preamble
+:sectnums:
+
+This document records optimisation opportunities, quality-of-life improvements,
+and language enhancements that are worth pursuing but are deliberately deferred
+from the current implementation phase. Each entry states what the improvement is,
+why it matters, and any known implementation notes.
+
+Items here are not committed to any release milestone. They exist so that good
+ideas are not lost and so that the rationale is available when the time comes to
+prioritise them.
+
+== Code Generation
+
+=== Single-precision intrinsic dispatch for trig functions
+
+*What.* When a `Single` (32-bit float) operand is passed to a standard trig
+function (`Sin`, `Cos`, `Tan`, `ArcTan`, `Sinh`, `Cosh`, `Tanh`, and their
+inverses), the codegen should call the corresponding `*f` variant from libc
+(`sinf`, `cosf`, `tanf`, `atanf`, `sinhf`, `coshf`, `tanhf`, etc.) rather
+than the double-precision variant (`sin`, `cos`, etc.).
+
+*Why it matters.* The x87 FPU always computed in 80-bit extended precision
+regardless of operand type, so no speed difference between `Single` and
+`Double` existed there. On modern x86_64, SSE2 scalar instructions
+(`ADDSS`, `MULSS`, `SQRTSS`) do operate at genuine 32-bit precision, but
+trig is computed via software polynomial approximations in libc — and that
+is where the gap lies. The `*f` variants require a polynomial with roughly
+half as many terms (24 mantissa bits vs 53), yielding a 2–4× speedup in
+scalar trig compared to the `double` path. FPC and Delphi both call the
+`double` variants for `Single` arguments, converting `Single → Double →
+call sin() → Single` and paying the full double-precision cost plus two
+conversions. This makes `Single` trig no faster than `Double` trig in
+those compilers — a known pain point for real-time audio and signal
+processing code.
+
+*Implementation notes.*
+
+* QBE already distinguishes `s` (single) and `d` (double) types, so the
+  operand type is available at emit time.
+* The fix is a small dispatch in the trig intrinsic call emitter: check
+  the resolved type of the argument; if `tyFloat` (Single), emit a call to
+  the `*f` symbol; if `tyDouble`, emit a call to the unprefixed symbol.
+* No ABI or calling-convention changes are required; both families use
+  the standard System V AMD64 float argument registers.
+* A future extension could call a SIMD math library (e.g. SLEEF) for
+  vectorised trig across arrays of singles, but that is a separate and
+  larger undertaking.
+
+*Relevant use cases.* Real-time PCM audio synthesis, DSP filters, FFT
+pre/post-processing, simple video effects pipelines — all domains where
+single precision is sufficient and throughput matters.
