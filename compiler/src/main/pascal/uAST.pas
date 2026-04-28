@@ -110,7 +110,7 @@ type
   end;
 
   TBinaryOp = (boAdd, boSub, boMul, boDiv, boEQ, boNE, boLT, boGT, boLE, boGE,
-               boAnd, boOr);
+               boAnd, boOr, boIn);
 
   TBinaryExpr = class(TASTExpr)
   public
@@ -354,6 +354,12 @@ type
   { Abstract base for type definitions. }
   TASTTypeDef = class(TASTNode);
 
+  { Set type definition: type TOptions = set of TEnum; }
+  TSetTypeDef = class(TASTTypeDef)
+  public
+    BaseTypeName: string;  { element type name — must resolve to an enum }
+  end;
+
   { Enum type definition: type TDir = (dNorth, dSouth, dEast, dWest); }
   TEnumTypeDef = class(TASTTypeDef)
   public
@@ -580,6 +586,7 @@ begin
     boGE:  Result := '>=';
     boAnd: Result := 'and';
     boOr:  Result := 'or';
+    boIn:  Result := 'in';
   else
     Result := '?';
   end;

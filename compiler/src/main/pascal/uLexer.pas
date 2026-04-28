@@ -65,6 +65,8 @@ type
     tkCase,
     tkOf,
     tkArray,
+    tkSet,    { 'set' keyword — set type declaration }
+    tkIn,     { 'in'  keyword — set membership test operator }
     tkConst,
     tkOut,
     { Identifier }
@@ -180,6 +182,8 @@ begin
   else if AUpper = 'CASE'           then Result := tkCase
   else if AUpper = 'OF'             then Result := tkOf
   else if AUpper = 'ARRAY'          then Result := tkArray
+  else if AUpper = 'SET'            then Result := tkSet
+  else if AUpper = 'IN'             then Result := tkIn
   else if AUpper = 'CONST'          then Result := tkConst
   else if AUpper = 'OUT'            then Result := tkOut
   else if AUpper = 'INHERITED'      then Result := tkInherited

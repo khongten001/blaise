@@ -83,6 +83,7 @@ type
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
     function  AnalyseStringSubscriptExpr(AExpr: TStringSubscriptExpr): TTypeDesc;
     function  AnalyseArrayLiteralExpr(AExpr: TArrayLiteralExpr): TTypeDesc;
+    function  AnalyseSetLiteralExpr(AExpr: TArrayLiteralExpr; ASetType: TSetTypeDesc): TTypeDesc;
     procedure CoerceToCharOrd(ALit: TStringLiteral);
     procedure AnalysePointerWriteStmt(AStmt: TPointerWriteStmt);
     procedure AnalyseStaticSubscriptAssign(AStmt: TStaticSubscriptAssign);
@@ -1283,6 +1284,9 @@ var
   PropType:   TTypeDesc;
   EnumDesc:   TEnumTypeDesc;
   EnumDef:    TEnumTypeDef;
+  SetDesc:    TSetTypeDesc;
+  SetDef:     TSetTypeDef;
+  BaseSym:    TSymbol;
   MName:      string;
   MSym:       TSymbol;
 begin
@@ -1340,9 +1344,28 @@ begin
       end;
       Continue;
     end
+    else if TD.Def is TSetTypeDef then
+    begin
+      { Set type: base type must be a previously-defined enum }
+      SetDef   := TSetTypeDef(TD.Def);
+      BaseSym  := FTable.Lookup(SetDef.BaseTypeName);
+      if (BaseSym = nil) or (BaseSym.Kind <> skType) or
+         not (BaseSym.TypeDesc is TEnumTypeDesc) then
+        SemanticError(
+          Format('Set base type ''%s'' must be an enumeration type', [SetDef.BaseTypeName]),
+          TD.Line, TD.Col);
+      SetDesc := FTable.NewSetType(TD.Name, TEnumTypeDesc(BaseSym.TypeDesc));
+      Sym := TSymbol.Create(TD.Name, skType, SetDesc);
+      if not FTable.Define(Sym) then
+      begin
+        Sym.Free;
+        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
+      end;
+      Continue;
+    end
     else
     begin
-      SemanticError('Only record, class, interface, or enum type definitions are supported',
+      SemanticError('Only record, class, interface, enum, or set type definitions are supported',
         TD.Line, TD.Col);
       Continue;
     end;
@@ -1359,10 +1382,11 @@ begin
   begin
     TD := TTypeDecl(ABlock.TypeDecls[I]);
 
-    { Generic templates and enum types need no pass-2 processing — skip }
+    { Generic templates, enum, and set types need no pass-2 processing — skip }
     if TD.Def is TGenericTypeDef then Continue;
     if TD.Def is TGenericInterfaceDef then Continue;
     if TD.Def is TEnumTypeDef then Continue;
+    if TD.Def is TSetTypeDef then Continue;
 
     { Interface types: register methods and resolve optional parent }
     if TD.Def is TInterfaceTypeDef then
@@ -2249,6 +2273,14 @@ begin
   AAssign.IsWeakLhs       := VarSym.IsWeak;
   AAssign.IsGlobal        := VarSym.IsGlobal;
 
+  { Set-literal assignment: [elem, ...] on RHS when LHS is a set type }
+  if (VarSym.TypeDesc.Kind = tySet) and (AAssign.Expr is TArrayLiteralExpr) then
+  begin
+    AnalyseSetLiteralExpr(TArrayLiteralExpr(AAssign.Expr),
+      TSetTypeDesc(VarSym.TypeDesc));
+    Exit;
+  end;
+
   ExprType := AnalyseExpr(AAssign.Expr);
   CheckTypesMatch(VarSym.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
 end;
@@ -2518,9 +2550,40 @@ begin
   end
   else
   begin
-    { Built-in (WriteLn/Write) — just analyse arg expressions }
-    for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args[I]));
+    { Include(S, elem) / Exclude(S, elem): validate arg count and types }
+    if SameText(ACall.Name, 'Include') or SameText(ACall.Name, 'Exclude') then
+    begin
+      if ACall.Args.Count <> 2 then
+        SemanticError(
+          Format('''%s'' requires exactly 2 arguments', [ACall.Name]),
+          ACall.Line, ACall.Col);
+      ArgType := AnalyseExpr(TASTExpr(ACall.Args[0]));
+      if ArgType.Kind <> tySet then
+        SemanticError(
+          Format('First argument of ''%s'' must be a set variable, got ''%s''',
+            [ACall.Name, ArgType.Name]),
+          ACall.Line, ACall.Col);
+      { Validate the second arg is the correct enum element type }
+      if ACall.Args.Count >= 2 then
+      begin
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args[1]));
+        { The set type arg was the first; recover it }
+        if (TASTExpr(ACall.Args[0]).ResolvedType.Kind = tySet) and
+           (ArgType <> TSetTypeDesc(TASTExpr(ACall.Args[0]).ResolvedType).BaseType) then
+          SemanticError(
+            Format('Second argument of ''%s'' must be type ''%s'', got ''%s''',
+              [ACall.Name,
+               TSetTypeDesc(TASTExpr(ACall.Args[0]).ResolvedType).BaseType.Name,
+               ArgType.Name]),
+            ACall.Line, ACall.Col);
+      end;
+    end
+    else
+    begin
+      { Other built-ins (WriteLn/Write/etc.) — just analyse arg expressions }
+      for I := 0 to ACall.Args.Count - 1 do
+        AnalyseExpr(TASTExpr(ACall.Args[I]));
+    end;
   end;
 end;
 
@@ -3430,6 +3493,53 @@ begin
   LType := AnalyseExpr(ABin.Left);
   RType := AnalyseExpr(ABin.Right);
 
+  { Set membership: elem in SetVar — left is base enum, right is set type }
+  if ABin.Op = boIn then
+  begin
+    if RType.Kind <> tySet then
+      SemanticError(
+        Format('Right operand of ''in'' must be a set type, got ''%s''', [RType.Name]),
+        ABin.Line, ABin.Col);
+    if LType <> TSetTypeDesc(RType).BaseType then
+      SemanticError(
+        Format('Left operand of ''in'' must be type ''%s'', got ''%s''',
+          [TSetTypeDesc(RType).BaseType.Name, LType.Name]),
+        ABin.Line, ABin.Col);
+    Result := FTable.TypeBoolean;
+    ABin.ResolvedType := Result;
+    Exit;
+  end;
+
+  { Set arithmetic and equality when both operands are set types }
+  if (LType.Kind = tySet) or (RType.Kind = tySet) then
+  begin
+    if LType.Kind <> tySet then
+      SemanticError(
+        Format('Left operand of ''%s'' must be a set type, got ''%s''',
+          [BinaryOpName(ABin.Op), LType.Name]),
+        ABin.Line, ABin.Col);
+    if RType.Kind <> tySet then
+      SemanticError(
+        Format('Right operand of ''%s'' must be a set type, got ''%s''',
+          [BinaryOpName(ABin.Op), RType.Name]),
+        ABin.Line, ABin.Col);
+    if LType <> RType then
+      SemanticError(
+        Format('Incompatible set types in ''%s'': ''%s'' vs ''%s''',
+          [BinaryOpName(ABin.Op), LType.Name, RType.Name]),
+        ABin.Line, ABin.Col);
+    if ABin.Op in [boEQ, boNE] then
+      Result := FTable.TypeBoolean
+    else if ABin.Op in [boAdd, boSub, boMul] then
+      Result := LType
+    else
+      SemanticError(
+        Format('Operator ''%s'' is not defined for set types', [BinaryOpName(ABin.Op)]),
+        ABin.Line, ABin.Col);
+    ABin.ResolvedType := Result;
+    Exit;
+  end;
+
   { Logical AND / OR — both operands must be Boolean. }
   if ABin.Op in [boAnd, boOr] then
   begin
@@ -3748,6 +3858,28 @@ begin
   end;
   Result := FTable.NewOpenArrayType(ElemType);
   AExpr.ResolvedType := Result;
+end;
+
+function TSemanticAnalyser.AnalyseSetLiteralExpr(AExpr: TArrayLiteralExpr;
+  ASetType: TSetTypeDesc): TTypeDesc;
+{ Validates a set literal [elem, ...] against ASetType.
+  Elements must be constants or variables of the set's base enum type.
+  An empty literal [] is valid and yields the set type with bitmask 0. }
+var
+  ElemType: TTypeDesc;
+  I:        Integer;
+begin
+  for I := 0 to AExpr.Elements.Count - 1 do
+  begin
+    ElemType := AnalyseExpr(TASTExpr(AExpr.Elements[I]));
+    if ElemType <> ASetType.BaseType then
+      SemanticError(
+        Format('Set literal element %d has type ''%s''; expected ''%s''',
+          [I + 1, ElemType.Name, ASetType.BaseType.Name]),
+        AExpr.Line, AExpr.Col);
+  end;
+  AExpr.ResolvedType := ASetType;
+  Result := ASetType;
 end;
 
 end.

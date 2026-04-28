@@ -532,6 +532,60 @@ code.
 _Deferred to Phase 6 (LLVM backend + Windows target). No implementation
 required for the current Linux x86_64 target._
 
+=== Set Types (`set of TEnum`)
+
+==== Decision
+
+Blaise supports Pascal bit-set types declared as `set of EnumType`, where
+`EnumType` must be a previously-defined enumeration.  A set variable holds a
+bitmask in which bit N is set when the enum member with ordinal N is included.
+
+==== Storage model
+
+- ≤ 32 enum members: stored as a single QBE `w` (32-bit word).
+- 33–64 members: stored as a single QBE `l` (64-bit long).
+- More than 64 members: deferred (no use case in the current codebase).
+
+Sets are value types (copied on assignment), not heap-allocated.
+
+==== Set literals and disambiguation
+
+Set literals use the same `[elem, ...]` bracket notation as array literals.
+The semantic pass resolves the ambiguity by examining the assignment target
+type: when the LHS is a set type, the bracket expression is analysed as a set
+literal; otherwise it is treated as an array literal.
+
+An empty literal `[]` is valid only in a set context (the empty set, bitmask 0).
+In an array context, `[]` remains a semantic error (element type cannot be
+inferred without type-context propagation).
+
+==== Set operators
+
+[cols="1,2,2"]
+|===
+| Operator | Meaning | QBE IR
+
+| `S1 + S2` | union | `or`
+| `S1 - S2` | difference | `xor` then `and`
+| `S1 * S2` | intersection | `and`
+| `elem in S` | membership test | `shr` then `and 1`
+| `S1 = S2` | equality | `ceqw`
+| `S1 <> S2` | inequality | `cnew`
+|===
+
+==== Include and Exclude
+
+`Include(S, elem)` and `Exclude(S, elem)` are built-in procedures (not
+language keywords) that modify a set variable in-place using bitwise OR and
+AND-NOT respectively.  This matches FPC's implementation model.
+
+==== Rejected alternatives
+
+- *Heap-allocated bitsets* — rejected.  All current set uses are flag sets over
+  small enumerations (≤ 32 members).  A single word is the correct choice.
+- *`not` for set complement* — deferred.  Not required for current self-hosting
+  targets.  Can be added as a unary `not` on set operands when needed.
+
 ---
 
 == Open Language Questions
@@ -546,9 +600,11 @@ Affects ABI, codegen, and porting assumptions.
 
 === Enumeration Underlying Type
 
-What is the underlying storage type for enumeration values? FPC uses the
-smallest type that fits. QBE IR uses `w` (32-bit) for all ordinals
-currently. A formal decision is needed before enumerations are documented.
+*Resolved:* Enumeration values are stored as QBE `w` (32-bit word) on all
+platforms, matching the current Blaise `Integer` type.  FPC's
+smallest-type-that-fits approach is not followed: the compiler always uses `w`
+for simplicity and ABI predictability.  Set types also use `w` for sets with
+≤ 32 members and `l` for 33–64 members.
 
 === `Result` vs Return Variable
 

@@ -337,6 +337,7 @@ IdentList
 
 TypeName
     = ArrayType                   (* static array: array[L..H] of T *)
+    | SetType                     (* bit-set over an enum base type *)
     | CARET TypeName              (* pointer-to type: ^Integer, ^T, ^^T  *)
     | IDENT LESS TypeArgList GREATER   (* generic instantiation: TList<Integer> *)
     | IDENT                       (* simple type or built-in *)
@@ -344,6 +345,19 @@ TypeName
 
 ArrayType
     = ARRAY LBRACKET IntLit DOTDOT IntLit RBRACKET OF TypeName
+    ;
+
+SetType
+    = SET OF IDENT
+    ;
+
+(* Set literals use the same bracket notation as array literals.
+   The semantic pass distinguishes them by assignment-target type context:
+   when the LHS is a set type, LBRACKET ExprList RBRACKET is a set literal;
+   otherwise it is an array literal.  An empty LBRACKET RBRACKET is valid
+   only as a set literal (the empty set). *)
+SetLiteral
+    = LBRACKET [ Expr { COMMA Expr } ] RBRACKET
     ;
 
 TypeArgList

@@ -67,6 +67,7 @@ type
     procedure ParseTypeDecl(ABlock: TBlock);
     procedure ParseConstBlock(ABlock: TBlock);
     function  ParseEnumDef: TEnumTypeDef;
+    function  ParseSetDef: TSetTypeDef;
     function  ParseRecordDef: TRecordTypeDef;
     function  ParseGenericName: string;  { reads IDENT optionally followed by '<' TypeArgs '>' }
     function  ParseClassDef: TClassTypeDef;
@@ -456,9 +457,11 @@ begin
         TD.Def := ParseInterfaceDef
       else if Check(tkLParen) then
         TD.Def := ParseEnumDef
+      else if Check(tkSet) then
+        TD.Def := ParseSetDef
       else
         raise EParseError.CreateFmt(
-          'Expected ''record'', ''class'', ''interface'', or ''('' at line %d col %d',
+          'Expected ''record'', ''class'', ''interface'', ''('', or ''set'' at line %d col %d',
           [FCurrent.Line, FCurrent.Col]);
     end;
     Expect(tkSemicolon);
@@ -535,6 +538,26 @@ begin
       Advance;
     end;
     Expect(tkRParen);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TParser.ParseSetDef: TSetTypeDef;
+begin
+  Result := TSetTypeDef.Create;
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Expect(tkSet);
+    Expect(tkOf);
+    if not Check(tkIdent) then
+      raise EParseError.CreateFmt(
+        'Expected base type name after ''set of'' at line %d col %d',
+        [FCurrent.Line, FCurrent.Col]);
+    Result.BaseTypeName := FCurrent.Value;
+    Advance;
   except
     Result.Free;
     raise;
@@ -1907,6 +1930,16 @@ begin
     Right       := ParseAddSub;
     Node        := TBinaryExpr.Create;
     Node.Op     := CmpOp;
+    Node.Left   := Result;
+    Node.Right  := Right;
+    Result      := Node;
+  end
+  else if Check(tkIn) then
+  begin
+    Advance;
+    Right       := ParseAddSub;
+    Node        := TBinaryExpr.Create;
+    Node.Op     := boIn;
     Node.Left   := Result;
     Node.Right  := Right;
     Result      := Node;

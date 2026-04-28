@@ -106,9 +106,9 @@ const
     '  TPair<K, V> = class'                                     + LineEnding +
     '    FKey: K;'                                              + LineEnding +
     '    FVal: V;'                                              + LineEnding +
-    '    procedure Set(AKey: K; AVal: V);'                      + LineEnding +
+    '    procedure Assign(AKey: K; AVal: V);'                   + LineEnding +
     '  end;'                                                    + LineEnding +
-    'procedure TPair<K, V>.Set(AKey: K; AVal: V);'              + LineEnding +
+    'procedure TPair<K, V>.Assign(AKey: K; AVal: V);'           + LineEnding +
     'begin'                                                     + LineEnding +
     '  Self.FKey := AKey;'                                      + LineEnding +
     '  Self.FVal := AVal'                                       + LineEnding +

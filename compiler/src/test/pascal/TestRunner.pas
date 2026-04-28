@@ -56,6 +56,7 @@ uses
   cp.test.stringops,
   cp.test.collections,
   cp.test.caseenum,
+  cp.test.sets,
   cp.test.selfhosting,
   cp.test.openarray,
   cp.test.staticarray,

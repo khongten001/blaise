@@ -35,7 +35,8 @@ type
     tyEnum,       { Enumeration type — stored as QBE 'w' (Integer); see TEnumTypeDesc }
     tyOpenArray,  { Open-array parameter — two-register ABI: data ptr + high index }
     tyStaticArray, { Fixed-size array: stack-allocated, compile-time bounds }
-    tyPChar  { Opaque C pointer for interop: PChar(str) / string(pchar) }
+    tyPChar, { Opaque C pointer for interop: PChar(str) / string(pchar) }
+    tySet    { Bit-set over an enum base type — QBE 'w' (≤32 members) or 'l' (≤64) }
   );
 
   TTypeDesc = class
@@ -89,6 +90,15 @@ type
     constructor Create(const AName: string);
     destructor  Destroy; override;
     function    OrdinalOf(const AMember: string): Integer;
+  end;
+
+  { Set type descriptor.  BaseType is the element enum; BitCount is the number
+    of bits required (= BaseType.Members.Count).  Stored as QBE 'w' for ≤32
+    members, 'l' for 33–64.  Each member ordinal N maps to bit (1 shl N). }
+  TSetTypeDesc = class(TTypeDesc)
+  public
+    BaseType: TEnumTypeDesc;  { not owned }
+    BitCount: Integer;        { = BaseType.Members.Count }
   end;
 
   { Field entry inside a record type descriptor. }
@@ -299,6 +309,7 @@ type
     { Creates a typed pointer descriptor '^BaseType'. Registered in FAllTypes. }
     function NewPointerType(const AName: string; ABase: TTypeDesc): TPointerTypeDesc;
     function NewEnumType(const AName: string): TEnumTypeDesc;
+    function NewSetType(const AName: string; ABase: TEnumTypeDesc): TSetTypeDesc;
 
     { Creates an open-array type descriptor for element type AElementType.
       Registered in FAllTypes so the table owns the lifetime. }
@@ -359,6 +370,7 @@ begin
     tyInteger, tyUInt32, tyEnum: Result := 4;
     tyInt64, tyString, tyClass, tyPointer, tyNil: Result := 8;
     tyRecord: Result := TRecordTypeDesc(Self).TotalSize;
+    tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
     tyStaticArray:
       Result := (TStaticArrayTypeDesc(Self).HighBound -
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
@@ -377,6 +389,7 @@ begin
     tyString:            Result := 8;  { pointer size on 64-bit }
     tyRecord:            Result := TRecordTypeDesc(Self).TotalSize;
     tyNil:               Result := 8;
+    tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
     tyStaticArray:
       Result := (TStaticArrayTypeDesc(Self).HighBound -
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
@@ -393,6 +406,7 @@ begin
     tyByte, tyBoolean:   Result := 4;  { round up to word boundary }
     tyInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
+    tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
     tyStaticArray: Result := TStaticArrayTypeDesc(Self).ElementType.AllocAlign;
   else
     Result := 8;
@@ -823,6 +837,16 @@ begin
   FAllTypes.Add(Result);
 end;
 
+function TSymbolTable.NewSetType(const AName: string; ABase: TEnumTypeDesc): TSetTypeDesc;
+begin
+  Result          := TSetTypeDesc.Create;
+  Result.Kind     := tySet;
+  Result.Name     := AName;
+  Result.BaseType := ABase;
+  Result.BitCount := ABase.Members.Count;
+  FAllTypes.Add(Result);
+end;
+
 function TSymbolTable.NewOpenArrayType(AElementType: TTypeDesc): TOpenArrayTypeDesc;
 begin
   Result             := TOpenArrayTypeDesc.Create;
@@ -904,6 +928,12 @@ begin
   Sym := TSymbol.Create('Write',   skProcedure, nil);
   Define(Sym);
   Sym := TSymbol.Create('WriteLn', skProcedure, nil);
+  Define(Sym);
+
+  { Built-in set procedures }
+  Sym := TSymbol.Create('Include', skProcedure, nil);
+  Define(Sym);
+  Sym := TSymbol.Create('Exclude', skProcedure, nil);
   Define(Sym);
 
   { Built-in memory management }

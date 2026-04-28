@@ -82,6 +82,7 @@ type
     function  EmitStringSubscriptExpr(AExpr: TStringSubscriptExpr): string;
     function  EmitAddrOfExpr(AExpr: TAddrOfExpr): string;
     function  EmitArrayLiteralExpr(AExpr: TArrayLiteralExpr): string;
+    function  EmitSetLiteralExpr(AExpr: TArrayLiteralExpr): string;
     { Returns a QBE temp holding a pointer to the storage of a record or class
       instance referenced by AExpr.  Used by chained field access to traverse
       base nodes without loading record aggregates as scalars. }
@@ -236,6 +237,7 @@ function TCodeGenQBE.QbeTypeOf(AType: TTypeDesc): string;
 begin
   case AType.Kind of
     tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum: Result := 'w';
+    tySet: if TSetTypeDesc(AType).BitCount <= 32 then Result := 'w' else Result := 'l';
     tyInt64, tyString:                      Result := 'l';
     tyRecord:                               Result := 'l';  { pointer to aggregate }
     tyClass:                                Result := 'l';  { heap pointer }
@@ -330,6 +332,21 @@ begin
             EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
           end;
 
+        tySet:
+          begin
+            { Set var: 32-bit bitmask for ≤32 members, 64-bit for 33–64 }
+            if TSetTypeDesc(Decl.ResolvedType).BitCount <= 32 then
+            begin
+              EmitLine(Format('  %%_var_%s =l alloc4 1', [VarName]));
+              EmitLine(Format('  storew 0, %%_var_%s', [VarName]));
+            end
+            else
+            begin
+              EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
+              EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
+            end;
+          end;
+
         tyStaticArray:
           begin
             SAT      := TStaticArrayTypeDesc(Decl.ResolvedType);
@@ -384,6 +401,11 @@ begin
       case Decl.ResolvedType.Kind of
         tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
           EmitLine(Format('data $%s = { w 0 }', [VarName]));
+        tySet:
+          if TSetTypeDesc(Decl.ResolvedType).BitCount <= 32 then
+            EmitLine(Format('data $%s = { w 0 }', [VarName]))
+          else
+            EmitLine(Format('data $%s = { l 0 }', [VarName]));
         tyInt64:
           EmitLine(Format('data $%s = { l 0 }', [VarName]));
         tyString, tyClass, tyPointer:
@@ -2691,6 +2713,34 @@ begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
     EmitLine(Format('  call $exit(w %s)', [ArgTemp]));
   end
+  else if UCaseName = 'INCLUDE' then
+  begin
+    { Include(S, elem): S := S or (1 shl ord(elem)) }
+    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[0])));
+    ArgTemp2 := AllocTemp;
+    EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
+    SizeTemp := EmitExpr(TASTExpr(ACall.Args[1]));  { enum ordinal }
+    ArgLine  := AllocTemp;
+    EmitLine(Format('  %s =w shl 1, %s', [ArgLine, SizeTemp]));
+    SizeTemp := AllocTemp;
+    EmitLine(Format('  %s =w or %s, %s', [SizeTemp, ArgTemp2, ArgLine]));
+    EmitLine(Format('  storew %s, %s', [SizeTemp, ArgTemp]));
+  end
+  else if UCaseName = 'EXCLUDE' then
+  begin
+    { Exclude(S, elem): S := S and (not (1 shl ord(elem))) }
+    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[0])));
+    ArgTemp2 := AllocTemp;
+    EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
+    SizeTemp := EmitExpr(TASTExpr(ACall.Args[1]));  { enum ordinal }
+    ArgLine  := AllocTemp;
+    EmitLine(Format('  %s =w shl 1, %s', [ArgLine, SizeTemp]));
+    SizeTemp := AllocTemp;
+    EmitLine(Format('  %s =w xor %s, -1', [SizeTemp, ArgLine]));
+    ArgLine  := AllocTemp;
+    EmitLine(Format('  %s =w and %s, %s', [ArgLine, ArgTemp2, SizeTemp]));
+    EmitLine(Format('  storew %s, %s', [ArgLine, ArgTemp]));
+  end
   else if UCaseName = 'DELETEFILE' then
   begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
@@ -3794,6 +3844,43 @@ begin
       Result := T;
       Exit;
     end;
+    { Set membership: elem in SetVar — (set >> ord(elem)) & 1 }
+    if BinExpr.Op = boIn then
+    begin
+      ArgTemp := AllocTemp;
+      EmitLine(Format('  %s =w shr %s, %s', [ArgTemp, R, L]));
+      EmitLine(Format('  %s =w and %s, 1', [T, ArgTemp]));
+      Result := T;
+      Exit;
+    end;
+
+    { Set arithmetic: union, difference, intersection }
+    if (BinExpr.Left.ResolvedType <> nil) and
+       (BinExpr.Left.ResolvedType.Kind = tySet) then
+    begin
+      case BinExpr.Op of
+        boAdd:  { union: or }
+          EmitLine(Format('  %s =w or %s, %s', [T, L, R]));
+        boSub:  { difference: L and (not R) }
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =w xor %s, -1', [ArgTemp, R]));
+          EmitLine(Format('  %s =w and %s, %s', [T, L, ArgTemp]));
+        end;
+        boMul:  { intersection: and }
+          EmitLine(Format('  %s =w and %s, %s', [T, L, R]));
+        boEQ:
+          EmitLine(Format('  %s =w ceqw %s, %s', [T, L, R]));
+        boNE:
+          EmitLine(Format('  %s =w cnew %s, %s', [T, L, R]));
+      else
+        raise ECodeGenError.CreateFmt(
+          'Operator not supported for set types at line %d', [BinExpr.Line]);
+      end;
+      Result := T;
+      Exit;
+    end;
+
     { Use long (pointer) comparison instructions when operands are class/nil }
     if (BinExpr.Left.ResolvedType <> nil) and
        (BinExpr.Left.ResolvedType.Kind in [tyClass, tyNil]) then
@@ -4329,6 +4416,34 @@ begin
   EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
 end;
 
+function TCodeGenQBE.EmitSetLiteralExpr(AExpr: TArrayLiteralExpr): string;
+{ Compute a compile-time bitmask for a set literal [elem, ...].
+  Each element must be a constant enum value; bit (1 shl ordinal) is set.
+  Returns a QBE temp holding the integer mask. }
+var
+  Mask:    Int64;
+  I:       Integer;
+  Elem:    TASTExpr;
+  IdExpr:  TIdentExpr;
+  Tmp:     string;
+begin
+  Mask := 0;
+  for I := 0 to AExpr.Elements.Count - 1 do
+  begin
+    Elem := TASTExpr(AExpr.Elements[I]);
+    if not (Elem is TIdentExpr) then
+      raise ECodeGenError.Create('Set literal elements must be enum constant references');
+    IdExpr := TIdentExpr(Elem);
+    if not IdExpr.IsConstant then
+      raise ECodeGenError.CreateFmt(
+        'Set literal element ''%s'' is not a constant', [IdExpr.Name]);
+    Mask := Mask or (Int64(1) shl IdExpr.ConstValue);
+  end;
+  Tmp := AllocTemp;
+  EmitLine(Format('  %s =w copy %d', [Tmp, Mask]));
+  Result := Tmp;
+end;
+
 function TCodeGenQBE.EmitArrayLiteralExpr(AExpr: TArrayLiteralExpr): string;
 var
   OAType:     TOpenArrayTypeDesc;
@@ -4343,6 +4458,13 @@ var
   Offset:     string;
   I:          Integer;
 begin
+  { Set literal: emit as bitmask constant rather than a memory buffer }
+  if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tySet) then
+  begin
+    Result := EmitSetLiteralExpr(AExpr);
+    Exit;
+  end;
+
   OAType   := TOpenArrayTypeDesc(AExpr.ResolvedType);
   ElemType := OAType.ElementType;
   ElemSize := ElemType.ByteSize;
