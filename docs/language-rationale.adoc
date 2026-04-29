@@ -234,6 +234,106 @@ onwards without an explicit type annotation.
 
 ---
 
+=== Integer Types
+
+==== Decision
+
+Blaise defines three integer types with fixed, platform-independent widths:
+
+[cols="1,1,2", options="header"]
+|===
+| Type | Width | QBE IR type
+
+| `Integer` | 32-bit signed | `w`
+| `Int64` | 64-bit signed | `l`
+| `Byte` | 8-bit unsigned (stored as 32-bit in registers) | `w`
+|===
+
+`Integer` is 32-bit on all platforms.  This matches FPC's behaviour and
+makes arithmetic portable across Blaise's supported targets (linux-x86_64,
+macos-arm64) without requiring a platform-sized integer type.
+
+`Int64` is 64-bit signed on all platforms.  It is used wherever values may
+exceed the 32-bit range — notably as the type of the `MaxInt` built-in
+constant (value `9223372036854775807`, i.e., 2^63 − 1).
+
+`Byte` is 8-bit unsigned.  In registers and temporaries it is widened to
+`w` (32-bit QBE word).  Array element allocation uses 1 byte per `Byte`
+element, consistent with FPC.
+
+==== Built-in constant
+
+`MaxInt: Int64 = 9223372036854775807` is a compiler built-in constant.
+It represents the maximum value of a 64-bit signed integer.  It is used
+as a sentinel meaning "to end of string" in `Copy()`.
+
+==== Conversion built-ins
+
+[cols="2,1,2", options="header"]
+|===
+| Built-in | Signature | Notes
+
+| `IntToStr` | `(Integer): string` | 32-bit integer to decimal string
+| `Int64ToStr` | `(Int64): string` | 64-bit integer to decimal string; use when the value may exceed 2^31−1
+| `StrToInt` | `(string): Integer` | Decimal string to 32-bit integer; truncates silently on overflow
+| `StrToInt64` | `(string): Int64` | Decimal string to 64-bit integer; required for parsing large literals such as `MaxInt`
+|===
+
+==== Alternatives rejected
+
+* *Platform-native integer width* — rejected.  A 64-bit `Integer` on 64-bit
+  targets would break FPC ABI compatibility and cause silent data loss when
+  interoperating with existing 32-bit FPC code or C functions that expect
+  `int32_t`.  Explicit `Int64` covers the cases that genuinely need 64 bits.
+
+* *`LongInt`, `SmallInt`, `Word`, `Cardinal` aliases* — deferred.  These
+  FPC/Delphi aliases map to fixed widths and could be added as type aliases
+  in a future release.  They are not present in the current implementation
+  because the compiler's own source uses only `Integer`, `Int64`, and `Byte`.
+
+---
+
+=== Indexed Properties
+
+==== Decision
+
+Blaise supports indexed properties — a class property with a single
+index parameter:
+
+----
+property Items[Index: Integer]: Pointer read Get write Put;
+----
+
+The index parameter is declared inside square brackets in the property
+declaration and is automatically passed to the getter and setter
+accessors.  An indexed property read `Obj.Items[I]` emits a call to the
+getter with `(Self, I)`.  An indexed write `Obj.Items[I] := V` emits a
+call to the setter with `(Self, I, V)`.
+
+Only a single index parameter is supported.  Multi-index properties (as
+in Delphi) are not implemented.
+
+==== Rationale
+
+Indexed properties are required for `TObjectList.Items[i]`,
+`TStringList.Strings[i]`, and `TStringList.Objects[i]` — the three
+list-access patterns used throughout the multi-file compiler source.
+Without them, every list access requires a direct method call rather than
+the idiomatic subscript syntax the compiler source already uses.
+
+==== Alternatives rejected
+
+* *Array-typed plain properties* — the getter and setter approach is how
+  FPC and Delphi implement all container properties.  Returning an array
+  would require value-copy semantics and would not allow write access
+  through the subscript.
+
+* *Untyped `__getitem__`/`__setitem__` hooks* — the explicit getter/setter
+  names in the declaration are more transparent and consistent with the
+  existing non-indexed property design.
+
+---
+
 == Memory Management
 
 === Automatic Reference Counting (ARC)
@@ -643,9 +743,9 @@ These items are under active consideration but not yet decided.
 
 === Integer Width
 
-FPC's `Integer` is 32-bit on all platforms (even 64-bit). Should Blaise's
-`Integer` follow suit for portability, or match the native word width?
-Affects ABI, codegen, and porting assumptions.
+*Resolved:* `Integer` is 32-bit on all platforms, matching FPC.  `Int64`
+is the explicit 64-bit type.  See the _Integer Types_ section in the Type
+System chapter for the full decision, rationale, and alternatives rejected.
 
 === Enumeration Underlying Type
 

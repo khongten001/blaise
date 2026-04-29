@@ -283,11 +283,20 @@ MethodSignatureList
     ;
 
 PropertyDecl
-    = "property" IDENT COLON TypeName
+    = "property" IDENT
+      [ LBRACKET IDENT COLON TypeName RBRACKET ]   (* optional index parameter *)
+      COLON TypeName
       [ "read"  IDENT ]
       [ "write" IDENT ]
       SEMICOLON
     ;
+
+(* If the index parameter is present, the property is indexed:
+ *   property Items[Index: Integer]: Pointer read Get write Put;
+ * Indexed reads emit a getter call with one extra argument (the index).
+ * Indexed writes emit a setter call with two extra arguments (index, value).
+ * Only a single index parameter is supported; multiple-index properties
+ * (as in Delphi) are not. *)
 
 (* "property", "read", "write" are contextual soft keywords; they may be used
  * as identifiers outside a class body. *)
@@ -428,7 +437,7 @@ PointerWriteStmt
     ;
 
 FieldAssignment
-    = IDENT DOT IDENT ASSIGN Expr
+    = IDENT DOT IDENT [ LBRACKET Expr RBRACKET ] ASSIGN Expr
     ;
 
 MethodCall
@@ -436,8 +445,13 @@ MethodCall
     ;
 
 (* Semantic disambiguation of  IDENT DOT IDENT  in Stmt:
- *   - Followed by ASSIGN  → FieldAssignment
- *   - Otherwise           → MethodCall                   *)
+ *   - Followed by ASSIGN or LBRACKET ASSIGN → FieldAssignment (plain or indexed)
+ *   - Otherwise                              → MethodCall
+ *
+ * When IDENT DOT IDENT is followed by LBRACKET, the parser checks whether the
+ * member is an indexed property (symbol table lookup).  If it is, LBRACKET Expr
+ * RBRACKET is consumed as the index; the result is an indexed property access.
+ * A following ASSIGN makes it an IndexedPropWrite; absence of ASSIGN is a read. *)
 
 Assignment
     = IDENT ASSIGN Expr
@@ -480,7 +494,8 @@ Factor
     | NIL
     | ArrayLiteral
     | AddrOf
-    | IDENT DOT IDENT [ LPAREN [ ArgList ] RPAREN ]  (* field/constructor/method *)
+    | IDENT DOT IDENT [ LBRACKET Expr RBRACKET ]      (* indexed property read *)
+               [ LPAREN [ ArgList ] RPAREN ]           (* field/constructor/method *)
     | IDENT LESS TypeArgList GREATER LPAREN [ ArgList ] RPAREN   (* generic func call *)
     | IDENT [ LPAREN [ ArgList ] RPAREN ]             (* variable, func call, type cast *)
     | LPAREN Expr RPAREN
