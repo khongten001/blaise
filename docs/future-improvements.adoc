@@ -52,3 +52,13 @@ processing code.
 *Relevant use cases.* Real-time PCM audio synthesis, DSP filters, FFT
 pre/post-processing, simple video effects pipelines — all domains where
 single precision is sufficient and throughput matters.
+
+
+== Generics
+
+- TStringList ← TList<String>: Generic class inheritance
+- Generic class inheritance (class(TList<String>)): Parser reads the
+  parent name as a string, but semantic analysis never resolves a generic
+  instantiation as a parent — it needs template lookup + monomorphisation.
+  Moderate-significant effort.
+

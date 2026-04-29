@@ -1637,12 +1637,14 @@ type
 
   TPropertyInfo = class
 
-    Name:        string;
-    TypeDesc:    TTypeDesc;   
-    ReadField:   string;      
-    ReadMethod:  string;      
-    WriteField:  string;      
-    WriteMethod: string;      
+    Name:           string;
+    TypeDesc:       TTypeDesc;
+    ReadField:      string;
+    ReadMethod:     string;
+    WriteField:     string;
+    WriteMethod:    string;
+    IndexParamName: string;
+    IndexTypeDesc:  TTypeDesc;
   end;
 
   
@@ -2374,8 +2376,11 @@ begin
   Sym := TSymbol.Create('False', skConstant, FTypeBoolean);
   Sym.ConstValue := 0;
   Define(Sym);
+  Sym := TSymbol.Create('MaxInt', skConstant, FTypeInt64);
+  Sym.ConstValue := 9223372036854775807;
+  Define(Sym);
 
-  
+
   Sym := TSymbol.Create('Write',   skProcedure, nil);
   Define(Sym);
   Sym := TSymbol.Create('WriteLn', skProcedure, nil);
@@ -2408,7 +2413,11 @@ begin
   Define(Sym);
   Sym := TSymbol.Create('IntToStr',  skFunction, FTypeString);
   Define(Sym);
+  Sym := TSymbol.Create('Int64ToStr', skFunction, FTypeString);
+  Define(Sym);
   Sym := TSymbol.Create('StrToInt',  skFunction, FTypeInteger);
+  Define(Sym);
+  Sym := TSymbol.Create('StrToInt64', skFunction, FTypeInt64);
   Define(Sym);
   Sym := TSymbol.Create('CompareStr',  skFunction, FTypeInteger);
   Define(Sym);
@@ -2555,19 +2564,20 @@ type
 
   TFieldAccessExpr = class(TASTExpr)
 
-    RecordName:        string;         
+    RecordName:        string;
     FieldName:         string;
-    Base:              TASTExpr;       
-    FieldInfo:         TFieldInfo;    
-    IsConstructorCall: Boolean;       
-    IsClassAccess:     Boolean;       
-    PropRead:          TPropertyInfo; 
-    PropOwnerType:     string;        
-    IsImplicitSelf:    Boolean;       
-    ImplicitBaseInfo:  TFieldInfo;    
-    IsMethodCall:      Boolean;       
-    ResolvedMethod:    TObject;       
-    IsGlobal:          Boolean;       
+    Base:              TASTExpr;
+    FieldInfo:         TFieldInfo;
+    IsConstructorCall: Boolean;
+    IsClassAccess:     Boolean;
+    PropRead:          TPropertyInfo;
+    PropOwnerType:     string;
+    PropIndexExpr:     TASTExpr;
+    IsImplicitSelf:    Boolean;
+    ImplicitBaseInfo:  TFieldInfo;
+    IsMethodCall:      Boolean;
+    ResolvedMethod:    TObject;
+    IsGlobal:          Boolean;
     procedure Destroy; override;
   end;
 
@@ -2705,15 +2715,18 @@ type
 
   TFieldAssignment = class(TASTStmt)
 
-    RecordName:    string;
-    FieldName:     string;
-    Expr:          TASTExpr;   
-    ObjExpr:       TASTExpr;   
-    FieldInfo:     TFieldInfo; 
-    IsClassAccess: Boolean;    
-    IsImplicitSelf:    Boolean; 
-    ImplicitBaseInfo:  TFieldInfo; 
-    IsGlobal:          Boolean; 
+    RecordName:      string;
+    FieldName:       string;
+    Expr:            TASTExpr;
+    ObjExpr:         TASTExpr;
+    FieldInfo:       TFieldInfo;
+    IsClassAccess:   Boolean;
+    IsImplicitSelf:  Boolean;
+    ImplicitBaseInfo: TFieldInfo;
+    IsGlobal:        Boolean;
+    PropIndexExpr:   TASTExpr;
+    PropWriteInfo:   TPropertyInfo;
+    PropOwnerType:   string;
     procedure Destroy; override;
   end;
 
@@ -2883,10 +2896,12 @@ type
   
   TPropertyDecl = class(TASTNode)
 
-    Name:      string;  
-    TypeName:  string;  
-    ReadName:  string;  
-    WriteName: string;  
+    Name:           string;
+    TypeName:       string;
+    ReadName:       string;
+    WriteName:      string;
+    IndexParamName: string;
+    IndexTypeName:  string;
   end;
 
   TClassTypeDef = class(TASTTypeDef)
@@ -3121,7 +3136,7 @@ end;
 procedure TFieldAccessExpr.Destroy;
 begin
   Base.Free;
-
+  PropIndexExpr.Free;
 end;
 
 
@@ -3171,7 +3186,7 @@ procedure TFieldAssignment.Destroy;
 begin
   Expr.Free;
   ObjExpr.Free;
-
+  PropIndexExpr.Free;
 end;
 
 
@@ -3988,13 +4003,13 @@ begin
       Advance;
       if not Check(tkIntLit) then
         raise EParseError.Create(Format('Expected integer after minus in const at line %d col %d', FCurrent.Line, FCurrent.Col));
-      CD.IntVal  := -StrToInt(FCurrent.Value);
+      CD.IntVal  := -StrToInt64(FCurrent.Value);
       CD.IsString := False;
       Advance;
     end
     else if Check(tkIntLit) then
     begin
-      CD.IntVal   := StrToInt(FCurrent.Value);
+      CD.IntVal   := StrToInt64(FCurrent.Value);
       CD.IsString := False;
       Advance;
     end
@@ -4350,11 +4365,23 @@ begin
   try
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
-    Advance;  
+    Advance;
     if not Check(tkIdent) then
       raise EParseError.Create(Format('Expected property name at line %d col %d', FCurrent.Line, FCurrent.Col));
     Result.Name := FCurrent.Value;
     Advance;
+    { Optional index parameter: 'property Name[ParamName: TypeName]: ...' }
+    if Check(tkLBracket) then
+    begin
+      Advance;
+      if not Check(tkIdent) then
+        raise EParseError.Create(Format('Expected index parameter name at line %d col %d', FCurrent.Line, FCurrent.Col));
+      Result.IndexParamName := FCurrent.Value;
+      Advance;
+      Expect(tkColon);
+      Result.IndexTypeName := ParseTypeName;
+      Expect(tkRBracket);
+    end;
     Expect(tkColon);
     Result.TypeName := ParseTypeName;
     
@@ -4639,9 +4666,23 @@ begin
     SecondIdent := FCurrent.Value;
     Advance;
 
-    if Check(tkAssign) then
+    if Check(tkLBracket) then
     begin
-      
+      { Indexed property write: Ident '.' Ident '[' Index ']' ':=' Expr }
+      Advance;
+      FldAssign            := TFieldAssignment.Create;
+      FldAssign.Line       := Line;
+      FldAssign.Col        := Col;
+      FldAssign.RecordName := Name;
+      FldAssign.FieldName  := SecondIdent;
+      FldAssign.PropIndexExpr := ParseExpr;
+      Expect(tkRBracket);
+      Expect(tkAssign);
+      FldAssign.Expr := ParseExpr;
+      Result := FldAssign;
+    end
+    else if Check(tkAssign) then
+    begin
       FldAssign            := TFieldAssignment.Create;
       FldAssign.Line       := Line;
       FldAssign.Col        := Col;
@@ -4653,11 +4694,11 @@ begin
     end
     else
     begin
-      
+
 
       if Check(tkDot) then
       begin
-        
+
 
         MCall            := TMethodCallStmt.Create;
         MCall.Line       := Line;
@@ -5447,7 +5488,7 @@ begin
         IntNode       := TIntLiteral.Create;
         IntNode.Line  := FCurrent.Line;
         IntNode.Col   := FCurrent.Col;
-        IntNode.Value := StrToInt(FCurrent.Value);
+        IntNode.Value := StrToInt64(FCurrent.Value);
         Advance;
         Result := IntNode;
       end;
@@ -5525,22 +5566,28 @@ begin
             FldNode.RecordName := Name;
             FldNode.FieldName  := SecondName;
             Result := FldNode;
-            
+            { Indexed property read: Ident.Prop[idx] }
+            if Check(tkLBracket) then
+            begin
+              Advance;
+              FldNode.PropIndexExpr := ParseExpr;
+              Expect(tkRBracket);
+            end;
+
             while Check(tkDot) and (PeekKind = tkIdent) do
             begin
-              Advance;  
+              Advance;
               SecondName := FCurrent.Value;
-              Advance;  
+              Advance;
               if Check(tkLParen) then
               begin
-                
                 MCallNode             := TMethodCallExpr.Create;
                 MCallNode.Line        := FCurrent.Line;
                 MCallNode.Col         := FCurrent.Col;
                 MCallNode.ObjectName  := '';
                 MCallNode.Name        := SecondName;
                 MCallNode.ObjExpr     := Result;
-                Advance;  
+                Advance;
                 if not Check(tkRParen) then
                 begin
                   MCallNode.Args.Add(ParseExpr);
@@ -5561,6 +5608,13 @@ begin
                 FldNode.Base       := Result;
                 FldNode.FieldName  := SecondName;
                 Result := FldNode;
+                { Indexed property read: chained A.B.C[idx] }
+                if Check(tkLBracket) then
+                begin
+                  Advance;
+                  FldNode.PropIndexExpr := ParseExpr;
+                  Expect(tkRBracket);
+                end;
               end;
             end;
           end;
@@ -6200,7 +6254,7 @@ begin
   
   if (Length(AName) > 1) and (OrdAt(AName, 1) = 94) then
   begin
-    BaseName := Copy(AName, 2, MaxInt);
+    BaseName := Copy(AName, 2, Length(AName));
     BaseType := FindTypeOrInstantiate(BaseName);
     if BaseType <> nil then
     begin
@@ -6234,7 +6288,7 @@ begin
     end;
   
   if (Length(Result) > 0) and (OrdAt(Result, 1) = 94) then
-    Result := '^' + Self.SubstTypeParam(Copy(Result, 2, MaxInt), AParamNames, AArgs);
+    Result := '^' + Self.SubstTypeParam(Copy(Result, 2, Length(Result)), AParamNames, AArgs);
 end;
 
 function TSemanticAnalyser.InstantiateGeneric(const ATypeName: string): TRecordTypeDesc;
@@ -6278,7 +6332,7 @@ begin
       if BracPos > 0 then
       begin
         Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
-        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, Length(ArgsStr)));
       end
       else
       begin
@@ -6480,7 +6534,7 @@ begin
       if BracPos > 0 then
       begin
         Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
-        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, Length(ArgsStr)));
       end
       else
       begin
@@ -7000,6 +7054,9 @@ begin
           else
             PropInfo.WriteMethod := PropDecl.WriteName;
         end;
+        PropInfo.IndexParamName := PropDecl.IndexParamName;
+        if PropDecl.IndexTypeName <> '' then
+          PropInfo.IndexTypeDesc := FTable.FindType(PropDecl.IndexTypeName);
         RT.AddProperty(PropInfo);
       end;
 
@@ -7791,6 +7848,24 @@ begin
             AAssign.FieldName := PropInfo.WriteField;
             FldInfo           := RT.FindField(PropInfo.WriteField);
           end
+          else if (PropInfo <> nil) and (PropInfo.WriteMethod <> '') then
+          begin
+            { Method-backed write (includes indexed properties) }
+            if PropInfo.IndexParamName <> '' then
+            begin
+              if AAssign.PropIndexExpr = nil then
+                SemanticError(
+                  Format('Indexed property ''%s'' requires an index expression', AAssign.FieldName),
+                  AAssign.Line, AAssign.Col);
+              AnalyseExpr(AAssign.PropIndexExpr);
+            end;
+            AAssign.PropWriteInfo := PropInfo;
+            AAssign.PropOwnerType := RT.Name;
+            ExprType := AnalyseExpr(AAssign.Expr);
+            CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
+              AAssign.Line, AAssign.Col);
+            Exit;
+          end
           else
             SemanticError(
               Format('Type ''%s'' has no field ''%s''', AAssign.RecordName, AAssign.FieldName),
@@ -7829,14 +7904,28 @@ begin
     begin
       if PropInfo.WriteField <> '' then
       begin
-        
+        { Field-backed write: redirect to the backing field }
         AAssign.FieldName := PropInfo.WriteField;
         FldInfo           := RT.FindField(PropInfo.WriteField);
       end
       else if PropInfo.WriteMethod <> '' then
-        SemanticError(
-          Format('Method-backed property write not yet supported for ''%s''', AAssign.FieldName),
-          AAssign.Line, AAssign.Col)
+      begin
+        { Method-backed write (includes indexed properties) }
+        if PropInfo.IndexParamName <> '' then
+        begin
+          if AAssign.PropIndexExpr = nil then
+            SemanticError(
+              Format('Indexed property ''%s'' requires an index expression', AAssign.FieldName),
+              AAssign.Line, AAssign.Col);
+          AnalyseExpr(AAssign.PropIndexExpr);
+        end;
+        AAssign.PropWriteInfo := PropInfo;
+        AAssign.PropOwnerType := RT.Name;
+        ExprType := AnalyseExpr(AAssign.Expr);
+        CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
+          AAssign.Line, AAssign.Col);
+        Exit;
+      end
       else
         SemanticError(
           Format('Property ''%s'' is read-only', AAssign.FieldName),
@@ -8104,12 +8193,32 @@ begin
     Exit;
   end;
 
+  if SameText(AExpr.Name, 'Int64ToStr') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('Int64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Get(0)));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
   if SameText(AExpr.Name, 'StrToInt') then
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt requires exactly one argument', AExpr.Line, AExpr.Col);
     AnalyseExpr(TASTExpr(AExpr.Args.Get(0)));
     Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'StrToInt64') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('StrToInt64 requires exactly one argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Get(0)));
+    Result := FTable.TypeInt64;
     AExpr.ResolvedType := Result;
     Exit;
   end;
@@ -8693,7 +8802,23 @@ begin
             AAccess.ResolvedType := Result;
             Exit;
           end;
-          
+          if (PropInfo <> nil) and (PropInfo.ReadMethod <> '') then
+          begin
+            { Method-backed read (includes indexed properties) }
+            if PropInfo.IndexParamName <> '' then
+            begin
+              if AAccess.PropIndexExpr = nil then
+                SemanticError(
+                  Format('Indexed property ''%s'' requires an index expression', AAccess.FieldName),
+                  AAccess.Line, AAccess.Col);
+              AnalyseExpr(AAccess.PropIndexExpr);
+            end;
+            AAccess.PropRead := PropInfo;
+            AAccess.PropOwnerType := RT.Name;
+            Result := PropInfo.TypeDesc;
+            AAccess.ResolvedType := Result;
+            Exit;
+          end;
           AAccess.ResolvedMethod := FindMethodDecl(RT.Name, AAccess.FieldName);
           if AAccess.ResolvedMethod <> nil then
           begin
@@ -8774,8 +8899,16 @@ begin
       end
       else if PropInfo.ReadMethod <> '' then
       begin
-        
-        AAccess.PropRead      := PropInfo;
+        { Method-backed read (includes indexed properties) }
+        if PropInfo.IndexParamName <> '' then
+        begin
+          if AAccess.PropIndexExpr = nil then
+            SemanticError(
+              Format('Indexed property ''%s'' requires an index expression', AAccess.FieldName),
+              AAccess.Line, AAccess.Col);
+          AnalyseExpr(AAccess.PropIndexExpr);
+        end;
+        AAccess.PropRead := PropInfo;
         AAccess.PropOwnerType := RT.Name;
         Result := PropInfo.TypeDesc;
         AAccess.ResolvedType := Result;
@@ -10146,7 +10279,52 @@ var
   Ptr, PtrTemp, ValTemp, OldTemp, QType, StoreInstr, ExtTemp: string;
   IsArc: Boolean;
   IsStr: Boolean;
+  SelfPtr: string;
+  IdxTemp: string;
+  IdxQType: string;
 begin
+  { Method-backed property write: emit a call to the setter }
+  if AAssign.PropWriteInfo <> nil then
+  begin
+    ValTemp := EmitExpr(AAssign.Expr);
+    if AAssign.IsImplicitSelf then
+    begin
+      SelfPtr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_Self', SelfPtr));
+      if AAssign.ImplicitBaseInfo.Offset > 0 then
+      begin
+        PtrTemp := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d', PtrTemp, SelfPtr, AAssign.ImplicitBaseInfo.Offset));
+        SelfPtr := PtrTemp;
+      end;
+      if AAssign.IsClassAccess then
+      begin
+        PtrTemp := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s', PtrTemp, SelfPtr));
+        SelfPtr := PtrTemp;
+      end;
+    end
+    else
+    begin
+      SelfPtr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', SelfPtr, VarRef(AAssign.RecordName, AAssign.IsGlobal)));
+    end;
+    QType := QbeTypeOf(AAssign.PropWriteInfo.TypeDesc);
+    if AAssign.PropIndexExpr <> nil then
+    begin
+      IdxTemp  := EmitExpr(AAssign.PropIndexExpr);
+      IdxQType := QbeTypeOf(AAssign.PropWriteInfo.IndexTypeDesc);
+      EmitLine(Format('  call $%s_%s(l %s, %s %s, %s %s)',
+        QBEMangle(AAssign.PropOwnerType), AAssign.PropWriteInfo.WriteMethod,
+        SelfPtr, IdxQType, IdxTemp, QType, ValTemp));
+    end
+    else
+      EmitLine(Format('  call $%s_%s(l %s, %s %s)',
+        QBEMangle(AAssign.PropOwnerType), AAssign.PropWriteInfo.WriteMethod,
+        SelfPtr, QType, ValTemp));
+    Exit;
+  end;
+
   if AAssign.FieldInfo = nil then
     raise ECodeGenError.Create(Format('Field assignment ''%s.%s'' has no resolved field info', AAssign.RecordName, AAssign.FieldName));
 
@@ -11566,6 +11744,8 @@ var
   SelfT:        string;
   PtrT:         string;
   SretBuf:      string;
+  IdxTemp:      string;
+  IdxQType:     string;
 begin
   if AExpr is TFuncCallExpr then
   begin
@@ -11683,6 +11863,15 @@ begin
         Exit;
       end;
 
+      if SameText(TFuncCallExpr(AExpr).Name, 'Int64ToStr') then
+      begin
+        L := EmitExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Get(0)));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', T, L));
+        Result := T;
+        Exit;
+      end;
+
       if SameText(TFuncCallExpr(AExpr).Name, 'StrToInt') then
       begin
         L := EmitExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Get(0)));
@@ -11692,7 +11881,16 @@ begin
         Exit;
       end;
 
-      
+      if SameText(TFuncCallExpr(AExpr).Name, 'StrToInt64') then
+      begin
+        L := EmitExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Get(0)));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_StrToInt64(l %s)', T, L));
+        Result := T;
+        Exit;
+      end;
+
+
 
 
       if SameText(TFuncCallExpr(AExpr).Name, 'Format') then
@@ -12067,7 +12265,7 @@ begin
   if AExpr is TIntLiteral then
   begin
     T := AllocTemp;
-    EmitLine(Format('  %s =w copy %d', T, TIntLiteral(AExpr).Value));
+    EmitLine(Format('  %s =w copy %s', T, Int64ToStr(TIntLiteral(AExpr).Value)));
     Result := T;
   end
   else if AExpr is TStringLiteral then
@@ -12167,6 +12365,26 @@ begin
         end;
         Exit;
       end;
+      if FldAccess.PropRead <> nil then
+      begin
+        { Method-backed property read via implicit-Self field }
+        T     := AllocTemp;
+        QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
+        if FldAccess.PropIndexExpr <> nil then
+        begin
+          IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+          IdxQType := QbeTypeOf(FldAccess.PropRead.IndexTypeDesc);
+          EmitLine(Format('  %s =%s call $%s_%s(l %s, %s %s)',
+            T, QType, QBEMangle(FldAccess.PropOwnerType),
+            FldAccess.PropRead.ReadMethod, L, IdxQType, IdxTemp));
+        end
+        else
+          EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+            T, QType, QBEMangle(FldAccess.PropOwnerType),
+            FldAccess.PropRead.ReadMethod, L));
+        Result := T;
+        Exit;
+      end;
       if FldAccess.FieldInfo.Offset > 0 then
       begin
         Ptr := AllocTemp;
@@ -12227,12 +12445,23 @@ begin
     end
     else if FldAccess.PropRead <> nil then
     begin
+      { Method-backed property read: load Self pointer and call getter }
       L := AllocTemp;
       EmitLine(Format('  %s =l loadl %s', L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)));
       T     := AllocTemp;
       QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
-      EmitLine(Format('  %s =%s call $%s_%s(l %s)', T, QType, QBEMangle(FldAccess.PropOwnerType),
-         FldAccess.PropRead.ReadMethod, L));
+      if FldAccess.PropIndexExpr <> nil then
+      begin
+        IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+        IdxQType := QbeTypeOf(FldAccess.PropRead.IndexTypeDesc);
+        EmitLine(Format('  %s =%s call $%s_%s(l %s, %s %s)',
+          T, QType, QBEMangle(FldAccess.PropOwnerType),
+          FldAccess.PropRead.ReadMethod, L, IdxQType, IdxTemp));
+      end
+      else
+        EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+          T, QType, QBEMangle(FldAccess.PropOwnerType),
+          FldAccess.PropRead.ReadMethod, L));
       Result := T;
     end
     else if FldAccess.IsClassAccess then
@@ -12342,7 +12571,10 @@ begin
       if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyString) then
         EmitLine(Format('  %s =l copy %s', T, EmitStrLit(TIdentExpr(AExpr).ConstString)))
       else
-        EmitLine(Format('  %s =w copy %d', T, TIdentExpr(AExpr).ConstValue));
+        if (AExpr.ResolvedType <> nil) and (QbeTypeOf(AExpr.ResolvedType) = 'l') then
+          EmitLine(Format('  %s =l copy %s', T, Int64ToStr(TIdentExpr(AExpr).ConstValue)))
+        else
+          EmitLine(Format('  %s =w copy %s', T, Int64ToStr(TIdentExpr(AExpr).ConstValue)));
     end
     else if TIdentExpr(AExpr).IsVarParam then
     begin
@@ -12594,6 +12826,8 @@ function TCodeGenQBE.QbeEscapeString(const AStr: string): string;
 var
   I: Integer;
   C: Integer;
+  Hi: Integer;
+  Lo: Integer;
 begin
   Result := '';
   for I := 1 to Length(AStr) do
@@ -12610,7 +12844,19 @@ begin
     else if C = 9 then
       Result := Result + '\t'
     else if (C < 32) or (C > 126) then
-      Result := Result + Format('\%02x', C)
+    begin
+      Hi := C div 16;
+      Lo := C - Hi * 16;
+      Result := Result + '\';
+      if Hi < 10 then
+        Result := Result + Chr(48 + Hi)
+      else
+        Result := Result + Chr(55 + Hi);
+      if Lo < 10 then
+        Result := Result + Chr(48 + Lo)
+      else
+        Result := Result + Chr(55 + Lo);
+    end
     else
       Result := Result + Copy(AStr, I, 1);
   end;
@@ -12706,6 +12952,8 @@ end;
 function TCodeGenQBE.GetOutput: string;
 begin
   Result := FOutput.GetText;
+  if Length(Result) > 0 then
+    Result := Result + #10;
 end;
 
 
@@ -12761,7 +13009,7 @@ procedure HandleFPCInfoQuery(const AArg: string);
 var
   Query: string;
 begin
-  Query := Copy(AArg, 3, MaxInt);  
+  Query := Copy(AArg, 3, Length(AArg));
   if Query = 'V' then
   begin
     WriteLn('3.2.2');
@@ -12806,11 +13054,11 @@ begin
     if Copy(Arg, 1, 2) = '-i' then
       HandleFPCInfoQuery(Arg)
     else if Copy(Arg, 1, 3) = '-FE' then
-      OutDir := Copy(Arg, 4, MaxInt)
+      OutDir := Copy(Arg, 4, Length(Arg))
     else if Copy(Arg, 1, 3) = '-FU' then begin end
     else if Copy(Arg, 1, 3) = '-Fu' then begin end
     else if Copy(Arg, 1, 2) = '-o' then
-      OutName := Copy(Arg, 3, MaxInt)
+      OutName := Copy(Arg, 3, Length(Arg))
     else if Copy(Arg, 1, 2) = '-M' then begin end
     else if Copy(Arg, 1, 2) = '-O' then begin end
     else if Copy(Arg, 1, 2) = '-d' then begin end

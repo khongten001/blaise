@@ -491,13 +491,13 @@ begin
       if not Check(tkIntLit) then
         raise EParseError.CreateFmt('Expected integer after minus in const at line %d col %d',
           [FCurrent.Line, FCurrent.Col]);
-      CD.IntVal  := -StrToInt(FCurrent.Value);
+      CD.IntVal  := -StrToInt64(FCurrent.Value);
       CD.IsString := False;
       Advance;
     end
     else if Check(tkIntLit) then
     begin
-      CD.IntVal   := StrToInt(FCurrent.Value);
+      CD.IntVal   := StrToInt64(FCurrent.Value);
       CD.IsString := False;
       Advance;
     end
@@ -909,6 +909,20 @@ begin
         [FCurrent.Line, FCurrent.Col]);
     Result.Name := FCurrent.Value;
     Advance;
+    { Optional index parameter: 'property Name[ParamName: TypeName]: ...' }
+    if Check(tkLBracket) then
+    begin
+      Advance;  { consume '[' }
+      if not Check(tkIdent) then
+        raise EParseError.CreateFmt(
+          'Expected index parameter name at line %d col %d',
+          [FCurrent.Line, FCurrent.Col]);
+      Result.IndexParamName := FCurrent.Value;
+      Advance;
+      Expect(tkColon);
+      Result.IndexTypeName := ParseTypeName;
+      Expect(tkRBracket);
+    end;
     Expect(tkColon);
     Result.TypeName := ParseTypeName;
     { Optional: read Accessor }
@@ -1226,14 +1240,29 @@ begin
     SecondIdent := FCurrent.Value;
     Advance;
 
-    if Check(tkAssign) then
+    if Check(tkLBracket) then
+    begin
+      { Indexed property write: Ident '.' Ident '[' Index ']' ':=' Expr }
+      FldAssign := TFieldAssignment.Create;
+      FldAssign.Line := Line;
+      FldAssign.Col := Col;
+      FldAssign.RecordName := Name;
+      FldAssign.FieldName := SecondIdent;
+      Advance;  { consume '[' }
+      FldAssign.PropIndexExpr := ParseExpr;
+      Expect(tkRBracket);
+      Expect(tkAssign);
+      FldAssign.Expr := ParseExpr;
+      Result := FldAssign;
+    end
+    else if Check(tkAssign) then
     begin
       { Field assignment: Ident '.' Ident ':=' Expr }
-      FldAssign            := TFieldAssignment.Create;
-      FldAssign.Line       := Line;
-      FldAssign.Col        := Col;
+      FldAssign := TFieldAssignment.Create;
+      FldAssign.Line := Line;
+      FldAssign.Col := Col;
       FldAssign.RecordName := Name;
-      FldAssign.FieldName  := SecondIdent;
+      FldAssign.FieldName := SecondIdent;
       Expect(tkAssign);
       FldAssign.Expr := ParseExpr;
       Result := FldAssign;
@@ -2160,6 +2189,13 @@ begin
             FldNode.RecordName := Name;
             FldNode.FieldName  := SecondName;
             Result := FldNode;
+            { Indexed property read: Ident.Prop[idx] }
+            if Check(tkLBracket) then
+            begin
+              Advance;
+              FldNode.PropIndexExpr := ParseExpr;
+              Expect(tkRBracket);
+            end;
             { Chained access: A.B.C.D ... — wrap each subsequent '.IDENT' }
             while Check(tkDot) and (PeekKind = tkIdent) do
             begin
@@ -2196,6 +2232,13 @@ begin
                 FldNode.Base       := Result;
                 FldNode.FieldName  := SecondName;
                 Result := FldNode;
+                { Indexed property on chained access: A.B.Prop[idx] }
+                if Check(tkLBracket) then
+                begin
+                  Advance;
+                  FldNode.PropIndexExpr := ParseExpr;
+                  Expect(tkRBracket);
+                end;
               end;
             end;
           end;

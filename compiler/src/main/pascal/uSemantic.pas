@@ -1564,23 +1564,26 @@ begin
             Format('Unknown type ''%s'' for property ''%s''',
               [PropDecl.TypeName, PropDecl.Name]),
             PropDecl.Line, PropDecl.Col);
-        PropInfo          := TPropertyInfo.Create;
-        PropInfo.Name     := PropDecl.Name;
+        PropInfo := TPropertyInfo.Create;
+        PropInfo.Name := PropDecl.Name;
         PropInfo.TypeDesc := PropType;
         if PropDecl.ReadName <> '' then
         begin
           if RT.FindField(PropDecl.ReadName) <> nil then
-            PropInfo.ReadField  := PropDecl.ReadName
+            PropInfo.ReadField := PropDecl.ReadName
           else
             PropInfo.ReadMethod := PropDecl.ReadName;
         end;
         if PropDecl.WriteName <> '' then
         begin
           if RT.FindField(PropDecl.WriteName) <> nil then
-            PropInfo.WriteField  := PropDecl.WriteName
+            PropInfo.WriteField := PropDecl.WriteName
           else
             PropInfo.WriteMethod := PropDecl.WriteName;
         end;
+        PropInfo.IndexParamName := PropDecl.IndexParamName;
+        if PropDecl.IndexTypeName <> '' then
+          PropInfo.IndexTypeDesc := FTable.FindType(PropDecl.IndexTypeName);
         RT.AddProperty(PropInfo);
       end;
 
@@ -2396,6 +2399,25 @@ begin
             AAssign.FieldName := PropInfo.WriteField;
             FldInfo           := RT.FindField(PropInfo.WriteField);
           end
+          else if (PropInfo <> nil) and (PropInfo.WriteMethod <> '') then
+          begin
+            { Method-backed write (includes indexed properties) }
+            if PropInfo.IndexParamName <> '' then
+            begin
+              if AAssign.PropIndexExpr = nil then
+                SemanticError(
+                  Format('Indexed property ''%s'' requires an index expression',
+                    [AAssign.FieldName]),
+                  AAssign.Line, AAssign.Col);
+              AnalyseExpr(AAssign.PropIndexExpr);
+            end;
+            AAssign.PropWriteInfo := PropInfo;
+            AAssign.PropOwnerType := RT.Name;
+            ExprType := AnalyseExpr(AAssign.Expr);
+            CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
+              AAssign.Line, AAssign.Col);
+            Exit;
+          end
           else
             SemanticError(
               Format('Type ''%s'' has no field ''%s''',
@@ -2440,10 +2462,24 @@ begin
         FldInfo           := RT.FindField(PropInfo.WriteField);
       end
       else if PropInfo.WriteMethod <> '' then
-        SemanticError(
-          Format('Method-backed property write not yet supported for ''%s''',
-            [AAssign.FieldName]),
-          AAssign.Line, AAssign.Col)
+      begin
+        { Method-backed write (includes indexed properties) }
+        if PropInfo.IndexParamName <> '' then
+        begin
+          if AAssign.PropIndexExpr = nil then
+            SemanticError(
+              Format('Indexed property ''%s'' requires an index expression',
+                [AAssign.FieldName]),
+              AAssign.Line, AAssign.Col);
+          AnalyseExpr(AAssign.PropIndexExpr);
+        end;
+        AAssign.PropWriteInfo := PropInfo;
+        AAssign.PropOwnerType := RT.Name;
+        ExprType := AnalyseExpr(AAssign.Expr);
+        CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
+          AAssign.Line, AAssign.Col);
+        Exit;
+      end
       else
         SemanticError(
           Format('Property ''%s'' is read-only', [AAssign.FieldName]),
@@ -2801,12 +2837,32 @@ begin
     Exit;
   end;
 
+  if SameText(AExpr.Name, 'Int64ToStr') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('Int64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
   if SameText(AExpr.Name, 'StrToInt') then
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt requires exactly one argument', AExpr.Line, AExpr.Col);
     AnalyseExpr(TASTExpr(AExpr.Args[0]));
     Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'StrToInt64') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('StrToInt64 requires exactly one argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    Result := FTable.TypeInt64;
     AExpr.ResolvedType := Result;
     Exit;
   end;
@@ -3403,13 +3459,34 @@ begin
         begin
           { Field-backed property on the implicit-Self field's type }
           PropInfo := RT.FindProperty(AAccess.FieldName);
-          if (PropInfo <> nil) and (PropInfo.ReadField <> '') then
+          if PropInfo <> nil then
           begin
-            AAccess.FieldName := PropInfo.ReadField;
-            AAccess.FieldInfo := RT.FindField(PropInfo.ReadField);
-            Result := PropInfo.TypeDesc;
-            AAccess.ResolvedType := Result;
-            Exit;
+            if PropInfo.ReadField <> '' then
+            begin
+              AAccess.FieldName := PropInfo.ReadField;
+              AAccess.FieldInfo := RT.FindField(PropInfo.ReadField);
+              Result := PropInfo.TypeDesc;
+              AAccess.ResolvedType := Result;
+              Exit;
+            end
+            else if PropInfo.ReadMethod <> '' then
+            begin
+              { Method-backed read (includes indexed properties) }
+              if PropInfo.IndexParamName <> '' then
+              begin
+                if AAccess.PropIndexExpr = nil then
+                  SemanticError(
+                    Format('Indexed property ''%s'' requires an index expression',
+                      [AAccess.FieldName]),
+                    AAccess.Line, AAccess.Col);
+                AnalyseExpr(AAccess.PropIndexExpr);
+              end;
+              AAccess.PropRead := PropInfo;
+              AAccess.PropOwnerType := RT.Name;
+              Result := PropInfo.TypeDesc;
+              AAccess.ResolvedType := Result;
+              Exit;
+            end;
           end;
           { Zero-arg method on the implicit-Self field: FTok.NextToken }
           AAccess.ResolvedMethod := FindMethodDecl(RT.Name, AAccess.FieldName);
@@ -3495,8 +3572,17 @@ begin
       end
       else if PropInfo.ReadMethod <> '' then
       begin
-        { Method-backed read: mark for method call in codegen }
-        AAccess.PropRead      := PropInfo;
+        { Method-backed read (includes indexed properties) }
+        if PropInfo.IndexParamName <> '' then
+        begin
+          if AAccess.PropIndexExpr = nil then
+            SemanticError(
+              Format('Indexed property ''%s'' requires an index expression',
+                [AAccess.FieldName]),
+              AAccess.Line, AAccess.Col);
+          AnalyseExpr(AAccess.PropIndexExpr);
+        end;
+        AAccess.PropRead := PropInfo;
         AAccess.PropOwnerType := RT.Name;
         Result := PropInfo.TypeDesc;
         AAccess.ResolvedType := Result;

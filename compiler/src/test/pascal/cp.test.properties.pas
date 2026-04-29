@@ -60,6 +60,16 @@ type
     { Codegen — method-backed                                              }
     { ------------------------------------------------------------------ }
     procedure TestCodegen_Property_MethodBacked_Read_EmitsCall;
+
+    { ------------------------------------------------------------------ }
+    { Indexed properties                                                   }
+    { ------------------------------------------------------------------ }
+    procedure TestParse_IndexedProperty_ParamNameAndType;
+    procedure TestSemantic_IndexedProperty_Read_OK;
+    procedure TestSemantic_IndexedProperty_Write_OK;
+    procedure TestSemantic_IndexedProperty_MissingIndex_RaisesError;
+    procedure TestCodegen_IndexedProperty_Read_EmitsGetterWithIndex;
+    procedure TestCodegen_IndexedProperty_Write_EmitsSetterWithIndex;
   end;
 
 implementation
@@ -150,6 +160,60 @@ const
     'begin'                                    + LineEnding +
     '  B := TBox.Create;'                      + LineEnding +
     '  WriteLn(B.Count)'                       + LineEnding +
+    'end.';
+
+  SrcIndexedPropDecl =
+    'program P;'                                                   + LineEnding +
+    'type'                                                         + LineEnding +
+    '  TList = class'                                              + LineEnding +
+    '    function Get(AIndex: Integer): Integer;'                  + LineEnding +
+    '    begin'                                                    + LineEnding +
+    '      Result := AIndex'                                       + LineEnding +
+    '    end;'                                                     + LineEnding +
+    '    procedure Put(AIndex: Integer; AValue: Integer);'         + LineEnding +
+    '    begin'                                                    + LineEnding +
+    '    end;'                                                     + LineEnding +
+    '    property Items[Index: Integer]: Integer read Get write Put;' + LineEnding +
+    '  end;'                                                       + LineEnding +
+    'begin'                                                        + LineEnding +
+    'end.';
+
+  SrcIndexedPropReadUsage =
+    'program P;'                                                   + LineEnding +
+    'type'                                                         + LineEnding +
+    '  TList = class'                                              + LineEnding +
+    '    function Get(AIndex: Integer): Integer;'                  + LineEnding +
+    '    begin'                                                    + LineEnding +
+    '      Result := AIndex'                                       + LineEnding +
+    '    end;'                                                     + LineEnding +
+    '    property Items[Index: Integer]: Integer read Get;'        + LineEnding +
+    '  end;'                                                       + LineEnding +
+    'var L: TList; V: Integer;'                                    + LineEnding +
+    'begin'                                                        + LineEnding +
+    '  L := TList.Create;'                                         + LineEnding +
+    '  V := L.Items[3];'                                           + LineEnding +
+    '  WriteLn(V)'                                                 + LineEnding +
+    'end.';
+
+  SrcIndexedPropWriteUsage =
+    'program P;'                                                   + LineEnding +
+    'type'                                                         + LineEnding +
+    '  TList = class'                                              + LineEnding +
+    '    FValue: Integer;'                                         + LineEnding +
+    '    function Get(AIndex: Integer): Integer;'                  + LineEnding +
+    '    begin'                                                    + LineEnding +
+    '      Result := AIndex'                                       + LineEnding +
+    '    end;'                                                     + LineEnding +
+    '    procedure Put(AIndex: Integer; AValue: Integer);'         + LineEnding +
+    '    begin'                                                    + LineEnding +
+    '      Self.FValue := AValue'                                  + LineEnding +
+    '    end;'                                                     + LineEnding +
+    '    property Items[Index: Integer]: Integer read Get write Put;' + LineEnding +
+    '  end;'                                                       + LineEnding +
+    'var L: TList;'                                                + LineEnding +
+    'begin'                                                        + LineEnding +
+    '  L := TList.Create;'                                         + LineEnding +
+    '  L.Items[2] := 42'                                           + LineEnding +
     'end.';
 
 { ------------------------------------------------------------------ }
@@ -423,6 +487,71 @@ begin
   { B.Count → calls $TBox_GetCount }
   AssertTrue('method-backed read emits call to GetCount',
     Pos('TBox_GetCount', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Indexed properties                                                   }
+{ ------------------------------------------------------------------ }
+
+procedure TPropertyTests.TestParse_IndexedProperty_ParamNameAndType;
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  PD:   TPropertyDecl;
+begin
+  Prog := ParseSrc(SrcIndexedPropDecl);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    AssertEquals('one property', 1, CD.Properties.Count);
+    PD := TPropertyDecl(CD.Properties[0]);
+    AssertEquals('property name', 'Items', PD.Name);
+    AssertEquals('index param name', 'Index', PD.IndexParamName);
+    AssertEquals('index type name', 'Integer', PD.IndexTypeName);
+    AssertEquals('read name', 'Get', PD.ReadName);
+    AssertEquals('write name', 'Put', PD.WriteName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TPropertyTests.TestSemantic_IndexedProperty_Read_OK;
+begin
+  AnalyseSrc(SrcIndexedPropReadUsage).Free;
+end;
+
+procedure TPropertyTests.TestSemantic_IndexedProperty_Write_OK;
+begin
+  AnalyseSrc(SrcIndexedPropWriteUsage).Free;
+end;
+
+procedure TPropertyTests.TestSemantic_IndexedProperty_MissingIndex_RaisesError;
+begin
+  AnalyseExpectError(
+    'program P;'                                              + LineEnding +
+    'type TList = class'                                      + LineEnding +
+    '  function Get(AIndex: Integer): Integer;'               + LineEnding +
+    '  begin Result := AIndex end;'                           + LineEnding +
+    '  property Items[Index: Integer]: Integer read Get;'     + LineEnding +
+    'end;'                                                    + LineEnding +
+    'var L: TList; V: Integer;'                               + LineEnding +
+    'begin L := TList.Create; V := L.Items; WriteLn(V) end.'
+  );
+end;
+
+procedure TPropertyTests.TestCodegen_IndexedProperty_Read_EmitsGetterWithIndex;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcIndexedPropReadUsage);
+  AssertTrue('indexed read emits getter call', Pos('call $TList_Get', IR) > 0);
+end;
+
+procedure TPropertyTests.TestCodegen_IndexedProperty_Write_EmitsSetterWithIndex;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcIndexedPropWriteUsage);
+  AssertTrue('indexed write emits setter call', Pos('call $TList_Put', IR) > 0);
 end;
 
 initialization

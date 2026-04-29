@@ -79,6 +79,12 @@ type
     procedure TestCodegen_IncludeTrailingPathDelimiter_CallsRTL;
 
     { ------------------------------------------------------------------ }
+    { MaxInt built-in constant                                            }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_MaxInt_ResolvesToInt64;
+    procedure TestCodegen_MaxInt_EmitsLongLiteral;
+
+    { ------------------------------------------------------------------ }
     { Main emits argc/argv (required for ParamStr to work at runtime)    }
     { ------------------------------------------------------------------ }
     procedure TestCodegen_Main_HasArgcArgv;
@@ -243,6 +249,13 @@ const
     'var S: string;'                                          + LineEnding +
     'begin'                                                   + LineEnding +
     '  S := IncludeTrailingPathDelimiter(''/usr/bin'')'       + LineEnding +
+    'end.';
+
+  SrcMaxInt =
+    'program P;'         + LineEnding +
+    'var N: Int64;'      + LineEnding +
+    'begin'              + LineEnding +
+    '  N := MaxInt;'     + LineEnding +
     'end.';
 
 { ------------------------------------------------------------------ }
@@ -564,6 +577,26 @@ begin
   IR := GenIR(SrcIncludeTrailingPathDelimiter);
   AssertTrue('IncludeTrailingPathDelimiter calls _IncludeTrailingPathDelimiter',
     Pos('_IncludeTrailingPathDelimiter', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ MaxInt built-in constant                                            }
+{ ------------------------------------------------------------------ }
+
+procedure TSelfHostingTests.TestSemantic_MaxInt_ResolvesToInt64;
+begin
+  SemanticOK(SrcMaxInt);
+end;
+
+procedure TSelfHostingTests.TestCodegen_MaxInt_EmitsLongLiteral;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcMaxInt);
+  AssertTrue('MaxInt emits 64-bit literal',
+    Pos('9223372036854775807', IR) > 0);
+  AssertTrue('MaxInt emits l-typed copy',
+    Pos('=l copy 9223372036854775807', IR) > 0);
 end;
 
 procedure TSelfHostingTests.TestCodegen_Main_HasArgcArgv;

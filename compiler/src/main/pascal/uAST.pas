@@ -91,6 +91,7 @@ type
     IsMethodCall:      Boolean;       { set by uSemantic — FieldName is a zero-arg method }
     ResolvedMethod:    TObject;       { TMethodDecl — not owned; set when IsMethodCall }
     IsGlobal:          Boolean;       { set by uSemantic — RecordName is a program-level global }
+    PropIndexExpr: TASTExpr;  { owned — non-nil = indexed property read (e.g. List.Items[i]) }
     destructor Destroy; override;
   end;
 
@@ -238,6 +239,9 @@ type
     IsImplicitSelf:    Boolean; { set by uSemantic — RecordName is a field of Self }
     ImplicitBaseInfo:  TFieldInfo; { non-owned — the field of Self that holds the record/class }
     IsGlobal:          Boolean; { set by uSemantic — RecordName is a program-level global }
+    PropIndexExpr: TASTExpr;  { owned — non-nil = indexed property write via setter }
+    PropWriteInfo: TPropertyInfo;  { non-owned — set by semantic when PropIndexExpr is set }
+    PropOwnerType: string;  { owner class name for setter call; valid when PropIndexExpr set }
     destructor Destroy; override;
   end;
 
@@ -435,10 +439,12 @@ type
   { One property declaration inside a class body. }
   TPropertyDecl = class(TASTNode)
   public
-    Name:      string;  { property name }
-    TypeName:  string;  { declared type }
-    ReadName:  string;  { backing field or getter method; '' = no read accessor }
-    WriteName: string;  { backing field or setter method; '' = read-only }
+    Name:           string;  { property name }
+    TypeName:       string;  { declared type }
+    ReadName:       string;  { backing field or getter method; '' = no read accessor }
+    WriteName:      string;  { backing field or setter method; '' = read-only }
+    IndexParamName: string;  { '' = non-indexed property }
+    IndexTypeName: string;  { type name of the index parameter; '' when non-indexed }
   end;
 
   TClassTypeDef = class(TASTTypeDef)
@@ -671,6 +677,7 @@ end;
 destructor TFieldAccessExpr.Destroy;
 begin
   Base.Free;
+  PropIndexExpr.Free;
   inherited Destroy;
 end;
 
@@ -721,6 +728,7 @@ destructor TFieldAssignment.Destroy;
 begin
   Expr.Free;
   ObjExpr.Free;
+  PropIndexExpr.Free;
   inherited Destroy;
 end;
 

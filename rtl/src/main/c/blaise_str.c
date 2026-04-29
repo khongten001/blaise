@@ -191,12 +191,35 @@ void* _IntToStr(int32_t n) {
 }
 
 /* ------------------------------------------------------------------ */
+/* _Int64ToStr(n) : string                                             */
+/* ------------------------------------------------------------------ */
+
+void* _Int64ToStr(int64_t n) {
+    char buf[24];
+    int  written = snprintf(buf, sizeof(buf), "%lld", (long long)n);
+    if (written < 0) written = 0;
+    void* r = str_alloc(written);
+    if (r && written > 0)
+        memcpy((char*)r + sizeof(BlaiseStrHdr), buf, written);
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
 /* _StrToInt(s) : Integer                                               */
 /* ------------------------------------------------------------------ */
 
 int32_t _StrToInt(void* s) {
     const char* data = str_data(s);
     return (int32_t)strtol(data, NULL, 10);
+}
+
+/* ------------------------------------------------------------------ */
+/* _StrToInt64(s) : Int64                                               */
+/* ------------------------------------------------------------------ */
+
+int64_t _StrToInt64(void* s) {
+    const char* data = str_data(s);
+    return (int64_t)strtoll(data, NULL, 10);
 }
 
 /* ------------------------------------------------------------------ */

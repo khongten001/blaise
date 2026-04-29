@@ -125,12 +125,14 @@ type
   { Property descriptor — one per declared property on a class. }
   TPropertyInfo = class
   public
-    Name:        string;
-    TypeDesc:    TTypeDesc;   { not owned — resolved by semantic analysis }
-    ReadField:   string;      { '' if method-backed read }
-    ReadMethod:  string;      { '' if field-backed read }
-    WriteField:  string;      { '' if method-backed write or read-only }
-    WriteMethod: string;      { '' if field-backed write or read-only }
+    Name:           string;
+    TypeDesc:       TTypeDesc;   { not owned — resolved by semantic analysis }
+    ReadField:      string;      { '' if method-backed read }
+    ReadMethod:     string;      { '' if field-backed read }
+    WriteField:     string;      { '' if method-backed write or read-only }
+    WriteMethod:    string;      { '' if field-backed write or read-only }
+    IndexParamName: string;  { '' = non-indexed property }
+    IndexTypeDesc: TTypeDesc;  { not owned; non-nil when IndexParamName <> '' }
   end;
 
   { Extended type descriptor for record types. }
@@ -924,6 +926,11 @@ begin
   Sym.ConstValue := 0;
   Define(Sym);
 
+  { Integer range constants }
+  Sym := TSymbol.Create('MaxInt', skConstant, FTypeInt64);
+  Sym.ConstValue := 9223372036854775807;
+  Define(Sym);
+
   { Built-in I/O procedures }
   Sym := TSymbol.Create('Write',   skProcedure, nil);
   Define(Sym);
@@ -963,7 +970,11 @@ begin
   Define(Sym);
   Sym := TSymbol.Create('IntToStr',  skFunction, FTypeString);
   Define(Sym);
+  Sym := TSymbol.Create('Int64ToStr', skFunction, FTypeString);
+  Define(Sym);
   Sym := TSymbol.Create('StrToInt',  skFunction, FTypeInteger);
+  Define(Sym);
+  Sym := TSymbol.Create('StrToInt64', skFunction, FTypeInt64);
   Define(Sym);
   Sym := TSymbol.Create('CompareStr',  skFunction, FTypeInteger);
   Define(Sym);

@@ -1536,7 +1536,54 @@ var
   Ptr, PtrTemp, ValTemp, OldTemp, QType, StoreInstr, ExtTemp: string;
   IsArc: Boolean;
   IsStr: Boolean;
+  SelfPtr: string;
+  IdxTemp: string;
+  IdxQType: string;
 begin
+  { Method-backed property write: emit a call to the setter }
+  if AAssign.PropWriteInfo <> nil then
+  begin
+    ValTemp := EmitExpr(AAssign.Expr);
+    if AAssign.IsImplicitSelf then
+    begin
+      SelfPtr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_Self', [SelfPtr]));
+      if AAssign.ImplicitBaseInfo.Offset > 0 then
+      begin
+        PtrTemp := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d',
+          [PtrTemp, SelfPtr, AAssign.ImplicitBaseInfo.Offset]));
+        SelfPtr := PtrTemp;
+      end;
+      if AAssign.IsClassAccess then
+      begin
+        PtrTemp := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s', [PtrTemp, SelfPtr]));
+        SelfPtr := PtrTemp;
+      end;
+    end
+    else
+    begin
+      SelfPtr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [SelfPtr, VarRef(AAssign.RecordName, AAssign.IsGlobal)]));
+    end;
+    QType := QbeTypeOf(AAssign.PropWriteInfo.TypeDesc);
+    if AAssign.PropIndexExpr <> nil then
+    begin
+      IdxTemp  := EmitExpr(AAssign.PropIndexExpr);
+      IdxQType := QbeTypeOf(AAssign.PropWriteInfo.IndexTypeDesc);
+      EmitLine(Format('  call $%s_%s(l %s, %s %s, %s %s)',
+        [QBEMangle(AAssign.PropOwnerType), AAssign.PropWriteInfo.WriteMethod,
+         SelfPtr, IdxQType, IdxTemp, QType, ValTemp]));
+    end
+    else
+      EmitLine(Format('  call $%s_%s(l %s, %s %s)',
+        [QBEMangle(AAssign.PropOwnerType), AAssign.PropWriteInfo.WriteMethod,
+         SelfPtr, QType, ValTemp]));
+    Exit;
+  end;
+
   if AAssign.FieldInfo = nil then
     raise ECodeGenError.CreateFmt(
       'Field assignment ''%s.%s'' has no resolved field info',
@@ -2845,6 +2892,8 @@ var
   PtrT:         string;
   StrLabel:     string;
   SretBuf:      string;
+  IdxTemp:      string;
+  IdxQType:     string;
 begin
   if AExpr is TFuncCallExpr then
   begin
@@ -3020,11 +3069,29 @@ begin
         Exit;
       end;
 
+      if SameText(Name, 'Int64ToStr') then
+      begin
+        L := EmitExpr(TASTExpr(Args[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
       if SameText(Name, 'StrToInt') then
       begin
         L := EmitExpr(TASTExpr(Args[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StrToInt(l %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(Name, 'StrToInt64') then
+      begin
+        L := EmitExpr(TASTExpr(Args[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_StrToInt64(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
@@ -3431,7 +3498,7 @@ begin
   if AExpr is TIntLiteral then
   begin
     T := AllocTemp;
-    EmitLine(Format('  %s =w copy %d', [T, TIntLiteral(AExpr).Value]));
+    EmitLine(Format('  %s =w copy %s', [T, IntToStr(TIntLiteral(AExpr).Value)]));
     Result := T;
   end
   else if AExpr is TStringLiteral then
@@ -3555,6 +3622,26 @@ begin
         end;
         Exit;
       end;
+      if FldAccess.PropRead <> nil then
+      begin
+        { Method-backed property read via implicit-Self field }
+        T     := AllocTemp;
+        QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
+        if FldAccess.PropIndexExpr <> nil then
+        begin
+          IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+          IdxQType := QbeTypeOf(FldAccess.PropRead.IndexTypeDesc);
+          EmitLine(Format('  %s =%s call $%s_%s(l %s, %s %s)',
+            [T, QType, QBEMangle(FldAccess.PropOwnerType),
+             FldAccess.PropRead.ReadMethod, L, IdxQType, IdxTemp]));
+        end
+        else
+          EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+            [T, QType, QBEMangle(FldAccess.PropOwnerType),
+             FldAccess.PropRead.ReadMethod, L]));
+        Result := T;
+        Exit;
+      end;
       if FldAccess.FieldInfo.Offset > 0 then
       begin
         Ptr := AllocTemp;
@@ -3635,9 +3722,18 @@ begin
       EmitLine(Format('  %s =l loadl %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
       T     := AllocTemp;
       QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
-      EmitLine(Format('  %s =%s call $%s_%s(l %s)',
-        [T, QType, QBEMangle(FldAccess.PropOwnerType),
-         FldAccess.PropRead.ReadMethod, L]));
+      if FldAccess.PropIndexExpr <> nil then
+      begin
+        IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+        IdxQType := QbeTypeOf(FldAccess.PropRead.IndexTypeDesc);
+        EmitLine(Format('  %s =%s call $%s_%s(l %s, %s %s)',
+          [T, QType, QBEMangle(FldAccess.PropOwnerType),
+           FldAccess.PropRead.ReadMethod, L, IdxQType, IdxTemp]));
+      end
+      else
+        EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+          [T, QType, QBEMangle(FldAccess.PropOwnerType),
+           FldAccess.PropRead.ReadMethod, L]));
       Result := T;
     end
     else if FldAccess.IsClassAccess then
@@ -3758,6 +3854,9 @@ begin
         StrLabel := EmitStrLit(TIdentExpr(AExpr).ConstString);
         EmitLine(Format('  %s =l copy %s', [T, StrLabel]));
       end
+      else if (AExpr.ResolvedType <> nil) and
+              (QbeTypeOf(AExpr.ResolvedType) = 'l') then
+        EmitLine(Format('  %s =l copy %s', [T, IntToStr(TIdentExpr(AExpr).ConstValue)]))
       else
         EmitLine(Format('  %s =w copy %d', [T, TIdentExpr(AExpr).ConstValue]));
     end
