@@ -1,0 +1,63 @@
+#!/bin/sh
+# pasbuild-integration-test — Run PDR integration tests for the Blaise compiler.
+#
+# Phase: none  (standalone — invoke as: pasbuild integration-test)
+#
+# Preconditions:
+#   - pdr must be in PATH
+#   - compiler/target/blaise must exist (run 'pasbuild compile' first)
+#   - compiler/src/it/ must exist and contain test_*.pas files
+#
+# Usage:
+#   pasbuild integration-test
+#   BLAISE=/path/to/blaise pasbuild integration-test
+
+set -e
+
+case "$1" in
+  --pasbuild-phase)
+    echo "none"
+    exit 0
+    ;;
+esac
+
+# ---- Locate project directory ------------------------------------------------
+PROJ="${PASBUILD_PROJECT_DIR:-$1}"
+if [ -z "$PROJ" ]; then
+  echo "[integration-test] ERROR: project directory not set" >&2
+  exit 1
+fi
+
+# ---- Locate integration test directory ---------------------------------------
+IT_DIR="$PROJ/compiler/src/it"
+if [ ! -d "$IT_DIR" ]; then
+  echo "[integration-test] ERROR: no integration tests found at $IT_DIR" >&2
+  exit 1
+fi
+
+if [ -z "$(find "$IT_DIR" -maxdepth 1 -name 'test_*.pas' 2>/dev/null)" ]; then
+  echo "[integration-test] ERROR: no test_*.pas files in $IT_DIR" >&2
+  exit 1
+fi
+
+# ---- Check prerequisites -----------------------------------------------------
+if ! command -v pdr > /dev/null 2>&1; then
+  echo "[integration-test] ERROR: pdr not found in PATH" >&2
+  exit 1
+fi
+
+BLAISE_BIN="${BLAISE:-$PROJ/compiler/target/blaise}"
+if [ ! -x "$BLAISE_BIN" ]; then
+  echo "[integration-test] ERROR: Blaise compiler not found: $BLAISE_BIN" >&2
+  echo "  Run 'pasbuild compile -m blaise-compiler' first" >&2
+  exit 1
+fi
+
+echo "[integration-test] Project  : $PROJ"
+echo "[integration-test] Tests    : $IT_DIR"
+echo "[integration-test] Blaise   : $BLAISE_BIN"
+echo "[integration-test] PDR      : $(command -v pdr)"
+echo
+
+# ---- Run tests ---------------------------------------------------------------
+BLAISE="$BLAISE_BIN" "$IT_DIR/run_tests.sh"

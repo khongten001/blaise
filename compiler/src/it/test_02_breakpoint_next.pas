@@ -1,0 +1,23 @@
+program test_02_breakpoint_next;
+
+
+
+var
+  MyInt: Integer;
+  Sentinel: Integer;
+
+begin
+  WriteLn('Test: Breakpoint and Next');
+
+  MyInt := 10;
+  WriteLn('Set MyInt to 10');
+
+  MyInt := 20;
+  WriteLn('Set MyInt to 20');
+
+  MyInt := 30;
+  WriteLn('Set MyInt to 30');
+
+  WriteLn('Done');
+  Sentinel := 1;
+end.

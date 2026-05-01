@@ -420,6 +420,44 @@ stream chains.
 
 *Effort.* Moderate.  Blocked on abstract method support in the class system.
 
+== Debugger
+
+=== PIE (ASLR) support in PDR
+
+*What.* When a Blaise binary is compiled with `--debug-opdf`, the compiler
+currently passes `-no-pie` to gcc to ensure OPDF `.quad symbol` entries
+contain absolute link-time addresses.  The PDR debugger should instead read
+the binary's actual load base at runtime and adjust all OPDF addresses by the
+ASLR slide, allowing debug-opdf builds to remain PIE.
+
+*Why it matters.* PIE (Position Independent Executable) is the default on all
+modern Linux distributions and is required for ASLR protection.  Disabling it
+in debug builds is a pragmatic workaround that is acceptable for local
+development but is not appropriate for any scenario where the binary is
+distributed or run in a production-adjacent environment.  Lifting the
+restriction makes `--debug-opdf` safe to enable in CI and staging environments.
+
+*Implementation notes.*
+
+* On Linux, `/proc/<pid>/maps` lists each memory mapping with its base
+  address and the backing file.  At debugger attach time, read this file,
+  find the entry whose backing path matches the target binary, and record
+  its base address as `LoadBase`.
+* On FreeBSD, PIE and ASLR are supported by default from FreeBSD 12 onwards.
+  FreeBSD's procfs is not mounted by default, so `/proc/<pid>/map` is not
+  reliable.  The correct approach is `sysctl(KERN_PROC_VMMAP, pid)`, which
+  returns the full VM map for a process; find the entry matching the binary
+  path and extract its start address as `LoadBase`.
+* On macOS, the equivalent is `task_info(TASK_DYLD_INFO)` or parsing the
+  Mach-O load commands; `DYLD_IMAGE_BASE` is available via the dyld shared
+  cache APIs.
+* At symbol-resolution time on all platforms: `RuntimeAddr = OPDFAddr + LoadBase`.
+* Once PIE-aware address resolution is in place, remove the `-no-pie` guard
+  in `Blaise.pas` (`CompileToNative`).
+
+*Effort.* Small on Linux and FreeBSD (one sysctl/procfs read at attach time);
+moderate on macOS (dyld integration).
+
 == macOS — Debugging and Code-Signing
 
 === Debugger entitlement requirements
