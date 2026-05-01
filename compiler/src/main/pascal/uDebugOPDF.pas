@@ -1,0 +1,785 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: BSD-3-Clause
+  See LICENSE file in the project root for full license terms.
+}
+
+unit uDebugOPDF;
+
+{$H+}
+
+{ OPDF debug information emitter.
+  Produces a companion .opdf.s GNU assembly file that the linker folds into
+  the ELF .opdf section.  The existing pdr debugger reads that section without
+  modification.
+
+  Platform note: section and relocation syntax targets Linux x86_64 (ELF).
+  For macOS arm64 (Mach-O) change the .section directive to
+  ".section __DATA,__opdf" and review .quad relocation constraints. }
+
+interface
+
+uses
+  SysUtils, Classes, contnrs, uAST, uSymbolTable;
+
+type
+  TOPDFEmitter = class
+  private
+    FProgram:    TProgram;
+    FSourceFile: string;
+    FOutput:     TStringList;
+    FTypeNames:  TStringList;   { sorted; Objects[i] = Pointer(PtrUInt(TypeID)) }
+    FEmitted:    TStringList;   { sorted canonical names already written }
+    FRecordCount: Integer;
+    FTotRecIdx:   Integer;      { FOutput line index of the TotalRecords placeholder }
+    FDone:        Boolean;
+
+    function  FNV1a32(const S: string): Cardinal;
+    function  GetOrAllocTypeID(const AName: string): Cardinal;
+    function  HasBeenEmitted(const AName: string): Boolean;
+    procedure MarkEmitted(const AName: string);
+    procedure L(const AText: string);
+    procedure EmitRecHdr(ARecType: Byte; ARecSize: Integer);
+    procedure EmitNameLen(const AStr: string);
+    procedure EmitNameData(const AStr: string);
+    procedure EmitStrField(const AStr: string);
+    procedure EmitSection;
+    procedure EmitHeader;
+    procedure EmitTypeDesc(AType: TTypeDesc);
+    procedure EmitPrimitive(AType: TTypeDesc);
+    procedure EmitEnum(AType: TEnumTypeDesc);
+    procedure EmitRecord(AType: TRecordTypeDesc);
+    procedure EmitClass(AType: TRecordTypeDesc);
+    procedure EmitAnsiStr;
+    procedure EmitGlobalVar(const AVarName: string; AType: TTypeDesc);
+    procedure EmitFunctionScope(AMethod: TMethodDecl; AScopeID: Integer;
+                                ADeclIdx: Integer; const ANextLabel: string);
+    procedure EmitParameters(AMethod: TMethodDecl);
+    procedure EmitLocalVars(ABlock: TBlock; AScopeID: Integer);
+    procedure EmitAllTypes;
+    procedure EmitGlobalVars;
+    procedure EmitFunctionScopes;
+    procedure CollectStmtLines(AStmt: TASTStmt; ALines: TStringList);
+    procedure EmitLineInfoForScope(AMethod: TMethodDecl);
+    procedure PatchTotalRecords;
+    procedure DoEmit;
+    function  FuncLabel(AMethod: TMethodDecl): string;
+    function  CanonicalName(AType: TTypeDesc): string;
+    function  FieldsPayloadSize(ARec: TRecordTypeDesc): Integer;
+    procedure EmitFields(ARec: TRecordTypeDesc);
+  public
+    constructor Create(AProgram: TProgram; const ASourceFile: string);
+    destructor Destroy; override;
+    procedure EmitToFile(const AFileName: string);
+    function  GetOutput: string;
+  end;
+
+implementation
+
+const
+  REC_LINEINFO  = 14;
+  REC_PRIMITIVE = 1;
+  REC_GLOBALVAR = 2;
+  REC_ANSISTR   = 4;
+  REC_RECORD    = 8;
+  REC_CLASS     = 9;
+  REC_LOCALVAR  = 12;
+  REC_PARAMETER = 13;
+  REC_FUNCSCOPE = 15;
+  REC_ENUM      = 17;
+
+  SK_INTEGER = 0;
+  SK_BOOLEAN = 1;
+
+  LOC_RBP = 1;
+
+constructor TOPDFEmitter.Create(AProgram: TProgram; const ASourceFile: string);
+begin
+  inherited Create;
+  FProgram    := AProgram;
+  FSourceFile := ASourceFile;
+  FOutput     := TStringList.Create;
+  FTypeNames  := TStringList.Create;
+  FTypeNames.Sorted        := True;
+  FTypeNames.CaseSensitive := True;
+  FEmitted    := TStringList.Create;
+  FEmitted.Sorted        := True;
+  FEmitted.CaseSensitive := True;
+  FRecordCount := 0;
+  FTotRecIdx   := -1;
+  FDone        := False;
+end;
+
+destructor TOPDFEmitter.Destroy;
+begin
+  FEmitted.Free;
+  FTypeNames.Free;
+  FOutput.Free;
+  inherited Destroy;
+end;
+
+procedure TOPDFEmitter.L(const AText: string);
+begin
+  FOutput.Add(AText);
+end;
+
+function TOPDFEmitter.FNV1a32(const S: string): Cardinal;
+const
+  FNV_PRIME  = $01000193;
+  FNV_OFFSET = $811C9DC5;
+var
+  I: Integer;
+begin
+  Result := FNV_OFFSET;
+  for I := 1 to Length(S) do
+  begin
+    Result := Result xor Cardinal(Ord(S[I]));
+    Result := Result * FNV_PRIME;
+  end;
+  if Result = 0 then
+    Result := 1;
+end;
+
+function TOPDFEmitter.GetOrAllocTypeID(const AName: string): Cardinal;
+var
+  Idx: Integer;
+begin
+  if FTypeNames.Find(AName, Idx) then
+    Result := Cardinal(PtrUInt(FTypeNames.Objects[Idx]))
+  else
+  begin
+    Result := FNV1a32(AName);
+    FTypeNames.AddObject(AName, TObject(PtrUInt(Result)));
+  end;
+end;
+
+function TOPDFEmitter.HasBeenEmitted(const AName: string): Boolean;
+var
+  Idx: Integer;
+begin
+  Result := FEmitted.Find(AName, Idx);
+end;
+
+procedure TOPDFEmitter.MarkEmitted(const AName: string);
+begin
+  if not HasBeenEmitted(AName) then
+    FEmitted.Add(AName);
+end;
+
+procedure TOPDFEmitter.EmitRecHdr(ARecType: Byte; ARecSize: Integer);
+begin
+  L('    .byte ' + IntToStr(ARecType) + '  # RecType');
+  L('    .int  ' + IntToStr(ARecSize) + '  # RecSize');
+  FRecordCount := FRecordCount + 1;
+end;
+
+procedure TOPDFEmitter.EmitNameLen(const AStr: string);
+begin
+  L('    .word ' + IntToStr(Length(AStr)) + '  # NameLen');
+end;
+
+procedure TOPDFEmitter.EmitNameData(const AStr: string);
+begin
+  if Length(AStr) > 0 then
+    L('    .ascii "' + AStr + '"');
+end;
+
+procedure TOPDFEmitter.EmitStrField(const AStr: string);
+begin
+  EmitNameLen(AStr);
+  EmitNameData(AStr);
+end;
+
+function TOPDFEmitter.CanonicalName(AType: TTypeDesc): string;
+begin
+  if AType = nil then
+  begin
+    Result := 'Pointer';
+    Exit;
+  end;
+  case AType.Kind of
+    tyString:  Result := 'AnsiString';
+    tyPointer:
+      if TPointerTypeDesc(AType).BaseType = nil then
+        Result := 'Pointer'
+      else
+        Result := '^' + CanonicalName(TPointerTypeDesc(AType).BaseType);
+  else
+    if AType.Name = '' then
+      Result := 'Pointer'
+    else
+      Result := AType.Name;
+  end;
+end;
+
+function TOPDFEmitter.FieldsPayloadSize(ARec: TRecordTypeDesc): Integer;
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  Result := 0;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    Result := Result + 4 + 4 + 2 + Length(F.Name);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitFields(ARec: TRecordTypeDesc);
+var
+  I: Integer;
+  F: TFieldInfo;
+  FTypeName: string;
+begin
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    if F.TypeDesc <> nil then
+      FTypeName := CanonicalName(F.TypeDesc)
+    else
+      FTypeName := 'Pointer';
+    L('    # field: ' + F.Name);
+    L('    .int  ' + IntToStr(GetOrAllocTypeID(FTypeName)) + '  # FieldTypeID');
+    L('    .int  ' + IntToStr(F.Offset) + '  # Offset');
+    EmitStrField(F.Name);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitTypeDesc(AType: TTypeDesc);
+var
+  CName: string;
+begin
+  if AType = nil then Exit;
+  CName := CanonicalName(AType);
+  if HasBeenEmitted(CName) then Exit;
+  case AType.Kind of
+    tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean:
+      EmitPrimitive(AType);
+    tyString:
+      EmitAnsiStr;
+    tyEnum:
+      EmitEnum(TEnumTypeDesc(AType));
+    tyRecord:
+      EmitRecord(TRecordTypeDesc(AType));
+    tyClass:
+      EmitClass(TRecordTypeDesc(AType));
+  else
+    { tyVoid, tyNil, tyPointer, tyOpenArray, tyStaticArray, tyPChar, tySet,
+      tyInterface: no OPDF record for Priority 1-2 }
+  end;
+end;
+
+procedure TOPDFEmitter.EmitPrimitive(AType: TTypeDesc);
+var
+  CName: string;
+  SubKind, IsSigned, SzB: Byte;
+  RecSize: Integer;
+begin
+  CName := CanonicalName(AType);
+  if HasBeenEmitted(CName) then Exit;
+  MarkEmitted(CName);
+
+  SzB      := AType.RawSize;
+  case AType.Kind of
+    tyBoolean:         begin SubKind := SK_BOOLEAN; IsSigned := 0; end;
+    tyInt64, tyInteger:begin SubKind := SK_INTEGER;  IsSigned := 1; end;
+  else
+    SubKind := SK_INTEGER; IsSigned := 0;
+  end;
+  RecSize := 9 + Length(CName);
+
+  L('');
+  L('    # recPrimitive: ' + CName);
+  EmitRecHdr(REC_PRIMITIVE, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .byte ' + IntToStr(SzB) + '  # SizeInBytes');
+  L('    .byte ' + IntToStr(IsSigned) + '  # IsSigned');
+  L('    .byte ' + IntToStr(SubKind) + '  # SubKind');
+  EmitStrField(CName);
+end;
+
+procedure TOPDFEmitter.EmitAnsiStr;
+const
+  CNAME           = 'AnsiString';
+  LEN_OFFSET      = 4;   { Blaise: Length at header+4 }
+  RC_OFFSET       = 0;   { Blaise: RefCount at header+0 }
+  CODEPAGE_OFFSET = 0;
+  ELEMSIZE_OFFSET = 0;
+var
+  RecSize: Integer;
+begin
+  if HasBeenEmitted(CNAME) then Exit;
+  MarkEmitted(CNAME);
+  RecSize := 14 + Length(CNAME);
+  L('');
+  L('    # recAnsiStr: AnsiString (Blaise layout: ptr→[RC][Len][Cap][data])');
+  EmitRecHdr(REC_ANSISTR, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CNAME)) + '  # TypeID');
+  L('    .word ' + IntToStr(LEN_OFFSET)      + '  # LengthOffset');
+  L('    .word ' + IntToStr(RC_OFFSET)       + '  # RefCountOffset');
+  L('    .word ' + IntToStr(CODEPAGE_OFFSET) + '  # CodePageOffset');
+  L('    .word ' + IntToStr(ELEMSIZE_OFFSET) + '  # ElementSizeOffset');
+  EmitStrField(CNAME);
+end;
+
+procedure TOPDFEmitter.EmitEnum(AType: TEnumTypeDesc);
+var
+  CName: string;
+  RecSize, MembSize, I: Integer;
+begin
+  CName := AType.Name;
+  if HasBeenEmitted(CName) then Exit;
+  MarkEmitted(CName);
+
+  MembSize := 0;
+  for I := 0 to AType.Members.Count - 1 do
+    MembSize := MembSize + 8 + 2 + Length(AType.Members.Strings[I]);
+
+  RecSize := 11 + Length(CName) + MembSize;
+
+  L('');
+  L('    # recEnum: ' + CName);
+  EmitRecHdr(REC_ENUM, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .byte 4                          # SizeInBytes');
+  L('    .int  ' + IntToStr(AType.Members.Count) + '  # MemberCount');
+  EmitStrField(CName);
+  for I := 0 to AType.Members.Count - 1 do
+  begin
+    L('    # member: ' + AType.Members.Strings[I]);
+    L('    .quad ' + IntToStr(I) + '  # Value');
+    EmitStrField(AType.Members.Strings[I]);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitRecord(AType: TRecordTypeDesc);
+var
+  CName: string;
+  RecSize, I: Integer;
+  F: TFieldInfo;
+begin
+  CName := AType.Name;
+  if HasBeenEmitted(CName) then Exit;
+  MarkEmitted(CName);
+
+  for I := 0 to AType.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(AType.Fields.Items[I]);
+    if F.TypeDesc <> nil then
+      EmitTypeDesc(F.TypeDesc);
+  end;
+
+  RecSize := 14 + Length(CName) + FieldsPayloadSize(AType);
+
+  L('');
+  L('    # recRecord: ' + CName);
+  EmitRecHdr(REC_RECORD, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .int  ' + IntToStr(AType.Fields.Count) + '  # FieldCount');
+  L('    .int  ' + IntToStr(AType.TotalSize) + '  # TotalSize');
+  EmitStrField(CName);
+  EmitFields(AType);
+end;
+
+procedure TOPDFEmitter.EmitClass(AType: TRecordTypeDesc);
+var
+  CName, ParentName: string;
+  ParentID: Cardinal;
+  RecSize, I: Integer;
+  F: TFieldInfo;
+begin
+  CName := AType.Name;
+  if HasBeenEmitted(CName) then Exit;
+  MarkEmitted(CName);
+
+  if AType.Parent <> nil then
+  begin
+    EmitClass(AType.Parent);
+    ParentName := AType.Parent.Name;
+    ParentID   := GetOrAllocTypeID(ParentName);
+  end
+  else
+  begin
+    ParentName := '';
+    ParentID   := 0;
+  end;
+
+  for I := 0 to AType.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(AType.Fields.Items[I]);
+    if F.TypeDesc <> nil then
+      EmitTypeDesc(F.TypeDesc);
+  end;
+
+  RecSize := 26 + Length(CName) + FieldsPayloadSize(AType);
+
+  L('');
+  L('    # recClass: ' + CName);
+  EmitRecHdr(REC_CLASS, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .int  ' + IntToStr(ParentID) + '  # ParentTypeID');
+  if AType.HasVTable then
+    L('    .quad vtable_' + CName + '  # VMTAddress')
+  else
+    L('    .quad 0  # VMTAddress (no vtable)');
+  L('    .int  ' + IntToStr(AType.TotalSize) + '  # InstanceSize');
+  L('    .int  ' + IntToStr(AType.Fields.Count) + '  # FieldCount');
+  EmitStrField(CName);
+  EmitFields(AType);
+end;
+
+procedure TOPDFEmitter.EmitGlobalVar(const AVarName: string; AType: TTypeDesc);
+var
+  CName: string;
+  RecSize: Integer;
+begin
+  if AType <> nil then
+  begin
+    CName := CanonicalName(AType);
+    EmitTypeDesc(AType);
+  end
+  else
+    CName := 'Pointer';
+
+  RecSize := 14 + Length(AVarName);
+
+  L('');
+  L('    # recGlobalVar: ' + AVarName);
+  EmitRecHdr(REC_GLOBALVAR, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .quad ' + AVarName + '  # Address (linker-resolved)');
+  EmitStrField(AVarName);
+end;
+
+procedure TOPDFEmitter.EmitFunctionScope(AMethod: TMethodDecl; AScopeID: Integer;
+  ADeclIdx: Integer; const ANextLabel: string);
+var
+  FuncName, Label_: string;
+  RecSize: Integer;
+begin
+  FuncName := AMethod.Name;
+  Label_   := FuncLabel(AMethod);
+  RecSize  := 24 + Length(FuncName);
+
+  L('');
+  L('    # recFunctionScope: ' + FuncName);
+  EmitRecHdr(REC_FUNCSCOPE, RecSize);
+  L('    .int  ' + IntToStr(AScopeID) + '  # ScopeID');
+  L('    .quad ' + Label_ + '  # LowPC');
+  if ANextLabel <> '' then
+    L('    .quad ' + ANextLabel + '  # HighPC (approx: next function start)')
+  else
+    L('    .quad 0  # HighPC (last function)');
+  L('    .word ' + IntToStr(ADeclIdx) + '  # DeclIndex');
+  EmitStrField(FuncName);
+end;
+
+procedure TOPDFEmitter.EmitParameters(AMethod: TMethodDecl);
+var
+  I: Integer;
+  P: TMethodParam;
+  CName: string;
+  RecSize: Integer;
+begin
+  for I := 0 to AMethod.Params.Count - 1 do
+  begin
+    P := TMethodParam(AMethod.Params.Items[I]);
+    if P.ResolvedType <> nil then
+      CName := CanonicalName(P.ResolvedType)
+    else
+      CName := 'Pointer';
+    RecSize := 9 + Length(P.ParamName);
+    L('');
+    L('    # recParameter: ' + P.ParamName);
+    EmitRecHdr(REC_PARAMETER, RecSize);
+    L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+    L('    .byte ' + IntToStr(Ord(P.IsVarParam)) + '  # IsVar');
+    L('    .byte ' + IntToStr(Ord(P.IsConstParam)) + '  # IsConst');
+    L('    .byte 0  # IsOut');
+    EmitStrField(P.ParamName);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitLocalVars(ABlock: TBlock; AScopeID: Integer);
+var
+  DeclIdx, RBPOffset: Integer;
+  I, J: Integer;
+  V: TVarDecl;
+  CName, VarName: string;
+  RawSz, RecSize: Integer;
+begin
+  DeclIdx   := 0;
+  RBPOffset := 0;
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    V := TVarDecl(ABlock.Decls.Items[I]);
+    if V.IsGlobal then Continue;
+    if V.ResolvedType <> nil then
+    begin
+      CName  := CanonicalName(V.ResolvedType);
+      RawSz  := V.ResolvedType.RawSize;
+    end
+    else
+    begin
+      CName := 'Pointer';
+      RawSz := 8;
+    end;
+    RBPOffset := RBPOffset - ((RawSz + 7) and (not 7));
+    for J := 0 to V.Names.Count - 1 do
+    begin
+      VarName := V.Names.Strings[J];
+      RecSize := 15 + Length(VarName);
+      L('');
+      L('    # recLocalVar: ' + VarName);
+      EmitRecHdr(REC_LOCALVAR, RecSize);
+      L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+      L('    .int  ' + IntToStr(AScopeID) + '  # ScopeID');
+      L('    .byte ' + IntToStr(LOC_RBP) + '  # LocationExpr (RBP-relative)');
+      L('    .word ' + IntToStr(DeclIdx) + '  # DeclIndex');
+      EmitNameLen(VarName);
+      L('    .word ' + IntToStr(RBPOffset) + '  # LocationData (RBP offset)');
+      EmitNameData(VarName);
+      DeclIdx := DeclIdx + 1;
+    end;
+  end;
+end;
+
+function TOPDFEmitter.FuncLabel(AMethod: TMethodDecl): string;
+begin
+  if AMethod.OwnerTypeName = '' then
+    Result := AMethod.Name
+  else
+    Result := AMethod.OwnerTypeName + '_' + AMethod.Name;
+end;
+
+procedure TOPDFEmitter.EmitSection;
+begin
+  L('    # OPDF debug companion file — generated by Blaise compiler');
+  L('    # Platform: linux-x86_64 (ELF)');
+  L('    # macOS arm64 adaptation: change .section to .section __DATA,__opdf');
+  L('    .section .opdf, "aw", @progbits');
+  L('');
+end;
+
+procedure TOPDFEmitter.EmitHeader;
+begin
+  L('    # OPDF header (32 bytes)');
+  L('    .byte 79, 80, 68, 70           # Magic: OPDF');
+  L('    .word 1                        # Version');
+  L('    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  # BuildID (zeroed)');
+  L('    .byte 2                        # TargetArch: archX86_64');
+  L('    .byte 8                        # PointerSize: 8');
+  FTotRecIdx := FOutput.Count;
+  L('    .int  0                        # TotalRecords (patched at end)');
+  L('    .int  0                        # Flags');
+end;
+
+procedure TOPDFEmitter.EmitAllTypes;
+var
+  I: Integer;
+  TD: TTypeDecl;
+  TDesc: TTypeDesc;
+  GI: TGenericInstance;
+begin
+  EmitAnsiStr;
+  if FProgram.SymbolTable <> nil then
+  begin
+    EmitPrimitive(FProgram.SymbolTable.TypeInteger);
+    EmitPrimitive(FProgram.SymbolTable.TypeInt64);
+    EmitPrimitive(FProgram.SymbolTable.TypeByte);
+    EmitPrimitive(FProgram.SymbolTable.TypeBoolean);
+  end;
+  for I := 0 to FProgram.Block.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(FProgram.Block.TypeDecls.Items[I]);
+    if FProgram.SymbolTable <> nil then
+    begin
+      TDesc := FProgram.SymbolTable.FindType(TD.Name);
+      if TDesc <> nil then
+        EmitTypeDesc(TDesc);
+    end;
+  end;
+  for I := 0 to FProgram.GenericInstances.Count - 1 do
+  begin
+    GI := TGenericInstance(FProgram.GenericInstances.Items[I]);
+    if (GI.TypeDesc <> nil) and (GI.TypeDesc.Kind = tyClass) then
+      EmitTypeDesc(GI.TypeDesc);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitGlobalVars;
+var
+  I, J: Integer;
+  V: TVarDecl;
+begin
+  for I := 0 to FProgram.Block.Decls.Count - 1 do
+  begin
+    V := TVarDecl(FProgram.Block.Decls.Items[I]);
+    if not V.IsGlobal then Continue;
+    for J := 0 to V.Names.Count - 1 do
+      EmitGlobalVar(V.Names.Strings[J], V.ResolvedType);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitFunctionScopes;
+var
+  I, NextI, ScopeID, DeclIdx: Integer;
+  M, NM: TMethodDecl;
+  Labels: TStringList;
+  NextLabel: string;
+begin
+  Labels := TStringList.Create;
+  try
+    for I := 0 to FProgram.Block.ProcDecls.Count - 1 do
+    begin
+      M := TMethodDecl(FProgram.Block.ProcDecls.Items[I]);
+      if M.IsExternal or (M.Body = nil) then
+        Labels.Add('')
+      else
+        Labels.Add(FuncLabel(M));
+    end;
+
+    ScopeID := 0;
+    DeclIdx := 0;
+    for I := 0 to FProgram.Block.ProcDecls.Count - 1 do
+    begin
+      M := TMethodDecl(FProgram.Block.ProcDecls.Items[I]);
+      if M.IsExternal or (M.Body = nil) then Continue;
+
+      ScopeID := ScopeID + 1;
+
+      NextLabel := '';
+      NextI := I + 1;
+      while NextI < Labels.Count do
+      begin
+        if Labels.Strings[NextI] <> '' then
+        begin
+          NextLabel := Labels.Strings[NextI];
+          Break;
+        end;
+        NextI := NextI + 1;
+      end;
+
+      EmitFunctionScope(M, ScopeID, DeclIdx, NextLabel);
+      EmitParameters(M);
+      if M.Body <> nil then
+        EmitLocalVars(M.Body, ScopeID);
+      EmitLineInfoForScope(M);
+
+      DeclIdx := DeclIdx + 1;
+    end;
+  finally
+    Labels.Free;
+  end;
+end;
+
+procedure TOPDFEmitter.CollectStmtLines(AStmt: TASTStmt; ALines: TStringList);
+var
+  I: Integer;
+  Key: string;
+begin
+  if AStmt = nil then Exit;
+  if AStmt.Line > 0 then
+  begin
+    Key := IntToStr(AStmt.Line);
+    if ALines.IndexOf(Key) < 0 then
+      ALines.AddObject(Key, TObject(PtrUInt(AStmt.Col)));
+  end;
+  if AStmt is TCompoundStmt then
+  begin
+    for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
+      CollectStmtLines(TASTStmt(TCompoundStmt(AStmt).Stmts.Items[I]), ALines);
+  end
+  else if AStmt is TIfStmt then
+  begin
+    CollectStmtLines(TIfStmt(AStmt).ThenStmt, ALines);
+    CollectStmtLines(TIfStmt(AStmt).ElseStmt, ALines);
+  end
+  else if AStmt is TWhileStmt then
+    CollectStmtLines(TWhileStmt(AStmt).Body, ALines)
+  else if AStmt is TRepeatStmt then
+    CollectStmtLines(TRepeatStmt(AStmt).Body, ALines)
+  else if AStmt is TForStmt then
+    CollectStmtLines(TForStmt(AStmt).Body, ALines)
+  else if AStmt is TTryFinallyStmt then
+  begin
+    CollectStmtLines(TTryFinallyStmt(AStmt).TryBody, ALines);
+    CollectStmtLines(TTryFinallyStmt(AStmt).FinallyBody, ALines);
+  end
+  else if AStmt is TTryExceptStmt then
+  begin
+    CollectStmtLines(TTryExceptStmt(AStmt).TryBody, ALines);
+    CollectStmtLines(TTryExceptStmt(AStmt).ExceptBody, ALines);
+  end
+  else if AStmt is TCaseStmt then
+  begin
+    for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
+      CollectStmtLines(TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Stmt, ALines);
+    CollectStmtLines(TCaseStmt(AStmt).ElseStmt, ALines);
+  end;
+end;
+
+procedure TOPDFEmitter.EmitLineInfoForScope(AMethod: TMethodDecl);
+var
+  Lines: TStringList;
+  FLabel: string;
+  I, LineNum, ColNum, RecSize: Integer;
+begin
+  if AMethod.Body = nil then Exit;
+  Lines := TStringList.Create;
+  try
+    for I := 0 to AMethod.Body.Stmts.Count - 1 do
+      CollectStmtLines(TASTStmt(AMethod.Body.Stmts.Items[I]), Lines);
+    if Lines.Count = 0 then Exit;
+    FLabel := FuncLabel(AMethod);
+    RecSize := 16 + Length(FSourceFile);
+    for I := 0 to Lines.Count - 1 do
+    begin
+      LineNum := StrToInt(Lines.Strings[I]);
+      ColNum := Integer(PtrUInt(Lines.Objects[I]));
+      L('');
+      L('    # recLineInfo: line ' + Lines.Strings[I] + ' in ' + AMethod.Name);
+      EmitRecHdr(REC_LINEINFO, RecSize);
+      L('    .quad ' + FLabel + '  # Address (function start; per-stmt addr needs QBE label support)');
+      L('    .int  ' + IntToStr(LineNum) + '  # LineNumber');
+      L('    .word ' + IntToStr(ColNum) + '  # ColumnNumber');
+      EmitStrField(FSourceFile);
+    end;
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TOPDFEmitter.PatchTotalRecords;
+begin
+  if FTotRecIdx >= 0 then
+    FOutput[FTotRecIdx] := '    .int  ' + IntToStr(FRecordCount) +
+                           '                        # TotalRecords';
+end;
+
+procedure TOPDFEmitter.DoEmit;
+begin
+  if FDone then Exit;
+  FDone := True;
+  EmitSection;
+  EmitHeader;
+  EmitAllTypes;
+  EmitGlobalVars;
+  EmitFunctionScopes;
+  PatchTotalRecords;
+end;
+
+procedure TOPDFEmitter.EmitToFile(const AFileName: string);
+begin
+  DoEmit;
+  FOutput.SaveToFile(AFileName);
+end;
+
+function TOPDFEmitter.GetOutput: string;
+begin
+  DoEmit;
+  Result := FOutput.Text;
+end;
+
+end.

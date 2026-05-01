@@ -23,7 +23,7 @@ program Blaise;
 
 uses
   SysUtils, Classes, Process, contnrs,
-  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader;
+  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader, uDebugOPDF;
 
 const
   Version = '0.4.0-dev';
@@ -44,6 +44,7 @@ begin
   WriteLn('  --unit-path <dir>   Add directory to unit search path (repeatable)');
   WriteLn('  --target <id>       linux-x86_64 (default), macos-arm64');
   WriteLn('  --emit-ir           Print QBE IR to stdout and exit');
+  WriteLn('  --debug-opdf        Emit OPDF debug info (.opdf.s companion file)');
 end;
 
 { Handle FPC -i query flags: -iV (version), -iTP (target processor), -iTO (target OS).
@@ -75,9 +76,10 @@ end;
   Handles: -iV/-iTP/-iTO, -FE<dir>, -Fu<path>, -FU<path>, -o<name>,
            -Mobjfpc, -O<n>, -g, -gl, -CX, -d<define>, and the positional source file. }
 function ParseFPCArgs(
-  out SourceFile:  string;
-  out OutputFile:  string;
-  out SearchPaths: TStringList): Boolean;
+  out SourceFile:   string;
+  out OutputFile:   string;
+  out SearchPaths:  TStringList;
+  out OPDFEnabled:  Boolean): Boolean;
 var
   I:       Integer;
   Arg:     string;
@@ -87,6 +89,7 @@ begin
   Result      := False;
   SourceFile  := '';
   OutputFile  := '';
+  OPDFEnabled := False;
   OutDir      := '';
   OutName     := '';
   SearchPaths := TStringList.Create;
@@ -112,9 +115,10 @@ begin
       { optimisation level — ignored }
     else if Copy(Arg, 1, 2) = '-d' then
       { conditional define — ignored in Phase 1 }
-    else if (Arg = '-g') or (Arg = '-gl') or (Arg = '-CX') or
-            (Arg = '-XX') or (Arg = '-Xs') then
-      { debug / linking flags — ignored }
+    else if (Arg = '-g') or (Arg = '-gl') then
+      OPDFEnabled := True
+    else if (Arg = '-CX') or (Arg = '-XX') or (Arg = '-Xs') then
+      { other linking flags — ignored }
     else if (Arg = '--help') or (Arg = '-h') then
     begin
       PrintUsage;
@@ -172,6 +176,7 @@ function ParseArgs(
   out SourceFile:  string;
   out OutputFile:  string;
   out EmitIR:      Boolean;
+  out OPDFEnabled: Boolean;
   out SearchPaths: TStringList): Boolean;
 var
   I: Integer;
@@ -181,6 +186,7 @@ begin
   SourceFile  := '';
   OutputFile  := '';
   EmitIR      := False;
+  OPDFEnabled := False;
   SearchPaths := TStringList.Create;
 
   I := 1;
@@ -204,6 +210,8 @@ begin
     end
     else if Arg = '--emit-ir' then
       EmitIR := True
+    else if Arg = '--debug-opdf' then
+      OPDFEnabled := True
     else if Arg = '--target' then
       Inc(I)  { consume next arg — target is not used in Phase 1 }
     else if (Arg = '--help') or (Arg = '-h') then
@@ -265,6 +273,7 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := AExe;
+    Proc.Options := [poUsePipes, poStderrToOutPut];
     for I := 0 to AArgs.Count - 1 do
       Proc.Parameters.Add(AArgs.Strings[I]);
     Proc.Execute;
@@ -298,7 +307,7 @@ begin
   Result := '';
 end;
 
-procedure CompileToNative(const AIRFile, AOutputFile: string);
+procedure CompileToNative(const AIRFile, AOutputFile, AOPDFAsmFile: string);
 var
   AsmFile, RTLPath: string;
   Msg:              string;
@@ -329,6 +338,8 @@ begin
     Args.Add('-o');
     Args.Add(AOutputFile);
     Args.Add(AsmFile);
+    if (AOPDFAsmFile <> '') and FileExists(AOPDFAsmFile) then
+      Args.Add(AOPDFAsmFile);
     if RTLPath <> '' then
       Args.Add(RTLPath);
     ExitCode := RunProcess('cc', Args, Msg);
@@ -349,13 +360,16 @@ end;
 var
   SourceFile, OutputFile: string;
   SearchPaths: TStringList;
-  EmitIR:   Boolean;
+  EmitIR:      Boolean;
+  OPDFEnabled: Boolean;
+  OPDFAsmFile: string;
   Source:   TStringList;
   Lexer:    TLexer;
   Parser:   TParser;
   Prog:     TProgram;
   Semantic: TSemanticAnalyser;
   CG:       TCodeGenQBE;
+  OE:       TOPDFEmitter;
   Loader:   TUnitLoader;
   Units:    TObjectList;
   I:        Integer;
@@ -364,9 +378,11 @@ var
 
 begin
   SearchPaths := nil;
+  OPDFEnabled := False;
+  OPDFAsmFile := '';
   if IsFPCStyleInvocation then
   begin
-    if not ParseFPCArgs(SourceFile, OutputFile, SearchPaths) then
+    if not ParseFPCArgs(SourceFile, OutputFile, SearchPaths, OPDFEnabled) then
     begin
       PrintUsage;
       Halt(1);
@@ -375,7 +391,7 @@ begin
   end
   else
   begin
-    if not ParseArgs(SourceFile, OutputFile, EmitIR, SearchPaths) then
+    if not ParseArgs(SourceFile, OutputFile, EmitIR, OPDFEnabled, SearchPaths) then
     begin
       PrintUsage;
       Halt(1);
@@ -475,6 +491,16 @@ begin
       else
         CG.Generate(Prog);
       IR := CG.GetOutput;
+      if OPDFEnabled then
+      begin
+        OPDFAsmFile := ChangeFileExt(OutputFile, '.opdf.s');
+        OE := TOPDFEmitter.Create(Prog, SourceFile);
+        try
+          OE.EmitToFile(OPDFAsmFile);
+        finally
+          OE.Free;
+        end;
+      end;
     except
 {$IFDEF FPC}
       on E: Exception do
@@ -527,6 +553,8 @@ begin
 {$ENDIF}
   end;
 
-  CompileToNative(IRFile, OutputFile);
+  CompileToNative(IRFile, OutputFile, OPDFAsmFile);
   DeleteFile(IRFile);
+  if OPDFAsmFile <> '' then
+    DeleteFile(OPDFAsmFile);
 end.
