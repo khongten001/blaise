@@ -23,16 +23,16 @@ type
   published
     { Data sections }
     procedure TestHelloWorld_HasStrLitData;
-    procedure TestHelloWorld_HasFormatString;
+    procedure TestHelloWorld_UsesSysWriteStr;
 
     { Main function structure }
     procedure TestOutput_HasMainFunction;
     procedure TestOutput_HasRetZero;
 
     { WriteLn }
-    procedure TestWriteLn_NoArgs_CallsFormatNL;
-    procedure TestWriteLn_StringLit_CallsPrintf;
-    procedure TestWriteLn_IntExpr_CallsPrintfInt;
+    procedure TestWriteLn_NoArgs_CallsSysWriteNewline;
+    procedure TestWriteLn_StringLit_CallsSysWriteStr;
+    procedure TestWriteLn_IntExpr_CallsSysWriteInt;
 
     { Variables and assignment }
     procedure TestIntVar_HasAlloc;
@@ -109,13 +109,13 @@ begin
     IRContains(IR, '"Hello"'));
 end;
 
-procedure TCodeGenTests.TestHelloWorld_HasFormatString;
+procedure TCodeGenTests.TestHelloWorld_UsesSysWriteStr;
 var
   IR: string;
 begin
   IR := GenerateIR('program P; begin WriteLn(''Hello'') end.');
-  AssertTrue('Has fmt_s_nl',
-    IRContains(IR, '$__fmt_s_nl'));
+  AssertTrue('Calls _SysWriteStr',
+    IRContains(IR, 'call $_SysWriteStr('));
 end;
 
 { Main function structure }
@@ -139,34 +139,35 @@ end;
 
 { WriteLn }
 
-procedure TCodeGenTests.TestWriteLn_NoArgs_CallsFormatNL;
+procedure TCodeGenTests.TestWriteLn_NoArgs_CallsSysWriteNewline;
 var
   IR: string;
 begin
   IR := GenerateIR('program P; begin WriteLn() end.');
-  AssertTrue('Calls printf with fmt_nl',
-    IRContains(IR, 'call $printf(l $__fmt_nl)'));
+  AssertTrue('Calls _SysWriteNewline',
+    IRContains(IR, 'call $_SysWriteNewline(w 1)'));
 end;
 
-procedure TCodeGenTests.TestWriteLn_StringLit_CallsPrintf;
+procedure TCodeGenTests.TestWriteLn_StringLit_CallsSysWriteStr;
 var
   IR: string;
 begin
   IR := GenerateIR('program P; begin WriteLn(''Hi'') end.');
-  AssertTrue('Calls printf with s_nl format',
-    IRContains(IR, '$__fmt_s_nl'));
-  { String header is 12 bytes; char data is accessed via add $__s0, 12 }
-  AssertTrue('Offsets past string header',
-    IRContains(IR, 'add $__s0, 12'));
+  AssertTrue('Calls _SysWriteStr with string pointer',
+    IRContains(IR, 'call $_SysWriteStr(w 1,'));
+  AssertTrue('Calls _SysWriteNewline for line ending',
+    IRContains(IR, 'call $_SysWriteNewline(w 1)'));
 end;
 
-procedure TCodeGenTests.TestWriteLn_IntExpr_CallsPrintfInt;
+procedure TCodeGenTests.TestWriteLn_IntExpr_CallsSysWriteInt;
 var
   IR: string;
 begin
   IR := GenerateIR('program P; begin WriteLn(42) end.');
-  AssertTrue('Uses int format',
-    IRContains(IR, '$__fmt_d_nl'));
+  AssertTrue('Calls _SysWriteInt',
+    IRContains(IR, 'call $_SysWriteInt(w 1,'));
+  AssertTrue('Calls _SysWriteNewline for line ending',
+    IRContains(IR, 'call $_SysWriteNewline(w 1)'));
 end;
 
 { Variables and assignment }

@@ -25,7 +25,7 @@ type
     function GenIR(const ASrc: string): string;
     function CountOccurrences(const AHaystack, ANeedle: string): Integer;
   published
-    procedure TestCodegen_WriteLn_TwoArgs_EmitsTwoValuePrintfsPlusNewline;
+    procedure TestCodegen_WriteLn_TwoArgs_EmitsTwoWriteCallsPlusNewline;
     procedure TestCodegen_WriteLn_ThreeArgs_EmitsTrailingNewline;
     procedure TestCodegen_Write_TwoArgs_NoTrailingNewline;
     procedure TestCodegen_WriteLn_MixedStringAndInteger;
@@ -74,10 +74,10 @@ begin
   until False;
 end;
 
-procedure TMultiWriteTests.TestCodegen_WriteLn_TwoArgs_EmitsTwoValuePrintfsPlusNewline;
+procedure TMultiWriteTests.TestCodegen_WriteLn_TwoArgs_EmitsTwoWriteCallsPlusNewline;
 var
   IR: string;
-  TotalPrintf, NewlinePrintf: Integer;
+  WriteIntCalls, NewlineCalls: Integer;
 begin
   IR := GenIR(
     'program P;'                    + LineEnding +
@@ -86,10 +86,10 @@ begin
     '  I := 1; J := 2;'             + LineEnding +
     '  WriteLn(I, J)'               + LineEnding +
     'end.');
-  TotalPrintf   := CountOccurrences(IR, 'call $printf');
-  NewlinePrintf := CountOccurrences(IR, 'call $printf(l $__fmt_nl)');
-  AssertEquals('3 printf calls: 2 values + 1 newline', 3, TotalPrintf);
-  AssertEquals('1 newline printf', 1, NewlinePrintf);
+  WriteIntCalls := CountOccurrences(IR, 'call $_SysWriteInt(');
+  NewlineCalls  := CountOccurrences(IR, 'call $_SysWriteNewline(');
+  AssertEquals('2 _SysWriteInt calls for values', 2, WriteIntCalls);
+  AssertEquals('1 _SysWriteNewline call', 1, NewlineCalls);
 end;
 
 procedure TMultiWriteTests.TestCodegen_WriteLn_ThreeArgs_EmitsTrailingNewline;
@@ -102,9 +102,9 @@ begin
     '  A := 1; B := 2; C := 3;'      + LineEnding +
     '  WriteLn(A, B, C)'             + LineEnding +
     'end.');
-  AssertTrue('emits newline call', Pos('call $printf(l $__fmt_nl)', IR) > 0);
-  AssertEquals('3 value + 1 newline = 4 printf calls',
-    4, CountOccurrences(IR, 'call $printf'));
+  AssertTrue('emits newline call', Pos('call $_SysWriteNewline(', IR) > 0);
+  AssertEquals('3 _SysWriteInt calls for values',
+    3, CountOccurrences(IR, 'call $_SysWriteInt('));
 end;
 
 procedure TMultiWriteTests.TestCodegen_Write_TwoArgs_NoTrailingNewline;
@@ -120,10 +120,10 @@ begin
   { Write must not issue a trailing newline call.  The format string is
     always defined in the data section, so we look specifically for the
     call (not the declaration). }
-  AssertEquals('no newline printf call', 0,
-    CountOccurrences(IR, 'call $printf(l $__fmt_nl)'));
-  AssertEquals('2 value printf calls', 2,
-    CountOccurrences(IR, 'call $printf'));
+  AssertEquals('no _SysWriteNewline call', 0,
+    CountOccurrences(IR, 'call $_SysWriteNewline('));
+  AssertEquals('2 _SysWriteInt calls', 2,
+    CountOccurrences(IR, 'call $_SysWriteInt('));
 end;
 
 procedure TMultiWriteTests.TestCodegen_WriteLn_MixedStringAndInteger;
@@ -137,8 +137,8 @@ begin
     '  S := ''hi'';'                      + LineEnding +
     '  WriteLn(S, I)'                     + LineEnding +
     'end.');
-  AssertTrue('uses string format call', Pos('$__fmt_s, ..., l ', IR) > 0);
-  AssertTrue('uses int format call',    Pos('$__fmt_d, ..., w ', IR) > 0);
+  AssertTrue('uses _SysWriteStr for string', Pos('call $_SysWriteStr(', IR) > 0);
+  AssertTrue('uses _SysWriteInt for integer', Pos('call $_SysWriteInt(', IR) > 0);
 end;
 
 procedure TMultiWriteTests.TestCodegen_WriteLn_Empty_StillEmitsNewline;
@@ -150,7 +150,7 @@ begin
     '  WriteLn'                 + LineEnding +
     'end.');
   AssertTrue('empty WriteLn still emits newline',
-    Pos('call $printf(l $__fmt_nl)', IR) > 0);
+    Pos('call $_SysWriteNewline(w 1)', IR) > 0);
 end;
 
 initialization

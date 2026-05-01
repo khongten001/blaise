@@ -47,10 +47,35 @@ const
   HDR_SIZE  = 12;   { string header: RefCount + Length + Capacity }
   CLASS_HDR = 16;   { class header:  RefCount + pad + cleanup ptr }
 
-function  _libc_malloc(Size: Int64): Pointer;               external name 'malloc';
-procedure _libc_free(Ptr: Pointer);                         external name 'free';
-function  _libc_memcpy(Dst, Src: Pointer; N: Int64): Pointer; external name 'memcpy';
-function  _libc_memcmp(S1, S2: Pointer; N: Int64): Integer; external name 'memcmp';
+function  _libc_malloc(Size: Int64): Pointer; external name 'malloc';
+procedure _libc_free(Ptr: Pointer);           external name 'free';
+
+procedure MemCopy(Dst, Src: Pointer; N: Integer);
+var
+  D, S: PChar;
+  I:    Integer;
+begin
+  D := PChar(Dst);
+  S := PChar(Src);
+  for I := 0 to N - 1 do
+    D[I] := S[I];
+end;
+
+function MemCompare(P1, P2: Pointer; N: Integer): Integer;
+var
+  A, B: PChar;
+  I:    Integer;
+begin
+  A := PChar(P1);
+  B := PChar(P2);
+  for I := 0 to N - 1 do
+    if A[I] <> B[I] then
+    begin
+      Result := A[I] - B[I];
+      Exit;
+    end;
+  Result := 0;
+end;
 
 { ------------------------------------------------------------------ }
 { String ARC                                                           }
@@ -114,7 +139,7 @@ begin
   end;
   C1 := PChar(S1 + HDR_SIZE);
   C2 := PChar(S2 + HDR_SIZE);
-  if _libc_memcmp(C1, C2, Int64(Len1)) = 0 then
+  if MemCompare(C1, C2, Len1) = 0 then
     Result := 1
   else
     Result := 0;
@@ -152,9 +177,9 @@ begin
   CapF^ := Total;
   Dst   := PChar(Result + HDR_SIZE);
   if Len1 > 0 then
-    _libc_memcpy(Dst, S1 + HDR_SIZE, Int64(Len1));
+    MemCopy(Dst, S1 + HDR_SIZE, Len1);
   if Len2 > 0 then
-    _libc_memcpy(Dst + Len1, S2 + HDR_SIZE, Int64(Len2));
+    MemCopy(Dst + Len1, S2 + HDR_SIZE, Len2);
   Dst[Total] := 0;
 end;
 

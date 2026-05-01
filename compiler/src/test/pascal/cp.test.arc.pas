@@ -37,7 +37,7 @@ type
     { WriteLn of string literal still works }
     procedure TestARC_WriteLn_StringLit_StillWorks;
 
-    { String variable passed to WriteLn (load + printf) }
+    { String variable passed to WriteLn (load + _SysWriteStr) }
     procedure TestARC_WriteLn_StringVar_Works;
 
     { String value parameter: addref on entry, release on exit }
@@ -204,7 +204,7 @@ var
   IR: string;
 begin
   IR := GenIR('program P; begin WriteLn(''Hello'') end.');
-  AssertTrue('printf still called', IRContains(IR, 'call $printf'));
+  AssertTrue('_SysWriteStr called', IRContains(IR, 'call $_SysWriteStr'));
   AssertTrue('data section present', IRContains(IR, 'data $__s0'));
 end;
 
@@ -219,7 +219,7 @@ begin
     '  s := ''world'';'  + LineEnding +
     '  WriteLn(s)'       + LineEnding +
     'end.');
-  AssertTrue('printf called', IRContains(IR, 'call $printf'));
+  AssertTrue('_SysWriteStr called', IRContains(IR, 'call $_SysWriteStr'));
 end;
 
 const

@@ -627,8 +627,8 @@ procedure TControlTests.TestCodegen_Compound_EmitsAllStmts;
 var IR: string;
 begin
   IR := GenIR(SrcCompound);
-  { Compound then branch has WriteLn + assignment, so printf should appear }
-  AssertTrue('printf in compound branch', Pos('printf', IR) > 0);
+  { Compound then branch has WriteLn + assignment, so _SysWrite should appear }
+  AssertTrue('_SysWrite in compound branch', Pos('_SysWrite', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

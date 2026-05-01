@@ -31,14 +31,10 @@ unit blaise_str;
 interface
 
 { ------------------------------------------------------------------ }
-{ Libc bindings                                                        }
+{ Libc bindings (malloc/free only — all other libc calls replaced)    }
 { ------------------------------------------------------------------ }
-function  _libc_malloc(Size: Int64): Pointer;        external name 'malloc';
-procedure _libc_free(Ptr: Pointer);                  external name 'free';
-function  _libc_memcpy(Dest, Src: Pointer; N: Int64): Pointer; external name 'memcpy';
-function  _libc_strlen(S: PChar): Int64;             external name 'strlen';
-function  _libc_toupper(C: Integer): Integer;        external name 'toupper';
-function  _libc_tolower(C: Integer): Integer;        external name 'tolower';
+function  _libc_malloc(Size: Int64): Pointer; external name 'malloc';
+procedure _libc_free(Ptr: Pointer);           external name 'free';
 
 { ------------------------------------------------------------------ }
 { String RTL public interface                                          }
@@ -67,6 +63,21 @@ implementation
 
 const
   HDR_SIZE = 12;  { 3 x 4-byte integers: RefCount, Length, Capacity }
+
+{ ------------------------------------------------------------------ }
+{ Pure-Pascal memory helpers (no libc)                                 }
+{ ------------------------------------------------------------------ }
+
+procedure MemCopy(Dst, Src: Pointer; N: Integer);
+var
+  D, S: PChar;
+  I:    Integer;
+begin
+  D := PChar(Dst);
+  S := PChar(Src);
+  for I := 0 to N - 1 do
+    D[I] := S[I];
+end;
 
 { ------------------------------------------------------------------ }
 { Internal helpers                                                     }
@@ -193,7 +204,7 @@ begin
   if (Result <> nil) and (Count > 0) then
   begin
     Data := StrData(S);
-    _libc_memcpy(Result + HDR_SIZE, Data + Start, Int64(Count));
+    MemCopy(Result + HDR_SIZE, Data + Start, Count);
   end;
 end;
 
@@ -206,7 +217,7 @@ var
   Len:     Integer;
   SrcData: PChar;
   DstData: PChar;
-  I:       Integer;
+  I, C:    Integer;
 begin
   Len    := StrLen(S);
   Result := StrAlloc(Len);
@@ -214,7 +225,13 @@ begin
   SrcData := StrData(S);
   DstData := PChar(Result + HDR_SIZE);
   for I := 0 to Len - 1 do
-    DstData[I] := _libc_toupper(SrcData[I]);
+  begin
+    C := SrcData[I];
+    if (C >= 97) and (C <= 122) then
+      DstData[I] := C - 32
+    else
+      DstData[I] := C;
+  end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -226,7 +243,7 @@ var
   Len:     Integer;
   SrcData: PChar;
   DstData: PChar;
-  I:       Integer;
+  I, C:    Integer;
 begin
   Len    := StrLen(S);
   Result := StrAlloc(Len);
@@ -234,7 +251,13 @@ begin
   SrcData := StrData(S);
   DstData := PChar(Result + HDR_SIZE);
   for I := 0 to Len - 1 do
-    DstData[I] := _libc_tolower(SrcData[I]);
+  begin
+    C := SrcData[I];
+    if (C >= 65) and (C <= 90) then
+      DstData[I] := C + 32
+    else
+      DstData[I] := C;
+  end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -268,7 +291,7 @@ begin
     NewLen := 0;
   Result := StrAlloc(NewLen);
   if (Result = nil) or (NewLen = 0) then Exit;
-  _libc_memcpy(Result + HDR_SIZE, Data + Lo, Int64(NewLen));
+  MemCopy(Result + HDR_SIZE, Data + Lo, NewLen);
 end;
 
 { ------------------------------------------------------------------ }
@@ -279,6 +302,7 @@ function _StringSameText(S1, S2: Pointer): Integer;
 var
   Len1, Len2, I: Integer;
   D1, D2:        PChar;
+  C1, C2:        Integer;
 begin
   Len1 := StrLen(S1);
   Len2 := StrLen(S2);
@@ -290,11 +314,17 @@ begin
   D1 := StrData(S1);
   D2 := StrData(S2);
   for I := 0 to Len1 - 1 do
-    if _libc_tolower(D1[I]) <> _libc_tolower(D2[I]) then
+  begin
+    C1 := D1[I];
+    C2 := D2[I];
+    if (C1 >= 65) and (C1 <= 90) then C1 := C1 + 32;
+    if (C2 >= 65) and (C2 <= 90) then C2 := C2 + 32;
+    if C1 <> C2 then
     begin
       Result := 0;
       Exit;
     end;
+  end;
   Result := 1;
 end;
 
@@ -368,7 +398,7 @@ begin
   Written := WriteDecimal(Int64(N), BP);
   Result  := StrAlloc(Written);
   if (Result <> nil) and (Written > 0) then
-    _libc_memcpy(Result + HDR_SIZE, Buf, Int64(Written));
+    MemCopy(Result + HDR_SIZE, Buf, Written);
   _libc_free(Buf);
 end;
 
@@ -387,7 +417,7 @@ begin
   Written := WriteDecimal(N, BP);
   Result  := StrAlloc(Written);
   if (Result <> nil) and (Written > 0) then
-    _libc_memcpy(Result + HDR_SIZE, Buf, Int64(Written));
+    MemCopy(Result + HDR_SIZE, Buf, Written);
   _libc_free(Buf);
 end;
 
@@ -546,8 +576,10 @@ begin
   D2 := StrData(S2);
   for I := 0 to Len - 1 do
   begin
-    C1 := _libc_tolower(D1[I]);
-    C2 := _libc_tolower(D2[I]);
+    C1 := D1[I];
+    C2 := D2[I];
+    if (C1 >= 65) and (C1 <= 90) then C1 := C1 + 32;
+    if (C2 >= 65) and (C2 <= 90) then C2 := C2 + 32;
     if C1 <> C2 then
     begin
       Result := C1 - C2;
@@ -570,10 +602,12 @@ begin
     Result := StrAlloc(0);
     Exit;
   end;
-  Len    := Integer(_libc_strlen(P));
+  Len := 0;
+  while P[Len] <> 0 do
+    Inc(Len);
   Result := StrAlloc(Len);
   if (Result <> nil) and (Len > 0) then
-    _libc_memcpy(Result + HDR_SIZE, P, Int64(Len));
+    MemCopy(Result + HDR_SIZE, P, Len);
 end;
 
 end.

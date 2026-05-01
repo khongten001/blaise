@@ -10,8 +10,8 @@ unit uCodeGenQBE;
 {$mode objfpc}{$H+}
 
 { QBE IR emitter for Blaise.
-  String layout: Phase 1 uses raw NUL-terminated bytes (no ARC header).
-  WriteLn/Write are built-ins resolved directly to libc printf calls.
+  WriteLn/Write are built-ins emitted as calls to _SysWriteStr/_SysWriteInt/
+  _SysWriteInt64/_SysWriteNewline (blaise_sys.pas / blaise_sys.c).
   Records are stack-allocated; field access uses pointer arithmetic. }
 
 interface
@@ -231,16 +231,6 @@ end;
 procedure TCodeGenQBE.EmitDataSection;
 begin
   EmitPendingStrLits;
-  { printf format strings. Always emitted: a program with no string literals
-    can still call WriteLn(Integer) or a bare WriteLn, and those reference
-    $__fmt_d_nl / $__fmt_nl unconditionally. Omitting these definitions
-    produces a link-time "undefined reference" failure that the IR-only test
-    harness cannot see. }
-  EmitLine('data $__fmt_s_nl = { b "%s\n", b 0 }');
-  EmitLine('data $__fmt_s    = { b "%s", b 0 }');
-  EmitLine('data $__fmt_d_nl = { b "%d\n", b 0 }');
-  EmitLine('data $__fmt_d    = { b "%d", b 0 }');
-  EmitLine('data $__fmt_nl   = { b "\n", b 0 }');
   EmitLine('');
 end;
 
@@ -2984,85 +2974,60 @@ end;
 
 procedure TCodeGenQBE.EmitWrite(ACall: TProcCall; ANewline: Boolean);
 var
-  ArgExpr:   TASTExpr;
-  ArgTemp:   string;
-  CharPtr:   string;
-  IsString:  Boolean;
-  I:         Integer;
-  StartIdx:  Integer;
-  ToStderr:  Boolean;
-  StderrFd:  string;
+  ArgExpr:  TASTExpr;
+  ArgTemp:  string;
+  IsString: Boolean;
+  IsInt64:  Boolean;
+  I:        Integer;
+  StartIdx: Integer;
+  FdLit:    string;
 begin
+  { bare WriteLn with no arguments — emit newline to stdout }
   if ACall.Args.Count = 0 then
   begin
     if ANewline then
-      EmitLine('  call $printf(l $__fmt_nl)');
+      EmitLine('  call $_SysWriteNewline(w 1)');
     Exit;
   end;
 
-  { Detect WriteLn(StdErr, ...) — first arg is integer constant 2 (StdErr) }
+  { Detect WriteLn(StdErr, ...) — first arg is the StdErr identifier (FD 2) }
   StartIdx := 0;
-  ToStderr := False;
-  ArgExpr := TASTExpr(ACall.Args.Items[0]);
+  FdLit    := '1';
+  ArgExpr  := TASTExpr(ACall.Args.Items[0]);
   if (ArgExpr is TIdentExpr) and SameText(TIdentExpr(ArgExpr).Name, 'StdErr') then
   begin
     StartIdx := 1;
-    ToStderr := True;
-    { Load the libc stderr pointer from the FILE* global }
-    StderrFd := AllocTemp;
-    EmitLine(Format('  %s =l loadl $stderr', [StderrFd]));
+    FdLit    := '2';
   end;
 
-  if (StartIdx >= ACall.Args.Count) then
+  if StartIdx >= ACall.Args.Count then
   begin
     if ANewline then
-    begin
-      if ToStderr then
-        EmitLine(Format('  call $fprintf(l %s, l $__fmt_nl)', [StderrFd]))
-      else
-        EmitLine('  call $printf(l $__fmt_nl)');
-    end;
+      EmitLine(Format('  call $_SysWriteNewline(w %s)', [FdLit]));
     Exit;
   end;
 
-  { Emit one printf/fprintf call per argument. }
+  { Emit one _SysWrite* call per argument. }
   for I := StartIdx to ACall.Args.Count - 1 do
   begin
     ArgExpr  := TASTExpr(ACall.Args.Items[I]);
     IsString := (ArgExpr.ResolvedType <> nil) and ArgExpr.ResolvedType.IsString;
     ArgTemp  := EmitExpr(ArgExpr);
-    if ToStderr then
-    begin
-      if IsString then
-      begin
-        CharPtr := AllocTemp;
-        EmitLine(Format('  %s =l add %s, 12', [CharPtr, ArgTemp]));
-        EmitLine(Format('  call $fprintf(l %s, l $__fmt_s, ..., l %s)', [StderrFd, CharPtr]));
-      end
-      else
-        EmitLine(Format('  call $fprintf(l %s, l $__fmt_d, ..., w %s)', [StderrFd, ArgTemp]));
-    end
+    if IsString then
+      EmitLine(Format('  call $_SysWriteStr(w %s, l %s)', [FdLit, ArgTemp]))
     else
     begin
-      if IsString then
-      begin
-        { String pointer is the header pointer; char data starts at ptr+12. }
-        CharPtr := AllocTemp;
-        EmitLine(Format('  %s =l add %s, 12', [CharPtr, ArgTemp]));
-        EmitLine(Format('  call $printf(l $__fmt_s, ..., l %s)', [CharPtr]));
-      end
+      IsInt64 := (ArgExpr.ResolvedType <> nil) and
+                 (QbeTypeOf(ArgExpr.ResolvedType) = 'l');
+      if IsInt64 then
+        EmitLine(Format('  call $_SysWriteInt64(w %s, l %s)', [FdLit, ArgTemp]))
       else
-        EmitLine(Format('  call $printf(l $__fmt_d, ..., w %s)', [ArgTemp]));
+        EmitLine(Format('  call $_SysWriteInt(w %s, w %s)', [FdLit, ArgTemp]));
     end;
   end;
 
   if ANewline then
-  begin
-    if ToStderr then
-      EmitLine(Format('  call $fprintf(l %s, l $__fmt_nl)', [StderrFd]))
-    else
-      EmitLine('  call $printf(l $__fmt_nl)');
-  end;
+    EmitLine(Format('  call $_SysWriteNewline(w %s)', [FdLit]));
 end;
 
 function TCodeGenQBE.EmitExpr(AExpr: TASTExpr): string;
