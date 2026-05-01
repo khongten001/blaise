@@ -33,6 +33,7 @@ type
     FBreakLabels:    TStringList;  { stack of active loop-end labels; top = innermost }
     FContinueLabels: TStringList;  { stack of active loop-continue labels; top = innermost }
     FExitLabel:    string;       { label to jmp to for 'exit'; '' = main program }
+    FSymTable:     TSymbolTable; { set via SetSymbolTable; used by AppendUnit for class data }
 
     function  AllocTemp: string;
     function  AllocLabel(const APrefix: string): string;
@@ -126,6 +127,10 @@ type
       Does not reset the output buffer or string-literal table so that
       all units and the final program can share a single QBE IR file
       with globally-unique string-literal labels. }
+    { Provide the global symbol table so AppendUnit can emit class typeinfo,
+      vtable, and field-cleanup data.  Must be called before AppendUnit when
+      the units contain class type definitions.  Prog.SymbolTable is correct. }
+    procedure SetSymbolTable(ASymTable: TSymbolTable);
     procedure AppendUnit(AUnit: TUnit);
     { Append program IR to existing output (companion to AppendUnit).
       Emits any remaining string literals and the $main function. }
@@ -197,9 +202,9 @@ begin
       EmitLine('# String literals');
     for I := FStrLitsEmitted to FStrLits.Count - 1 do
     begin
-      StrLen := Length(FStrLits[I]);
+      StrLen := Length(FStrLits.Strings[I]);
       EmitLine(Format('data $__s%d = { w -1, w %d, w %d, b "%s", b 0 }',
-        [I, StrLen, StrLen, QbeEscapeString(FStrLits[I])]));
+        [I, StrLen, StrLen, QbeEscapeString(FStrLits.Strings[I])]));
     end;
     FStrLitsEmitted := FStrLits.Count;
   end;
@@ -265,17 +270,17 @@ var
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
-    Decl := TVarDecl(ABlock.Decls[I]);
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
     if Decl.ResolvedType = nil then
       raise ECodeGenError.Create(Format(
         'Variable ''%s'' has no resolved type — semantic pass required',
-        [Decl.Names[0]]));
+        [Decl.Names.Strings[0]]));
     if Decl.IsGlobal then
       Continue;  { global vars are emitted in the data section, not as stack allocs }
 
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      VarName := Decl.Names[J];
+      VarName := Decl.Names.Strings[J];
       case Decl.ResolvedType.Kind of
         tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
           begin
@@ -393,12 +398,12 @@ var
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
-    Decl := TVarDecl(ABlock.Decls[I]);
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
     if not Decl.IsGlobal then Continue;
     if Decl.ResolvedType = nil then Continue;
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      VarName := Decl.Names[J];
+      VarName := Decl.Names.Strings[J];
       case Decl.ResolvedType.Kind of
         tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
           EmitLine(Format('data $%s = { w 0 }', [VarName]));
@@ -448,7 +453,7 @@ var
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
-    Decl := TVarDecl(ABlock.Decls[I]);
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
     if Decl.ResolvedType = nil then Continue;
     IsIntf := Decl.ResolvedType.Kind = tyInterface;
     if Decl.IsWeak then
@@ -458,7 +463,7 @@ begin
         as _WeakClear writes 0 to *slot. }
       for J := 0 to Decl.Names.Count - 1 do
       begin
-        VarName := Decl.Names[J];
+        VarName := Decl.Names.Strings[J];
         if IsIntf then
           EmitLine(Format('  call $_WeakClear(l %s_obj)', [VarRef(VarName, Decl.IsGlobal)]))
         else
@@ -477,7 +482,7 @@ begin
       { Record local: release each ARC-managed field at scope exit }
       for J := 0 to Decl.Names.Count - 1 do
       begin
-        VarName := Decl.Names[J];
+        VarName := Decl.Names.Strings[J];
         EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal));
       end;
@@ -487,7 +492,7 @@ begin
       Continue;
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      VarName := Decl.Names[J];
+      VarName := Decl.Names.Strings[J];
       ValTemp := AllocTemp;
       if IsIntf then
         EmitLine(Format('  %s =l loadl %s_obj', [ValTemp, VarRef(VarName, Decl.IsGlobal)]))
@@ -505,7 +510,7 @@ begin
   FCurrentBlock := ABlock;
   EmitVarAllocs(ABlock);
   for I := 0 to ABlock.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(ABlock.Stmts[I]));
+    EmitStmt(TASTStmt(ABlock.Stmts.Items[I]));
   { Fall-through to exit label so 'exit' and normal flow share cleanup. }
   if FExitLabel <> '' then
   begin
@@ -527,7 +532,7 @@ begin
   if ABlock = nil then Exit;
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
-    Decl := TVarDecl(ABlock.Decls[I]);
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
     if Decl.ResolvedType = nil then Continue;
     IsIntf := Decl.ResolvedType.Kind = tyInterface;
     if Decl.IsWeak then
@@ -536,7 +541,7 @@ begin
         so a subsequent nested handler's cleanup sees nil. }
       for J := 0 to Decl.Names.Count - 1 do
       begin
-        VarName := Decl.Names[J];
+        VarName := Decl.Names.Strings[J];
         if IsIntf then
           EmitLine(Format('  call $_WeakClear(l %s_obj)', [VarRef(VarName, Decl.IsGlobal)]))
         else
@@ -555,7 +560,7 @@ begin
       { Record local on exception path: release ARC fields }
       for J := 0 to Decl.Names.Count - 1 do
       begin
-        VarName := Decl.Names[J];
+        VarName := Decl.Names.Strings[J];
         EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal));
       end;
@@ -565,7 +570,7 @@ begin
       Continue;
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      VarName := Decl.Names[J];
+      VarName := Decl.Names.Strings[J];
       ValTemp := AllocTemp;
       if IsIntf then
       begin
@@ -636,7 +641,7 @@ begin
     if FBreakLabels.Count = 0 then
       raise ECodeGenError.Create('break outside loop');
     EmitLine(Format('  jmp @%s',
-      [FBreakLabels[FBreakLabels.Count - 1]]));
+      [FBreakLabels.Strings[FBreakLabels.Count - 1]]));
     DeadLbl := AllocLabel('after_break');
     EmitLine('@' + DeadLbl);
   end
@@ -645,7 +650,7 @@ begin
     if FContinueLabels.Count = 0 then
       raise ECodeGenError.Create('continue outside loop');
     EmitLine(Format('  jmp @%s',
-      [FContinueLabels[FContinueLabels.Count - 1]]));
+      [FContinueLabels.Strings[FContinueLabels.Count - 1]]));
     DeadLbl := AllocLabel('after_continue');
     EmitLine('@' + DeadLbl);
   end
@@ -715,10 +720,10 @@ begin
   { Normal path: run try body, pop frame, run finally body }
   EmitLine('@' + LblTry);
   for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.TryBody.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
   EmitLine('  call $_PopExcFrame()');
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
   { Exception path: capture exception, pop frame, run finally body, release
@@ -728,7 +733,7 @@ begin
   EmitLine(Format('  %s =l call $_CurrentException()', [ExcTemp]));
   EmitLine('  call $_PopExcFrame()');
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   EmitExcPathArcCleanup(FCurrentBlock);
   EmitLine(Format('  call $_Reraise(l %s)', [ExcTemp]));
   EmitLine(Format('  jmp @%s', [LblEnd]));  { unreachable — satisfies QBE block exit }
@@ -763,7 +768,7 @@ begin
   { Normal path: run try body, pop frame on clean exit }
   EmitLine('@' + LblTry);
   for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.TryBody.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
   EmitLine('  call $_PopExcFrame()');
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
@@ -771,7 +776,7 @@ begin
   EmitLine('@' + LblExcept);
   EmitLine('  call $_PopExcFrame()');
   for I := 0 to AStmt.ExceptBody.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.ExceptBody.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.ExceptBody.Stmts.Items[I]));
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
   EmitLine('@' + LblEnd);
@@ -936,7 +941,7 @@ var
   I: Integer;
 begin
   for I := 0 to AStmt.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(AStmt.Stmts[I]));
+    EmitStmt(TASTStmt(AStmt.Stmts.Items[I]));
 end;
 
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
@@ -1331,13 +1336,30 @@ begin
 end;
 
 function TCodeGenQBE.EmitVarArgAddr(AIdent: TIdentExpr): string;
+var
+  SelfT: string;
+  ImplFld: TFieldInfo;
 begin
   if AIdent.IsVarParam then
   begin
-    { The local slot holds the caller's pointer — load it so we pass the
-      original address, not the address of the local slot. }
+    // The local slot holds the caller's pointer — load it so we pass the
+    // original address, not the address of the local slot.
     Result := AllocTemp;
     EmitLine(Format('  %s =l loadl %%_var_%s', [Result, AIdent.Name]));
+  end
+  else if AIdent.IsImplicitSelf then
+  begin
+    // Field of Self — compute address as Self pointer + field offset.
+    ImplFld := TFieldInfo(AIdent.ImplicitFieldInfo);
+    SelfT := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_Self', [SelfT]));
+    if ImplFld.Offset > 0 then
+    begin
+      Result := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [Result, SelfT, ImplFld.Offset]));
+    end
+    else
+      Result := SelfT;
   end
   else
     Result := VarRef(AIdent.Name, AIdent.IsGlobal);
@@ -1386,7 +1408,7 @@ var
 begin
   for I := 0 to ARec.Fields.Count - 1 do
   begin
-    F := TFieldInfo(ARec.Fields[I]);
+    F := TFieldInfo(ARec.Fields.Items[I]);
     if F.TypeDesc = nil then Continue;
     if F.Offset > 0 then
     begin
@@ -1468,13 +1490,13 @@ begin
     end;
     for I := 0 to FCallExpr.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
-          [EmitVarArgAddr(TIdentExpr(TASTExpr(FCallExpr.Args[I])))])
+          [EmitVarArgAddr(TIdentExpr(TASTExpr(FCallExpr.Args.Items[I])))])
       else
       begin
-        ArgTemp := EmitExpr(TASTExpr(FCallExpr.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(FCallExpr.Args.Items[I]));
         ArgLine := ArgLine + Format(', %s %s',
           [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
@@ -1492,13 +1514,13 @@ begin
     ArgLine  := Format('l %s, l %s', [ASretAddr, SelfTemp]);
     for I := 0 to MCallExpr.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
-          [EmitVarArgAddr(TIdentExpr(TASTExpr(MCallExpr.Args[I])))])
+          [EmitVarArgAddr(TIdentExpr(TASTExpr(MCallExpr.Args.Items[I])))])
       else
       begin
-        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
         ArgLine := ArgLine + Format(', %s %s',
           [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
@@ -1550,7 +1572,7 @@ var
 begin
   for I := 0 to ARec.Fields.Count - 1 do
   begin
-    F := TFieldInfo(ARec.Fields[I]);
+    F := TFieldInfo(ARec.Fields.Items[I]);
     if F.TypeDesc = nil then Continue;
     if not (F.TypeDesc.IsString or (F.TypeDesc.Kind = tyClass)) then Continue;
     if F.Offset > 0 then
@@ -1785,13 +1807,13 @@ begin
     ArgLine := Format('l %s', [SelfTemp]);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
-          [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[I])))])
+          [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[I])))])
       else
       begin
-        ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
         QType   := QbeTypeOf(Par.ResolvedType);
         ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
       end;
@@ -1857,6 +1879,13 @@ begin
     EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SelfTemp]));
     SelfTemp := FPtrTemp;
   end
+  else if ACall.IsVarParam then
+  begin
+    { Var/out param: local slot holds caller's address — dereference twice }
+    FPtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %%_var_%s', [FPtrTemp, ACall.ObjectName]));
+    EmitLine(Format('  %s =l loadl %s', [SelfTemp, FPtrTemp]));
+  end
   else
     EmitLine(Format('  %s =l loadl %s', [SelfTemp, VarRef(ACall.ObjectName, ACall.IsGlobal)]));
 
@@ -1864,13 +1893,13 @@ begin
   ArgLine := Format('l %s', [SelfTemp]);
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    Par := TMethodParam(MDecl.Params[I]);
+    Par := TMethodParam(MDecl.Params.Items[I]);
     if Par.IsVarParam then
       ArgLine := ArgLine + Format(', l %s',
-        [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[I])))])
+        [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[I])))])
     else
     begin
-      ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+      ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
       QType   := QbeTypeOf(Par.ResolvedType);
       ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
     end;
@@ -1926,11 +1955,11 @@ begin
       on no match fall through to next branch test or else }
     for I := 0 to AStmt.Branches.Count - 1 do
     begin
-      Branch    := TCaseBranch(AStmt.Branches[I]);
-      BranchLbl := BranchLabels[I];
+      Branch    := TCaseBranch(AStmt.Branches.Items[I]);
+      BranchLbl := BranchLabels.Strings[I];
       for J := 0 to Branch.Values.Count - 1 do
       begin
-        ValTemp := EmitExpr(TASTExpr(Branch.Values[J]));
+        ValTemp := EmitExpr(TASTExpr(Branch.Values.Items[J]));
         CmpTemp := AllocTemp;
         NextLbl := AllocLabel('case_next');
         EmitLine(Format('  %s =w ceqw %s, %s', [CmpTemp, SelTemp, ValTemp]));
@@ -1943,8 +1972,8 @@ begin
     { Branch bodies }
     for I := 0 to AStmt.Branches.Count - 1 do
     begin
-      Branch    := TCaseBranch(AStmt.Branches[I]);
-      BranchLbl := BranchLabels[I];
+      Branch    := TCaseBranch(AStmt.Branches.Items[I]);
+      BranchLbl := BranchLabels.Strings[I];
       EmitLine('@' + BranchLbl);
       EmitStmt(Branch.Stmt);
       EmitLine(Format('  jmp @%s', [EndLbl]));
@@ -1971,6 +2000,9 @@ var
   QType:    string;
   I:        Integer;
 begin
+  { TObject inherited calls are no-ops — no method body exists }
+  if ACall.ResolvedMethod = nil then Exit;
+
   MDecl := TMethodDecl(ACall.ResolvedMethod);
 
   { Load Self from the current method's local slot }
@@ -1981,8 +2013,8 @@ begin
   ArgLine := Format('l %s', [SelfTemp]);
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    Par     := TMethodParam(MDecl.Params[I]);
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+    Par     := TMethodParam(MDecl.Params.Items[I]);
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
     QType   := QbeTypeOf(Par.ResolvedType);
     ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
   end;
@@ -2005,7 +2037,7 @@ begin
   { Explicit params }
   for I := 0 to AMethod.Params.Count - 1 do
   begin
-    Par := TMethodParam(AMethod.Params[I]);
+    Par := TMethodParam(AMethod.Params.Items[I]);
     if Par.IsOpenArray then
     begin
       { Open array arrives as two params: data ptr + high index }
@@ -2071,7 +2103,7 @@ begin
     Sig := 'l %_par_Self';
   for I := 0 to AMethod.Params.Count - 1 do
   begin
-    Par := TMethodParam(AMethod.Params[I]);
+    Par := TMethodParam(AMethod.Params.Items[I]);
     if Par.IsOpenArray then
       Sig := Sig + Format(', l %%_par_%s, l %%_par_%s_high',
         [Par.ParamName, Par.ParamName])
@@ -2103,7 +2135,7 @@ begin
     specifically about class ARC parity. }
   for I := 0 to AMethod.Params.Count - 1 do
   begin
-    Par := TMethodParam(AMethod.Params[I]);
+    Par := TMethodParam(AMethod.Params.Items[I]);
     if Par.IsVarParam then Continue;
     if Par.ResolvedType.Kind = tyClass then
     begin
@@ -2142,7 +2174,7 @@ begin
   { ARC: release class value params on exit. }
   for I := 0 to AMethod.Params.Count - 1 do
   begin
-    Par := TMethodParam(AMethod.Params[I]);
+    Par := TMethodParam(AMethod.Params.Items[I]);
     if Par.IsVarParam then Continue;
     if Par.ResolvedType.Kind = tyClass then
     begin
@@ -2175,12 +2207,12 @@ end;
 
 procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
 { Emit one $typeinfo_T data item per class type.
-  Layout: { l parent_typeinfo_or_zero, l impllist_or_zero }
+  Layout: l parent_typeinfo_or_zero, l impllist_or_zero
   TypeInfo is at vtable slot 0; _IsInstance walks parent chain.
-  impllist is NULL-terminated array of {typeinfo_intf, itab} pairs for _ImplementsInterface.
+  impllist is NULL-terminated array of (typeinfo_intf, itab) pairs for _ImplementsInterface.
 
   TObject is the built-in root class; any user class with an explicit
-  `class(TObject, IFoo)` parent list resolves Parent to TObject's
+  class(TObject, IFoo) parent list resolves Parent to TObject's
   TRecordTypeDesc, so we emit a typeinfo stub for TObject unconditionally
   to satisfy the linker.  Its parent slot is nil and its impllist slot
   is nil because TObject implements no interfaces. }
@@ -2198,7 +2230,7 @@ begin
 
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
     TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -2218,7 +2250,7 @@ begin
   { Generic instances }
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
-    GI    := TGenericInstance(AProg.GenericInstances[I]);
+    GI    := TGenericInstance(AProg.GenericInstances.Items[I]);
     RT    := TRecordTypeDesc(GI.TypeDesc);
     MName := QBEMangle(GI.TypeName);
     if RT.Parent <> nil then
@@ -2247,7 +2279,7 @@ var
 begin
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
     TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -2267,7 +2299,7 @@ begin
   { Generic instances }
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
-    GI    := TGenericInstance(AProg.GenericInstances[I]);
+    GI    := TGenericInstance(AProg.GenericInstances.Items[I]);
     RT    := TRecordTypeDesc(GI.TypeDesc);
     if not RT.HasVTable then Continue;
     MName := QBEMangle(GI.TypeName);
@@ -2286,10 +2318,10 @@ end;
 
 procedure TCodeGenQBE.EmitInterfaceDefs(AProg: TProgram);
 { Emit typeinfo blocks for interfaces and itab/impllist blocks for class-interface pairs.
-  Interface typeinfo: data $typeinfo_IFoo = { l 0 }  (address IS the identity token)
-  Itab: data $itab_TFoo_IFoo = { l $TFoo_DoIt, l $TFoo_GetVal }
-  Impllist: data $impllist_TFoo = { l $typeinfo_IFoo, l $itab_TFoo_IFoo, l 0 }
-  Methods in declaration order; impllist is NULL-terminated {ti, itab} pair array. }
+  Interface typeinfo: data $typeinfo_IFoo = ( l 0 )  -- address IS the identity token
+  Itab: data $itab_TFoo_IFoo = ( l $TFoo_DoIt, l $TFoo_GetVal )
+  Impllist: data $impllist_TFoo = ( l $typeinfo_IFoo, l $itab_TFoo_IFoo, l 0 )
+  Methods in declaration order; impllist is NULL-terminated (ti, itab) pair array. }
 var
   I, J, K:     Integer;
   TD:          TTypeDecl;
@@ -2305,7 +2337,7 @@ begin
   { Typeinfo blocks for every plain interface }
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TInterfaceTypeDef) then Continue;
     EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
   end;
@@ -2313,14 +2345,14 @@ begin
   { Typeinfo blocks for generic interface instantiations }
   for I := 0 to AProg.GenericIntfInstances.Count - 1 do
   begin
-    GII := TGenericInterfaceInstance(AProg.GenericIntfInstances[I]);
+    GII := TGenericInterfaceInstance(AProg.GenericIntfInstances.Items[I]);
     EmitLine('data $typeinfo_' + GII.InstName + ' = { l 0 }');
   end;
 
   { Itab and impllist blocks for each implementing class }
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
     TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -2345,7 +2377,7 @@ begin
       EmitLine(ItabLine);
     end;
 
-    { One impllist per class: NULL-terminated {typeinfo_intf, itab} pairs }
+    { One impllist per class: NULL-terminated (typeinfo_intf, itab) pairs }
     ImplLine := 'data $impllist_' + TD.Name + ' = {';
     for J := 0 to ClassRT.ImplementsCount - 1 do
     begin
@@ -2394,7 +2426,7 @@ begin
     EmitLine(Format('  call $%s_Destroy(l %%self)', [AMangledName]));
   for I := 0 to ARec.Fields.Count - 1 do
   begin
-    F := TFieldInfo(ARec.Fields[I]);
+    F := TFieldInfo(ARec.Fields.Items[I]);
     if F.TypeDesc = nil then Continue;
     if not (F.TypeDesc.IsString or (F.TypeDesc.Kind = tyClass)) then
       Continue;
@@ -2437,7 +2469,7 @@ var
 begin
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
     TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -2446,7 +2478,7 @@ begin
   end;
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances[I]);
+    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
     EmitFieldCleanupFn(QBEMangle(GI.TypeName), RT);
   end;
@@ -2462,22 +2494,22 @@ var
 begin
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls[I]);
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then
       Continue;
     CD := TClassTypeDef(TD.Def);
     for J := 0 to CD.Methods.Count - 1 do
-      if TMethodDecl(CD.Methods[J]).Body <> nil then
-        EmitMethodDef(TD.Name, TMethodDecl(CD.Methods[J]));
+      if TMethodDecl(CD.Methods.Items[J]).Body <> nil then
+        EmitMethodDef(TD.Name, TMethodDecl(CD.Methods.Items[J]));
   end;
 
   { Generic instances — emit with mangled type name }
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances[I]);
+    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
     for J := 0 to GI.ClassDef.Methods.Count - 1 do
     begin
-      MDecl := TMethodDecl(GI.ClassDef.Methods[J]);
+      MDecl := TMethodDecl(GI.ClassDef.Methods.Items[J]);
       if MDecl.Body <> nil then
         EmitMethodDef(QBEMangle(GI.TypeName), MDecl);
     end;
@@ -2504,7 +2536,7 @@ begin
   Sig := '';
   for I := 0 to ADecl.Params.Count - 1 do
   begin
-    Par := TMethodParam(ADecl.Params[I]);
+    Par := TMethodParam(ADecl.Params.Items[I]);
     if Sig <> '' then Sig := Sig + ', ';
     if Par.IsOpenArray then
       Sig := Sig + Format('l %%_par_%s, l %%_par_%s_high',
@@ -2535,7 +2567,7 @@ begin
 
   for I := 0 to ADecl.Params.Count - 1 do
   begin
-    Par := TMethodParam(ADecl.Params[I]);
+    Par := TMethodParam(ADecl.Params.Items[I]);
     if Par.IsOpenArray then
     begin
       { Open array: spill data pointer and high index into separate slots }
@@ -2575,7 +2607,7 @@ begin
     retained copy that is balanced by the release pass at function exit). }
   for I := 0 to ADecl.Params.Count - 1 do
   begin
-    Par := TMethodParam(ADecl.Params[I]);
+    Par := TMethodParam(ADecl.Params.Items[I]);
     if Par.IsVarParam or Par.IsOpenArray then Continue;
     if Par.ResolvedType.Kind = tyString then
     begin
@@ -2620,7 +2652,7 @@ begin
     addref inserted at function entry). }
   for I := 0 to ADecl.Params.Count - 1 do
   begin
-    Par := TMethodParam(ADecl.Params[I]);
+    Par := TMethodParam(ADecl.Params.Items[I]);
     if Par.IsVarParam or Par.IsOpenArray then Continue;
     if Par.ResolvedType.Kind = tyString then
     begin
@@ -2669,7 +2701,7 @@ var
 begin
   for I := 0 to AProg.Block.ProcDecls.Count - 1 do
   begin
-    Decl := TMethodDecl(AProg.Block.ProcDecls[I]);
+    Decl := TMethodDecl(AProg.Block.ProcDecls.Items[I]);
     { Class method impls had their body transferred — skip here. }
     if Decl.OwnerTypeName <> '' then Continue;
     { Generic templates — concrete instances are emitted via GenericFuncInstances. }
@@ -2681,7 +2713,7 @@ begin
   { Emit each concrete generic function instance }
   for I := 0 to AProg.GenericFuncInstances.Count - 1 do
     EmitStandaloneDef(
-      TGenericFuncInstance(AProg.GenericFuncInstances[I]).MethodDecl);
+      TGenericFuncInstance(AProg.GenericFuncInstances.Items[I]).MethodDecl);
 end;
 
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
@@ -2707,8 +2739,8 @@ begin
       ArgLine := Format('l %s', [ArgTemp]);
       for I := 0 to ACall.Args.Count - 1 do
       begin
-        Par     := TMethodParam(MDecl.Params[I]);
-        ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+        Par     := TMethodParam(MDecl.Params.Items[I]);
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
         ArgLine := ArgLine + Format(', %s %s',
           [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
@@ -2719,32 +2751,32 @@ begin
     ArgLine := '';
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if ArgLine <> '' then ArgLine := ArgLine + ', ';
       if Par.IsOpenArray then
       begin
-        if TASTExpr(ACall.Args[I]) is TArrayLiteralExpr then
+        if TASTExpr(ACall.Args.Items[I]) is TArrayLiteralExpr then
         begin
-          ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(ACall.Args[I])));
+          ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])));
           ArgLine := ArgLine + Format('l %s, l %d',
-            [ArgTemp, TArrayLiteralExpr(TASTExpr(ACall.Args[I])).Elements.Count - 1]);
+            [ArgTemp, TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])).Elements.Count - 1]);
         end
         else
         begin
           { Forward an open-array param variable }
-          ArgTemp  := EmitExpr(TASTExpr(ACall.Args[I]));
+          ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
           ArgTemp2 := AllocTemp;
           EmitLine(Format('  %s =l loadl %%_var_%s_high',
-            [ArgTemp2, TIdentExpr(TASTExpr(ACall.Args[I])).Name]));
+            [ArgTemp2, TIdentExpr(TASTExpr(ACall.Args.Items[I])).Name]));
           ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
         end;
       end
       else if Par.IsVarParam then
         ArgLine := ArgLine + Format('l %s',
-          [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[I])))])
+          [EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[I])))])
       else
       begin
-        ArgTemp := EmitExpr(TASTExpr(ACall.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
         ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
@@ -2760,51 +2792,86 @@ begin
     EmitWrite(ACall, False)
   else if UCaseName = 'FREEMEM' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $free(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'ZEROMEM' then
   begin
-    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
-    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     SizeTemp := AllocTemp;
     EmitLine(Format('  %s =l extsw %s', [SizeTemp, ArgTemp2]));
     EmitLine(Format('  call $memset(l %s, w 0, l %s)', [ArgTemp, SizeTemp]));
   end
   else if UCaseName = '_CLASSADDREF' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ClassAddRef(l %s)', [ArgTemp]));
   end
   else if UCaseName = '_CLASSRELEASE' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ClassRelease(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'WRITEFILE' then
   begin
-    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
-    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_WriteFile(l %s, l %s)', [ArgTemp, ArgTemp2]));
   end
   else if UCaseName = 'APPENDFILE' then
   begin
-    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
-    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_AppendFile(l %s, l %s)', [ArgTemp, ArgTemp2]));
   end
   else if UCaseName = 'HALT' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $exit(w %s)', [ArgTemp]));
+  end
+  else if (UCaseName = 'INC') or (UCaseName = 'DEC') then
+  begin
+    { Inc(x) / Inc(x, n) / Dec(x) / Dec(x, n) — in-place add/sub }
+    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
+    ArgTemp2 := AllocTemp;
+    if (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
+       (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyClass, tyPointer]) then
+    begin
+      EmitLine(Format('  %s =l loadl %s', [ArgTemp2, ArgTemp]));
+      if ACall.Args.Count >= 2 then
+        SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]))
+      else
+        SizeTemp := '1';
+      ArgLine := AllocTemp;
+      if UCaseName = 'INC' then
+        EmitLine(Format('  %s =l add %s, %s', [ArgLine, ArgTemp2, SizeTemp]))
+      else
+        EmitLine(Format('  %s =l sub %s, %s', [ArgLine, ArgTemp2, SizeTemp]));
+      EmitLine(Format('  storel %s, %s', [ArgLine, ArgTemp]));
+    end
+    else
+    begin
+      EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
+      if ACall.Args.Count >= 2 then
+        SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]))
+      else
+        SizeTemp := '1';
+      ArgLine := AllocTemp;
+      if UCaseName = 'INC' then
+        EmitLine(Format('  %s =w add %s, %s', [ArgLine, ArgTemp2, SizeTemp]))
+      else
+        EmitLine(Format('  %s =w sub %s, %s', [ArgLine, ArgTemp2, SizeTemp]));
+      EmitLine(Format('  storew %s, %s', [ArgLine, ArgTemp]));
+    end;
   end
   else if UCaseName = 'INCLUDE' then
   begin
     { Include(S, elem): S := S or (1 shl ord(elem)) }
-    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[0])));
+    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
     ArgTemp2 := AllocTemp;
     EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
-    SizeTemp := EmitExpr(TASTExpr(ACall.Args[1]));  { enum ordinal }
+    SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]));  { enum ordinal }
     ArgLine  := AllocTemp;
     EmitLine(Format('  %s =w shl 1, %s', [ArgLine, SizeTemp]));
     SizeTemp := AllocTemp;
@@ -2814,10 +2881,10 @@ begin
   else if UCaseName = 'EXCLUDE' then
   begin
     { Exclude(S, elem): S := S and (not (1 shl ord(elem))) }
-    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args[0])));
+    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
     ArgTemp2 := AllocTemp;
     EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
-    SizeTemp := EmitExpr(TASTExpr(ACall.Args[1]));  { enum ordinal }
+    SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]));  { enum ordinal }
     ArgLine  := AllocTemp;
     EmitLine(Format('  %s =w shl 1, %s', [ArgLine, SizeTemp]));
     SizeTemp := AllocTemp;
@@ -2828,34 +2895,34 @@ begin
   end
   else if UCaseName = 'DELETEFILE' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_DeleteFile(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'PROCESSSETEXE' then
   begin
-    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
-    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_ProcessSetExe(l %s, l %s)', [ArgTemp, ArgTemp2]));
   end
   else if UCaseName = 'PROCESSADDARG' then
   begin
-    ArgTemp  := EmitExpr(TASTExpr(ACall.Args[0]));
-    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args[1]));
+    ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
+    ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_ProcessAddArg(l %s, l %s)', [ArgTemp, ArgTemp2]));
   end
   else if UCaseName = 'PROCESSEXECUTE' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ProcessExecute(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'PROCESSWAITONEXIT' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ProcessWaitOnExit(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'PROCESSFREE' then
   begin
-    ArgTemp := EmitExpr(TASTExpr(ACall.Args[0]));
+    ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ProcessFree(l %s)', [ArgTemp]));
   end
   else
@@ -2892,11 +2959,14 @@ end;
 
 procedure TCodeGenQBE.EmitWrite(ACall: TProcCall; ANewline: Boolean);
 var
-  ArgExpr:  TASTExpr;
-  ArgTemp:  string;
-  CharPtr:  string;
-  IsString: Boolean;
-  I:        Integer;
+  ArgExpr:   TASTExpr;
+  ArgTemp:   string;
+  CharPtr:   string;
+  IsString:  Boolean;
+  I:         Integer;
+  StartIdx:  Integer;
+  ToStderr:  Boolean;
+  StderrFd:  string;
 begin
   if ACall.Args.Count = 0 then
   begin
@@ -2905,27 +2975,69 @@ begin
     Exit;
   end;
 
-  { Emit one printf call per argument.  All formatting is plain ("%d" or "%s")
-    with no trailing newline; a final "\n" is emitted after the last arg when
-    ANewline is set (i.e. WriteLn rather than Write). }
-  for I := 0 to ACall.Args.Count - 1 do
+  { Detect WriteLn(StdErr, ...) — first arg is integer constant 2 (StdErr) }
+  StartIdx := 0;
+  ToStderr := False;
+  ArgExpr := TASTExpr(ACall.Args.Items[0]);
+  if (ArgExpr is TIdentExpr) and SameText(TIdentExpr(ArgExpr).Name, 'StdErr') then
   begin
-    ArgExpr  := TASTExpr(ACall.Args[I]);
+    StartIdx := 1;
+    ToStderr := True;
+    { Load the libc stderr pointer from the FILE* global }
+    StderrFd := AllocTemp;
+    EmitLine(Format('  %s =l loadl $stderr', [StderrFd]));
+  end;
+
+  if (StartIdx >= ACall.Args.Count) then
+  begin
+    if ANewline then
+    begin
+      if ToStderr then
+        EmitLine(Format('  call $fprintf(l %s, l $__fmt_nl)', [StderrFd]))
+      else
+        EmitLine('  call $printf(l $__fmt_nl)');
+    end;
+    Exit;
+  end;
+
+  { Emit one printf/fprintf call per argument. }
+  for I := StartIdx to ACall.Args.Count - 1 do
+  begin
+    ArgExpr  := TASTExpr(ACall.Args.Items[I]);
     IsString := (ArgExpr.ResolvedType <> nil) and ArgExpr.ResolvedType.IsString;
     ArgTemp  := EmitExpr(ArgExpr);
-    if IsString then
+    if ToStderr then
     begin
-      { String pointer is the header pointer; char data starts at ptr+12. }
-      CharPtr := AllocTemp;
-      EmitLine(Format('  %s =l add %s, 12', [CharPtr, ArgTemp]));
-      EmitLine(Format('  call $printf(l $__fmt_s, ..., l %s)', [CharPtr]));
+      if IsString then
+      begin
+        CharPtr := AllocTemp;
+        EmitLine(Format('  %s =l add %s, 12', [CharPtr, ArgTemp]));
+        EmitLine(Format('  call $fprintf(l %s, l $__fmt_s, ..., l %s)', [StderrFd, CharPtr]));
+      end
+      else
+        EmitLine(Format('  call $fprintf(l %s, l $__fmt_d, ..., w %s)', [StderrFd, ArgTemp]));
     end
     else
-      EmitLine(Format('  call $printf(l $__fmt_d, ..., w %s)', [ArgTemp]));
+    begin
+      if IsString then
+      begin
+        { String pointer is the header pointer; char data starts at ptr+12. }
+        CharPtr := AllocTemp;
+        EmitLine(Format('  %s =l add %s, 12', [CharPtr, ArgTemp]));
+        EmitLine(Format('  call $printf(l $__fmt_s, ..., l %s)', [CharPtr]));
+      end
+      else
+        EmitLine(Format('  call $printf(l $__fmt_d, ..., w %s)', [ArgTemp]));
+    end;
   end;
 
   if ANewline then
-    EmitLine('  call $printf(l $__fmt_nl)');
+  begin
+    if ToStderr then
+      EmitLine(Format('  call $fprintf(l %s, l $__fmt_nl)', [StderrFd]))
+    else
+      EmitLine('  call $printf(l $__fmt_nl)');
+  end;
 end;
 
 function TCodeGenQBE.EmitExpr(AExpr: TASTExpr): string;
@@ -2951,6 +3063,7 @@ var
   VTblTemp:     string;
   FPtrTemp:     string;
   SlotOff:      Integer;
+  FC:           TFuncCallExpr;
   NoArgCall:    TFuncCallExpr;
   ImplFld:      TFieldInfo;
   SelfT:        string;
@@ -2963,22 +3076,21 @@ begin
   if AExpr is TFuncCallExpr then
   begin
     { Standalone function call expression }
-    with TFuncCallExpr(AExpr) do
-    begin
-      { SizeOf(TypeName) → integer literal = byte size of the type }
-      if SameText(Name, 'SizeOf') then
+    FC := TFuncCallExpr(AExpr);
+    { SizeOf(TypeName) → integer literal = byte size of the type }
+      if SameText(FC.Name,'SizeOf') then
       begin
         T := AllocTemp;
         EmitLine(Format('  %s =w copy %d',
-          [T, TASTExpr(Args[0]).ResolvedType.ByteSize]));
+          [T, TASTExpr(FC.Args.Items[0]).ResolvedType.ByteSize]));
         Result := T;
         Exit;
       end;
 
       { GetMem(N) → malloc(N) → pointer }
-      if SameText(Name, 'GetMem') then
+      if SameText(FC.Name,'GetMem') then
       begin
-        ArgTemp := EmitExpr(TASTExpr(Args[0]));
+        ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         { Extend arg to l for malloc }
         L := AllocTemp;
@@ -2989,10 +3101,10 @@ begin
       end;
 
       { ReallocMem(P, N) → realloc(P, N) → pointer }
-      if SameText(Name, 'ReallocMem') then
+      if SameText(FC.Name,'ReallocMem') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         ArgTemp := AllocTemp;
         EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
         T := AllocTemp;
@@ -3002,16 +3114,16 @@ begin
       end;
 
       { Open-array intrinsics }
-      if SameText(Name, 'High') then
+      if SameText(FC.Name,'High') then
       begin
         T := AllocTemp;
-        if TASTExpr(Args[0]).ResolvedType.Kind = tyStaticArray then
+        if TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyStaticArray then
           EmitLine(Format('  %s =w copy %d', [T,
-            TStaticArrayTypeDesc(TASTExpr(Args[0]).ResolvedType).HighBound]))
+            TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).HighBound]))
         else
         begin
           { Open-array: load the high-index slot and truncate to Integer (w) }
-          L := TIdentExpr(Args[0]).Name;
+          L := TIdentExpr(FC.Args.Items[0]).Name;
           R := AllocTemp;
           EmitLine(Format('  %s =l loadl %%_var_%s_high', [R, L]));
           EmitLine(Format('  %s =w truncl %s', [T, R]));
@@ -3020,22 +3132,22 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'Low') then
+      if SameText(FC.Name,'Low') then
       begin
         T := AllocTemp;
-        if TASTExpr(Args[0]).ResolvedType.Kind = tyStaticArray then
+        if TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyStaticArray then
           EmitLine(Format('  %s =w copy %d', [T,
-            TStaticArrayTypeDesc(TASTExpr(Args[0]).ResolvedType).LowBound]))
+            TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).LowBound]))
         else
           EmitLine(Format('  %s =w copy 0', [T]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'PChar') then
+      if SameText(FC.Name,'PChar') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        if TASTExpr(Args[0]).ResolvedType.Kind = tyPChar then
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        if TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyPChar then
           Result := L  { PChar(pchar_expr) — identity }
         else
         begin
@@ -3047,9 +3159,9 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'string') then
+      if SameText(FC.Name,'string') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringFromPChar(l %s)', [T, L]));
         Result := T;
@@ -3057,30 +3169,30 @@ begin
       end;
 
       { Built-in string operations — delegate to RTL functions }
-      if SameText(Name, 'Length') then
+      if SameText(FC.Name,'Length') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StringLength(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'Pos') then
+      if SameText(FC.Name,'Pos') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StringPos(l %s, l %s)', [T, L, R]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'Copy') then
+      if SameText(FC.Name,'Copy') then
       begin
-        L       := EmitExpr(TASTExpr(Args[0]));
-        R       := EmitExpr(TASTExpr(Args[1]));
-        ArgTemp := EmitExpr(TASTExpr(Args[2]));
+        L       := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R       := EmitExpr(TASTExpr(FC.Args.Items[1]));
+        ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[2]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringCopy(l %s, w %s, w %s)',
           [T, L, R, ArgTemp]));
@@ -3088,73 +3200,73 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'UpperCase') then
+      if SameText(FC.Name,'UpperCase') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringUpperCase(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'LowerCase') then
+      if SameText(FC.Name,'LowerCase') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringLowerCase(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'Trim') then
+      if SameText(FC.Name,'Trim') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringTrim(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'SameText') then
+      if SameText(FC.Name,'SameText') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StringSameText(l %s, l %s)', [T, L, R]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'IntToStr') then
+      if SameText(FC.Name,'IntToStr') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_IntToStr(w %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'Int64ToStr') then
+      if SameText(FC.Name,'Int64ToStr') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'StrToInt') then
+      if SameText(FC.Name,'StrToInt') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StrToInt(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'StrToInt64') then
+      if SameText(FC.Name,'StrToInt64') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StrToInt64(l %s)', [T, L]));
         Result := T;
@@ -3164,59 +3276,96 @@ begin
       { Format(fmt, arg0, arg1, ...) → $_StringFormat(l fmt, ..., tag val, ...)
         Each arg is emitted as a (w tag, w/l value) pair after the variadic
         marker.  tag=0 for integer types, tag=1 for string/pointer types. }
-      if SameText(Name, 'Format') then
+      if SameText(FC.Name,'Format') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         { Build variadic arg pairs: "..., w tag, w/l val, ..." }
         ArgLine := Format('l %s, ...', [L]);
-        for I := 1 to Args.Count - 1 do
+        { Support Pascal array-of-const notation: Format(str, [a, b, c]) }
+        if (FC.Args.Count = 2) and (FC.Args.Items[1] is TArrayLiteralExpr) then
         begin
-          ArgTemp := EmitExpr(TASTExpr(Args[I]));
-          if TASTExpr(Args[I]).ResolvedType.Kind in
-             [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum] then
-            ArgLine := ArgLine + Format(', w 0, w %s', [ArgTemp])
-          else
-            ArgLine := ArgLine + Format(', w 1, l %s', [ArgTemp]);
-        end;
+          for I := 0 to TArrayLiteralExpr(FC.Args.Items[1]).Elements.Count - 1 do
+          begin
+            ArgTemp := EmitExpr(TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]));
+            if TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]).ResolvedType.Kind in
+               [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum] then
+              ArgLine := ArgLine + Format(', w 0, w %s', [ArgTemp])
+            else
+              ArgLine := ArgLine + Format(', w 1, l %s', [ArgTemp]);
+          end;
+        end
+        else
+          for I := 1 to FC.Args.Count - 1 do
+          begin
+            ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
+            if TASTExpr(FC.Args.Items[I]).ResolvedType.Kind in
+               [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum] then
+              ArgLine := ArgLine + Format(', w 0, w %s', [ArgTemp])
+            else
+              ArgLine := ArgLine + Format(', w 1, l %s', [ArgTemp]);
+          end;
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringFormat(%s)', [T, ArgLine]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'OrdAt') then
+      if SameText(FC.Name,'OrdAt') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_OrdAt(l %s, w %s)', [T, L, R]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'Chr') then
+      if SameText(FC.Name,'Ord') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        { String/char arg: get ordinal of first byte via OrdAt(str, 1) }
+        { Enum/integer arg: already an integer — just copy }
+        if TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyString then
+          EmitLine(Format('  %s =w call $_OrdAt(l %s, w 1)', [T, L]))
+        else
+          EmitLine(Format('  %s =w copy %s', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name,'Chr') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_Chr(w %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'CompareStr') then
+      if SameText(FC.Name,'UpCase') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_UpCase(w %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name,'CompareStr') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StringCompare(l %s, l %s)', [T, L, R]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'CompareText') then
+      if SameText(FC.Name,'CompareText') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
-        R := EmitExpr(TASTExpr(Args[1]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_StringCompareText(l %s, l %s)', [T, L, R]));
         Result := T;
@@ -3224,7 +3373,7 @@ begin
       end;
 
       { CLI arguments }
-      if SameText(Name, 'ParamCount') then
+      if SameText(FC.Name,'ParamCount') then
       begin
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_ParamCount()', [T]));
@@ -3232,9 +3381,9 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'ParamStr') then
+      if SameText(FC.Name,'ParamStr') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ParamStr(w %s)', [T, L]));
         Result := T;
@@ -3242,18 +3391,18 @@ begin
       end;
 
       { File I/O functions }
-      if SameText(Name, 'ReadFile') then
+      if SameText(FC.Name,'ReadFile') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ReadFile(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'FileExists') then
+      if SameText(FC.Name,'FileExists') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_FileExists(l %s)', [T, L]));
         Result := T;
@@ -3261,16 +3410,16 @@ begin
       end;
 
       { Environment and process }
-      if SameText(Name, 'GetEnvVar') or SameText(Name, 'GetEnvironmentVariable') then
+      if SameText(FC.Name,'GetEnvVar') or SameText(FC.Name,'GetEnvironmentVariable') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_GetEnvVar(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'CurrentExceptionMessage') then
+      if SameText(FC.Name,'CurrentExceptionMessage') then
       begin
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_CurrentExceptionMessage()', [T]));
@@ -3278,9 +3427,9 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'Exec') then
+      if SameText(FC.Name,'Exec') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_Exec(l %s)', [T, L]));
         Result := T;
@@ -3288,37 +3437,37 @@ begin
       end;
 
       { File path manipulation }
-      if SameText(Name, 'ChangeFileExt') then
+      if SameText(FC.Name,'ChangeFileExt') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ChangeFileExt(l %s, l %s)',
-          [T, L, EmitExpr(TASTExpr(Args[1]))]));
+          [T, L, EmitExpr(TASTExpr(FC.Args.Items[1]))]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'ExtractFileName') then
+      if SameText(FC.Name,'ExtractFileName') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ExtractFileName(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'ExtractFilePath') then
+      if SameText(FC.Name,'ExtractFilePath') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ExtractFilePath(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'IncludeTrailingPathDelimiter') then
+      if SameText(FC.Name,'IncludeTrailingPathDelimiter') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_IncludeTrailingPathDelimiter(l %s)', [T, L]));
         Result := T;
@@ -3326,7 +3475,7 @@ begin
       end;
 
       { Process management built-ins }
-      if SameText(Name, 'ProcessCreate') then
+      if SameText(FC.Name,'ProcessCreate') then
       begin
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ProcessCreate()', [T]));
@@ -3334,27 +3483,27 @@ begin
         Exit;
       end;
 
-      if SameText(Name, 'ProcessRunning') then
+      if SameText(FC.Name,'ProcessRunning') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_ProcessRunning(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'ProcessReadOutput') then
+      if SameText(FC.Name,'ProcessReadOutput') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_ProcessReadOutput(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
 
-      if SameText(Name, 'ProcessExitCode') then
+      if SameText(FC.Name,'ProcessExitCode') then
       begin
-        L := EmitExpr(TASTExpr(Args[0]));
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =w call $_ProcessExitCode(l %s)', [T, L]));
         Result := T;
@@ -3362,11 +3511,11 @@ begin
       end;
 
       { Type cast TypeName(Expr) — ResolvedDecl is nil; just copy with target QBE type }
-      if ResolvedDecl = nil then
+      if FC.ResolvedDecl = nil then
       begin
-        ArgTemp := EmitExpr(TASTExpr(Args[0]));
+        ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T       := AllocTemp;
-        QType   := QbeTypeOf(ResolvedType);
+        QType   := QbeTypeOf(FC.ResolvedType);
         if QType = 'w' then
           EmitLine(Format('  %s =w copy %s', [T, ArgTemp]))
         else
@@ -3375,7 +3524,7 @@ begin
         Exit;
       end;
 
-      MDecl    := TMethodDecl(ResolvedDecl);
+      MDecl    := TMethodDecl(FC.ResolvedDecl);
       QType    := QbeTypeOf(MDecl.ResolvedReturnType);
       { sret: record-returning function — caller allocates a zero-init buffer
         and passes its address as the first (hidden) parameter. }
@@ -3393,16 +3542,16 @@ begin
         Result := SretBuf;
         Exit;
       end;
-      if IsImplicitSelfMethod then
+      if FC.IsImplicitSelfMethod then
       begin
         ArgTemp := AllocTemp;
         EmitLine(Format('  %s =l loadl %%_var_Self', [ArgTemp]));
         ArgLine  := Format('l %s', [ArgTemp]);
-        FuncName := '$' + MDecl.OwnerTypeName + '_' + Name;
-        for I := 0 to Args.Count - 1 do
+        FuncName := '$' + MDecl.OwnerTypeName + '_' + FC.Name;
+        for I := 0 to FC.Args.Count - 1 do
         begin
-          Par     := TMethodParam(MDecl.Params[I]);
-          ArgTemp := EmitExpr(TASTExpr(Args[I]));
+          Par     := TMethodParam(MDecl.Params.Items[I]);
+          ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
           ArgLine := ArgLine + Format(', %s %s',
             [QbeTypeOf(Par.ResolvedType), ArgTemp]);
         end;
@@ -3411,43 +3560,42 @@ begin
         Result := T;
         Exit;
       end;
-      FuncName := '$' + QBEMangle(Name);
+      FuncName := '$' + QBEMangle(FC.Name);
       ArgLine  := '';
-      for I := 0 to Args.Count - 1 do
+      for I := 0 to FC.Args.Count - 1 do
       begin
-        Par := TMethodParam(MDecl.Params[I]);
+        Par := TMethodParam(MDecl.Params.Items[I]);
         if ArgLine <> '' then ArgLine := ArgLine + ', ';
         if Par.IsOpenArray then
         begin
-          if TASTExpr(Args[I]) is TArrayLiteralExpr then
+          if TASTExpr(FC.Args.Items[I]) is TArrayLiteralExpr then
           begin
-            ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(Args[I])));
+            ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])));
             ArgLine := ArgLine + Format('l %s, l %d',
-              [ArgTemp, TArrayLiteralExpr(TASTExpr(Args[I])).Elements.Count - 1]);
+              [ArgTemp, TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])).Elements.Count - 1]);
           end
           else
           begin
             { Forward an open-array param variable }
-            ArgTemp  := EmitExpr(TASTExpr(Args[I]));
+            ArgTemp  := EmitExpr(TASTExpr(FC.Args.Items[I]));
             ArgTemp2 := AllocTemp;
             EmitLine(Format('  %s =l loadl %%_var_%s_high',
-              [ArgTemp2, TIdentExpr(TASTExpr(Args[I])).Name]));
+              [ArgTemp2, TIdentExpr(TASTExpr(FC.Args.Items[I])).Name]));
             ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
           end;
         end
         else if Par.IsVarParam then
           ArgLine := ArgLine + Format('l %s',
-            [EmitVarArgAddr(TIdentExpr(TASTExpr(Args[I])))])
+            [EmitVarArgAddr(TIdentExpr(TASTExpr(FC.Args.Items[I])))])
         else
         begin
-          ArgTemp := EmitExpr(TASTExpr(Args[I]));
+          ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
           ArgLine := ArgLine + Format('%s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
         end;
       end;
       T := AllocTemp;
       EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
       Result := T;
-    end;
     Exit;
   end;
 
@@ -3480,7 +3628,7 @@ begin
       ArgLine := Format('l %s', [SelfTemp]);
       for I := 0 to MCallExpr.Args.Count - 1 do
       begin
-        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
         ArgLine := ArgLine + Format(', w %s', [ArgTemp]);
       end;
       T := AllocTemp;
@@ -3508,8 +3656,8 @@ begin
         ArgLine := Format('l %s', [SelfTemp]);
         for I := 0 to MCallExpr.Args.Count - 1 do
         begin
-          Par     := TMethodParam(MDecl.Params[I]);
-          ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args[I]));
+          Par     := TMethodParam(MDecl.Params.Items[I]);
+          ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
           ArgLine := ArgLine + Format(', %s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
         end;
         if MDecl.OwnerTypeName <> '' then
@@ -3548,6 +3696,14 @@ begin
       evaluating the receiver expression (e.g. a typecast). }
     if MCallExpr.ObjExpr <> nil then
       SelfTemp := EmitExpr(MCallExpr.ObjExpr)
+    else if MCallExpr.IsVarParam then
+    begin
+      { Var/out param: local slot holds caller's address — dereference twice }
+      SelfTemp := AllocTemp;
+      FPtrTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [FPtrTemp, MCallExpr.ObjectName]));
+      EmitLine(Format('  %s =l loadl %s', [SelfTemp, FPtrTemp]));
+    end
     else
     begin
       SelfTemp := AllocTemp;
@@ -3558,13 +3714,13 @@ begin
     ArgLine := Format('l %s', [SelfTemp]);
     for I := 0 to MCallExpr.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
-          [EmitVarArgAddr(TIdentExpr(TASTExpr(MCallExpr.Args[I])))])
+          [EmitVarArgAddr(TIdentExpr(TASTExpr(MCallExpr.Args.Items[I])))])
       else
       begin
-        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args[I]));
+        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
         ArgLine := ArgLine + Format(', %s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
@@ -3658,6 +3814,25 @@ begin
         Exit;
       end;
       L := EmitInstancePtr(FldAccess.Base);
+      { Method-backed property read (indexed or non-indexed) }
+      if FldAccess.PropRead <> nil then
+      begin
+        QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
+        T := AllocTemp;
+        if FldAccess.PropIndexExpr <> nil then
+        begin
+          IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+          IdxQType := QbeTypeOf(FldAccess.PropRead.IndexTypeDesc);
+          EmitLine(Format('  %s =%s call $%s_%s(l %s, %s %s)',
+            [T, QType, FldAccess.PropOwnerType, FldAccess.PropRead.ReadMethod,
+             L, IdxQType, IdxTemp]));
+        end
+        else
+          EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+            [T, QType, FldAccess.PropOwnerType, FldAccess.PropRead.ReadMethod, L]));
+        Result := T;
+        Exit;
+      end;
       if FldAccess.FieldInfo = nil then
         raise ECodeGenError.Create(Format(
           'Chained field ''%s'' has no resolved field info', [FldAccess.FieldName]));
@@ -4000,6 +4175,30 @@ begin
   else if AExpr is TBinaryExpr then
   begin
     BinExpr := TBinaryExpr(AExpr);
+    { Bitwise and/or for integer operands (not Boolean short-circuit) }
+    if ((BinExpr.Op = boAnd) or (BinExpr.Op = boOr)) and
+       (BinExpr.ResolvedType <> nil) and BinExpr.ResolvedType.IsNumeric then
+    begin
+      L := EmitExpr(BinExpr.Left);
+      R := EmitExpr(BinExpr.Right);
+      T := AllocTemp;
+      if BinExpr.ResolvedType.Kind = tyInt64 then
+      begin
+        if BinExpr.Op = boAnd then
+          EmitLine(Format('  %s =l and %s, %s', [T, L, R]))
+        else
+          EmitLine(Format('  %s =l or %s, %s', [T, L, R]));
+      end
+      else
+      begin
+        if BinExpr.Op = boAnd then
+          EmitLine(Format('  %s =w and %s, %s', [T, L, R]))
+        else
+          EmitLine(Format('  %s =w or %s, %s', [T, L, R]));
+      end;
+      Result := T;
+      Exit;
+    end;
     { Short-circuit boolean and/or: evaluate LHS, then skip RHS when the
       result is already determined.  FPC and Delphi use short-circuit by
       default, and the compiler source relies on it for guarded nil-checks
@@ -4131,6 +4330,40 @@ begin
       end;
       EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     end
+    // Int64 arithmetic: use l-typed instructions; extend w operands to l as needed.
+    else if (BinExpr.ResolvedType <> nil) and (BinExpr.ResolvedType.Kind = tyInt64) then
+    begin
+      if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+      begin
+        ArgTemp := AllocTemp;
+        EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+        L := ArgTemp;
+      end;
+      // For shift ops, the shift count stays w (QBE accepts w shift count for l shifts).
+      // For arithmetic ops, extend the right operand to l too.
+      if not (BinExpr.Op in [boShl, boShr]) then
+      begin
+        if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+          R := ArgTemp;
+        end;
+      end;
+      case BinExpr.Op of
+        boAdd: Op := 'add';
+        boSub: Op := 'sub';
+        boMul: Op := 'mul';
+        boDiv: Op := 'div';
+        boAnd: Op := 'and';
+        boOr:  Op := 'or';
+        boShl: Op := 'shl';
+        boShr: Op := 'shr';
+      else
+        Op := 'add';
+      end;
+      EmitLine(Format('  %s =l %s %s, %s', [T, Op, L, R]));
+    end
     else
     begin
       case BinExpr.Op of
@@ -4146,6 +4379,8 @@ begin
         boGE:  Op := 'csgew';
         boAnd: Op := 'and';
         boOr:  Op := 'or';
+        boShl: Op := 'shl';
+        boShr: Op := 'shr';
       else
         Op := 'add';
       end;
@@ -4241,37 +4476,41 @@ end;
 function TCodeGenQBE.QBEMangle(const AName: string): string;
 var
   I: Integer;
+  C: Integer;
 begin
   Result := '';
   for I := 1 to Length(AName) do
-    case AName[I] of
-      '<': Result := Result + '_';
-      '>': { skip — closing bracket dropped };
-      ',': Result := Result + '_';
+  begin
+    C := Ord(AName[I]);
+    case C of
+      60: Result := Result + '_';    { '<' }
+      62: ;                          { '>' — skip }
+      44: Result := Result + '_';    { ',' }
     else
-      Result := Result + AName[I];
+      Result := Result + Chr(C);
     end;
+  end;
 end;
 
 function TCodeGenQBE.QbeEscapeString(const AStr: string): string;
 var
   I: Integer;
-  C: Char;
+  C: Integer;
 begin
   Result := '';
   for I := 1 to Length(AStr) do
   begin
-    C := AStr[I];
+    C := Ord(AStr[I]);  { FPC: Ord(Char); Blaise: AStr[I] already Integer }
     case C of
-      '"':  Result := Result + '\"';
-      '\':  Result := Result + '\\';
-      #10:  Result := Result + '\n';
-      #13:  Result := Result + '\r';
-      #9:   Result := Result + '\t';
-      else if (Ord(C) < 32) or (Ord(C) > 126) then
-        Result := Result + Format('\%02x', [Ord(C)])
+      34:  Result := Result + '\"';   { '"' }
+      92:  Result := Result + '\\';   { '\' }
+      10:  Result := Result + '\n';
+      13:  Result := Result + '\r';
+      9:   Result := Result + '\t';
+      else if (C < 32) or (C > 126) then
+        Result := Result + Format('\%02x', [C])
       else
-        Result := Result + C;
+        Result := Result + Chr(C);
     end;
   end;
 end;
@@ -4336,7 +4575,7 @@ begin
   try
     IntfNames.CaseSensitive := False;
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
-      IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls[I]).Name);
+      IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
     Body := TStringList.Create;
     try
@@ -4345,7 +4584,7 @@ begin
       try
         for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
         begin
-          ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+          ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
           EmitFuncDef(ImplDecl, IntfNames.IndexOf(ImplDecl.Name) >= 0);
         end;
       finally
@@ -4365,13 +4604,33 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.SetSymbolTable(ASymTable: TSymbolTable);
+begin
+  FSymTable := ASymTable;
+end;
+
 procedure TCodeGenQBE.AppendUnit(AUnit: TUnit);
 var
-  I:         Integer;
-  ImplDecl:  TMethodDecl;
-  IntfNames: TStringList;
-  Body:      TStringList;
-  SavedOut:  TStringList;
+  I, J, K, S:  Integer;
+  ImplDecl:     TMethodDecl;
+  IntfNames:    TStringList;
+  Body:         TStringList;
+  SavedOut:     TStringList;
+  TD:           TTypeDecl;
+  CD:           TClassTypeDef;
+  MDecl:        TMethodDecl;
+  TDesc:        TTypeDesc;
+  RT:           TRecordTypeDesc;
+  ClassRT:      TRecordTypeDesc;
+  IntfDesc:     TInterfaceTypeDesc;
+  ParentStr:    string;
+  ImplStr:      string;
+  ItabLine:     string;
+  ImplLine:     string;
+  MethName:     string;
+  IntfMangle:   string;
+  VLine:        string;
+  E:            TVTableEntry;
 begin
   { No clears — output and string literal table accumulate across calls.
     Counter resets are safe: QBE temps and block labels are function-scoped. }
@@ -4382,25 +4641,156 @@ begin
   try
     IntfNames.CaseSensitive := False;
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
-      IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls[I]).Name);
+      IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
     Body := TStringList.Create;
     try
       SavedOut := FOutput;
       FOutput  := Body;
       try
+        { Standalone functions from impl block.
+          Skip class method stubs (OwnerTypeName <> ''): after LinkClassMethodImpls
+          their bodies were transferred to the class definition and their
+          parameter types are not resolved — EmitFuncDef would crash on nil ResolvedType. }
         for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
         begin
-          ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+          ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
+          if ImplDecl.OwnerTypeName <> '' then Continue;
           EmitFuncDef(ImplDecl, IntfNames.IndexOf(ImplDecl.Name) >= 0);
         end;
+
+        { Class method bodies from interface type declarations.
+          After LinkClassMethodImpls the class definition's TMethodDecl nodes
+          hold the bodies and parameter types are resolved by AnalyseMethodBodies. }
+        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        begin
+          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          if not (TD.Def is TClassTypeDef) then Continue;
+          CD := TClassTypeDef(TD.Def);
+          for J := 0 to CD.Methods.Count - 1 do
+          begin
+            MDecl := TMethodDecl(CD.Methods.Items[J]);
+            if MDecl.Body <> nil then
+              EmitMethodDef(TD.Name, MDecl);
+          end;
+        end;
+
+        { Field cleanup functions — emitted here (inside redirect) because they
+          are function bodies, not data.  Requires FSymTable to look up TRecordTypeDesc. }
+        if FSymTable <> nil then
+          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          begin
+            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            if not (TD.Def is TClassTypeDef) then Continue;
+            TDesc := FSymTable.FindType(TD.Name);
+            if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+            RT := TRecordTypeDesc(TDesc);
+            EmitFieldCleanupFn(TD.Name, RT);
+          end;
       finally
         FOutput := SavedOut;
       end;
 
       EmitLine('# Unit: ' + AUnit.Name);
       EmitLine('');
-      EmitPendingStrLits;  { emit only new string literals — no fmt strings yet }
+      EmitPendingStrLits;
+
+      { Per-class data sections: typeinfo, vtables, interface tables.
+        All require FSymTable to look up resolved TRecordTypeDesc. }
+      if FSymTable <> nil then
+      begin
+        { Interface typeinfo blocks }
+        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        begin
+          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          if TD.Def is TInterfaceTypeDef then
+            EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
+        end;
+
+        { Class typeinfo blocks }
+        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        begin
+          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          if not (TD.Def is TClassTypeDef) then Continue;
+          TDesc := FSymTable.FindType(TD.Name);
+          if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+          RT := TRecordTypeDesc(TDesc);
+          if RT.Parent <> nil then
+            ParentStr := '$typeinfo_' + RT.Parent.Name
+          else
+            ParentStr := '0';
+          if RT.ImplementsCount > 0 then
+            ImplStr := '$impllist_' + TD.Name
+          else
+            ImplStr := '0';
+          EmitLine('data $typeinfo_' + TD.Name +
+                   ' = { l ' + ParentStr + ', l ' + ImplStr + ' }');
+        end;
+
+        { Vtable data }
+        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        begin
+          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          if not (TD.Def is TClassTypeDef) then Continue;
+          TDesc := FSymTable.FindType(TD.Name);
+          if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+          RT := TRecordTypeDesc(TDesc);
+          if not RT.HasVTable then Continue;
+          VLine := 'data $vtable_' + TD.Name + ' = { l $typeinfo_' + TD.Name;
+          for S := 0 to RT.VTableCount - 1 do
+          begin
+            E := RT.VTableEntryAt(S);
+            VLine := VLine + ', l ' + E.ImplName;
+          end;
+          VLine := VLine + ' }';
+          EmitLine(VLine);
+        end;
+
+        { Interface itab and impllist blocks for implementing classes }
+        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        begin
+          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          if not (TD.Def is TClassTypeDef) then Continue;
+          TDesc := FSymTable.FindType(TD.Name);
+          if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+          ClassRT := TRecordTypeDesc(TDesc);
+          if ClassRT.ImplementsCount = 0 then Continue;
+          for J := 0 to ClassRT.ImplementsCount - 1 do
+          begin
+            IntfDesc   := ClassRT.ImplementsIntfAt(J);
+            IntfMangle := QBEMangle(IntfDesc.Name);
+            ItabLine   := 'data $itab_' + TD.Name + '_' + IntfMangle + ' = {';
+            for K := 0 to IntfDesc.MethodCount - 1 do
+            begin
+              MethName := IntfDesc.MethodName(K);
+              if K = 0 then
+                ItabLine := ItabLine + ' l $' + TD.Name + '_' + MethName
+              else
+                ItabLine := ItabLine + ', l $' + TD.Name + '_' + MethName;
+            end;
+            ItabLine := ItabLine + ' }';
+            EmitLine(ItabLine);
+          end;
+          ImplLine := 'data $impllist_' + TD.Name + ' = {';
+          for J := 0 to ClassRT.ImplementsCount - 1 do
+          begin
+            IntfDesc   := ClassRT.ImplementsIntfAt(J);
+            IntfMangle := QBEMangle(IntfDesc.Name);
+            if J = 0 then
+              ImplLine := ImplLine + ' l $typeinfo_' + IntfMangle +
+                                     ', l $itab_' + TD.Name + '_' + IntfMangle
+            else
+              ImplLine := ImplLine + ', l $typeinfo_' + IntfMangle +
+                                     ', l $itab_' + TD.Name + '_' + IntfMangle;
+          end;
+          ImplLine := ImplLine + ', l 0 }';
+          EmitLine(ImplLine);
+        end;
+      end;
+
+      { Global variables from impl section (IsGlobal set by semantic analyser) }
+      EmitGlobalVarData(AUnit.ImplBlock);
+
       FOutput.AddStrings(Body);
     finally
       Body.Free;
@@ -4467,6 +4857,13 @@ var
   LowBnd:    Integer;
   Adj:       string;
 begin
+  { Indexed property read: Obj.Items[I] — delegate to EmitExpr(StrExpr) }
+  if (AExpr.StrExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr.StrExpr).PropRead <> nil) then
+  begin
+    Result := EmitExpr(AExpr.StrExpr);
+    Exit;
+  end;
   { Static array element read: A[I] where A: array[L..H] of T }
   if AExpr.StrExpr.ResolvedType.Kind = tyStaticArray then
   begin
@@ -4657,25 +5054,25 @@ end;
 function TCodeGenQBE.EmitSetLiteralExpr(AExpr: TArrayLiteralExpr): string;
 { Compute a compile-time bitmask for a set literal [elem, ...].
   Each element must be a constant enum value; bit (1 shl ordinal) is set.
-  Returns a QBE temp holding the integer mask. }
+  Returns a QBE temp holding the 32-bit integer mask. }
 var
-  Mask:    Int64;
-  I:       Integer;
-  Elem:    TASTExpr;
-  IdExpr:  TIdentExpr;
-  Tmp:     string;
+  Mask:   Integer;
+  I:      Integer;
+  Elem:   TASTExpr;
+  IdExpr: TIdentExpr;
+  Tmp:    string;
 begin
   Mask := 0;
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
-    Elem := TASTExpr(AExpr.Elements[I]);
+    Elem := TASTExpr(AExpr.Elements.Items[I]);
     if not (Elem is TIdentExpr) then
       raise ECodeGenError.Create('Set literal elements must be enum constant references');
     IdExpr := TIdentExpr(Elem);
     if not IdExpr.IsConstant then
       raise ECodeGenError.Create(Format(
         'Set literal element ''%s'' is not a constant', [IdExpr.Name]));
-    Mask := Mask or (Int64(1) shl IdExpr.ConstValue);
+    Mask := Mask or (1 shl IdExpr.ConstValue);
   end;
   Tmp := AllocTemp;
   EmitLine(Format('  %s =w copy %d', [Tmp, Mask]));
@@ -4722,7 +5119,7 @@ begin
   EmitLine(Format('  %s =l %s %d', [BufPtr, AllocInstr, TotalBytes]));
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
-    ElemVal := EmitExpr(TASTExpr(AExpr.Elements[I]));
+    ElemVal := EmitExpr(TASTExpr(AExpr.Elements.Items[I]));
     if I = 0 then
       EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, BufPtr]))
     else

@@ -32,7 +32,7 @@ type
     procedure   Put(AIndex: Integer; AObject: Pointer);
     function    IndexOf(AObject: Pointer): Integer;
     procedure   Delete(AIndex: Integer);
-    function    Extract(AIndex: Integer): Pointer;
+    function    Extract(AObject: Pointer): Pointer;
     procedure   Clear;
     property Count: Integer read FCount;
     property Items[Index: Integer]: Pointer read Get write Put;
@@ -62,7 +62,17 @@ begin
 end;
 
 procedure TObjectList.Destroy;
+var
+  I:   Integer;
+  Src: ^Pointer;
 begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Src := Self.FData + I * SizeOf(Pointer);
+    _ClassRelease(Src^);
+    I := I + 1
+  end;
   FreeMem(Self.FData);
   Self.FData     := nil;
   Self.FCount    := 0;
@@ -75,6 +85,7 @@ var
 begin
   if Self.FCount = Self.FCapacity then
     Self.Grow;
+  _ClassAddRef(AObject);
   Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
   Dest^       := AObject;
   Self.FCount := Self.FCount + 1;
@@ -92,9 +103,13 @@ end;
 procedure TObjectList.Put(AIndex: Integer; AObject: Pointer);
 var
   Dest: ^Pointer;
+  Old:  Pointer;
 begin
   Dest  := Self.FData + AIndex * SizeOf(Pointer);
-  Dest^ := AObject
+  Old   := Dest^;
+  _ClassAddRef(AObject);
+  Dest^ := AObject;
+  _ClassRelease(Old)
 end;
 
 function TObjectList.IndexOf(AObject: Pointer): Integer;
@@ -122,6 +137,8 @@ var
   Dst: ^Pointer;
   Src: ^Pointer;
 begin
+  Src := Self.FData + AIndex * SizeOf(Pointer);
+  _ClassRelease(Src^);
   I := AIndex;
   while I < Self.FCount - 1 do
   begin
@@ -134,19 +151,35 @@ begin
 end;
 
 procedure TObjectList.Clear;
+var
+  I:   Integer;
+  Src: ^Pointer;
 begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Src := Self.FData + I * SizeOf(Pointer);
+    _ClassRelease(Src^);
+    I := I + 1
+  end;
   Self.FCount := 0
 end;
 
-function TObjectList.Extract(AIndex: Integer): Pointer;
+function TObjectList.Extract(AObject: Pointer): Pointer;
 var
   I:   Integer;
   Src: ^Pointer;
   Dst: ^Pointer;
+  Idx: Integer;
 begin
-  Src    := Self.FData + AIndex * SizeOf(Pointer);
-  Result := Src^;
-  I := AIndex;
+  Idx := Self.IndexOf(AObject);
+  if Idx < 0 then
+  begin
+    Result := nil;
+    Exit
+  end;
+  Result := AObject;
+  I := Idx;
   while I < Self.FCount - 1 do
   begin
     Dst  := Self.FData + I * SizeOf(Pointer);

@@ -51,7 +51,7 @@ type
     TextStart: Integer;  { 1-based index into source string }
   end;
 
-  TFpgPascalTokeniser = class
+  TFpgPascalTokeniser = class(TObject)
     FSource: string;
     FPos: Integer;
     FLine: Integer;
@@ -152,7 +152,6 @@ end;
 
 constructor TFpgPascalTokeniser.Create;
 begin
-  inherited Create;
   if KwList = nil then
     InitKeywords;
   FSource := '';

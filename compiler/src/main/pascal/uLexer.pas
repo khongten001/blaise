@@ -69,6 +69,8 @@ type
     tkArray,
     tkSet,    { 'set' keyword — set type declaration }
     tkIn,     { 'in'  keyword — set membership test operator }
+    tkShl,    { 'shl' keyword — shift left }
+    tkShr,    { 'shr' keyword — shift right }
     tkConst,
     tkOut,
     tkConstructor,
@@ -196,6 +198,8 @@ begin
   else if AUpper = 'ARRAY'          then Result := tkArray
   else if AUpper = 'SET'            then Result := tkSet
   else if AUpper = 'IN'             then Result := tkIn
+  else if AUpper = 'SHL'            then Result := tkShl
+  else if AUpper = 'SHR'            then Result := tkShr
   else if AUpper = 'CONST'          then Result := tkConst
   else if AUpper = 'OUT'         then Result := tkOut
   else if AUpper = 'CONSTRUCTOR' then Result := tkConstructor

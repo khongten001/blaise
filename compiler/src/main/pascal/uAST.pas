@@ -111,7 +111,7 @@ type
   end;
 
   TBinaryOp = (boAdd, boSub, boMul, boDiv, boEQ, boNE, boLT, boGT, boLE, boGE,
-               boAnd, boOr, boIn);
+               boAnd, boOr, boIn, boShl, boShr);
 
   TBinaryExpr = class(TASTExpr)
   public
@@ -318,6 +318,7 @@ type
     IsImplicitSelf:    Boolean;     { ObjectName is a field of Self }
     ImplicitBaseInfo:  TFieldInfo;  { not owned — the field of Self }
     IsGlobal:          Boolean;     { set by uSemantic — ObjectName is a program-level global }
+    IsVarParam:        Boolean;     { set by uSemantic — ObjectName is a var/out parameter }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -397,7 +398,16 @@ type
     destructor Destroy; override;
   end;
 
-  TBlock = class;  { forward — defined below after all declarations }
+  TBlock = class(TASTNode)
+  public
+    TypeDecls:  TObjectList;  { owned TTypeDecl }
+    ConstDecls: TObjectList;  { owned TConstDecl }
+    Decls:      TObjectList;  { owned TVarDecl }
+    ProcDecls:  TObjectList;  { owned TMethodDecl — standalone procs/funcs }
+    Stmts:      TObjectList;  { owned TASTStmt }
+    constructor Create;
+    destructor Destroy; override;
+  end;
 
   TMethodParam = class(TASTNode)
   public
@@ -439,6 +449,7 @@ type
     ResolvedMethod:    TObject;     { TMethodDecl — not owned }
     IsConstructorCall: Boolean;    { set by uSemantic — TypeName.Create(args) }
     IsGlobal:          Boolean;    { set by uSemantic — ObjectName is a program-level global }
+    IsVarParam:        Boolean;    { set by uSemantic — ObjectName is a var/out parameter }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -545,17 +556,6 @@ type
   {  Block and Program                                                  }
   { ------------------------------------------------------------------ }
 
-  TBlock = class(TASTNode)
-  public
-    TypeDecls:  TObjectList;  { owned TTypeDecl }
-    ConstDecls: TObjectList;  { owned TConstDecl }
-    Decls:      TObjectList;  { owned TVarDecl }
-    ProcDecls:  TObjectList;  { owned TMethodDecl — standalone procs/funcs }
-    Stmts:      TObjectList;  { owned TASTStmt }
-    constructor Create;
-    destructor Destroy; override;
-  end;
-
   TProgram = class(TASTNode)
   public
     Name:                 string;
@@ -600,6 +600,8 @@ begin
     boAnd: Result := 'and';
     boOr:  Result := 'or';
     boIn:  Result := 'in';
+    boShl: Result := 'shl';
+    boShr: Result := 'shr';
   else
     Result := '?';
   end;

@@ -114,6 +114,11 @@ void _ClassFree(void* user_ptr) {
     free((char*)user_ptr - CLASS_HDR_SIZE);
 }
 
+/* Default TObject.Destroy — no-op; ARC cleanup handles memory management. */
+void TObject_Destroy(void* self) {
+    (void)self;
+}
+
 void _ClassAddRef(void* user_ptr) {
     if (!user_ptr) return;
     obj_hdr(user_ptr)->refcnt++;

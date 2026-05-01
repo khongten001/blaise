@@ -174,7 +174,7 @@ begin
     Exit;
   end;
   for I := 0 to AAttrs.Count - 1 do
-    if AttrMatches(AAttrs[I], 'Weak') then
+    if AttrMatches(AAttrs.Strings[I], 'Weak') then
     begin
       Result := True;
       Exit;
@@ -371,11 +371,11 @@ begin
     { Register interface forward declaration signatures }
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
     begin
-      MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+      MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
 
       for J := 0 to MDecl.Params.Count - 1 do
       begin
-        Par              := TMethodParam(MDecl.Params[J]);
+        Par              := TMethodParam(MDecl.Params.Items[J]);
         Par.ResolvedType := ResolveParamType(Par, MDecl.Line, MDecl.Col);
       end;
 
@@ -408,13 +408,13 @@ begin
       (OwnerTypeName + OwnerTypeParams set); they are handled below. }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
-      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if (ImplDecl.OwnerTypeName <> '') and (ImplDecl.OwnerTypeParams <> nil) then
         Continue;
 
       for J := 0 to ImplDecl.Params.Count - 1 do
       begin
-        Par              := TMethodParam(ImplDecl.Params[J]);
+        Par              := TMethodParam(ImplDecl.Params.Items[J]);
         Par.ResolvedType := ResolveParamType(Par, ImplDecl.Line, ImplDecl.Col);
       end;
 
@@ -465,7 +465,7 @@ begin
     { Verify every interface declaration has a matching implementation }
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
     begin
-      MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+      MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
       ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
@@ -477,7 +477,7 @@ begin
     { Analyse standalone implementation bodies (skip generic class method impls) }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
-      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if (ImplDecl.OwnerTypeName <> '') and (ImplDecl.OwnerTypeParams <> nil) then
         Continue;
       AnalyseStandaloneDecl(ImplDecl);
@@ -496,6 +496,7 @@ var
   Par:      TMethodParam;
   ParType:  TTypeDesc;
   Sym:      TSymbol;
+  VDecl:    TVarDecl;
 begin
   { --- Interface section ------------------------------------------------
     No scope is pushed here: all FTable.Define calls go to the global scope,
@@ -504,20 +505,16 @@ begin
   AnalyseConstDecls(AUnit.IntfBlock);
   AnalyseTypeDecls(AUnit.IntfBlock);
 
-  { Link class method bodies from ImplBlock to the class type method decls
-    registered by AnalyseTypeDecls, then analyse those bodies. }
-  LinkClassMethodImpls(AUnit.ImplBlock);
-  LinkGenericClassMethodImpls(AUnit.ImplBlock);
-  AnalyseMethodBodies(AUnit.IntfBlock);
-
-  { Register interface forward declarations for standalone procs/funcs }
+  { Register interface forward declarations for standalone procs/funcs.
+    Must happen before AnalyseMethodBodies so class method bodies can call
+    them (e.g. TStringList.SetText calls SplitIntoList). }
   for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
   begin
-    MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+    MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
 
     for J := 0 to MDecl.Params.Count - 1 do
     begin
-      Par              := TMethodParam(MDecl.Params[J]);
+      Par              := TMethodParam(MDecl.Params.Items[J]);
       Par.ResolvedType := ResolveParamType(Par, MDecl.Line, MDecl.Col);
     end;
 
@@ -546,19 +543,49 @@ begin
     end;
   end;
 
+  { Link class method bodies from ImplBlock to the class type method decls
+    registered by AnalyseTypeDecls. }
+  LinkClassMethodImpls(AUnit.ImplBlock);
+  LinkGenericClassMethodImpls(AUnit.ImplBlock);
+
   { --- Implementation section -------------------------------------------
-    Push a scope so impl-only standalone symbols don't leak globally. }
+    Push a scope so impl-only standalone symbols don't leak globally.
+    Class method bodies are analysed inside this scope so they can call
+    impl-only helpers (e.g. TStringList.SetText -> SplitIntoList). }
   FTable.PushScope;
   try
+    { Register impl-section global variables — marked IsGlobal so codegen
+      emits them as data-segment slots rather than stack allocations. }
+    AnalyseConstDecls(AUnit.ImplBlock);
+    for I := 0 to AUnit.ImplBlock.Decls.Count - 1 do
+    begin
+      VDecl := TVarDecl(AUnit.ImplBlock.Decls.Items[I]);
+      ParType := FTable.FindType(VDecl.TypeName);
+      if ParType = nil then
+        SemanticError(Format('Unknown type ''%s''', [VDecl.TypeName]), VDecl.Line, VDecl.Col);
+      VDecl.ResolvedType := ParType;
+      VDecl.IsGlobal := True;
+      for J := 0 to VDecl.Names.Count - 1 do
+      begin
+        Sym := TSymbol.Create(VDecl.Names.Strings[J], skVariable, ParType);
+        Sym.IsGlobal := True;
+        if not FTable.Define(Sym) then
+        begin
+          Sym.Free;
+          SemanticError(Format('Duplicate identifier ''%s''', [VDecl.Names.Strings[J]]), VDecl.Line, VDecl.Col);
+        end;
+      end;
+    end;
+
     { Register impl decls, skipping class method impls (already linked above) }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
-      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if ImplDecl.OwnerTypeName <> '' then Continue;  { class method — already handled }
 
       for J := 0 to ImplDecl.Params.Count - 1 do
       begin
-        Par              := TMethodParam(ImplDecl.Params[J]);
+        Par              := TMethodParam(ImplDecl.Params.Items[J]);
         Par.ResolvedType := ResolveParamType(Par, ImplDecl.Line, ImplDecl.Col);
       end;
 
@@ -602,10 +629,13 @@ begin
       end;
     end;
 
+    { Analyse class method bodies — impl-only helpers now visible above }
+    AnalyseMethodBodies(AUnit.IntfBlock);
+
     { Verify every interface declaration has a matching implementation }
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
     begin
-      MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls[I]);
+      MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
       ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
@@ -617,7 +647,7 @@ begin
     { Analyse standalone implementation bodies (skip class method impls) }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
-      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls[I]);
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if ImplDecl.OwnerTypeName <> '' then Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
@@ -636,7 +666,7 @@ var
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
-    Decl := TMethodDecl(ABlock.ProcDecls[I]);
+    Decl := TMethodDecl(ABlock.ProcDecls.Items[I]);
     if Decl.OwnerTypeName = '' then Continue;
     if Decl.OwnerTypeParams <> nil then Continue;  { generic owner — handled by LinkGenericClassMethodImpls }
     Key := Decl.OwnerTypeName + '.' + Decl.Name;
@@ -667,7 +697,7 @@ var
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
-    Decl := TMethodDecl(ABlock.ProcDecls[I]);
+    Decl := TMethodDecl(ABlock.ProcDecls.Items[I]);
     if (Decl.OwnerTypeName = '') or (Decl.OwnerTypeParams = nil) then
       Continue;
     { Locate the generic template by base class name }
@@ -680,9 +710,9 @@ begin
     { Find the matching forward declaration in the template }
     MDecl := nil;
     for J := 0 to Templ.ClassDef.Methods.Count - 1 do
-      if SameText(TMethodDecl(Templ.ClassDef.Methods[J]).Name, Decl.Name) then
+      if SameText(TMethodDecl(Templ.ClassDef.Methods.Items[J]).Name, Decl.Name) then
       begin
-        MDecl := TMethodDecl(Templ.ClassDef.Methods[J]);
+        MDecl := TMethodDecl(Templ.ClassDef.Methods.Items[J]);
         Break;
       end;
     if MDecl = nil then
@@ -787,9 +817,9 @@ begin
   Result := ATypeName;
   { Direct match: T → Integer }
   for I := 0 to AParamNames.Count - 1 do
-    if SameText(Result, AParamNames[I]) then
+    if SameText(Result, AParamNames.Strings[I]) then
     begin
-      Result := AArgs[I];
+      Result := AArgs.Strings[I];
       Exit;
     end;
   { Prefix caret: ^T → ^Integer, ^^T → ^^Integer, etc. }
@@ -856,8 +886,8 @@ begin
     { Validate each type argument against its declared constraint. }
     for I := 0 to Args.Count - 1 do
       if (Templ.ParamConstraints <> nil) and (I < Templ.ParamConstraints.Count) then
-        CheckTypeParamConstraint(Templ.ParamNames[I], Args[I],
-          Templ.ParamConstraints[I],
+        CheckTypeParamConstraint(Templ.ParamNames.Strings[I], Args.Strings[I],
+          Templ.ParamConstraints.Strings[I],
           Format('instantiation ''%s''', [ATypeName]));
 
     { Create the concrete class type descriptor — defined globally so the
@@ -870,15 +900,15 @@ begin
     ClonedCD             := TClassTypeDef.Create;
     ClonedCD.ParentName  := Templ.ClassDef.ParentName;
     for I := 0 to Templ.ClassDef.ImplementsNames.Count - 1 do
-      ClonedCD.ImplementsNames.Add(Templ.ClassDef.ImplementsNames[I]);
+      ClonedCD.ImplementsNames.Add(Templ.ClassDef.ImplementsNames.Strings[I]);
 
     { Clone fields with type-param substitution (handles ^T → ^Integer etc.) }
     for I := 0 to Templ.ClassDef.Fields.Count - 1 do
     begin
-      FDecl    := TFieldDecl(Templ.ClassDef.Fields[I]);
+      FDecl    := TFieldDecl(Templ.ClassDef.Fields.Items[I]);
       NewFDecl := TFieldDecl.Create;
       for J := 0 to FDecl.Names.Count - 1 do
-        NewFDecl.Names.Add(FDecl.Names[J]);
+        NewFDecl.Names.Add(FDecl.Names.Strings[J]);
       NewFDecl.TypeName := SubstTypeParam(FDecl.TypeName, Templ.ParamNames, Args);
       ClonedCD.Fields.Add(NewFDecl);
     end;
@@ -886,7 +916,7 @@ begin
     { Clone method declarations (shared body — OwnBody = False) }
     for I := 0 to Templ.ClassDef.Methods.Count - 1 do
     begin
-      MDecl            := TMethodDecl(Templ.ClassDef.Methods[I]);
+      MDecl            := TMethodDecl(Templ.ClassDef.Methods.Items[I]);
       NewMDecl         := TMethodDecl.Create;
       NewMDecl.Name          := MDecl.Name;
       NewMDecl.OwnerTypeName := ATypeName;
@@ -897,7 +927,7 @@ begin
 
       for J := 0 to MDecl.Params.Count - 1 do
       begin
-        Par    := TMethodParam(MDecl.Params[J]);
+        Par    := TMethodParam(MDecl.Params.Items[J]);
         NewPar := TMethodParam.Create;
         NewPar.ParamName  := Par.ParamName;
         NewPar.IsVarParam := Par.IsVarParam;
@@ -914,7 +944,7 @@ begin
     { Pre-pass: vtable slots (before fields so vptr is counted in offsets) }
     for J := 0 to ClonedCD.Methods.Count - 1 do
     begin
-      NewMDecl := TMethodDecl(ClonedCD.Methods[J]);
+      NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
       if NewMDecl.IsVirtual then
         RT.AddVTableSlot(NewMDecl.Name, '$' + ATypeName + '_' + NewMDecl.Name)
       else if NewMDecl.IsOverride then
@@ -926,7 +956,7 @@ begin
     { Resolve fields }
     for J := 0 to ClonedCD.Fields.Count - 1 do
     begin
-      NewFDecl := TFieldDecl(ClonedCD.Fields[J]);
+      NewFDecl := TFieldDecl(ClonedCD.Fields.Items[J]);
       FldType  := FindTypeOrInstantiate(NewFDecl.TypeName);
       if FldType = nil then
         SemanticError(
@@ -935,7 +965,7 @@ begin
       NewFDecl.ResolvedType := FldType;
       for K := 0 to NewFDecl.Names.Count - 1 do
       begin
-        FldName := NewFDecl.Names[K];
+        FldName := NewFDecl.Names.Strings[K];
         RT.AddField(FldName, FldType);
       end;
     end;
@@ -943,7 +973,7 @@ begin
     { Resolve method signatures and index them }
     for J := 0 to ClonedCD.Methods.Count - 1 do
     begin
-      NewMDecl := TMethodDecl(ClonedCD.Methods[J]);
+      NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
       Key      := ATypeName + '.' + NewMDecl.Name;
       FMethodIndex.AddObject(Key, NewMDecl);
       if SameText(NewMDecl.Name, 'Destroy') then
@@ -954,7 +984,7 @@ begin
 
       for K := 0 to NewMDecl.Params.Count - 1 do
       begin
-        Par     := TMethodParam(NewMDecl.Params[K]);
+        Par     := TMethodParam(NewMDecl.Params.Items[K]);
         ParType := FindTypeOrInstantiate(Par.TypeName);
         if ParType = nil then
           SemanticError(
@@ -983,16 +1013,16 @@ begin
     try
       for K := 0 to Templ.ParamNames.Count - 1 do
       begin
-        ConcrType := FindTypeOrInstantiate(Args[K]);
+        ConcrType := FindTypeOrInstantiate(Args.Strings[K]);
         if ConcrType <> nil then
         begin
-          Sym := TSymbol.Create(Templ.ParamNames[K], skType, ConcrType);
+          Sym := TSymbol.Create(Templ.ParamNames.Strings[K], skType, ConcrType);
           FTable.Define(Sym);
         end;
       end;
       for J := 0 to ClonedCD.Methods.Count - 1 do
       begin
-        NewMDecl := TMethodDecl(ClonedCD.Methods[J]);
+        NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
         if NewMDecl.Body <> nil then
           AnalyseMethodDecl(NewMDecl, RT);
       end;
@@ -1058,8 +1088,8 @@ begin
 
     for I := 0 to Args.Count - 1 do
       if (Templ.ParamConstraints <> nil) and (I < Templ.ParamConstraints.Count) then
-        CheckTypeParamConstraint(Templ.ParamNames[I], Args[I],
-          Templ.ParamConstraints[I],
+        CheckTypeParamConstraint(Templ.ParamNames.Strings[I], Args.Strings[I],
+          Templ.ParamConstraints.Strings[I],
           Format('interface instantiation ''%s''', [ATypeName]));
 
     { Check if already instantiated }
@@ -1073,7 +1103,7 @@ begin
     { Build mangled name: IEqualityComparer<Integer> → IEqualityComparer_Integer }
     MangledName := BaseName;
     for I := 0 to Args.Count - 1 do
-      MangledName := MangledName + '_' + Args[I];
+      MangledName := MangledName + '_' + Args.Strings[I];
 
     { Create the concrete interface type descriptor }
     Result := FTable.NewInterfaceType(ATypeName);
@@ -1083,7 +1113,7 @@ begin
     { Register interface method names with substituted return types }
     for I := 0 to Templ.IntfDef.Methods.Count - 1 do
     begin
-      MDecl := TMethodDecl(Templ.IntfDef.Methods[I]);
+      MDecl := TMethodDecl(Templ.IntfDef.Methods.Items[I]);
       Result.AddMethod(MDecl.Name,
         SubstTypeParam(MDecl.ReturnTypeName, Templ.ParamNames, Args));
     end;
@@ -1134,11 +1164,20 @@ begin
 
   Args := TStringList.Create;
   try
-    Args.StrictDelimiter := True;
-    Args.Delimiter       := ',';
-    Args.DelimitedText   := ArgsStr;
-    for I := 0 to Args.Count - 1 do
-      Args[I] := Trim(Args[I]);
+    while Length(ArgsStr) > 0 do
+    begin
+      BracPos := Pos(',', ArgsStr);
+      if BracPos > 0 then
+      begin
+        Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
+        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+      end
+      else
+      begin
+        Args.Add(Trim(ArgsStr));
+        ArgsStr := '';
+      end;
+    end;
 
     if Args.Count <> Templ.TypeParams.Count then
       SemanticError(
@@ -1150,8 +1189,8 @@ begin
     for I := 0 to Args.Count - 1 do
       if (Templ.TypeParamConstraints <> nil) and
          (I < Templ.TypeParamConstraints.Count) then
-        CheckTypeParamConstraint(Templ.TypeParams[I], Args[I],
-          Templ.TypeParamConstraints[I],
+        CheckTypeParamConstraint(Templ.TypeParams.Strings[I], Args.Strings[I],
+          Templ.TypeParamConstraints.Strings[I],
           Format('generic function ''%s''', [AInstName]));
 
     NewMDecl         := TMethodDecl.Create;
@@ -1162,8 +1201,8 @@ begin
     { Substitute return type }
     RetTypeName := Templ.ReturnTypeName;
     for I := 0 to Templ.TypeParams.Count - 1 do
-      if SameText(RetTypeName, Templ.TypeParams[I]) then
-        RetTypeName := Args[I];
+      if SameText(RetTypeName, Templ.TypeParams.Strings[I]) then
+        RetTypeName := Args.Strings[I];
     NewMDecl.ReturnTypeName := RetTypeName;
     if RetTypeName <> '' then
     begin
@@ -1177,14 +1216,14 @@ begin
     { Clone params with substituted types }
     for I := 0 to Templ.Params.Count - 1 do
     begin
-      OldPar           := TMethodParam(Templ.Params[I]);
+      OldPar           := TMethodParam(Templ.Params.Items[I]);
       NewPar           := TMethodParam.Create;
       NewPar.ParamName  := OldPar.ParamName;
       NewPar.IsVarParam := OldPar.IsVarParam;
       ParTypeName       := OldPar.TypeName;
       for J := 0 to Templ.TypeParams.Count - 1 do
-        if SameText(ParTypeName, Templ.TypeParams[J]) then
-          ParTypeName := Args[J];
+        if SameText(ParTypeName, Templ.TypeParams.Strings[J]) then
+          ParTypeName := Args.Strings[J];
       NewPar.TypeName := ParTypeName;
       SubstType := FindTypeOrInstantiate(ParTypeName);
       if SubstType = nil then
@@ -1253,7 +1292,7 @@ var
 begin
   for I := 0 to ABlock.ConstDecls.Count - 1 do
   begin
-    CD := TConstDecl(ABlock.ConstDecls[I]);
+    CD := TConstDecl(ABlock.ConstDecls.Items[I]);
     if CD.IsString then
       TD := FTable.TypeString
     else
@@ -1299,12 +1338,13 @@ var
   BaseSym:    TSymbol;
   MName:      string;
   MSym:       TSymbol;
+  Slot:       Integer;
 begin
   { Pass 1 — register all type symbols with empty descriptors.
     This allows self-referential field types to resolve in pass 2. }
   for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(ABlock.TypeDecls[I]);
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
     if TD.Def is TRecordTypeDef then
       RT := FTable.NewRecordType(TD.Name)
     else if TD.Def is TClassTypeDef then
@@ -1339,7 +1379,7 @@ begin
       EnumDesc := FTable.NewEnumType(TD.Name);
       for K := 0 to EnumDef.Members.Count - 1 do
       begin
-        MName           := EnumDef.Members[K];
+        MName           := EnumDef.Members.Strings[K];
         EnumDesc.Members.Add(MName);
         MSym            := TSymbol.Create(MName, skConstant, EnumDesc);
         MSym.ConstValue := K;
@@ -1390,7 +1430,7 @@ begin
   { Pass 2 — resolve parent, fields, and method signatures for each type. }
   for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(ABlock.TypeDecls[I]);
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
 
     { Generic templates, enum, and set types need no pass-2 processing — skip }
     if TD.Def is TGenericTypeDef then Continue;
@@ -1419,8 +1459,8 @@ begin
             IntfDesc.Parent.MethodReturnTypeName(J));
       end;
       for J := 0 to ITD.Methods.Count - 1 do
-        IntfDesc.AddMethod(TMethodDecl(ITD.Methods[J]).Name,
-          TMethodDecl(ITD.Methods[J]).ReturnTypeName);
+        IntfDesc.AddMethod(TMethodDecl(ITD.Methods.Items[J]).Name,
+          TMethodDecl(ITD.Methods.Items[J]).ReturnTypeName);
       Continue;
     end;
 
@@ -1470,9 +1510,23 @@ begin
           RT.CopyVTableFrom(ParentRT);
           for K := 0 to ParentRT.Fields.Count - 1 do
           begin
-            FldInfo := TFieldInfo(ParentRT.Fields[K]);
+            FldInfo := TFieldInfo(ParentRT.Fields.Items[K]);
             RT.AddField(FldInfo.Name, FldInfo.TypeDesc);
           end;
+        end;
+      end;
+
+      { If no explicit parent was specified (and this class is not TObject itself),
+        implicitly inherit TObject's vtable so that all class types carry a vptr.
+        This ensures field offsets start after the 8-byte vtable pointer.
+        We do NOT set RT.Parent here — root classes have null parent in typeinfo. }
+      if (TClassTypeDef(TD.Def).ParentName = '') and (TD.Name <> 'TObject') then
+      begin
+        ParentSym := FTable.Lookup('TObject');
+        if (ParentSym <> nil) and (ParentSym.TypeDesc is TRecordTypeDesc) then
+        begin
+          ParentRT := TRecordTypeDesc(ParentSym.TypeDesc);
+          RT.CopyVTableFrom(ParentRT);
         end;
       end;
 
@@ -1481,20 +1535,39 @@ begin
       if MethodList <> nil then
         for J := 0 to MethodList.Count - 1 do
         begin
-          MDecl := TMethodDecl(MethodList[J]);
+          MDecl := TMethodDecl(MethodList.Items[J]);
           if MDecl.IsVirtual then
             RT.AddVTableSlot(MDecl.Name, '$' + TD.Name + '_' + MDecl.Name)
           else if MDecl.IsOverride then
-            RT.OverrideVTableSlot(
-              RT.FindVTableSlot(MDecl.Name),
-              '$' + TD.Name + '_' + MDecl.Name);
+          begin
+            Slot := RT.FindVTableSlot(MDecl.Name);
+            if Slot < 0 then
+            begin
+              { No inherited vtable slot — check if TObject provides the virtual
+                base (handles both parentless classes and deep hierarchies where
+                an intermediate class doesn't declare the method as virtual). }
+              ParentSym := FTable.Lookup('TObject');
+              if (ParentSym <> nil) and (ParentSym.TypeDesc is TRecordTypeDesc) then
+              begin
+                ParentRT := TRecordTypeDesc(ParentSym.TypeDesc);
+                if ParentRT.FindVTableSlot(MDecl.Name) >= 0 then
+                begin
+                  RT.CopyVTableFrom(ParentRT);
+                  if RT.Parent = nil then
+                    RT.Parent := ParentRT;
+                  Slot := RT.FindVTableSlot(MDecl.Name);
+                end;
+              end;
+            end;
+            RT.OverrideVTableSlot(Slot, '$' + TD.Name + '_' + MDecl.Name);
+          end;
         end;
     end;
 
     { Resolve own field declarations (offsets now include vptr if HasVTable) }
     for J := 0 to FieldList.Count - 1 do
     begin
-      FDecl   := TFieldDecl(FieldList[J]);
+      FDecl   := TFieldDecl(FieldList.Items[J]);
       FldType := FindTypeOrInstantiate(FDecl.TypeName);
       if FldType = nil then
         SemanticError(
@@ -1513,7 +1586,7 @@ begin
       end;
       for K := 0 to FDecl.Names.Count - 1 do
       begin
-        FldName := FDecl.Names[K];
+        FldName := FDecl.Names.Strings[K];
         RT.AddField(FldName, FldType);
         { Propagate the weak flag to the just-added field info so codegen
           and the field cleanup emitter can consult it without walking
@@ -1527,7 +1600,7 @@ begin
     if MethodList <> nil then
       for J := 0 to MethodList.Count - 1 do
       begin
-        MDecl               := TMethodDecl(MethodList[J]);
+        MDecl               := TMethodDecl(MethodList.Items[J]);
         MDecl.OwnerTypeName := TD.Name;
         Key                 := TD.Name + '.' + MDecl.Name;
         FMethodIndex.AddObject(Key, MDecl);
@@ -1547,7 +1620,7 @@ begin
 
         for K := 0 to MDecl.Params.Count - 1 do
         begin
-          Par              := TMethodParam(MDecl.Params[K]);
+          Par              := TMethodParam(MDecl.Params.Items[K]);
           Par.ResolvedType := ResolveParamType(Par, MDecl.Line, MDecl.Col);
         end;
 
@@ -1567,7 +1640,7 @@ begin
     if TD.Def is TClassTypeDef then
       for J := 0 to TClassTypeDef(TD.Def).Properties.Count - 1 do
       begin
-        PropDecl := TPropertyDecl(TClassTypeDef(TD.Def).Properties[J]);
+        PropDecl := TPropertyDecl(TClassTypeDef(TD.Def).Properties.Items[J]);
         PropType := FTable.FindType(PropDecl.TypeName);
         if PropType = nil then
           SemanticError(
@@ -1601,7 +1674,7 @@ begin
     if TD.Def is TClassTypeDef then
       for L := 0 to TClassTypeDef(TD.Def).ImplementsNames.Count - 1 do
       begin
-        IntfName := TClassTypeDef(TD.Def).ImplementsNames[L];
+        IntfName := TClassTypeDef(TD.Def).ImplementsNames.Strings[L];
         IntfSym  := FTable.Lookup(IntfName);
         if IntfSym = nil then
         begin
@@ -1630,9 +1703,9 @@ begin
             MDecl := nil;
             if TD.Def is TClassTypeDef then
               for K := 0 to TClassTypeDef(TD.Def).Methods.Count - 1 do
-                if SameText(TMethodDecl(TClassTypeDef(TD.Def).Methods[K]).Name, Key) then
+                if SameText(TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[K]).Name, Key) then
                 begin
-                  MDecl := TMethodDecl(TClassTypeDef(TD.Def).Methods[K]);
+                  MDecl := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[K]);
                   Break;
                 end;
             if MDecl = nil then
@@ -1656,7 +1729,7 @@ var
 begin
   for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(ABlock.TypeDecls[I]);
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then
       Continue;
     CD  := TClassTypeDef(TD.Def);
@@ -1665,7 +1738,7 @@ begin
       Continue;
     RT := TRecordTypeDesc(Sym.TypeDesc);
     for J := 0 to CD.Methods.Count - 1 do
-      AnalyseMethodDecl(TMethodDecl(CD.Methods[J]), RT);
+      AnalyseMethodDecl(TMethodDecl(CD.Methods.Items[J]), RT);
   end;
 end;
 
@@ -1696,7 +1769,7 @@ begin
     { Define explicit parameters }
     for I := 0 to AMethod.Params.Count - 1 do
     begin
-      Par := TMethodParam(AMethod.Params[I]);
+      Par := TMethodParam(AMethod.Params.Items[I]);
       if Par.ResolvedType = nil then
         SemanticError(
           Format('Parameter ''%s'' has unresolved type', [Par.ParamName]),
@@ -1770,7 +1843,7 @@ var
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
-    ADecl := TMethodDecl(ABlock.ProcDecls[I]);
+    ADecl := TMethodDecl(ABlock.ProcDecls.Items[I]);
     { Class method implementations have their body transferred; skip them here }
     if ADecl.OwnerTypeName <> '' then Continue;
     { Generic function templates — registered for on-demand instantiation }
@@ -1783,7 +1856,7 @@ begin
     { Resolve parameter types }
     for J := 0 to ADecl.Params.Count - 1 do
     begin
-      Par              := TMethodParam(ADecl.Params[J]);
+      Par              := TMethodParam(ADecl.Params.Items[J]);
       Par.ResolvedType := ResolveParamType(Par, ADecl.Line, ADecl.Col);
     end;
 
@@ -1846,7 +1919,7 @@ begin
     { Define explicit parameters }
     for I := 0 to ADecl.Params.Count - 1 do
     begin
-      Par := TMethodParam(ADecl.Params[I]);
+      Par := TMethodParam(ADecl.Params.Items[I]);
       if Par.IsVarParam then
         Sym := TSymbol.Create(Par.ParamName, skVarParameter, Par.ResolvedType)
       else
@@ -1874,7 +1947,7 @@ var
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
-    ADecl := TMethodDecl(ABlock.ProcDecls[I]);
+    ADecl := TMethodDecl(ABlock.ProcDecls.Items[I]);
     { Class method implementations have their body transferred; skip them here }
     if ADecl.OwnerTypeName <> '' then Continue;
     { Generic templates are instantiated on demand — skip until first call }
@@ -1895,7 +1968,7 @@ var
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
-    Decl := TVarDecl(ABlock.Decls[I]);
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
 
     Typ := FindTypeOrInstantiate(Decl.TypeName);
     if Typ = nil then
@@ -1923,7 +1996,7 @@ begin
     Decl.IsGlobal := (FScopeDepth = 1);  { depth 1 = main program block (global scope) }
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      VarName := Decl.Names[J];
+      VarName := Decl.Names.Strings[J];
       Sym := TSymbol.Create(VarName, skVariable, Typ);
       Sym.IsWeak   := Decl.IsWeak;
       Sym.IsGlobal := Decl.IsGlobal;
@@ -1943,7 +2016,7 @@ var
   I: Integer;
 begin
   for I := 0 to ABody.Stmts.Count - 1 do
-    AnalyseStmt(TASTStmt(ABody.Stmts[I]));
+    AnalyseStmt(TASTStmt(ABody.Stmts.Items[I]));
 end;
 
 procedure TSemanticAnalyser.AnalyseStmts(ABlock: TBlock);
@@ -1951,7 +2024,7 @@ var
   I: Integer;
 begin
   for I := 0 to ABlock.Stmts.Count - 1 do
-    AnalyseStmt(TASTStmt(ABlock.Stmts[I]));
+    AnalyseStmt(TASTStmt(ABlock.Stmts.Items[I]));
 end;
 
 procedure TSemanticAnalyser.AnalyseStmt(AStmt: TASTStmt);
@@ -2062,7 +2135,7 @@ begin
   begin
     CmpS := TCompoundStmt(AStmt);
     for I := 0 to CmpS.Stmts.Count - 1 do
-      AnalyseStmt(TASTStmt(CmpS.Stmts[I]));
+      AnalyseStmt(TASTStmt(CmpS.Stmts.Items[I]));
   end
   else if AStmt is TTryFinallyStmt then
   begin
@@ -2144,8 +2217,8 @@ begin
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
-      Par     := TMethodParam(MDecl.Params[I]);
+      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      Par     := TMethodParam(MDecl.Params.Items[I]);
       CheckTypesMatch(Par.ResolvedType, ArgType,
         Format('argument %d of ''%s''', [I + 1, ACall.Name]),
         ACall.Line, ACall.Col);
@@ -2186,8 +2259,8 @@ begin
             ACall.Line, ACall.Col);
         for I := 0 to ACall.Args.Count - 1 do
         begin
-          ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
-          Par     := TMethodParam(MDecl.Params[I]);
+          ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+          Par     := TMethodParam(MDecl.Params.Items[I]);
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('argument %d of ''%s''', [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
@@ -2222,6 +2295,7 @@ begin
     ACall.ResolvedClassType := ObjSym.TypeDesc;
     ACall.ResolvedMethod    := nil;  { nil = interface dispatch, not class dispatch }
     ACall.IsGlobal          := ObjSym.IsGlobal;
+    ACall.IsVarParam        := (ObjSym.Kind = skVarParameter);
     Exit;
   end;
 
@@ -2235,6 +2309,7 @@ begin
       ACall.ResolvedClassType := RT;
       ACall.ResolvedMethod    := nil;  { nil signals built-in Free to codegen }
       ACall.IsGlobal          := ObjSym.IsGlobal;
+      ACall.IsVarParam        := (ObjSym.Kind = skVarParameter);
       Exit;
     end;
     SemanticError(
@@ -2250,8 +2325,8 @@ begin
 
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
-    Par     := TMethodParam(MDecl.Params[I]);
+    ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of ''%s''', [I + 1, ACall.Name]),
       ACall.Line, ACall.Col);
@@ -2260,6 +2335,7 @@ begin
   ACall.ResolvedClassType := RT;
   ACall.ResolvedMethod    := MDecl;
   ACall.IsGlobal          := ObjSym.IsGlobal;
+  ACall.IsVarParam        := (ObjSym.Kind = skVarParameter);
 end;
 
 procedure TSemanticAnalyser.AnalyseAssignment(AAssign: TAssignment);
@@ -2323,18 +2399,46 @@ begin
       ACall.Line, ACall.Col);
 
   if FCurrentClass.Parent = nil then
+  begin
+    { No explicit parent — implicit TObject. inherited Create/Destroy are no-ops. }
+    if SameText(ACall.Name, 'Create') or SameText(ACall.Name, 'Destroy') then
+    begin
+      ACall.ResolvedParentType := nil;
+      ACall.ResolvedMethod     := nil;
+      Exit;
+    end;
     SemanticError(
       Format('Class ''%s'' has no parent; ''inherited'' is not valid',
         [FCurrentClass.Name]),
       ACall.Line, ACall.Col);
+  end;
 
   ParentType := FCurrentClass.Parent;
+
+  { TObject is the builtin root class — inherited Create/Destroy are no-ops }
+  if SameText(ParentType.Name, 'TObject') then
+  begin
+    ACall.ResolvedParentType := ParentType;
+    ACall.ResolvedMethod     := nil;
+    Exit;
+  end;
+
   MDecl := FindMethodDecl(ParentType.Name, ACall.Name);
   if MDecl = nil then
+  begin
+    { Constructor/destructor chaining: if the parent doesn't explicitly declare
+      Create or Destroy, the call chains up to TObject (a no-op in ARC). }
+    if SameText(ACall.Name, 'Create') or SameText(ACall.Name, 'Destroy') then
+    begin
+      ACall.ResolvedParentType := ParentType;
+      ACall.ResolvedMethod     := nil;
+      Exit;
+    end;
     SemanticError(
       Format('Parent class ''%s'' has no method ''%s''',
         [ParentType.Name, ACall.Name]),
       ACall.Line, ACall.Col);
+  end;
 
   if ACall.Args.Count <> MDecl.Params.Count then
     SemanticError(
@@ -2344,8 +2448,8 @@ begin
 
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
-    Par     := TMethodParam(MDecl.Params[I]);
+    ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of inherited ''%s''', [I + 1, ACall.Name]),
       ACall.Line, ACall.Col);
@@ -2545,8 +2649,8 @@ begin
             ACall.Line, ACall.Col);
         for I := 0 to ACall.Args.Count - 1 do
         begin
-          Par     := TMethodParam(MDecl.Params[I]);
-          ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+          Par     := TMethodParam(MDecl.Params.Items[I]);
+          ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('argument %d of ''%s''', [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
@@ -2582,23 +2686,23 @@ begin
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      Par := TMethodParam(MDecl.Params[I]);
+      Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
       begin
         { var parameter: argument must be a simple variable }
-        if not (TASTExpr(ACall.Args[I]) is TIdentExpr) then
+        if not (TASTExpr(ACall.Args.Items[I]) is TIdentExpr) then
           SemanticError(
             Format('var argument %d of ''%s'' must be a variable',
               [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
         CheckTypesMatch(Par.ResolvedType, ArgType,
           Format('var argument %d of ''%s''', [I + 1, ACall.Name]),
           ACall.Line, ACall.Col);
       end
       else
       begin
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args[I]));
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
         CheckTypesMatch(Par.ResolvedType, ArgType,
           Format('argument %d of ''%s''', [I + 1, ACall.Name]),
           ACall.Line, ACall.Col);
@@ -2608,6 +2712,18 @@ begin
   end
   else
   begin
+    { Inc(x) / Inc(x, n) / Dec(x) / Dec(x, n) — in-place add/sub }
+    if SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec') then
+    begin
+      if (ACall.Args.Count < 1) or (ACall.Args.Count > 2) then
+        SemanticError(
+          Format('''%s'' requires 1 or 2 arguments', [ACall.Name]),
+          ACall.Line, ACall.Col);
+      AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      if ACall.Args.Count = 2 then
+        AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
+    end
+    else
     { Include(S, elem) / Exclude(S, elem): validate arg count and types }
     if SameText(ACall.Name, 'Include') or SameText(ACall.Name, 'Exclude') then
     begin
@@ -2615,7 +2731,7 @@ begin
         SemanticError(
           Format('''%s'' requires exactly 2 arguments', [ACall.Name]),
           ACall.Line, ACall.Col);
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args[0]));
+      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
       if ArgType.Kind <> tySet then
         SemanticError(
           Format('First argument of ''%s'' must be a set variable, got ''%s''',
@@ -2624,14 +2740,14 @@ begin
       { Validate the second arg is the correct enum element type }
       if ACall.Args.Count >= 2 then
       begin
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args[1]));
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
         { The set type arg was the first; recover it }
-        if (TASTExpr(ACall.Args[0]).ResolvedType.Kind = tySet) and
-           (ArgType <> TSetTypeDesc(TASTExpr(ACall.Args[0]).ResolvedType).BaseType) then
+        if (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tySet) and
+           (ArgType <> TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType) then
           SemanticError(
             Format('Second argument of ''%s'' must be type ''%s'', got ''%s''',
               [ACall.Name,
-               TSetTypeDesc(TASTExpr(ACall.Args[0]).ResolvedType).BaseType.Name,
+               TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Name,
                ArgType.Name]),
             ACall.Line, ACall.Col);
       end;
@@ -2640,7 +2756,7 @@ begin
     begin
       { Other built-ins (WriteLn/Write/etc.) — just analyse arg expressions }
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(ACall.Args[I]));
+        AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
     end;
   end;
 end;
@@ -2659,11 +2775,11 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('SizeOf requires exactly one argument', AExpr.Line, AExpr.Col);
-    if AExpr.Args[0] is TIdentExpr then
+    if AExpr.Args.Items[0] is TIdentExpr then
     begin
-      Sym := FTable.Lookup(TIdentExpr(AExpr.Args[0]).Name);
+      Sym := FTable.Lookup(TIdentExpr(AExpr.Args.Items[0]).Name);
       if (Sym <> nil) and (Sym.Kind = skType) then
-        TIdentExpr(AExpr.Args[0]).ResolvedType := Sym.TypeDesc;
+        TIdentExpr(AExpr.Args.Items[0]).ResolvedType := Sym.TypeDesc;
     end;
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
@@ -2674,7 +2790,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('PChar requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     if not (ArgType.Kind in [tyString, tyPChar]) then
       SemanticError(
         Format('PChar cast requires a string or PChar expression, got ''%s''',
@@ -2689,7 +2805,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('string() requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     if ArgType.Kind <> tyPChar then
       SemanticError(
         Format('string() cast requires a PChar expression, got ''%s''',
@@ -2704,7 +2820,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('High requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     if not (ArgType.Kind in [tyOpenArray, tyStaticArray]) then
       SemanticError('High argument must be an array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
@@ -2716,7 +2832,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Low requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     if not (ArgType.Kind in [tyOpenArray, tyStaticArray]) then
       SemanticError('Low argument must be an array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
@@ -2740,8 +2856,8 @@ begin
             AExpr.Line, AExpr.Col);
         for I := 0 to AExpr.Args.Count - 1 do
         begin
-          Par     := TMethodParam(MDecl.Params[I]);
-          ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
+          Par     := TMethodParam(MDecl.Params.Items[I]);
+          ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
             AExpr.Line, AExpr.Col);
@@ -2769,7 +2885,7 @@ begin
       SemanticError(
         Format('Type cast ''%s'' expects exactly one argument', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := Sym.TypeDesc;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2784,7 +2900,7 @@ begin
   if SameText(AExpr.Name, 'GetMem') or SameText(AExpr.Name, 'ReallocMem') then
   begin
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args[I]));
+      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     Result := FTable.TypePointer;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2796,7 +2912,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Length requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     if ArgType.Kind <> tyString then
       SemanticError('Length argument must be a string', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
@@ -2808,8 +2924,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('Pos requires exactly two arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2819,9 +2935,9 @@ begin
   begin
     if AExpr.Args.Count <> 3 then
       SemanticError('Copy requires exactly three arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
-    AnalyseExpr(TASTExpr(AExpr.Args[2]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[2]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2832,7 +2948,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2842,8 +2958,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('SameText requires exactly two arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2853,7 +2969,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('IntToStr requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2863,7 +2979,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Int64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2873,7 +2989,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2883,7 +2999,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt64 requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeInt64;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2893,8 +3009,18 @@ begin
   begin
     if AExpr.Args.Count < 1 then
       SemanticError('Format requires at least one argument', AExpr.Line, AExpr.Col);
-    for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args[I]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    { When the second arg is an array literal (Pascal 'array of const' notation),
+      analyse each element individually — types need not be homogeneous. }
+    if (AExpr.Args.Count = 2) and (AExpr.Args.Items[1] is TArrayLiteralExpr) then
+    begin
+      for I := 0 to TArrayLiteralExpr(AExpr.Args.Items[1]).Elements.Count - 1 do
+        AnalyseExpr(TASTExpr(TArrayLiteralExpr(AExpr.Args.Items[1]).Elements.Items[I]));
+      TArrayLiteralExpr(AExpr.Args.Items[1]).ResolvedType := FTable.TypeString;
+    end
+    else
+      for I := 1 to AExpr.Args.Count - 1 do
+        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2904,8 +3030,18 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('OrdAt requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Ord') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('Ord requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2915,7 +3051,17 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Chr requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'UpCase') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('UpCase requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2925,8 +3071,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError(AExpr.Name + ' requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2946,7 +3092,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ParamStr requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2957,7 +3103,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ReadFile requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2967,7 +3113,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('FileExists requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2980,7 +3126,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('''%s'' requires exactly 1 argument', [AExpr.Name]),
                     AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -2990,7 +3136,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Exec requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3001,8 +3147,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('ChangeFileExt requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args[1]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3015,7 +3161,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('''%s'' requires exactly 1 argument', [AExpr.Name]),
                     AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3035,7 +3181,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessRunning requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3045,7 +3191,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessReadOutput requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3055,7 +3201,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessExitCode requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -3077,8 +3223,8 @@ begin
 
   for I := 0 to AExpr.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
-    Par     := TMethodParam(MDecl.Params[I]);
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
       AExpr.Line, AExpr.Col);
@@ -3116,7 +3262,7 @@ begin
             [ObjType.Name, AExpr.Name]),
           AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(AExpr.Args[I]));
+        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
       AExpr.ResolvedClassType := ObjType;
       AExpr.ResolvedMethod    := nil;
       Result := FindTypeOrInstantiate(
@@ -3138,8 +3284,8 @@ begin
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
     begin
-      ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
-      Par     := TMethodParam(MDecl.Params[I]);
+      ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Par     := TMethodParam(MDecl.Params.Items[I]);
       CheckTypesMatch(Par.ResolvedType, ArgType,
         Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
         AExpr.Line, AExpr.Col);
@@ -3194,7 +3340,7 @@ begin
               [ObjType.Name, AExpr.Name]),
             AExpr.Line, AExpr.Col);
         for I := 0 to AExpr.Args.Count - 1 do
-          AnalyseExpr(TASTExpr(AExpr.Args[I]));
+          AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
         AExpr.ResolvedClassType := ObjType;
         AExpr.ResolvedMethod    := nil;
         Result := FindTypeOrInstantiate(
@@ -3216,8 +3362,8 @@ begin
           AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.Args.Count - 1 do
       begin
-        ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
-        Par     := TMethodParam(MDecl.Params[I]);
+        ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        Par     := TMethodParam(MDecl.Params.Items[I]);
         CheckTypesMatch(Par.ResolvedType, ArgType,
           Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
           AExpr.Line, AExpr.Col);
@@ -3244,7 +3390,7 @@ begin
         Format('Cannot construct non-class type ''%s''', [AExpr.ObjectName]),
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args[I]));
+      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     { Try to find a user-defined constructor method for type checking }
     MDecl := FindMethodDecl(AExpr.ObjectName, AExpr.Name);
     AExpr.ResolvedMethod    := MDecl;
@@ -3273,10 +3419,11 @@ begin
           [ObjSym.TypeDesc.Name, AExpr.Name]),
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args[I]));
+      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
     AExpr.ResolvedMethod    := nil;  { nil = interface dispatch }
     AExpr.IsGlobal          := ObjSym.IsGlobal;
+    AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
     { Look up return type from interface method descriptor }
     Result := FindTypeOrInstantiate(
       IntfDesc.MethodReturnTypeName(IntfDesc.MethodIndex(AExpr.Name)));
@@ -3305,8 +3452,8 @@ begin
 
   for I := 0 to AExpr.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args[I]));
-    Par     := TMethodParam(MDecl.Params[I]);
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
       AExpr.Line, AExpr.Col);
@@ -3315,6 +3462,7 @@ begin
   AExpr.ResolvedClassType := RT;
   AExpr.ResolvedMethod    := MDecl;
   AExpr.IsGlobal          := ObjSym.IsGlobal;
+  AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
   Result := MDecl.ResolvedReturnType;
 end;
 
@@ -3481,6 +3629,14 @@ begin
       begin
         AAccess.FieldName := PropInfo.ReadField;
         AAccess.FieldInfo := RT.FindField(PropInfo.ReadField);
+        Result := PropInfo.TypeDesc;
+        Exit;
+      end;
+      { Method-backed property (including indexed; index attached later by subscript analyser) }
+      if (PropInfo <> nil) and (PropInfo.ReadMethod <> '') then
+      begin
+        AAccess.PropRead := PropInfo;
+        AAccess.PropOwnerType := RT.Name;
         Result := PropInfo.TypeDesc;
         Exit;
       end;
@@ -3664,6 +3820,7 @@ end;
 function TSemanticAnalyser.AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
 var
   LType, RType: TTypeDesc;
+  TmpSet: TSetTypeDesc;
 begin
   LType := AnalyseExpr(ABin.Left);
   RType := AnalyseExpr(ABin.Right);
@@ -3671,6 +3828,13 @@ begin
   { Set membership: elem in SetVar — left is base enum, right is set type }
   if ABin.Op = boIn then
   begin
+    { Coerce array literal [a, b, c] to an anonymous set type when the left
+      operand is an enum — handles the common 'x in [A, B, C]' idiom. }
+    if (ABin.Right is TArrayLiteralExpr) and (LType.Kind = tyEnum) then
+    begin
+      TmpSet := FTable.NewSetType('', TEnumTypeDesc(LType));
+      RType := AnalyseSetLiteralExpr(TArrayLiteralExpr(ABin.Right), TmpSet);
+    end;
     if RType.Kind <> tySet then
       SemanticError(
         Format('Right operand of ''in'' must be a set type, got ''%s''', [RType.Name]),
@@ -3718,6 +3882,15 @@ begin
   { Logical AND / OR — both operands must be Boolean. }
   if ABin.Op in [boAnd, boOr] then
   begin
+    { Bitwise or/and for integer types }
+    if LType.IsNumeric and RType.IsNumeric then
+    begin
+      if (LType.Kind = tyInt64) or (RType.Kind = tyInt64) then
+        Result := FTable.TypeInt64
+      else
+        Result := FTable.TypeInteger;
+      Exit;
+    end;
     if LType.Kind <> tyBoolean then
       SemanticError(
         Format('Left operand of ''%s'' must be Boolean, got ''%s''',
@@ -3781,6 +3954,24 @@ begin
     if (ABin.Op = boAdd) and LType.IsNumeric and (RType.Kind = tyPointer) then
     begin
       Result := RType;
+      Exit;
+    end;
+
+    { Shift operators: result has the left operand's type; right is the shift amount }
+    if ABin.Op in [boShl, boShr] then
+    begin
+      if not LType.IsNumeric then
+        SemanticError(
+          Format('Left operand of ''%s'' must be numeric, got ''%s''',
+            [BinaryOpName(ABin.Op), LType.Name]),
+          ABin.Line, ABin.Col);
+      if not RType.IsNumeric then
+        SemanticError(
+          Format('Shift amount of ''%s'' must be numeric, got ''%s''',
+            [BinaryOpName(ABin.Op), RType.Name]),
+          ABin.Line, ABin.Col);
+      Result := LType;
+      ABin.ResolvedType := Result;
       Exit;
     end;
 
@@ -3888,8 +4079,23 @@ end;
 function TSemanticAnalyser.AnalyseStringSubscriptExpr(AExpr: TStringSubscriptExpr): TTypeDesc;
 var
   StrType, IdxType: TTypeDesc;
+  FldAccess: TFieldAccessExpr;
 begin
   StrType := AnalyseExpr(AExpr.StrExpr);
+  { Indexed property read: Obj.Prop[I] where Prop is a method-backed indexed property }
+  if AExpr.StrExpr is TFieldAccessExpr then
+  begin
+    FldAccess := TFieldAccessExpr(AExpr.StrExpr);
+    if (FldAccess.PropRead <> nil) and (FldAccess.PropRead.IndexParamName <> '') then
+    begin
+      IdxType := AnalyseExpr(AExpr.IndexExpr);
+      FldAccess.PropIndexExpr := AExpr.IndexExpr;
+      AExpr.IndexExpr := nil;
+      Result := FldAccess.PropRead.TypeDesc;
+      AExpr.ResolvedType := Result;
+      Exit;
+    end;
+  end;
   { Static array element access: A[I] where A is a static array local }
   if StrType.Kind = tyStaticArray then
   begin
@@ -3954,10 +4160,10 @@ begin
       AStmt.Line, AStmt.Col);
   for I := 0 to AStmt.Branches.Count - 1 do
   begin
-    Branch := TCaseBranch(AStmt.Branches[I]);
+    Branch := TCaseBranch(AStmt.Branches.Items[I]);
     for J := 0 to Branch.Values.Count - 1 do
     begin
-      ValType := AnalyseExpr(TASTExpr(Branch.Values[J]));
+      ValType := AnalyseExpr(TASTExpr(Branch.Values.Items[J]));
       CheckTypesMatch(SelType, ValType, 'case value', AStmt.Line, AStmt.Col);
     end;
     AnalyseStmt(Branch.Stmt);
@@ -4021,10 +4227,10 @@ begin
   if AExpr.Elements.Count = 0 then
     SemanticError('Array literal must contain at least one element',
       AExpr.Line, AExpr.Col);
-  ElemType := AnalyseExpr(TASTExpr(AExpr.Elements[0]));
+  ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[0]));
   for I := 1 to AExpr.Elements.Count - 1 do
   begin
-    ActType := AnalyseExpr(TASTExpr(AExpr.Elements[I]));
+    ActType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
     if ActType <> ElemType then
       SemanticError(
         Format('Array literal element %d has type ''%s''; expected ''%s''',
@@ -4046,7 +4252,7 @@ var
 begin
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
-    ElemType := AnalyseExpr(TASTExpr(AExpr.Elements[I]));
+    ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
     if ElemType <> ASetType.BaseType then
       SemanticError(
         Format('Set literal element %d has type ''%s''; expected ''%s''',

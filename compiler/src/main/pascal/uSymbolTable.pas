@@ -120,8 +120,6 @@ type
     ImplName: string;   { fully-qualified QBE label, e.g. $TDog_Speak }
   end;
 
-  TInterfaceTypeDesc = class;  { forward }
-
   { Property descriptor — one per declared property on a class. }
   TPropertyInfo = class
   public
@@ -133,6 +131,24 @@ type
     WriteMethod:    string;      { '' if field-backed write or read-only }
     IndexParamName: string;  { '' = non-indexed property }
     IndexTypeDesc: TTypeDesc;  { not owned; non-nil when IndexParamName <> '' }
+  end;
+
+  { Type descriptor for zero-GUID interface types (Phase 3). }
+  TInterfaceTypeDesc = class(TTypeDesc)
+  private
+    FMethods:     TStringList;  { method names, case-insensitive }
+    FReturnTypes: TStringList;  { parallel: return type name, '' = procedure }
+    FParent:      TInterfaceTypeDesc;  { not owned; nil if no parent }
+  public
+    constructor Create(const AName: string);
+    destructor Destroy; override;
+    procedure AddMethod(const AName: string; const AReturnTypeName: string);
+    function  HasMethod(const AName: string): Boolean;
+    function  MethodCount: Integer;
+    function  MethodName(AIndex: Integer): string;
+    function  MethodReturnTypeName(AIndex: Integer): string;
+    function  MethodIndex(const AName: string): Integer;
+    property  Parent: TInterfaceTypeDesc read FParent write FParent;
   end;
 
   { Extended type descriptor for record types. }
@@ -175,24 +191,6 @@ type
     property  Parent: TRecordTypeDesc read FParent write FParent;
     property  HasDestroyMethod: Boolean
               read FHasDestroyMethod write FHasDestroyMethod;
-  end;
-
-  { Type descriptor for zero-GUID interface types (Phase 3). }
-  TInterfaceTypeDesc = class(TTypeDesc)
-  private
-    FMethods:     TStringList;  { method names, case-insensitive }
-    FReturnTypes: TStringList;  { parallel: return type name, '' = procedure }
-    FParent:      TInterfaceTypeDesc;  { not owned; nil if no parent }
-  public
-    constructor Create(const AName: string);
-    destructor Destroy; override;
-    procedure AddMethod(const AName: string; const AReturnTypeName: string);
-    function  HasMethod(const AName: string): Boolean;
-    function  MethodCount: Integer;
-    function  MethodName(AIndex: Integer): string;
-    function  MethodReturnTypeName(AIndex: Integer): string;
-    function  MethodIndex(const AName: string): Integer;
-    property  Parent: TInterfaceTypeDesc read FParent write FParent;
   end;
 
   { ------------------------------------------------------------------ }
@@ -477,7 +475,7 @@ begin
   else
     Result := 0;
   for I := 0 to FFields.Count - 1 do
-    Inc(Result, TFieldInfo(FFields[I]).TypeDesc.ByteSize);
+    Inc(Result, TFieldInfo(FFields.Items[I]).TypeDesc.ByteSize);
 end;
 
 function TRecordTypeDesc.MaxAlign: Integer;
@@ -489,7 +487,7 @@ begin
     Result := 8;  { vptr requires 8-byte alignment }
   for I := 0 to FFields.Count - 1 do
   begin
-    A := TFieldInfo(FFields[I]).TypeDesc.AllocAlign;
+    A := TFieldInfo(FFields.Items[I]).TypeDesc.AllocAlign;
     if A > Result then
       Result := A;
   end;
@@ -513,7 +511,7 @@ begin
   if (FVTable = nil) or (ASlot < 0) or (ASlot >= FVTable.Count) then
     Result := nil
   else
-    Result := TVTableEntry(FVTable[ASlot]);
+    Result := TVTableEntry(FVTable.Items[ASlot]);
 end;
 
 function TRecordTypeDesc.FindVTableSlot(const AMethodName: string): Integer;
@@ -525,7 +523,7 @@ begin
   if FVTable = nil then Exit;
   for I := 0 to FVTable.Count - 1 do
   begin
-    E := TVTableEntry(FVTable[I]);
+    E := TVTableEntry(FVTable.Items[I]);
     if SameText(E.MethName, AMethodName) then
     begin
       Result := I;
@@ -551,7 +549,7 @@ end;
 procedure TRecordTypeDesc.OverrideVTableSlot(ASlot: Integer; const AImplName: string);
 begin
   if (FVTable <> nil) and (ASlot >= 0) and (ASlot < FVTable.Count) then
-    TVTableEntry(FVTable[ASlot]).ImplName := AImplName;
+    TVTableEntry(FVTable.Items[ASlot]).ImplName := AImplName;
 end;
 
 procedure TRecordTypeDesc.AddImplements(AIntf: TInterfaceTypeDesc);
@@ -566,7 +564,7 @@ end;
 
 function TRecordTypeDesc.ImplementsIntfAt(AIndex: Integer): TInterfaceTypeDesc;
 begin
-  Result := TInterfaceTypeDesc(FImplements[AIndex]);
+  Result := TInterfaceTypeDesc(FImplements.Items[AIndex]);
 end;
 
 procedure TRecordTypeDesc.CopyVTableFrom(AParent: TRecordTypeDesc);
@@ -602,9 +600,9 @@ var
   I: Integer;
 begin
   for I := 0 to FProperties.Count - 1 do
-    if SameText(TPropertyInfo(FProperties[I]).Name, AName) then
+    if SameText(TPropertyInfo(FProperties.Items[I]).Name, AName) then
     begin
-      Result := TPropertyInfo(FProperties[I]);
+      Result := TPropertyInfo(FProperties.Items[I]);
       Exit;
     end;
   Result := nil;
@@ -647,12 +645,12 @@ end;
 
 function TInterfaceTypeDesc.MethodName(AIndex: Integer): string;
 begin
-  Result := FMethods[AIndex];
+  Result := FMethods.Strings[AIndex];
 end;
 
 function TInterfaceTypeDesc.MethodReturnTypeName(AIndex: Integer): string;
 begin
-  Result := FReturnTypes[AIndex];
+  Result := FReturnTypes.Strings[AIndex];
 end;
 
 function TInterfaceTypeDesc.MethodIndex(const AName: string): Integer;
@@ -765,7 +763,7 @@ var
   I: Integer;
 begin
   for I := 0 to Members.Count - 1 do
-    if SameText(Members[I], AMember) then
+    if SameText(Members.Strings[I], AMember) then
     begin
       Result := I;
       Exit;
@@ -887,7 +885,8 @@ end;
 
 procedure TSymbolTable.RegisterBuiltins;
 var
-  Sym: TSymbol;
+  Sym:        TSymbol;
+  TObjectDesc: TRecordTypeDesc;
 begin
   { Primitive types }
   FTypeInteger := NewType(tyInteger, 'Integer');
@@ -912,7 +911,9 @@ begin
   Define(TSymbol.Create('PChar',   skType, FTypePChar));
 
   { TObject — root of the class hierarchy; no fields, no parent }
-  Define(TSymbol.Create('TObject', skType, NewClassType('TObject')));
+  TObjectDesc := NewClassType('TObject');
+  TObjectDesc.AddVTableSlot('Destroy', '$TObject_Destroy');
+  Define(TSymbol.Create('TObject', skType, TObjectDesc));
 
   { IInterface — root of the interface hierarchy; no methods }
   Define(TSymbol.Create('IInterface', skType, NewInterfaceType('IInterface')));
@@ -934,6 +935,9 @@ begin
   Sym := TSymbol.Create('Write',   skProcedure, nil);
   Define(Sym);
   Sym := TSymbol.Create('WriteLn', skProcedure, nil);
+  Define(Sym);
+  Sym := TSymbol.Create('StdErr', skConstant, FTypeInteger);
+  Sym.ConstValue := 2;
   Define(Sym);
 
   { Built-in set procedures }
@@ -981,8 +985,15 @@ begin
   Define(Sym);
   Sym := TSymbol.Create('OrdAt',       skFunction, FTypeInteger);
   Define(Sym);
+  Sym := TSymbol.Create('Ord',         skFunction, FTypeInteger);
+  Define(Sym);
   Sym := TSymbol.Create('Chr',         skFunction, FTypeString);
   Define(Sym);
+  Sym := TSymbol.Create('UpCase',      skFunction, FTypeString);
+  Define(Sym);
+  { Inc/Dec — in-place increment/decrement (var param, 1 or 2 args) }
+  Sym := TSymbol.Create('Inc', skProcedure, nil); Define(Sym);
+  Sym := TSymbol.Create('Dec', skProcedure, nil); Define(Sym);
   { Memory utilities }
   Sym := TSymbol.Create('ZeroMem',      skProcedure, nil); Define(Sym);
   Sym := TSymbol.Create('_ClassAddRef', skProcedure, nil); Define(Sym);
@@ -1021,12 +1032,12 @@ end;
 
 function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;
 begin
-  Result := TScope(FScopeStack[0]).Define(ASymbol);
+  Result := TScope(FScopeStack.Items[0]).Define(ASymbol);
 end;
 
 function TSymbolTable.GetCurrentScope: TScope;
 begin
-  Result := TScope(FScopeStack[FScopeStack.Count - 1]);
+  Result := TScope(FScopeStack.Items[FScopeStack.Count - 1]);
 end;
 
 function TSymbolTable.GetScopeDepth: Integer;

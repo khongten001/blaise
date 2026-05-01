@@ -47,24 +47,14 @@ type
 
 implementation
 
-const
-  FpcRtlUnits: array[0..8] of string = (
-    'System', 'Math', 'DateUtils',
-    'Windows', 'Unix', 'BaseUnix', 'CThreads',
-    'FGL', 'Types'
-  );
-
 function TUnitLoader.IsBuiltin(const AName: string): Boolean;
-var
-  I: Integer;
 begin
-  for I := Low(FpcRtlUnits) to High(FpcRtlUnits) do
-    if SameText(AName, FpcRtlUnits[I]) then
-    begin
-      Result := True;
-      Exit;
-    end;
-  Result := False;
+  Result :=
+    SameText(AName, 'System')    or SameText(AName, 'Math')      or
+    SameText(AName, 'DateUtils') or SameText(AName, 'Windows')   or
+    SameText(AName, 'Unix')      or SameText(AName, 'BaseUnix')  or
+    SameText(AName, 'CThreads')  or SameText(AName, 'FGL')       or
+    SameText(AName, 'Types');
 end;
 
 function TUnitLoader.Locate(const AName: string): string;
@@ -75,7 +65,7 @@ var
 begin
   for I := 0 to FSearchPaths.Count - 1 do
   begin
-    Base := IncludeTrailingPathDelimiter(FSearchPaths[I]);
+    Base := IncludeTrailingPathDelimiter(FSearchPaths.Strings[I]);
     { Try lowercase first — Blaise convention for unit file names }
     Path := Base + LowerCase(AName) + '.pas';
     if FileExists(Path) then
@@ -143,7 +133,7 @@ begin
     U := LoadOne(Path);
     { Post-order DFS: process dependencies before this unit }
     for I := 0 to U.UsedUnits.Count - 1 do
-      LoadTransitive(U.UsedUnits[I]);
+      LoadTransitive(U.UsedUnits.Strings[I]);
     { Append this unit after all its dependencies }
     FResult.Add(U);
     FLoadedNames.Add(AName);
@@ -179,7 +169,7 @@ begin
   FResult := Result;
   try
     for I := 0 to AUnitNames.Count - 1 do
-      LoadTransitive(AUnitNames[I]);
+      LoadTransitive(AUnitNames.Strings[I]);
   except
     FResult := nil;
     Result.Free;

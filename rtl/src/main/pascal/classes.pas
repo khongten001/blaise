@@ -26,6 +26,11 @@ unit Classes;
 
 interface
 
+const
+  dupAccept = 0;
+  dupIgnore = 1;
+  dupError  = 2;
+
 type
   { ------------------------------------------------------------------ }
   { TStringList                                                          }

@@ -321,11 +321,10 @@ procedure TInheritTests.TestCodegen_SelfRef_Create_AllocatesCorrectSize;
 var IR: string;
 begin
   IR := GenIR(SrcSelfRef);
-  { TNode has Integer (4 bytes) + TNode pointer (8 bytes) = 12 bytes,
-    aligned to 8 → 12 bytes total.  _ClassAlloc is called with TotalSize
-    plus a pointer to the class's field-cleanup function. }
-  AssertTrue('_ClassAlloc 12 bytes for TNode with cleanup fn',
-    Pos('call $_ClassAlloc(l 12, l $_FieldCleanup_TNode)', IR) > 0);
+  { TNode: vptr (8) + Integer (4) + TNode pointer (8) = 20 bytes.
+    All class types carry the 8-byte vtable pointer at offset 0. }
+  AssertTrue('_ClassAlloc 20 bytes for TNode with cleanup fn',
+    Pos('call $_ClassAlloc(l 20, l $_FieldCleanup_TNode)', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }
@@ -352,12 +351,12 @@ var
 begin
   Prog := AnalyseSrc(SrcInherit);
   try
-    { TAnimal: Age (4 bytes) = 4 total.
-      TDog: Age (4) + Legs (4) = 8 total. }
+    { TAnimal: vptr (8) + Age (4) = 12 total.
+      TDog: vptr (8) + Age (4) + Legs (4) = 16 total. }
     Sym := Prog.SymbolTable.Lookup('TDog');
     AssertNotNull('TDog symbol', Sym);
     RT := TRecordTypeDesc(Sym.TypeDesc);
-    AssertEquals('TDog total size = 8', 8, RT.TotalSize);
+    AssertEquals('TDog total size = 16', 16, RT.TotalSize);
   finally Prog.Free; end;
 end;
 
@@ -365,19 +364,18 @@ procedure TInheritTests.TestCodegen_Inherit_Create_AllocatesTotalSize;
 var IR: string;
 begin
   IR := GenIR(SrcInherit);
-  { TDog.Create passes TotalSize (8 bytes: Age + Legs) to _ClassAlloc along
-    with its per-class field-cleanup function. }
-  AssertTrue('_ClassAlloc 8 bytes for TDog with cleanup fn',
-    Pos('call $_ClassAlloc(l 8, l $_FieldCleanup_TDog)', IR) > 0);
+  { TDog.Create passes TotalSize (16 bytes: vptr + Age + Legs) to _ClassAlloc
+    along with its per-class field-cleanup function. }
+  AssertTrue('_ClassAlloc 16 bytes for TDog with cleanup fn',
+    Pos('call $_ClassAlloc(l 16, l $_FieldCleanup_TDog)', IR) > 0);
 end;
 
 procedure TInheritTests.TestCodegen_Inherit_ParentFieldOffset;
 var IR: string;
 begin
   IR := GenIR(SrcInherit);
-  { Age is at offset 0 in TDog (first field, inherited).
-    storew to the base pointer — no offset add needed. }
-  AssertTrue('Age field at offset 0 (storew to base ptr)',
+  { Age is at offset 8 in TDog (after 8-byte vptr); storew appears in the IR. }
+  AssertTrue('Age field storew present',
     Pos('storew', IR) > 0);
 end;
 
@@ -385,9 +383,9 @@ procedure TInheritTests.TestCodegen_Inherit_ChildFieldOffset;
 var IR: string;
 begin
   IR := GenIR(SrcInherit);
-  { Legs is at offset 4 in TDog — codegen must emit an add 4 }
-  AssertTrue('Legs field at offset 4 (add 4)',
-    Pos(', 4', IR) > 0);
+  { Legs is at offset 12 in TDog (8 vptr + 4 Age) — codegen emits an add 12 }
+  AssertTrue('Legs field at offset 12 (add 12)',
+    Pos(', 12', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

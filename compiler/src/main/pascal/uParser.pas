@@ -87,6 +87,7 @@ type
     function  ParseRepeatStmt: TRepeatStmt;
     function  ParseForStmt: TForStmt;
     function  ParseTryStmt: TASTStmt;
+    procedure ParseBodyInto(ATarget: TCompoundStmt; AStop1, AStop2: TTokenKind);
     function  ParseRaiseStmt: TRaiseStmt;
     function  ParseInheritedStmt: TInheritedCallStmt;
     function  ParseCaseStmt: TCaseStmt;
@@ -775,7 +776,8 @@ begin
             carried on the type decl, not repeated on method impls. }
           Result.OwnerTypeParams := TempParams;
           TempParams := nil;
-          FreeAndNil(TempConstraints);
+          TempConstraints.Free;
+          TempConstraints := nil;
         end
         else
         begin
@@ -910,7 +912,7 @@ begin
       for I := 0 to Names.Count - 1 do
       begin
         Par              := TMethodParam.Create;
-        Par.ParamName    := Names[I];
+        Par.ParamName    := Names.Strings[I];
         Par.TypeName     := TypeN;
         Par.IsVarParam   := IsVarGrp;
         Par.IsConstParam := IsConstGrp;
@@ -1630,6 +1632,10 @@ begin
     Result.Condition := ParseExpr;
     Expect(tkThen);
     Result.ThenStmt := ParseStmt;
+    // 'if cond then { comment } else' leaves ThenStmt nil when the comment is the only body.
+    // Substitute an empty compound so EmitIfStmt can always call EmitStmt.
+    if Result.ThenStmt = nil then
+      Result.ThenStmt := TCompoundStmt.Create;
     if Check(tkElse) then
     begin
       Advance;
@@ -1678,6 +1684,23 @@ begin
   end;
 end;
 
+procedure TParser.ParseBodyInto(ATarget: TCompoundStmt;
+  AStop1, AStop2: TTokenKind);
+var
+  S: TASTStmt;
+begin
+  while not (Check(AStop1) or Check(AStop2) or Check(tkEnd) or Check(tkEOF)) do
+  begin
+    S := ParseStmt;
+    if S <> nil then
+      ATarget.Stmts.Add(S);
+    if Check(tkSemicolon) then
+      Advance
+    else
+      Break;
+  end;
+end;
+
 function TParser.ParseTryStmt: TASTStmt;
 var
   TryBody:     TCompoundStmt;
@@ -1687,24 +1710,6 @@ var
   TFS:         TTryFinallyStmt;
   TES:         TTryExceptStmt;
   Line, Col:   Integer;
-
-  procedure ParseBodyInto(ATarget: TCompoundStmt;
-    AStop1, AStop2: TTokenKind);
-  var S: TASTStmt;
-  begin
-    while not (Check(AStop1) or Check(AStop2) or
-               Check(tkEnd) or Check(tkEOF)) do
-    begin
-      S := ParseStmt;
-      if S <> nil then
-        ATarget.Stmts.Add(S);
-      if Check(tkSemicolon) then
-        Advance
-      else
-        Break;
-    end;
-  end;
-
 begin
   Line := FCurrent.Line;
   Col  := FCurrent.Col;
@@ -2136,10 +2141,13 @@ var
   Node:  TBinaryExpr;
 begin
   Result := ParseFactor;
-  while Check(tkStar) or Check(tkSlash) or Check(tkDiv) or Check(tkAnd) do
+  while Check(tkStar) or Check(tkSlash) or Check(tkDiv) or Check(tkAnd)
+        or Check(tkShl) or Check(tkShr) do
   begin
     if      Check(tkStar) then Op := boMul
     else if Check(tkAnd)  then Op := boAnd
+    else if Check(tkShl)  then Op := boShl
+    else if Check(tkShr)  then Op := boShr
     else                       Op := boDiv;
     Advance;
     Right := ParseFactor;

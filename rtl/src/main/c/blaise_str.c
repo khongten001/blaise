@@ -98,9 +98,10 @@ void* _StringCopy(void* s, int32_t from, int32_t count) {
         /* Return empty string */
         return str_alloc(0);
     }
-    if (count < 0) count = 0;
-    /* Use 64-bit arithmetic to avoid signed overflow when count = MaxInt */
-    if ((int64_t)start + (int64_t)count > (int64_t)slen) count = slen - start;
+    /* Negative count means the caller passed a very large value that was
+       truncated from 64-bit (e.g. MaxInt), so treat it as "rest of string". */
+    if (count < 0 || (int64_t)start + (int64_t)count > (int64_t)slen)
+        count = slen - start;
 
     void* result = str_alloc(count);
     if (result && count > 0)
@@ -244,6 +245,13 @@ void* _Chr(int32_t n) {
     if (!h) return NULL;
     ((char*)(h + 1))[0] = (char)(unsigned char)n;
     return (void*)h;
+}
+
+/* _UpCase(n) : string  — uppercase 1-char string for char ordinal n. */
+void* _UpCase(int32_t n) {
+    unsigned char c = (unsigned char)n;
+    if (c >= 'a' && c <= 'z') c -= 32;
+    return _Chr((int32_t)c);
 }
 
 /* ------------------------------------------------------------------ */

@@ -266,7 +266,7 @@ begin
   try
     Proc.Executable := AExe;
     for I := 0 to AArgs.Count - 1 do
-      Proc.Parameters.Add(AArgs[I]);
+      Proc.Parameters.Add(AArgs.Strings[I]);
     Proc.Execute;
     AOutput := '';
     repeat
@@ -437,7 +437,7 @@ begin
         Loader := TUnitLoader.Create(SearchPaths);
         Units  := Loader.LoadAll(Prog.UsedUnits);
         for I := 0 to Units.Count - 1 do
-          Semantic.AnalyseUnitForExport(TUnit(Units[I]));
+          Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
       end;
       Semantic.Analyse(Prog);
     except
@@ -467,8 +467,9 @@ begin
       CG := TCodeGenQBE.Create;
       if (Units <> nil) and (Units.Count > 0) then
       begin
+        CG.SetSymbolTable(Prog.SymbolTable);
         for I := 0 to Units.Count - 1 do
-          CG.AppendUnit(TUnit(Units[I]));
+          CG.AppendUnit(TUnit(Units.Items[I]));
         CG.AppendProgram(Prog);
       end
       else
