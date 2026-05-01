@@ -14,6 +14,42 @@ prioritise them.
 
 == Code Generation
 
+=== Int64 literal range detection in self-hosted binary
+
+*What.* When a constant or literal value exceeds the 32-bit signed range
+(`> 2147483647`), the codegen should emit `l copy <value>` (64-bit) rather
+than `w copy <value>` (32-bit).  Currently the range check in
+`EmitIntLiteralExpr` is `Value > 2147483647`, which uses a 32-bit comparison
+in the self-hosted binary; an Int64 value whose lower 32 bits appear negative
+is incorrectly classified as in-range.
+
+*Why it matters.* The current workaround is that `MaxInt` is declared as a
+32-bit `Integer` constant (`2147483647`) rather than a true 64-bit value.
+This is correct for `Copy(S, N, MaxInt)` usage (any string shorter than 2 GB
+qualifies), but it means `High(Int64)` cannot be represented as a named
+constant, and large Int64 literals in user code may be silently truncated.
+
+*Root cause.* `TSymbol.ConstValue` is declared as `Integer` (32-bit).
+Int64 literals such as `9223372036854775807` are stored by truncating to the
+lower 32 bits, yielding `-1`.  The range-check comparison in codegen then uses
+whatever integer width the self-hosted compiler assigns to the comparison
+operands — also 32-bit — so the check cannot distinguish a large positive
+value from a small negative one.
+
+*Implementation path.*
+
+. Add `ConstValueInt64: Int64` alongside `ConstValue: Integer` in `TSymbol`;
+  populate it in `RegisterBuiltIns` and the constant-declaration semantic pass.
+. In `EmitIntLiteralExpr` (and the constant-emit path), use `ConstValueInt64`
+  when the resolved type is `tyInt64`; emit `l copy <value>`.
+. Extend the range-check guard to compare `ConstValueInt64 > 2147483647`
+  using a 64-bit comparison.
+. Once the fix is verified in the self-hosted binary, `MaxInt` may optionally
+  be changed back to `Int64 = 9223372036854775807`, though the 32-bit value
+  is semantically correct for all current RTL uses.
+
+*Effort.* Small — field addition and emit-path branch.
+
 === Single-precision intrinsic dispatch for trig functions
 
 *What.* When a `Single` (32-bit float) operand is passed to a standard trig
@@ -63,6 +99,36 @@ single precision is sufficient and throughput matters.
   Moderate-significant effort.
 
 == Language
+
+=== `const` sections in unit interface and implementation blocks
+
+*What.* Allow `const` declaration sections to appear inside both the
+`interface` and `implementation` blocks of a unit, not only at program
+scope.  A unit's interface `const` section exports named constants to all
+importing units.
+
+*Why it matters.* Without this, RTL units that want to publish symbolic
+constants must either (a) declare them at implementation scope (invisible to
+callers) or (b) inline integer literals at every call site.  The current
+workaround in `classes.pas` is to keep `dupAccept = 0`, `dupIgnore = 1`, and
+`dupError = 2` in the interface section's `const` block — but the unit
+parser does not yet parse that block, so the constants are absent from the
+RTL public API and importing units must repeat the literals.
+
+*Implementation notes.*
+
+* `uParser.pas`: `ParseUnit` already dispatches on `tkConst` in the
+  interface section to skip to the next keyword.  Change that to call
+  `ParseConstSection` and attach the resulting constants to the unit scope.
+* `uSemantic.pas` / `uSymbolTable.pas`: when a unit's interface section is
+  imported, its constants must be registered in the importing scope under
+  the unit namespace, consistent with how exported types and procedures are
+  handled.
+* No codegen change is required: constants are resolved at semantic time and
+  folded to literals before IR emission.
+
+*Effort.* Small.  Parser change is the critical path; symbol-table import
+propagation follows the existing unit-import pattern.
 
 === Multi-line string literals
 

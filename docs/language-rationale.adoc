@@ -254,8 +254,7 @@ makes arithmetic portable across Blaise's supported targets (linux-x86_64,
 macos-arm64) without requiring a platform-sized integer type.
 
 `Int64` is 64-bit signed on all platforms.  It is used wherever values may
-exceed the 32-bit range — notably as the type of the `MaxInt` built-in
-constant (value `9223372036854775807`, i.e., 2^63 − 1).
+exceed the 32-bit range.
 
 `Byte` is 8-bit unsigned.  In registers and temporaries it is widened to
 `w` (32-bit QBE word).  Array element allocation uses 1 byte per `Byte`
@@ -263,9 +262,20 @@ element, consistent with FPC.
 
 ==== Built-in constant
 
-`MaxInt: Int64 = 9223372036854775807` is a compiler built-in constant.
-It represents the maximum value of a 64-bit signed integer.  It is used
-as a sentinel meaning "to end of string" in `Copy()`.
+`MaxInt: Integer = 2147483647` is a compiler built-in constant.  It
+represents the maximum value of a 32-bit signed integer (2^31 − 1).  In
+Blaise source it is used exclusively as a sentinel meaning "copy to end of
+string" in `Copy(S, N, MaxInt)` calls; every such call passes `2147483647`
+as the `count` argument to the RTL's `_StringCopy`, which clamps any count
+≥ remaining length to the actual remainder.
+
+This differs from FPC, where `MaxInt = High(SizeInt) = 9223372036854775807`
+(the 64-bit maximum on 64-bit targets).  The Blaise value is deliberately
+kept 32-bit: the compiler's Integer type is 32-bit, `Copy`'s `count`
+parameter is `Integer`, and passing a 64-bit literal through the QBE `w`
+calling convention truncated it to −1, causing `_StringCopy` to return an
+empty string.  The 32-bit value avoids this without loss of expressiveness
+for any realistic string length.
 
 ==== Conversion built-ins
 
@@ -273,10 +283,10 @@ as a sentinel meaning "to end of string" in `Copy()`.
 |===
 | Built-in | Signature | Notes
 
-| `IntToStr` | `(Integer): string` | 32-bit integer to decimal string
-| `Int64ToStr` | `(Int64): string` | 64-bit integer to decimal string; use when the value may exceed 2^31−1
+| `IntToStr` | `(Integer): string` | 32-bit integer to decimal string; when the argument resolves to `Int64` the codegen automatically routes the call to `_Int64ToStr`, matching FPC's overloaded resolution
+| `Int64ToStr` | `(Int64): string` | 64-bit integer to decimal string
 | `StrToInt` | `(string): Integer` | Decimal string to 32-bit integer; truncates silently on overflow
-| `StrToInt64` | `(string): Int64` | Decimal string to 64-bit integer; required for parsing large literals such as `MaxInt`
+| `StrToInt64` | `(string): Int64` | Decimal string to 64-bit integer
 |===
 
 ==== Alternatives rejected
