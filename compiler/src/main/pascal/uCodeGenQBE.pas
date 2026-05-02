@@ -1619,6 +1619,21 @@ begin
     Fld := TFieldAccessExpr(AExpr);
     if Fld.Base <> nil then
       Base := EmitInstancePtr(Fld.Base)
+    else if Fld.IsImplicitSelf then
+    begin
+      { Leaf: RecordName is a field of Self — load through %_var_Self. }
+      SelfT := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_Self', [SelfT]));
+      if Fld.ImplicitBaseInfo.Offset > 0 then
+      begin
+        Ptr := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d', [Ptr, SelfT, Fld.ImplicitBaseInfo.Offset]));
+        SelfT := Ptr;
+      end;
+      Loaded := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [Loaded, SelfT]));
+      Base := Loaded;
+    end
     else
     begin
       { Leaf: RecordName-based access, same rules as for TIdentExpr. }
