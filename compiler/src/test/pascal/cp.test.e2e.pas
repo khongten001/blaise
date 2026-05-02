@@ -118,6 +118,9 @@ type
     procedure TestRun_StringOps_SameText;
     procedure TestRun_StringOps_IntToStr;
     procedure TestRun_StringOps_StrToInt;
+    procedure TestRun_StringOps_StrToInt_Hex;
+    procedure TestRun_StringOps_Copy_MaxIntCount;
+    procedure TestRun_Int64_PositiveAboveInt32_FormatsCorrectly;
     procedure TestRun_StringOps_Format_IntArg;
     procedure TestRun_StringOps_Format_StrArg;
     procedure TestRun_StringOps_Format_MixedArgs;
@@ -1303,6 +1306,66 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcStringStrToInt, Output, RCode, []));
   AssertEquals('StrToInt(''123'') = 123', '123', Trim(Output));
+end;
+
+const
+  SrcStringStrToIntHex =
+    'program P;'                                  + LineEnding +
+    'var n: Integer;'                             + LineEnding +
+    'begin'                                       + LineEnding +
+    '  n := StrToInt(''$FF'');'                   + LineEnding +
+    '  WriteLn(n)'                                + LineEnding +
+    'end.';
+
+  SrcStringCopyMaxIntCount =
+    'program P;'                                  + LineEnding +
+    'var s: string;'                              + LineEnding +
+    'begin'                                       + LineEnding +
+    '  s := Copy(''^Integer'', 2, MaxInt);'       + LineEnding +
+    '  WriteLn(s)'                                + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_StringOps_StrToInt_Hex;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcStringStrToIntHex, Output, RCode, []));
+  AssertEquals('StrToInt(''$FF'') = 255', '255', Trim(Output));
+end;
+
+procedure TE2ETests.TestRun_StringOps_Copy_MaxIntCount;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcStringCopyMaxIntCount, Output, RCode, []));
+  AssertEquals('Copy(''^Integer'', 2, MaxInt) = ''Integer''', 'Integer', Trim(Output));
+end;
+
+const
+  SrcInt64PositiveAboveInt32 =
+    'program P;'                                  + LineEnding +
+    'var v: Int64;'                               + LineEnding +
+    'begin'                                       + LineEnding +
+    '  v := 1000000000;'                          + LineEnding +
+    '  v := v + v + 166136261;'                   + LineEnding +
+    '  if v < 0 then WriteLn(''neg'')'            + LineEnding +
+    '          else WriteLn(''pos'');'            + LineEnding +
+    '  WriteLn(IntToStr(v))'                      + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_Int64_PositiveAboveInt32_FormatsCorrectly;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcInt64PositiveAboveInt32, Output, RCode, []));
+  AssertEquals('Int64=2166136261 compares as positive and formats correctly',
+    'pos' + LineEnding + '2166136261', Trim(Output));
 end;
 
 const

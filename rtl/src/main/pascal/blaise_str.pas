@@ -211,7 +211,9 @@ begin
     Result := StrAlloc(0);
     Exit;
   end;
-  if (Count < 0) or (Start + Count > SLen) then
+  { Avoid signed overflow when Count is large (Copy(S, N, MaxInt) idiom) —
+    compare Count against (SLen - Start) instead of (Start + Count) > SLen. }
+  if (Count < 0) or (Count > SLen - Start) then
     Count := SLen - Start;
   Result := StrAlloc(Count);
   if (Result <> nil) and (Count > 0) then
@@ -456,12 +458,33 @@ begin
   else if Data[0] = 43 then  { '+' }
     I := 1;
   Value := 0;
-  C := Data[I];
-  while (C >= 48) and (C <= 57) do
+  if Data[I] = 36 then  { '$' — hexadecimal }
   begin
-    Value := Value * 10 + Int64(C - 48);
     Inc(I);
     C := Data[I];
+    while ((C >= 48) and (C <= 57))
+       or ((C >= 65) and (C <= 70))
+       or ((C >= 97) and (C <= 102)) do
+    begin
+      if C >= 97 then
+        Value := Value * 16 + Int64(C - 87)   { 'a'..'f' → 10..15 }
+      else if C >= 65 then
+        Value := Value * 16 + Int64(C - 55)   { 'A'..'F' → 10..15 }
+      else
+        Value := Value * 16 + Int64(C - 48);  { '0'..'9' }
+      Inc(I);
+      C := Data[I];
+    end;
+  end
+  else
+  begin
+    C := Data[I];
+    while (C >= 48) and (C <= 57) do
+    begin
+      Value := Value * 10 + Int64(C - 48);
+      Inc(I);
+      C := Data[I];
+    end;
   end;
   if Neg then
     Result := Integer(-Value)
@@ -486,12 +509,33 @@ begin
   else if Data[0] = 43 then
     I := 1;
   Result := 0;
-  C := Data[I];
-  while (C >= 48) and (C <= 57) do
+  if Data[I] = 36 then  { '$' — hexadecimal }
   begin
-    Result := Result * 10 + Int64(C - 48);
     Inc(I);
     C := Data[I];
+    while ((C >= 48) and (C <= 57))
+       or ((C >= 65) and (C <= 70))
+       or ((C >= 97) and (C <= 102)) do
+    begin
+      if C >= 97 then
+        Result := Result * 16 + Int64(C - 87)
+      else if C >= 65 then
+        Result := Result * 16 + Int64(C - 55)
+      else
+        Result := Result * 16 + Int64(C - 48);
+      Inc(I);
+      C := Data[I];
+    end;
+  end
+  else
+  begin
+    C := Data[I];
+    while (C >= 48) and (C <= 57) do
+    begin
+      Result := Result * 10 + Int64(C - 48);
+      Inc(I);
+      C := Data[I];
+    end;
   end;
   if Neg then
     Result := -Result;

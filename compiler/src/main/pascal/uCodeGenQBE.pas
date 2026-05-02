@@ -4351,7 +4351,8 @@ begin
       else
       begin
         T := AllocTemp;
-        EmitLine(Format('  %s =w copy %d', [T, FldAccess.ConstValue]));
+        { Int64-safe: see comment at TIdentExpr ConstValue emission. }
+        EmitLine(Format('  %s =w copy %s', [T, IntToStr(FldAccess.ConstValue)]));
         Result := T;
       end;
     end
@@ -4527,7 +4528,9 @@ begin
               (QbeTypeOf(AExpr.ResolvedType) = 'l') then
         EmitLine(Format('  %s =l copy %s', [T, IntToStr(TIdentExpr(AExpr).ConstValue)]))
       else
-        EmitLine(Format('  %s =w copy %d', [T, TIdentExpr(AExpr).ConstValue]));
+        { Use IntToStr (Int64-aware) instead of %d to avoid the
+          self-hosted Format runtime truncating Int64 args to int32. }
+        EmitLine(Format('  %s =w copy %s', [T, IntToStr(TIdentExpr(AExpr).ConstValue)]));
     end
     else if TIdentExpr(AExpr).IsVarParam then
     begin
@@ -4719,6 +4722,35 @@ begin
         boNE: Op := 'cnel';
       else
         Op := 'ceql';
+      end;
+      EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
+    end
+    { Int64 comparison: result is Boolean (w) but operands must be compared as l }
+    else if (BinExpr.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
+            (((BinExpr.Left.ResolvedType <> nil) and
+              (BinExpr.Left.ResolvedType.Kind = tyInt64)) or
+             ((BinExpr.Right.ResolvedType <> nil) and
+              (BinExpr.Right.ResolvedType.Kind = tyInt64))) then
+    begin
+      if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+      begin
+        ArgTemp := AllocTemp;
+        EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+        L := ArgTemp;
+      end;
+      if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+      begin
+        ArgTemp := AllocTemp;
+        EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+        R := ArgTemp;
+      end;
+      case BinExpr.Op of
+        boEQ: Op := 'ceql';
+        boNE: Op := 'cnel';
+        boLT: Op := 'csltl';
+        boGT: Op := 'csgtl';
+        boLE: Op := 'cslel';
+        boGE: Op := 'csgel';
       end;
       EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     end
