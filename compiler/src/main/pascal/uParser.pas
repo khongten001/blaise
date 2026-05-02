@@ -85,7 +85,7 @@ type
     function  ParseIfStmt: TIfStmt;
     function  ParseWhileStmt: TWhileStmt;
     function  ParseRepeatStmt: TRepeatStmt;
-    function  ParseForStmt: TForStmt;
+    function  ParseForStmt: TASTStmt;
     function  ParseTryStmt: TASTStmt;
     procedure ParseBodyInto(ATarget: TCompoundStmt; AStop1, AStop2: TTokenKind);
     function  ParseRaiseStmt: TRaiseStmt;
@@ -1665,40 +1665,75 @@ begin
   end;
 end;
 
-function TParser.ParseForStmt: TForStmt;
+function TParser.ParseForStmt: TASTStmt;
+var
+  SLine:    Integer;
+  SCol:     Integer;
+  VarName:  string;
+  ForS:     TForStmt;
+  ForInS:   TForInStmt;
 begin
-  Result := TForStmt.Create;
-  try
-    Result.Line := FCurrent.Line;
-    Result.Col  := FCurrent.Col;
-    Expect(tkFor);
-    if not Check(tkIdent) then
-      raise EParseError.Create(Format('Expected loop variable at line %d col %d in %s',
-        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-    Result.VarName := FCurrent.Value;
-    Advance;
-    Expect(tkAssign);
-    Result.StartExpr := ParseExpr;
-    if Check(tkTo) then
-    begin
-      Result.IsDownTo := False;
-      Advance;
-    end
-    else if Check(tkDownto) then
-    begin
-      Result.IsDownTo := True;
-      Advance;
-    end
-    else
-      raise EParseError.Create(Format(
-        'Expected ''to'' or ''downto'' at line %d col %d in %s',
-        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-    Result.EndExpr := ParseExpr;
-    Expect(tkDo);
-    Result.Body := ParseStmt;
-  except
-    Result.Free;
-    raise;
+  SLine := FCurrent.Line;
+  SCol  := FCurrent.Col;
+  Expect(tkFor);
+  if not Check(tkIdent) then
+    raise EParseError.Create(Format('Expected loop variable at line %d col %d in %s',
+      [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  VarName := FCurrent.Value;
+  Advance;
+
+  if Check(tkIn) then
+  begin
+    { for X in Collection do Body }
+    ForInS := TForInStmt.Create;
+    Result := ForInS;
+    try
+      ForInS.Line    := SLine;
+      ForInS.Col     := SCol;
+      ForInS.VarName := VarName;
+      Advance;  { consume 'in' }
+      ForInS.CollExpr := ParseExpr;
+      Expect(tkDo);
+      ForInS.Body := ParseStmt;
+    except
+      ForInS.Free;
+      Result := nil;
+      raise;
+    end;
+  end
+  else
+  begin
+    { for X := Start to/downto End do Body }
+    ForS := TForStmt.Create;
+    Result := ForS;
+    try
+      ForS.Line    := SLine;
+      ForS.Col     := SCol;
+      ForS.VarName := VarName;
+      Expect(tkAssign);
+      ForS.StartExpr := ParseExpr;
+      if Check(tkTo) then
+      begin
+        ForS.IsDownTo := False;
+        Advance;
+      end
+      else if Check(tkDownto) then
+      begin
+        ForS.IsDownTo := True;
+        Advance;
+      end
+      else
+        raise EParseError.Create(Format(
+          'Expected ''to'' or ''downto'' at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      ForS.EndExpr := ParseExpr;
+      Expect(tkDo);
+      ForS.Body := ParseStmt;
+    except
+      ForS.Free;
+      Result := nil;
+      raise;
+    end;
   end;
 end;
 

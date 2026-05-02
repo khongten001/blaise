@@ -37,6 +37,8 @@ type
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
+    FCurrentLocalBlock:    TBlock;       { block currently being stmt-analysed; for-in injects synthetic TVarDecl here }
+    FForInCounter:         Integer;      { counter for generating unique __forin_N variable names }
 
     { Generic type instantiation: resolves 'TBox<Integer>' on demand. }
     function  FindTypeOrInstantiate(const AName: string): TTypeDesc;
@@ -2051,10 +2053,17 @@ end;
 
 procedure TSemanticAnalyser.AnalyseStmts(ABlock: TBlock);
 var
-  I: Integer;
+  I:         Integer;
+  PrevBlock: TBlock;
 begin
-  for I := 0 to ABlock.Stmts.Count - 1 do
-    AnalyseStmt(TASTStmt(ABlock.Stmts.Items[I]));
+  PrevBlock := FCurrentLocalBlock;
+  FCurrentLocalBlock := ABlock;
+  try
+    for I := 0 to ABlock.Stmts.Count - 1 do
+      AnalyseStmt(TASTStmt(ABlock.Stmts.Items[I]));
+  finally
+    FCurrentLocalBlock := PrevBlock;
+  end;
 end;
 
 procedure TSemanticAnalyser.AnalyseStmt(AStmt: TASTStmt);
@@ -2062,6 +2071,7 @@ var
   IfS:    TIfStmt;
   CmpS:   TCompoundStmt;
   ForS:   TForStmt;
+  ForInS: TForInStmt;
   WS:     TWhileStmt;
   RS:     TRepeatStmt;
   TFS:    TTryFinallyStmt;
@@ -2072,6 +2082,17 @@ var
   VarSym:    TSymbol;
   StartType: TTypeDesc;
   EndType:   TTypeDesc;
+  CollType:     TTypeDesc;
+  CollRT:       TRecordTypeDesc;
+  GetEnumDecl:  TMethodDecl;
+  EnumType:     TTypeDesc;
+  EnumRT:       TRecordTypeDesc;
+  MNDecl:       TMethodDecl;
+  CurProp:      TPropertyInfo;
+  CurDecl:      TMethodDecl;
+  ElemType:     TTypeDesc;
+  SynthDecl:    TVarDecl;
+  WalkRT:       TRecordTypeDesc;
 begin
   if AStmt is TForStmt then
   begin
@@ -2100,6 +2121,121 @@ begin
     Inc(FLoopDepth);
     try
       AnalyseStmt(ForS.Body);
+    finally
+      Dec(FLoopDepth);
+    end;
+  end
+  else if AStmt is TForInStmt then
+  begin
+    ForInS := TForInStmt(AStmt);
+
+    { 1. Analyse the collection expression }
+    CollType := AnalyseExpr(ForInS.CollExpr);
+    if (CollType = nil) or (CollType.Kind <> tyClass) then
+      SemanticError(
+        'for-in collection must be a class instance',
+        ForInS.Line, ForInS.Col);
+    CollRT := TRecordTypeDesc(CollType);
+
+    { 2. Find GetEnumerator on the collection type (walk parent chain) }
+    GetEnumDecl := FindMethodDecl(CollRT.Name, 'GetEnumerator');
+    if GetEnumDecl = nil then
+      SemanticError(
+        Format('class ''%s'' does not have a GetEnumerator method',
+          [CollRT.Name]),
+        ForInS.Line, ForInS.Col);
+
+    { 3. Verify GetEnumerator returns a class type }
+    EnumType := GetEnumDecl.ResolvedReturnType;
+    if (EnumType = nil) or (EnumType.Kind <> tyClass) then
+      SemanticError(
+        Format('GetEnumerator on ''%s'' must return a class type',
+          [CollRT.Name]),
+        ForInS.Line, ForInS.Col);
+    EnumRT := TRecordTypeDesc(EnumType);
+
+    { 4. Find MoveNext on the enumerator type (walk parent chain) }
+    MNDecl := FindMethodDecl(EnumRT.Name, 'MoveNext');
+    if MNDecl = nil then
+      SemanticError(
+        Format('enumerator class ''%s'' does not have a MoveNext method',
+          [EnumRT.Name]),
+        ForInS.Line, ForInS.Col);
+    if (MNDecl.ResolvedReturnType = nil) or
+       (MNDecl.ResolvedReturnType.Kind <> tyBoolean) then
+      SemanticError(
+        Format('MoveNext on enumerator ''%s'' must return Boolean',
+          [EnumRT.Name]),
+        ForInS.Line, ForInS.Col);
+
+    { 5. Find Current property on the enumerator (walk parent chain) }
+    CurProp := nil;
+    WalkRT  := EnumRT;
+    while (WalkRT <> nil) and (CurProp = nil) do
+    begin
+      CurProp := WalkRT.FindProperty('Current');
+      WalkRT  := WalkRT.Parent;
+    end;
+    if CurProp = nil then
+      SemanticError(
+        Format('enumerator class ''%s'' does not have a Current property',
+          [EnumRT.Name]),
+        ForInS.Line, ForInS.Col);
+    if CurProp.ReadMethod = '' then
+      SemanticError(
+        Format('Current property on ''%s'' must have a method-backed getter',
+          [EnumRT.Name]),
+        ForInS.Line, ForInS.Col);
+
+    { 6. Resolve the getter method }
+    CurDecl := FindMethodDecl(EnumRT.Name, CurProp.ReadMethod);
+    if CurDecl = nil then
+      SemanticError(
+        Format('getter ''%s'' for Current on ''%s'' not found',
+          [CurProp.ReadMethod, EnumRT.Name]),
+        ForInS.Line, ForInS.Col);
+    ElemType := CurDecl.ResolvedReturnType;
+
+    { 7. Resolve the loop variable and check type compatibility }
+    VarSym := FTable.Lookup(ForInS.VarName);
+    if VarSym = nil then
+      SemanticError(
+        Format('Undeclared loop variable ''%s''', [ForInS.VarName]),
+        ForInS.Line, ForInS.Col);
+    if VarSym.Kind <> skVariable then
+      SemanticError(
+        Format('''%s'' is not a variable', [ForInS.VarName]),
+        ForInS.Line, ForInS.Col);
+    CheckTypesMatch(VarSym.TypeDesc, ElemType,
+      'for-in loop variable', ForInS.Line, ForInS.Col);
+    ForInS.VarIsGlobal := VarSym.IsGlobal;
+
+    { 8. Set resolved annotations }
+    ForInS.ResolvedVarType      := ElemType;
+    ForInS.ResolvedEnumTypeName := EnumRT.Name;
+    ForInS.GetEnumDecl          := GetEnumDecl;
+    ForInS.MoveNextDecl         := MNDecl;
+    ForInS.CurrentDecl          := CurDecl;
+
+    { 9. Inject a synthetic TVarDecl for the enumerator slot into the
+         current local block so EmitVarAllocs allocates the slot and
+         EmitArcCleanup releases it at block exit. }
+    ForInS.EnumVarName := '__forin_' + IntToStr(FForInCounter);
+    Inc(FForInCounter);
+    if FCurrentLocalBlock <> nil then
+    begin
+      SynthDecl := TVarDecl.Create;
+      SynthDecl.Names.Add(ForInS.EnumVarName);
+      SynthDecl.TypeName    := EnumRT.Name;
+      SynthDecl.ResolvedType := EnumType;
+      SynthDecl.IsGlobal    := False;
+      FCurrentLocalBlock.Decls.Add(SynthDecl);
+    end;
+
+    { 10. Analyse the body }
+    Inc(FLoopDepth);
+    try
+      AnalyseStmt(ForInS.Body);
     finally
       Dec(FLoopDepth);
     end;

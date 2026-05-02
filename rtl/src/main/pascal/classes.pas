@@ -29,6 +29,19 @@ type
   TDuplicates = (dupAccept, dupIgnore, dupError);
 
   { ------------------------------------------------------------------ }
+  { TStringListEnumerator                                                }
+  { ------------------------------------------------------------------ }
+
+  TStringListEnumerator = class
+    FList:  TStringList;
+    FIndex: Integer;
+    constructor Create(AList: TStringList);
+    function MoveNext: Boolean;
+    function GetCurrent: string;
+    property Current: string read GetCurrent;
+  end;
+
+  { ------------------------------------------------------------------ }
   { TStringList                                                          }
   { ------------------------------------------------------------------ }
 
@@ -61,6 +74,7 @@ type
     procedure   SetText(AText: string);
     procedure   LoadFromFile(APath: string);
     procedure   SaveToFile(APath: string);
+    function    GetEnumerator: TStringListEnumerator;
     property Count:         Integer read FCount;
     property CaseSensitive: Boolean read FCaseSensitive write FCaseSensitive;
     property Sorted:        Boolean read FSorted        write FSorted;
@@ -432,6 +446,32 @@ end;
 procedure TStringList.SaveToFile(APath: string);
 begin
   WriteFile(APath, Self.GetText)
+end;
+
+function TStringList.GetEnumerator: TStringListEnumerator;
+begin
+  Result := TStringListEnumerator.Create(Self)
+end;
+
+{ ================================================================== }
+{ TStringListEnumerator                                                }
+{ ================================================================== }
+
+constructor TStringListEnumerator.Create(AList: TStringList);
+begin
+  Self.FList  := AList;
+  Self.FIndex := -1
+end;
+
+function TStringListEnumerator.MoveNext: Boolean;
+begin
+  Self.FIndex := Self.FIndex + 1;
+  Result := Self.FIndex < Self.FList.Count
+end;
+
+function TStringListEnumerator.GetCurrent: string;
+begin
+  Result := Self.FList.Get(Self.FIndex)
 end;
 
 end.

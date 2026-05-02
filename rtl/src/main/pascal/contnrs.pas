@@ -16,6 +16,19 @@ interface
 
 type
   { ------------------------------------------------------------------ }
+  { TObjectListEnumerator                                                }
+  { ------------------------------------------------------------------ }
+
+  TObjectListEnumerator = class
+    FList:  TObjectList;
+    FIndex: Integer;
+    constructor Create(AList: TObjectList);
+    function MoveNext: Boolean;
+    function GetCurrent: Pointer;
+    property Current: Pointer read GetCurrent;
+  end;
+
+  { ------------------------------------------------------------------ }
   { TObjectList                                                          }
   { ------------------------------------------------------------------ }
 
@@ -34,6 +47,7 @@ type
     procedure   Delete(AIndex: Integer);
     function    Extract(AObject: Pointer): Pointer;
     procedure   Clear;
+    function    GetEnumerator: TObjectListEnumerator;
     property Count: Integer read FCount;
     property Items[Index: Integer]: Pointer read Get write Put;
   end;
@@ -188,6 +202,32 @@ begin
     I    := I + 1
   end;
   Self.FCount := Self.FCount - 1
+end;
+
+function TObjectList.GetEnumerator: TObjectListEnumerator;
+begin
+  Result := TObjectListEnumerator.Create(Self)
+end;
+
+{ ================================================================== }
+{ TObjectListEnumerator                                                }
+{ ================================================================== }
+
+constructor TObjectListEnumerator.Create(AList: TObjectList);
+begin
+  Self.FList  := AList;
+  Self.FIndex := -1
+end;
+
+function TObjectListEnumerator.MoveNext: Boolean;
+begin
+  Self.FIndex := Self.FIndex + 1;
+  Result := Self.FIndex < Self.FList.Count
+end;
+
+function TObjectListEnumerator.GetCurrent: Pointer;
+begin
+  Result := Self.FList.Get(Self.FIndex)
 end;
 
 end.

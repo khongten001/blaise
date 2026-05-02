@@ -1066,6 +1066,8 @@ begin
     CollectStmtLines(TRepeatStmt(AStmt).Body, ALines)
   else if AStmt is TForStmt then
     CollectStmtLines(TForStmt(AStmt).Body, ALines)
+  else if AStmt is TForInStmt then
+    CollectStmtLines(TForInStmt(AStmt).Body, ALines)
   else if AStmt is TTryFinallyStmt then
   begin
     CollectStmtLines(TTryFinallyStmt(AStmt).TryBody, ALines);

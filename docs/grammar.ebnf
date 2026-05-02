@@ -452,6 +452,7 @@ WhileStmt
 
 ForStmt
     = FOR IDENT ASSIGN Expr ( TO | DOWNTO ) Expr DO Stmt
+    | FOR IDENT IN Expr DO Stmt
     ;
 
 TryFinallyStmt

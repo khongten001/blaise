@@ -66,6 +66,7 @@ type
     procedure EmitWhileStmt(AStmt: TWhileStmt);
     procedure EmitRepeatStmt(AStmt: TRepeatStmt);
     procedure EmitForStmt(AStmt: TForStmt);
+    procedure EmitForInStmt(AStmt: TForInStmt);
     procedure EmitTryFinallyStmt(AStmt: TTryFinallyStmt);
     procedure EmitTryExceptStmt(AStmt: TTryExceptStmt);
     procedure EmitRaiseStmt(AStmt: TRaiseStmt);
@@ -608,6 +609,8 @@ begin
     EmitTryExceptStmt(TTryExceptStmt(AStmt))
   else if AStmt is TRaiseStmt then
     EmitRaiseStmt(TRaiseStmt(AStmt))
+  else if AStmt is TForInStmt then
+    EmitForInStmt(TForInStmt(AStmt))
   else if AStmt is TForStmt then
     EmitForStmt(TForStmt(AStmt))
   else if AStmt is TWhileStmt then
@@ -871,6 +874,169 @@ begin
   EmitLine(Format('  jmp @%s', [LblCond]));
 
   { Continuation block }
+  EmitLine('@' + LblEnd);
+end;
+
+procedure TCodeGenQBE.EmitForInStmt(AStmt: TForInStmt);
+{ Implements for X in Collection do Body via the GetEnumerator protocol.
+  Desugars to:
+    __forin_N := Collection.GetEnumerator;
+    while __forin_N.MoveNext do begin X := __forin_N.Current; Body end;
+  The synthetic __forin_N slot is pre-allocated by EmitVarAllocs (injected
+  into Block.Decls by the semantic pass) and released by EmitArcCleanup. }
+var
+  LblCond:    string;
+  LblBody:    string;
+  LblEnd:     string;
+  EnumSlot:   string;  { %_var___forin_N address }
+  SelfT:      string;
+  EnumT:      string;
+  OldT:       string;
+  OkT:        string;
+  CurT:       string;
+  OldVarT:    string;
+  GetEDecl:   TMethodDecl;
+  MNDecl:     TMethodDecl;
+  CurDecl:    TMethodDecl;
+  QType:      string;
+  FuncName:   string;
+  VTblT:      string;
+  FPtrT:      string;
+  SlotOff:    Integer;
+  StoreInstr: string;
+begin
+  LblCond := AllocLabel('forin_cond');
+  LblBody := AllocLabel('forin_body');
+  LblEnd  := AllocLabel('forin_end');
+
+  GetEDecl := TMethodDecl(AStmt.GetEnumDecl);
+  MNDecl   := TMethodDecl(AStmt.MoveNextDecl);
+  CurDecl  := TMethodDecl(AStmt.CurrentDecl);
+  EnumSlot := '%_var_' + AStmt.EnumVarName;
+
+  { --- Call GetEnumerator on the collection --- }
+  SelfT := EmitExpr(AStmt.CollExpr);
+  EnumT := AllocTemp;
+  FuncName := '$' + QBEMangle(GetEDecl.OwnerTypeName + '_' + GetEDecl.Name);
+  if GetEDecl.VTableSlot >= 0 then
+  begin
+    VTblT   := AllocTemp;
+    FPtrT   := AllocTemp;
+    SlotOff := (GetEDecl.VTableSlot + 1) * 8;
+    EmitLine(Format('  %s =l loadl %s', [VTblT, SelfT]));
+    if SlotOff = 0 then
+      EmitLine(Format('  %s =l loadl %s', [FPtrT, VTblT]))
+    else
+    begin
+      OldT := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [OldT, VTblT, SlotOff]));
+      EmitLine(Format('  %s =l loadl %s', [FPtrT, OldT]));
+    end;
+    EmitLine(Format('  %s =l call %s(l %s)', [EnumT, FPtrT, SelfT]));
+  end
+  else
+    EmitLine(Format('  %s =l call %s(l %s)', [EnumT, FuncName, SelfT]));
+
+  { ARC-assign the enumerator into the synthetic slot }
+  OldT := AllocTemp;
+  EmitLine(Format('  %s =l loadl %s', [OldT, EnumSlot]));
+  EmitLine(Format('  call $_ClassAddRef(l %s)', [EnumT]));
+  EmitLine(Format('  call $_ClassRelease(l %s)', [OldT]));
+  EmitLine(Format('  storel %s, %s', [EnumT, EnumSlot]));
+
+  EmitLine(Format('  jmp @%s', [LblCond]));
+
+  { --- Condition: call MoveNext --- }
+  EmitLine('@' + LblCond);
+  SelfT    := AllocTemp;
+  EmitLine(Format('  %s =l loadl %s', [SelfT, EnumSlot]));
+  OkT      := AllocTemp;
+  FuncName := '$' + QBEMangle(MNDecl.OwnerTypeName + '_' + MNDecl.Name);
+  if MNDecl.VTableSlot >= 0 then
+  begin
+    VTblT   := AllocTemp;
+    FPtrT   := AllocTemp;
+    SlotOff := (MNDecl.VTableSlot + 1) * 8;
+    EmitLine(Format('  %s =l loadl %s', [VTblT, SelfT]));
+    if SlotOff = 0 then
+      EmitLine(Format('  %s =l loadl %s', [FPtrT, VTblT]))
+    else
+    begin
+      OldT := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d', [OldT, VTblT, SlotOff]));
+      EmitLine(Format('  %s =l loadl %s', [FPtrT, OldT]));
+    end;
+    EmitLine(Format('  %s =w call %s(l %s)', [OkT, FPtrT, SelfT]));
+  end
+  else
+    EmitLine(Format('  %s =w call %s(l %s)', [OkT, FuncName, SelfT]));
+  EmitLine(Format('  jnz %s, @%s, @%s', [OkT, LblBody, LblEnd]));
+
+  { --- Body: read Current, assign to loop var, then user body --- }
+  EmitLine('@' + LblBody);
+  FBreakLabels.Add(LblEnd);
+  FContinueLabels.Add(LblCond);
+  try
+    SelfT    := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s', [SelfT, EnumSlot]));
+    QType    := QbeTypeOf(CurDecl.ResolvedReturnType);
+    FuncName := '$' + QBEMangle(CurDecl.OwnerTypeName + '_' + CurDecl.Name);
+    CurT     := AllocTemp;
+    if CurDecl.VTableSlot >= 0 then
+    begin
+      VTblT   := AllocTemp;
+      FPtrT   := AllocTemp;
+      SlotOff := (CurDecl.VTableSlot + 1) * 8;
+      EmitLine(Format('  %s =l loadl %s', [VTblT, SelfT]));
+      if SlotOff = 0 then
+        EmitLine(Format('  %s =l loadl %s', [FPtrT, VTblT]))
+      else
+      begin
+        OldT := AllocTemp;
+        EmitLine(Format('  %s =l add %s, %d', [OldT, VTblT, SlotOff]));
+        EmitLine(Format('  %s =l loadl %s', [FPtrT, OldT]));
+      end;
+      EmitLine(Format('  %s =%s call %s(l %s)', [CurT, QType, FPtrT, SelfT]));
+    end
+    else
+      EmitLine(Format('  %s =%s call %s(l %s)', [CurT, QType, FuncName, SelfT]));
+
+    { Assign Current result to the loop variable }
+    if AStmt.ResolvedVarType.IsString then
+    begin
+      OldVarT := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+      EmitLine(Format('  call $_StringAddRef(l %s)', [CurT]));
+      EmitLine(Format('  call $_StringRelease(l %s)', [OldVarT]));
+      EmitLine(Format('  storel %s, %s',
+        [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+    end
+    else if AStmt.ResolvedVarType.Kind = tyClass then
+    begin
+      OldVarT := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [CurT]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldVarT]));
+      EmitLine(Format('  storel %s, %s',
+        [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+    end
+    else if QType = 'w' then
+      EmitLine(Format('  storew %s, %s',
+        [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]))
+    else
+      EmitLine(Format('  storel %s, %s',
+        [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+
+    EmitStmt(AStmt.Body);
+  finally
+    FBreakLabels.Delete(FBreakLabels.Count - 1);
+    FContinueLabels.Delete(FContinueLabels.Count - 1);
+  end;
+  EmitLine(Format('  jmp @%s', [LblCond]));
+
+  { --- End label --- }
   EmitLine('@' + LblEnd);
 end;
 

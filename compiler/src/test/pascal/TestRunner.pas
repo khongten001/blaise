@@ -66,7 +66,8 @@ uses
   cp.test.multifile,
   cp.test.constants,
   cp.test.external,
-  cp.test.opdf;
+  cp.test.opdf,
+  cp.test.forin;
 
 var
   Application: TTestRunner;

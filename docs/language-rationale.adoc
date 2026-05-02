@@ -823,6 +823,59 @@ required.
 
 ---
 
+== Iteration
+
+=== `for..in` Loop — Class-Based Enumerators
+
+==== Decision
+
+Blaise supports `for X in Collection do` iteration via the _GetEnumerator
+protocol_, matching FPC and Delphi semantics exactly:
+
+. The collection expression must be a class instance.
+. The class must have a zero-argument method `GetEnumerator` returning a class.
+. The returned enumerator class must have a `MoveNext: Boolean` method and a
+  `Current: T` property whose getter yields the element type.
+. The loop variable must be compatible with the element type `T`.
+
+The compiler desugars the loop as follows:
+
+[source,pascal]
+----
+{ for X in Collection do Body }
+__enum := Collection.GetEnumerator;
+while __enum.MoveNext do
+begin
+  X := __enum.Current;
+  Body
+end;
+----
+
+The synthetic `__enum` variable is injected into the enclosing function's
+local variable scope by the semantic pass so that ARC scope-exit cleanup
+releases the enumerator automatically.
+
+==== What is not yet supported
+
+* Iterating over static arrays (`for X in Arr do`) — deferred; requires
+  a built-in range-iteration path separate from GetEnumerator.
+* Iterating over sets (`for X in [a, b, c] do`) — deferred.
+* Byte-wise iteration over strings (`for B in S do`) — deferred; Blaise has
+  no `Char` type; byte iteration would yield `Byte` values consistent with
+  `S[N]` semantics, but the implementation is not yet present.
+
+==== Alternatives rejected
+
+* *FPC-style `IEnumerable` interface* — Blaise does not require the
+  collection to implement an interface.  The structural protocol
+  (GetEnumerator / MoveNext / Current) is checked by the semantic pass
+  via name lookup.  Requiring an interface declaration would add
+  boilerplate for simple use cases.
+* *Index-based desugaring for arrays* — deferred to a follow-on commit;
+  using the same protocol for all iterable types keeps the compiler simpler.
+
+---
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.

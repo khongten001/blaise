@@ -191,6 +191,22 @@ type
     destructor Destroy; override;
   end;
 
+  TForInStmt = class(TASTStmt)
+  public
+    VarName:              string;
+    VarIsGlobal:          Boolean;    { set by semantic — VarName is program-level global }
+    CollExpr:             TASTExpr;   { owned — collection expression }
+    Body:                 TASTStmt;   { owned }
+    { Annotations set by the semantic pass }
+    EnumVarName:          string;     { synthetic slot name, e.g. __forin_0 }
+    ResolvedVarType:      TTypeDesc;  { element type (type of Current) }
+    ResolvedEnumTypeName: string;     { enumerator class type name }
+    GetEnumDecl:          TObject;    { TMethodDecl — not owned }
+    MoveNextDecl:         TObject;    { TMethodDecl — not owned }
+    CurrentDecl:          TObject;    { TMethodDecl getter — not owned }
+    destructor Destroy; override;
+  end;
+
   TTryFinallyStmt = class(TASTStmt)
   public
     TryBody:     TCompoundStmt;  { owned }
@@ -667,6 +683,15 @@ destructor TForStmt.Destroy;
 begin
   StartExpr.Free;
   EndExpr.Free;
+  Body.Free;
+  inherited Destroy;
+end;
+
+{ TForInStmt }
+
+destructor TForInStmt.Destroy;
+begin
+  CollExpr.Free;
   Body.Free;
   inherited Destroy;
 end;
