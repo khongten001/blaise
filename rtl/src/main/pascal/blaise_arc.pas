@@ -40,6 +40,9 @@ function  _StringConcat(S1, S2: Pointer): Pointer;
 procedure TObject_Destroy(Self: Pointer);
 procedure _ClassAddRef(UserPtr: Pointer);
 procedure _ClassFree(UserPtr: Pointer);
+{ _ClassRelease is implemented in blaise_arc_class.c — decrement refcount
+  and free the object (running the cleanup hook) when it reaches zero. }
+procedure _ClassRelease(UserPtr: Pointer); external name '_ClassRelease';
 
 implementation
 

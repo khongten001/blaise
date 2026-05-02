@@ -4735,6 +4735,7 @@ begin
         boMod: Op := 'rem';
         boAnd: Op := 'and';
         boOr:  Op := 'or';
+        boXor: Op := 'xor';
         boShl: Op := 'shl';
         boShr: Op := 'shr';
       else
@@ -4758,6 +4759,7 @@ begin
         boGE:  Op := 'csgew';
         boAnd: Op := 'and';
         boOr:  Op := 'or';
+        boXor: Op := 'xor';
         boShl: Op := 'shl';
         boShr: Op := 'shr';
       else

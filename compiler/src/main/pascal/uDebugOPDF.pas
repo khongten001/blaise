@@ -582,7 +582,7 @@ begin
       CName := 'Pointer';
       RawSz := 8;
     end;
-    RBPOffset := RBPOffset - ((RawSz + 7) and (not 7));
+    RBPOffset := RBPOffset - ((RawSz + 7) and (-8));  { round up to 8-byte alignment; -8 = not 7 }
     for J := 0 to V.Names.Count - 1 do
     begin
       VarName := V.Names.Strings[J];
@@ -1129,16 +1129,16 @@ end;
 procedure TOPDFEmitter.PatchTotalRecords;
 begin
   if FTotRecIdx >= 0 then
-    FOutput[FTotRecIdx] := '    .int  ' + IntToStr(FRecordCount) +
-                           '                        # TotalRecords';
+    FOutput.Strings[FTotRecIdx] := '    .int  ' + IntToStr(FRecordCount) +
+                                  '                        # TotalRecords';
 end;
 
 procedure TOPDFEmitter.PatchUnitDirRecordCount;
 begin
   { RecordCount for the unit = all records except the directory record itself }
   if FUnitDirRecCountIdx >= 0 then
-    FOutput[FUnitDirRecCountIdx] := '    .int  ' + IntToStr(FRecordCount - 1) +
-                                    '  # RecordCount';
+    FOutput.Strings[FUnitDirRecCountIdx] := '    .int  ' + IntToStr(FRecordCount - 1) +
+                                           '  # RecordCount';
 end;
 
 procedure TOPDFEmitter.DoEmit;

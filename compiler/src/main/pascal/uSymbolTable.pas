@@ -905,6 +905,8 @@ begin
   Define(TSymbol.Create('Integer', skType, FTypeInteger));
   Define(TSymbol.Create('Int64',   skType, FTypeInt64));
   Define(TSymbol.Create('UInt32',  skType, FTypeUInt32));
+  Define(TSymbol.Create('Cardinal', skType, FTypeUInt32));  { FPC/Delphi alias }
+  Define(TSymbol.Create('PtrUInt', skType, FTypeInt64));    { FPC: pointer-sized unsigned = QWord on 64-bit }
   Define(TSymbol.Create('Byte',    skType, FTypeByte));
   Define(TSymbol.Create('Boolean', skType, FTypeBoolean));
   Define(TSymbol.Create('string',  skType, FTypeString));

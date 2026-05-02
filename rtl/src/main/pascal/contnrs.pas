@@ -14,6 +14,9 @@ unit Contnrs;
 
 interface
 
+uses
+  blaise_arc;  { for _ClassRelease }
+
 type
   { ------------------------------------------------------------------ }
   { TObjectListEnumerator                                                }

@@ -4124,8 +4124,8 @@ begin
     Exit;
   end;
 
-  { Logical AND / OR — both operands must be Boolean. }
-  if ABin.Op in [boAnd, boOr] then
+  { Logical AND / OR / XOR — both operands must be Boolean or both numeric. }
+  if ABin.Op in [boAnd, boOr, boXor] then
   begin
     { Bitwise or/and for integer types }
     if LType.IsNumeric and RType.IsNumeric then
