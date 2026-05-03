@@ -3,7 +3,7 @@
   <name>blaise</name>
   <version>0.1.0-SNAPSHOT</version>
   <author>Graeme Geldenhuys</author>
-  <license>BSD-3-Clause</license>
+  <license>Apache-2.0 WITH Swift-exception</license>
 
   <build>
     <packaging>pom</packaging>

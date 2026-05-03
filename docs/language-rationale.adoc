@@ -1003,6 +1003,120 @@ OnClause      = "on" [ IDENT ":" ] TypeRef DO Stmt ;
 
 ---
 
+== Project Governance
+
+=== Licensing
+
+==== Decision
+
+The Blaise compiler, RTL, and bundled tooling are licensed under the
+*Apache License, Version 2.0 with Runtime Library Exception*.
+
+The SPDX identifier used in source headers and project metadata is:
+
+  Apache-2.0 WITH Swift-exception
+
+The Runtime Library Exception text used is the one defined by the Swift
+project, reproduced verbatim at the foot of `LICENSE` in the project
+root. Binaries produced by the Blaise compiler that incorporate
+portions of the RTL do not inherit attribution obligations from the
+licence.
+
+==== Alternatives considered
+
+*BSD-3-Clause* — the project's original licence, in use during early
+development. Permissive, short, and well-recognised.
+
+* Rejected for one specific reason: it grants no patent licence. As
+  Blaise grows and accepts external contributions, every contributor
+  becomes a potential future patent risk under BSD-3. For a *compiler*
+  — which by nature implements algorithms (parsing, optimisation,
+  code generation) that may be patent-encumbered — this is the wrong
+  default.
+
+*BSD-3-Clause + custom patent grant + custom Runtime Library Exception*
+— a bespoke combination, ~50 lines.
+
+* Rejected because it is not OSI-approved, has no SPDX shorthand, and
+  trades concise text for unfamiliar text. A custom licence is *more*
+  friction for adopters' legal review than a 12-page Apache 2.0,
+  because every clause must be read from scratch rather than
+  recognised from precedent.
+
+*BSD-2-Clause-Patent* — an OSI-approved short licence with patent
+grant.
+
+* Rejected because it is not widely adopted in compiler/runtime land
+  and would still require a custom Runtime Library Exception bolted on,
+  putting us back in bespoke territory.
+
+*Modified-LGPL with linking exception* — the Free Pascal Compiler's
+licence, familiar to the Pascal community.
+
+* Rejected because it carries weak-copyleft obligations on the file
+  level. Apache 2.0 is fully permissive and avoids any ambiguity for
+  commercial adopters.
+
+*MIT* — minimal permissive licence.
+
+* Same patent-grant gap as BSD-3, but shorter. Same rejection.
+
+==== Rationale
+
+The Apache 2.0 + Runtime Library Exception combination is the modern
+consensus for compiler/runtime projects:
+
+* *Swift* (Apple) — Apache 2.0 with their Runtime Library Exception
+  text. The wording Blaise uses is theirs, verbatim.
+* *LLVM* — Apache 2.0 with the LLVM Exceptions (relicensed in 2019
+  from a BSD-style licence specifically to gain the patent grant).
+* *Rust* — dual MIT / Apache 2.0; Apache 2.0 is the patent-grant path.
+
+Specific properties that mattered for this decision:
+
+. *Explicit patent grant* (Apache 2.0 Section 3). Each contributor
+  grants users a patent licence covering their contributions. A
+  contributor who later sues a user over patents in their contribution
+  loses their grant. This is the headline feature versus BSD-3.
+
+. *Patent retaliation clause* (Apache 2.0 Section 3, second sentence).
+  Anyone who sues an Apache 2.0 user over the project loses their
+  licence. This deters submarine patent claims.
+
+. *Runtime Library Exception*. Without an exception, every binary
+  compiled by Blaise would technically inherit Apache 2.0 obligations
+  because the RTL is linked in. The Swift-style exception explicitly
+  releases that obligation, allowing closed-source applications to
+  ship binaries built with Blaise without Apache attribution noise.
+
+. *NOTICE file mechanic* (Apache 2.0 Section 4(d)). Concentrates
+  third-party attribution requirements (currently QBE) in one
+  well-known file that downstream redistributors must preserve.
+
+. *OSI-approved and SPDX-listed*. Tooling (FOSSology, ScanCode,
+  GitHub licence detection) recognises both the licence and the
+  exception identifier without configuration.
+
+. *Battle-tested in legal review*. Major compiler projects use exactly
+  this combination; corporate legal teams have pre-approved it.
+
+==== Notes
+
+* The relicensing happened pre-public-release. No external contributor
+  consent was needed because Graeme Geldenhuys was the sole
+  contributor at the time of the change.
+* All `.pas`, `.pp`, and `.inc` source files in `compiler/`, `rtl/`,
+  `tools/`, and `tests/` carry an `SPDX-License-Identifier:
+  Apache-2.0 WITH Swift-exception` header.
+* `LICENSE` at the project root contains the full Apache 2.0 text
+  followed by the Runtime Library Exception clause.
+* `NOTICE` at the project root contains attribution for vendored
+  third-party code (currently QBE under MIT).
+* `vendor/qbe/` retains its original MIT licence; QBE is invoked as a
+  subprocess and is not statically linked into the Blaise compiler.
+
+---
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.
