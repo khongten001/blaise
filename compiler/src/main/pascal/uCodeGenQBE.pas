@@ -34,7 +34,8 @@ type
     FBreakLabels:    TStringList;  { stack of active loop-end labels; top = innermost }
     FContinueLabels: TStringList;  { stack of active loop-continue labels; top = innermost }
     FExitLabel:    string;       { label to jmp to for 'exit'; '' = main program }
-    FSymTable:     TSymbolTable; { set via SetSymbolTable; used by AppendUnit for class data }
+    FSymTable:         TSymbolTable; { set via SetSymbolTable; used by AppendUnit for class data }
+    FUnitInitNames:    TStringList;  { unit names that have initialization sections }
 
     function  AllocTemp: string;
     function  AllocLabel(const APrefix: string): string;
@@ -154,6 +155,7 @@ begin
   FStrLits.CaseSensitive := True;
   FBreakLabels     := TStringList.Create;
   FContinueLabels  := TStringList.Create;
+  FUnitInitNames   := TStringList.Create;
   FTempCount       := 0;
   FStrLitsEmitted  := 0;
 end;
@@ -162,6 +164,7 @@ destructor TCodeGenQBE.Destroy;
 begin
   FBreakLabels.Free;
   FContinueLabels.Free;
+  FUnitInitNames.Free;
   FOutput.Free;
   FStrLits.Free;
   inherited Destroy;
@@ -261,10 +264,15 @@ begin
 end;
 
 procedure TCodeGenQBE.EmitMainHeader;
+var
+  I: Integer;
 begin
   EmitLine('export function w $main(w %argc, l %argv) {');
   EmitLine('@start');
   EmitLine('  call $_SetArgs(w %argc, l %argv)');
+  { Call initialization sections of imported units in order }
+  for I := 0 to FUnitInitNames.Count - 1 do
+    EmitLine('  call $' + FUnitInitNames.Strings[I] + '_init()');
 end;
 
 procedure TCodeGenQBE.EmitMainFooter;
@@ -3525,9 +3533,9 @@ end;
 
 function TCodeGenQBE.EmitExpr(AExpr: TASTExpr): string;
 var
-  T, L, R:    string;
-  Op:         string;
-  BinExpr:    TBinaryExpr;
+  T, L, R, T2: string;
+  Op:          string;
+  BinExpr:     TBinaryExpr;
   FldAccess:  TFieldAccessExpr;
   MCallExpr:  TMethodCallExpr;
   Ptr:        string;
@@ -5143,15 +5151,28 @@ begin
   end
   else if AExpr is TDerefExpr then
   begin
-    { P^ — load the value at the pointer address }
-    T     := EmitExpr(TDerefExpr(AExpr).Expr);
-    QType := QbeTypeOf(AExpr.ResolvedType);
-    L     := AllocTemp;
-    if QType = 'w' then
-      EmitLine(Format('  %s =w loadw %s', [L, T]))
+    { P^ — T is the pointer value stored in the pointer variable.
+      For record/array types, T IS the storage address — return it directly.
+      For scalar types, load through T to get the actual value. }
+    T := EmitExpr(TDerefExpr(AExpr).Expr);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind in [tyRecord, tyStaticArray]) then
+    begin
+      { P : ^TRecord — T is already the record's address; no further load }
+      Result := T;
+    end
     else
-      EmitLine(Format('  %s =l loadl %s', [L, T]));
-    Result := L;
+    begin
+      QType := QbeTypeOf(AExpr.ResolvedType);
+      L     := AllocTemp;
+      case QType of
+        'w': EmitLine(Format('  %s =w loadw %s', [L, T]));
+        'd': EmitLine(Format('  %s =d loadd %s', [L, T]));
+        's': EmitLine(Format('  %s =s loads %s', [L, T]));
+      else   EmitLine(Format('  %s =l loadl %s', [L, T]));
+      end;
+      Result := L;
+    end;
   end
   else if AExpr is TAddrOfExpr then
     Result := EmitAddrOfExpr(TAddrOfExpr(AExpr))
@@ -5545,6 +5566,37 @@ begin
       EmitGlobalVarData(AUnit.ImplBlock);
 
       FOutput.AddStrings(Body);
+
+      { Initialization section: emit as export function $<Unit>_init() }
+      if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
+      begin
+        FUnitInitNames.Add(AUnit.Name);
+        EmitLine('');
+        EmitLine('export function w $' + AUnit.Name + '_init() {');
+        EmitLine('@start');
+        FTempCount  := 0;
+        FLabelCount := 0;
+        for I := 0 to AUnit.InitStmts.Count - 1 do
+          EmitStmt(TASTStmt(AUnit.InitStmts.Items[I]));
+        EmitLine('  ret 0');
+        EmitLine('}');
+        EmitPendingStrLits;
+      end;
+
+      { Finalization section: emit as export function $<Unit>_fini() }
+      if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
+      begin
+        EmitLine('');
+        EmitLine('export function w $' + AUnit.Name + '_fini() {');
+        EmitLine('@start');
+        FTempCount  := 0;
+        FLabelCount := 0;
+        for I := 0 to AUnit.FinalStmts.Count - 1 do
+          EmitStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
+        EmitLine('  ret 0');
+        EmitLine('}');
+        EmitPendingStrLits;
+      end;
     finally
       Body.Free;
     end;

@@ -26,6 +26,8 @@ type
     tkIntLit,
     tkFloatLit,
     tkStringLit,
+    tkInitialization,
+    tkFinalization,
     { Keywords }
     tkProgram,
     tkUses,
@@ -211,7 +213,9 @@ begin
   else if AUpper = 'OUT'         then Result := tkOut
   else if AUpper = 'CONSTRUCTOR' then Result := tkConstructor
   else if AUpper = 'DESTRUCTOR'  then Result := tkDestructor
-  else if AUpper = 'INHERITED'   then Result := tkInherited
+  else if AUpper = 'INHERITED'     then Result := tkInherited
+  else if AUpper = 'INITIALIZATION' then Result := tkInitialization
+  else if AUpper = 'FINALIZATION'   then Result := tkFinalization
   else
     Result := tkIdent;  { keyword outside Phase 1 grammar treated as ident }
 end;
@@ -398,9 +402,11 @@ begin
         if      text = 'VIRTUAL'  then Result.Kind := tkVirtual
         else if text = 'OVERRIDE' then Result.Kind := tkOverride
         else if text = 'EXTERNAL' then Result.Kind := tkExternal
-        else if text = 'EXIT'     then Result.Kind := tkExit
-        else if text = 'BREAK'    then Result.Kind := tkBreak
-        else if text = 'CONTINUE' then Result.Kind := tkContinue
+        else if text = 'EXIT'           then Result.Kind := tkExit
+        else if text = 'BREAK'          then Result.Kind := tkBreak
+        else if text = 'CONTINUE'       then Result.Kind := tkContinue
+        else if text = 'INITIALIZATION' then Result.Kind := tkInitialization
+        else if text = 'FINALIZATION'   then Result.Kind := tkFinalization
         else if text = 'CASE'     then Result.Kind := tkCase
         else if text = 'OF'       then Result.Kind := tkOf
         else if text = 'CONST'    then Result.Kind := tkConst

@@ -1227,8 +1227,10 @@ var
   MCallExpr:   TMethodCallExpr;
   PtrWrite:    TPointerWriteStmt;
   PtrIdNode:   TIdentExpr;
+  DerefNode:   TDerefExpr;
   SecondIdent: string;
   FldNode:     TFieldAccessExpr;
+  InnerFld:    TFieldAccessExpr;
   CastRcv:     TASTExpr;
   FCallNode:   TFuncCallExpr;
   SubAssign:   TStaticSubscriptAssign;
@@ -1352,19 +1354,68 @@ begin
 
   if Check(tkCaret) then
   begin
-    { Pointer dereference assignment: Ident^ := Expr }
     Advance;  { consume '^' }
-    Expect(tkAssign);
-    PtrWrite         := TPointerWriteStmt.Create;
-    PtrWrite.Line    := Line;
-    PtrWrite.Col     := Col;
-    PtrIdNode        := TIdentExpr.Create;
-    PtrIdNode.Line   := Line;
-    PtrIdNode.Col    := Col;
-    PtrIdNode.Name   := Name;
-    PtrWrite.PtrExpr := PtrIdNode;
-    PtrWrite.ValExpr := ParseExpr;
-    Result := PtrWrite;
+    if Check(tkDot) then
+    begin
+      { Deref-then-field assignment: Ident^.Field := Expr
+        Re-use the field-assignment path with a TDerefExpr as ObjExpr. }
+      Advance;  { consume '.' }
+      if not Check(tkIdent) then
+        raise EParseError.Create(Format('Expected field name after ''^.'' at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      SecondIdent := FCurrent.Value;
+      Advance;  { consume field name }
+      { Build chain: handle further A^.B.C.D chaining }
+      PtrIdNode        := TIdentExpr.Create;
+      PtrIdNode.Line   := Line;
+      PtrIdNode.Col    := Col;
+      PtrIdNode.Name   := Name;
+      DerefNode        := TDerefExpr.Create;
+      DerefNode.Line   := Line;
+      DerefNode.Col    := Col;
+      DerefNode.Expr   := PtrIdNode;
+      FldNode          := TFieldAccessExpr.Create;
+      FldNode.Line     := Line;
+      FldNode.Col      := Col;
+      FldNode.Base     := DerefNode;
+      FldNode.FieldName := SecondIdent;
+      while Check(tkDot) and (PeekKind = tkIdent) do
+      begin
+        Advance;
+        InnerFld           := TFieldAccessExpr.Create;
+        InnerFld.Line      := FCurrent.Line;
+        InnerFld.Col       := FCurrent.Col;
+        InnerFld.FieldName := FCurrent.Value;
+        InnerFld.Base      := FldNode;
+        FldNode            := InnerFld;
+        Advance;
+      end;
+      FldAssign         := TFieldAssignment.Create;
+      FldAssign.Line    := Line;
+      FldAssign.Col     := Col;
+      FldAssign.ObjExpr := FldNode.Base;
+      FldAssign.FieldName := FldNode.FieldName;
+      FldNode.Base      := nil;
+      FldNode.Free;
+      Expect(tkAssign);
+      FldAssign.Expr := ParseExpr;
+      Result := FldAssign;
+    end
+    else
+    begin
+      { Plain pointer dereference assignment: Ident^ := Expr }
+      Expect(tkAssign);
+      PtrWrite         := TPointerWriteStmt.Create;
+      PtrWrite.Line    := Line;
+      PtrWrite.Col     := Col;
+      PtrIdNode        := TIdentExpr.Create;
+      PtrIdNode.Line   := Line;
+      PtrIdNode.Col    := Col;
+      PtrIdNode.Name   := Name;
+      PtrWrite.PtrExpr := PtrIdNode;
+      PtrWrite.ValExpr := ParseExpr;
+      Result := PtrWrite;
+    end;
   end
   else if Check(tkDot) then
   begin
@@ -2195,6 +2246,8 @@ begin
 end;
 
 function TParser.ParseUnit: TUnit;
+var
+  InitStmt: TASTStmt;
 begin
   Result := TUnit.Create;
   try
@@ -2247,6 +2300,30 @@ begin
         ParseTypeSection(Result.ImplBlock)
       else
         Result.ImplBlock.ProcDecls.Add(ParseMethodDecl(False));
+    end;
+
+    { Optional initialization / finalization sections }
+    if Check(tkInitialization) then
+    begin
+      Advance;
+      Result.InitStmts := TObjectList.Create(True);
+      while not (Check(tkEnd) or Check(tkFinalization) or Check(tkEOF)) do
+      begin
+        InitStmt := ParseStmt;
+        if InitStmt <> nil then Result.InitStmts.Add(InitStmt);
+        if Check(tkSemicolon) then Advance else Break;
+      end;
+    end;
+    if Check(tkFinalization) then
+    begin
+      Advance;
+      Result.FinalStmts := TObjectList.Create(True);
+      while not (Check(tkEnd) or Check(tkEOF)) do
+      begin
+        InitStmt := ParseStmt;
+        if InitStmt <> nil then Result.FinalStmts.Add(InitStmt);
+        if Check(tkSemicolon) then Advance else Break;
+      end;
     end;
 
     Expect(tkEnd);
@@ -2664,7 +2741,7 @@ begin
           IdNode.Name := Name;
           Result := IdNode;
         end;
-        { Postfix dereference: Expr^ }
+        { Postfix dereference: Expr^ and optional Expr^.Field chaining }
         if Check(tkCaret) then
         begin
           Advance;
@@ -2673,6 +2750,18 @@ begin
           DerefNode.Col  := Col;
           DerefNode.Expr := Result;
           Result         := DerefNode;
+          { Deref-then-field: P^.Field or P^.Field.Sub ... }
+          while Check(tkDot) and (PeekKind = tkIdent) do
+          begin
+            Advance;  { consume '.' }
+            FldNode           := TFieldAccessExpr.Create;
+            FldNode.Line      := FCurrent.Line;
+            FldNode.Col       := FCurrent.Col;
+            FldNode.FieldName := FCurrent.Value;
+            FldNode.Base      := Result;
+            Advance;  { consume field name }
+            Result := FldNode;
+          end;
         end;
       end;
     tkLBracket:
@@ -2704,7 +2793,7 @@ begin
         Advance;
         Inner := ParseExpr;
         Expect(tkRParen);
-        { Postfix dereference: (Expr)^ }
+        { Postfix dereference: (Expr)^ and optional (Expr)^.Field chaining }
         if Check(tkCaret) then
         begin
           Advance;
@@ -2713,6 +2802,17 @@ begin
           DerefNode.Col  := FCurrent.Col;
           DerefNode.Expr := Inner;
           Result         := DerefNode;
+          while Check(tkDot) and (PeekKind = tkIdent) do
+          begin
+            Advance;
+            FldNode           := TFieldAccessExpr.Create;
+            FldNode.Line      := FCurrent.Line;
+            FldNode.Col       := FCurrent.Col;
+            FldNode.FieldName := FCurrent.Value;
+            FldNode.Base      := Result;
+            Advance;
+            Result := FldNode;
+          end;
         end
         else
           Result := Inner;

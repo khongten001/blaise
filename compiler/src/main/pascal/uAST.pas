@@ -660,6 +660,8 @@ type
     UsedUnits:  TStringList; { owned — unit names from the interface uses clause }
     IntfBlock:  TBlock;      { owned — forward decls + type decls }
     ImplBlock:  TBlock;      { owned — full implementations }
+    InitStmts:  TObjectList; { owned — statements in the initialization section (may be nil) }
+    FinalStmts: TObjectList; { owned — statements in the finalization section (may be nil) }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1287,15 +1289,19 @@ end;
 constructor TUnit.Create;
 begin
   inherited Create;
-  UsedUnits := TStringList.Create;
-  IntfBlock := TBlock.Create;
-  ImplBlock := TBlock.Create;
+  UsedUnits  := TStringList.Create;
+  IntfBlock  := TBlock.Create;
+  ImplBlock  := TBlock.Create;
+  InitStmts  := nil;
+  FinalStmts := nil;
 end;
 
 destructor TUnit.Destroy;
 begin
   IntfBlock.Free;
   ImplBlock.Free;
+  InitStmts.Free;
+  FinalStmts.Free;
   UsedUnits.Free;
   inherited Destroy;
 end;
