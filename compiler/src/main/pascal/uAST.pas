@@ -659,12 +659,15 @@ type
 
   TUnit = class(TASTNode)
   public
-    Name:       string;
-    UsedUnits:  TStringList; { owned — unit names from the interface uses clause }
-    IntfBlock:  TBlock;      { owned — forward decls + type decls }
-    ImplBlock:  TBlock;      { owned — full implementations }
-    InitStmts:  TObjectList; { owned — statements in the initialization section (may be nil) }
-    FinalStmts: TObjectList; { owned — statements in the finalization section (may be nil) }
+    Name:        string;
+    UsedUnits:   TStringList; { owned — unit names from the interface uses clause }
+    IntfBlock:   TBlock;      { owned — forward decls + type decls }
+    ImplBlock:   TBlock;      { owned — full implementations }
+    InitStmts:   TObjectList; { owned — statements in the initialization section (may be nil) }
+    FinalStmts:  TObjectList; { owned — statements in the finalization section (may be nil) }
+    SymbolTable: TSymbolTable; { owned after standalone semantic analysis;
+                                 nil when the unit is analysed as part of a
+                                 program (program owns the table). }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1306,6 +1309,10 @@ begin
   InitStmts.Free;
   FinalStmts.Free;
   UsedUnits.Free;
+  { Transferred from TSemanticAnalyser when the unit is analysed standalone;
+    nil when the unit is analysed as a dependency of a program (program owns
+    the shared symbol table in that case). }
+  SymbolTable.Free;
   inherited Destroy;
 end;
 

@@ -523,6 +523,11 @@ begin
   finally
     FTable.PopScope;
   end;
+  { Transfer table ownership so TTypeDesc instances referenced by AST
+    nodes (Par.ResolvedType, ResolvedReturnType, etc.) outlive this
+    analyser.  Mirrors the Analyse(TProgram) behaviour. }
+  AUnit.SymbolTable := FTable;
+  FTable := nil;
 end;
 
 procedure TSemanticAnalyser.AnalyseUnitForExport(AUnit: TUnit);
