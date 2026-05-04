@@ -363,12 +363,14 @@ var
   IR: string;
 begin
   IR := GenIR(SrcTwoArities);
-  { Type-code mangling: zero-arg overload is '$' (empty signature),
-    Integer overload is '$i'. }
+  { Type-code mangling: '$' in the resolved name is escaped to '_D_' in QBE
+    symbols (QBE allows '$' inside identifiers, but other downstream tools
+    do not).  Zero-arg overload is '_D_' (empty signature), Integer overload
+    is '_D_i'. }
   AssertTrue('zero-arg overload defined',
-    Pos('function $Greet$(', IR) > 0);
+    Pos('function $Greet_D_(', IR) > 0);
   AssertTrue('Integer overload defined',
-    Pos('function $Greet$i(', IR) > 0);
+    Pos('function $Greet_D_i(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestCodegen_CallSite_ResolvesByArity;
@@ -377,9 +379,9 @@ var
 begin
   IR := GenIR(SrcTwoArities);
   AssertTrue('zero-arg call site mangled',
-    Pos('call $Greet$(', IR) > 0);
+    Pos('call $Greet_D_(', IR) > 0);
   AssertTrue('Integer call site mangled',
-    Pos('call $Greet$i(', IR) > 0);
+    Pos('call $Greet_D_i(', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }
@@ -404,13 +406,13 @@ var
 begin
   IR := GenIR(SrcTypeDistinct);
   AssertTrue('Integer-typed overload uses ''i'' suffix',
-    Pos('function $Show$i(', IR) > 0);
+    Pos('function $Show_D_i(', IR) > 0);
   AssertTrue('string-typed overload uses ''S'' suffix',
-    Pos('function $Show$S(', IR) > 0);
+    Pos('function $Show_D_S(', IR) > 0);
   AssertTrue('Integer call site mangled',
-    Pos('call $Show$i(', IR) > 0);
+    Pos('call $Show_D_i(', IR) > 0);
   AssertTrue('string call site mangled',
-    Pos('call $Show$S(', IR) > 0);
+    Pos('call $Show_D_S(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestCodegen_ExactMatch_BeatsWidening;
@@ -419,9 +421,9 @@ var
 begin
   IR := GenIR(SrcExactBeatsWidening);
   AssertTrue('exact-match overload selected (Integer)',
-    Pos('call $F$i(', IR) > 0);
+    Pos('call $F_D_i(', IR) > 0);
   AssertFalse('widening overload not selected (Double)',
-    Pos('call $F$d(', IR) > 0);
+    Pos('call $F_D_d(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestCodegen_WideningMatch_Used;
@@ -430,7 +432,7 @@ var
 begin
   IR := GenIR(SrcWideningUsed);
   AssertTrue('widening overload selected (Double)',
-    Pos('call $F$d(', IR) > 0);
+    Pos('call $F_D_d(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestSemantic_AmbiguousOverload_RaisesError;
@@ -461,10 +463,10 @@ var
   IR: string;
 begin
   IR := GenIR(SrcClassOverload);
-  AssertTrue('Integer overload defined as $TFoo_Show$i',
-    Pos('function $TFoo_Show$i(', IR) > 0);
-  AssertTrue('string overload defined as $TFoo_Show$S',
-    Pos('function $TFoo_Show$S(', IR) > 0);
+  AssertTrue('Integer overload defined as $TFoo_Show_D_i',
+    Pos('function $TFoo_Show_D_i(', IR) > 0);
+  AssertTrue('string overload defined as $TFoo_Show_D_S',
+    Pos('function $TFoo_Show_D_S(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestCodegen_ClassOverload_CallSitesMangled;
@@ -473,9 +475,9 @@ var
 begin
   IR := GenIR(SrcClassOverload);
   AssertTrue('Integer call site mangled',
-    Pos('call $TFoo_Show$i(', IR) > 0);
+    Pos('call $TFoo_Show_D_i(', IR) > 0);
   AssertTrue('string call site mangled',
-    Pos('call $TFoo_Show$S(', IR) > 0);
+    Pos('call $TFoo_Show_D_S(', IR) > 0);
 end;
 
 procedure TOverloadTests.TestSemantic_ClassDupNoOverload_RaisesError;
@@ -493,13 +495,13 @@ begin
     matching base implementation; TChild carries overrides keyed by
     the same mangled signatures. }
   AssertTrue('TBase Integer slot',
-    Pos('$TBase_Greet$i', IR) > 0);
+    Pos('$TBase_Greet_D_i', IR) > 0);
   AssertTrue('TBase string slot',
-    Pos('$TBase_Greet$S', IR) > 0);
+    Pos('$TBase_Greet_D_S', IR) > 0);
   AssertTrue('TChild Integer override',
-    Pos('$TChild_Greet$i', IR) > 0);
+    Pos('$TChild_Greet_D_i', IR) > 0);
   AssertTrue('TChild string override',
-    Pos('$TChild_Greet$S', IR) > 0);
+    Pos('$TChild_Greet_D_S', IR) > 0);
 end;
 
 initialization

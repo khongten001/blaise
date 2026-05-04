@@ -2378,11 +2378,13 @@ end;
 
 function TParser.ParseExpr: TASTExpr;
 var
-  Right:  TASTExpr;
-  CmpOp:  TBinaryOp;
-  Node:   TBinaryExpr;
-  IsNode: TIsExpr;
-  AsNode: TAsExpr;
+  Right:    TASTExpr;
+  CmpOp:    TBinaryOp;
+  Node:     TBinaryExpr;
+  IsNode:   TIsExpr;
+  AsNode:   TAsExpr;
+  OpLine:   Integer;
+  OpCol:    Integer;
 begin
   Result := ParseAddSub;
 
@@ -2397,9 +2399,13 @@ begin
     else if Check(tkGreaterThan) then CmpOp := boGT
     else if Check(tkLessEqual)   then CmpOp := boLE
     else                              CmpOp := boGE;
+    OpLine  := FCurrent.Line;
+    OpCol   := FCurrent.Col;
     Advance;
     Right       := ParseAddSub;
     Node        := TBinaryExpr.Create;
+    Node.Line   := OpLine;
+    Node.Col    := OpCol;
     Node.Op     := CmpOp;
     Node.Left   := Result;
     Node.Right  := Right;
@@ -2407,9 +2413,13 @@ begin
   end
   else if Check(tkIn) then
   begin
+    OpLine  := FCurrent.Line;
+    OpCol   := FCurrent.Col;
     Advance;
     Right       := ParseAddSub;
     Node        := TBinaryExpr.Create;
+    Node.Line   := OpLine;
+    Node.Col    := OpCol;
     Node.Op     := boIn;
     Node.Left   := Result;
     Node.Right  := Right;
@@ -2439,9 +2449,11 @@ end;
 
 function TParser.ParseAddSub: TASTExpr;
 var
-  Right: TASTExpr;
-  Op:    TBinaryOp;
-  Node:  TBinaryExpr;
+  Right:  TASTExpr;
+  Op:     TBinaryOp;
+  Node:   TBinaryExpr;
+  OpLine: Integer;
+  OpCol:  Integer;
 begin
   Result := ParseTerm;
   while Check(tkPlus) or Check(tkMinus) or Check(tkOr) do
@@ -2449,21 +2461,27 @@ begin
     if      Check(tkPlus)  then Op := boAdd
     else if Check(tkMinus) then Op := boSub
     else                        Op := boOr;
+    OpLine := FCurrent.Line;
+    OpCol  := FCurrent.Col;
     Advance;
-    Right := ParseTerm;
-    Node := TBinaryExpr.Create;
+    Right      := ParseTerm;
+    Node       := TBinaryExpr.Create;
+    Node.Line  := OpLine;
+    Node.Col   := OpCol;
     Node.Op    := Op;
     Node.Left  := Result;
     Node.Right := Right;
-    Result := Node;
+    Result     := Node;
   end;
 end;
 
 function TParser.ParseTerm: TASTExpr;
 var
-  Right: TASTExpr;
-  Op:    TBinaryOp;
-  Node:  TBinaryExpr;
+  Right:  TASTExpr;
+  Op:     TBinaryOp;
+  Node:   TBinaryExpr;
+  OpLine: Integer;
+  OpCol:  Integer;
 begin
   Result := ParseFactor;
   while Check(tkStar) or Check(tkSlash) or Check(tkDiv) or Check(tkMod)
@@ -2476,13 +2494,17 @@ begin
     else if Check(tkShl)  then Op := boShl
     else if Check(tkShr)  then Op := boShr
     else                       Op := boDiv;
+    OpLine     := FCurrent.Line;
+    OpCol      := FCurrent.Col;
     Advance;
-    Right := ParseFactor;
-    Node := TBinaryExpr.Create;
+    Right      := ParseFactor;
+    Node       := TBinaryExpr.Create;
+    Node.Line  := OpLine;
+    Node.Col   := OpCol;
     Node.Op    := Op;
     Node.Left  := Result;
     Node.Right := Right;
-    Result := Node;
+    Result     := Node;
   end;
 end;
 

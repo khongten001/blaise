@@ -1758,6 +1758,14 @@ begin
       EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal)]));
       Result := Loaded;
     end
+    else if Id.IsVarParam then
+    begin
+      { Var-record param: dereference the param slot to get the actual record
+        address. }
+      Loaded := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal)]));
+      Result := Loaded;
+    end
     else
       Result := VarRef(Id.Name, Id.IsGlobal);  { inline record }
     Exit;
@@ -1790,6 +1798,13 @@ begin
         raise ECodeGenError.Create('Chained base has no resolved type');
       if Fld.IsClassAccess then
       begin
+        Loaded := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Fld.RecordName, Fld.IsGlobal)]));
+        Base := Loaded;
+      end
+      else if Fld.IsVarParam then
+      begin
+        { Var-record param leaf: dereference the param slot. }
         Loaded := AllocTemp;
         EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Fld.RecordName, Fld.IsGlobal)]));
         Base := Loaded;
@@ -1912,6 +1927,14 @@ begin
     FldAcc := TFieldAccessExpr(AExpr);
     if FldAcc.Base <> nil then
       BaseAddr := EmitInstancePtr(FldAcc.Base)
+    else if FldAcc.IsVarParam then
+    begin
+      { Var-record param leaf: dereference the param slot. }
+      T := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [T, VarRef(FldAcc.RecordName, FldAcc.IsGlobal)]));
+      BaseAddr := T;
+    end
     else
       BaseAddr := VarRef(FldAcc.RecordName, FldAcc.IsGlobal);
     if (FldAcc.ResolvedType <> nil) and
@@ -2271,6 +2294,22 @@ begin
     begin
       Ptr := AllocTemp;
       EmitLine(Format('  %s =l add %s, %d', [Ptr, PtrTemp, AAssign.FieldInfo.Offset]));
+    end
+    else
+      Ptr := PtrTemp;
+  end
+  else if AAssign.IsVarParam then
+  begin
+    { Var-record param: dereference the param slot to get the actual record
+      address, then add field offset. }
+    PtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s',
+      [PtrTemp, VarRef(AAssign.RecordName, AAssign.IsGlobal)]));
+    if AAssign.FieldInfo.Offset > 0 then
+    begin
+      Ptr := AllocTemp;
+      EmitLine(Format('  %s =l add %s, %d',
+        [Ptr, PtrTemp, AAssign.FieldInfo.Offset]));
     end
     else
       Ptr := PtrTemp;
@@ -2674,9 +2713,9 @@ var
   ValTemp:       string;
 begin
   if AMethod.ResolvedQbeName <> '' then
-    FuncName := '$' + AMethod.ResolvedQbeName
+    FuncName := '$' + QBEMangle(AMethod.ResolvedQbeName)
   else
-    FuncName := '$' + ATypeName + '_' + AMethod.Name;
+    FuncName := '$' + QBEMangle(ATypeName + '_' + AMethod.Name);
   IsFunc   := AMethod.ResolvedReturnType <> nil;
 
   { Build parameter signature.
@@ -2881,7 +2920,11 @@ begin
     for S := 0 to RT.VTableCount - 1 do
     begin
       E    := RT.VTableEntryAt(S);
-      Line := Line + ', l ' + E.ImplName;
+      { ImplName has leading '$' already; mangle the rest }
+      if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
+        Line := Line + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+      else
+        Line := Line + ', l ' + QBEMangle(E.ImplName);
     end;
     Line := Line + ' }';
     EmitLine(Line);
@@ -2898,7 +2941,10 @@ begin
     for S := 0 to RT.VTableCount - 1 do
     begin
       E    := RT.VTableEntryAt(S);
-      Line := Line + ', l ' + QBEMangle(E.ImplName);
+      if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
+        Line := Line + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+      else
+        Line := Line + ', l ' + QBEMangle(E.ImplName);
     end;
     Line := Line + ' }';
     EmitLine(Line);
@@ -3121,6 +3167,7 @@ var
   SavedExitLbl: string;
 begin
   if ADecl.IsExternal then Exit;  { no body to emit for external declarations }
+  if ADecl.Body = nil then Exit;  { forward declaration — impl appears elsewhere }
   if ADecl.ResolvedQbeName <> '' then
     FuncName := '$' + QBEMangle(ADecl.ResolvedQbeName)
   else
@@ -3332,8 +3379,33 @@ var
   ArgTemp2:  string;
   SizeTemp:  string;
   ArgLine:   string;
+  FPtrTemp:  string;
   I:         Integer;
 begin
+  { Indirect call through a procedural-typed variable: load the function
+    pointer from the variable and call through it. }
+  if ACall.IsIndirectCall then
+  begin
+    FPtrTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s',
+      [FPtrTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
+    ArgLine := '';
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      if ArgLine <> '' then ArgLine := ArgLine + ', ';
+      ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+      ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]),
+        QbeTypeOf(TProcParamInfo(
+          TProceduralTypeDesc(ACall.ResolvedProcType).Params.Items[I]).TypeDesc));
+      ArgLine := ArgLine + Format('%s %s',
+        [QbeTypeOf(TProcParamInfo(
+          TProceduralTypeDesc(ACall.ResolvedProcType).Params.Items[I]).TypeDesc),
+         ArgTemp]);
+    end;
+    EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
+    Exit;
+  end;
+
   { User-defined procedure }
   if ACall.ResolvedDecl <> nil then
   begin
@@ -3447,7 +3519,7 @@ begin
   else if (UCaseName = 'INC') or (UCaseName = 'DEC') then
   begin
     { Inc(x) / Inc(x, n) / Dec(x) / Dec(x, n) — in-place add/sub }
-    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
+    ArgTemp  := EmitLValueAddr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := AllocTemp;
     if (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
        (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyClass, tyPointer]) then
@@ -3482,7 +3554,7 @@ begin
   else if UCaseName = 'INCLUDE' then
   begin
     { Include(S, elem): S := S or (1 shl ord(elem)) }
-    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
+    ArgTemp  := EmitLValueAddr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := AllocTemp;
     EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
     SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]));  { enum ordinal }
@@ -3495,7 +3567,7 @@ begin
   else if UCaseName = 'EXCLUDE' then
   begin
     { Exclude(S, elem): S := S and (not (1 shl ord(elem))) }
-    ArgTemp  := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
+    ArgTemp  := EmitLValueAddr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := AllocTemp;
     EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
     SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]));  { enum ordinal }
@@ -4422,6 +4494,38 @@ begin
       Exit;
     end;
 
+    { Built-in TObject.ToString: virtual dispatch through vtable slot 1.
+      Loads the object pointer, reads its vtable, reads slot 1 (ToString),
+      calls through it with just Self, returns a string (QBE type l). }
+    if MCallExpr.IsBuiltinToString then
+    begin
+      if MCallExpr.ObjExpr <> nil then
+        SelfTemp := EmitExpr(MCallExpr.ObjExpr)
+      else if MCallExpr.IsVarParam then
+      begin
+        FPtrTemp := AllocTemp;
+        SelfTemp := AllocTemp;
+        EmitLine(Format('  %s =l loadl %%_var_%s', [FPtrTemp, MCallExpr.ObjectName]));
+        EmitLine(Format('  %s =l loadl %s', [SelfTemp, FPtrTemp]));
+      end
+      else
+      begin
+        SelfTemp := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s',
+          [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
+      end;
+      VTblTemp := AllocTemp;
+      FPtrTemp := AllocTemp;
+      ArgTemp  := AllocTemp;
+      T        := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [VTblTemp, SelfTemp]));
+      EmitLine(Format('  %s =l add %s, 16', [ArgTemp, VTblTemp]));
+      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
+      EmitLine(Format('  %s =l call %s(l %s)', [T, FPtrTemp, SelfTemp]));
+      Result := T;
+      Exit;
+    end;
+
     MDecl     := TMethodDecl(MCallExpr.ResolvedMethod);
     if MDecl.OwnerTypeName <> '' then
       FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, MCallExpr.Name)
@@ -4589,6 +4693,31 @@ begin
       Ptr := AllocTemp;
       EmitLine(Format('  %s =l loadl %s', [Ptr, T]));
       Result := Ptr;
+      Exit;
+    end;
+
+    { Built-in: Obj.ToString — virtual dispatch via vtable slot 1.
+      vtable[0]=typeinfo, vtable[1]=Destroy, vtable[2]=ToString → offset 16. }
+    if FldAccess.IsBuiltinToString then
+    begin
+      if FldAccess.Base <> nil then
+        L := EmitExpr(FldAccess.Base)
+      else
+      begin
+        T := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s',
+          [T, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+        L := T;
+      end;
+      VTblTemp := AllocTemp;
+      FPtrTemp := AllocTemp;
+      ArgTemp  := AllocTemp;
+      T        := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [VTblTemp, L]));
+      EmitLine(Format('  %s =l add %s, 16', [ArgTemp, VTblTemp]));
+      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
+      EmitLine(Format('  %s =l call %s(l %s)', [T, FPtrTemp, L]));
+      Result := T;
       Exit;
     end;
 
@@ -4773,8 +4902,22 @@ begin
           [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
         QType := QbeTypeOf(MDecl.ResolvedReturnType);
         T := AllocTemp;
-        EmitLine(Format('  %s =%s call $%s_%s(l %s)',
-          [T, QType, MDecl.OwnerTypeName, FldAccess.FieldName, L]));
+        if MDecl.VTableSlot >= 0 then
+        begin
+          { Virtual dispatch: load vptr, then load function pointer from
+            vtable[(VTableSlot+1)*8] (slot 0 is reserved for typeinfo). }
+          VTblTemp := AllocTemp;
+          FPtrTemp := AllocTemp;
+          SlotOff  := (MDecl.VTableSlot + 1) * 8;
+          ArgTemp  := AllocTemp;
+          EmitLine(Format('  %s =l loadl %s', [VTblTemp, L]));
+          EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
+          EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
+          EmitLine(Format('  %s =%s call %s(l %s)', [T, QType, FPtrTemp, L]));
+        end
+        else
+          EmitLine(Format('  %s =%s call $%s_%s(l %s)',
+            [T, QType, MDecl.OwnerTypeName, FldAccess.FieldName, L]));
         Result := T;
       end;
     end
@@ -4872,7 +5015,24 @@ begin
         raise ECodeGenError.Create(Format(
           'Field access ''%s.%s'' has no resolved field info',
           [FldAccess.RecordName, FldAccess.FieldName]));
-      Ptr   := FieldPtr(FldAccess.RecordName, FldAccess.FieldInfo.Offset, FldAccess.IsGlobal);
+      if FldAccess.IsVarParam then
+      begin
+        { Var-record param: dereference the param slot to get the actual record
+          address, then add field offset. }
+        L := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s',
+          [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+        if FldAccess.FieldInfo.Offset > 0 then
+        begin
+          Ptr := AllocTemp;
+          EmitLine(Format('  %s =l add %s, %d',
+            [Ptr, L, FldAccess.FieldInfo.Offset]));
+        end
+        else
+          Ptr := L;
+      end
+      else
+        Ptr := FieldPtr(FldAccess.RecordName, FldAccess.FieldInfo.Offset, FldAccess.IsGlobal);
       QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
       T     := AllocTemp;
       if QType = 'w' then LoadInstr := 'loadw'
@@ -4977,9 +5137,19 @@ begin
           self-hosted Format runtime truncating Int64 args to int32. }
         EmitLine(Format('  %s =w copy %s', [T, IntToStr(TIdentExpr(AExpr).ConstValue)]));
     end
+    else if TIdentExpr(AExpr).IsVarParam and
+            (AExpr.ResolvedType <> nil) and
+            (AExpr.ResolvedType.Kind in [tyRecord, tyStaticArray]) then
+    begin
+      { Var param of aggregate type: the param slot already holds the address
+        of the caller's storage — load and return that as the storage address. }
+      EmitLine(Format('  %s =l loadl %%_var_%s', [T, TIdentExpr(AExpr).Name]));
+      Result := T;
+      Exit;
+    end
     else if TIdentExpr(AExpr).IsVarParam then
     begin
-      { Var param: load pointer, then dereference }
+      { Var param of scalar type: load pointer, then dereference to get value }
       Ptr := AllocTemp;
       EmitLine(Format('  %s =l loadl %%_var_%s', [Ptr, TIdentExpr(AExpr).Name]));
       QType := QbeTypeOf(AExpr.ResolvedType);
@@ -5024,6 +5194,19 @@ begin
       T := AllocTemp;
       if BinExpr.ResolvedType.Kind = tyInt64 then
       begin
+        { Extend w operands to l before the l-typed instruction. }
+        if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+          L := ArgTemp;
+        end;
+        if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+          R := ArgTemp;
+        end;
         if BinExpr.Op = boAnd then
           EmitLine(Format('  %s =l and %s, %s', [T, L, R]))
         else
@@ -5434,9 +5617,12 @@ begin
   begin
     C := Ord(AName[I]);
     case C of
-      60: Result := Result + '_';    { '<' }
-      62: ;                          { '>' — skip }
-      44: Result := Result + '_';    { ',' }
+      60:  Result := Result + '_';    { '<' }
+      62:  ;                          { '>' — skip }
+      44:  Result := Result + '_';    { ',' }
+      36:  Result := Result + '_D_';  { '$' — overload delimiter }
+      64:  Result := Result + '_V_';  { '@' — var-param prefix }
+      94:  Result := Result + '_P_';  { '^' — pointer prefix }
     else
       Result := Result + Chr(C);
     end;
@@ -5708,7 +5894,10 @@ begin
           for S := 0 to RT.VTableCount - 1 do
           begin
             E := RT.VTableEntryAt(S);
-            VLine := VLine + ', l ' + E.ImplName;
+            if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
+              VLine := VLine + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+            else
+              VLine := VLine + ', l ' + QBEMangle(E.ImplName);
           end;
           VLine := VLine + ' }';
           EmitLine(VLine);
@@ -5756,7 +5945,8 @@ begin
         end;
       end;
 
-      { Global variables from impl section (IsGlobal set by semantic analyser) }
+      { Global variables from interface and impl sections }
+      EmitGlobalVarData(AUnit.IntfBlock);
       EmitGlobalVarData(AUnit.ImplBlock);
 
       FOutput.AddStrings(Body);
@@ -6022,12 +6212,25 @@ begin
       Result := '$' + TIdentExpr(AExpr.Expr).Name;
       Exit;
     end;
+    { @VarParam: the address is the dereferenced param slot value, not the
+      local slot itself.  Without this, @ARun on a var-record param yields
+      the local 8-byte slot's address instead of the caller's record. }
+    if TIdentExpr(AExpr.Expr).IsVarParam then
+    begin
+      StrPtr := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [StrPtr, VarRef(TIdentExpr(AExpr.Expr).Name,
+                        TIdentExpr(AExpr.Expr).IsGlobal)]));
+      Result := StrPtr;
+      Exit;
+    end;
     Result := VarRef(TIdentExpr(AExpr.Expr).Name,
                      TIdentExpr(AExpr.Expr).IsGlobal);
     Exit;
   end;
-  raise ECodeGenError.Create(
-    'address-of (@) is only supported for array subscripts, locals, and standalone functions');
+  { Fallthrough: field access, pointer deref, etc. — delegate to EmitLValueAddr
+    which already handles TFieldAccessExpr, TDerefExpr, and TIdentExpr. }
+  Result := EmitLValueAddr(AExpr.Expr);
 end;
 
 procedure TCodeGenQBE.EmitStaticSubscriptAssign(AStmt: TStaticSubscriptAssign);

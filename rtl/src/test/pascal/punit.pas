@@ -1318,7 +1318,7 @@ begin
   S := '';
   for I := 1 to 16 do
     begin
-    S := HexChars[(V and $F) + 1] + S;
+    S := Copy(HexChars, (V and $F) + 1, 1) + S;
     V := V shr 4;
     end;
   Result := '0x' + S;
@@ -1367,7 +1367,7 @@ begin
   end;
   Result := AssertNotNull(AMessage, Pointer(AExceptionClass))  { suppress unused warning }
     and AssertTrue(AMessage + ': expected exception was not raised', Raised)
-    and AssertEquals(AMessage, string(''), S);
+    and AssertEquals(AMessage, '', S);
 end;
 
 function ExpectException(AMessage : string; AClass : Pointer) : Boolean;
@@ -2387,32 +2387,31 @@ begin
     end;
 end;
 
+function TestO(const Short, Long : string; var AIdx : Integer; var AStr : string) : Boolean;
+var
+  L : Integer;
+  LO : string;
+begin
+  Result := AStr = '-' + Short;
+  if Result then
+    begin
+    Inc(AIdx);
+    AStr := ParamStr(AIdx);
+    end
+  else
+    begin
+    LO := '--' + Long + '=';
+    L := Length(LO);
+    Result := Copy(AStr, 1, L) = LO;
+    if Result then
+      Delete(AStr, 1, L);
+    end;
+end;
+
 procedure ProcessSysCommandline;
 var
   I : Integer;
   S : string;
-
-  function TestO(const Short, Long : string) : Boolean;
-  var
-    L : Integer;
-    LO : string;
-  begin
-    Result := S = '-' + Short;
-    if Result then
-      begin
-      Inc(I);
-      S := ParamStr(I);
-      end
-    else
-      begin
-      LO := '--' + Long + '=';
-      L := Length(LO);
-      Result := Copy(S, 1, L) = LO;
-      if Result then
-        Delete(S, 1, L);
-      end;
-  end;
-
 begin
   SysRunMode := rmTest;
   I := 1;
@@ -2431,11 +2430,11 @@ begin
       SysRunMode := rmList
     else if (S = '-h') or (S = '--help') then
       SysRunMode := rmHelp
-    else if TestO('o', 'output') then
-      SysOutputFileName := S   { parsed but ignored — no Text file I/O in early RTL }
-    else if TestO('s', 'suite') then
+    else if TestO('o', 'output', I, S) then
+      SysOutputFileName := S
+    else if TestO('s', 'suite', I, S) then
       SysSuiteName := S
-    else if TestO('t', 'test') then
+    else if TestO('t', 'test', I, S) then
       SysTestName := S;
     Inc(I);
     end;

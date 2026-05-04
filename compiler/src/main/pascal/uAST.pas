@@ -97,11 +97,13 @@ type
     PropOwnerType:     string;        { class type name for method-backed property calls }
     IsImplicitSelf:    Boolean;       { set by uSemantic — RecordName is a field of Self }
     ImplicitBaseInfo:  TFieldInfo;    { non-owned — the field of Self holding the record/class }
-    IsMethodCall:      Boolean;       { set by uSemantic — FieldName is a zero-arg method }
-    ResolvedMethod:    TObject;       { TMethodDecl — not owned; set when IsMethodCall }
-    IsGlobal:          Boolean;       { set by uSemantic — RecordName is a program-level global }
-    IsClassNameAccess: Boolean;       { set by uSemantic — .ClassName built-in on a class instance }
-    IsClassTypeAccess: Boolean;       { set by uSemantic — .ClassType built-in: returns metaclass (typeinfo ptr) }
+    IsMethodCall:        Boolean;     { set by uSemantic — FieldName is a zero-arg method }
+    ResolvedMethod:      TObject;     { TMethodDecl — not owned; set when IsMethodCall }
+    IsGlobal:            Boolean;     { set by uSemantic — RecordName is a program-level global }
+    IsClassNameAccess:   Boolean;     { set by uSemantic — .ClassName built-in on a class instance }
+    IsClassTypeAccess:   Boolean;     { set by uSemantic — .ClassType built-in: returns metaclass (typeinfo ptr) }
+    IsBuiltinToString:   Boolean;     { set by uSemantic — .ToString built-in: virtual dispatch via vtable slot 1 }
+    IsVarParam:          Boolean;     { set by uSemantic — RecordName is a var parameter (record by-ref) }
     PropIndexExpr: TASTExpr;  { owned — non-nil = indexed property read (e.g. List.Items[i]) }
     destructor Destroy; override;
   end;
@@ -297,6 +299,7 @@ type
     IsImplicitSelf:    Boolean; { set by uSemantic — RecordName is a field of Self }
     ImplicitBaseInfo:  TFieldInfo; { non-owned — the field of Self that holds the record/class }
     IsGlobal:          Boolean; { set by uSemantic — RecordName is a program-level global }
+    IsVarParam:        Boolean; { set by uSemantic — RecordName is a var parameter (record by-ref) }
     PropIndexExpr: TASTExpr;  { owned — non-nil = indexed property write via setter }
     PropWriteInfo: TPropertyInfo;  { non-owned — set by semantic when PropIndexExpr is set }
     PropOwnerType: string;  { owner class name for setter call; valid when PropIndexExpr set }
@@ -329,6 +332,9 @@ type
     Args:         TObjectList;  { owned TASTExpr items }
     ResolvedDecl: TObject;      { TMethodDecl — not owned; set by uSemantic for user-defined procs }
     IsImplicitSelfMethod: Boolean; { set by uSemantic — call is on Self }
+    IsIndirectCall:       Boolean; { set by uSemantic — Name is a procedural-typed variable }
+    IndirectCallIsGlobal: Boolean; { set by uSemantic — when IsIndirectCall, variable is global }
+    ResolvedProcType:     TObject; { TProceduralTypeDesc — not owned; valid when IsIndirectCall }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -374,12 +380,13 @@ type
     Args:       TObjectList;   { owned TASTExpr items }
     ObjExpr:    TASTExpr;  { owned — when non-nil, receiver is this expression }
     { Set by uSemantic: }
-    ResolvedClassType: TTypeDesc;   { not owned }
-    ResolvedMethod:    TObject;     { TMethodDecl — not owned; avoids forward ref }
-    IsImplicitSelf:    Boolean;     { ObjectName is a field of Self }
-    ImplicitBaseInfo:  TFieldInfo;  { not owned — the field of Self }
-    IsGlobal:          Boolean;     { set by uSemantic — ObjectName is a program-level global }
-    IsVarParam:        Boolean;     { set by uSemantic — ObjectName is a var/out parameter }
+    ResolvedClassType:  TTypeDesc;   { not owned }
+    ResolvedMethod:     TObject;     { TMethodDecl — not owned; avoids forward ref }
+    IsImplicitSelf:     Boolean;     { ObjectName is a field of Self }
+    ImplicitBaseInfo:   TFieldInfo;  { not owned — the field of Self }
+    IsGlobal:           Boolean;     { set by uSemantic — ObjectName is a program-level global }
+    IsVarParam:         Boolean;     { set by uSemantic — ObjectName is a var/out parameter }
+    IsBuiltinToString:  Boolean;     { set by uSemantic — built-in TObject.ToString virtual dispatch }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -532,11 +539,12 @@ type
     Name:              string;     { method name }
     Args:              TObjectList; { owned TASTExpr }
     ObjExpr:           TASTExpr;   { owned — receiver expression when ObjectName = '' }
-    ResolvedClassType: TTypeDesc;   { not owned; set by uSemantic }
-    ResolvedMethod:    TObject;     { TMethodDecl — not owned }
-    IsConstructorCall: Boolean;    { set by uSemantic — TypeName.Create(args) }
-    IsGlobal:          Boolean;    { set by uSemantic — ObjectName is a program-level global }
-    IsVarParam:        Boolean;    { set by uSemantic — ObjectName is a var/out parameter }
+    ResolvedClassType:  TTypeDesc;   { not owned; set by uSemantic }
+    ResolvedMethod:     TObject;     { TMethodDecl — not owned }
+    IsConstructorCall:  Boolean;    { set by uSemantic — TypeName.Create(args) }
+    IsGlobal:           Boolean;    { set by uSemantic — ObjectName is a program-level global }
+    IsVarParam:         Boolean;    { set by uSemantic — ObjectName is a var/out parameter }
+    IsBuiltinToString:  Boolean;    { set by uSemantic — built-in TObject.ToString virtual dispatch }
     constructor Create;
     destructor Destroy; override;
   end;

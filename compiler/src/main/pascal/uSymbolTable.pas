@@ -869,7 +869,15 @@ begin
   begin
     PA := TProcParamInfo(Params.Items[I]);
     PB := TProcParamInfo(AOther.Params.Items[I]);
-    if PA.TypeDesc <> PB.TypeDesc then Exit;
+    if PA.TypeDesc <> PB.TypeDesc then
+    begin
+      { Allow structural pointer equivalence: PSuite and ^TSuite are the same
+        type conceptually — both are TPointerTypeDesc with the same BaseType. }
+      if (PA.TypeDesc = nil) or (PB.TypeDesc = nil) then Exit;
+      if (PA.TypeDesc.Kind <> tyPointer) or (PB.TypeDesc.Kind <> tyPointer) then Exit;
+      if TPointerTypeDesc(PA.TypeDesc).BaseType <>
+         TPointerTypeDesc(PB.TypeDesc).BaseType then Exit;
+    end;
     if PA.IsVarParam <> PB.IsVarParam then Exit;
     if PA.IsConstParam <> PB.IsConstParam then Exit;
   end;
@@ -1030,7 +1038,8 @@ begin
 
   { TObject — root of the class hierarchy; no fields, no parent }
   TObjectDesc := NewClassType('TObject');
-  TObjectDesc.AddVTableSlot('Destroy', '$TObject_Destroy');
+  TObjectDesc.AddVTableSlot('Destroy',  '$TObject_Destroy');
+  TObjectDesc.AddVTableSlot('ToString', '$TObject_ToString');
   Define(TSymbol.Create('TObject', skType, TObjectDesc));
 
   { IInterface — root of the interface hierarchy; no methods }

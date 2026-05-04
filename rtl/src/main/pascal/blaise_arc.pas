@@ -39,6 +39,7 @@ procedure _StringRelease(Ptr: Pointer);
 function  _StringEquals(S1, S2: Pointer): Integer;
 function  _StringConcat(S1, S2: Pointer): Pointer;
 procedure TObject_Destroy(Self: Pointer);
+function  TObject_ToString(Self: Pointer): Pointer;
 procedure _ClassAddRef(UserPtr: Pointer);
 procedure _ClassFree(UserPtr: Pointer);
 { _ClassRelease is implemented in blaise_arc_class.c — decrement refcount
@@ -198,6 +199,29 @@ end;
 
 procedure TObject_Destroy(Self: Pointer);
 begin
+end;
+
+{ TObject_ToString: returns the class name as an immortal string.
+  Instance layout: Self[0] = vptr -> vtable.
+  Vtable layout:   vtable[0] = typeinfo, vtable[1] = Destroy, vtable[2] = ToString.
+  Typeinfo layout: typeinfo[0]=parent, typeinfo[1]=impllist, typeinfo[2]=classname ptr. }
+function TObject_ToString(Self: Pointer): Pointer;
+var
+  Slot:   ^Pointer;
+  VTable: Pointer;
+  TInfo:  Pointer;
+begin
+  if Self = nil then
+    begin
+    Result := nil;
+    Exit;
+    end;
+  Slot   := Self;         { instance: first 8 bytes = vptr }
+  VTable := Slot^;        { VTable points to vtable data }
+  Slot   := VTable;       { vtable[0] = typeinfo ptr }
+  TInfo  := Slot^;        { TInfo points to typeinfo data }
+  Slot   := TInfo + 16;   { typeinfo[2] = classname, at byte offset 16 }
+  Result := Slot^;
 end;
 
 procedure _ClassAddRef(UserPtr: Pointer);

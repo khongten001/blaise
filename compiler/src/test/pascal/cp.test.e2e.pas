@@ -170,6 +170,21 @@ type
     procedure TestRun_TypedExcept_UnmatchedReraises;
     procedure TestRun_TypedExcept_BareRaisePropagatesToOuter;
     procedure TestRun_TypedExcept_ElseBodyRunsWhenNoMatch;
+
+    { ------------------------------------------------------------------ }
+    { Built-in TObject.ToString                                           }
+    { ------------------------------------------------------------------ }
+    { Default ToString (no override) returns the runtime class name via
+      vtable slot 1.  Exercises the RTL TObject_ToString helper and its
+      vtable + typeinfo walk — IR tests cannot validate the helper. }
+    procedure TestRun_ToString_DefaultReturnsClassName;
+    { An override placed at vtable slot 1 must be reached through Obj.ToString
+      even when the static type is the base class — i.e. the FieldAccess
+      method-call path must dispatch virtually, not statically. }
+    procedure TestRun_ToString_OverrideDispatchedVirtually;
+    { When a derived class inherits the override without re-declaring it,
+      the inherited slot must still resolve to the override at runtime. }
+    procedure TestRun_ToString_InheritedOverrideStillReached;
   end;
 
 implementation
@@ -2385,6 +2400,92 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcTypedExceptElseRun, Output, RCode, []));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('else body ran when no handler matched', '5', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ Built-in TObject.ToString                                           }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcToStringDefault =
+    'program P;'                              + LE +
+    'type'                                    + LE +
+    '  TFoo = class end;'                     + LE +
+    '  TBar = class(TFoo) end;'               + LE +
+    'var F: TFoo; B: TBar;'                   + LE +
+    'begin'                                   + LE +
+    '  F := TFoo.Create;'                     + LE +
+    '  WriteLn(F.ToString);'                  + LE +
+    '  B := TBar.Create;'                     + LE +
+    '  WriteLn(B.ToString)'                   + LE +
+    'end.';
+
+  SrcToStringOverride =
+    'program P;'                                          + LE +
+    'type'                                                + LE +
+    '  TFoo = class'                                      + LE +
+    '    function ToString: string; override;'            + LE +
+    '  end;'                                              + LE +
+    '  TBar = class(TFoo)'                                + LE +
+    '    function ToString: string; override;'            + LE +
+    '  end;'                                              + LE +
+    '  function TFoo.ToString: string;'                   + LE +
+    '  begin Result := ''foo!'' end;'                     + LE +
+    '  function TBar.ToString: string;'                   + LE +
+    '  begin Result := ''bar!'' end;'                     + LE +
+    'var F: TFoo; B: TFoo;'                               + LE +
+    'begin'                                               + LE +
+    '  F := TFoo.Create;'                                 + LE +
+    '  WriteLn(F.ToString);'                              + LE +
+    '  B := TBar.Create;'                                 + LE +
+    '  WriteLn(B.ToString)'                               + LE +
+    'end.';
+
+  SrcToStringInheritedOverride =
+    'program P;'                                          + LE +
+    'type'                                                + LE +
+    '  TFoo = class'                                      + LE +
+    '    function ToString: string; override;'            + LE +
+    '  end;'                                              + LE +
+    '  TBar = class(TFoo) end;'                           + LE +
+    '  function TFoo.ToString: string;'                   + LE +
+    '  begin Result := ''foo override'' end;'             + LE +
+    'var F: TFoo; B: TFoo;'                               + LE +
+    'begin'                                               + LE +
+    '  F := TFoo.Create;'                                 + LE +
+    '  WriteLn(F.ToString);'                              + LE +
+    '  B := TBar.Create;'                                 + LE +
+    '  WriteLn(B.ToString)'                               + LE +
+    'end.';
+
+procedure TE2ETests.TestRun_ToString_DefaultReturnsClassName;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcToStringDefault, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('default ToString returns class name',
+    'TFoo' + LE + 'TBar' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_ToString_OverrideDispatchedVirtually;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcToStringOverride, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('override reached through static base type',
+    'foo!' + LE + 'bar!' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_ToString_InheritedOverrideStillReached;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcToStringInheritedOverride, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('inherited override still reached',
+    'foo override' + LE + 'foo override' + LE, Output);
 end;
 
 initialization

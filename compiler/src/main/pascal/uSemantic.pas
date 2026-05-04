@@ -629,6 +629,14 @@ begin
         Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
+
+    { Analyse initialization/finalization section statements at unit scope. }
+    if AUnit.InitStmts <> nil then
+      for I := 0 to AUnit.InitStmts.Count - 1 do
+        AnalyseStmt(TASTStmt(AUnit.InitStmts.Items[I]));
+    if AUnit.FinalStmts <> nil then
+      for I := 0 to AUnit.FinalStmts.Count - 1 do
+        AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
   finally
     FTable.PopScope;
   end;
@@ -861,6 +869,14 @@ begin
       if ImplDecl.OwnerTypeName <> '' then Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
+
+    { Analyse initialization/finalization section statements at unit scope. }
+    if AUnit.InitStmts <> nil then
+      for I := 0 to AUnit.InitStmts.Count - 1 do
+        AnalyseStmt(TASTStmt(AUnit.InitStmts.Items[I]));
+    if AUnit.FinalStmts <> nil then
+      for I := 0 to AUnit.FinalStmts.Count - 1 do
+        AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
   finally
     FTable.PopScope;
   end;
@@ -2225,6 +2241,27 @@ begin
         end;
       end;
   end;
+
+  { Pass 3 — resolve forward-referenced pointer aliases.
+    A pointer type 'PFoo = ^TFoo' may have been processed before TFoo was
+    registered; its TPointerTypeDesc.BaseType is nil.  Now that all types
+    are in the symbol table, fill in the missing base types. }
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if not (TD.Def is TTypeAliasDef) then Continue;
+    AliasDef  := TTypeAliasDef(TD.Def);
+    AliasName := AliasDef.TypeName;
+    if (Length(AliasName) = 0) or (AliasName[1] <> '^') then Continue;
+    BaseName := Copy(AliasName, 2, Length(AliasName) - 1);
+    BaseSym  := FTable.Lookup(TD.Name);
+    if (BaseSym = nil) or not (BaseSym.TypeDesc is TPointerTypeDesc) then Continue;
+    if TPointerTypeDesc(BaseSym.TypeDesc).BaseType <> nil then Continue;
+    { Base was unresolved in Pass 1 — try again now }
+    Sym := FTable.Lookup(BaseName);
+    if (Sym <> nil) and (Sym.Kind = skType) then
+      TPointerTypeDesc(BaseSym.TypeDesc).BaseType := Sym.TypeDesc;
+  end;
 end;
 
 procedure TSemanticAnalyser.AnalyseMethodBodies(ABlock: TBlock);
@@ -3433,6 +3470,11 @@ begin
 
   AAssign.IsClassAccess := RecSym.TypeDesc.Kind = tyClass;
   AAssign.IsGlobal      := RecSym.IsGlobal;
+  { Treat value record/array params as by-reference at QBE ABI level. }
+  AAssign.IsVarParam    :=
+    (RecSym.Kind = skVarParameter) or
+    ((RecSym.Kind = skParameter) and (RecSym.TypeDesc <> nil) and
+     (RecSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
 
   RT      := TRecordTypeDesc(RecSym.TypeDesc);
   FldInfo := RT.FindField(AAssign.FieldName);
@@ -3744,6 +3786,24 @@ begin
         Format('Undeclared procedure ''%s''', [ACall.Name]),
         ACall.Line, ACall.Col);
   end;
+  { Indirect call through a procedural-typed variable used as a statement:
+    e.g. 'MyHandler(Arg1, Arg2)' where MyHandler is 'var MyHandler: TMyProc'. }
+  if (Sym.Kind in [skVariable, skParameter, skVarParameter]) and
+     (Sym.TypeDesc <> nil) and (Sym.TypeDesc.Kind = tyProcedural) then
+  begin
+    ACall.IsIndirectCall       := True;
+    ACall.IndirectCallIsGlobal := Sym.IsGlobal;
+    ACall.ResolvedProcType     := Sym.TypeDesc;
+    if ACall.Args.Count <> TProceduralTypeDesc(Sym.TypeDesc).Params.Count then
+      SemanticError(Format(
+        'Indirect call ''%s'' expects %d argument(s), got %d',
+        [ACall.Name, TProceduralTypeDesc(Sym.TypeDesc).Params.Count,
+         ACall.Args.Count]), ACall.Line, ACall.Col);
+    for I := 0 to ACall.Args.Count - 1 do
+      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    Exit;
+  end;
+
   if not (Sym.Kind in [skProcedure, skFunction]) then
     SemanticError(
       Format('''%s'' is not a procedure or function', [ACall.Name]),
@@ -4460,6 +4520,16 @@ begin
     { Analyse args first so overload resolution can score by type. }
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    { Built-in TObject.ToString: virtual dispatch via vtable slot 1. }
+    if SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) then
+    begin
+      AExpr.ResolvedClassType := RT;
+      AExpr.ResolvedMethod    := nil;
+      AExpr.IsBuiltinToString := True;
+      Result := FTable.TypeString;
+      AExpr.ResolvedType := Result;
+      Exit;
+    end;
     MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
       AExpr.Line, AExpr.Col);
     if MDecl = nil then
@@ -4610,6 +4680,19 @@ begin
 
   RT    := TRecordTypeDesc(ObjSym.TypeDesc);
   MDecl := FindMethodDecl(RT.Name, AExpr.Name);
+  { Built-in TObject.ToString: virtual dispatch yielding string.
+    Every class inherits this from TObject (vtable slot 1). }
+  if (MDecl = nil) and SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) then
+  begin
+    AExpr.ResolvedClassType := RT;
+    AExpr.ResolvedMethod    := nil;
+    AExpr.IsBuiltinToString := True;
+    AExpr.IsGlobal          := ObjSym.IsGlobal;
+    AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
   if MDecl = nil then
     SemanticError(
       Format('Class ''%s'' has no method ''%s''', [RT.Name, AExpr.Name]),
@@ -4723,7 +4806,13 @@ begin
         Format('Undeclared identifier ''%s''', [TIdentExpr(AExpr).Name]),
         AExpr.Line, AExpr.Col);
     end;
-    TIdentExpr(AExpr).IsVarParam := (Sym.Kind = skVarParameter);
+    { Var-params and value-record/array params are both passed by reference at
+      the QBE ABI level: the local slot holds a pointer, not the aggregate
+      bytes.  Codegen must dereference the slot before reading fields. }
+    TIdentExpr(AExpr).IsVarParam :=
+      (Sym.Kind = skVarParameter) or
+      ((Sym.Kind = skParameter) and (Sym.TypeDesc <> nil) and
+       (Sym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
     TIdentExpr(AExpr).IsGlobal  := Sym.IsGlobal;
     if Sym.Kind = skConstant then
     begin
@@ -4840,6 +4929,17 @@ begin
       begin
         AAccess.IsMethodCall := True;
         Result := TMethodDecl(AAccess.ResolvedMethod).ResolvedReturnType;
+        Exit;
+      end;
+      { Built-in TObject.ToString: virtual dispatch yielding string.
+        Every class inherits this via vtable slot 1. }
+      if SameText(AAccess.FieldName, 'ToString') then
+      begin
+        AAccess.IsMethodCall      := True;
+        AAccess.IsBuiltinToString := True;
+        AAccess.ResolvedMethod    := nil;
+        Result := FTable.TypeString;
+        AAccess.ResolvedType := Result;
         Exit;
       end;
       SemanticError(
@@ -4977,6 +5077,13 @@ begin
 
   AAccess.IsClassAccess := RecSym.TypeDesc.Kind = tyClass;
   AAccess.IsGlobal      := RecSym.IsGlobal;
+  { Records and static arrays are always passed by reference at the QBE ABI
+    level — the param slot holds a pointer.  Mark both var-params and value
+    aggregate params so codegen dereferences the slot. }
+  AAccess.IsVarParam    :=
+    (RecSym.Kind = skVarParameter) or
+    ((RecSym.Kind = skParameter) and (RecSym.TypeDesc <> nil) and
+     (RecSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
 
   { Built-in class intrinsics }
   if SameText(AAccess.FieldName, 'ClassName') and (RecSym.TypeDesc.Kind = tyClass) then
@@ -5004,6 +5111,16 @@ begin
     begin
       AAccess.IsMethodCall := True;
       Result := TMethodDecl(AAccess.ResolvedMethod).ResolvedReturnType;
+      AAccess.ResolvedType := Result;
+      Exit;
+    end;
+    { Built-in TObject.ToString: virtual dispatch yielding string. }
+    if SameText(AAccess.FieldName, 'ToString') then
+    begin
+      AAccess.IsMethodCall      := True;
+      AAccess.IsBuiltinToString := True;
+      AAccess.ResolvedMethod    := nil;
+      Result := FTable.TypeString;
       AAccess.ResolvedType := Result;
       Exit;
     end;
