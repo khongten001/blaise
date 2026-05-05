@@ -204,17 +204,49 @@ function TCodeGenQBE.CoerceArg(const AArgTemp: string; AArgExpr: TASTExpr;
   const AParamQType: string): string;
 var
   ExtTemp: string;
+  ArgQ:    string;
+  ArgT:    TTypeDesc;
 begin
-  if (AParamQType = 'l') and (AArgExpr <> nil) and
-     (AArgExpr.ResolvedType <> nil) and
-     (QbeTypeOf(AArgExpr.ResolvedType) = 'w') then
+  Result := AArgTemp;
+  if (AArgExpr = nil) or (AArgExpr.ResolvedType = nil) then Exit;
+  ArgT := AArgExpr.ResolvedType;
+  ArgQ := QbeTypeOf(ArgT);
+  if ArgQ = AParamQType then Exit;
+  { Integer widening: w → l. }
+  if (AParamQType = 'l') and (ArgQ = 'w') then
   begin
     ExtTemp := AllocTemp;
     EmitLine(Format('  %s =l extsw %s', [ExtTemp, AArgTemp]));
     Result := ExtTemp;
-  end
-  else
-    Result := AArgTemp;
+    Exit;
+  end;
+  { Integer/Single → Double. }
+  if AParamQType = 'd' then
+  begin
+    ExtTemp := AllocTemp;
+    if ArgQ = 'w' then
+      EmitLine(Format('  %s =d swtof %s', [ExtTemp, AArgTemp]))
+    else if ArgQ = 'l' then
+      EmitLine(Format('  %s =d sltof %s', [ExtTemp, AArgTemp]))
+    else if ArgQ = 's' then
+      EmitLine(Format('  %s =d exts %s', [ExtTemp, AArgTemp]))
+    else
+      Exit;  { unsupported conversion — leave as-is; QBE will reject if invalid }
+    Result := ExtTemp;
+    Exit;
+  end;
+  { Integer → Single. }
+  if AParamQType = 's' then
+  begin
+    ExtTemp := AllocTemp;
+    if ArgQ = 'w' then
+      EmitLine(Format('  %s =s swtof %s', [ExtTemp, AArgTemp]))
+    else if ArgQ = 'l' then
+      EmitLine(Format('  %s =s sltof %s', [ExtTemp, AArgTemp]))
+    else
+      Exit;
+    Result := ExtTemp;
+  end;
 end;
 
 function TCodeGenQBE.EmitStrLit(const AValue: string): string;
@@ -318,6 +350,7 @@ begin
     Result := 'w';
   end;
 end;
+
 
 procedure TCodeGenQBE.EmitVarAllocs(ABlock: TBlock);
 var
@@ -2089,6 +2122,8 @@ begin
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(FCallExpr.Args.Items[I]));
+        ArgTemp := CoerceArg(ArgTemp, TASTExpr(FCallExpr.Args.Items[I]),
+          QbeTypeOf(Par.ResolvedType));
         ArgLine := ArgLine + Format(', %s %s',
           [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
@@ -2113,6 +2148,8 @@ begin
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
+        ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]),
+          QbeTypeOf(Par.ResolvedType));
         ArgLine := ArgLine + Format(', %s %s',
           [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
@@ -2423,6 +2460,7 @@ begin
       begin
         ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
         QType   := QbeTypeOf(Par.ResolvedType);
+        ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
         ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
       end;
     end;
@@ -2625,6 +2663,7 @@ begin
     Par     := TMethodParam(MDecl.Params.Items[I]);
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
     QType   := QbeTypeOf(Par.ResolvedType);
+    ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
     ArgLine := ArgLine + Format(', %s %s', [QType, ArgTemp]);
   end;
 
@@ -4482,6 +4521,8 @@ begin
         begin
           Par     := TMethodParam(MDecl.Params.Items[I]);
           ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
+          ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]),
+            QbeTypeOf(Par.ResolvedType));
           ArgLine := ArgLine + Format(', %s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
         end;
         if MDecl.OwnerTypeName <> '' then
@@ -4577,6 +4618,8 @@ begin
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
+        ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]),
+          QbeTypeOf(Par.ResolvedType));
         ArgLine := ArgLine + Format(', %s %s', [QbeTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
@@ -5115,6 +5158,15 @@ begin
         NoArgCall.Free;
       end;
       Exit;
+    end
+    else if TIdentExpr(AExpr).IsMetaclassRef then
+    begin
+      { Bare class type identifier used as a value: emit the typeinfo address.
+        This is the same pointer that vtable[0] holds at runtime, so
+        identity comparisons against Obj.ClassType return true for instances
+        of that exact class.  See language-rationale.adoc § Metaclass refs. }
+      EmitLine(Format('  %s =l copy $typeinfo_%s',
+        [T, QBEMangle(TIdentExpr(AExpr).Name)]));
     end
     else if TIdentExpr(AExpr).IsConstant then
     begin

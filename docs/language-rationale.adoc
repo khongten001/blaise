@@ -1280,6 +1280,163 @@ the descendant's signature matches no base-class slot.
 
 ---
 
+== Default Parameter Values
+
+=== Decision
+
+Trailing parameters of a procedure, function, constructor, destructor,
+or class method may carry a default value introduced with `=`.  A call
+site may omit any trailing argument whose corresponding parameter has
+a default.  The compiler fills the missing slots with a fresh AST
+clone of the default expression at each call site.
+
+A default value is permitted only when *all three* conditions hold:
+
+* the parameter group declares a single name (no comma list);
+* the parameter is not `var`/`out`;
+* the parameter is not an open array.
+
+A default value must be a literal of the parameter's type or a named
+constant whose resolved type matches.  Permitted forms: integer
+literal, float literal, string literal, the `nil` keyword, and a bare
+identifier that resolves to a `skConstant` symbol.  Arbitrary
+constant expressions are *not* permitted in this iteration.
+
+=== Rationale
+
+Default values close the most common ergonomics gap between FPC and
+Blaise: porting library code (such as the `punit` test framework's
+`AddTest('name', @proc)` four-arity wrapper around the three-arity
+core) requires either a small explicit overload pyramid or default
+arguments.  The pyramid bloats the source and the QBE IR by a constant
+factor; default values let one declaration cover all the omission
+patterns Delphi callers expect.
+
+Restricting the default to literals and named constants keeps the
+constant-expression evaluator out of the parameter-decl path.  An
+arbitrary constant expression would require running the full constant
+folder during forward-decl analysis, which currently happens only
+during statement analysis.  Literals and named constants suffice for
+the FPC RTL, the Blaise RTL, and every port we have surveyed; the
+restriction can be relaxed later without invalidating earlier code.
+
+Restricting to single-name groups keeps the syntax unambiguous —
+`A, B, C : Integer = 0` could plausibly mean "all three default to
+zero" or "only `C` has a default", and the compiler refuses to guess.
+
+=== Forward declarations and overrides
+
+A default value declared on a *forward* (unit interface) declaration
+is transferred by ownership to the matching parameter on the
+*implementation* declaration during interface↔impl reconciliation
+(`TransferDefaultValues` in `uSemantic`).  This means a unit author
+writes the default once, on the interface, and the implementation may
+either repeat it or omit it — both are accepted.
+
+Defaults are not inherited by overrides: a descendant's overriding
+method must repeat any defaults it wants to expose.  This matches
+Delphi semantics and avoids surprising callers of an override that the
+defaults silently changed underneath them.
+
+=== Overload resolution and tie-break
+
+The arity filter in `ResolveStandaloneOverload` and
+`ResolveMethodOverload` accepts a candidate when
+`MinArity(Cand) <= ArgCount <= ParamCount(Cand)`, where `MinArity` is
+the count of leading parameters before the first one carrying a
+default.  Where two candidates score equally on type compatibility,
+the one needing fewer defaulted slots wins:
+
+[source]
+----
+CompositeScore = (TypeScore * 16) - (ParamCount - ArgCount)
+----
+
+So given:
+
+[source,delphi]
+----
+function F(A: Integer; B: Integer = 0): Integer; overload;
+function F(A: Integer): Integer; overload;
+----
+
+the call `F(42)` resolves to the second overload (no defaulting
+needed), not the first — even though both type-score equally.
+
+=== Alternatives rejected
+
+* *No default values; force explicit overload pyramids.*  Every port
+  that wants `AddTest('name', @proc)` short-form would have to either
+  add an explicit two-arg overload or rewrite the call site.  For a
+  feature whose semantic and codegen impact is small (literal clone +
+  arity-range filter + tie-break), the porting cost outweighed the
+  saving in compiler complexity.
+* *Default values as arbitrary constant expressions.*  Requires
+  hoisting the constant folder into forward-decl analysis.  Deferred
+  until a real use case appears.
+* *Defaults stored as a token sequence and re-parsed at each call
+  site.*  Would avoid the AST-clone step.  Rejected because it
+  fragments the semantic model — every other AST node is fully parsed
+  before semantic analysis begins.
+
+---
+
+== Metaclass References
+
+=== Decision
+
+A bare class type identifier (e.g. `EError`) used in a value position
+is a *metaclass reference*: a compile-time constant of type `Pointer`
+whose value is the class's typeinfo address.  This matches the value
+that `vtable[0]` holds for any instance of that class, so the
+identity comparison `Obj.ClassType = EError` is true exactly when
+`Obj` is an instance of (the same exact) `EError`.
+
+The semantic analyser sets `IsMetaclassRef := True` on the
+`TIdentExpr`, retypes the expression to `FTable.TypePointer`, and
+codegen emits `$typeinfo_<Name>` as an `l copy` immediate.
+
+=== Rationale
+
+A class identifier in value position is the canonical Pascal/Delphi
+spelling for the runtime class object: `class of TObject` (i.e.
+`TClass`) values, `Obj is EError` checks, exception filters in `try ...
+except on E: EError do`, and the `AClass: TClass` parameter pattern
+all expect to receive the typeinfo pointer.  Without the metaclass
+ref, every such site has to be rewritten as `EError.ClassType` (which
+is a method call requiring an instance) or otherwise hand-rolled —
+none of which port cleanly from existing FPC/Delphi sources.
+
+The result type is `Pointer` rather than a dedicated `TClass`/`tyMetaclass`
+kind because most receiving signatures already use `Pointer` (the
+`AClass: Pointer` parameter of punit's `ExpectException`, the
+`TClass(EError)` cast result, etc.).  A dedicated `tyMetaclass` kind
+would be more precise and would enable RTTI dispatch on the metaclass
+itself, but is left for a future iteration.
+
+=== Examples
+
+[source,delphi]
+----
+ExpectException('msg', EError);          // metaclass ref → Pointer
+P := Pointer(EFail);                     // explicit cast — same value
+if A.ClassType = EError then …            // identity match
+----
+
+=== Alternatives rejected
+
+* *Require explicit `EError.ClassType` everywhere.*  Loses Delphi
+  source-level compatibility; every port has to be rewritten.
+* *Treat the bare identifier as type `tyClass` and rely on `tyClass`–
+  `tyPointer` compatibility at call sites.*  Rejected because codegen
+  would still try to load it through a non-existent variable slot.
+  The semantic mark-up has to drive the codegen path explicitly.
+* *Introduce a dedicated `tyMetaclass` kind right now.*  Defers the
+  feature until the symbol-table descriptor work lands and is not
+  necessary for the present porting needs.
+
+---
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.

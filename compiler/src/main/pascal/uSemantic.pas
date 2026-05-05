@@ -133,6 +133,25 @@ type
     function  AttrMatches(const AAttrName, ACanonical: string): Boolean;
     function  HasWeakAttribute(AAttrs: TStringList): Boolean;
 
+    { Default-argument support.  MinArity returns the minimum number of
+      arguments a call must supply: params before the first one carrying a
+      DefaultValue.  TransferDefaultValues moves DefaultValue ownership from
+      AFrom's params into AInto's matching params (used to forward defaults
+      from an interface forward decl to its implementation).
+      AnalyseDefaultValueExpr type-checks an already-attached default
+      expression against the param's resolved type.
+      CloneDefaultExprNode produces a fresh AST copy of a default-value
+      literal/identifier so a call site can own its own argument node.
+      AppendDefaultArgs fills a call's Args list from MDecl.Params for any
+      missing trailing slots (Args.Count < Params.Count). }
+    function  MinArity(ADecl: TMethodDecl): Integer;
+    procedure TransferDefaultValues(AFrom, AInto: TMethodDecl);
+    procedure AnalyseDefaultValueExpr(APar: TMethodParam;
+      const AContext: string; ALine, ACol: Integer);
+    function  CloneDefaultExprNode(ASrc: TASTExpr): TASTExpr;
+    procedure AppendDefaultArgs(AArgs: TObjectList; ADecl: TMethodDecl;
+      const AContext: string; ALine, ACol: Integer);
+
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
     procedure CheckTypesMatch(AExpected, AActual: TTypeDesc;
       const AContext: string; ALine, ACol: Integer);
@@ -580,6 +599,7 @@ begin
         { Carry mangling forward, then update the index entry. }
         ImplDecl.ResolvedQbeName := MDecl.ResolvedQbeName;
         ImplDecl.IsOverload      := MDecl.IsOverload;
+        TransferDefaultValues(MDecl, ImplDecl);
         FProcIndex.Objects[ImplIdx] := ImplDecl;
       end
       else
@@ -821,6 +841,7 @@ begin
             ImplDecl.Line, ImplDecl.Col);
         ImplDecl.ResolvedQbeName := MDecl.ResolvedQbeName;
         ImplDecl.IsOverload      := MDecl.IsOverload;
+        TransferDefaultValues(MDecl, ImplDecl);
         FProcIndex.Objects[ImplIdx] := ImplDecl;
       end
       else
@@ -2411,7 +2432,8 @@ begin
         begin
           Inc(TotalCnt);
           Cand := TMethodDecl(FMethodIndex.Objects[K]);
-          if (Arity < 0) or (Cand.Params.Count = Arity) then
+          if (Arity < 0) or
+             ((Arity >= MinArity(Cand)) and (Arity <= Cand.Params.Count)) then
             ArityMatch.Add(Cand);
         end;
       if ArityMatch.Count > 0 then Break;
@@ -2469,6 +2491,8 @@ begin
         Score := Score + ArgScore;
       end;
       if Score < 0 then Continue;
+      { Tie-break: prefer fewer defaulted slots (Cand.Params.Count - Arity). }
+      Score := (Score * 16) - (Cand.Params.Count - Arity);
       if Score > BestScore then
       begin
         BestScore := Score;
@@ -3593,6 +3617,154 @@ begin
   end;
 end;
 
+function TSemanticAnalyser.MinArity(ADecl: TMethodDecl): Integer;
+var
+  I: Integer;
+begin
+  for I := 0 to ADecl.Params.Count - 1 do
+    if TMethodParam(ADecl.Params.Items[I]).DefaultValue <> nil then
+    begin
+      Result := I;
+      Exit;
+    end;
+  Result := ADecl.Params.Count;
+end;
+
+procedure TSemanticAnalyser.TransferDefaultValues(AFrom, AInto: TMethodDecl);
+var
+  I:    Integer;
+  PSrc: TMethodParam;
+  PDst: TMethodParam;
+begin
+  if (AFrom = nil) or (AInto = nil) then Exit;
+  if AFrom.Params.Count <> AInto.Params.Count then Exit;
+  for I := 0 to AFrom.Params.Count - 1 do
+  begin
+    PSrc := TMethodParam(AFrom.Params.Items[I]);
+    PDst := TMethodParam(AInto.Params.Items[I]);
+    if (PSrc.DefaultValue <> nil) and (PDst.DefaultValue = nil) then
+    begin
+      PDst.DefaultValue := PSrc.DefaultValue;
+      PSrc.DefaultValue := nil;  { ownership transferred }
+    end;
+  end;
+end;
+
+procedure TSemanticAnalyser.AnalyseDefaultValueExpr(APar: TMethodParam;
+  const AContext: string; ALine, ACol: Integer);
+var
+  T: TTypeDesc;
+begin
+  if APar.DefaultValue = nil then Exit;
+  if APar.DefaultValue.ResolvedType <> nil then Exit;  { already analysed }
+  if not ((APar.DefaultValue is TIntLiteral)    or
+          (APar.DefaultValue is TFloatLiteral)  or
+          (APar.DefaultValue is TStringLiteral) or
+          (APar.DefaultValue is TNilLiteral)    or
+          (APar.DefaultValue is TIdentExpr)) then
+    SemanticError(
+      Format('Default value for parameter ''%s'' must be a literal or named constant',
+        [APar.ParamName]),
+      ALine, ACol);
+  T := AnalyseExpr(APar.DefaultValue);
+  if APar.DefaultValue is TIdentExpr then
+    if not TIdentExpr(APar.DefaultValue).IsConstant then
+      SemanticError(
+        Format('Default value for parameter ''%s'' must be a constant expression',
+          [APar.ParamName]),
+        ALine, ACol);
+  CheckTypesMatch(APar.ResolvedType, T,
+    Format('default value of parameter ''%s'' (%s)', [APar.ParamName, AContext]),
+    ALine, ACol);
+end;
+
+function TSemanticAnalyser.CloneDefaultExprNode(ASrc: TASTExpr): TASTExpr;
+var
+  ILit: TIntLiteral;
+  FLit: TFloatLiteral;
+  SLit: TStringLiteral;
+  Ident: TIdentExpr;
+  SrcId: TIdentExpr;
+begin
+  Result := nil;
+  if ASrc = nil then Exit;
+  if ASrc is TIntLiteral then
+  begin
+    ILit       := TIntLiteral.Create;
+    ILit.Value := TIntLiteral(ASrc).Value;
+    ILit.Line  := ASrc.Line;
+    ILit.Col   := ASrc.Col;
+    ILit.ResolvedType := ASrc.ResolvedType;
+    Result := ILit;
+  end
+  else if ASrc is TFloatLiteral then
+  begin
+    FLit       := TFloatLiteral.Create;
+    FLit.Value := TFloatLiteral(ASrc).Value;
+    FLit.Line  := ASrc.Line;
+    FLit.Col   := ASrc.Col;
+    FLit.ResolvedType := ASrc.ResolvedType;
+    Result := FLit;
+  end
+  else if ASrc is TStringLiteral then
+  begin
+    SLit       := TStringLiteral.Create;
+    SLit.Value := TStringLiteral(ASrc).Value;
+    SLit.IsCharCoerce := TStringLiteral(ASrc).IsCharCoerce;
+    SLit.CharOrdValue := TStringLiteral(ASrc).CharOrdValue;
+    SLit.Line  := ASrc.Line;
+    SLit.Col   := ASrc.Col;
+    SLit.ResolvedType := ASrc.ResolvedType;
+    Result := SLit;
+  end
+  else if ASrc is TNilLiteral then
+  begin
+    Result      := TNilLiteral.Create;
+    Result.Line := ASrc.Line;
+    Result.Col  := ASrc.Col;
+    Result.ResolvedType := ASrc.ResolvedType;
+  end
+  else if ASrc is TIdentExpr then
+  begin
+    SrcId  := TIdentExpr(ASrc);
+    Ident  := TIdentExpr.Create;
+    Ident.Name        := SrcId.Name;
+    Ident.IsConstant  := SrcId.IsConstant;
+    Ident.ConstValue  := SrcId.ConstValue;
+    Ident.ConstString := SrcId.ConstString;
+    Ident.Line        := SrcId.Line;
+    Ident.Col         := SrcId.Col;
+    Ident.ResolvedType := SrcId.ResolvedType;
+    Result := Ident;
+  end
+  else
+    SemanticError(
+      'Internal: unsupported default-value AST node — only literals and named constants allowed',
+      ASrc.Line, ASrc.Col);
+end;
+
+procedure TSemanticAnalyser.AppendDefaultArgs(AArgs: TObjectList;
+  ADecl: TMethodDecl; const AContext: string; ALine, ACol: Integer);
+var
+  I:        Integer;
+  Par:      TMethodParam;
+  CloneEx:  TASTExpr;
+begin
+  if ADecl = nil then Exit;
+  for I := AArgs.Count to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if Par.DefaultValue = nil then
+      SemanticError(
+        Format('No default value for parameter ''%s'' of ''%s''',
+          [Par.ParamName, AContext]),
+        ALine, ACol);
+    AnalyseDefaultValueExpr(Par, AContext, ALine, ACol);
+    CloneEx := CloneDefaultExprNode(Par.DefaultValue);
+    AArgs.Add(CloneEx);
+  end;
+end;
+
 function TSemanticAnalyser.ArgMatchScore(AParam: TTypeDesc;
   AArg: TTypeDesc): Integer;
 begin
@@ -3663,7 +3835,7 @@ begin
       begin
         Inc(TotalCnt);
         Cand := TMethodDecl(FProcIndex.Objects[I]);
-        if Cand.Params.Count = AArity then
+        if (AArity >= MinArity(Cand)) and (AArity <= Cand.Params.Count) then
           ArityMatch.Add(Cand);
       end;
 
@@ -3715,6 +3887,11 @@ begin
         Score := Score + ArgScore;
       end;
       if Score < 0 then Continue;
+      { Tie-break: prefer the candidate that needs the fewest defaulted
+        parameters — i.e. Params.Count closest to AArity.  Score in the
+        high bits, defaulting penalty in the low bits.  Each defaulted
+        slot subtracts 1 from the composite score. }
+      Score := (Score * 16) - (Cand.Params.Count - AArity);
       if Score > BestScore then
       begin
         BestScore := Score;
@@ -3868,6 +4045,7 @@ begin
       { Non-var argument compatibility was verified by overload scoring;
         no second CheckTypesMatch needed here. }
     end;
+    AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedDecl := MDecl;
   end
   else
@@ -4511,6 +4689,7 @@ begin
         [AExpr.Name, AExpr.Args.Count]),
       AExpr.Line, AExpr.Col);
 
+  AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
   AExpr.ResolvedDecl := MDecl;
   Result := MDecl.ResolvedReturnType;
 end;
@@ -4855,6 +5034,18 @@ begin
       TIdentExpr(AExpr).IsConstant  := True;
       TIdentExpr(AExpr).ConstValue  := Sym.ConstValue;
       TIdentExpr(AExpr).ConstString := Sym.ConstString;
+    end;
+    { Bare class type identifier used as a value: metaclass reference.
+      Codegen emits the typeinfo address (a Pointer-typed compile-time
+      constant).  Used wherever a TClass or untyped Pointer is expected:
+      argument of ExpectException, Pointer(EError) cast, etc. }
+    if (Sym.Kind = skType) and (Sym.TypeDesc <> nil) and
+       (Sym.TypeDesc.Kind = tyClass) then
+    begin
+      TIdentExpr(AExpr).IsMetaclassRef := True;
+      Result := FTable.TypePointer;
+      AExpr.ResolvedType := Result;
+      Exit;
     end;
     { Bare function reference without parens — mark as no-arg call for codegen.
       Covers both builtins (not in FProcIndex) and user-defined standalone functions. }

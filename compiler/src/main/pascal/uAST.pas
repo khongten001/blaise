@@ -80,6 +80,9 @@ type
     ImplicitFieldInfo: TObject;  { TFieldInfo — not owned; valid when IsImplicitSelf }
     IsImplicitSelfMethod: Boolean; { set by uSemantic — bare zero-arg method call on Self }
     ImplicitMethodDecl:   TObject;  { TMethodDecl — not owned; set when IsImplicitSelfMethod }
+    IsMetaclassRef:    Boolean;     { set by uSemantic — bare class type identifier used as
+                                      metaclass value (typeinfo ptr); codegen emits
+                                      $typeinfo_<Name> instead of loading a variable. }
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -506,6 +509,10 @@ type
     IsConstParam: Boolean;    { True = 'const' keyword present }
     IsOpenArray:  Boolean;    { True = 'array of T'; TypeName is the element type }
     ResolvedType: TTypeDesc;  { set by uSemantic — TOpenArrayTypeDesc when IsOpenArray }
+    DefaultValue: TASTExpr;   { owned — non-nil when the param has a default value
+                                ('= expr' after the type); restricted to literal forms
+                                (int/float/string/nil) and named-constant idents. }
+    destructor Destroy; override;
   end;
 
   TMethodDecl = class(TASTNode)
@@ -986,6 +993,14 @@ end;
 destructor TInheritedCallStmt.Destroy;
 begin
   Args.Free;
+  inherited Destroy;
+end;
+
+{ TMethodParam }
+
+destructor TMethodParam.Destroy;
+begin
+  DefaultValue.Free;
   inherited Destroy;
 end;
 

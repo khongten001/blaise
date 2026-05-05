@@ -62,6 +62,7 @@ var
   GrowFactor       : Integer;
   DefaultSuiteName : string;
   RequirePassed    : Boolean;
+  DefaultDoubleDelta : Double;
 
 { -----------------------------------------------------------------------
   Core data types
@@ -241,9 +242,9 @@ function GetSuite(const AName : string; AParent : ^TSuite) : ^TSuite; overload;
   ----------------------------------------------------------------------- }
 
 function AddTest(const ATestName : string; ARun : TTestRun;
-  const ASuiteName : string) : ^TTest; overload;
+  const ASuiteName : string = '') : ^TTest; overload;
 function AddTest(const ATestName : string; ARun : TTestRunProc;
-  const ASuiteName : string) : ^TTest; overload;
+  const ASuiteName : string = '') : ^TTest; overload;
 function AddTest(const ATestName : string; ARun : TTestRun;
   const ASuite : ^TSuite) : ^TTest; overload;
 function AddTest(const ATestName : string; ARun : TTestRunProc;
@@ -299,6 +300,8 @@ function AssertEquals(AMessage : string; const AExpected, AActual : Byte) : Bool
 function AssertEquals(AMessage : string; const AExpected, AActual : Integer) : Boolean; overload;
 function AssertEquals(AMessage : string; const AExpected, AActual : Cardinal) : Boolean; overload;
 function AssertEquals(AMessage : string; const AExpected, AActual : Int64) : Boolean; overload;
+function AssertEquals(AMessage : string; const AExpected, AActual : Double) : Boolean; overload;
+function AssertEquals(AMessage : string; const AExpected, AActual, ADelta : Double) : Boolean; overload;
 
 function AssertNull(AMessage : string; const AValue : Pointer) : Boolean;
 function AssertNotNull(AMessage : string; const AValue : Pointer) : Boolean;
@@ -1289,6 +1292,23 @@ begin
   Result := AssertTrue(
     AMessage + '. ' + ExpectMessage(Int64ToStr(AExpected), Int64ToStr(AActual)),
     AExpected = AActual);
+end;
+
+function AssertEquals(AMessage : string; const AExpected, AActual, ADelta : Double) : Boolean; overload;
+var
+  Effective : Double;
+begin
+  Effective := ADelta;
+  if Effective = 0 then
+    Effective := DefaultDoubleDelta;
+  Result := AssertTrue(
+    AMessage + '. ' + ExpectMessage(DoubleToStr(AExpected), DoubleToStr(AActual)),
+    Abs(AExpected - AActual) < Effective);
+end;
+
+function AssertEquals(AMessage : string; const AExpected, AActual : Double) : Boolean; overload;
+begin
+  Result := AssertEquals(AMessage, AExpected, AActual, 0.0);
 end;
 
 function AssertNull(AMessage : string; const AValue : Pointer) : Boolean;
@@ -2549,6 +2569,7 @@ initialization
   GrowFactor       := 2;
   DefaultSuiteName := 'Globals';
   RequirePassed    := False;
+  DefaultDoubleDelta := 1E-14;
   CurrentRunMode   := rvNormal;
   SetupTestRegistry;
   SetupSysHandlers;

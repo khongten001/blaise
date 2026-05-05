@@ -324,7 +324,7 @@ ParamList
     ;
 
 ParamGroup
-    = [ VAR | CONST ] IdentList COLON ParamType
+    = [ VAR | CONST ] IdentList COLON ParamType [ EQUALS DefaultValue ]
     ;
 
 ParamType
@@ -332,9 +332,25 @@ ParamType
     | TypeName
     ;
 
+DefaultValue
+    = IntLiteral
+    | FloatLiteral
+    | StrLiteral
+    | NIL
+    | IDENT                                  (* must resolve to a named constant *)
+    ;
+
 (* VAR marks a by-reference parameter; CONST marks a read-only parameter.
  * ARRAY OF TypeName denotes an open-array parameter using the two-register
- * ABI: a data pointer and a high-index value passed as separate arguments. *)
+ * ABI: a data pointer and a high-index value passed as separate arguments.
+ *
+ * A DefaultValue is permitted only on a single-name ParamGroup that is not
+ * VAR/OUT and not an open-array.  A call site may omit any trailing
+ * argument whose corresponding ParamGroup carries a DefaultValue; the
+ * compiler fills the missing arguments with a clone of the default
+ * expression.  Where two overloads resolve equally, the candidate
+ * requiring fewer defaulted slots wins (defaulting penalty in
+ * ResolveStandaloneOverload / ResolveMethodOverload). *)
 
 TypeParamList
     = IDENT { COMMA IDENT }

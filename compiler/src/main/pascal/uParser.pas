@@ -968,6 +968,9 @@ var
   IsVarGrp:    Boolean;
   IsConstGrp:  Boolean;
   IsOpenArr:   Boolean;
+  Default:     TASTExpr;
+  DefLine:     Integer;
+  DefCol:      Integer;
 begin
   repeat
     IsVarGrp   := Check(tkVar) or Check(tkOut);
@@ -1000,6 +1003,30 @@ begin
       end
       else
         TypeN := ParseTypeName;
+      Default := nil;
+      if Check(tkEquals) then
+      begin
+        if Names.Count > 1 then
+          raise EParseError.Create(Format(
+            'Default value not allowed in a multi-name parameter group at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        if IsVarGrp then
+          raise EParseError.Create(Format(
+            'Default value not allowed on var/out parameter at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        if IsOpenArr then
+          raise EParseError.Create(Format(
+            'Default value not allowed on open-array parameter at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        DefLine := FCurrent.Line;
+        DefCol  := FCurrent.Col;
+        Advance;  { consume '=' }
+        Default := ParseExpr;
+        if Default = nil then
+          raise EParseError.Create(Format(
+            'Expected default value expression at line %d col %d in %s',
+            [DefLine, DefCol, FLexer.Filename]));
+      end;
       for I := 0 to Names.Count - 1 do
       begin
         Par              := TMethodParam.Create;
@@ -1008,6 +1035,11 @@ begin
         Par.IsVarParam   := IsVarGrp;
         Par.IsConstParam := IsConstGrp;
         Par.IsOpenArray  := IsOpenArr;
+        if (I = Names.Count - 1) and (Default <> nil) then
+        begin
+          Par.DefaultValue := Default;
+          Default := nil;  { ownership transferred to Par }
+        end;
         AParams.Add(Par);
       end;
     finally
