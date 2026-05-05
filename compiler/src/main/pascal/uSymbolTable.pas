@@ -125,20 +125,29 @@ type
     IsConstParam: Boolean;
   end;
 
-  { Procedural (function or procedure) type descriptor.  Storage: a single
-    QBE 'l' (function code pointer).  Used for callback values such as
-    `type T = function: Integer`.  Not for method pointers (those need a
-    second slot for Self) and not for closures (those need an environment). }
+  { Procedural (function or procedure) type descriptor.
+
+    Bare procedural pointer: 8-byte slot, holds a function code pointer.
+    Used for callback values such as `type T = function: Integer`.
+
+    Method pointer (IsMethodPtr=True): 16-byte slot, holds (Code, Data).
+    Layout: Code at offset 0, Data at offset 8.  The variable's QBE name
+    refers to the address of the 16-byte block, mirroring how records
+    are represented.  A method-pointer call loads both halves and emits
+    `call code(l data, args...)`.  Set when the type was declared with
+    the 'of object' suffix. }
   TProceduralTypeDesc = class(TTypeDesc)
   public
-    Params:     TObjectList;  { owned TProcParamInfo }
-    ReturnType: TTypeDesc;    { not owned; nil = procedure (no return) }
+    Params:      TObjectList;  { owned TProcParamInfo }
+    ReturnType:  TTypeDesc;    { not owned; nil = procedure (no return) }
+    IsMethodPtr: Boolean;      { True for 'procedure of object' types }
     constructor Create(const AName: string);
     destructor  Destroy; override;
     { Two procedural types are compatible iff their return types match
-      (both nil or both same TTypeDesc) and their parameter lists match
-      pairwise on type and on parameter mode (var/const/value). Parameter
-      names do not participate. }
+      (both nil or both same TTypeDesc), their method-pointer flags
+      match, and their parameter lists match pairwise on type and on
+      parameter mode (var/const/value).  Parameter names do not
+      participate. }
     function    IsCompatibleWith(AOther: TProceduralTypeDesc): Boolean;
   end;
 
@@ -872,6 +881,7 @@ var
 begin
   Result := False;
   if AOther = nil then Exit;
+  if IsMethodPtr <> AOther.IsMethodPtr then Exit;
   if (ReturnType = nil) <> (AOther.ReturnType = nil) then Exit;
   if (ReturnType <> nil) and (ReturnType <> AOther.ReturnType) then Exit;
   if Params.Count <> AOther.Params.Count then Exit;
@@ -1025,6 +1035,7 @@ procedure TSymbolTable.RegisterBuiltins;
 var
   Sym:        TSymbol;
   TObjectDesc: TRecordTypeDesc;
+  TMethodDesc: TRecordTypeDesc;
 begin
   { Primitive types }
   FTypeInteger := NewType(tyInteger, 'Integer');
@@ -1060,6 +1071,16 @@ begin
   TObjectDesc.AddVTableSlot('Destroy',  '$TObject_Destroy');
   TObjectDesc.AddVTableSlot('ToString', '$TObject_ToString');
   Define(TSymbol.Create('TObject', skType, TObjectDesc));
+
+  { TMethod — record carrying a (Code, Data) pair, byte-for-byte
+    identical to a 'procedure of object' value's representation.  The
+    cast 'TMyMethod(m)' (m: TMethod, TMyMethod a method-pointer type)
+    is a no-op at the QBE level: both share the 16-byte (Code at +0,
+    Data at +8) layout. }
+  TMethodDesc := NewRecordType('TMethod');
+  TMethodDesc.AddField('Code', FTypePointer);
+  TMethodDesc.AddField('Data', FTypePointer);
+  Define(TSymbol.Create('TMethod', skType, TMethodDesc));
 
   { IInterface — root of the interface hierarchy; no methods }
   Define(TSymbol.Create('IInterface', skType, NewInterfaceType('IInterface')));

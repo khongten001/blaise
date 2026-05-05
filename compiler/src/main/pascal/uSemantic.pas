@@ -5800,6 +5800,7 @@ begin
     SemanticError(Format('Internal: procedural type ''%s'' not registered',
       [ATD.Name]), ATD.Line, ATD.Col);
   ProcDesc := TProceduralTypeDesc(Sym.TypeDesc);
+  ProcDesc.IsMethodPtr := Def.IsMethodPtr;
   for K := 0 to Def.Params.Count - 1 do
   begin
     MParam := TMethodParam(Def.Params.Items[K]);

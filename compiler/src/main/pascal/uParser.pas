@@ -647,6 +647,18 @@ begin
       Expect(tkColon);
       Result.ReturnTypeName := ParseTypeName;
     end;
+    { Optional 'of object' modifier — turns the bare procedural type into
+      a method-pointer type, with a 16-byte (Code, Data) representation. }
+    if Check(tkOf) then
+    begin
+      Advance;  { consume 'of' }
+      if not (Check(tkIdent) and SameText(FCurrent.Value, 'object')) then
+        raise EParseError.Create(Format(
+          'Expected ''object'' after ''of'' in procedural-type declaration at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      Advance;  { consume 'object' }
+      Result.IsMethodPtr := True;
+    end;
   except
     Result.Free;
     raise;

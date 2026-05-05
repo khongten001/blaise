@@ -423,12 +423,24 @@ begin
 
         tyPointer, tyProcedural, tyMetaClass:
           begin
-            { Pointer var (typed/untyped), procedural var, or metaclass
-              var — one pointer slot, nil-init.  Procedural variables
-              hold a function code pointer; metaclass variables hold a
-              typeinfo pointer; storage is identical to a pointer. }
-            EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
-            EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
+            if (Decl.ResolvedType.Kind = tyProcedural) and
+               TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr then
+            begin
+              { Method-pointer var: 16-byte (Code, Data) block, allocated
+                inline like a record.  The var name is the address of
+                that block; loads/stores read both halves explicitly. }
+              EmitLine(Format('  %%_var_%s =l alloc8 16', [VarName]));
+              EmitLine(Format('  call $memset(l %%_var_%s, w 0, l 16)', [VarName]));
+            end
+            else
+            begin
+              { Pointer var (typed/untyped), bare procedural var, or
+                metaclass var — one pointer slot, nil-init.  Procedural
+                variables hold a function code pointer; metaclass
+                variables hold a typeinfo pointer. }
+              EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
+              EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
+            end;
           end;
 
         tyPChar:
@@ -528,6 +540,12 @@ begin
           EmitLine(Format('export data $%s = { l 0 }', [VarName]));
         tyString, tyClass, tyPointer, tyMetaClass:
           EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+        tyProcedural:
+          if TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr then
+            { Method-pointer global: 16-byte zero block (Code at +0, Data at +8). }
+            EmitLine(Format('export data $%s = { z 16 }', [VarName]))
+          else
+            EmitLine(Format('export data $%s = { l 0 }', [VarName]));
         tyDouble:
           EmitLine(Format('export data $%s = { d 0 }', [VarName]));
         tySingle:
@@ -1673,6 +1691,17 @@ begin
       ValTemp := EmitExpr(AAssign.Expr);
       EmitRecordCopy(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp);
     end;
+  end
+  else if (AAssign.ResolvedLhsType <> nil) and
+          (AAssign.ResolvedLhsType.Kind = tyProcedural) and
+          TProceduralTypeDesc(AAssign.ResolvedLhsType).IsMethodPtr then
+  begin
+    { Method-pointer assignment: 16-byte block copy (Code at +0, Data at +8).
+      The RHS evaluates to the address of a 16-byte source block — either
+      another method-pointer var or a TMethod record (same layout). }
+    ValTemp := EmitExpr(AAssign.Expr);
+    EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
+      [VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp]));
   end
   else if AAssign.Expr.ResolvedType.IsString then
   begin
@@ -3460,13 +3489,32 @@ var
   I:         Integer;
 begin
   { Indirect call through a procedural-typed variable: load the function
-    pointer from the variable and call through it. }
+    pointer from the variable and call through it.  For 'of object' types
+    the variable's slot is a 16-byte (Code, Data) block; load both halves
+    and pass Data as the implicit first argument so the callee sees it as
+    Self. }
   if ACall.IsIndirectCall then
   begin
-    FPtrTemp := AllocTemp;
-    EmitLine(Format('  %s =l loadl %s',
-      [FPtrTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
-    ArgLine := '';
+    if TProceduralTypeDesc(ACall.ResolvedProcType).IsMethodPtr then
+    begin
+      { Method-pointer dispatch: Code at slot+0, Data at slot+8. }
+      FPtrTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [FPtrTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
+      ArgTemp := AllocTemp;
+      EmitLine(Format('  %s =l add %s, 8',
+        [ArgTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
+      ArgTemp2 := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [ArgTemp2, ArgTemp]));
+      ArgLine := Format('l %s', [ArgTemp2]);
+    end
+    else
+    begin
+      FPtrTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s',
+        [FPtrTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
+      ArgLine := '';
+    end;
     for I := 0 to ACall.Args.Count - 1 do
     begin
       if ArgLine <> '' then ArgLine := ArgLine + ', ';
@@ -4375,10 +4423,27 @@ begin
         type-cast branch below — indirect calls also have ResolvedDecl=nil. }
       if FC.IsIndirectCall then
       begin
-        FPtrTemp := AllocTemp;
-        EmitLine(Format('  %s =l loadl %s',
-          [FPtrTemp, VarRef(FC.Name, FC.IndirectCallIsGlobal)]));
-        ArgLine := '';
+        if TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr then
+        begin
+          { Method-pointer dispatch: 16-byte slot.  Code at +0, Data at +8;
+            pass Data as the implicit first arg. }
+          FPtrTemp := AllocTemp;
+          EmitLine(Format('  %s =l loadl %s',
+            [FPtrTemp, VarRef(FC.Name, FC.IndirectCallIsGlobal)]));
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =l add %s, 8',
+            [ArgTemp, VarRef(FC.Name, FC.IndirectCallIsGlobal)]));
+          T := AllocTemp;
+          EmitLine(Format('  %s =l loadl %s', [T, ArgTemp]));
+          ArgLine := Format('l %s', [T]);
+        end
+        else
+        begin
+          FPtrTemp := AllocTemp;
+          EmitLine(Format('  %s =l loadl %s',
+            [FPtrTemp, VarRef(FC.Name, FC.IndirectCallIsGlobal)]));
+          ArgLine := '';
+        end;
         for I := 0 to FC.Args.Count - 1 do
         begin
           if ArgLine <> '' then ArgLine := ArgLine + ', ';

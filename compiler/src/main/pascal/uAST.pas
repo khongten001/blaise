@@ -486,6 +486,10 @@ type
     Params:         TObjectList;  { owned TMethodParam }
     ReturnTypeName: string;       { '' = procedure, non-empty = function }
     IsFunction:     Boolean;
+    IsMethodPtr:    Boolean;       { True iff declared with the 'of object'
+                                     suffix.  Method-pointer values carry a
+                                     16-byte (Code, Data) pair instead of a
+                                     bare code pointer. }
     constructor Create;
     destructor Destroy; override;
   end;

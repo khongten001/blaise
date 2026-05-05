@@ -73,7 +73,8 @@ uses
   cp.test.proctypes,
   cp.test.overload,
   cp.test.classof,
-  cp.test.publishedrtti;
+  cp.test.publishedrtti,
+  cp.test.proctypes_ofobject;
 
 var
   Application: TTestRunner;
