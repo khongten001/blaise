@@ -1467,6 +1467,73 @@ if A.ClassType = EError then …            // identity match
 
 ---
 
+== `ClassCreate` — Runtime Construction from a Metaclass Value
+
+=== Decision
+
+The compiler exposes a built-in function `ClassCreate(Cls, ...args)` that
+allocates an instance of the class denoted by `Cls` (a value of type `class
+of T`) and invokes the resolved constructor on that class's `BaseClass`.
+
+[source,pascal]
+----
+var
+  Cls: class of TTestCase;
+  Inst: TTestCase;
+begin
+  Cls  := TFooTests;                       // metaclass = typeinfo pointer
+  Inst := ClassCreate(Cls, 'TestSomething'); // calls TTestCase.Create(string)
+end;
+----
+
+The first argument is required and must be of type `tyMetaClass`.  Any
+remaining arguments are passed to the constructor on `Cls.BaseClass`.
+The result type is `Cls.BaseClass`, so the call expression assigns
+cleanly to a variable of the base class type.
+
+=== Rationale
+
+The xUnit pattern needs to instantiate one test fixture per published
+test method, but the fixture class is only known through a `class of
+TTestCase` registered earlier.  Lowering this to the standard
+`TFoo.Create(args)` codegen path is impossible — that lowering bakes
+the concrete TotalSize, vtable label, and field-cleanup label into the
+emitted IR, all of which must come from the runtime class value.
+
+The split design — a generic RTL helper `_ClassCreate(TInfo)` that
+allocates and installs the vtable, plus a static call to the
+constructor — avoids stuffing every constructor signature through the
+RTL.  The helper reads the three additional typeinfo slots (totalsize,
+fieldcleanup, vtable) added in Step 11e for exactly this purpose.
+
+The constructor lookup is by name (`Create`).  Overload resolution on
+the constructor signature is not yet implemented; in practice the only
+two shapes used are `TObject.Create` (zero args) and `TTestCase.Create
+(AName: string)`, neither of which collide.  When a richer constructor
+mix appears, the resolution path can be widened without changing the
+ClassCreate surface.
+
+=== Alternatives rejected
+
+* *Use a factory function pointer per class.*  Forces every test class
+  declaration to add `, @TFoo.Create` (or similar) at the
+  `RegisterTest` call site, polluting the cp.test.* migration
+  mechanically required by Step 11f.  The runtime construction path
+  exists either way; this just moves where the boilerplate lives.
+* *Make `metaclassVar.Create(args)` a special method-call shape in the
+  parser.*  Requires the metaclass to know its own constructor symbol
+  table, which doesn't fit the current `class of T` lowering (a value
+  of `class of T` is just a typeinfo pointer; the constructor symbols
+  belong to T, not to the metaclass type).  A dedicated builtin is
+  honest about what's actually a runtime dispatch.
+* *Add a new vtable slot for the constructor and dispatch through
+  it.*  Constructors in Blaise are not virtual; introducing a virtual
+  constructor would break the static `TFoo.Create` codegen invariant.
+  Keeping ClassCreate as a separate path leaves the existing
+  constructor lowering untouched.
+
+---
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.

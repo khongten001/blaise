@@ -648,6 +648,12 @@ ArrayLiteral
  *
  *   GetMem    ( Integer ) : Pointer    — calls libc malloc()
  *   ReallocMem( Pointer, Integer ) : Pointer  — calls libc realloc()
+ *   MethodAddress( Obj, Name )  : Pointer  — published-method lookup
+ *   ClassCreate  ( Cls, ...args ) : Cls.BaseClass
+ *                              — runtime construction from a metaclass
+ *                                value; lowers to _ClassCreate(Cls)
+ *                                followed by a static call to the
+ *                                resolved constructor on Cls.BaseClass.
  *
  * Built-in types (pre-populated in the symbol table):
  *
