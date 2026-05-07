@@ -274,7 +274,9 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := AExe;
-    { Blaise RTL TProcess always uses pipes; no Options property needed }
+{$IFDEF FPC}
+    Proc.Options := [poUsePipes, poStderrToOutPut];
+{$ENDIF}
     for I := 0 to AArgs.Count - 1 do
       Proc.Parameters.Add(AArgs.Strings[I]);
     Proc.Execute;
