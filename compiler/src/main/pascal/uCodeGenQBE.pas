@@ -5335,9 +5335,22 @@ begin
     end
     else if FldAccess.PropRead <> nil then
     begin
-      { Method-backed property read: load Self pointer and call getter }
+      { Method-backed property read: load Self pointer and call getter.
+        When FieldInfo is also non-nil, the getter is on a field of the record
+        (e.g. Rec.Field[I]) — load the field first, then use that as Self. }
       L := AllocTemp;
       EmitLine(Format('  %s =l loadl %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+      if FldAccess.FieldInfo <> nil then
+      begin
+        { Load the field value to get the actual object the getter is called on }
+        Ptr := AllocTemp;
+        if FldAccess.FieldInfo.Offset > 0 then
+          EmitLine(Format('  %s =l add %s, %d', [Ptr, L, FldAccess.FieldInfo.Offset]))
+        else
+          Ptr := L;
+        L := AllocTemp;
+        EmitLine(Format('  %s =l loadl %s', [L, Ptr]));
+      end;
       T     := AllocTemp;
       QType := QbeTypeOf(FldAccess.PropRead.TypeDesc);
       if FldAccess.PropIndexExpr <> nil then

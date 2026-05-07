@@ -5283,6 +5283,24 @@ begin
     end;
     AAccess.FieldInfo := FldInfo;
     Result := FldInfo.TypeDesc;
+    { Subscript on a class field — e.g. TES.Handlers[I] where Handlers is a
+      TObjectList with an indexed property (Items).  The parser attaches [I]
+      to PropIndexExpr; redirect to the indexed property's getter.
+      FieldInfo is kept non-nil so the codegen knows to load the field first,
+      then pass that value as Self to the getter. }
+    if (AAccess.PropIndexExpr <> nil) and
+       (FldInfo.TypeDesc.Kind in [tyRecord, tyClass]) then
+    begin
+      PropInfo := TRecordTypeDesc(FldInfo.TypeDesc).FindIndexedProperty;
+      if PropInfo <> nil then
+      begin
+        AnalyseExpr(AAccess.PropIndexExpr);
+        AAccess.PropRead      := PropInfo;
+        AAccess.PropOwnerType := TRecordTypeDesc(FldInfo.TypeDesc).Name;
+        Result := PropInfo.TypeDesc;
+        AAccess.ResolvedType := Result;
+      end;
+    end;
     Exit;
   end;
 
@@ -5358,6 +5376,20 @@ begin
             AAccess.Line, AAccess.Col);
         end;
         Result := AAccess.FieldInfo.TypeDesc;
+        { Subscript on implicit-Self class field — same as the Base path above. }
+        if (AAccess.PropIndexExpr <> nil) and
+           (AAccess.FieldInfo.TypeDesc.Kind in [tyRecord, tyClass]) then
+        begin
+          PropInfo := TRecordTypeDesc(AAccess.FieldInfo.TypeDesc).FindIndexedProperty;
+          if PropInfo <> nil then
+          begin
+            AnalyseExpr(AAccess.PropIndexExpr);
+            AAccess.PropRead      := PropInfo;
+            AAccess.PropOwnerType := TRecordTypeDesc(AAccess.FieldInfo.TypeDesc).Name;
+            Result := PropInfo.TypeDesc;
+            AAccess.ResolvedType := Result;
+          end;
+        end;
         Exit;
       end;
     end;
@@ -5498,6 +5530,20 @@ begin
 
   AAccess.FieldInfo := FldInfo;
   Result := FldInfo.TypeDesc;
+  { Subscript on a class field (simple RecordName.Field[I] form). }
+  if (AAccess.PropIndexExpr <> nil) and
+     (FldInfo.TypeDesc.Kind in [tyRecord, tyClass]) then
+  begin
+    PropInfo := TRecordTypeDesc(FldInfo.TypeDesc).FindIndexedProperty;
+    if PropInfo <> nil then
+    begin
+      AnalyseExpr(AAccess.PropIndexExpr);
+      AAccess.PropRead      := PropInfo;
+      AAccess.PropOwnerType := TRecordTypeDesc(FldInfo.TypeDesc).Name;
+      Result := PropInfo.TypeDesc;
+      AAccess.ResolvedType := Result;
+    end;
+  end;
 end;
 
 function TSemanticAnalyser.AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;

@@ -236,6 +236,7 @@ type
     { Property tracking }
     procedure AddProperty(AProp: TPropertyInfo);
     function  FindProperty(const AName: string): TPropertyInfo;
+    function  FindIndexedProperty: TPropertyInfo;
 
     property  Fields:      TObjectList read FFields;
     property  Properties: TObjectList read FProperties;
@@ -676,6 +677,23 @@ begin
       Result := TPropertyInfo(FProperties.Items[I]);
       Exit;
     end;
+  Result := nil;
+end;
+
+function TRecordTypeDesc.FindIndexedProperty: TPropertyInfo;
+var
+  I: Integer;
+  P: TPropertyInfo;
+begin
+  for I := 0 to FProperties.Count - 1 do
+  begin
+    P := TPropertyInfo(FProperties.Items[I]);
+    if (P.IndexParamName <> '') and (P.ReadMethod <> '') then
+    begin
+      Result := P;
+      Exit;
+    end;
+  end;
   Result := nil;
 end;
 
