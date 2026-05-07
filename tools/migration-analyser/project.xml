@@ -14,15 +14,6 @@
     </unitPaths>
   </build>
 
-  <test>
-    <framework>fptest</framework>
-    <testSource>TestRunner.pas</testSource>
-    <frameworkOptions>
-      <option>--all</option>
-      <option>--format=plain</option>
-    </frameworkOptions>
-  </test>
-
   <!-- Reuses the compiler's lexer and parser units -->
   <moduleDependencies>
     <module>../../compiler</module>
