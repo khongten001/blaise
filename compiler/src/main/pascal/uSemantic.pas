@@ -3870,11 +3870,16 @@ function TSemanticAnalyser.ArgMatchScore(AParam: TTypeDesc;
 begin
   Result := 0;
   if (AParam = nil) or (AArg = nil) then Exit;
-  { Integer literal (untyped constant) matches any integer or numeric type
-    exactly — mirrors the standard Pascal treatment of untyped constants. }
+  { Integer literal (untyped constant) matches any integer type exactly —
+    mirrors Pascal's treatment of untyped integer constants.  Floating-point
+    params score 1 (widening) so an Integer overload beats a Double overload
+    when both are candidates. }
   if (AArgExpr is TIntLiteral) and AParam.IsNumeric then
   begin
-    Result := 2;
+    if AParam.Kind in [tyInteger, tyInt64, tyUInt32, tyByte] then
+      Result := 2
+    else
+      Result := 1;  { Double, Single — widening }
     Exit;
   end;
   if AParam = AArg then

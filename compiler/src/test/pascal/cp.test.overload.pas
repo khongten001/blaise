@@ -295,15 +295,14 @@ const
     '  begin WriteLn(''child str '', S) end;'               + LineEnding +
     'begin end.';
 
-  { Two same-arity overloads — Int64 + Double — both reachable from
-    Integer only by widening.  Argument 42 (Integer) matches both via
-    widening with equal score → ambiguous. }
+  { Two same-arity overloads — Double + Single — both reachable from an
+    integer literal only by widening, with equal score → ambiguous. }
   SrcAmbiguousOverload =
     'program P;'                                            + LineEnding +
-    'procedure F(N: Int64); overload;'                      + LineEnding +
+    'procedure F(D: Double); overload;'                     + LineEnding +
     'begin'                                                 + LineEnding +
     'end;'                                                  + LineEnding +
-    'procedure F(D: Double); overload;'                     + LineEnding +
+    'procedure F(S: Single); overload;'                     + LineEnding +
     'begin'                                                 + LineEnding +
     'end;'                                                  + LineEnding +
     'begin'                                                 + LineEnding +
