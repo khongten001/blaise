@@ -20,12 +20,37 @@ interface
 uses
   SysUtils, StrUtils, Classes, uAST, uSymbolTable;
 
+// Raw byte copy used by TIRBuffer — maps to libc memcpy under both compilers.
+// FPC: {$linklib c} ensures libc is linked; Blaise links blaise_rtl.a which
+// already pulls in libc.
+{$IFDEF FPC}{$linklib c}{$ENDIF}
+procedure _ir_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
+
 type
   ECodeGenError = class(Exception);
 
+  { Growable byte buffer for QBE IR output.  Replaces TStringList + .Text:
+    AppendLine writes bytes directly — no per-line string allocation.
+    AppendBuffer bulk-copies another buffer in one memcpy.
+    Swapping FOutput ↔ a local TIRBuffer works identically to the old
+    TStringList swap pattern used by EmitFuncDef/AppendUnit/AppendProgram. }
+  TIRBuffer = class
+    FData:   PChar;   { heap-allocated byte array }
+    FLen:    Integer; { bytes written so far }
+    FCap:    Integer; { total allocated bytes }
+    procedure Grow(ANeed: Integer);
+    constructor Create;
+    destructor  Destroy; override;
+    procedure AppendLine(const ALine: string);
+    procedure AppendBuffer(AOther: TIRBuffer);
+    procedure Clear;
+    function  Text: string;
+    property  Len: Integer read FLen;
+  end;
+
   TCodeGenQBE = class
   private
-    FOutput:          TStringList;
+    FOutput:          TIRBuffer;
     FStrLits:         TStringList;  { index → raw value; label = $__s<index> }
     FStrLitsEmitted:  Integer;      { count of $__s<N> already written to output }
     FTempCount:       Integer;
@@ -197,10 +222,92 @@ type
 
 implementation
 
+{ -----------------------------------------------------------------------
+  TIRBuffer
+  ----------------------------------------------------------------------- }
+
+const
+  IR_INIT_CAP = 65536;  { 64 KB initial allocation — avoids early reallocs }
+  IR_NL = #10;
+
+procedure BufCopy(Dst, Src: Pointer; N: Integer);
+begin
+  _ir_memcpy(Dst, Src, N);
+end;
+
+constructor TIRBuffer.Create;
+begin
+  inherited Create;
+  FCap  := IR_INIT_CAP;
+  FLen  := 0;
+  FData := GetMem(FCap);
+end;
+
+destructor TIRBuffer.Destroy;
+begin
+  FreeMem(FData);
+  inherited Destroy;
+end;
+
+procedure TIRBuffer.Grow(ANeed: Integer);
+var
+  NewCap: Integer;
+  NewData: PChar;
+begin
+  NewCap := FCap;
+  while NewCap < FLen + ANeed do
+    NewCap := NewCap * 2;
+  NewData := GetMem(NewCap);
+  if FLen > 0 then
+    BufCopy(NewData, FData, FLen);
+  FreeMem(FData);
+  FData := NewData;
+  FCap  := NewCap;
+end;
+
+procedure TIRBuffer.AppendLine(const ALine: string);
+var
+  SLen: Integer;
+  NL:   string;
+begin
+  SLen := Length(ALine);
+  if FLen + SLen + 1 > FCap then
+    Grow(SLen + 1);
+  if SLen > 0 then
+  begin
+    BufCopy(FData + FLen, PChar(ALine), SLen);
+    FLen := FLen + SLen;
+  end;
+  NL := IR_NL;
+  BufCopy(FData + FLen, PChar(NL), 1);
+  FLen := FLen + 1;
+end;
+
+procedure TIRBuffer.AppendBuffer(AOther: TIRBuffer);
+begin
+  if AOther.FLen = 0 then Exit;
+  if FLen + AOther.FLen > FCap then
+    Grow(AOther.FLen);
+  BufCopy(FData + FLen, AOther.FData, AOther.FLen);
+  FLen := FLen + AOther.FLen;
+end;
+
+procedure TIRBuffer.Clear;
+begin
+  FLen := 0;
+end;
+
+function TIRBuffer.Text: string;
+begin
+  SetLength(Result, FLen);
+  if FLen > 0 then
+    BufCopy(PChar(Result), FData, FLen);
+end;
+
 constructor TCodeGenQBE.Create;
 begin
   inherited Create;
-  FOutput          := TStringList.Create;
+  FOutput          := TIRBuffer.Create;
   FStrLits         := TStringList.Create;
   FStrLits.CaseSensitive := True;
   FBreakLabels     := TStringList.Create;
@@ -318,7 +425,7 @@ end;
 
 procedure TCodeGenQBE.EmitLine(const ALine: string);
 begin
-  FOutput.Add(ALine);
+  FOutput.AppendLine(ALine);
   { Track the current basic block label — needed by short-circuit phi codegen
     to record which predecessor block each incoming value comes from. }
   if (Length(ALine) > 0) and (ALine[1] = '@') then
@@ -6768,8 +6875,8 @@ end;
 
 procedure TCodeGenQBE.Generate(AProg: TProgram);
 var
-  Body:        TStringList;
-  SavedOutput: TStringList;
+  Body:        TIRBuffer;
+  SavedOutput: TIRBuffer;
 begin
   FOutput.Clear;
   FStrLits.Clear;
@@ -6777,7 +6884,7 @@ begin
   FTempCount  := 0;
   FLabelCount := 0;
 
-  Body := TStringList.Create;
+  Body := TIRBuffer.Create;
   try
     SavedOutput := FOutput;
     FOutput := Body;
@@ -6802,7 +6909,7 @@ begin
     EmitInterfaceDefs(AProg);
     EmitTypeInfoDefs(AProg);
     EmitVTableDefs(AProg);
-    FOutput.AddStrings(Body);
+    FOutput.AppendBuffer(Body);
   finally
     Body.Free;
   end;
@@ -6813,8 +6920,8 @@ var
   I:         Integer;
   ImplDecl:  TMethodDecl;
   IntfNames: TStringList;
-  Body:      TStringList;
-  SavedOut:  TStringList;
+  Body:      TIRBuffer;
+  SavedOut:  TIRBuffer;
 begin
   FOutput.Clear;
   FStrLits.Clear;
@@ -6828,7 +6935,7 @@ begin
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
       IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
-    Body := TStringList.Create;
+    Body := TIRBuffer.Create;
     try
       SavedOut := FOutput;
       FOutput  := Body;
@@ -6846,7 +6953,7 @@ begin
       EmitLine('# Unit: ' + AUnit.Name);
       EmitLine('');
       EmitDataSection;
-      FOutput.AddStrings(Body);
+      FOutput.AppendBuffer(Body);
     finally
       Body.Free;
     end;
@@ -6866,8 +6973,8 @@ var
   PubCount:    Integer;
   ImplDecl:     TMethodDecl;
   IntfNames:    TStringList;
-  Body:         TStringList;
-  SavedOut:     TStringList;
+  Body:         TIRBuffer;
+  SavedOut:     TIRBuffer;
   TD:           TTypeDecl;
   CD:           TClassTypeDef;
   MDecl:        TMethodDecl;
@@ -6897,7 +7004,7 @@ begin
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
       IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
-    Body := TStringList.Create;
+    Body := TIRBuffer.Create;
     try
       SavedOut := FOutput;
       FOutput  := Body;
@@ -7078,7 +7185,7 @@ begin
       EmitGlobalVarData(AUnit.IntfBlock);
       EmitGlobalVarData(AUnit.ImplBlock);
 
-      FOutput.AddStrings(Body);
+      FOutput.AppendBuffer(Body);
 
       { Initialization section: emit as export function $<Unit>_init() }
       if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
@@ -7120,14 +7227,14 @@ end;
 
 procedure TCodeGenQBE.AppendProgram(AProg: TProgram);
 var
-  Body:        TStringList;
-  SavedOutput: TStringList;
+  Body:        TIRBuffer;
+  SavedOutput: TIRBuffer;
 begin
   { No clears — accumulates after AppendUnit calls. }
   FTempCount  := 0;
   FLabelCount := 0;
 
-  Body := TStringList.Create;
+  Body := TIRBuffer.Create;
   try
     SavedOutput := FOutput;
     FOutput := Body;
@@ -7152,7 +7259,7 @@ begin
     EmitInterfaceDefs(AProg);
     EmitTypeInfoDefs(AProg);
     EmitVTableDefs(AProg);
-    FOutput.AddStrings(Body);
+    FOutput.AppendBuffer(Body);
   finally
     Body.Free;
   end;
