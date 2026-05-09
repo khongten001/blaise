@@ -36,10 +36,12 @@ unit blaise_str;
 interface
 
 { ------------------------------------------------------------------ }
-{ Libc bindings (malloc/free only — all other libc calls replaced)    }
+{ Libc bindings                                                        }
 { ------------------------------------------------------------------ }
-function  _libc_malloc(Size: Int64): Pointer; external name 'malloc';
-procedure _libc_free(Ptr: Pointer);           external name 'free';
+function  _libc_malloc(Size: Int64): Pointer;                          external name 'malloc';
+procedure _libc_free(Ptr: Pointer);                                    external name 'free';
+procedure _libc_memcpy(Dst, Src: Pointer; N: Int64);                   external name 'memcpy';
+function  _libc_memcmp(P1, P2: Pointer; N: Int64): Integer;            external name 'memcmp';
 
 { ------------------------------------------------------------------ }
 { String RTL public interface                                          }
@@ -73,18 +75,13 @@ const
   HDR_SIZE = 12;  { 3 x 4-byte integers: RefCount, Length, Capacity }
 
 { ------------------------------------------------------------------ }
-{ Pure-Pascal memory helpers (no libc)                                 }
+{ Memory helpers                                                        }
 { ------------------------------------------------------------------ }
 
 procedure MemCopy(Dst, Src: Pointer; N: Integer);
-var
-  D, S: PChar;
-  I:    Integer;
 begin
-  D := PChar(Dst);
-  S := PChar(Src);
-  for I := 0 to N - 1 do
-    D[I] := S[I];
+  if N > 0 then
+    _libc_memcpy(Dst, Src, N);
 end;
 
 { ------------------------------------------------------------------ }

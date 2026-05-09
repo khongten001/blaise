@@ -59,34 +59,23 @@ const
   HDR_SIZE  = 12;   { string header: RefCount + Length + Capacity }
   CLASS_HDR = 16;   { class header:  RefCount + pad + cleanup ptr }
 
-function  _libc_malloc(Size: Int64): Pointer; external name 'malloc';
-procedure _libc_free(Ptr: Pointer);           external name 'free';
+function  _libc_malloc(Size: Int64): Pointer;              external name 'malloc';
+procedure _libc_free(Ptr: Pointer);                        external name 'free';
+procedure _libc_memcpy(Dst, Src: Pointer; N: Int64);       external name 'memcpy';
+function  _libc_memcmp(P1, P2: Pointer; N: Int64): Integer; external name 'memcmp';
 
 procedure MemCopy(Dst, Src: Pointer; N: Integer);
-var
-  D, S: PChar;
-  I:    Integer;
 begin
-  D := PChar(Dst);
-  S := PChar(Src);
-  for I := 0 to N - 1 do
-    D[I] := S[I];
+  if N > 0 then
+    _libc_memcpy(Dst, Src, N);
 end;
 
 function MemCompare(P1, P2: Pointer; N: Integer): Integer;
-var
-  A, B: PChar;
-  I:    Integer;
 begin
-  A := PChar(P1);
-  B := PChar(P2);
-  for I := 0 to N - 1 do
-    if A[I] <> B[I] then
-    begin
-      Result := A[I] - B[I];
-      Exit;
-    end;
-  Result := 0;
+  if N = 0 then
+    Result := 0
+  else
+    Result := _libc_memcmp(P1, P2, N);
 end;
 
 { ------------------------------------------------------------------ }
