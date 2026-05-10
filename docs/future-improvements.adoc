@@ -503,6 +503,60 @@ Required for porting existing Pascal codebases.  Provides the familiar
 `Terminate` / `Terminated` pattern.  Not inspiring, but necessary for
 ecosystem compatibility.
 
+**Important ARC consideration for TThread:**
+Blaise's automatic reference counting introduces a subtle but critical
+interaction with thread lifetimes.  The naive fire-and-forget pattern:
+
+[source,pascal]
+----
+var T: TMyThread;
+begin
+  T := TMyThread.Create;
+  T.FreeOnTerminate := True;
+  T.Start;
+end; // <- T is released here; refcount → 0; object freed while thread runs
+----
+
+...is unsafe under ARC.  When the local variable `T` goes out of scope,
+ARC immediately decrements the refcount.  If this is the last reference,
+the object is freed whilst the thread is still executing, causing a
+use-after-free or crash.
+
+The recommended solution is **self-referential threads**: each TThread
+increments its own refcount during `Execute` and decrements it during
+finalisation, keeping itself alive for the duration of its work.  This
+mirrors modern threading APIs (Rust's `Arc<Thread>`, Go's goroutines).
+
+Implementation sketch:
+
+[source,pascal]
+----
+procedure TThread.Execute;
+begin
+  _ClassAddRef(Self);  { Keep self alive during execution }
+  try
+    // User's Execute override (via virtual dispatch)
+    Self.UserExecute;
+  finally
+    _ClassRelease(Self);  { Release self; if FreeOnTerminate, frees object }
+  end;
+end;
+----
+
+This way the caller can write idiomatic fire-and-forget code and the
+thread automatically cleans itself up once it finishes:
+
+[source,pascal]
+----
+var T: TMyThread;
+begin
+  T := TMyThread.Create;
+  T.FreeOnTerminate := True;
+  T.Start;  // Thread increments self-refcount in Execute
+end;        // T's refcount drops, but thread keeps itself alive
+            // Thread finalizer decrements self-refcount, freeing the object
+----
+
 *Layer 2 — Modern structured concurrency.*
 
 The industry has converged on a few proven models:
@@ -522,30 +576,47 @@ The industry has converged on a few proven models:
   propagation and scope-bound lifetimes.  Prevents leaked tasks by
   construction.
 
+**Comparison: async/await vs TThread.**
+
+[%header, cols="2,5,5"]
+|===
+| Aspect | TThread | Async/Await
+| Concurrency model | OS threads (preemptive) | Cooperative coroutines (event loop)
+| Stack per task | ~1 MB per thread | Minimal; thousands in ~few MB
+| Scheduling | OS kernel; true parallelism on multicore | Single event loop; one task at a time
+| Blocking I/O | Blocks thread; wasteful | Suspends task; loop handles others
+| Data sharing | Requires locks/atomics (races, deadlocks) | Inherently safe; only one coroutine active
+| Cancellation | Difficult (cooperative flags) | Natural (`cancel()` the task)
+| CPU-bound work | Natural fit | Poor fit (no parallelism)
+| Common use | Fire-and-forget background workers | Server handling thousands of clients
+|===
+
 The recommended path for Blaise:
 
-. Start with `TThread` for compatibility.
-. Add `async`/`await` as the primary modern concurrency primitive.  This
-  is the most compiler-friendly approach — it is a source-to-source
-  transform during semantic analysis, turning async functions into state
-  machine classes.  It does not require a complex runtime scheduler.
+. Start with `TThread` for compatibility, using self-referential semantics
+  to protect thread lifetime under ARC.
+. Add `async`/`await` as the primary modern concurrency primitive for
+  I/O-bound workloads.  This is the most compiler-friendly approach —
+  it is a source-to-source transform during semantic analysis, turning
+  async functions into state machine classes.  It does not require a
+  complex runtime scheduler.
 . Layer structured task groups on top of async/await for fork-join
   parallelism with automatic cancellation.
 . Consider virtual threads as a long-term option if the runtime grows to
   support a user-mode scheduler (significant investment).
 
-*Why not just TThread.* `TThread` maps 1:1 to OS threads, which are
-expensive to create (~1 MB stack each) and limited in number (~thousands).
-Modern server and UI workloads routinely need tens of thousands of
-concurrent tasks (network connections, background jobs, UI animations).
-Lightweight async tasks are the standard solution across every modern
-language ecosystem.
-
 *Design considerations.*
 
-* ARC interaction — async tasks capture variables by reference; the ARC
-  system must ensure captured objects outlive the task.  Structured
-  concurrency helps here because task lifetimes are lexically scoped.
+* ARC interaction — both TThread (self-referential) and async/await handle
+  lifetime automatically.  For async tasks, captured variables are
+  referenced; the ARC system must ensure they outlive the task.
+  Structured concurrency helps here because task lifetimes are lexically
+  scoped.
+* Async/await state machine — the compiler transforms `async` function
+  bodies into state-machine classes during semantic analysis.  Each
+  `await` point becomes a state transition.  The state machine holds
+  captured variables and a continuation pointer.  No runtime scheduler or
+  coroutine primitives needed — just ordinary function calls and ARC.
 * QBE constraints — QBE has no coroutine or `setjmp`-based context
   switching primitives.  `async`/`await` via state-machine transform
   does not require these — the compiler generates ordinary function calls
@@ -556,8 +627,11 @@ language ecosystem.
   Structured concurrency naturally provides this: exceptions propagate
   to the parent scope and cancel sibling tasks.
 
-*Effort.* Large.  TThread is small (1–2 weeks); async/await is a
-significant compiler feature (parser, semantic, codegen transforms) that
-warrants its own design document and phased implementation.  This is
-post-v0.6.0 work.
+*Effort.*
+
+* TThread self-referential semantics: Small (2–3 days; modifications to
+  RTL's TThread base class and entry point).
+* Async/await: Large.  This is a significant compiler feature (parser,
+  semantic, codegen transforms) that warrants its own design document and
+  phased implementation.  Estimated 4–6 weeks post-v0.6.0.
 
