@@ -3296,7 +3296,10 @@ begin
     EmitLine(Format('  %s =l loadl %s', [SelfTemp, FPtrTemp]));
   end
   else
+  begin
     EmitLine(Format('  %s =l loadl %s', [SelfTemp, VarRef(ACall.ObjectName, ACall.IsGlobal)]));
+    EmitLine(Format('  call $_CheckNil(l %s)', [SelfTemp]));
+  end;
 
   { Build argument string: l Self, then each explicit arg }
   ArgLine := Format('l %s', [SelfTemp]);

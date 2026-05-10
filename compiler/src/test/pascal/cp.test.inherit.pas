@@ -36,6 +36,7 @@ type
     procedure TestSemantic_Nil_CompareWithClassVar_OK;
     procedure TestCodegen_Nil_StoresZero;
     procedure TestCodegen_Nil_CompareEmitsCeql;
+    procedure TestCodegen_MethodCall_NilGuard_EmitsCheckNil;
 
     { ------------------------------------------------------------------ }
     { Self-referential types                                               }
@@ -297,6 +298,26 @@ begin
     '    N := 0'               + LineEnding +
     'end.');
   AssertTrue('ceql for pointer comparison', Pos('ceql', IR) > 0);
+end;
+
+procedure TInheritTests.TestCodegen_MethodCall_NilGuard_EmitsCheckNil;
+var IR: string;
+begin
+  IR := GenIR(
+    'program P;'               + LineEnding +
+    'type'                     + LineEnding +
+    '  TFoo = class'           + LineEnding +
+    '    procedure DoIt;'      + LineEnding +
+    '  end;'                   + LineEnding +
+    'procedure TFoo.DoIt;'     + LineEnding +
+    'begin'                    + LineEnding +
+    'end;'                     + LineEnding +
+    'var F: TFoo;'             + LineEnding +
+    'begin'                    + LineEnding +
+    '  F := TFoo.Create;'      + LineEnding +
+    '  F.DoIt'                 + LineEnding +
+    'end.');
+  AssertTrue('_CheckNil emitted before method call', Pos('_CheckNil', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

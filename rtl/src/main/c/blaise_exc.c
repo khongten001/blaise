@@ -20,6 +20,7 @@
  */
 
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -206,4 +207,17 @@ const void* _GetItab(void* obj, const BlaiseTypeInfo* intf_ti) {
  */
 void _Raise_InvalidCast(void) {
     abort();
+}
+
+/*
+ * _CheckNil — abort with a clear message if the object pointer is nil.
+ * Emitted by codegen before every method dispatch on a class variable so
+ * that calling a method on an uninitialised (nil) object produces a
+ * meaningful error instead of silently succeeding or crashing randomly.
+ */
+void _CheckNil(void* obj) {
+    if (!obj) {
+        fprintf(stderr, "Runtime error: method call on nil object\n");
+        abort();
+    }
 }
