@@ -28,7 +28,7 @@ uses
   uStrCompat;
 
 const
-  Version = '0.6.0-dev';
+  Version = '0.6.0';
   CompilerName = 'Blaise';
 
 procedure PrintUsage;
