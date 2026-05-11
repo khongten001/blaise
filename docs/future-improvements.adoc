@@ -635,3 +635,86 @@ The recommended path for Blaise:
   semantic, codegen transforms) that warrants its own design document and
   phased implementation.  Estimated 4–6 weeks post-v0.6.0.
 
+== Migration Analyser
+
+=== Detect 1-based string indexing patterns from FPC/Delphi code
+
+*What.*  The migration analyser (`tools/migration-analyser`) must detect
+and flag patterns in FPC/Delphi source that rely on 1-based string
+semantics, since Blaise strings are 0-based (see
+`docs/language-rationale.adoc`, section "0-Based String Indexing").
+
+*Why it matters.*  Ported code that uses 1-based idioms will compile
+without error but produce wrong results silently — off-by-one character
+accesses, missed `Pos` not-found checks, and incorrect `Copy` start
+positions.  These are among the most insidious categories of migration
+bugs because they produce plausible-looking output most of the time and
+only misbehave on edge cases.
+
+*Patterns to detect.*
+
+[cols="1,2,2", options="header"]
+|===
+| Pattern | FPC/Delphi meaning | Blaise equivalent
+
+| `S[1]`
+| First character
+| `S[0]`
+
+| `S[N]` where `N` is a literal ≥ 1
+| Character at 1-based position N
+| `S[N-1]`
+
+| `Copy(S, 1, N)`
+| First N characters
+| `Copy(S, 0, N)`
+
+| `Copy(S, K, N)` where `K` is a literal ≥ 2
+| Substring starting at 1-based K
+| `Copy(S, K-1, N)`
+
+| `Copy(S, K, MaxInt)` where K ≥ 2
+| Tail from 1-based K
+| `Copy(S, K-1, MaxInt)`
+
+| `Pos(Sub, S) > 0`
+| Substring found
+| `Pos(Sub, S) >= 0`
+
+| `Pos(Sub, S) = 0`
+| Substring not found
+| `Pos(Sub, S) < 0`
+
+| `if Pos(Sub, S) > 0 then ... Pos(Sub, S)` (double call)
+| Find and use position
+| Assign to variable first; compare `>= 0`; use variable as 0-based index
+
+| `PosEx(Sub, S, K)` where `K` is a literal ≥ 2
+| Search from 1-based K
+| `PosEx(Sub, S, K-1)`
+
+| `OrdAt(S, K)` where `K` is a literal ≥ 1
+| Ordinal at 1-based K (FPC-defined helper)
+| `OrdAt(S, K-1)`
+
+| `for I := 1 to Length(S) do ... S[I]`
+| Iterate characters 1-based
+| `for I := 0 to Length(S) - 1 do ... S[I]`
+|===
+
+*Implementation path.*
+
+. Add a string-index analysis pass to the analyser that walks expression
+  trees and identifies the patterns above.
+. Report each occurrence with source location, the offending expression,
+  and the suggested rewrite.
+. Special-case `Copy(S, 1, N)` — this is the most common false-positive
+  source (copying the whole string) so provide the `Copy(S, 0, N)` rewrite
+  without noise.
+. The `Pos(...) > 0` → `>= 0` and `Pos(...) = 0` → `< 0` rewrites are
+  purely mechanical and could be offered as auto-apply fixes.
+
+*Effort.*  Medium — approximately one week to add the expression-walker and
+pattern-matching rules, plus testing against a representative FPC
+codebase.
+

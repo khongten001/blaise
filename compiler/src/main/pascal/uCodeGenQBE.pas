@@ -18,7 +18,7 @@ unit uCodeGenQBE;
 interface
 
 uses
-  SysUtils, StrUtils, Classes, uAST, uSymbolTable;
+  SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat;
 
 // Raw byte copy used by TIRBuffer — maps to libc memcpy under both compilers.
 // FPC: {$linklib c} ensures libc is linked; Blaise links blaise_rtl.a which
@@ -428,8 +428,8 @@ begin
   FOutput.AppendLine(ALine);
   { Track the current basic block label — needed by short-circuit phi codegen
     to record which predecessor block each incoming value comes from. }
-  if (Length(ALine) > 0) and (ALine[1] = '@') then
-    FCurrentBlockLabel := Copy(ALine, 2, Length(ALine) - 1);
+  if (Length(ALine) > 0) and (StrAt(ALine, 0) = Ord('@')) then
+    FCurrentBlockLabel := StrCopyTail(ALine, 1);
 end;
 
 procedure TCodeGenQBE.EmitPendingStrLits;
@@ -2370,14 +2370,34 @@ begin
 
   if AAssign.IsVarParam then
   begin
-    { Var param: load the stored pointer, then store the value through it }
-    QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
-    ValTemp := EmitExpr(AAssign.Expr);
     PtrTemp := AllocTemp;
     EmitLine(Format('  %s =l loadl %%_var_%s', [PtrTemp, AAssign.Name]));
-    if QType = 'w' then StoreInstr := 'storew'
-                   else StoreInstr := 'storel';
-    EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));
+    if AAssign.Expr.ResolvedType.IsString then
+    begin
+      OldTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+      EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
+      EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    end
+    else if AAssign.Expr.ResolvedType.Kind = tyClass then
+    begin
+      OldTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+      EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    end
+    else
+    begin
+      QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
+      ValTemp := EmitExpr(AAssign.Expr);
+      if QType = 'w' then StoreInstr := 'storew'
+                     else StoreInstr := 'storel';
+      EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));
+    end;
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyRecord) then
@@ -3565,15 +3585,19 @@ begin
   EmitLine('@start');
   EmitParamAllocs(AMethod, nil);
 
-  { ARC: addref class value params on entry — balances the release pass at
-    method exit.  Strings in method params are not ARC-managed yet (existing
-    gap); classes are covered here because the whole Phase 3 follow-up is
-    specifically about class ARC parity. }
+  { ARC: addref string and class value params on entry — balances the
+    release pass at method exit. }
   for I := 0 to AMethod.Params.Count - 1 do
   begin
     Par := TMethodParam(AMethod.Params.Items[I]);
-    if Par.IsVarParam then Continue;
-    if Par.ResolvedType.Kind = tyClass then
+    if Par.IsVarParam or Par.IsOpenArray then Continue;
+    if Par.ResolvedType.Kind = tyString then
+    begin
+      ValTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyClass then
     begin
       ValTemp := AllocTemp;
       EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
@@ -3607,12 +3631,18 @@ begin
     FExitLabel := SavedExitLbl;
   end;
 
-  { ARC: release class value params on exit. }
+  { ARC: release string and class value params on exit. }
   for I := 0 to AMethod.Params.Count - 1 do
   begin
     Par := TMethodParam(AMethod.Params.Items[I]);
-    if Par.IsVarParam then Continue;
-    if Par.ResolvedType.Kind = tyClass then
+    if Par.IsVarParam or Par.IsOpenArray then Continue;
+    if Par.ResolvedType.Kind = tyString then
+    begin
+      ValTemp := AllocTemp;
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitLine(Format('  call $_StringRelease(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyClass then
     begin
       ValTemp := AllocTemp;
       EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
@@ -3793,8 +3823,8 @@ begin
     begin
       E    := RT.VTableEntryAt(S);
       { ImplName has leading '$' already; mangle the rest }
-      if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
-        Line := Line + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+      if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+        Line := Line + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
         Line := Line + ', l ' + QBEMangle(E.ImplName);
     end;
@@ -3813,8 +3843,8 @@ begin
     for S := 0 to RT.VTableCount - 1 do
     begin
       E    := RT.VTableEntryAt(S);
-      if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
-        Line := Line + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+      if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+        Line := Line + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
         Line := Line + ', l ' + QBEMangle(E.ImplName);
     end;
@@ -5107,10 +5137,10 @@ begin
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
-        { String/char arg: get ordinal of first byte via OrdAt(str, 1) }
+        { String/char arg: get ordinal of first byte via OrdAt(str, 0) }
         { Enum/integer arg: already an integer — just copy }
         if TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyString then
-          EmitLine(Format('  %s =w call $_OrdAt(l %s, w 1)', [T, L]))
+          EmitLine(Format('  %s =w call $_OrdAt(l %s, w 0)', [T, L]))
         else
           EmitLine(Format('  %s =w copy %s', [T, L]));
         Result := T;
@@ -5129,6 +5159,13 @@ begin
       if SameText(FC.Name,'UpCase') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+           TASTExpr(FC.Args.Items[0]).ResolvedType.IsString then
+        begin
+          T := AllocTemp;
+          EmitLine(Format('  %s =w call $_OrdAt(l %s, w 0)', [T, L]));
+          L := T;
+        end;
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_UpCase(w %s)', [T, L]));
         Result := T;
@@ -6820,9 +6857,9 @@ var
   C: Integer;
 begin
   Result := '';
-  for I := 1 to Length(AName) do
+  for I := 0 to Length(AName) - 1 do
   begin
-    C := Ord(AName[I]);
+    C := StrAt(AName, I);
     case C of
       60:  Result := Result + '_';    { '<' }
       62:  ;                          { '>' — skip }
@@ -6853,9 +6890,9 @@ var
   Lo:   Integer;
 begin
   Result := '';
-  for I := 1 to Length(AStr) do
+  for I := 0 to Length(AStr) - 1 do
   begin
-    C := Ord(AStr[I]);  { FPC: Ord(Char); Blaise: AStr[I] already Integer }
+    C := StrAt(AStr, I);
     case C of
       34:  Result := Result + '\"';   { '"' }
       92:  Result := Result + '\\';   { '\' }
@@ -7133,8 +7170,8 @@ begin
           for S := 0 to RT.VTableCount - 1 do
           begin
             E := RT.VTableEntryAt(S);
-            if (Length(E.ImplName) > 0) and (E.ImplName[1] = '$') then
-              VLine := VLine + ', l $' + QBEMangle(Copy(E.ImplName, 2, MaxInt))
+            if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+              VLine := VLine + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
             else
               VLine := VLine + ', l ' + QBEMangle(E.ImplName);
           end;
@@ -7368,18 +7405,16 @@ begin
     Exit;
   end;
 
-  { String byte access: S[N] (1-based).
+  { String byte access: S[N] (0-based).
     Data-pointer convention: str_ptr IS the char data.
-    S[N] = byte at str_ptr + (N - 1) }
+    S[N] = byte at str_ptr + N }
   StrPtr  := EmitExpr(AExpr.StrExpr);    { data pointer (l) }
-  IdxW    := EmitExpr(AExpr.IndexExpr);  { 1-based index (w) }
+  IdxW    := EmitExpr(AExpr.IndexExpr);  { 0-based index (w) }
   IdxL    := AllocTemp;
-  Offset  := AllocTemp;
   BytePtr := AllocTemp;
   ByteVal := AllocTemp;
   EmitLine(Format('  %s =l extuw %s', [IdxL, IdxW]));
-  EmitLine(Format('  %s =l sub %s, 1', [Offset, IdxL]));   { N-1 (0-based offset) }
-  EmitLine(Format('  %s =l add %s, %s', [BytePtr, StrPtr, Offset]));
+  EmitLine(Format('  %s =l add %s, %s', [BytePtr, StrPtr, IdxL]));
   EmitLine(Format('  %s =w loadub %s', [ByteVal, BytePtr]));
   Result := ByteVal;
 end;

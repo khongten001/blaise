@@ -146,7 +146,7 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
-{ _StringPos(Sub, S) : Integer  — 1-based; 0 if not found            }
+{ _StringPos(Sub, S) : Integer  — 0-based; -1 if not found           }
 { ------------------------------------------------------------------ }
 
 function _StringPos(Sub, S: Pointer): Integer;
@@ -160,12 +160,12 @@ begin
   SubLen := StrLen(Sub);
   if SubLen = 0 then
   begin
-    Result := 1;
+    Result := 0;
     Exit;
   end;
   if SubLen > SLen then
   begin
-    Result := 0;
+    Result := -1;
     Exit;
   end;
   SData   := StrData(S);
@@ -186,17 +186,17 @@ begin
     end;
     if Match then
     begin
-      Result := I + 1;
+      Result := I;
       Exit;
     end;
     Inc(I);
   end;
-  Result := 0;
+  Result := -1;
 end;
 
 { ------------------------------------------------------------------ }
 { _StringPosEx(Sub, S, StartPos) — like _StringPos but starts from   }
-{ the given 1-based position.  Returns 0 if not found.               }
+{ the given 0-based position.  Returns -1 if not found.              }
 { ------------------------------------------------------------------ }
 
 function _StringPosEx(Sub, S: Pointer; StartPos: Integer): Integer;
@@ -210,18 +210,18 @@ begin
   SubLen := StrLen(Sub);
   if SubLen = 0 then
   begin
-    Result := 1;
+    Result := 0;
     Exit;
   end;
-  if (SubLen > SLen) or (StartPos > SLen) then
+  if (SubLen > SLen) or (StartPos >= SLen) then
   begin
-    Result := 0;
+    Result := -1;
     Exit;
   end;
   SData   := StrData(S);
   SubData := StrData(Sub);
-  if StartPos < 1 then StartPos := 1;
-  I := StartPos - 1;  { convert to 0-based }
+  if StartPos < 0 then StartPos := 0;
+  I := StartPos;
   while I <= SLen - SubLen do
   begin
     Match := True;
@@ -237,41 +237,39 @@ begin
     end;
     if Match then
     begin
-      Result := I + 1;
+      Result := I;
       Exit;
     end;
     Inc(I);
   end;
-  Result := 0;
+  Result := -1;
 end;
 
 { ------------------------------------------------------------------ }
-{ _StringCopy(S, From, Count) : string  — 1-based From               }
+{ _StringCopy(S, From, Count) : string  — 0-based From               }
 { ------------------------------------------------------------------ }
 
 function _StringCopy(S: Pointer; From, Count: Integer): Pointer;
 var
   SLen:  Integer;
   Data:  PChar;
-  Start: Integer;
 begin
   SLen := StrLen(S);
-  if From < 1 then From := 1;
-  Start := From - 1;
-  if Start >= SLen then
+  if From < 0 then From := 0;
+  if From >= SLen then
   begin
     Result := StrAlloc(0);
     Exit;
   end;
   { Avoid signed overflow when Count is large (Copy(S, N, MaxInt) idiom) —
-    compare Count against (SLen - Start) instead of (Start + Count) > SLen. }
-  if (Count < 0) or (Count > SLen - Start) then
-    Count := SLen - Start;
+    compare Count against (SLen - From) instead of (From + Count) > SLen. }
+  if (Count < 0) or (Count > SLen - From) then
+    Count := SLen - From;
   Result := StrAlloc(Count);
   if (Result <> nil) and (Count > 0) then
   begin
     Data := StrData(S);
-    MemCopy(StrData(Result), Data + Start, Count);
+    MemCopy(StrData(Result), Data + From, Count);
   end;
 end;
 
@@ -279,7 +277,7 @@ end;
 { _StringDelete(S, Idx, Count) : string                                }
 {                                                                      }
 { Returns a new string with Count characters removed starting at Idx   }
-{ (1-based).  Out-of-range Idx or non-positive Count returns a copy of }
+{ (0-based).  Out-of-range Idx or non-positive Count returns a copy of }
 { the input.  Caller owns the returned string (RefCount = 0); callers  }
 { that overwrite a var-string slot must release the old value first    }
 { and addref the result, exactly as for _StringCopy.                   }
@@ -287,30 +285,29 @@ end;
 
 function _StringDelete(S: Pointer; Idx, Count: Integer): Pointer;
 var
-  SLen, Start, RemoveCount, NewLen: Integer;
+  SLen, RemoveCount, NewLen: Integer;
   Data, ResData: PChar;
 begin
   SLen := StrLen(S);
-  if (Idx < 1) or (Idx > SLen) or (Count <= 0) then
+  if (Idx < 0) or (Idx >= SLen) or (Count <= 0) then
   begin
     Result := StrAlloc(SLen);
     if (Result <> nil) and (SLen > 0) then
       MemCopy(StrData(Result), StrData(S), SLen);
     Exit;
   end;
-  Start := Idx - 1;
   RemoveCount := Count;
-  if Start + RemoveCount > SLen then
-    RemoveCount := SLen - Start;
+  if Idx + RemoveCount > SLen then
+    RemoveCount := SLen - Idx;
   NewLen := SLen - RemoveCount;
   Result := StrAlloc(NewLen);
   if Result = nil then Exit;
   Data    := StrData(S);
   ResData := StrData(Result);
-  if Start > 0 then
-    MemCopy(ResData, Data, Start);
-  if NewLen - Start > 0 then
-    MemCopy(ResData + Start, Data + Start + RemoveCount, NewLen - Start);
+  if Idx > 0 then
+    MemCopy(ResData, Data, Idx);
+  if NewLen - Idx > 0 then
+    MemCopy(ResData + Idx, Data + Idx + RemoveCount, NewLen - Idx);
 end;
 
 { ------------------------------------------------------------------ }
@@ -668,13 +665,13 @@ var
   Data: PChar;
 begin
   Len  := StrLen(S);
-  if (I < 1) or (I > Len) then
+  if (I < 0) or (I >= Len) then
   begin
     Result := 0;
     Exit;
   end;
   Data   := StrData(S);
-  Result := Data[I - 1];
+  Result := Data[I];
 end;
 
 { ------------------------------------------------------------------ }

@@ -24,7 +24,8 @@ program Blaise;
 
 uses
   SysUtils, Classes, Process, contnrs,
-  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader, uDebugOPDF;
+  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader, uDebugOPDF,
+  uStrCompat;
 
 const
   Version = '0.6.0-dev';
@@ -100,21 +101,21 @@ begin
   begin
     Arg := ParamStr(I);
 
-    if Copy(Arg, 1, 2) = '-i' then
+    if StrHead(Arg, 2) = '-i' then
       HandleFPCInfoQuery(Arg)
-    else if Copy(Arg, 1, 3) = '-FE' then
-      OutDir := Copy(Arg, 4, MaxInt)
-    else if Copy(Arg, 1, 3) = '-FU' then
+    else if StrHead(Arg, 3) = '-FE' then
+      OutDir := StrCopyTail(Arg, 3)
+    else if StrHead(Arg, 3) = '-FU' then
       { unit cache directory — ignored in Phase 1 }
-    else if Copy(Arg, 1, 3) = '-Fu' then
-      SearchPaths.Add(Copy(Arg, 4, MaxInt))
-    else if Copy(Arg, 1, 2) = '-o' then
-      OutName := Copy(Arg, 3, MaxInt)
-    else if Copy(Arg, 1, 2) = '-M' then
+    else if StrHead(Arg, 3) = '-Fu' then
+      SearchPaths.Add(StrCopyTail(Arg, 3))
+    else if StrHead(Arg, 2) = '-o' then
+      OutName := StrCopyTail(Arg, 2)
+    else if StrHead(Arg, 2) = '-M' then
       { mode switch (e.g. -Mobjfpc) — ignored }
-    else if Copy(Arg, 1, 2) = '-O' then
+    else if StrHead(Arg, 2) = '-O' then
       { optimisation level — ignored }
-    else if Copy(Arg, 1, 2) = '-d' then
+    else if StrHead(Arg, 2) = '-d' then
       { conditional define — ignored in Phase 1 }
     else if (Arg = '-g') or (Arg = '-gl') then
       OPDFEnabled := True
@@ -125,7 +126,7 @@ begin
       PrintUsage;
       Halt(0);
     end
-    else if (Length(Arg) > 0) and (Arg[1] <> '-') then
+    else if (Length(Arg) > 0) and (StrAt(Arg, 0) <> Ord('-')) then
     begin
       { Positional argument — the source file }
       if SourceFile = '' then
@@ -165,7 +166,7 @@ begin
   for I := 1 to ParamCount do
   begin
     Arg := ParamStr(I);
-    if (Length(Arg) >= 2) and (Arg[1] = '-') and (Arg[2] <> '-') then
+    if (Length(Arg) >= 2) and (StrAt(Arg, 0) = Ord('-')) and (StrAt(Arg, 1) <> Ord('-')) then
     begin
       Result := True;
       Exit;
@@ -256,7 +257,7 @@ begin
   N := AProc.Output.Read(Buf, BufSize);
   Result := '';
   if N > 0 then
-    Result := Copy(string(PChar(@Buf[0])), 1, N);
+    Result := StrHead(string(PChar(@Buf[0])), N);
 end;
 {$ELSE}
 begin

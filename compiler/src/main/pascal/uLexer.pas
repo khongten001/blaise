@@ -17,7 +17,7 @@ unit uLexer;
 interface
 
 uses
-  SysUtils, uPasTokeniser;
+  SysUtils, uPasTokeniser, uStrCompat;
 
 type
   TTokenKind = (
@@ -142,10 +142,11 @@ implementation
 
 { Local helper matching the Blaise builtin — lets UnescapeString share one
   body under FPC and the self-hosted compiler. The migration tool strips
-  this declaration; self-hosted builds resolve OrdAt to the builtin. }
+  this declaration; self-hosted builds resolve OrdAt to the builtin.
+  I is 0-based; under FPC we convert to FPC's 1-based string indexing. }
 function OrdAt(const S: string; I: Integer): Integer;
 begin
-  Result := Ord(S[I]);
+  Result := Ord(S[I + 1]);
 end;
 
 constructor TLexer.Create(const ASource: string; const AFilename: string = '');
@@ -226,26 +227,26 @@ end;
 function TLexer.UnescapeString(const ARaw: string): string;
 { ARaw is the full source span. Handles: 'text' with '' → ' escaping,
   #nn numeric char literals (decimal), and concatenated runs like
-  'abc'#13#10'def'. Uses OrdAt so the body parses under both FPC and
-  the self-hosted Blaise compiler. }
+  'abc'#13#10'def'. Uses OrdAt (0-based) so the body parses under both
+  FPC and the self-hosted Blaise compiler. }
 var
   I, Len, N, C: Integer;
 begin
   Result := '';
   Len := Length(ARaw);
-  I := 1;
-  while I <= Len do
+  I := 0;
+  while I < Len do
   begin
     C := OrdAt(ARaw, I);
     if C = 39 then  { single quote }
     begin
       I := I + 1;
-      while I <= Len do
+      while I < Len do
       begin
         C := OrdAt(ARaw, I);
         if C = 39 then
         begin
-          if (I < Len) and (OrdAt(ARaw, I + 1) = 39) then
+          if (I + 1 < Len) and (OrdAt(ARaw, I + 1) = 39) then
           begin
             Result := Result + '''';
             I := I + 2;
@@ -267,7 +268,7 @@ begin
     begin
       I := I + 1;
       N := 0;
-      while I <= Len do
+      while I < Len do
       begin
         C := OrdAt(ARaw, I);
         if (C < 48) or (C > 57) then Break;
@@ -287,16 +288,16 @@ var
   Body: string;
 begin
   Len := Length(ARaw);
-  I := 4;
-  if (I <= Len) and (OrdAt(ARaw, I) = 13) then
+  I := 3;  { 0-based: skip opening 3-char delimiter }
+  if (I < Len) and (OrdAt(ARaw, I) = 13) then
     I := I + 1;
-  if (I <= Len) and (OrdAt(ARaw, I) = 10) then
+  if (I < Len) and (OrdAt(ARaw, I) = 10) then
     I := I + 1;
-  Body := Copy(ARaw, I, Len - I - 3 + 1);
+  Body := StrCopyFrom(ARaw, I, Len - 3 - I);
 
   Margin := 0;
-  I := Len - 3;
-  while (I >= 1) and (OrdAt(ARaw, I) = 32) do
+  I := Len - 4;  { 0-based: last char before 3-char closing delimiter }
+  while (I >= 0) and (OrdAt(ARaw, I) = 32) do
   begin
     Margin := Margin + 1;
     I := I - 1;
@@ -306,15 +307,15 @@ begin
   begin
     Result := '';
     Len := Length(Body);
-    I := 1;
-    while I <= Len do
+    I := 0;
+    while I < Len do
     begin
       C := OrdAt(Body, I);
       if C = 13 then
       begin
         Result := Result + #10;
         I := I + 1;
-        if (I <= Len) and (OrdAt(Body, I) = 10) then
+        if (I < Len) and (OrdAt(Body, I) = 10) then
           I := I + 1;
       end
       else if C = 10 then
@@ -333,23 +334,23 @@ begin
 
   Result := '';
   Len := Length(Body);
-  I := 1;
-  while I <= Len do
+  I := 0;
+  while I < Len do
   begin
     Skip := Margin;
-    while (Skip > 0) and (I <= Len) and (OrdAt(Body, I) = 32) do
+    while (Skip > 0) and (I < Len) and (OrdAt(Body, I) = 32) do
     begin
       I := I + 1;
       Skip := Skip - 1;
     end;
-    while I <= Len do
+    while I < Len do
     begin
       C := OrdAt(Body, I);
       if C = 13 then
       begin
         Result := Result + #10;
         I := I + 1;
-        if (I <= Len) and (OrdAt(Body, I) = 10) then
+        if (I < Len) and (OrdAt(Body, I) = 10) then
           I := I + 1;
         Break;
       end
@@ -373,13 +374,15 @@ end;
 // (angle brackets used in comment to avoid premature brace-comment closure)
 function TLexer.DirectiveName(const AText: string): string;
 var
-  I: Integer;
+  I, C: Integer;
 begin
   Result := '';
-  I := 3;  // skip opening '{$'
-  while (I <= Length(AText)) and (AText[I] <> '}') and (AText[I] <> ' ') do
+  I := 2;  // 0-based: skip opening '{$' at indices 0 and 1
+  while I < Length(AText) do
   begin
-    Result := Result + UpCase(AText[I]);
+    C := OrdAt(AText, I);
+    if (C = Ord('}')) or (C = Ord(' ')) then Break;
+    Result := Result + UpCase(Chr(C));
     I := I + 1;
   end;
 end;
@@ -509,9 +512,9 @@ begin
       begin
         { Float if text contains '.' or 'e'/'E' (decimal point or exponent).
           Hex/binary/octal literals never have those, so this is unambiguous. }
-        if (Pos('.', FTok.TokenText) > 0) or
-           (Pos('e', FTok.TokenText) > 0) or
-           (Pos('E', FTok.TokenText) > 0) then
+        if (StrPos('.', FTok.TokenText) >= 0) or
+           (StrPos('e', FTok.TokenText) >= 0) or
+           (StrPos('E', FTok.TokenText) >= 0) then
           Result.Kind := tkFloatLit
         else
           Result.Kind := tkIntLit;

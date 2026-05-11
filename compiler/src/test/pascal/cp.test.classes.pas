@@ -90,6 +90,19 @@ type
     { ------------------------------------------------------------------ }
     procedure TestCodegen_Constructor_NoArgs_StoresVTable;
     procedure TestCodegen_Constructor_WithArgs_StoresVTable;
+
+    { ------------------------------------------------------------------ }
+    { ARC on method string parameters                                      }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_MethodStringParam_AddRefOnEntry;
+    procedure TestCodegen_MethodStringParam_ReleaseOnExit;
+
+    { ------------------------------------------------------------------ }
+    { 0-based string semantic analysis                                     }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_ConstructorPrefix_CreateFmt;
+    procedure TestSemantic_PointerTypeAlias;
+    procedure TestSemantic_MetaclassAlias;
   end;
 
 implementation
@@ -844,6 +857,112 @@ begin
     '  F := TFoo.Create(42)'                  + LineEnding +
     'end.');
   AssertTrue('with-arg ctor stores vtable', Pos('storel $vtable_TFoo', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ ARC on method string parameters                                      }
+{ ------------------------------------------------------------------ }
+
+procedure TClassTests.TestCodegen_MethodStringParam_AddRefOnEntry;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'                              + LineEnding +
+    'type'                                    + LineEnding +
+    '  TFoo = class'                          + LineEnding +
+    '    procedure Bar(S: string);'           + LineEnding +
+    '  end;'                                  + LineEnding +
+    'procedure TFoo.Bar(S: string);'          + LineEnding +
+    'begin end;'                              + LineEnding +
+    'begin'                                   + LineEnding +
+    'end.');
+  AssertTrue('method string param must AddRef on entry',
+    Pos('call $_StringAddRef', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_MethodStringParam_ReleaseOnExit;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    'program P;'                              + LineEnding +
+    'type'                                    + LineEnding +
+    '  TFoo = class'                          + LineEnding +
+    '    procedure Bar(S: string);'           + LineEnding +
+    '  end;'                                  + LineEnding +
+    'procedure TFoo.Bar(S: string);'          + LineEnding +
+    'begin end;'                              + LineEnding +
+    'begin'                                   + LineEnding +
+    'end.');
+  AssertTrue('method string param must Release on exit',
+    Pos('call $_StringRelease', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ 0-based string semantic analysis                                     }
+{ ------------------------------------------------------------------ }
+
+procedure TClassTests.TestSemantic_ConstructorPrefix_CreateFmt;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(
+    'program P;'                                      + LineEnding +
+    'type'                                            + LineEnding +
+    '  TFoo = class'                                  + LineEnding +
+    '    constructor CreateFmt(S: string; N: Integer);' + LineEnding +
+    '  end;'                                          + LineEnding +
+    'constructor TFoo.CreateFmt(S: string; N: Integer);' + LineEnding +
+    'begin end;'                                      + LineEnding +
+    'var F: TFoo;'                                    + LineEnding +
+    'begin'                                           + LineEnding +
+    '  F := TFoo.CreateFmt(''hello'', 42)'            + LineEnding +
+    'end.');
+  try
+    AssertTrue('program parsed and analysed without error', Prog <> nil);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_PointerTypeAlias;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(
+    'program P;'                                  + LineEnding +
+    'type'                                        + LineEnding +
+    '  TFoo = class'                              + LineEnding +
+    '    X: Integer;'                             + LineEnding +
+    '  end;'                                      + LineEnding +
+    '  PFoo = ^TFoo;'                             + LineEnding +
+    'begin'                                       + LineEnding +
+    'end.');
+  try
+    AssertTrue('pointer type alias parsed OK', Prog <> nil);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TClassTests.TestSemantic_MetaclassAlias;
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(
+    'program P;'                                  + LineEnding +
+    'type'                                        + LineEnding +
+    '  TFoo = class'                              + LineEnding +
+    '  end;'                                      + LineEnding +
+    '  TFooClass = class of TFoo;'                + LineEnding +
+    'begin'                                       + LineEnding +
+    'end.');
+  try
+    AssertTrue('metaclass alias parsed OK', Prog <> nil);
+  finally
+    Prog.Free;
+  end;
 end;
 
 initialization

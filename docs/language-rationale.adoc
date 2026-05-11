@@ -60,6 +60,75 @@ data and a null terminator).
 
 ---
 
+=== 0-Based String Indexing
+
+==== Decision
+
+String indexing in Blaise is 0-based. `S[0]` is the first character.
+The built-in functions `Pos`, `Copy`, `Delete`, `PosEx`, and `OrdAt` all
+use 0-based positions. `Pos` returns `-1` when the substring is not found.
+
+==== Rationale
+
+1-based string indexing originates from Niklaus Wirth's original Pascal
+(1970), where `String` was a `packed array [1..N] of Char`. The `[1]`
+lower bound was simply the array's natural lower bound — there was nothing
+semantically meaningful about starting at 1. Borland's introduction of
+`ShortString` (with a length byte at index 0 and characters at indices
+1..255) then locked the convention in for backward-compatibility reasons.
+Every subsequent implementation — Turbo Pascal, Delphi, FPC — carried it
+forward unchanged.
+
+Blaise has no `ShortString`, no legacy length-byte layout, and no existing
+code base to be backward-compatible with. The data-pointer convention used
+by Blaise strings (`str_ptr + 0` is the first character byte) maps
+directly to 0-based indexing. Supporting 1-based access would require a
+`-1` adjustment in `EmitStringSubscriptExpr` and every RTL string function
+for no benefit other than mimicking an accidental 1970s convention.
+
+The rest of the language is already consistently 0-based: dynamic arrays
+start at 0, open-array parameters are 0-based, and pointer arithmetic is
+byte-addressed from a base pointer. Adopting 0-based strings removes the
+sole exception and eliminates an entire category of off-by-one errors that
+arise when mixing string indices with array indices.
+
+The `-1` not-found sentinel for `Pos` aligns with the convention used by
+most modern languages (Python `str.find`, Go `strings.Index`, Rust
+`str.find`, Java `String.indexOf`).
+
+Explicitly ranged arrays (`array[5..10] of T`) are unaffected: a user who
+declares a lower bound of 5 expects `A[5]` to be the first element. That
+indexing is explicit and intentional, not an inherited convention.
+
+==== Alternatives rejected
+
+* *Keep 1-based indexing for compatibility with FPC/Delphi* — rejected.
+  There is no existing Blaise code base to protect. Carrying 1-based
+  indexing forward would permanently embed a known design mistake into a
+  language that is explicitly trying to clean up Pascal's baggage.
+
+* *Offset transparently in the compiler, expose 1-based to the user* —
+  rejected. This would make pointer arithmetic on strings unpredictable and
+  would require every string function to document an exception to the
+  otherwise-universal 0-based convention.
+
+==== Bootstrap and migration notes
+
+The Blaise compiler source is compiled by FPC during development (as the
+stage-1 bootstrap compiler) and must therefore work under both FPC
+(1-based) and Blaise (0-based) semantics simultaneously. The shim unit
+`uStrCompat.pas` provides thin wrapper functions (`StrAt`, `StrHead`,
+`StrCopyFrom`, `StrCopyTail`, `StrPos`) that translate between the two
+conventions under FPC and pass through directly under Blaise. Once a
+Blaise release exists that is self-hosting on a 0-based string runtime,
+the shim can be dropped and the calls replaced with plain built-ins.
+
+The migration analyser (`tools/migration-analyser`) must flag code ported
+from FPC/Delphi that uses 1-based string idioms. See
+`docs/future-improvements.adoc` for the enumerated checklist.
+
+---
+
 === No Char Type
 
 ==== Decision

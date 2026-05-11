@@ -47,7 +47,7 @@ type
   public
     Value: string;
     IsCharCoerce: Boolean;  { set by uSemantic when used as Byte in a comparison }
-    CharOrdValue: Integer;  { Ord(Value[1]) — valid only when IsCharCoerce = True }
+    CharOrdValue: Integer;  { OrdAt(Value, 0) — valid only when IsCharCoerce = True }
   end;
 
   TStringSubscriptExpr = class(TASTExpr)

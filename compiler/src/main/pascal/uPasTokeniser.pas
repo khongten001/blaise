@@ -88,12 +88,30 @@ function PasIsKeyword(const AText: string): Boolean;
 
 implementation
 
-{ Under FPC, OrdAt is a local helper. Under Blaise, the built-in is used
-  and this declaration is not present. }
+{ PosOrd / PosSubstr: shims that accept a 1-based position I (matching the
+  tokeniser's FPos convention) and do the right thing under both FPC and Blaise.
+  Under FPC strings are 1-based so we pass I straight through.
+  Under Blaise strings are 0-based so we subtract 1 before indexing. }
+
 {$IFDEF FPC}
-function OrdAt(const S: string; I: Integer): Integer;
+function PosOrd(const S: string; I: Integer): Integer;
 begin
   Result := Ord(S[I]);
+end;
+
+function PosSubstr(const S: string; I, Len: Integer): string;
+begin
+  Result := Copy(S, I, Len);
+end;
+{$ELSE}
+function PosOrd(const S: string; I: Integer): Integer;
+begin
+  Result := OrdAt(S, I - 1);
+end;
+
+function PosSubstr(const S: string; I, Len: Integer): string;
+begin
+  Result := Copy(S, I - 1, Len);
 end;
 {$ENDIF}
 
@@ -179,7 +197,7 @@ end;
 function TFpgPascalTokeniser.Peek: Integer;
 begin
   if FPos <= Length(FSource) then
-    Result := OrdAt(FSource, FPos)
+    Result := PosOrd(FSource, FPos)
   else
     Result := 0
 end;
@@ -190,7 +208,7 @@ var
 begin
   P := FPos + AOffset;
   if (P >= 1) and (P <= Length(FSource)) then
-    Result := OrdAt(FSource, P)
+    Result := PosOrd(FSource, P)
   else
     Result := 0
 end;
@@ -210,7 +228,7 @@ procedure TFpgPascalTokeniser.ReadWhitespace;
 begin
   FToken.Kind := fptkWhitespace;
   while (FPos <= Length(FSource)) and
-        ((OrdAt(FSource, FPos) = 32) or (OrdAt(FSource, FPos) = 9)) do
+        ((PosOrd(FSource, FPos) = 32) or (PosOrd(FSource, FPos) = 9)) do
     Advance;
   FToken.Len := FPos - FToken.TextStart
 end;
@@ -218,7 +236,7 @@ end;
 procedure TFpgPascalTokeniser.ReadLineEnding;
 begin
   FToken.Kind := fptkLineEnding;
-  if (OrdAt(FSource, FPos) = 13) and (PeekAt(1) = 10) then
+  if (PosOrd(FSource, FPos) = 13) and (PeekAt(1) = 10) then
     Advance;
   Advance;
   FToken.Len := FPos - FToken.TextStart;
@@ -231,7 +249,7 @@ var
 begin
   while FPos <= Length(FSource) do
   begin
-    C := OrdAt(FSource, FPos);
+    C := PosOrd(FSource, FPos);
     if not (((C >= 65) and (C <= 90)) or ((C >= 97) and (C <= 122)) or
             ((C >= 48) and (C <= 57)) or (C = 95)) then
       Break;
@@ -249,15 +267,15 @@ var
   C: Integer;
 begin
   FToken.Kind := fptkNumber;
-  C := OrdAt(FSource, FPos);
+  C := PosOrd(FSource, FPos);
 
   if C = 36 then
   begin
     Advance;
     while (FPos <= Length(FSource)) and
-          (((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) or
-           ((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 70)) or
-           ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 102))) do
+          (((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) or
+           ((PosOrd(FSource, FPos) >= 65) and (PosOrd(FSource, FPos) <= 70)) or
+           ((PosOrd(FSource, FPos) >= 97) and (PosOrd(FSource, FPos) <= 102))) do
       Advance;
     FToken.Len := FPos - FToken.TextStart;
     Exit
@@ -267,7 +285,7 @@ begin
   begin
     Advance;
     while (FPos <= Length(FSource)) and
-          ((OrdAt(FSource, FPos) = 48) or (OrdAt(FSource, FPos) = 49)) do
+          ((PosOrd(FSource, FPos) = 48) or (PosOrd(FSource, FPos) = 49)) do
       Advance;
     FToken.Len := FPos - FToken.TextStart;
     Exit
@@ -277,34 +295,34 @@ begin
   begin
     Advance;
     while (FPos <= Length(FSource)) and
-          ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 55)) do
+          ((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 55)) do
       Advance;
     FToken.Len := FPos - FToken.TextStart;
     Exit
   end;
 
   while (FPos <= Length(FSource)) and
-        ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) do
+        ((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) do
     Advance;
 
-  if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 46) and
+  if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 46) and
      (PeekAt(1) <> 46) then
   begin
     Advance;
     while (FPos <= Length(FSource)) and
-          ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) do
+          ((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) do
       Advance
   end;
 
   if (FPos <= Length(FSource)) and
-     ((OrdAt(FSource, FPos) = 101) or (OrdAt(FSource, FPos) = 69)) then
+     ((PosOrd(FSource, FPos) = 101) or (PosOrd(FSource, FPos) = 69)) then
   begin
     Advance;
     if (FPos <= Length(FSource)) and
-       ((OrdAt(FSource, FPos) = 43) or (OrdAt(FSource, FPos) = 45)) then
+       ((PosOrd(FSource, FPos) = 43) or (PosOrd(FSource, FPos) = 45)) then
       Advance;
     while (FPos <= Length(FSource)) and
-          ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) do
+          ((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) do
       Advance
   end;
 
@@ -324,15 +342,15 @@ begin
       Advance;
       while FPos <= Length(FSource) do
       begin
-        if OrdAt(FSource, FPos) = 39 then
+        if PosOrd(FSource, FPos) = 39 then
         begin
           Advance;
-          if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 39) then
+          if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 39) then
             Advance
           else
             Break
         end
-        else if (OrdAt(FSource, FPos) = 10) or (OrdAt(FSource, FPos) = 13) then
+        else if (PosOrd(FSource, FPos) = 10) or (PosOrd(FSource, FPos) = 13) then
           Break
         else
           Advance
@@ -341,19 +359,19 @@ begin
     else if C = 35 then
     begin
       Advance;
-      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 36) then
+      if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 36) then
       begin
         Advance;
         while (FPos <= Length(FSource)) and
-              (((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) or
-               ((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 70)) or
-               ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 102))) do
+              (((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) or
+               ((PosOrd(FSource, FPos) >= 65) and (PosOrd(FSource, FPos) <= 70)) or
+               ((PosOrd(FSource, FPos) >= 97) and (PosOrd(FSource, FPos) <= 102))) do
           Advance
       end
       else
       begin
         while (FPos <= Length(FSource)) and
-              ((OrdAt(FSource, FPos) >= 48) and (OrdAt(FSource, FPos) <= 57)) do
+              ((PosOrd(FSource, FPos) >= 48) and (PosOrd(FSource, FPos) <= 57)) do
           Advance
       end
     end
@@ -361,8 +379,8 @@ begin
     begin
       Advance;
       if (FPos <= Length(FSource)) and
-         (((OrdAt(FSource, FPos) >= 65) and (OrdAt(FSource, FPos) <= 90)) or
-          ((OrdAt(FSource, FPos) >= 97) and (OrdAt(FSource, FPos) <= 122))) then
+         (((PosOrd(FSource, FPos) >= 65) and (PosOrd(FSource, FPos) <= 90)) or
+          ((PosOrd(FSource, FPos) >= 97) and (PosOrd(FSource, FPos) <= 122))) then
         Advance
     end
     else
@@ -377,21 +395,21 @@ begin
   Advance; { skip first ' }
   Advance; { skip second ' }
   Advance; { skip third ' }
-  if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 13) then
+  if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 13) then
   begin
     Advance;
-    if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+    if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 10) then
       Advance;
     AdvanceLine
   end
-  else if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+  else if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 10) then
   begin
     Advance;
     AdvanceLine
   end;
   while FPos <= Length(FSource) do
   begin
-    if OrdAt(FSource, FPos) = 39 then
+    if PosOrd(FSource, FPos) = 39 then
     begin
       if (PeekAt(1) = 39) and (PeekAt(2) = 39) and (PeekAt(3) <> 39) then
       begin
@@ -401,14 +419,14 @@ begin
         Break
       end
     end;
-    if OrdAt(FSource, FPos) = 13 then
+    if PosOrd(FSource, FPos) = 13 then
     begin
       Advance;
-      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+      if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 10) then
         Advance;
       AdvanceLine
     end
-    else if OrdAt(FSource, FPos) = 10 then
+    else if PosOrd(FSource, FPos) = 10 then
     begin
       Advance;
       AdvanceLine
@@ -428,19 +446,19 @@ begin
   Advance;
   while FPos <= Length(FSource) do
   begin
-    if OrdAt(FSource, FPos) = 125 then
+    if PosOrd(FSource, FPos) = 125 then
     begin
       Advance;
       Break
     end
-    else if OrdAt(FSource, FPos) = 13 then
+    else if PosOrd(FSource, FPos) = 13 then
     begin
       Advance;
-      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+      if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 10) then
         Advance;
       AdvanceLine
     end
-    else if OrdAt(FSource, FPos) = 10 then
+    else if PosOrd(FSource, FPos) = 10 then
     begin
       Advance;
       AdvanceLine
@@ -461,20 +479,20 @@ begin
   Advance;
   while FPos <= Length(FSource) do
   begin
-    if (OrdAt(FSource, FPos) = 42) and (PeekAt(1) = 41) then
+    if (PosOrd(FSource, FPos) = 42) and (PeekAt(1) = 41) then
     begin
       Advance;
       Advance;
       Break
     end
-    else if OrdAt(FSource, FPos) = 13 then
+    else if PosOrd(FSource, FPos) = 13 then
     begin
       Advance;
-      if (FPos <= Length(FSource)) and (OrdAt(FSource, FPos) = 10) then
+      if (FPos <= Length(FSource)) and (PosOrd(FSource, FPos) = 10) then
         Advance;
       AdvanceLine
     end
-    else if OrdAt(FSource, FPos) = 10 then
+    else if PosOrd(FSource, FPos) = 10 then
     begin
       Advance;
       AdvanceLine
@@ -489,7 +507,7 @@ procedure TFpgPascalTokeniser.ReadLineComment;
 begin
   FToken.Kind := fptkComment;
   while (FPos <= Length(FSource)) and
-        not ((OrdAt(FSource, FPos) = 10) or (OrdAt(FSource, FPos) = 13)) do
+        not ((PosOrd(FSource, FPos) = 10) or (PosOrd(FSource, FPos) = 13)) do
     Advance;
   FToken.Len := FPos - FToken.TextStart
 end;
@@ -499,7 +517,7 @@ var
   C, C2: Integer;
 begin
   FToken.Kind := fptkSymbol;
-  C := OrdAt(FSource, FPos);
+  C := PosOrd(FSource, FPos);
   C2 := PeekAt(1);
   Advance;
   if C = 58 then begin if C2 = 61 then Advance end           { := }
@@ -531,7 +549,7 @@ begin
   FToken.Line := FLine;
   FToken.Column := FPos - FLineStart + 1;
 
-  C := OrdAt(FSource, FPos);
+  C := PosOrd(FSource, FPos);
 
   if (C = 32) or (C = 9) then
   begin
@@ -630,7 +648,7 @@ function TFpgPascalTokeniser.TokenText: string;
 begin
   if (FToken.TextStart >= 1) and (FToken.Len > 0) and
      (FToken.TextStart + FToken.Len - 1 <= Length(FSource)) then
-    Result := Copy(FSource, FToken.TextStart, FToken.Len)
+    Result := PosSubstr(FSource, FToken.TextStart, FToken.Len)
   else
     Result := ''
 end;

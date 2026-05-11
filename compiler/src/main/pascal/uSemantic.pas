@@ -23,7 +23,7 @@ unit uSemantic;
 interface
 
 uses
-  SysUtils, Classes, contnrs, uAST, uSymbolTable;
+  SysUtils, Classes, contnrs, uAST, uSymbolTable, uStrCompat;
 
 type
   ESemanticError = class(Exception);
@@ -1038,20 +1038,20 @@ var
   Sym: TSymbol;
 begin
   Result  := ATypeName;
-  BrOpen  := Pos('<', ATypeName);
-  if BrOpen = 0 then Exit;
+  BrOpen  := StrPos('<', ATypeName);
+  if BrOpen < 0 then Exit;
   BrClose  := Length(ATypeName);
-  BasePart := Copy(ATypeName, 1, BrOpen - 1);
-  ArgsPart := Copy(ATypeName, BrOpen + 1, BrClose - BrOpen - 1);
+  BasePart := StrHead(ATypeName, BrOpen);
+  ArgsPart := StrCopyFrom(ATypeName, BrOpen + 1, BrClose - BrOpen - 2);
   ArgList  := TStringList.Create;
   try
     while ArgsPart <> '' do
     begin
-      I := Pos(',', ArgsPart);
-      if I > 0 then
+      I := StrPos(',', ArgsPart);
+      if I >= 0 then
       begin
-        ArgList.Add(Trim(Copy(ArgsPart, 1, I - 1)));
-        ArgsPart := Trim(Copy(ArgsPart, I + 1, MaxInt));
+        ArgList.Add(Trim(StrHead(ArgsPart, I)));
+        ArgsPart := Trim(StrCopyTail(ArgsPart, I + 1));
       end
       else
       begin
@@ -1092,14 +1092,14 @@ begin
   Result := FTable.FindType(AName);
   if Result <> nil then Exit;
   { Static array: 'array[L..H] of TypeName' — create on demand }
-  if (Length(AName) > 6) and (Copy(AName, 1, 6) = 'array[') then
+  if (Length(AName) > 6) and (StrHead(AName, 6) = 'array[') then
   begin
-    DDotPos  := Pos('..', AName);
-    RBrPos   := Pos(']', AName);
-    OfPos    := Pos(' of ', AName);
-    LStr     := Copy(AName, 7, DDotPos - 7);
-    HStr     := Copy(AName, DDotPos + 2, RBrPos - DDotPos - 2);
-    ElemName := Copy(AName, OfPos + 4, MaxInt);
+    DDotPos  := StrPos('..', AName);
+    RBrPos   := StrPos(']', AName);
+    OfPos    := StrPos(' of ', AName);
+    LStr     := StrCopyFrom(AName, 6, DDotPos - 6);
+    HStr     := StrCopyFrom(AName, DDotPos + 2, RBrPos - DDotPos - 2);
+    ElemName := StrCopyTail(AName, OfPos + 4);
     BaseType := FindTypeOrInstantiate(ElemName);
     if BaseType <> nil then
     begin
@@ -1111,9 +1111,9 @@ begin
     Exit;
   end;
   { Typed pointer: '^TypeName' — create on demand }
-  if (Length(AName) > 1) and (AName[1] = '^') then
+  if (Length(AName) > 1) and (StrAt(AName, 0) = Ord('^')) then
   begin
-    BaseName := Copy(AName, 2, MaxInt);
+    BaseName := StrCopyTail(AName, 1);
     BaseType := FindTypeOrInstantiate(BaseName);
     if BaseType <> nil then
     begin
@@ -1125,9 +1125,9 @@ begin
     Exit;
   end;
   { Metaclass: 'class of TypeName' — create on demand. }
-  if (Length(AName) > 9) and (Copy(AName, 1, 9) = 'class of ') then
+  if (Length(AName) > 9) and (StrHead(AName, 9) = 'class of ') then
   begin
-    BaseName := Copy(AName, 10, MaxInt);
+    BaseName := StrCopyTail(AName, 9);
     BaseType := FindTypeOrInstantiate(BaseName);
     if (BaseType <> nil) and (BaseType.Kind = tyClass) then
     begin
@@ -1138,7 +1138,7 @@ begin
     end;
     Exit;
   end;
-  if Pos('<', AName) > 0 then
+  if StrPos('<', AName) >= 0 then
   begin
     Result := InstantiateGeneric(AName);
     if Result = nil then
@@ -1188,27 +1188,27 @@ begin
       Exit;
     end;
   { Prefix caret: ^T → ^Integer, ^^T → ^^Integer, etc. }
-  if (Length(Result) > 0) and (Result[1] = '^') then
+  if (Length(Result) > 0) and (StrAt(Result, 0) = Ord('^')) then
   begin
-    Result := '^' + Self.SubstTypeParam(Copy(Result, 2, MaxInt), AParamNames, AArgs);
+    Result := '^' + Self.SubstTypeParam(StrCopyTail(Result, 1), AParamNames, AArgs);
     Exit;
   end;
   { Generic instantiation: SomeName<T,...> — substitute each type argument }
-  BrOpen := Pos('<', Result);
-  if BrOpen > 0 then
+  BrOpen := StrPos('<', Result);
+  if BrOpen >= 0 then
   begin
     BrClose  := Length(Result);  { closing '>' is always the last char }
-    BasePart := Copy(Result, 1, BrOpen - 1);
-    ArgsPart := Copy(Result, BrOpen + 1, BrClose - BrOpen - 1);
+    BasePart := StrHead(Result, BrOpen);
+    ArgsPart := StrCopyFrom(Result, BrOpen + 1, BrClose - BrOpen - 2);
     ArgList  := TStringList.Create;
     try
       while ArgsPart <> '' do
       begin
-        I := Pos(',', ArgsPart);
-        if I > 0 then
+        I := StrPos(',', ArgsPart);
+        if I >= 0 then
         begin
-          ArgList.Add(Trim(Copy(ArgsPart, 1, I - 1)));
-          ArgsPart := Trim(Copy(ArgsPart, I + 1, MaxInt));
+          ArgList.Add(Trim(StrHead(ArgsPart, I)));
+          ArgsPart := Trim(StrCopyTail(ArgsPart, I + 1));
         end
         else
         begin
@@ -1264,20 +1264,20 @@ begin
   Result := nil;
 
   { Parse 'BaseName<Arg1,Arg2>' }
-  BracPos := Pos('<', ATypeName);
-  if BracPos = 0 then Exit;
-  BaseName := Copy(ATypeName, 1, BracPos - 1);
-  ArgsStr  := Copy(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 1);
+  BracPos := StrPos('<', ATypeName);
+  if BracPos < 0 then Exit;
+  BaseName := StrHead(ATypeName, BracPos);
+  ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
 
   Args := TStringList.Create;
   try
     while ArgsStr <> '' do
     begin
-      BracPos := Pos(',', ArgsStr);
-      if BracPos > 0 then
+      BracPos := StrPos(',', ArgsStr);
+      if BracPos >= 0 then
       begin
-        Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
-        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+        Args.Add(Trim(StrHead(ArgsStr, BracPos)));
+        ArgsStr := Trim(StrCopyTail(ArgsStr, BracPos + 1));
       end
       else
       begin
@@ -1515,20 +1515,20 @@ var
 begin
   Result := nil;
 
-  BracPos := Pos('<', ATypeName);
-  if BracPos = 0 then Exit;
-  BaseName := Copy(ATypeName, 1, BracPos - 1);
-  ArgsStr  := Copy(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 1);
+  BracPos := StrPos('<', ATypeName);
+  if BracPos < 0 then Exit;
+  BaseName := StrHead(ATypeName, BracPos);
+  ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
 
   Args := TStringList.Create;
   try
     while ArgsStr <> '' do
     begin
-      BracPos := Pos(',', ArgsStr);
-      if BracPos > 0 then
+      BracPos := StrPos(',', ArgsStr);
+      if BracPos >= 0 then
       begin
-        Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
-        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+        Args.Add(Trim(StrHead(ArgsStr, BracPos)));
+        ArgsStr := Trim(StrCopyTail(ArgsStr, BracPos + 1));
       end
       else
       begin
@@ -1607,11 +1607,11 @@ begin
   Result := nil;
 
   { Parse 'Identity<Integer>' → BaseName='Identity', ArgsStr='Integer' }
-  BracPos := Pos('<', AInstName);
-  if BracPos = 0 then Exit;
+  BracPos := StrPos('<', AInstName);
+  if BracPos < 0 then Exit;
 
-  BaseName := Copy(AInstName, 1, BracPos - 1);
-  ArgsStr  := Copy(AInstName, BracPos + 1, Length(AInstName) - BracPos - 1);
+  BaseName := StrHead(AInstName, BracPos);
+  ArgsStr  := StrCopyFrom(AInstName, BracPos + 1, Length(AInstName) - BracPos - 2);
 
   TemplIdx := FGenericFuncTemplates.IndexOf(BaseName);
   if TemplIdx < 0 then Exit;  { not a known generic function template }
@@ -1622,11 +1622,11 @@ begin
   try
     while Length(ArgsStr) > 0 do
     begin
-      BracPos := Pos(',', ArgsStr);
-      if BracPos > 0 then
+      BracPos := StrPos(',', ArgsStr);
+      if BracPos >= 0 then
       begin
-        Args.Add(Trim(Copy(ArgsStr, 1, BracPos - 1)));
-        ArgsStr := Trim(Copy(ArgsStr, BracPos + 1, MaxInt));
+        Args.Add(Trim(StrHead(ArgsStr, BracPos)));
+        ArgsStr := Trim(StrCopyTail(ArgsStr, BracPos + 1));
       end
       else
       begin
@@ -1919,19 +1919,19 @@ begin
         a fresh TPointerTypeDesc (pointer alias '^T'). }
       AliasDef  := TTypeAliasDef(TD.Def);
       AliasName := AliasDef.TypeName;
-      if (Length(AliasName) > 0) and (AliasName[1] = '^') then
+      if (Length(AliasName) > 0) and (StrAt(AliasName, 0) = Ord('^')) then
       begin
         { Pointer alias: ^BaseName — base may not be registered yet
           (forward reference); leave BaseType nil for now (untyped
           pointer semantics — safe for punit's usage pattern). }
-        BaseName := Copy(AliasName, 2, Length(AliasName) - 1);
+        BaseName := StrCopyTail(AliasName, 1);
         BaseSym  := FTable.Lookup(BaseName);
         BaseType := nil;
         if (BaseSym <> nil) and (BaseSym.Kind = skType) then
           BaseType := BaseSym.TypeDesc;
         AliasDesc := FTable.NewPointerType(TD.Name, BaseType);
       end
-      else if (Length(AliasName) > 9) and (Copy(AliasName, 1, 9) = 'class of ') then
+      else if (Length(AliasName) > 9) and (StrHead(AliasName, 9) = 'class of ') then
       begin
         { Metaclass alias: 'class of TFoo'.  Route through the standard
           on-demand instantiation path so the underlying class type is
@@ -2046,7 +2046,7 @@ begin
       begin
         ParentSym := nil;
         { If name looks generic, try instantiating as interface first }
-        if Pos('<', TClassTypeDef(TD.Def).ParentName) > 0 then
+        if StrPos('<', TClassTypeDef(TD.Def).ParentName) >= 0 then
         begin
           IntfDesc := TInterfaceTypeDesc(
             FindTypeOrInstantiate(TClassTypeDef(TD.Def).ParentName));
@@ -2359,8 +2359,8 @@ begin
     if not (TD.Def is TTypeAliasDef) then Continue;
     AliasDef  := TTypeAliasDef(TD.Def);
     AliasName := AliasDef.TypeName;
-    if (Length(AliasName) = 0) or (AliasName[1] <> '^') then Continue;
-    BaseName := Copy(AliasName, 2, Length(AliasName) - 1);
+    if (Length(AliasName) = 0) or (StrAt(AliasName, 0) <> Ord('^')) then Continue;
+    BaseName := StrCopyTail(AliasName, 1);
     BaseSym  := FTable.Lookup(TD.Name);
     if (BaseSym = nil) or not (BaseSym.TypeDesc is TPointerTypeDesc) then Continue;
     if TPointerTypeDesc(BaseSym.TypeDesc).BaseType <> nil then Continue;
@@ -4123,7 +4123,7 @@ begin
       end;
     end;
     { Try on-demand instantiation of a generic function }
-    if Pos('<', ACall.Name) > 0 then
+    if StrPos('<', ACall.Name) >= 0 then
       InstantiateGenericFunc(ACall.Name);
     Sym := FTable.Lookup(ACall.Name);
     if Sym = nil then
@@ -4427,7 +4427,7 @@ begin
       end;
     end;
     { Try on-demand instantiation of a generic function }
-    if Pos('<', AExpr.Name) > 0 then
+    if StrPos('<', AExpr.Name) >= 0 then
       InstantiateGenericFunc(AExpr.Name);
     Sym := FTable.Lookup(AExpr.Name);
     if Sym = nil then
@@ -5147,7 +5147,7 @@ begin
     method on a class type starting with Create (e.g. CreateFmt). }
   if (ObjSym.Kind = skType) and
      (SameText(AExpr.Name, 'Create') or
-      (Pos('Create', AExpr.Name) = 1)) then
+      (StrPos('Create', AExpr.Name) = 0)) then
   begin
     if ObjSym.TypeDesc.Kind <> tyClass then
       SemanticError(
@@ -5543,7 +5543,7 @@ begin
   { If the name contains '<' and wasn't found, resolve scope-bound type params
     (e.g. 'TGenEnum<T>' → 'TGenEnum<Integer>' when T=Integer is in scope)
     and update AAccess.RecordName so codegen sees the concrete instantiation. }
-  if (RecSym = nil) and (Pos('<', AAccess.RecordName) > 0) then
+  if (RecSym = nil) and (StrPos('<', AAccess.RecordName) >= 0) then
   begin
     AAccess.RecordName := ResolveScopeBoundTypeParams(AAccess.RecordName);
     FindTypeOrInstantiate(AAccess.RecordName);
@@ -6241,7 +6241,7 @@ begin
         [ALit.Value, Length(ALit.Value)]),
       ALit.Line, ALit.Col);
   ALit.IsCharCoerce := True;
-  ALit.CharOrdValue := Ord(ALit.Value[1]);
+  ALit.CharOrdValue := StrAt(ALit.Value, 0);
   ALit.ResolvedType := FTable.TypeInteger;
 end;
 

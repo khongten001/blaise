@@ -97,9 +97,9 @@ var
   SHi:   Integer;
 begin
   AList.Clear;
-  Start := 1;
-  I     := 1;
-  while I <= Length(S) do
+  Start := 0;
+  I     := 0;
+  while I < Length(S) do
   begin
     if OrdAt(S, I) = ASep then
     begin
@@ -113,10 +113,10 @@ begin
     end;
     I := I + 1;
   end;
-  if Start <= Length(S) then
+  if Start < Length(S) then
   begin
     SLo := Start;
-    SHi := Length(S);
+    SHi := Length(S) - 1;
     while (SLo <= SHi) and (OrdAt(S, SLo) = 32) do SLo := SLo + 1;
     while (SHi >= SLo) and (OrdAt(S, SHi) = 32) do SHi := SHi - 1;
     AList.Add(Copy(S, SLo, SHi - SLo + 1));

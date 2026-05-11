@@ -103,6 +103,12 @@ type
     procedure TestSemantic_SetLength_OK;
     procedure TestSemantic_SetLength_NonStringError;
     procedure TestCodegen_SetLength_CallsRTL;
+
+    { ------------------------------------------------------------------ }
+    { ARC on var/out string parameter assignment                           }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_VarParamStringAssign_AddRef;
+    procedure TestCodegen_VarParamStringAssign_Release;
   end;
 
 implementation
@@ -675,7 +681,7 @@ const
     'var B: Integer;'              + LineEnding +
     'begin'                        + LineEnding +
     '  S := ''hello'';'            + LineEnding +
-    '  B := S[1]'                  + LineEnding +
+    '  B := S[0]'                  + LineEnding +
     'end.';
 var
   IR: string;
@@ -691,7 +697,7 @@ const
     'var S: string;'               + LineEnding +
     'begin'                        + LineEnding +
     '  S := ''hello'';'            + LineEnding +
-    '  if S[1] = ''h'' then WriteLn(''yes'')' + LineEnding +
+    '  if S[0] = ''h'' then WriteLn(''yes'')' + LineEnding +
     'end.';
 var
   IR: string;
@@ -708,7 +714,7 @@ const
     'var N: Integer;'              + LineEnding +
     'var B: Integer;'              + LineEnding +
     'begin'                        + LineEnding +
-    '  B := N[1]'                  + LineEnding +
+    '  B := N[0]'                  + LineEnding +
     'end.';
 begin
   SemanticError(Src);
@@ -720,7 +726,7 @@ const
     'program T;'                   + LineEnding +
     'var S: string;'               + LineEnding +
     'begin'                        + LineEnding +
-    '  if S[1] = ''😀'' then WriteLn(''yes'')' + LineEnding +
+    '  if S[0] = ''😀'' then WriteLn(''yes'')' + LineEnding +
     'end.';
 begin
   SemanticError(Src);
@@ -732,7 +738,7 @@ const
     'program T;'                   + LineEnding +
     'var S: string;'               + LineEnding +
     'begin'                        + LineEnding +
-    '  if S[1] = #45 then WriteLn(''yes'')' + LineEnding +  { #45 = Ord('-') }
+    '  if S[0] = #45 then WriteLn(''yes'')' + LineEnding +  { #45 = Ord('-') }
     'end.';
 var
   IR: string;
@@ -793,6 +799,36 @@ begin
     'begin S := ''hello''; SetLength(S, 3) end.');
   AssertTrue('emits _StringSetLength call',
     IRContains(IR, 'call $_StringSetLength('));
+end;
+
+{ ------------------------------------------------------------------ }
+{ ARC on var/out string parameter assignment                           }
+{ ------------------------------------------------------------------ }
+
+procedure TStringOpsTests.TestCodegen_VarParamStringAssign_AddRef;
+var IR: string;
+begin
+  IR := GenIR(
+    'program P;'                                  + LineEnding +
+    'procedure Foo(var S: string);'               + LineEnding +
+    'begin S := ''hello'' end;'                   + LineEnding +
+    'var X: string;'                              + LineEnding +
+    'begin Foo(X) end.');
+  AssertTrue('var string assign must AddRef new value',
+    Pos('_StringAddRef', IR) > 0);
+end;
+
+procedure TStringOpsTests.TestCodegen_VarParamStringAssign_Release;
+var IR: string;
+begin
+  IR := GenIR(
+    'program P;'                                  + LineEnding +
+    'procedure Foo(var S: string);'               + LineEnding +
+    'begin S := ''hello'' end;'                   + LineEnding +
+    'var X: string;'                              + LineEnding +
+    'begin Foo(X) end.');
+  AssertTrue('var string assign must Release old value',
+    Pos('_StringRelease', IR) > 0);
 end;
 
 initialization

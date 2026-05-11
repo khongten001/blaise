@@ -1237,7 +1237,7 @@ const
     'var s, t: string;'                + LineEnding +
     'begin'                            + LineEnding +
     '  s := ''hello'';'                + LineEnding +
-    '  t := Copy(s, 2, 3);'            + LineEnding +
+    '  t := Copy(s, 1, 3);'            + LineEnding +
     '  WriteLn(t)'                     + LineEnding +
     'end.';
 
@@ -1298,7 +1298,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcStringPos, Output, RCode, []));
-  AssertEquals('Pos(''world'', ''hello world'') = 7', '7', Trim(Output));
+  AssertEquals('Pos(''world'', ''hello world'') = 6', '6', Trim(Output));
 end;
 
 procedure TE2ETests.TestRun_StringOps_Copy;
@@ -1308,7 +1308,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcStringCopy, Output, RCode, []));
-  AssertEquals('Copy(''hello'', 2, 3) = ''ell''', 'ell', Trim(Output));
+  AssertEquals('Copy(''hello'', 1, 3) = ''ell''', 'ell', Trim(Output));
 end;
 
 procedure TE2ETests.TestRun_StringOps_UpperCase;
@@ -1364,7 +1364,7 @@ const
     'program P;'                                  + LineEnding +
     'var s: string;'                              + LineEnding +
     'begin'                                       + LineEnding +
-    '  s := Copy(''^Integer'', 2, MaxInt);'       + LineEnding +
+    '  s := Copy(''^Integer'', 1, MaxInt);'       + LineEnding +
     '  WriteLn(s)'                                + LineEnding +
     'end.';
 
@@ -1385,7 +1385,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcStringCopyMaxIntCount, Output, RCode, []));
-  AssertEquals('Copy(''^Integer'', 2, MaxInt) = ''Integer''', 'Integer', Trim(Output));
+  AssertEquals('Copy(''^Integer'', 1, MaxInt) = ''Integer''', 'Integer', Trim(Output));
 end;
 
 const
