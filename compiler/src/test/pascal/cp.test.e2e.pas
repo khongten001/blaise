@@ -202,6 +202,14 @@ type
     procedure TestRun_InheritsFrom_Unrelated_ReturnsFalse;
     procedure TestRun_InheritsFrom_Reverse_ReturnsFalse;
     procedure TestRun_InheritsFrom_ClassType_Works;
+
+    { for..in: full compile+run through QBE+gcc.
+      IR-substring tests cannot detect the promoted-scalar storew bug
+      (QBE rejects invalid IR at assembly time, not codegen time). }
+    procedure TestRun_ForIn_String_ByteVar_PrintsBytes;
+    procedure TestRun_ForIn_String_IntegerVar_PrintsBytes;
+    procedure TestRun_ForIn_Array_Integer_PrintsElements;
+    procedure TestRun_ForIn_ClassEnumerator_PrintsElements;
   end;
 
 implementation
@@ -2785,6 +2793,142 @@ begin
     CompileAndRun(SrcSleepTest, Output, RCode, []));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('output is ok', 'ok', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ for..in e2e tests                                                    }
+{ ------------------------------------------------------------------ }
+
+const
+  { Iterates 'Hi' with a local Byte var — the exact case that triggered
+    the promoted-scalar storew bug. Byte is always promoted to a QBE
+    register; storew to a register is a QBE error. }
+  SrcForInStringByte =
+    'program P;'                                        + LineEnding +
+    'var'                                               + LineEnding +
+    '  S: string;'                                      + LineEnding +
+    '  B: Byte;'                                        + LineEnding +
+    'begin'                                             + LineEnding +
+    '  S := ''Hi'';'                                    + LineEnding +
+    '  for B in S do'                                   + LineEnding +
+    '    WriteLn(B)'                                    + LineEnding +
+    'end.';
+
+  { Same program with Integer loop var — also promoted, exercises the
+    same IsPromoted path via a different type. }
+  SrcForInStringInteger =
+    'program P;'                                        + LineEnding +
+    'var'                                               + LineEnding +
+    '  S: string;'                                      + LineEnding +
+    '  I: Integer;'                                     + LineEnding +
+    'begin'                                             + LineEnding +
+    '  S := ''Hi'';'                                    + LineEnding +
+    '  for I in S do'                                   + LineEnding +
+    '    WriteLn(I)'                                    + LineEnding +
+    'end.';
+
+  { Static array iteration with a local Integer element var. }
+  SrcForInArrayInteger =
+    'program P;'                                        + LineEnding +
+    'var'                                               + LineEnding +
+    '  A: array[0..2] of Integer;'                      + LineEnding +
+    '  X: Integer;'                                     + LineEnding +
+    'begin'                                             + LineEnding +
+    '  A[0] := 10;'                                     + LineEnding +
+    '  A[1] := 20;'                                     + LineEnding +
+    '  A[2] := 30;'                                     + LineEnding +
+    '  for X in A do'                                   + LineEnding +
+    '    WriteLn(X)'                                    + LineEnding +
+    'end.';
+
+  { Class enumerator protocol: a minimal range enumerator that yields
+    3, 4, 5 so the expected output is deterministic. }
+  SrcForInClassEnum =
+    'program P;'                                                  + LineEnding +
+    'type'                                                        + LineEnding +
+    '  TRangeEnum = class'                                        + LineEnding +
+    '    FCurrent: Integer;'                                      + LineEnding +
+    '    FLast: Integer;'                                         + LineEnding +
+    '    constructor Create(AFirst, ALast: Integer);'             + LineEnding +
+    '    function MoveNext: Boolean;'                             + LineEnding +
+    '    function GetCurrent: Integer;'                           + LineEnding +
+    '    property Current: Integer read GetCurrent;'              + LineEnding +
+    '  end;'                                                      + LineEnding +
+    '  TRange = class'                                            + LineEnding +
+    '    FFirst: Integer;'                                        + LineEnding +
+    '    FLast: Integer;'                                         + LineEnding +
+    '    constructor Create(AFirst, ALast: Integer);'             + LineEnding +
+    '    function GetEnumerator: TRangeEnum;'                     + LineEnding +
+    '  end;'                                                      + LineEnding +
+    'constructor TRangeEnum.Create(AFirst, ALast: Integer);'      + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  FCurrent := AFirst - 1;'                                   + LineEnding +
+    '  FLast := ALast;'                                           + LineEnding +
+    'end;'                                                        + LineEnding +
+    'function TRangeEnum.MoveNext: Boolean;'                      + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  FCurrent := FCurrent + 1;'                                 + LineEnding +
+    '  Result := FCurrent <= FLast;'                              + LineEnding +
+    'end;'                                                        + LineEnding +
+    'function TRangeEnum.GetCurrent: Integer;'                    + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  Result := FCurrent;'                                       + LineEnding +
+    'end;'                                                        + LineEnding +
+    'constructor TRange.Create(AFirst, ALast: Integer);'          + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  FFirst := AFirst;'                                         + LineEnding +
+    '  FLast := ALast;'                                           + LineEnding +
+    'end;'                                                        + LineEnding +
+    'function TRange.GetEnumerator: TRangeEnum;'                  + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  Result := TRangeEnum.Create(FFirst, FLast);'               + LineEnding +
+    'end;'                                                        + LineEnding +
+    'var'                                                         + LineEnding +
+    '  R: TRange;'                                                + LineEnding +
+    '  N: Integer;'                                               + LineEnding +
+    'begin'                                                       + LineEnding +
+    '  R := TRange.Create(3, 5);'                                 + LineEnding +
+    '  for N in R do'                                             + LineEnding +
+    '    WriteLn(N);'                                             + LineEnding +
+    '  R.Free;'                                                   + LineEnding +
+    'end.';
+
+procedure TE2ETests.TestRun_ForIn_String_ByteVar_PrintsBytes;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringByte, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  { 'H' = 72, 'i' = 105 }
+  AssertEquals('bytes of ''Hi''', '72' + LE + '105' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_ForIn_String_IntegerVar_PrintsBytes;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringInteger, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('bytes of ''Hi'' via Integer var', '72' + LE + '105' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_ForIn_Array_Integer_PrintsElements;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInArrayInteger, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('array elements 10 20 30',
+    '10' + LE + '20' + LE + '30' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_ForIn_ClassEnumerator_PrintsElements;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInClassEnum, Output, RCode, []));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('range 3..5', '3' + LE + '4' + LE + '5' + LE, Output);
 end;
 
 initialization

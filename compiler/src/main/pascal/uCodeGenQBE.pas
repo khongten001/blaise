@@ -1235,6 +1235,14 @@ begin
             else
               EmitLine(Format('export data $%s = { l 0 }', [VarName]));
           end;
+        tyStaticArray:
+          begin
+            if TStaticArrayTypeDesc(Decl.ResolvedType).ByteSize > 0 then
+              EmitLine(Format('export data $%s = { z %d }',
+                [VarName, TStaticArrayTypeDesc(Decl.ResolvedType).ByteSize]))
+            else
+              EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+          end;
       else
         EmitLine(Format('export data $%s = { l 0 }', [VarName]));
       end;
@@ -7605,7 +7613,6 @@ begin
   else
     StoreInstr := 'storew';
   end;
-  { %_var_Name is already the base pointer to the stack buffer (from alloc) }
   IdxW    := EmitExpr(AStmt.IndexExpr);
   IdxL    := AllocTemp;
   Offset  := AllocTemp;
@@ -7620,7 +7627,8 @@ begin
   end
   else
     EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
-  EmitLine(Format('  %s =l add %%_var_%s, %s', [ElemPtr, AStmt.ArrayName, Offset]));
+  EmitLine(Format('  %s =l add %s, %s',
+    [ElemPtr, VarRef(AStmt.ArrayName, AStmt.IsGlobal), Offset]));
   EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
 end;
 
