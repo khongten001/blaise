@@ -254,24 +254,30 @@ void* _GetTempDir(void) {
 void* _GetTempFileName(void* dir, void* prefix) {
     const char* d  = io_str_data(dir);
     const char* p  = io_str_data(prefix);
-    /* build template: <dir>/<prefix>XXXXXX */
-    int32_t dlen = (int32_t)strlen(d);
     int32_t plen = (int32_t)strlen(p);
-    int need_slash = (dlen > 0 && d[dlen - 1] != '/') ? 1 : 0;
-    /* template length: dlen + maybe '/' + plen + 6 + NUL */
-    int32_t tlen = dlen + need_slash + plen + 6;
-    char*   tmpl = (char*)malloc((size_t)(tlen + 1));
     int     fd;
-    if (!tmpl) return io_str_from_cstr("/tmp/blaise_XXXXXX");
-    if (dlen == 0) {
+    char*   tmpl;
+    int32_t tlen;
+    if (strlen(d) == 0) {
         const char* tmp = getenv("TMPDIR");
         if (!tmp || tmp[0] == '\0') tmp = "/tmp";
-        memcpy(tmpl, tmp, strlen(tmp));
-        tmpl[strlen(tmp)] = '/';
-        memcpy(tmpl + strlen(tmp) + 1, p, (size_t)plen);
-        memcpy(tmpl + strlen(tmp) + 1 + plen, "XXXXXX", 6);
-        tmpl[strlen(tmp) + 1 + plen + 6] = '\0';
+        int32_t tmplen = (int32_t)strlen(tmp);
+        /* template: <tmp>/<prefix>XXXXXX\0 */
+        tlen = tmplen + 1 + plen + 6;
+        tmpl = (char*)malloc((size_t)(tlen + 1));
+        if (!tmpl) return io_str_from_cstr("/tmp/blaise_XXXXXX");
+        memcpy(tmpl, tmp, (size_t)tmplen);
+        tmpl[tmplen] = '/';
+        memcpy(tmpl + tmplen + 1, p, (size_t)plen);
+        memcpy(tmpl + tmplen + 1 + plen, "XXXXXX", 6);
+        tmpl[tlen] = '\0';
     } else {
+        int32_t dlen = (int32_t)strlen(d);
+        int need_slash = (d[dlen - 1] != '/') ? 1 : 0;
+        /* template: <dir>[/]<prefix>XXXXXX\0 */
+        tlen = dlen + need_slash + plen + 6;
+        tmpl = (char*)malloc((size_t)(tlen + 1));
+        if (!tmpl) return io_str_from_cstr("/tmp/blaise_XXXXXX");
         memcpy(tmpl, d, (size_t)dlen);
         if (need_slash) tmpl[dlen] = '/';
         memcpy(tmpl + dlen + need_slash, p, (size_t)plen);

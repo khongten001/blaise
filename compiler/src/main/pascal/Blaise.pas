@@ -503,16 +503,11 @@ begin
   try
     Source.LoadFromFile(SourceFile);
   except
-{$IFDEF FPC}
     on E: Exception do
     begin
-      WriteLn(StdErr, 'Error reading source: ', E.Message);
+      WriteLn(StdErr, 'Error reading source: ', Exception(E).Message);
       Halt(1);
     end;
-{$ELSE}
-    WriteLn('Error reading source file');
-    Halt(1);
-{$ENDIF}
   end;
 
   Lexer    := nil;
@@ -528,16 +523,11 @@ begin
       Parser := TParser.Create(Lexer);
       Prog   := Parser.Parse;
     except
-{$IFDEF FPC}
       on E: Exception do
       begin
-        WriteLn(StdErr, 'Parse error: ', E.Message);
+        WriteLn(StdErr, 'Parse error: ', Exception(E).Message);
         Halt(1);
       end;
-{$ELSE}
-      WriteLn('Parse error');
-      Halt(1);
-{$ENDIF}
     end;
 
     try
@@ -552,26 +542,26 @@ begin
       end;
       Semantic.Analyse(Prog);
     except
-{$IFDEF FPC}
       on E: ESemanticError do
       begin
-        WriteLn(StdErr, 'Semantic error: ', E.Message);
+        WriteLn(StdErr, 'Semantic error: ', Exception(E).Message);
         Halt(1);
       end;
       on E: EUnitNotFound do
       begin
-        WriteLn(StdErr, 'Unit not found: ', E.Message);
+        WriteLn(StdErr, 'Unit not found: ', Exception(E).Message);
         Halt(1);
       end;
       on E: ECircularDependency do
       begin
-        WriteLn(StdErr, 'Circular dependency: ', E.Message);
+        WriteLn(StdErr, 'Circular dependency: ', Exception(E).Message);
         Halt(1);
       end;
-{$ELSE}
-      WriteLn('Compiler error');
-      Halt(1);
-{$ENDIF}
+      on E: Exception do
+      begin
+        WriteLn(StdErr, 'Compiler error: ', Exception(E).Message);
+        Halt(1);
+      end;
     end;
 
     try
@@ -665,16 +655,11 @@ begin
         end;
       end;
     except
-{$IFDEF FPC}
       on E: Exception do
       begin
-        WriteLn(StdErr, 'Code generation error: ', E.Message);
+        WriteLn(StdErr, 'Code generation error: ', Exception(E).Message);
         Halt(1);
       end;
-{$ELSE}
-      WriteLn('Code generation error');
-      Halt(1);
-{$ENDIF}
     end;
   finally
     Units.Free;
@@ -704,16 +689,11 @@ begin
       Source.Free;
     end;
   except
-{$IFDEF FPC}
     on E: Exception do
     begin
-      WriteLn(StdErr, 'Error writing IR: ', E.Message);
+      WriteLn(StdErr, 'Error writing IR: ', Exception(E).Message);
       Halt(1);
     end;
-{$ELSE}
-    WriteLn('Error writing IR file');
-    Halt(1);
-{$ENDIF}
   end;
 
   CompileToNative(IRFile, OutputFile, OPDFAsmFile);

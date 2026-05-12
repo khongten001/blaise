@@ -4410,11 +4410,34 @@ begin
       ArgLine := Format('l %s', [ArgTemp]);
       for I := 0 to ACall.Args.Count - 1 do
       begin
-        Par     := TMethodParam(MDecl.Params.Items[I]);
-        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-        ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QbeTypeOf(Par.ResolvedType));
-        ArgLine := ArgLine + Format(', %s %s',
-          [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+        Par := TMethodParam(MDecl.Params.Items[I]);
+        if Par.IsOpenArray then
+        begin
+          if TASTExpr(ACall.Args.Items[I]) is TArrayLiteralExpr then
+          begin
+            ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])));
+            ArgLine := ArgLine + Format(', l %s, l %d',
+              [ArgTemp, TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])).Elements.Count - 1]);
+          end
+          else
+          begin
+            ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+            ArgTemp2 := AllocTemp;
+            EmitLine(Format('  %s =l loadl %%_var_%s_high',
+              [ArgTemp2, TIdentExpr(TASTExpr(ACall.Args.Items[I])).Name]));
+            ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+          end;
+        end
+        else if Par.IsVarParam then
+          ArgLine := ArgLine + Format(', l %s',
+            [EmitLValueAddr(TASTExpr(ACall.Args.Items[I]))])
+        else
+        begin
+          ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+          ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QbeTypeOf(Par.ResolvedType));
+          ArgLine := ArgLine + Format(', %s %s',
+            [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+        end;
       end;
       EmitLine(Format('  call $%s(%s)',
         [MethodEmitName(MDecl, MDecl.OwnerTypeName, ACall.Name), ArgLine]));
@@ -5584,11 +5607,34 @@ begin
         FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, FC.Name);
         for I := 0 to FC.Args.Count - 1 do
         begin
-          Par     := TMethodParam(MDecl.Params.Items[I]);
-          ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
-          ArgTemp := CoerceArg(ArgTemp, TASTExpr(FC.Args.Items[I]), QbeTypeOf(Par.ResolvedType));
-          ArgLine := ArgLine + Format(', %s %s',
-            [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+          Par := TMethodParam(MDecl.Params.Items[I]);
+          if Par.IsOpenArray then
+          begin
+            if TASTExpr(FC.Args.Items[I]) is TArrayLiteralExpr then
+            begin
+              ArgTemp := EmitArrayLiteralExpr(TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])));
+              ArgLine := ArgLine + Format(', l %s, l %d',
+                [ArgTemp, TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])).Elements.Count - 1]);
+            end
+            else
+            begin
+              ArgTemp  := EmitExpr(TASTExpr(FC.Args.Items[I]));
+              ArgTemp2 := AllocTemp;
+              EmitLine(Format('  %s =l loadl %%_var_%s_high',
+                [ArgTemp2, TIdentExpr(TASTExpr(FC.Args.Items[I])).Name]));
+              ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+            end;
+          end
+          else if Par.IsVarParam then
+            ArgLine := ArgLine + Format(', l %s',
+              [EmitLValueAddr(TASTExpr(FC.Args.Items[I]))])
+          else
+          begin
+            ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
+            ArgTemp := CoerceArg(ArgTemp, TASTExpr(FC.Args.Items[I]), QbeTypeOf(Par.ResolvedType));
+            ArgLine := ArgLine + Format(', %s %s',
+              [QbeTypeOf(Par.ResolvedType), ArgTemp]);
+          end;
         end;
         T := AllocTemp;
         EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
