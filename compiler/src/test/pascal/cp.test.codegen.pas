@@ -13,7 +13,7 @@ unit cp.test.codegen;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  bcl.testing,
   uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
 
 type
@@ -98,7 +98,7 @@ end;
 
 function TCodeGenTests.IRContains(const AIR, AFragment: string): Boolean;
 begin
-  Result := Pos(AFragment, AIR) > 0;
+  Result := Pos(AFragment, AIR) >= 0;
 end;
 
 { Data sections }

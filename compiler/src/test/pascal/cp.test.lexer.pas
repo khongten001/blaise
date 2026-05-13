@@ -13,7 +13,7 @@ unit cp.test.lexer;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  bcl.testing,
   uLexer;
 
 type

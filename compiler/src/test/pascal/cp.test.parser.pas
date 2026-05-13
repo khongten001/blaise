@@ -13,7 +13,7 @@ unit cp.test.parser;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  bcl.testing,
   uLexer, uParser, uAST;
 
 type
@@ -114,7 +114,7 @@ begin
   Prog := ParseSource('program P; uses System; begin end.');
   try
     AssertEquals('Uses count', 1, Prog.UsedUnits.Count);
-    AssertEquals('Unit name', 'System', Prog.UsedUnits[0]);
+    AssertEquals('Unit name', 'System', Prog.UsedUnits.Strings[0]);
   finally
     Prog.Free;
   end;
@@ -127,8 +127,8 @@ begin
   Prog := ParseSource('program P; uses System, SysUtils; begin end.');
   try
     AssertEquals('Uses count', 2, Prog.UsedUnits.Count);
-    AssertEquals('First', 'System', Prog.UsedUnits[0]);
-    AssertEquals('Second', 'SysUtils', Prog.UsedUnits[1]);
+    AssertEquals('First', 'System', Prog.UsedUnits.Strings[0]);
+    AssertEquals('Second', 'SysUtils', Prog.UsedUnits.Strings[1]);
   finally
     Prog.Free;
   end;
@@ -141,8 +141,8 @@ begin
   Prog := ParseSource('program P; uses Generics.Collections, SysUtils; begin end.');
   try
     AssertEquals('Uses count', 2, Prog.UsedUnits.Count);
-    AssertEquals('Dotted unit name', 'Generics.Collections', Prog.UsedUnits[0]);
-    AssertEquals('Plain unit name', 'SysUtils', Prog.UsedUnits[1]);
+    AssertEquals('Dotted unit name', 'Generics.Collections', Prog.UsedUnits.Strings[0]);
+    AssertEquals('Plain unit name', 'SysUtils', Prog.UsedUnits.Strings[1]);
   finally
     Prog.Free;
   end;
@@ -158,9 +158,9 @@ begin
   Prog := ParseSource('program P; var x: Integer; begin end.');
   try
     AssertEquals('1 decl', 1, Prog.Block.Decls.Count);
-    Decl := TVarDecl(Prog.Block.Decls[0]);
+    Decl := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertEquals('1 name', 1, Decl.Names.Count);
-    AssertEquals('Name', 'x', Decl.Names[0]);
+    AssertEquals('Name', 'x', Decl.Names.Strings[0]);
     AssertEquals('Type', 'Integer', Decl.TypeName);
   finally
     Prog.Free;
@@ -176,9 +176,9 @@ begin
   try
     AssertEquals('2 decls', 2, Prog.Block.Decls.Count);
     AssertEquals('First type', 'Integer',
-      TVarDecl(Prog.Block.Decls[0]).TypeName);
+      TVarDecl(Prog.Block.Decls.Items[0]).TypeName);
     AssertEquals('Second type', 'string',
-      TVarDecl(Prog.Block.Decls[1]).TypeName);
+      TVarDecl(Prog.Block.Decls.Items[1]).TypeName);
   finally
     Prog.Free;
   end;
@@ -192,10 +192,10 @@ begin
   Prog := ParseSource('program P; var x, y: Integer; begin end.');
   try
     AssertEquals('1 decl group', 1, Prog.Block.Decls.Count);
-    Decl := TVarDecl(Prog.Block.Decls[0]);
+    Decl := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertEquals('2 names', 2, Decl.Names.Count);
-    AssertEquals('First', 'x', Decl.Names[0]);
-    AssertEquals('Second', 'y', Decl.Names[1]);
+    AssertEquals('First', 'x', Decl.Names.Strings[0]);
+    AssertEquals('Second', 'y', Decl.Names.Strings[1]);
   finally
     Prog.Free;
   end;
@@ -225,8 +225,8 @@ begin
   try
     AssertEquals('1 stmt', 1, Prog.Block.Stmts.Count);
     AssertTrue('Is TAssignment',
-      Prog.Block.Stmts[0] is TAssignment);
-    Assign := TAssignment(Prog.Block.Stmts[0]);
+      Prog.Block.Stmts.Items[0] is TAssignment);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertEquals('Name', 'n', Assign.Name);
     AssertTrue('Expr is TIntLiteral', Assign.Expr is TIntLiteral);
     Lit := TIntLiteral(Assign.Expr);
@@ -244,7 +244,7 @@ begin
   Prog := ParseSource(
     'program P; var s: string; begin s := ''hello'' end.');
   try
-    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertTrue('Expr is TStringLiteral', Assign.Expr is TStringLiteral);
     AssertEquals('Value', 'hello',
       TStringLiteral(Assign.Expr).Value);
@@ -261,8 +261,8 @@ begin
   Prog := ParseSource('program P; begin WriteLn() end.');
   try
     AssertTrue('Is TProcCall',
-      Prog.Block.Stmts[0] is TProcCall);
-    Call := TProcCall(Prog.Block.Stmts[0]);
+      Prog.Block.Stmts.Items[0] is TProcCall);
+    Call := TProcCall(Prog.Block.Stmts.Items[0]);
     AssertEquals('Name', 'WriteLn', Call.Name);
     AssertEquals('0 args', 0, Call.Args.Count);
   finally
@@ -277,7 +277,7 @@ var
 begin
   Prog := ParseSource('program P; begin WriteLn end.');
   try
-    Call := TProcCall(Prog.Block.Stmts[0]);
+    Call := TProcCall(Prog.Block.Stmts.Items[0]);
     AssertEquals('Name', 'WriteLn', Call.Name);
     AssertEquals('0 args', 0, Call.Args.Count);
   finally
@@ -292,12 +292,12 @@ var
 begin
   Prog := ParseSource('program P; begin WriteLn(''Hello'') end.');
   try
-    Call := TProcCall(Prog.Block.Stmts[0]);
+    Call := TProcCall(Prog.Block.Stmts.Items[0]);
     AssertEquals('1 arg', 1, Call.Args.Count);
     AssertTrue('Arg is TStringLiteral',
-      Call.Args[0] is TStringLiteral);
+      Call.Args.Items[0] is TStringLiteral);
     AssertEquals('Value', 'Hello',
-      TStringLiteral(Call.Args[0]).Value);
+      TStringLiteral(Call.Args.Items[0]).Value);
   finally
     Prog.Free;
   end;
@@ -310,10 +310,10 @@ var
 begin
   Prog := ParseSource('program P; begin WriteLn(99) end.');
   try
-    Call := TProcCall(Prog.Block.Stmts[0]);
+    Call := TProcCall(Prog.Block.Stmts.Items[0]);
     AssertEquals('1 arg', 1, Call.Args.Count);
-    AssertTrue('Arg is TIntLiteral', Call.Args[0] is TIntLiteral);
-    AssertEquals('Value', 99, TIntLiteral(Call.Args[0]).Value);
+    AssertTrue('Arg is TIntLiteral', Call.Args.Items[0] is TIntLiteral);
+    AssertEquals('Value', 99, TIntLiteral(Call.Args.Items[0]).Value);
   finally
     Prog.Free;
   end;
@@ -329,7 +329,7 @@ begin
   Prog := ParseSource(
     'program P; var n: Integer; begin n := 1 + 2 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Op', Ord(boAdd), Ord(Bin.Op));
     AssertEquals('Left', 1, TIntLiteral(Bin.Left).Value);
     AssertEquals('Right', 2, TIntLiteral(Bin.Right).Value);
@@ -346,7 +346,7 @@ begin
   Prog := ParseSource(
     'program P; var n: Integer; begin n := 10 - 3 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Op', Ord(boSub), Ord(Bin.Op));
   finally
     Prog.Free;
@@ -361,7 +361,7 @@ begin
   Prog := ParseSource(
     'program P; var n: Integer; begin n := 3 * 4 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Op', Ord(boMul), Ord(Bin.Op));
   finally
     Prog.Free;
@@ -378,7 +378,7 @@ begin
   Prog := ParseSource(
     'program P; var n: Integer; begin n := 1 + 2 * 3 end.');
   try
-    Outer := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Outer := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Outer op is Add', Ord(boAdd), Ord(Outer.Op));
     AssertTrue('Right is TBinaryExpr', Outer.Right is TBinaryExpr);
     Inner := TBinaryExpr(Outer.Right);
@@ -398,7 +398,7 @@ begin
   Prog := ParseSource(
     'program P; var n: Integer; begin n := (1 + 2) * 3 end.');
   try
-    Outer := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Outer := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Outer op is Mul', Ord(boMul), Ord(Outer.Op));
     AssertTrue('Left is TBinaryExpr', Outer.Left is TBinaryExpr);
     Inner := TBinaryExpr(Outer.Left);
@@ -417,7 +417,7 @@ begin
   Prog := ParseSource(
     'program P; var x, y: Integer; begin y := x + 1 end.');
   try
-    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     Bin := TBinaryExpr(Assign.Expr);
     AssertTrue('Left is TIdentExpr', Bin.Left is TIdentExpr);
     AssertEquals('Ident name', 'x', TIdentExpr(Bin.Left).Name);
@@ -439,7 +439,7 @@ begin
   Prog := ParseSource(
     'program P; var N: Integer; begin N := Obj.GetRec().X end.');
   try
-    Stmt := TAssignment(Prog.Block.Stmts[0]);
+    Stmt := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertTrue('RHS is field access', Stmt.Expr is TFieldAccessExpr);
     Fld := TFieldAccessExpr(Stmt.Expr);
     AssertEquals('field name', 'X', Fld.FieldName);
@@ -458,7 +458,7 @@ begin
   Prog := ParseSource(
     'program P; var N: Integer; begin N := Tokens[0].Kind end.');
   try
-    Stmt := TAssignment(Prog.Block.Stmts[0]);
+    Stmt := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertTrue('RHS is field access', Stmt.Expr is TFieldAccessExpr);
     Fld := TFieldAccessExpr(Stmt.Expr);
     AssertEquals('field name', 'Kind', Fld.FieldName);
@@ -478,7 +478,7 @@ begin
   Prog := ParseSource(
     'program P; var N: Integer; begin N := A.GetB().GetC().Val end.');
   try
-    Stmt := TAssignment(Prog.Block.Stmts[0]);
+    Stmt := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertTrue('RHS is field access', Stmt.Expr is TFieldAccessExpr);
     Fld := TFieldAccessExpr(Stmt.Expr);
     AssertEquals('outer field', 'Val', Fld.FieldName);
@@ -500,7 +500,7 @@ begin
   Prog := ParseSource(
     'program P; var N: Integer; begin N := GetList()[0] end.');
   try
-    Stmt := TAssignment(Prog.Block.Stmts[0]);
+    Stmt := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertTrue('RHS is subscript', Stmt.Expr is TStringSubscriptExpr);
     Sub := TStringSubscriptExpr(Stmt.Expr);
     AssertTrue('base is func call', Sub.StrExpr is TFuncCallExpr);

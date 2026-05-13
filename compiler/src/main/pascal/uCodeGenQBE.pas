@@ -2760,6 +2760,12 @@ begin
   if AExpr is TFieldAccessExpr then
   begin
     Fld := TFieldAccessExpr(AExpr);
+    { Property-backed access: the result is already a pointer — delegate to EmitExpr }
+    if Fld.PropRead <> nil then
+    begin
+      Result := EmitExpr(Fld);
+      Exit;
+    end;
     if Fld.Base <> nil then
       Base := EmitInstancePtr(Fld.Base)
     else if Fld.IsImplicitSelf then
@@ -7784,20 +7790,11 @@ begin
     SAT      := TStaticArrayTypeDesc(AExpr.StrExpr.ResolvedType);
     ElemSize := SAT.ElementType.RawSize;
     LowBnd   := SAT.LowBound;
-    case SAT.ElementType.Kind of
-      tyByte, tyBoolean: QLoad := 'loadub';
-      tyInteger, tyUInt32, tyEnum: QLoad := 'loadw';
-      tyInt64, tyString, tyClass, tyPointer, tyMetaClass: QLoad := 'loadl';
-    else
-      QLoad := 'loadl';
-    end;
-    QType   := QbeTypeOf(SAT.ElementType);
     StrPtr  := EmitExpr(AExpr.StrExpr);
     IdxW    := EmitExpr(AExpr.IndexExpr);
     IdxL    := AllocTemp;
     Offset  := AllocTemp;
     ElemPtr := AllocTemp;
-    ByteVal := AllocTemp;
     EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
     if LowBnd <> 0 then
     begin
@@ -7808,6 +7805,21 @@ begin
     else
       EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
     EmitLine(Format('  %s =l add %s, %s', [ElemPtr, StrPtr, Offset]));
+    { Record elements: return address directly — records are by-value via pointer }
+    if SAT.ElementType.Kind = tyRecord then
+    begin
+      Result := ElemPtr;
+      Exit;
+    end;
+    case SAT.ElementType.Kind of
+      tyByte, tyBoolean: QLoad := 'loadub';
+      tyInteger, tyUInt32, tyEnum: QLoad := 'loadw';
+      tyInt64, tyString, tyClass, tyPointer, tyMetaClass: QLoad := 'loadl';
+    else
+      QLoad := 'loadl';
+    end;
+    QType   := QbeTypeOf(SAT.ElementType);
+    ByteVal := AllocTemp;
     EmitLine(Format('  %s =%s %s %s', [ByteVal, QType, QLoad, ElemPtr]));
     Result := ByteVal;
     Exit;
@@ -8029,18 +8041,10 @@ begin
   ElemType := SAT.ElementType;
   ElemSize := ElemType.RawSize;
   LowBnd   := SAT.LowBound;
-  case ElemType.Kind of
-    tyByte, tyBoolean: StoreInstr := 'storeb';
-    tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
-    tyInt64, tyString, tyClass, tyPointer, tyMetaClass: StoreInstr := 'storel';
-  else
-    StoreInstr := 'storew';
-  end;
   IdxW    := EmitExpr(AStmt.IndexExpr);
   IdxL    := AllocTemp;
   Offset  := AllocTemp;
   ElemPtr := AllocTemp;
-  ElemVal := EmitExpr(AStmt.ValueExpr);
   EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
   if LowBnd <> 0 then
   begin
@@ -8052,6 +8056,20 @@ begin
     EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
   EmitLine(Format('  %s =l add %s, %s',
     [ElemPtr, VarRef(AStmt.ArrayName, AStmt.IsGlobal), Offset]));
+  if ElemType.Kind = tyRecord then
+  begin
+    ElemVal := EmitExpr(AStmt.ValueExpr);
+    EmitRecordCopy(TRecordTypeDesc(ElemType), ElemPtr, ElemVal);
+    Exit;
+  end;
+  ElemVal := EmitExpr(AStmt.ValueExpr);
+  case ElemType.Kind of
+    tyByte, tyBoolean: StoreInstr := 'storeb';
+    tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
+    tyInt64, tyString, tyClass, tyPointer, tyMetaClass: StoreInstr := 'storel';
+  else
+    StoreInstr := 'storew';
+  end;
   EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
 end;
 

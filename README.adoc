@@ -38,7 +38,7 @@ https://github.com/graemeg/opdebugger[OPDF] debug format support.
 == 🚀 Project Status
 
 * **Self-Hosting:** Yes. Blaise bootstraps and recompiles itself with byte-for-byte fixpoint. FPC is no longer required — the entire toolchain runs on Blaise alone.
-* **Testing:** 1268 tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
+* **Testing:** 1541 tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
 * **Backends:** Currently utilising a QBE backend, with an LLVM backend in active development.
 
 
@@ -168,6 +168,10 @@ passed explicitly via the `BLAISE` make variable.
 
 [source,shell]
 ----
+# 0. Build the vendored QBE backend (once-off — not needed again unless
+#    you update vendor/qbe/)
+cd vendor/qbe && make && cd ../..
+
 # 1. Build the RTL using the release binary (BLAISE= avoids chicken-and-egg)
 cd rtl && make BLAISE=../releases/v0.7.0/blaise && make install && cd ..
 
@@ -184,7 +188,8 @@ gcc -o compiler/target/blaise /tmp/blaise.s compiler/target/blaise_rtl.a
 ----
 
 Once `compiler/target/blaise` exists, subsequent RTL rebuilds (`make && make install`)
-work without the override.
+work without the override. The QBE build in step 0 is a one-off and does not
+need to be repeated when rebuilding the compiler.
 
 === Build via PasBuild
 

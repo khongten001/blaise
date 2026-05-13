@@ -13,7 +13,7 @@ unit cp.test.records;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  bcl.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 type
@@ -201,7 +201,7 @@ begin
         begin end.
         ''');
   try
-    TD := TTypeDecl(Prog.Block.TypeDecls[0]);
+    TD := TTypeDecl(Prog.Block.TypeDecls.Items[0]);
     AssertEquals('Type name', 'TPoint', TD.Name);
     AssertTrue('Is TRecordTypeDef', TD.Def is TRecordTypeDef);
   finally
@@ -225,10 +225,10 @@ begin
         begin end.
         ''');
   try
-    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
     AssertEquals('1 field', 1, Rec.Fields.Count);
-    Fld := TFieldDecl(Rec.Fields[0]);
-    AssertEquals('Field name', 'X', Fld.Names[0]);
+    Fld := TFieldDecl(Rec.Fields.Items[0]);
+    AssertEquals('Field name', 'X', Fld.Names.Strings[0]);
     AssertEquals('Field type', 'Integer', Fld.TypeName);
   finally
     Prog.Free;
@@ -251,10 +251,10 @@ begin
         begin end.
         ''');
   try
-    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
     AssertEquals('2 fields', 2, Rec.Fields.Count);
-    AssertEquals('First field', 'X', TFieldDecl(Rec.Fields[0]).Names[0]);
-    AssertEquals('Second field', 'Y', TFieldDecl(Rec.Fields[1]).Names[0]);
+    AssertEquals('First field', 'X', TFieldDecl(Rec.Fields.Items[0]).Names.Strings[0]);
+    AssertEquals('Second field', 'Y', TFieldDecl(Rec.Fields.Items[1]).Names.Strings[0]);
   finally
     Prog.Free;
   end;
@@ -276,12 +276,12 @@ begin
         begin end.
         ''');
   try
-    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
+    Rec := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
     AssertEquals('1 field group', 1, Rec.Fields.Count);
-    Fld := TFieldDecl(Rec.Fields[0]);
+    Fld := TFieldDecl(Rec.Fields.Items[0]);
     AssertEquals('2 names', 2, Fld.Names.Count);
-    AssertEquals('First',  'X', Fld.Names[0]);
-    AssertEquals('Second', 'Y', Fld.Names[1]);
+    AssertEquals('First',  'X', Fld.Names.Strings[0]);
+    AssertEquals('Second', 'Y', Fld.Names.Strings[1]);
   finally
     Prog.Free;
   end;
@@ -304,8 +304,8 @@ begin
         ''');
   try
     AssertEquals('1 var', 1, Prog.Block.Decls.Count);
-    Decl := TVarDecl(Prog.Block.Decls[0]);
-    AssertEquals('Var name', 'P', Decl.Names[0]);
+    Decl := TVarDecl(Prog.Block.Decls.Items[0]);
+    AssertEquals('Var name', 'P', Decl.Names.Strings[0]);
     AssertEquals('Var type', 'TPoint', Decl.TypeName);
   finally
     Prog.Free;
@@ -332,8 +332,8 @@ begin
   try
     AssertEquals('1 stmt', 1, Prog.Block.Stmts.Count);
     AssertTrue('Is TFieldAssignment',
-      Prog.Block.Stmts[0] is TFieldAssignment);
-    Stmt := TFieldAssignment(Prog.Block.Stmts[0]);
+      Prog.Block.Stmts.Items[0] is TFieldAssignment);
+    Stmt := TFieldAssignment(Prog.Block.Stmts.Items[0]);
     AssertEquals('Record var', 'Pt',  Stmt.RecordName);
     AssertEquals('Field name', 'X',   Stmt.FieldName);
     AssertTrue('Expr is TIntLiteral', Stmt.Expr is TIntLiteral);
@@ -360,7 +360,7 @@ begin
         end.
         ''');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertTrue('Left is TFieldAccessExpr', Bin.Left is TFieldAccessExpr);
     AssertEquals('Record', 'Pt', TFieldAccessExpr(Bin.Left).RecordName);
     AssertEquals('Field',  'X',  TFieldAccessExpr(Bin.Left).FieldName);
@@ -416,9 +416,9 @@ begin
     RT := TRecordTypeDesc(Prog.SymbolTable.FindType('TPoint'));
     AssertEquals('2 fields', 2, RT.Fields.Count);
     AssertEquals('X type',
-      Ord(tyInteger), Ord(TFieldInfo(RT.Fields[0]).TypeDesc.Kind));
+      Ord(tyInteger), Ord(TFieldInfo(RT.Fields.Items[0]).TypeDesc.Kind));
     AssertEquals('Y type',
-      Ord(tyInteger), Ord(TFieldInfo(RT.Fields[1]).TypeDesc.Kind));
+      Ord(tyInteger), Ord(TFieldInfo(RT.Fields.Items[1]).TypeDesc.Kind));
   finally
     Prog.Free;
   end;
@@ -441,7 +441,7 @@ begin
   try
     AssertEquals('Var is tyRecord',
       Ord(tyRecord),
-      Ord(TVarDecl(Prog.Block.Decls[0]).ResolvedType.Kind));
+      Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
     Prog.Free;
   end;
@@ -498,7 +498,7 @@ begin
         end.
         ''');
   try
-    Access := TFieldAccessExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Access := TFieldAccessExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Field access type',
       Ord(tyInteger), Ord(Access.ResolvedType.Kind));
   finally

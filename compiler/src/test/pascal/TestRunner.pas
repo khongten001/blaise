@@ -13,12 +13,12 @@ program TestRunner;
 uses
   bcl.testing,
   bcl.testing.runner.text,
-  {cp.test.lexer,}
-  {cp.test.parser,}
-  {cp.test.codegen,}
-  {cp.test.symtable,}
-  {cp.test.semantic,}
-  {cp.test.records,}
+  cp.test.lexer,
+  cp.test.parser,
+  cp.test.codegen,
+  cp.test.symtable,
+  cp.test.semantic,
+  cp.test.records,
   cp.test.classes,
   cp.test.arc,
   cp.test.methods,

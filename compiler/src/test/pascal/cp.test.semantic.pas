@@ -13,7 +13,7 @@ unit cp.test.semantic;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  bcl.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic;
 
 type
@@ -108,7 +108,7 @@ begin
   Prog := Analyse('program P; var x: Integer; begin end.');
   try
     AssertEquals('1 decl', 1, Prog.Block.Decls.Count);
-    Decl := TVarDecl(Prog.Block.Decls[0]);
+    Decl := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertNotNull('ResolvedType set', Decl.ResolvedType);
   finally
     Prog.Free;
@@ -123,7 +123,7 @@ begin
   try
     AssertEquals('Integer kind',
       Ord(tyInteger),
-      Ord(TVarDecl(Prog.Block.Decls[0]).ResolvedType.Kind));
+      Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
     Prog.Free;
   end;
@@ -137,7 +137,7 @@ begin
   try
     AssertEquals('string kind',
       Ord(tyString),
-      Ord(TVarDecl(Prog.Block.Decls[0]).ResolvedType.Kind));
+      Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
     Prog.Free;
   end;
@@ -150,7 +150,7 @@ var
 begin
   Prog := Analyse('program P; var x, y: Integer; begin end.');
   try
-    Decl := TVarDecl(Prog.Block.Decls[0]);
+    Decl := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertNotNull('ResolvedType', Decl.ResolvedType);
     AssertEquals('Integer', Ord(tyInteger), Ord(Decl.ResolvedType.Kind));
   finally
@@ -180,7 +180,7 @@ var
 begin
   Prog := Analyse('program P; var n: Integer; begin n := 42 end.');
   try
-    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNull('Expr type', Assign.Expr.ResolvedType);
     AssertEquals('Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
@@ -197,7 +197,7 @@ begin
   Prog := Analyse(
     'program P; var s: string; begin s := ''hello'' end.');
   try
-    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertEquals('string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
@@ -213,7 +213,7 @@ begin
   Prog := Analyse(
     'program P; var x, y: Integer; begin y := x + 1 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertNotNull('Left type', Bin.Left.ResolvedType);
     AssertEquals('x is Integer',
       Ord(tyInteger), Ord(Bin.Left.ResolvedType.Kind));
@@ -236,7 +236,7 @@ begin
   Prog := Analyse(
     'program P; var n: Integer; begin n := 1 + 2 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Add result is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
@@ -258,7 +258,7 @@ begin
   Prog := Analyse(
     'program P; var n: Integer; begin n := 10 - 3 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Sub is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
@@ -274,7 +274,7 @@ begin
   Prog := Analyse(
     'program P; var n: Integer; begin n := 3 * 4 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Mul is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
@@ -290,7 +290,7 @@ begin
   Prog := Analyse(
     'program P; var n: Integer; begin n := 8 div 2 end.');
   try
-    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts[0]).Expr);
+    Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Div is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
