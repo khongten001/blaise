@@ -78,6 +78,17 @@ type
     procedure TestCodegen_InterfaceAssign_AsCast_ReleasesOldObj;
     procedure TestCodegen_InterfaceToInterface_TransfersBothSlots;
     procedure TestCodegen_InterfaceVar_ScopeExit_ReleasesObjOnly;
+
+    { ------------------------------------------------------------------ }
+    { Supports() intrinsic — 2-arg and 3-arg forms                        }
+    { ------------------------------------------------------------------ }
+    procedure TestParse_Supports_TwoArg_ProducesSupportsExpr;
+    procedure TestParse_Supports_ThreeArg_ProducesSupportsExpr;
+    procedure TestSemantic_Supports_TwoArg_ResultIsBoolean;
+    procedure TestSemantic_Supports_ThreeArg_ResultIsBoolean;
+    procedure TestSemantic_Supports_NonInterface_RaisesError;
+    procedure TestCodegen_Supports_TwoArg_CallsImplementsInterface;
+    procedure TestCodegen_Supports_ThreeArg_WritesSlots;
   end;
 
 implementation
@@ -766,6 +777,159 @@ begin
   AssertTrue('no StringRelease or direct free on itab slot',
     Pos('loadl $F_itab', IR) > 0);  { itab is read during the method
                                             call path but never released. }
+end;
+
+{ ------------------------------------------------------------------ }
+{ Supports() intrinsic tests                                         }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSupportsTwoArg =
+    'program P;'                                              + #10 +
+    'type'                                                    + #10 +
+    '  IFoo = interface'                                      + #10 +
+    '    procedure DoIt;'                                     + #10 +
+    '  end;'                                                  + #10 +
+    '  TFoo = class(TObject, IFoo)'                           + #10 +
+    '    procedure DoIt;'                                     + #10 +
+    '  end;'                                                  + #10 +
+    'procedure TFoo.DoIt; begin end;'                         + #10 +
+    'var Obj: TObject;'                                       + #10 +
+    '    B: Boolean;'                                         + #10 +
+    'begin'                                                   + #10 +
+    '  Obj := TFoo.Create;'                                   + #10 +
+    '  B := Supports(Obj, IFoo);'                             + #10 +
+    '  Obj.Free'                                              + #10 +
+    'end.';
+
+  SrcSupportsThreeArg =
+    'program P;'                                              + #10 +
+    'type'                                                    + #10 +
+    '  IFoo = interface'                                      + #10 +
+    '    procedure DoIt;'                                     + #10 +
+    '  end;'                                                  + #10 +
+    '  TFoo = class(TObject, IFoo)'                           + #10 +
+    '    procedure DoIt;'                                     + #10 +
+    '  end;'                                                  + #10 +
+    'procedure TFoo.DoIt; begin end;'                         + #10 +
+    'var Obj: TObject;'                                       + #10 +
+    '    F: IFoo;'                                            + #10 +
+    '    B: Boolean;'                                         + #10 +
+    'begin'                                                   + #10 +
+    '  Obj := TFoo.Create;'                                   + #10 +
+    '  B := Supports(Obj, IFoo, F);'                          + #10 +
+    '  Obj.Free'                                              + #10 +
+    'end.';
+
+  SrcSupportsNonIntf =
+    'program P;'                                              + #10 +
+    'type'                                                    + #10 +
+    '  TFoo = class(TObject)'                                 + #10 +
+    '  end;'                                                  + #10 +
+    'var Obj: TObject;'                                       + #10 +
+    '    B: Boolean;'                                         + #10 +
+    'begin'                                                   + #10 +
+    '  Obj := TFoo.Create;'                                   + #10 +
+    '  B := Supports(Obj, TFoo);'                             + #10 +
+    '  Obj.Free'                                              + #10 +
+    'end.';
+
+procedure TInterfaceTests.TestParse_Supports_TwoArg_ProducesSupportsExpr;
+var Prog: TProgram;
+    Assign: TAssignment;
+    SE: TSupportsExpr;
+begin
+  Prog := ParseSrc(SrcSupportsTwoArg);
+  try
+    { assignment: B := Supports(Obj, IFoo) — index 1 (after Obj := TFoo.Create) }
+    Assign := TAssignment(Prog.Block.Stmts[1]);
+    AssertTrue('rhs is TSupportsExpr', Assign.Expr is TSupportsExpr);
+    SE := TSupportsExpr(Assign.Expr);
+    AssertEquals('interface name', 'IFoo', SE.IntfTypeName);
+    AssertEquals('no out-var', '', SE.OutVarName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestParse_Supports_ThreeArg_ProducesSupportsExpr;
+var Prog: TProgram;
+    Assign: TAssignment;
+    SE: TSupportsExpr;
+begin
+  Prog := ParseSrc(SrcSupportsThreeArg);
+  try
+    Assign := TAssignment(Prog.Block.Stmts[1]);
+    AssertTrue('rhs is TSupportsExpr', Assign.Expr is TSupportsExpr);
+    SE := TSupportsExpr(Assign.Expr);
+    AssertEquals('interface name', 'IFoo', SE.IntfTypeName);
+    AssertEquals('out-var name', 'F', SE.OutVarName);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestSemantic_Supports_TwoArg_ResultIsBoolean;
+var Prog: TProgram;
+    Assign: TAssignment;
+    SE: TSupportsExpr;
+begin
+  Prog := AnalyseSrc(SrcSupportsTwoArg);
+  try
+    Assign := TAssignment(Prog.Block.Stmts[1]);
+    SE := TSupportsExpr(Assign.Expr);
+    AssertTrue('ResolvedType set', SE.ResolvedType <> nil);
+    AssertEquals('result is Boolean', 'Boolean', SE.ResolvedType.Name);
+    AssertTrue('ResolvedIntfType set', SE.ResolvedIntfType <> nil);
+    AssertEquals('intf type is IFoo', 'IFoo', SE.ResolvedIntfType.Name);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestSemantic_Supports_ThreeArg_ResultIsBoolean;
+var Prog: TProgram;
+    Assign: TAssignment;
+    SE: TSupportsExpr;
+begin
+  Prog := AnalyseSrc(SrcSupportsThreeArg);
+  try
+    Assign := TAssignment(Prog.Block.Stmts[1]);
+    SE := TSupportsExpr(Assign.Expr);
+    AssertTrue('ResolvedType set', SE.ResolvedType <> nil);
+    AssertEquals('result is Boolean', 'Boolean', SE.ResolvedType.Name);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TInterfaceTests.TestSemantic_Supports_NonInterface_RaisesError;
+begin
+  AnalyseExpectError(SrcSupportsNonIntf);
+end;
+
+procedure TInterfaceTests.TestCodegen_Supports_TwoArg_CallsImplementsInterface;
+var IR: string;
+begin
+  IR := GenIR(SrcSupportsTwoArg);
+  AssertTrue('calls _ImplementsInterface',
+    Pos('call $_ImplementsInterface', IR) > 0);
+  AssertTrue('passes typeinfo_IFoo',
+    Pos('$typeinfo_IFoo', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_Supports_ThreeArg_WritesSlots;
+var IR: string;
+begin
+  IR := GenIR(SrcSupportsThreeArg);
+  AssertTrue('calls _ImplementsInterface',
+    Pos('call $_ImplementsInterface', IR) > 0);
+  { On success the obj slot of the out-var must be written }
+  AssertTrue('stores obj slot',
+    Pos('storel', IR) > 0);
+  { itab slot must be populated via _GetItab }
+  AssertTrue('calls _GetItab',
+    Pos('call $_GetItab', IR) > 0);
 end;
 
 initialization

@@ -1845,6 +1845,57 @@ using rather than just being "FPC with a different name".
 
 ---
 
+== `Supports()` — Runtime Interface Membership Test
+
+Blaise provides `Supports()` as a compiler intrinsic with two overloaded forms:
+
+[source,pascal]
+----
+function Supports(Obj: TObject; IntfType: <type-name>): Boolean;
+function Supports(Obj: TObject; IntfType: <type-name>; out OutVar: IntfType): Boolean;
+----
+
+The second argument is a *type name*, not a runtime value. This is why `Supports` is
+a compiler intrinsic rather than a library function: the parser treats the second
+(and optional third) argument positionally rather than as an expression.
+
+=== Decision
+
+`Supports()` is a compiler intrinsic parsed specially in `ParseFactor` when the
+identifier `Supports` is immediately followed by `(`. The second argument is consumed
+as a bare identifier (interface type name), and the optional third argument is consumed
+as a bare identifier (output variable name).
+
+=== Rationale
+
+* *No GUIDs* — Blaise does not have GUID-based interface identity (Delphi `IID`
+  dispatch). Interface type identity is determined structurally via the `typeinfo_*`
+  symbols emitted by the compiler. Passing a GUID at runtime would require a
+  separate GUID declaration infrastructure.
+
+* *Intrinsic vs. library function* — A library `Supports(Obj, IFoo)` would require
+  `IFoo` to be a runtime value, which it is not; it is a compile-time type name.
+  Making it an intrinsic keeps the call site idiomatic without requiring special
+  "type value" syntax.
+
+* *Two forms* — The 2-arg form is a pure Boolean test: it calls the RTL
+  `_ImplementsInterface(obj, typeinfo_IFoo)`. The 3-arg form additionally obtains the
+  correct `itab` via `_GetItab` and writes both the obj and itab pointers into the
+  output variable's fat-pointer slots under full ARC (retain new, release old).
+
+* *Delphi compatibility at the call site* — Delphi's `Supports` is a library function
+  in `SysUtils` with GUID overloads. Blaise's form is syntactically identical for the
+  common use-cases (`Supports(X, IFoo)` and `Supports(X, IFoo, Ref)`) even though the
+  underlying mechanism differs.
+
+=== Alternatives Rejected
+
+* *`is` operator extended to assignment* — Considered `if (Obj is IFoo) := Ref then`
+  syntax, rejected as non-standard and confusing.
+
+* *Explicit `QueryInterface` method* — Requires the programmer to manage typeinfo
+  pointers manually; the intrinsic is safer and more ergonomic.
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.

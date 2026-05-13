@@ -2682,6 +2682,7 @@ var
   FldNode:    TFieldAccessExpr;
   MCallNode:  TMethodCallExpr;
   FCallNode:  TFuncCallExpr;
+  SuppNode:   TSupportsExpr;
   DerefNode:  TDerefExpr;
   AddrNode:   TAddrOfExpr;
   NotNode:    TNotExpr;
@@ -2794,7 +2795,27 @@ begin
               'Expected ''.'' or ''('' after generic type arguments at line %d col %d in %s',
               [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
         end;
-        if Check(tkDot) then
+        { Supports(Obj, IFoo) or Supports(Obj, IFoo, OutVar) — compiler intrinsic }
+        if SameText(Name, 'Supports') and Check(tkLParen) then
+        begin
+          SuppNode          := TSupportsExpr.Create;
+          SuppNode.Line     := Line;
+          SuppNode.Col      := Col;
+          Advance;  { consume '(' }
+          SuppNode.Obj      := ParseExpr;
+          Expect(tkComma);
+          SuppNode.IntfTypeName := FCurrent.Value;
+          Expect(tkIdent);
+          if Check(tkComma) then
+          begin
+            Advance;  { consume ',' }
+            SuppNode.OutVarName := FCurrent.Value;
+            Expect(tkIdent);
+          end;
+          Expect(tkRParen);
+          Result := SuppNode;
+        end
+        else if Check(tkDot) then
         begin
           Advance;
           if not Check(tkIdent) then

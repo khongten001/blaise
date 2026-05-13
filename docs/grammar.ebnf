@@ -614,6 +614,7 @@ Factor
     | NIL
     | ArrayLiteral
     | AddrOf
+    | "Supports" LPAREN Expr COMMA IDENT [ COMMA IDENT ] RPAREN  (* compiler intrinsic *)
     | IDENT DOT IDENT [ LBRACKET Expr RBRACKET ]      (* indexed property read *)
                [ LPAREN [ ArgList ] RPAREN ]           (* field/constructor/method *)
     | IDENT LESS TypeArgList GREATER LPAREN [ ArgList ] RPAREN   (* generic func call *)
@@ -662,6 +663,15 @@ ArrayLiteral
  *   FreeMem  ( Pointer )    — calls libc free()
  *
  * Built-in functions (recognised by the code generator):
+ *
+ *   Supports  ( Obj, IntfType ) : Boolean
+ *             — returns True if Obj's class implements IntfType.
+ *               Obj must be a class or interface reference;
+ *               IntfType is a type name (not a runtime value).
+ *   Supports  ( Obj, IntfType, out OutVar ) : Boolean
+ *             — same as above; on success also assigns Obj and its
+ *               itab for IntfType to OutVar's fat-pointer slots (ARC).
+ *               OutVar must be a variable of an interface type.
  *
  *   GetMem    ( Integer ) : Pointer    — calls libc malloc()
  *   ReallocMem( Pointer, Integer ) : Pointer  — calls libc realloc()

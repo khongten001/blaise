@@ -116,6 +116,7 @@ type
     function  AnalyseFieldAccess(AAccess: TFieldAccessExpr): TTypeDesc;
     function  AnalyseIsExpr(AExpr: TIsExpr): TTypeDesc;
     function  AnalyseAsExpr(AExpr: TAsExpr): TTypeDesc;
+    function  AnalyseSupportsExpr(AExpr: TSupportsExpr): TTypeDesc;
     function  AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
     procedure ResolveProceduralTypeDef(ATD: TTypeDecl);
@@ -5403,6 +5404,8 @@ begin
     Result := AnalyseIsExpr(TIsExpr(AExpr))
   else if AExpr is TAsExpr then
     Result := AnalyseAsExpr(TAsExpr(AExpr))
+  else if AExpr is TSupportsExpr then
+    Result := AnalyseSupportsExpr(TSupportsExpr(AExpr))
   else if AExpr is TDerefExpr then
     Result := AnalyseDerefExpr(TDerefExpr(AExpr))
   else if AExpr is TAddrOfExpr then
@@ -6047,6 +6050,44 @@ begin
       AExpr.Line, AExpr.Col);
 
   Result := TargetType;
+end;
+
+function TSemanticAnalyser.AnalyseSupportsExpr(AExpr: TSupportsExpr): TTypeDesc;
+var
+  ObjType:   TTypeDesc;
+  IntfType:  TTypeDesc;
+  OutSym:    TSymbol;
+begin
+  ObjType := AnalyseExpr(AExpr.Obj);
+  if not (ObjType.Kind in [tyClass, tyInterface, tyPointer]) then
+    SemanticError(
+      Format('Supports() requires a class or interface instance as first argument, got ''%s''',
+        [ObjType.Name]),
+      AExpr.Line, AExpr.Col);
+
+  IntfType := FTable.FindType(AExpr.IntfTypeName);
+  if (IntfType = nil) or (IntfType.Kind <> tyInterface) then
+    SemanticError(
+      Format('Supports() second argument must be an interface type name, got ''%s''',
+        [AExpr.IntfTypeName]),
+      AExpr.Line, AExpr.Col);
+
+  AExpr.ResolvedIntfType := IntfType;
+
+  if AExpr.OutVarName <> '' then
+  begin
+    OutSym := FTable.Lookup(AExpr.OutVarName);
+    if (OutSym = nil) or (OutSym.TypeDesc = nil) or
+       (OutSym.TypeDesc.Kind <> tyInterface) then
+      SemanticError(
+        Format('Supports() third argument must be an interface-typed variable, got ''%s''',
+          [AExpr.OutVarName]),
+        AExpr.Line, AExpr.Col);
+    AExpr.OutVarIsGlobal := OutSym.IsGlobal;
+  end;
+
+  Result := FTable.TypeBoolean;
+  AExpr.ResolvedType := Result;
 end;
 
 function TSemanticAnalyser.AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;

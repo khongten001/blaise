@@ -151,6 +151,7 @@ type
     function  EmitExpr(AExpr: TASTExpr): string;
     function  EmitIsExpr(AExpr: TIsExpr): string;
     function  EmitAsExpr(AExpr: TAsExpr): string;
+    function  EmitSupportsExpr(AExpr: TSupportsExpr): string;
     function  EmitStringSubscriptExpr(AExpr: TStringSubscriptExpr): string;
     function  EmitAddrOfExpr(AExpr: TAddrOfExpr): string;
     function  EmitArrayLiteralExpr(AExpr: TArrayLiteralExpr): string;
@@ -758,6 +759,8 @@ begin
     CollectAddressTakenExpr(TIsExpr(AExpr).Obj, ASet)
   else if AExpr is TAsExpr then
     CollectAddressTakenExpr(TAsExpr(AExpr).Obj, ASet)
+  else if AExpr is TSupportsExpr then
+    CollectAddressTakenExpr(TSupportsExpr(AExpr).Obj, ASet)
   else if AExpr is TArrayLiteralExpr then
     for I := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
       CollectAddressTakenExpr(TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[I]), ASet);
@@ -6954,6 +6957,8 @@ begin
     Result := EmitIsExpr(TIsExpr(AExpr))
   else if AExpr is TAsExpr then
     Result := EmitAsExpr(TAsExpr(AExpr))
+  else if AExpr is TSupportsExpr then
+    Result := EmitSupportsExpr(TSupportsExpr(AExpr))
   else
     raise ECodeGenError.Create('Unknown expression node type');
 end;
@@ -7010,6 +7015,65 @@ begin
   EmitLine('@' + LblEnd);
   ResTemp := AllocTemp;
   EmitLine(Format('  %s =l loadl %s', [ResTemp, SlotTemp]));
+  Result := ResTemp;
+end;
+
+function TCodeGenQBE.EmitSupportsExpr(AExpr: TSupportsExpr): string;
+var
+  ObjTemp:   string;
+  OkTemp:    string;
+  OldTemp:   string;
+  ResSlot:   string;
+  ResTemp:   string;
+  ItabTemp:  string;
+  LblYes:    string;
+  LblNo:     string;
+  LblEnd:    string;
+  OutRef:    string;
+begin
+  ObjTemp := EmitExpr(AExpr.Obj);
+  OkTemp  := AllocTemp;
+  EmitLine(Format('  %s =w call $_ImplementsInterface(l %s, l $typeinfo_%s)',
+    [OkTemp, ObjTemp, AExpr.IntfTypeName]));
+
+  if AExpr.OutVarName = '' then
+  begin
+    { 2-arg form — just return the Boolean result }
+    Result := OkTemp;
+    Exit;
+  end;
+
+  { 3-arg form — on success populate the out-var's fat pointer }
+  ResSlot := AllocTemp;
+  EmitLine(Format('  %s =l alloc4 1', [ResSlot]));
+  LblYes := AllocLabel('supports_yes');
+  LblNo  := AllocLabel('supports_no');
+  LblEnd := AllocLabel('supports_end');
+
+  EmitLine(Format('  jnz %s, @%s, @%s', [OkTemp, LblYes, LblNo]));
+
+  EmitLine('@' + LblYes);
+  OutRef   := VarRef(AExpr.OutVarName, AExpr.OutVarIsGlobal);
+  ItabTemp := AllocTemp;
+  EmitLine(Format('  %s =l call $_GetItab(l %s, l $typeinfo_%s)',
+    [ItabTemp, ObjTemp, AExpr.IntfTypeName]));
+  { ARC: retain new obj, release old obj slot of out-var }
+  OldTemp := AllocTemp;
+  EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, OutRef]));
+  EmitLine(Format('  call $_ClassAddRef(l %s)',  [ObjTemp]));
+  EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+  EmitLine(Format('  storel %s, %s_obj',  [ObjTemp, OutRef]));
+  EmitLine(Format('  storel %s, %s_itab', [ItabTemp, OutRef]));
+  EmitLine(Format('  storew 1, %s', [ResSlot]));
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  EmitLine('@' + LblNo);
+  EmitLine(Format('  storew 0, %s', [ResSlot]));
+  EmitLine(Format('  jmp @%s', [LblEnd]));
+
+  EmitLine('@' + LblEnd);
+  ResTemp := AllocTemp;
+  EmitLine(Format('  %s =w loadw %s', [ResTemp, ResSlot]));
   Result := ResTemp;
 end;
 

@@ -295,6 +295,8 @@ type
     procedure TestRun_Interface_Dispatch_CallsImpl;
     procedure TestRun_Interface_ARC_NoLeak;
     procedure TestRun_Interface_Is_As_Roundtrip;
+    procedure TestRun_Supports_TwoArg_BooleanResult;
+    procedure TestRun_Supports_ThreeArg_AssignsAndCalls;
   end;
 
 implementation
@@ -4365,6 +4367,72 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcIntfIsAs, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('printing', 'printing' + LE, Output);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Supports() e2e tests                                               }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSupportsTwoArgRun =
+    'program P;'                                              + #10 +
+    'type'                                                    + #10 +
+    '  IGreeter = interface'                                  + #10 +
+    '    procedure Greet;'                                    + #10 +
+    '  end;'                                                  + #10 +
+    '  THello = class(TObject, IGreeter)'                     + #10 +
+    '    procedure Greet;'                                    + #10 +
+    '  end;'                                                  + #10 +
+    'procedure THello.Greet;'                                 + #10 +
+    'begin WriteLn(''hello'') end;'                           + #10 +
+    'var Obj: TObject;'                                       + #10 +
+    'begin'                                                   + #10 +
+    '  Obj := THello.Create;'                                 + #10 +
+    '  if Supports(Obj, IGreeter) then'                       + #10 +
+    '    WriteLn(''yes'')'                                    + #10 +
+    '  else'                                                  + #10 +
+    '    WriteLn(''no'');'                                    + #10 +
+    '  Obj.Free'                                              + #10 +
+    'end.';
+
+  SrcSupportsThreeArgRun =
+    'program P;'                                              + #10 +
+    'type'                                                    + #10 +
+    '  IGreeter = interface'                                  + #10 +
+    '    procedure Greet;'                                    + #10 +
+    '  end;'                                                  + #10 +
+    '  THello = class(TObject, IGreeter)'                     + #10 +
+    '    procedure Greet;'                                    + #10 +
+    '  end;'                                                  + #10 +
+    'procedure THello.Greet;'                                 + #10 +
+    'begin WriteLn(''hello'') end;'                           + #10 +
+    'var Obj: TObject;'                                       + #10 +
+    '    G: IGreeter;'                                        + #10 +
+    'begin'                                                   + #10 +
+    '  Obj := THello.Create;'                                 + #10 +
+    '  if Supports(Obj, IGreeter, G) then'                    + #10 +
+    '    G.Greet'                                             + #10 +
+    '  else'                                                  + #10 +
+    '    WriteLn(''no'');'                                    + #10 +
+    '  Obj.Free'                                              + #10 +
+    'end.';
+
+procedure TE2ETests.TestRun_Supports_TwoArg_BooleanResult;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSupportsTwoArgRun, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('yes', 'yes' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_Supports_ThreeArg_AssignsAndCalls;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSupportsThreeArgRun, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('hello', 'hello' + LE, Output);
 end;
 
 initialization

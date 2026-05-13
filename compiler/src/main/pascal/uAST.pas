@@ -127,6 +127,18 @@ type
     destructor Destroy; override;
   end;
 
+  { Supports(Obj, IFoo) — Boolean interface-membership test.
+    Supports(Obj, IFoo, Ref) — test + assign fat pointer to Ref on success. }
+  TSupportsExpr = class(TASTExpr)
+  public
+    Obj:                TASTExpr;  { owned — object being tested }
+    IntfTypeName:       string;    { interface type name (second arg) }
+    OutVarName:         string;    { variable to receive fat pointer (third arg; empty = 2-arg form) }
+    ResolvedIntfType:   TTypeDesc; { set by uSemantic — must be tyInterface }
+    OutVarIsGlobal:     Boolean;   { set by uSemantic }
+    destructor Destroy; override;
+  end;
+
   TBinaryOp = (boAdd, boSub, boMul, boDiv, boMod, boEQ, boNE, boLT, boGT, boLE, boGE,
                boAnd, boOr, boXor, boIn, boShl, boShr);
 
@@ -864,6 +876,14 @@ end;
 { TAsExpr }
 
 destructor TAsExpr.Destroy;
+begin
+  Obj.Free;
+  inherited Destroy;
+end;
+
+{ TSupportsExpr }
+
+destructor TSupportsExpr.Destroy;
 begin
   Obj.Free;
   inherited Destroy;
