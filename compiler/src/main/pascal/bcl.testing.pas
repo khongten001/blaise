@@ -38,10 +38,8 @@ interface
 uses
   Classes, SysUtils;
 
-{$IFNDEF FPC}
 const
   LineEnding = #10;
-{$ENDIF}
 
 type
   { TRunMethod — type of a parameter-less method on any TObject descendant.
