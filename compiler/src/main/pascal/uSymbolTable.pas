@@ -1274,10 +1274,13 @@ begin
   Sym := TSymbol.Create('ChangeFileExt',                skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('ExtractFileName',              skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('ExtractFilePath',              skFunction, FTypeString); Define(Sym);
+  Sym := TSymbol.Create('ExtractFileExt',               skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('IncludeTrailingPathDelimiter', skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('ExtractFileDir',               skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('ExcludeTrailingPathDelimiter', skFunction, FTypeString); Define(Sym);
   Sym := TSymbol.Create('RemoveDir',                    skProcedure, nil);        Define(Sym);
+  Sym := TSymbol.Create('RenameFile',                   skFunction, FTypeBoolean); Define(Sym);
+  Sym := TSymbol.Create('SetCurrentDir',                skFunction, FTypeBoolean); Define(Sym);
   { Process management (used by Process.pas RTL) }
   Sym := TSymbol.Create('ProcessCreate',     skFunction,  FTypePointer); Define(Sym);
   Sym := TSymbol.Create('ProcessSetExe',     skProcedure, nil);          Define(Sym);

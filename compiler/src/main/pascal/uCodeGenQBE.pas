@@ -8,8 +8,6 @@
 
 unit uCodeGenQBE;
 
-{$mode objfpc}{$H+}
-
 { QBE IR emitter for Blaise.
   WriteLn/Write are built-ins emitted as calls to _SysWriteStr/_SysWriteInt/
   _SysWriteInt64/_SysWriteNewline (blaise_sys.pas / blaise_sys.c).
@@ -23,7 +21,6 @@ uses
 // Raw byte copy used by TIRBuffer — maps to libc memcpy under both compilers.
 // FPC: {$linklib c} ensures libc is linked; Blaise links blaise_rtl.a which
 // already pulls in libc.
-{$IFDEF FPC}{$linklib c}{$ENDIF}
 procedure _ir_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
 
 type
@@ -5677,6 +5674,15 @@ begin
         Exit;
       end;
 
+      if SameText(FC.Name,'ExtractFileExt') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_ExtractFileExt(l %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
       if SameText(FC.Name,'ExcludeTrailingPathDelimiter') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
@@ -5691,6 +5697,25 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_IncludeTrailingPathDelimiter(l %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name,'RenameFile') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =w call $_RenameFile(l %s, l %s)',
+          [T, L, EmitExpr(TASTExpr(FC.Args.Items[1]))]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name,'SetCurrentDir') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =w call $_SetCurrentDir(l %s)', [T, L]));
         Result := T;
         Exit;
       end;

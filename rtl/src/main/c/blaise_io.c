@@ -434,3 +434,46 @@ void* _IncludeTrailingPathDelimiter(void* path) {
     ((char*)r)[len] = '/';
     return r;
 }
+
+/* ------------------------------------------------------------------ */
+/* _RenameFile(OldPath, NewPath) : Boolean (0 or 1)                    */
+/* Renames (moves) a file.  Returns 1 on success, 0 on failure.        */
+/* ------------------------------------------------------------------ */
+
+int32_t _RenameFile(void* oldpath, void* newpath) {
+    const char* op = io_str_data(oldpath);
+    const char* np = io_str_data(newpath);
+    return (rename(op, np) == 0) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* _SetCurrentDir(Path) : Boolean (0 or 1)                             */
+/* Changes the current working directory.  Returns 1 on success.       */
+/* ------------------------------------------------------------------ */
+
+int32_t _SetCurrentDir(void* path) {
+    const char* p = io_str_data(path);
+    return (chdir(p) == 0) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* _ExtractFileExt(path) : string                                       */
+/* Returns the file extension of path including the leading dot.        */
+/* Returns an empty string when path has no extension, or when the      */
+/* last dot appears before the last directory separator.                */
+/* ------------------------------------------------------------------ */
+
+void* _ExtractFileExt(void* path) {
+    const char* p = io_str_data(path);
+    const char* last_dot = NULL;
+    const char* last_sep = NULL;
+    const char* c = p;
+    while (*c) {
+        if (*c == '/') last_sep = c;
+        if (*c == '.') last_dot = c;
+        c++;
+    }
+    if (last_dot == NULL || (last_sep != NULL && last_dot < last_sep))
+        return io_str_from_cstr("");
+    return io_str_from_cstr(last_dot);
+}

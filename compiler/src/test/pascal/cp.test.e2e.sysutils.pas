@@ -38,6 +38,14 @@ type
     procedure TestRun_Sleep_DoesNotCrash;
     procedure TestRun_ProcessBuiltins_CapturesOutput;
     procedure TestRun_ProcessBuiltins_ExitCode;
+    { New tests for Step 5 builtins }
+    procedure TestRun_RenameFile_Works;
+    procedure TestRun_RenameFile_MissingSource_ReturnsFalse;
+    procedure TestRun_SetCurrentDir_ChangesDir;
+    procedure TestRun_ExtractFileExt_ReturnsExt;
+    procedure TestRun_BoolToStr_TrueAndFalse;
+    procedure TestRun_SysUtils_LineEndingConst;
+    procedure TestRun_GetCurrentDir_ReturnsNonEmpty;
   end;
 
 implementation
@@ -468,6 +476,202 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcProcessBuiltinsExitCode, Output, RCode));
   AssertEquals('program exit code 0', 0, RCode);
   AssertEquals('true exits with 0', '0', Trim(Output));
+end;
+
+const
+  SrcRenameFileWorks =
+    '''
+        program P;
+        var OldName, NewName: string;
+        begin
+          OldName := ParamStr(1);
+          NewName := ParamStr(2);
+          WriteFile(OldName, 'rename-me');
+          WriteLn(RenameFile(OldName, NewName));
+          WriteLn(FileExists(OldName));
+          WriteLn(FileExists(NewName))
+        end.
+        ''';
+
+  SrcRenameFileMissing =
+    '''
+        program P;
+        begin
+          WriteLn(RenameFile('__no_such_source_xyz__', '__no_such_dest_xyz__'))
+        end.
+        ''';
+
+  SrcSetCurrentDir =
+    '''
+        program P;
+        var D: string;
+        begin
+          WriteLn(SetCurrentDir('/tmp'));
+          D := GetCurrentDir;
+          WriteLn(Length(D) > 0)
+        end.
+        ''';
+
+  SrcExtractFileExt =
+    '''
+        program P;
+        begin
+          WriteLn(ExtractFileExt('/foo/bar.txt'));
+          WriteLn(ExtractFileExt('noext'));
+          WriteLn(ExtractFileExt('/usr/bin/ls.sh'))
+        end.
+        ''';
+
+  SrcBoolToStr =
+    '''
+        program P;
+        uses SysUtils;
+        begin
+          WriteLn(BoolToStr(True));
+          WriteLn(BoolToStr(False))
+        end.
+        ''';
+
+  SrcLineEndingConst =
+    '''
+        program P;
+        uses SysUtils;
+        begin
+          WriteLn(sLineBreak = #10);
+          WriteLn(LineEnding = #10)
+        end.
+        ''';
+
+  SrcGetCurrentDir =
+    '''
+        program P;
+        begin
+          WriteLn(Length(GetCurrentDir) > 0)
+        end.
+        ''';
+
+procedure TE2ESysUtilsTests.TestRun_RenameFile_Works;
+var
+  Output: string;
+  RCode: Integer;
+  OldFile, NewFile: string;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  OldFile := GetTempFileName('', 'blaise_rename_old');
+  NewFile := OldFile + '.renamed';
+  try
+    AssertTrue('compile+run',
+      CompileAndRun(SrcRenameFileWorks, Output, RCode, [OldFile, NewFile]));
+    AssertEquals('exit code 0', 0, RCode);
+    Lines := TStringList.Create;
+    try
+      Lines.Text := Trim(Output);
+      AssertEquals('RenameFile returns 1', '1', Lines.Strings[0]);
+      AssertEquals('old name gone (0)', '0', Lines.Strings[1]);
+      AssertEquals('new name exists (1)', '1', Lines.Strings[2]);
+    finally
+      Lines.Free;
+    end;
+  finally
+    if FileExists(OldFile) then DeleteFile(OldFile);
+    if FileExists(NewFile) then DeleteFile(NewFile);
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_RenameFile_MissingSource_ReturnsFalse;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcRenameFileMissing, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('RenameFile missing = 0', '0', Trim(Output));
+end;
+
+procedure TE2ESysUtilsTests.TestRun_SetCurrentDir_ChangesDir;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSetCurrentDir, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('SetCurrentDir /tmp returns 1', '1', Lines.Strings[0]);
+    AssertEquals('GetCurrentDir non-empty', '1', Lines.Strings[1]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_ExtractFileExt_ReturnsExt;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcExtractFileExt, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('/foo/bar.txt -> .txt', '.txt', Lines.Strings[0]);
+    AssertEquals('noext -> empty',       '',     Lines.Strings[1]);
+    AssertEquals('/usr/bin/ls.sh -> .sh', '.sh', Lines.Strings[2]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_BoolToStr_TrueAndFalse;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcBoolToStr, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('BoolToStr(True)',  'True',  Lines.Strings[0]);
+    AssertEquals('BoolToStr(False)', 'False', Lines.Strings[1]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_SysUtils_LineEndingConst;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcLineEndingConst, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('sLineBreak = #10', '1', Lines.Strings[0]);
+    AssertEquals('LineEnding = #10', '1', Lines.Strings[1]);
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_GetCurrentDir_ReturnsNonEmpty;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcGetCurrentDir, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('GetCurrentDir non-empty', '1', Trim(Output));
 end;
 
 initialization

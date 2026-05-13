@@ -5027,6 +5027,7 @@ begin
   if SameText(AExpr.Name, 'ExtractFileName') or
      SameText(AExpr.Name, 'ExtractFilePath') or
      SameText(AExpr.Name, 'ExtractFileDir') or
+     SameText(AExpr.Name, 'ExtractFileExt') or
      SameText(AExpr.Name, 'IncludeTrailingPathDelimiter') or
      SameText(AExpr.Name, 'ExcludeTrailingPathDelimiter') then
   begin
@@ -5035,6 +5036,27 @@ begin
                     AExpr.Line, AExpr.Col);
     AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'RenameFile') then
+  begin
+    if AExpr.Args.Count <> 2 then
+      SemanticError('RenameFile requires exactly 2 arguments', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Result := FTable.TypeBoolean;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'SetCurrentDir') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('SetCurrentDir requires exactly 1 argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
   end;
