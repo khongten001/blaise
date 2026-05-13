@@ -65,6 +65,19 @@ type
     procedure TestCodegen_ArrayLiteral_StoresElements;
     procedure TestCodegen_ArrayLiteral_HighIndexIsOne;
     procedure TestCodegen_ArrayLiteral_SingleElem_HighZero;
+
+    { ------------------------------------------------------------------ }
+    { Length() on open-array and static-array parameters                  }
+    { ------------------------------------------------------------------ }
+    { Length(A) on an open-array param must compile (was rejected with
+      "Length argument must be a string") and emit High+1 IR. }
+    procedure TestSemantic_Length_OpenArray_Accepted;
+    { Length(A) on a static-array param emits a compile-time constant. }
+    procedure TestSemantic_Length_StaticArray_Accepted;
+    { IR: Length(open-array) loads the _high slot and adds 1. }
+    procedure TestCodegen_Length_OpenArray_EmitsHighPlusOne;
+    { IR: Length(static-array) emits a constant equal to the element count. }
+    procedure TestCodegen_Length_StaticArray_EmitsConstant;
   end;
 
 implementation
@@ -180,6 +193,29 @@ const
         begin end;
         begin
           Print(['only'])
+        end.
+        ''';
+
+  SrcLengthOpenArray =
+    '''
+        program OA;
+        procedure Show(const A: array of string);
+        var N: Integer;
+        begin
+          N := Length(A)
+        end;
+        begin
+          Show(['x', 'y', 'z'])
+        end.
+        ''';
+
+  SrcLengthStaticArray =
+    '''
+        program OA;
+        var A: array[1..5] of Integer;
+        var N: Integer;
+        begin
+          N := Length(A)
         end.
         ''';
 
@@ -463,6 +499,39 @@ begin
   IR := GenIR(SrcLiteralSingle);
   { Single-element literal → high index = 0 }
   AssertTrue('high index 0 in call', Pos('l 0', IR) > 0);
+end;
+
+procedure TOpenArrayTests.TestSemantic_Length_OpenArray_Accepted;
+var P: TProgram;
+begin
+  P := AnalyseSrc(SrcLengthOpenArray);
+  P.Free;
+  AssertTrue('no error raised', True);
+end;
+
+procedure TOpenArrayTests.TestSemantic_Length_StaticArray_Accepted;
+var P: TProgram;
+begin
+  P := AnalyseSrc(SrcLengthStaticArray);
+  P.Free;
+  AssertTrue('no error raised', True);
+end;
+
+procedure TOpenArrayTests.TestCodegen_Length_OpenArray_EmitsHighPlusOne;
+var IR: string;
+begin
+  IR := GenIR(SrcLengthOpenArray);
+  { Length(A) = High(A) + 1: load _high slot then add 1 }
+  AssertTrue('loads _high slot', Pos('loadl %_var_A_high', IR) > 0);
+  AssertTrue('adds 1 for length', Pos('add', IR) > 0);
+end;
+
+procedure TOpenArrayTests.TestCodegen_Length_StaticArray_EmitsConstant;
+var IR: string;
+begin
+  IR := GenIR(SrcLengthStaticArray);
+  { array[1..5] has 5 elements — Length emits the constant 5 }
+  AssertTrue('constant 5 emitted', Pos('copy 5', IR) > 0);
 end;
 
 initialization

@@ -258,6 +258,7 @@ type
     { Open arrays }
     procedure TestRun_OpenArray_Sum;
     procedure TestRun_OpenArray_HighLow;
+    procedure TestRun_OpenArray_Length;
 
     { var / const params }
     procedure TestRun_VarParam_SwapIntegers;
@@ -3811,6 +3812,18 @@ const
     '  PrintBounds([10, 20, 30])'                          + #10 +
     'end.';
 
+  SrcOpenArrayLength =
+    '''
+        program P;
+        function Count(const A: array of Integer): Integer;
+        begin
+          Result := Length(A)
+        end;
+        begin
+          WriteLn(Count([10, 20, 30]))
+        end.
+        ''';
+
 procedure TE2ETests.TestRun_OpenArray_Sum;
 var Output: string; RCode: Integer;
 begin
@@ -3827,6 +3840,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcOpenArrayHighLow, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('low=0 high=2', '0' + LE + '2' + LE, Output);
+end;
+
+procedure TE2ETests.TestRun_OpenArray_Length;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcOpenArrayLength, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Length([10,20,30]) = 3', '3' + LE, Output);
 end;
 
 { ------------------------------------------------------------------ }

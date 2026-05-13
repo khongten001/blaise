@@ -4967,12 +4967,31 @@ begin
         Exit;
       end;
 
-      { Built-in string operations — delegate to RTL functions }
+      { Built-in string/array length }
       if SameText(FC.Name,'Length') then
       begin
-        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
-        EmitLine(Format('  %s =w call $_StringLength(l %s)', [T, L]));
+        case TASTExpr(FC.Args.Items[0]).ResolvedType.Kind of
+          tyStaticArray:
+          begin
+            { Compile-time constant: HighBound - LowBound + 1 }
+            EmitLine(Format('  %s =w copy %d', [T,
+              TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).HighBound -
+              TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).LowBound + 1]));
+          end;
+          tyOpenArray:
+          begin
+            { Length = High + 1: load the _high slot then add 1 }
+            L := TIdentExpr(FC.Args.Items[0]).Name;
+            R := AllocTemp;
+            EmitLine(Format('  %s =l loadl %%_var_%s_high', [R, L]));
+            EmitLine(Format('  %s =w add %s, 1', [T, R]));
+          end;
+        else
+          { tyString: delegate to RTL }
+          L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+          EmitLine(Format('  %s =w call $_StringLength(l %s)', [T, L]));
+        end;
         Result := T;
         Exit;
       end;

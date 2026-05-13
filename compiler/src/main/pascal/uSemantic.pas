@@ -4509,8 +4509,8 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Length requires exactly one argument', AExpr.Line, AExpr.Col);
     ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    if ArgType.Kind <> tyString then
-      SemanticError('Length argument must be a string', AExpr.Line, AExpr.Col);
+    if not (ArgType.Kind in [tyString, tyOpenArray, tyStaticArray]) then
+      SemanticError('Length argument must be a string or array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
