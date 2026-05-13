@@ -79,6 +79,11 @@ type
 
     { virtual + overload base; override + overload descendant }
     procedure TestCodegen_VirtualOverload_DistinctVTableSlots;
+
+    { Overload resolution in implicit-self expression context: a 3-arg call
+      to a method that has a 3-param and a 4-param (open-array) overload
+      must resolve to the 3-param overload, not fail with arity mismatch. }
+    procedure TestSemantic_ImplicitSelf_ExprCtx_PicksCorrectOverload;
   end;
 
 implementation
@@ -315,6 +320,38 @@ const
         begin end.
         ''';
 
+  { Method overload where one variant takes an open-array 4th param and
+    another has only 3 params.  A 3-arg call in expression context (result
+    assigned) must resolve to the 3-param overload, not the 4-param one. }
+  SrcImplicitSelfOverloadExprCtx =
+    '''
+        program P;
+        type
+          THelper = class
+            function Run(const S: string; out R: string; out N: Integer;
+                         const Args: array of string): Boolean; overload;
+            function Run(const S: string; out R: string;
+                         out N: Integer): Boolean; overload;
+          end;
+          function THelper.Run(const S: string; out R: string; out N: Integer;
+                               const Args: array of string): Boolean;
+          begin R := 'with-args'; N := 1; Result := True; end;
+          function THelper.Run(const S: string; out R: string;
+                               out N: Integer): Boolean;
+          begin R := 'no-args'; N := 0; Result := True; end;
+          type TOwner = class
+            FHelper: THelper;
+            procedure DoIt;
+          end;
+          procedure TOwner.DoIt;
+          var S: string; N: Integer; Ok: Boolean;
+          begin
+            { implicit-self expression context — was broken: picked 4-param overload }
+            Ok := FHelper.Run('x', S, N);
+          end;
+        begin end.
+        ''';
+
   { Two same-arity overloads — Double + Single — both reachable from an
     integer literal only by widening, with equal score → ambiguous. }
   SrcAmbiguousOverload =
@@ -521,6 +558,19 @@ begin
     Pos('$TChild_Greet_D_i', IR) > 0);
   AssertTrue('TChild string override',
     Pos('$TChild_Greet_D_S', IR) > 0);
+end;
+
+procedure TOverloadTests.TestSemantic_ImplicitSelf_ExprCtx_PicksCorrectOverload;
+var
+  IR: string;
+begin
+  { Must compile without error — previously raised
+    "Method expects 4 argument(s) but got 3" }
+  IR := GenIR(SrcImplicitSelfOverloadExprCtx);
+  { The 3-param overload (no-args) must be called, not the 4-param one.
+    Mangled name: Run(const S; out R: string; out N: Integer) }
+  AssertTrue('calls 3-param overload',
+    Pos('call $THelper_Run_D_S_V_S_V_i(', IR) > 0);
 end;
 
 initialization

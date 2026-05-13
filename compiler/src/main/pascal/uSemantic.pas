@@ -5112,25 +5112,29 @@ begin
         AExpr.ResolvedType := Result;
         Exit;
       end;
-      RT    := TRecordTypeDesc(ObjType);
-      MDecl := FindMethodDecl(RT.Name, AExpr.Name);
+      RT := TRecordTypeDesc(ObjType);
+      { Analyse args first so overload resolution can score by type. }
+      for I := 0 to AExpr.Args.Count - 1 do
+        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
+        AExpr.Line, AExpr.Col);
       if MDecl = nil then
         SemanticError(
           Format('Class ''%s'' has no method ''%s''', [RT.Name, AExpr.Name]),
           AExpr.Line, AExpr.Col);
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
-      if AExpr.Args.Count <> MDecl.Params.Count then
-        SemanticError(
-          Format('Method ''%s.%s'' expects %d argument(s) but got %d',
-            [RT.Name, AExpr.Name, MDecl.Params.Count, AExpr.Args.Count]),
-          AExpr.Line, AExpr.Col);
+      { Validate var/out-param arguments (type compatibility scored by
+        overload resolver; only lvalue constraint needs rechecking). }
       for I := 0 to AExpr.Args.Count - 1 do
       begin
-        ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
-        Par     := TMethodParam(MDecl.Params.Items[I]);
-        CheckTypesMatch(Par.ResolvedType, ArgType,
-          Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
-          AExpr.Line, AExpr.Col);
+        Par := TMethodParam(MDecl.Params.Items[I]);
+        if Par.IsVarParam then
+        begin
+          ArgType := TASTExpr(AExpr.Args.Items[I]).ResolvedType;
+          CheckTypesMatch(Par.ResolvedType, ArgType,
+            Format('var argument %d of ''%s''', [I + 1, AExpr.Name]),
+            AExpr.Line, AExpr.Col);
+        end;
       end;
       AExpr.ResolvedClassType := RT;
       AExpr.ResolvedMethod    := MDecl;

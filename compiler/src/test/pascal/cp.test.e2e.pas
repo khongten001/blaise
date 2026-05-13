@@ -42,10 +42,10 @@ type
     function  CompileAndRun(const ASrc:       string;
                             out   AStdout:    string;
                             out   AExitCode:  Integer;
-                            const AExtraArgs: array of string): Boolean;
-    function  CompileAndRunNoArgs(const ASrc:    string;
-                                  out AStdout:   string;
-                                  out AExitCode: Integer): Boolean;
+                            const AExtraArgs: array of string): Boolean; overload;
+    function  CompileAndRun(const ASrc:    string;
+                            out AStdout:   string;
+                            out AExitCode: Integer): Boolean; overload;
     function  RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
     function  ToolchainAvailable: Boolean;
   protected
@@ -508,9 +508,9 @@ begin
   DeleteFile(BinFile);
 end;
 
-function TE2ETests.CompileAndRunNoArgs(const ASrc: string;
-                                       out AStdout: string;
-                                       out AExitCode: Integer): Boolean;
+function TE2ETests.CompileAndRun(const ASrc: string;
+                                 out AStdout: string;
+                                 out AExitCode: Integer): Boolean;
 var
   IR:       string;
   Base:     string;
@@ -701,7 +701,7 @@ begin
     Exit;
   end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcBareTryFinally, Output, RCode));
+    CompileAndRun(SrcBareTryFinally, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout',
     'in_try' + LE + 'in_finally' + LE, Output);
@@ -716,7 +716,7 @@ begin
     Exit;
   end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcPreservesLocals, Output, RCode));
+    CompileAndRun(SrcPreservesLocals, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('locals preserved',
     '11' + LE + '22' + LE + '33' + LE + '66' + LE, Output);
@@ -731,7 +731,7 @@ begin
     Exit;
   end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcNestedTryFinally, Output, RCode));
+    CompileAndRun(SrcNestedTryFinally, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout',
     'inner_try' + LE + 'inner_fin' + LE + 'outer_fin' + LE, Output);
@@ -746,7 +746,7 @@ begin
     Exit;
   end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcVirtualDispatchInTry, Output, RCode));
+    CompileAndRun(SrcVirtualDispatchInTry, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout (virtual -> marked -> 1)', '1' + LE, Output);
 end;
@@ -779,7 +779,7 @@ begin
   end;
 
   AssertTrue('compile+run milestone',
-    CompileAndRunNoArgs(Src, Output, RCode));
+    CompileAndRun(Src, Output, RCode));
   AssertEquals('milestone exit code', 0, RCode);
 
   Expected :=
@@ -1087,7 +1087,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcBoolOps, Output, RCode));
+  AssertTrue(CompileAndRun(SrcBoolOps, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('all three branches fire',
     't1' + LE + 't2' + LE + 't3' + LE, Output);
@@ -1101,7 +1101,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcMultiArg, Output, RCode));
+  AssertTrue(CompileAndRun(SrcMultiArg, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('three values concatenated with trailing newline',
     '123' + LE, Output);
@@ -1115,7 +1115,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcForBreak, Output, RCode));
+  AssertTrue(CompileAndRun(SrcForBreak, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('loop broke at I=5', '5' + LE, Output);
 end;
@@ -1128,7 +1128,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcExitFunc, Output, RCode));
+  AssertTrue(CompileAndRun(SrcExitFunc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('exit early for positive, compute for negative',
     '7' + LE + '9' + LE, Output);
@@ -1142,7 +1142,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcChainedRecord, Output, RCode));
+  AssertTrue(CompileAndRun(SrcChainedRecord, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('chained read of zero-initialised field', '0' + LE, Output);
 end;
@@ -1156,7 +1156,7 @@ begin
     Exit;
   end;
   { Sanity: program runs and prints 42 }
-  AssertTrue(CompileAndRunNoArgs(SrcClassArcNoFree, Output, RCode));
+  AssertTrue(CompileAndRun(SrcClassArcNoFree, Output, RCode));
   AssertEquals('exit 0',       0,         RCode);
   AssertEquals('field reread', '42' + LE, Output);
   { Leak-freedom: under valgrind, every class instance must be reclaimed
@@ -1182,7 +1182,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcInterfaceArcLifetime, Output, RCode));
+  AssertTrue(CompileAndRun(SrcInterfaceArcLifetime, Output, RCode));
   AssertEquals('exit 0',                  0,         RCode);
   AssertEquals('interface method result', '17' + LE, Output);
   if RunProc('valgrind', ['--version'], Log, True) <> 0 then
@@ -1206,7 +1206,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue(CompileAndRunNoArgs(SrcWeakCycle, Output, RCode));
+  AssertTrue(CompileAndRun(SrcWeakCycle, Output, RCode));
   AssertEquals('exit 0',                0,              RCode);
   AssertEquals('values printed via A/B', '1' + LE + '2' + LE, Output);
   if RunProc('valgrind', ['--version'], Log, True) <> 0 then
@@ -1234,7 +1234,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcDestroyFreesBuffer, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcDestroyFreesBuffer, Output, RCode));
   AssertEquals('exit 0',  0,          RCode);
   AssertEquals('stdout',  'ok' + LE,  Output);
   if RunProc('valgrind', ['--version'], Log, True) <> 0 then
@@ -1262,7 +1262,7 @@ begin
     Ignore('qbe or RTL not built');
     Exit;
   end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTListARCValgrind, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTListARCValgrind, Output, RCode));
   AssertEquals('exit 0',  0,   RCode);
   AssertEquals('stdout',
     '10' + LE + '20' + LE + '30' + LE + '3' + LE, Output);
@@ -1304,7 +1304,7 @@ begin
   finally
     Lst.Free;
   end;
-  AssertTrue('compile+run milestone', CompileAndRunNoArgs(Src, Output, RCode));
+  AssertTrue('compile+run milestone', CompileAndRun(Src, Output, RCode));
   AssertEquals('milestone exit code', 0, RCode);
   Expected :=
     'list.count=5'             + LE +
@@ -1454,7 +1454,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringLength, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringLength, Output, RCode));
   AssertEquals('Length(''hello'') = 5', '5', Trim(Output));
 end;
 
@@ -1464,7 +1464,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringPos, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringPos, Output, RCode));
   AssertEquals('Pos(''world'', ''hello world'') = 6', '6', Trim(Output));
 end;
 
@@ -1474,7 +1474,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringCopy, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringCopy, Output, RCode));
   AssertEquals('Copy(''hello'', 1, 3) = ''ell''', 'ell', Trim(Output));
 end;
 
@@ -1484,7 +1484,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringUpperCase, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringUpperCase, Output, RCode));
   AssertEquals('UpperCase(''hello'') = ''HELLO''', 'HELLO', Trim(Output));
 end;
 
@@ -1494,7 +1494,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringSameText, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringSameText, Output, RCode));
   AssertEquals('SameText(''Hello'', ''hello'') = True (1)', '1', Trim(Output));
 end;
 
@@ -1504,7 +1504,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringIntToStr, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringIntToStr, Output, RCode));
   AssertEquals('IntToStr(42) = ''42''', '42', Trim(Output));
 end;
 
@@ -1514,7 +1514,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringStrToInt, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringStrToInt, Output, RCode));
   AssertEquals('StrToInt(''123'') = 123', '123', Trim(Output));
 end;
 
@@ -1545,7 +1545,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringStrToIntHex, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringStrToIntHex, Output, RCode));
   AssertEquals('StrToInt(''$FF'') = 255', '255', Trim(Output));
 end;
 
@@ -1555,7 +1555,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringCopyMaxIntCount, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringCopyMaxIntCount, Output, RCode));
   AssertEquals('Copy(''^Integer'', 1, MaxInt) = ''Integer''', 'Integer', Trim(Output));
 end;
 
@@ -1579,7 +1579,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInt64PositiveAboveInt32, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInt64PositiveAboveInt32, Output, RCode));
   AssertEquals('Int64=2166136261 compares as positive and formats correctly',
     'pos' + #10 + '2166136261', Trim(Output));
 end;
@@ -1629,7 +1629,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcFormatIntArg, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcFormatIntArg, Output, RCode));
   AssertEquals('Format int arg', 'val=42', Trim(Output));
 end;
 
@@ -1639,7 +1639,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcFormatStrArg, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcFormatStrArg, Output, RCode));
   AssertEquals('Format str arg', 'hello world', Trim(Output));
 end;
 
@@ -1649,7 +1649,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcFormatMixedArgs, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcFormatMixedArgs, Output, RCode));
   AssertEquals('Format mixed args', 'Alice=30', Trim(Output));
 end;
 
@@ -1945,7 +1945,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTObjectListAddGetCount, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListAddGetCount, Output, RCode));
   AssertEquals('count=3', '3', Trim(Copy(Output, 0, Pos(#10, Output))));
 end;
 
@@ -1955,7 +1955,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTObjectListDelete, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListDelete, Output, RCode));
   AssertEquals('count after delete=2', '2', Trim(Output));
 end;
 
@@ -1966,7 +1966,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTStringListAddGet, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTStringListAddGet, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -1985,7 +1985,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTStringListFindSorted, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTStringListFindSorted, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2180,7 +2180,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcGetEnvVarTest, Output, RCode));
+    CompileAndRun(SrcGetEnvVarTest, Output, RCode));
   AssertTrue('GetEnvVar(BLAISE_TEST_VAR) returns empty when unset',
     Trim(Output) = '');
 end;
@@ -2191,7 +2191,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  CompileAndRunNoArgs(SrcHaltTest, Output, RCode);
+  CompileAndRun(SrcHaltTest, Output, RCode);
   AssertEquals('WriteLn before Halt', '42', Trim(Output));
   AssertEquals('Halt(7) sets exit code', 7, RCode);
 end;
@@ -2203,7 +2203,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcMultiTypeBlock, Output, RCode));
+    CompileAndRun(SrcMultiTypeBlock, Output, RCode));
   AssertEquals('TCounter(3).Double = 6', '6', Trim(Output));
 end;
 
@@ -2277,7 +2277,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcCaseInt, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcCaseInt, Output, RCode));
   AssertEquals('case N=2 → 22', '22', Trim(Output));
 end;
 
@@ -2287,7 +2287,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcCaseElse, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcCaseElse, Output, RCode));
   AssertEquals('case N=7 → else → 99', '99', Trim(Output));
 end;
 
@@ -2298,7 +2298,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcEnumOrdinal, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcEnumOrdinal, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2316,7 +2316,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcEnumCase, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcEnumCase, Output, RCode));
   AssertEquals('dEast=2', '2', Trim(Output));
 end;
 
@@ -2416,7 +2416,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcChangeFileExtTest, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcChangeFileExtTest, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2435,7 +2435,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcExtractFileNameTest, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcExtractFileNameTest, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2453,7 +2453,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcExtractFilePathTest, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcExtractFilePathTest, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2471,7 +2471,7 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcIncludeTrailingPathDelimiterTest, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcIncludeTrailingPathDelimiterTest, Output, RCode));
   Lines := TStringList.Create;
   try
     Lines.Text := Trim(Output);
@@ -2492,7 +2492,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcProcessBuiltinsCapture, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcProcessBuiltinsCapture, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('captured echo output', 'hello from process', Trim(Output));
 end;
@@ -2503,7 +2503,7 @@ var
   RCode:  Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcProcessBuiltinsExitCode, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcProcessBuiltinsExitCode, Output, RCode));
   AssertEquals('program exit code 0', 0, RCode);
   AssertEquals('true exits with 0', '0', Trim(Output));
 end;
@@ -2622,7 +2622,7 @@ procedure TE2ETests.TestRun_TypedExcept_CorrectHandlerMatched;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedExceptCorrect, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedExceptCorrect, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('EFoo handler ran', '42', Trim(Output));
 end;
@@ -2631,7 +2631,7 @@ procedure TE2ETests.TestRun_TypedExcept_SubclassMatchesParentHandler;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedExceptSubclass, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedExceptSubclass, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('EBar matches EFoo handler', '7', Trim(Output));
 end;
@@ -2640,7 +2640,7 @@ procedure TE2ETests.TestRun_TypedExcept_UnmatchedReraises;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedExceptUnmatched, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedExceptUnmatched, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('unmatched inner re-raises to outer', '3', Trim(Output));
 end;
@@ -2649,7 +2649,7 @@ procedure TE2ETests.TestRun_TypedExcept_BareRaisePropagatesToOuter;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedExceptBareRaise, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedExceptBareRaise, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('bare raise propagated to outer handler', '2', Trim(Output));
 end;
@@ -2658,7 +2658,7 @@ procedure TE2ETests.TestRun_TypedExcept_ElseBodyRunsWhenNoMatch;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedExceptElseRun, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedExceptElseRun, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('else body ran when no handler matched', '5', Trim(Output));
 end;
@@ -2723,7 +2723,7 @@ procedure TE2ETests.TestRun_ToString_DefaultReturnsClassName;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcToStringDefault, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcToStringDefault, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('default ToString returns class name',
     'TFoo' + LE + 'TBar' + LE, Output);
@@ -2733,7 +2733,7 @@ procedure TE2ETests.TestRun_ToString_OverrideDispatchedVirtually;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcToStringOverride, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcToStringOverride, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('override reached through static base type',
     'foo!' + LE + 'bar!' + LE, Output);
@@ -2743,7 +2743,7 @@ procedure TE2ETests.TestRun_ToString_InheritedOverrideStillReached;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcToStringInheritedOverride, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcToStringInheritedOverride, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('inherited override still reached',
     'foo override' + LE + 'foo override' + LE, Output);
@@ -2856,7 +2856,7 @@ procedure TE2ETests.TestRun_InheritsFrom_SameClass_ReturnsTrue;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromBase, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromBase, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('same class returns true', 'yes' + LE, Output);
 end;
@@ -2865,7 +2865,7 @@ procedure TE2ETests.TestRun_InheritsFrom_Parent_ReturnsTrue;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromParent, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromParent, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('child inherits from parent', 'yes' + LE, Output);
 end;
@@ -2874,7 +2874,7 @@ procedure TE2ETests.TestRun_InheritsFrom_GrandParent_ReturnsTrue;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromGrandParent, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromGrandParent, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('grandchild inherits from base', 'yes' + LE, Output);
 end;
@@ -2883,7 +2883,7 @@ procedure TE2ETests.TestRun_InheritsFrom_Unrelated_ReturnsFalse;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromUnrelated, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromUnrelated, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('unrelated class returns false', 'no' + LE, Output);
 end;
@@ -2892,7 +2892,7 @@ procedure TE2ETests.TestRun_InheritsFrom_Reverse_ReturnsFalse;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromReverse, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromReverse, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('parent does not inherit from child', 'no' + LE, Output);
 end;
@@ -2901,7 +2901,7 @@ procedure TE2ETests.TestRun_InheritsFrom_ClassType_Works;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInheritsFromClassType, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromClassType, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('ClassType.InheritsFrom works', 'yes' + LE, Output);
 end;
@@ -2964,7 +2964,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcGetProcessID, Output, RCode));
+    CompileAndRun(SrcGetProcessID, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   PID := StrToInt(Trim(Output));
   AssertTrue('PID > 0', PID > 0);
@@ -2978,7 +2978,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcDirectoryExists, Output, RCode));
+    CompileAndRun(SrcDirectoryExists, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   Lines := TStringList.Create;
   try
@@ -2998,7 +2998,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcGetTempDir, Output, RCode));
+    CompileAndRun(SrcGetTempDir, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   Dir := Trim(Output);
   AssertTrue('dir is non-empty', Length(Dir) > 0);
@@ -3046,7 +3046,7 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcSleepTest, Output, RCode));
+    CompileAndRun(SrcSleepTest, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('output is ok', 'ok', Trim(Output));
 end;
@@ -3153,7 +3153,7 @@ procedure TE2ETests.TestRun_ForIn_String_ByteVar_PrintsBytes;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForInStringByte, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringByte, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   { 'H' = 72, 'i' = 105 }
   AssertEquals('bytes of ''Hi''', '72' + LE + '105' + LE, Output);
@@ -3163,7 +3163,7 @@ procedure TE2ETests.TestRun_ForIn_String_IntegerVar_PrintsBytes;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForInStringInteger, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringInteger, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('bytes of ''Hi'' via Integer var', '72' + LE + '105' + LE, Output);
 end;
@@ -3172,7 +3172,7 @@ procedure TE2ETests.TestRun_ForIn_Array_Integer_PrintsElements;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForInArrayInteger, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForInArrayInteger, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('array elements 10 20 30',
     '10' + LE + '20' + LE + '30' + LE, Output);
@@ -3182,7 +3182,7 @@ procedure TE2ETests.TestRun_ForIn_ClassEnumerator_PrintsElements;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForInClassEnum, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForInClassEnum, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('range 3..5', '3' + LE + '4' + LE + '5' + LE, Output);
 end;
@@ -3266,7 +3266,7 @@ procedure TE2ETests.TestRun_For_Upward_PrintsRange;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForUp, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForUp, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 3', '1' + LE + '2' + LE + '3' + LE, Output);
 end;
@@ -3275,7 +3275,7 @@ procedure TE2ETests.TestRun_For_Downto_PrintsRange;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForDown, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForDown, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('3 2 1', '3' + LE + '2' + LE + '1' + LE, Output);
 end;
@@ -3284,7 +3284,7 @@ procedure TE2ETests.TestRun_While_PrintsRange;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcWhile, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcWhile, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 3', '1' + LE + '2' + LE + '3' + LE, Output);
 end;
@@ -3293,7 +3293,7 @@ procedure TE2ETests.TestRun_Repeat_PrintsRange;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRepeat, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRepeat, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 3', '1' + LE + '2' + LE + '3' + LE, Output);
 end;
@@ -3302,7 +3302,7 @@ procedure TE2ETests.TestRun_For_BreakExitsEarly;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForBreakE2E, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForBreakE2E, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 3', '1' + LE + '2' + LE + '3' + LE, Output);
 end;
@@ -3311,7 +3311,7 @@ procedure TE2ETests.TestRun_For_ContinueSkipsIteration;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcForContinue, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcForContinue, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 4 5', '1' + LE + '2' + LE + '4' + LE + '5' + LE, Output);
 end;
@@ -3320,7 +3320,7 @@ procedure TE2ETests.TestRun_Nested_For_Loops;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcNestedFor, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcNestedFor, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('nested 2x2', '11' + LE + '12' + LE + '21' + LE + '22' + LE, Output);
 end;
@@ -3398,7 +3398,7 @@ procedure TE2ETests.TestRun_Record_FieldReadWrite;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRecordFieldRW, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRecordFieldRW, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('3 + 7 = 10', '10' + LE, Output);
 end;
@@ -3407,7 +3407,7 @@ procedure TE2ETests.TestRun_Record_PassByValue;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRecordPassByValue, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRecordPassByValue, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('5 then 9', '5' + LE + '9' + LE, Output);
 end;
@@ -3416,7 +3416,7 @@ procedure TE2ETests.TestRun_Record_PassByVar;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRecordPassByVar, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRecordPassByVar, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('6 then 8', '6' + LE + '8' + LE, Output);
 end;
@@ -3425,7 +3425,7 @@ procedure TE2ETests.TestRun_Record_StringField_ARC;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRecordStringField, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRecordStringField, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Ada Lovelace', 'Ada Lovelace' + LE, Output);
 end;
@@ -3434,7 +3434,7 @@ procedure TE2ETests.TestRun_Record_NestedRecord;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcRecordNested, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcRecordNested, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('10 + 20 = 30', '30' + LE, Output);
 end;
@@ -3480,7 +3480,7 @@ procedure TE2ETests.TestRun_Pointer_GetMem_WriteRead_FreeMem;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcGetMemWriteRead, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcGetMemWriteRead, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('42', '42' + LE, Output);
 end;
@@ -3489,7 +3489,7 @@ procedure TE2ETests.TestRun_Pointer_TypedPointer_Deref;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypedPointerDeref, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypedPointerDeref, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('99', '99' + LE, Output);
 end;
@@ -3498,7 +3498,7 @@ procedure TE2ETests.TestRun_Pointer_NilCheck;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcPointerNilCheck, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcPointerNilCheck, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('nil', 'nil' + LE, Output);
 end;
@@ -3533,7 +3533,7 @@ procedure TE2ETests.TestRun_TextBlock_BasicContent;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTextBlockBasic, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTextBlockBasic, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   { Text block content is 'hello' + LF (the newline before closing ''');
     WriteLn adds a second LF, so output is hello+LF+LF. }
@@ -3544,7 +3544,7 @@ procedure TE2ETests.TestRun_TextBlock_IndentStripped;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTextBlockIndent, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTextBlockIndent, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   { 'line1' + LF + 'line2' + LF = 12 chars after indent strip }
   AssertEquals('length 12', '12' + LE, Output);
@@ -3584,7 +3584,7 @@ procedure TE2ETests.TestRun_Const_IntegerConst;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcConstInt, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcConstInt, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('101', '101' + LE, Output);
 end;
@@ -3593,7 +3593,7 @@ procedure TE2ETests.TestRun_Const_StringConst;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcConstStr, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcConstStr, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Hello', 'Hello' + LE, Output);
 end;
@@ -3602,7 +3602,7 @@ procedure TE2ETests.TestRun_Const_NegativeConst;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcConstNeg, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcConstNeg, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('-20', '-20' + LE, Output);
 end;
@@ -3661,7 +3661,7 @@ procedure TE2ETests.TestRun_Set_Include_Exclude;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcSetIncludeExclude, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcSetIncludeExclude, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('red blue', 'red' + LE + 'blue' + LE, Output);
 end;
@@ -3670,7 +3670,7 @@ procedure TE2ETests.TestRun_Set_InOperator;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcSetIn, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcSetIn, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('E W', 'E' + LE + 'W' + LE, Output);
 end;
@@ -3679,7 +3679,7 @@ procedure TE2ETests.TestRun_Set_UnionIntersect;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcSetUnion, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcSetUnion, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('union 0 1 2, intersect 1',
     '0' + LE + '1' + LE + '2' + LE + 'inter1' + LE, Output);
@@ -3726,7 +3726,7 @@ procedure TE2ETests.TestRun_ProcType_CallViaVariable;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcProcTypeVar, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcProcTypeVar, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('14', '14' + LE, Output);
 end;
@@ -3735,7 +3735,7 @@ procedure TE2ETests.TestRun_ProcType_OfObject_Dispatch;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcProcTypeOfObject, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcProcTypeOfObject, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('55', '55' + LE, Output);
 end;
@@ -3768,7 +3768,7 @@ procedure TE2ETests.TestRun_DefaultParam_OmitLast;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcDefaultParam, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcDefaultParam, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15 then 25', '15' + LE + '25' + LE, Output);
 end;
@@ -3777,7 +3777,7 @@ procedure TE2ETests.TestRun_DefaultParam_OmitMultiple;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcDefaultParamMulti, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcDefaultParamMulti, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('greetings', 'Hello World!' + LE + 'Hi Ada!' + LE, Output);
 end;
@@ -3815,7 +3815,7 @@ procedure TE2ETests.TestRun_OpenArray_Sum;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcOpenArraySum, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcOpenArraySum, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15', '15' + LE, Output);
 end;
@@ -3824,7 +3824,7 @@ procedure TE2ETests.TestRun_OpenArray_HighLow;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcOpenArrayHighLow, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcOpenArrayHighLow, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('low=0 high=2', '0' + LE + '2' + LE, Output);
 end;
@@ -3874,7 +3874,7 @@ procedure TE2ETests.TestRun_VarParam_SwapIntegers;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcVarParamSwap, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcVarParamSwap, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('7 then 3', '7' + LE + '3' + LE, Output);
 end;
@@ -3883,7 +3883,7 @@ procedure TE2ETests.TestRun_VarParam_ModifyString;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcVarParamString, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcVarParamString, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Hello World', 'Hello World' + LE, Output);
 end;
@@ -3892,7 +3892,7 @@ procedure TE2ETests.TestRun_ConstParam_CanRead;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcConstParam, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcConstParam, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('42', '42' + LE, Output);
 end;
@@ -3944,7 +3944,7 @@ procedure TE2ETests.TestRun_StringSubscript_ReadByte;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringSubscript, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringSubscript, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   { 'A'=65 'B'=66 'C'=67 }
   AssertEquals('65 66 67', '65' + LE + '66' + LE + '67' + LE, Output);
@@ -3954,7 +3954,7 @@ procedure TE2ETests.TestRun_StringConcat_TwoStrings;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringConcatStr, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringConcatStr, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('foobar', 'foobar' + LE, Output);
 end;
@@ -3964,7 +3964,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs('program P; begin WriteLn(''x='' + IntToStr(7)) end.',
+    CompileAndRun('program P; begin WriteLn(''x='' + IntToStr(7)) end.',
                   Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('x=7', 'x=7' + LE, Output);
@@ -3974,7 +3974,7 @@ procedure TE2ETests.TestRun_StringDelete_Modifies;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringDelete, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringDelete, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Hellod', 'Hello' + LE, Output);
 end;
@@ -3983,7 +3983,7 @@ procedure TE2ETests.TestRun_StringSetLength_Truncates;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcStringSetLength, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcStringSetLength, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Hel', 'Hel' + LE, Output);
 end;
@@ -4025,7 +4025,7 @@ procedure TE2ETests.TestRun_Int64_ArithmeticOverInt32;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInt64Arith, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInt64Arith, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('6000000000', '6000000000' + LE, Output);
 end;
@@ -4034,7 +4034,7 @@ procedure TE2ETests.TestRun_Int64_Comparison;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInt64Compare, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInt64Compare, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('big small', 'big' + LE + 'small' + LE, Output);
 end;
@@ -4043,7 +4043,7 @@ procedure TE2ETests.TestRun_Int64_ForLoop;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInt64ForLoop, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInt64ForLoop, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15', '15' + LE, Output);
 end;
@@ -4075,7 +4075,7 @@ procedure TE2ETests.TestRun_TypeCast_IntegerByte;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypeCastIntByte, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypeCastIntByte, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   { 300 mod 256 = 44 }
   AssertEquals('44', '44' + LE, Output);
@@ -4085,7 +4085,7 @@ procedure TE2ETests.TestRun_TypeCast_PointerInteger;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcTypeCastPointerInt, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcTypeCastPointerInt, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('42', '42' + LE, Output);
 end;
@@ -4145,7 +4145,7 @@ procedure TE2ETests.TestRun_Is_CorrectSubclass_True;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcIsTrue, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcIsTrue, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('yes', 'yes' + LE, Output);
 end;
@@ -4154,7 +4154,7 @@ procedure TE2ETests.TestRun_Is_WrongClass_False;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcIsFalse, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcIsFalse, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('no', 'no' + LE, Output);
 end;
@@ -4163,7 +4163,7 @@ procedure TE2ETests.TestRun_As_DowncastCallsMethod;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcAsDowncast, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcAsDowncast, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('child', 'child' + LE, Output);
 end;
@@ -4246,7 +4246,7 @@ procedure TE2ETests.TestRun_Inherited_CallsParentMethod;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcInherited, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcInherited, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15', '15' + LE, Output);
 end;
@@ -4255,7 +4255,7 @@ procedure TE2ETests.TestRun_Virtual_OverrideDispatch;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcVirtualOverride, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcVirtualOverride, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('16', '16' + LE, Output);
 end;
@@ -4264,7 +4264,7 @@ procedure TE2ETests.TestRun_MultiLevel_Inheritance_Chain;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcMultiLevelChain, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcMultiLevelChain, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('3', '3' + LE, Output);
 end;
@@ -4322,7 +4322,7 @@ procedure TE2ETests.TestRun_Interface_Dispatch_CallsImpl;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcIntfDispatch, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcIntfDispatch, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('hello', 'hello' + LE, Output);
 end;
@@ -4332,7 +4332,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
-    CompileAndRunNoArgs(SrcIntfDispatch, Output, RCode));
+    CompileAndRun(SrcIntfDispatch, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
 end;
 
@@ -4340,7 +4340,7 @@ procedure TE2ETests.TestRun_Interface_Is_As_Roundtrip;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunNoArgs(SrcIntfIsAs, Output, RCode));
+  AssertTrue('compile+run', CompileAndRun(SrcIntfIsAs, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('printing', 'printing' + LE, Output);
 end;
