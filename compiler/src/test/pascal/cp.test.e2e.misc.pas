@@ -1,0 +1,666 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit cp.test.e2e.misc;
+
+{ E2E tests for miscellaneous features: boolean ops, WriteLn, constants,
+  procedural types, default parameters, var/const params, type casts,
+  sets, and for..in. }
+
+interface
+
+uses
+  bcl.testing, cp.test.e2e.base;
+
+type
+  TE2EMiscTests = class(TE2ETestCase)
+  protected
+    procedure SetUp; override;
+  published
+    { Boolean, WriteLn, break/exit }
+    procedure TestRun_BooleanOps_AllExpressions;
+    procedure TestRun_MultiArgWriteLn_PrintsAllArgs;
+    procedure TestRun_ForBreak_StopsAtFiveHalt;
+    procedure TestRun_ExitFromFunction_ReturnsImmediately;
+    procedure TestRun_ChainedRecordField_LoadsInner;
+
+    { Constants }
+    procedure TestRun_Const_IntegerConst;
+    procedure TestRun_Const_StringConst;
+    procedure TestRun_Const_NegativeConst;
+
+    { Procedural types }
+    procedure TestRun_ProcType_CallViaVariable;
+    procedure TestRun_ProcType_OfObject_Dispatch;
+
+    { Default parameters }
+    procedure TestRun_DefaultParam_OmitLast;
+    procedure TestRun_DefaultParam_OmitMultiple;
+
+    { var / const params }
+    procedure TestRun_VarParam_SwapIntegers;
+    procedure TestRun_VarParam_ModifyString;
+    procedure TestRun_ConstParam_CanRead;
+
+    { Type casts }
+    procedure TestRun_TypeCast_IntegerByte;
+    procedure TestRun_TypeCast_PointerInteger;
+
+    { Sets }
+    procedure TestRun_Set_Include_Exclude;
+    procedure TestRun_Set_InOperator;
+    procedure TestRun_Set_UnionIntersect;
+
+    { for..in }
+    procedure TestRun_ForIn_String_ByteVar_PrintsBytes;
+    procedure TestRun_ForIn_String_IntegerVar_PrintsBytes;
+    procedure TestRun_ForIn_Array_Integer_PrintsElements;
+    procedure TestRun_ForIn_ClassEnumerator_PrintsElements;
+    procedure TestRun_ForIn_Set_PrintsMembers;
+  end;
+
+implementation
+
+procedure TE2EMiscTests.SetUp;
+begin
+  inherited SetUp;
+  SetUpScratch('compiler/target/test-e2e-misc');
+end;
+
+const
+  LE = #10;
+
+  SrcBoolOps = '''
+    program P;
+    var A, B: Boolean;
+    begin
+      A := True;
+      B := False;
+      if A and not B then WriteLn('t1');
+      if A or B then WriteLn('t2');
+      if not (A and B) then WriteLn('t3')
+    end.
+    ''';
+
+  SrcMultiArg = '''
+    program P;
+    var I, J, K: Integer;
+    begin
+      I := 1; J := 2; K := 3;
+      WriteLn(I, J, K)
+    end.
+    ''';
+
+  SrcForBreak = '''
+    program P;
+    var I, Last: Integer;
+    begin
+      Last := 0;
+      for I := 1 to 100 do
+      begin
+        Last := I;
+        if I = 5 then break
+      end;
+      WriteLn(Last)
+    end.
+    ''';
+
+  SrcExitFunc = '''
+    program P;
+    function FirstPositive(X: Integer): Integer;
+    begin
+      if X > 0 then
+      begin Result := X; exit end;
+      Result := 0 - X
+    end;
+    begin
+      WriteLn(FirstPositive(7));
+      WriteLn(FirstPositive(0 - 9))
+    end.
+    ''';
+
+  SrcChainedRecord = '''
+    program P;
+    type
+      TInner = record Value: Integer; end;
+      TOuter = record I: TInner; end;
+    var O: TOuter; N: Integer;
+    begin
+      N := O.I.Value;
+      WriteLn(N)
+    end.
+    ''';
+
+  SrcConstInt = '''
+    program P;
+    const MaxVal = 100;
+    var X: Integer;
+    begin
+      X := MaxVal + 1;
+      WriteLn(X)
+    end.
+    ''';
+
+  SrcConstStr = '''
+    program P;
+    const Greeting = 'Hello';
+    begin
+      WriteLn(Greeting)
+    end.
+    ''';
+
+  SrcConstNeg = '''
+    program P;
+    const MinVal = -10;
+    var X: Integer;
+    begin
+      X := MinVal * 2;
+      WriteLn(X)
+    end.
+    ''';
+
+  SrcProcTypeVar = '''
+    program P;
+    type TFn = function(X: Integer): Integer;
+    function Twice(X: Integer): Integer;
+    begin Result := X * 2 end;
+    var F: TFn;
+    begin
+      F := @Twice;
+      WriteLn(F(7))
+    end.
+    ''';
+
+  SrcProcTypeOfObject = '''
+    program P;
+    type
+      TProc = procedure of object;
+      TFoo = class
+        FVal: Integer;
+        procedure Print;
+      end;
+    procedure TFoo.Print;
+    begin WriteLn(FVal) end;
+    var
+      Obj: TFoo;
+      M: TProc;
+    begin
+      Obj := TFoo.Create;
+      Obj.FVal := 55;
+      M := @Obj.Print;
+      M;
+      Obj.Free
+    end.
+    ''';
+
+  SrcDefaultParam = '''
+    program P;
+    function Add(A: Integer; B: Integer = 10): Integer;
+    begin Result := A + B end;
+    begin
+      WriteLn(Add(5));
+      WriteLn(Add(5, 20))
+    end.
+    ''';
+
+  SrcDefaultParamMulti = '''
+    program P;
+    function Greet(Name: string; Prefix: string = 'Hello';
+                   Suffix: string = '!'): string;
+    begin Result := Prefix + ' ' + Name + Suffix end;
+    begin
+      WriteLn(Greet('World'));
+      WriteLn(Greet('Ada', 'Hi'))
+    end.
+    ''';
+
+  SrcVarParamSwap = '''
+    program P;
+    procedure Swap(var A, B: Integer);
+    var T: Integer;
+    begin
+      T := A; A := B; B := T
+    end;
+    var X, Y: Integer;
+    begin
+      X := 3; Y := 7;
+      Swap(X, Y);
+      WriteLn(X);
+      WriteLn(Y)
+    end.
+    ''';
+
+  SrcVarParamString = '''
+    program P;
+    procedure Append(var S: string; const T: string);
+    begin
+      S := S + T
+    end;
+    var R: string;
+    begin
+      R := 'Hello';
+      Append(R, ' World');
+      WriteLn(R)
+    end.
+    ''';
+
+  SrcConstParam = '''
+    program P;
+    function Twice(const X: Integer): Integer;
+    begin Result := X * 2 end;
+    begin
+      WriteLn(Twice(21))
+    end.
+    ''';
+
+  SrcTypeCastIntByte = '''
+    program P;
+    var I: Integer; B: Byte;
+    begin
+      I := 300;
+      B := Byte(I);
+      WriteLn(B)
+    end.
+    ''';
+
+  SrcTypeCastPointerInt = '''
+    program P;
+    var I: Integer; P1: Pointer;
+    begin
+      I  := 42;
+      P1 := Pointer(I);
+      WriteLn(Integer(P1))
+    end.
+    ''';
+
+  SrcSetIncludeExclude = '''
+    program P;
+    type TColor = (Red, Green, Blue);
+         TColors = set of TColor;
+    var S: TColors;
+    begin
+      S := [];
+      Include(S, Red);
+      Include(S, Blue);
+      if Red in S then WriteLn('red');
+      if Green in S then WriteLn('green');
+      if Blue in S then WriteLn('blue');
+      Exclude(S, Red);
+      if Red in S then WriteLn('red2')
+    end.
+    ''';
+
+  SrcSetIn = '''
+    program P;
+    type TDir = (North, South, East, West);
+         TDirs = set of TDir;
+    var Horizontal: TDirs;
+    begin
+      Horizontal := [East, West];
+      if North in Horizontal then WriteLn('N');
+      if East  in Horizontal then WriteLn('E');
+      if West  in Horizontal then WriteLn('W')
+    end.
+    ''';
+
+  SrcSetUnion = '''
+    program P;
+    type TBit = (B0, B1, B2, B3);
+         TBits = set of TBit;
+    var A, B, C: TBits;
+    begin
+      A := [B0, B1];
+      B := [B1, B2];
+      C := A + B;
+      if B0 in C then WriteLn('0');
+      if B1 in C then WriteLn('1');
+      if B2 in C then WriteLn('2');
+      if B3 in C then WriteLn('3');
+      C := A * B;
+      if B1 in C then WriteLn('inter1')
+    end.
+    ''';
+
+  SrcForInStringByte = '''
+    program P;
+    var
+      S: string;
+      B: Byte;
+    begin
+      S := 'Hi';
+      for B in S do
+        WriteLn(B)
+    end.
+    ''';
+
+  SrcForInStringInteger = '''
+    program P;
+    var
+      S: string;
+      I: Integer;
+    begin
+      S := 'Hi';
+      for I in S do
+        WriteLn(I)
+    end.
+    ''';
+
+  SrcForInArrayInteger = '''
+    program P;
+    var
+      A: array[0..2] of Integer;
+      X: Integer;
+    begin
+      A[0] := 10;
+      A[1] := 20;
+      A[2] := 30;
+      for X in A do
+        WriteLn(X)
+    end.
+    ''';
+
+  SrcForInClassEnum = '''
+    program P;
+    type
+      TRangeEnum = class
+        FCurrent: Integer;
+        FLast: Integer;
+        constructor Create(AFirst, ALast: Integer);
+        function MoveNext: Boolean;
+        function GetCurrent: Integer;
+        property Current: Integer read GetCurrent;
+      end;
+      TRange = class
+        FFirst: Integer;
+        FLast: Integer;
+        constructor Create(AFirst, ALast: Integer);
+        function GetEnumerator: TRangeEnum;
+      end;
+    constructor TRangeEnum.Create(AFirst, ALast: Integer);
+    begin
+      FCurrent := AFirst - 1;
+      FLast := ALast;
+    end;
+    function TRangeEnum.MoveNext: Boolean;
+    begin
+      FCurrent := FCurrent + 1;
+      Result := FCurrent <= FLast;
+    end;
+    function TRangeEnum.GetCurrent: Integer;
+    begin
+      Result := FCurrent;
+    end;
+    constructor TRange.Create(AFirst, ALast: Integer);
+    begin
+      FFirst := AFirst;
+      FLast := ALast;
+    end;
+    function TRange.GetEnumerator: TRangeEnum;
+    begin
+      Result := TRangeEnum.Create(FFirst, FLast);
+    end;
+    var
+      R: TRange;
+      N: Integer;
+    begin
+      R := TRange.Create(3, 5);
+      for N in R do
+        WriteLn(N);
+      R.Free;
+    end.
+    ''';
+
+  SrcForInSet = '''
+    program P;
+    type
+      TColor = (Red, Green, Blue);
+      TColorSet = set of TColor;
+    var
+      S: TColorSet;
+      C: TColor;
+    begin
+      S := [Red, Blue];
+      for C in S do
+        WriteLn(Ord(C));
+    end.
+    ''';
+
+procedure TE2EMiscTests.TestRun_BooleanOps_AllExpressions;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcBoolOps, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('all three branches fire',
+    't1' + LE + 't2' + LE + 't3' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_MultiArgWriteLn_PrintsAllArgs;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcMultiArg, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('three values concatenated with trailing newline',
+    '123' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForBreak_StopsAtFiveHalt;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcForBreak, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('loop broke at I=5', '5' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ExitFromFunction_ReturnsImmediately;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcExitFunc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('exit early for positive, compute for negative',
+    '7' + LE + '9' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ChainedRecordField_LoadsInner;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcChainedRecord, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('chained read of zero-initialised field', '0' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Const_IntegerConst;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcConstInt, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('101', '101' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Const_StringConst;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcConstStr, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Hello', 'Hello' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Const_NegativeConst;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcConstNeg, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('-20', '-20' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcType_CallViaVariable;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcProcTypeVar, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('14', '14' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcType_OfObject_Dispatch;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcProcTypeOfObject, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('55', '55' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_DefaultParam_OmitLast;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcDefaultParam, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('15 then 25', '15' + LE + '25' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_DefaultParam_OmitMultiple;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcDefaultParamMulti, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('greetings', 'Hello World!' + LE + 'Hi Ada!' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_VarParam_SwapIntegers;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcVarParamSwap, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('7 then 3', '7' + LE + '3' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_VarParam_ModifyString;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcVarParamString, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Hello World', 'Hello World' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ConstParam_CanRead;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcConstParam, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('42', '42' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_TypeCast_IntegerByte;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTypeCastIntByte, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('44', '44' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_TypeCast_PointerInteger;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTypeCastPointerInt, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('42', '42' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Set_Include_Exclude;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSetIncludeExclude, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('red blue', 'red' + LE + 'blue' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Set_InOperator;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSetIn, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('E W', 'E' + LE + 'W' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_Set_UnionIntersect;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcSetUnion, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('union 0 1 2, intersect 1',
+    '0' + LE + '1' + LE + '2' + LE + 'inter1' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_String_ByteVar_PrintsBytes;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringByte, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('bytes of ''Hi''', '72' + LE + '105' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_String_IntegerVar_PrintsBytes;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInStringInteger, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('bytes of ''Hi'' via Integer var', '72' + LE + '105' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_Array_Integer_PrintsElements;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInArrayInteger, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('array elements 10 20 30',
+    '10' + LE + '20' + LE + '30' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_ClassEnumerator_PrintsElements;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInClassEnum, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('range 3..5', '3' + LE + '4' + LE + '5' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_Set_PrintsMembers;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcForInSet, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Red=0 Blue=2', '0' + LE + '2' + LE, Output);
+end;
+
+initialization
+  RegisterTest(TE2EMiscTests);
+
+end.

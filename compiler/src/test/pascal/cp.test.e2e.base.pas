@@ -34,11 +34,17 @@ type
     function  RunProcNoArgs(const AExe: string; out AStdout: string): Integer;
   protected
     function  ToolchainAvailable: Boolean;
+    function  ValgrindAvailable: Boolean;
     procedure SetUpScratch(const ADirName: string);
     procedure SetUp; override;
     function  CompileAndRun(const ASrc: string;
                             out AStdout: string;
-                            out AExitCode: Integer): Boolean;
+                            out AExitCode: Integer): Boolean; overload;
+    function  CompileAndRun(const ASrc: string;
+                            out AStdout: string;
+                            out AExitCode: Integer;
+                            const AExtraArgs: array of string): Boolean; overload;
+    function  RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
     function  CompileAndRunWithRTL(const ASrc: string;
                                    out AStdout: string;
                                    out AExitCode: Integer): Boolean;
@@ -76,6 +82,12 @@ end;
 function TE2ETestCase.ToolchainAvailable: Boolean;
 begin
   Result := FileExists(FQBE) and FileExists(FRTL)
+end;
+
+function TE2ETestCase.ValgrindAvailable: Boolean;
+var Dummy: string;
+begin
+  Result := RunProc('valgrind', ['--version'], Dummy) = 0
 end;
 
 procedure TE2ETestCase.SetUp;
@@ -190,6 +202,98 @@ begin
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);
   Result := True
+end;
+
+function TE2ETestCase.CompileAndRun(const ASrc: string;
+                                    out AStdout: string;
+                                    out AExitCode: Integer;
+                                    const AExtraArgs: array of string): Boolean;
+var
+  Lexer:    TLexer;
+  Parser:   TParser;
+  Prog:     TProgram;
+  Semantic: TSemanticAnalyser;
+  CG:       TCodeGenQBE;
+  IR:       string;
+  IRFile:   string;
+  AsmFile:  string;
+  BinFile:  string;
+  ToolOut:  string;
+  Rc:       Integer;
+begin
+  Result := False;
+  Inc(FCounter);
+  IRFile  := FScratch + '/t' + IntToStr(FCounter) + '.ssa';
+  AsmFile := FScratch + '/t' + IntToStr(FCounter) + '.s';
+  BinFile := FScratch + '/t' + IntToStr(FCounter);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse;
+    Semantic := TSemanticAnalyser.Create;
+    Semantic.Analyse(Prog);
+    CG       := TCodeGenQBE.Create;
+    CG.Generate(Prog);
+    IR       := CG.GetOutput
+  finally
+    CG.Free; Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+  end;
+
+  WriteFile(IRFile, IR);
+  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+  if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  AExitCode := RunProc(BinFile, AExtraArgs, AStdout);
+  Result := True
+end;
+
+function TE2ETestCase.RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
+var
+  Lexer:    TLexer;
+  Parser:   TParser;
+  Prog:     TProgram;
+  Semantic: TSemanticAnalyser;
+  CG:       TCodeGenQBE;
+  IR:       string;
+  IRFile:   string;
+  AsmFile:  string;
+  BinFile:  string;
+  ToolOut:  string;
+  Rc:       Integer;
+begin
+  Result := False;
+  ALog   := '';
+  Inc(FCounter);
+  IRFile  := FScratch + '/vg' + IntToStr(FCounter) + '.ssa';
+  AsmFile := FScratch + '/vg' + IntToStr(FCounter) + '.s';
+  BinFile := FScratch + '/vg' + IntToStr(FCounter);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse;
+    Semantic := TSemanticAnalyser.Create;
+    Semantic.Analyse(Prog);
+    CG       := TCodeGenQBE.Create;
+    CG.Generate(Prog);
+    IR       := CG.GetOutput
+  finally
+    CG.Free; Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+  end;
+
+  WriteFile(IRFile, IR);
+  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+  if Rc <> 0 then Exit;
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  if Rc <> 0 then Exit;
+
+  Rc := RunProc('valgrind',
+    ['--error-exitcode=99', '--leak-check=full', '--quiet', BinFile], ALog);
+  Result := Rc = 0
 end;
 
 function TE2ETestCase.CompileAndRunWithRTL(const ASrc: string;

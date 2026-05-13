@@ -1,0 +1,272 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit cp.test.e2e.arc;
+
+{ E2E tests for ARC (Automatic Reference Counting) — class and interface
+  lifetime, weak references, and valgrind-clean leak-freedom. }
+
+interface
+
+uses
+  bcl.testing, cp.test.e2e.base;
+
+type
+  TE2EArcTests = class(TE2ETestCase)
+  protected
+    procedure SetUp; override;
+  published
+    procedure TestRun_ClassArc_NoExplicitFree_Valgrind;
+    procedure TestRun_InterfaceArc_CarriesLifetime_Valgrind;
+    procedure TestRun_WeakRef_BreaksCycle_Valgrind;
+    procedure TestRun_ClassDestroy_FreesBuffer_Valgrind;
+    procedure TestRun_TListARC_Valgrind;
+  end;
+
+implementation
+
+procedure TE2EArcTests.SetUp;
+begin
+  inherited SetUp;
+  SetUpScratch('compiler/target/test-e2e-arc');
+end;
+
+const
+  LE = #10;
+
+  SrcClassArcNoFree = '''
+    program P;
+    type
+      TInner = class
+        V: Integer;
+      end;
+      TOuter = class
+        Child: TInner;
+      end;
+    var
+      A, B: TOuter;
+      I:    TInner;
+    begin
+      A       := TOuter.Create;
+      I       := TInner.Create;
+      I.V     := 42;
+      A.Child := I;
+      B       := A;
+      WriteLn(B.Child.V)
+    end.
+    ''';
+
+  SrcInterfaceArcLifetime = '''
+    program P;
+    type
+      IThing = interface
+        procedure Emit;
+      end;
+      TThing = class(TObject, IThing)
+        FValue: Integer;
+        procedure Emit;
+      end;
+    procedure TThing.Emit;
+    begin
+      WriteLn(Self.FValue)
+    end;
+    var
+      T: TThing;
+      F: IThing;
+    begin
+      T        := TThing.Create;
+      T.FValue := 17;
+      F        := T;
+      F.Emit
+    end.
+    ''';
+
+  SrcWeakCycle = '''
+    program P;
+    type
+      TNode = class
+        Value: Integer;
+        [Weak] Other: TNode;
+      end;
+    var
+      A, B: TNode;
+    begin
+      A := TNode.Create;
+      B := TNode.Create;
+      A.Value := 1;
+      B.Value := 2;
+      A.Other := B;
+      B.Other := A;
+      WriteLn(A.Value);
+      WriteLn(B.Value)
+    end.
+    ''';
+
+  SrcDestroyFreesBuffer = '''
+    program P;
+    type
+      TBuf = class
+        FData: ^Integer;
+        procedure Init;
+        procedure Destroy;
+      end;
+    procedure TBuf.Init;
+    begin
+      Self.FData := GetMem(4 * SizeOf(Integer))
+    end;
+    procedure TBuf.Destroy;
+    begin
+      FreeMem(Self.FData);
+      Self.FData := nil
+    end;
+    var B: TBuf;
+    begin
+      B := TBuf.Create;
+      B.Init;
+      WriteLn('ok')
+    end.
+    ''';
+
+  SrcTListARCValgrind = '''
+    program P;
+    type
+      TList = class
+        FData:     ^Integer;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        procedure Add(V: Integer);
+        function  Get(I: Integer): Integer;
+        procedure Destroy;
+        property Count: Integer read FCount;
+      end;
+    procedure TList.Grow;
+    var NewCap: Integer;
+    begin
+      if Self.FCapacity = 0 then NewCap := 4
+      else NewCap := Self.FCapacity * 2;
+      Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(Integer));
+      Self.FCapacity := NewCap
+    end;
+    procedure TList.Add(V: Integer);
+    var Dest: ^Integer;
+    begin
+      if Self.FCount = Self.FCapacity then Self.Grow;
+      Dest  := Self.FData + Self.FCount * SizeOf(Integer);
+      Dest^ := V;
+      Self.FCount := Self.FCount + 1
+    end;
+    function TList.Get(I: Integer): Integer;
+    var Src: ^Integer;
+    begin
+      Src    := Self.FData + I * SizeOf(Integer);
+      Result := Src^
+    end;
+    procedure TList.Destroy;
+    begin
+      FreeMem(Self.FData);
+      Self.FData := nil
+    end;
+    var L: TList;
+    begin
+      L := TList.Create;
+      L.Add(10);
+      L.Add(20);
+      L.Add(30);
+      WriteLn(L.Get(0));
+      WriteLn(L.Get(1));
+      WriteLn(L.Get(2));
+      WriteLn(L.Count)
+    end.
+    ''';
+
+procedure TE2EArcTests.TestRun_ClassArc_NoExplicitFree_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcClassArcNoFree, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('field reread', '42' + LE, Output);
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcClassArcNoFree, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_InterfaceArc_CarriesLifetime_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcInterfaceArcLifetime, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('interface method result', '17' + LE, Output);
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcInterfaceArcLifetime, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_WeakRef_BreaksCycle_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcWeakCycle, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('values printed via A/B', '1' + LE + '2' + LE, Output);
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcWeakCycle, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_ClassDestroy_FreesBuffer_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcDestroyFreesBuffer, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('stdout', 'ok' + LE, Output);
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcDestroyFreesBuffer, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('Destroy did not free buffer — valgrind reports:' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_TListARC_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTListARCValgrind, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('stdout',
+    '10' + LE + '20' + LE + '30' + LE + '3' + LE, Output);
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcTListARCValgrind, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('TList FData leaked — valgrind reports:' + LE + Log);
+  end;
+end;
+
+initialization
+  RegisterTest(TE2EArcTests);
+
+end.

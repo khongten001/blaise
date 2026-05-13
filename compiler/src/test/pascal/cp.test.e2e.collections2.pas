@@ -1,0 +1,266 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit cp.test.e2e.collections2;
+
+{ E2E tests for TObjectList and TStringList collection classes. }
+
+interface
+
+uses
+  bcl.testing, cp.test.e2e.base;
+
+type
+  TE2ECollections2Tests = class(TE2ETestCase)
+  protected
+    procedure SetUp; override;
+  published
+    procedure TestRun_TObjectList_AddGetCount;
+    procedure TestRun_TObjectList_Delete;
+    procedure TestRun_Collections_Valgrind;
+  end;
+
+implementation
+
+procedure TE2ECollections2Tests.SetUp;
+begin
+  inherited SetUp;
+  SetUpScratch('compiler/target/test-e2e-collections2');
+end;
+
+const
+  // Note: uses //-style comment here because the text contains curly braces.
+  SrcTObjectListAddGetCount = '''
+    program P;
+    type
+      TObjectList = class
+        FData:     ^Pointer;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        var OldCap, NewCap: Integer;
+        begin
+          OldCap := Self.FCapacity;
+          if OldCap = 0 then NewCap := 4
+          else NewCap := OldCap * 2;
+          Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(Pointer));
+          Self.FCapacity := NewCap
+        end;
+        function Add(AObject: Pointer): Integer;
+        var Dest: ^Pointer;
+        begin
+          if Self.FCount = Self.FCapacity then Self.Grow;
+          Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
+          Dest^       := AObject;
+          Self.FCount := Self.FCount + 1;
+          Result      := Self.FCount - 1
+        end;
+        function Get(AIndex: Integer): Pointer;
+        var Src: ^Pointer;
+        begin
+          Src    := Self.FData + AIndex * SizeOf(Pointer);
+          Result := Src^
+        end;
+        procedure Delete(AIndex: Integer);
+        var I: Integer; Dst, Src: ^Pointer;
+        begin
+          I := AIndex;
+          while I < Self.FCount - 1 do
+          begin
+            Dst  := Self.FData + I * SizeOf(Pointer);
+            Src  := Self.FData + (I + 1) * SizeOf(Pointer);
+            Dst^ := Src^;
+            I    := I + 1
+          end;
+          Self.FCount := Self.FCount - 1
+        end;
+        property Count: Integer read FCount;
+      end;
+    var
+      L:  TObjectList;
+      P1, P2: Pointer;
+    begin
+      L  := TObjectList.Create;
+      P1 := GetMem(1);
+      P2 := GetMem(1);
+      L.Add(P1);
+      L.Add(P2);
+      L.Add(nil);
+      WriteLn(L.Count);
+      WriteLn(L.Get(0) = P1);
+      WriteLn(L.Get(1) = P2)
+    end.
+    ''';
+
+  SrcTObjectListDelete = '''
+    program P;
+    type
+      TObjectList = class
+        FData:     ^Pointer;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        var OldCap, NewCap: Integer;
+        begin
+          OldCap := Self.FCapacity;
+          if OldCap = 0 then NewCap := 4
+          else NewCap := OldCap * 2;
+          Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(Pointer));
+          Self.FCapacity := NewCap
+        end;
+        function Add(AObject: Pointer): Integer;
+        var Dest: ^Pointer;
+        begin
+          if Self.FCount = Self.FCapacity then Self.Grow;
+          Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
+          Dest^       := AObject;
+          Self.FCount := Self.FCount + 1;
+          Result      := Self.FCount - 1
+        end;
+        procedure Delete(AIndex: Integer);
+        var I: Integer; Dst, Src: ^Pointer;
+        begin
+          I := AIndex;
+          while I < Self.FCount - 1 do
+          begin
+            Dst  := Self.FData + I * SizeOf(Pointer);
+            Src  := Self.FData + (I + 1) * SizeOf(Pointer);
+            Dst^ := Src^;
+            I    := I + 1
+          end;
+          Self.FCount := Self.FCount - 1
+        end;
+        property Count: Integer read FCount;
+      end;
+    var L: TObjectList;
+    begin
+      L := TObjectList.Create;
+      L.Add(GetMem(1));
+      L.Add(GetMem(1));
+      L.Add(GetMem(1));
+      L.Delete(1);
+      WriteLn(L.Count)
+    end.
+    ''';
+
+  SrcCollectionsValgrind =
+    '''
+        program P;
+        type
+          TObjectList = class
+            FData: ^Pointer; FCount: Integer; FCapacity: Integer;
+            procedure Grow;
+            var OldCap, NewCap: Integer;
+            begin
+              OldCap := Self.FCapacity;
+              if OldCap = 0 then NewCap := 4 else NewCap := OldCap * 2;
+              Self.FData := ReallocMem(Self.FData, NewCap * SizeOf(Pointer));
+              Self.FCapacity := NewCap
+            end;
+            function Add(AObject: Pointer): Integer;
+            var Dest: ^Pointer;
+            begin
+              if Self.FCount = Self.FCapacity then Self.Grow;
+              Dest := Self.FData + Self.FCount * SizeOf(Pointer);
+              Dest^ := AObject;
+              Self.FCount := Self.FCount + 1;
+              Result := Self.FCount - 1
+            end;
+            procedure Destroy;
+            begin
+              FreeMem(Self.FData);
+              Self.FData := nil; Self.FCount := 0; Self.FCapacity := 0
+            end;
+            property Count: Integer read FCount;
+          end;
+          TStringList = class
+            FStrings: ^string; FObjects: ^Pointer;
+            FCount: Integer; FCapacity: Integer;
+            procedure Grow;
+            var OldCap, NewCap: Integer;
+            begin
+              OldCap := Self.FCapacity;
+              if OldCap = 0 then NewCap := 4 else NewCap := OldCap * 2;
+              Self.FStrings := ReallocMem(Self.FStrings, NewCap * SizeOf(string));
+              Self.FObjects := ReallocMem(Self.FObjects, NewCap * SizeOf(Pointer));
+              ZeroMem(Self.FStrings + OldCap * SizeOf(string),
+                      (NewCap - OldCap) * SizeOf(string));
+              Self.FCapacity := NewCap
+            end;
+            procedure Destroy;
+            var I: Integer; Ptr: ^string;
+            begin
+              I := 0;
+              while I < Self.FCount do
+              begin
+                Ptr := Self.FStrings + I * SizeOf(string); Ptr^ := nil; I := I + 1
+              end;
+              FreeMem(Self.FStrings); FreeMem(Self.FObjects);
+              Self.FStrings := nil; Self.FObjects := nil;
+              Self.FCount := 0; Self.FCapacity := 0
+            end;
+            function Add(S: string): Integer;
+            var StrP: ^string; ObjP: ^Pointer;
+            begin
+              if Self.FCount = Self.FCapacity then Self.Grow;
+              StrP := Self.FStrings + Self.FCount * SizeOf(string);
+              ObjP := Self.FObjects + Self.FCount * SizeOf(Pointer);
+              StrP^ := S; ObjP^ := nil;
+              Result := Self.FCount; Self.FCount := Self.FCount + 1
+            end;
+            function Get(AIndex: Integer): string;
+            var Ptr: ^string;
+            begin
+              Ptr := Self.FStrings + AIndex * SizeOf(string); Result := Ptr^
+            end;
+            property Count: Integer read FCount;
+          end;
+        var OL: TObjectList; SL: TStringList;
+        begin
+          OL := TObjectList.Create;
+          OL.Add(nil); OL.Add(nil);
+          SL := TStringList.Create;
+          SL.Add('hello'); SL.Add('world');
+          WriteLn(OL.Count);
+          WriteLn(SL.Get(0))
+        end.
+        ''';
+
+procedure TE2ECollections2Tests.TestRun_TObjectList_AddGetCount;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListAddGetCount, Output, RCode));
+  AssertEquals('count=3', '3', Trim(Copy(Output, 0, Pos(#10, Output))));
+end;
+
+procedure TE2ECollections2Tests.TestRun_TObjectList_Delete;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcTObjectListDelete, Output, RCode));
+  AssertEquals('count after delete=2', '2', Trim(Output));
+end;
+
+procedure TE2ECollections2Tests.TestRun_Collections_Valgrind;
+var OK: Boolean; Log: string;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  if not ValgrindAvailable then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcCollectionsValgrind, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('Collections Valgrind check failed:' + #10 + Log);
+  end;
+end;
+
+initialization
+  RegisterTest(TE2ECollections2Tests);
+
+end.
