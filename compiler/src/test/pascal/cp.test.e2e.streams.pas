@@ -32,6 +32,9 @@ type
     procedure TestRun_BufferedFile_RoundTrip;
     procedure TestRun_BufferedOutput_FlushOnClose;
     procedure TestRun_FileOpen_MissingFile_Raises;
+    procedure TestRun_TextRoundTrip_WriteLineReadLine;
+    procedure TestRun_TextReader_MixedLineEndings;
+    procedure TestRun_TextReader_ReadAll;
   end;
 
 implementation
@@ -233,6 +236,98 @@ const
     end.
     ''';
 
+  { Full 4-layer pipeline: write three lines through
+    TStreamWriter → TBufferedOutputStream → TFileOutputStream, read
+    them back through TStreamReader → TBufferedInputStream →
+    TFileInputStream.  Verifies the chain composes cleanly and that
+    Close on the outer text writer flushes through the buffered layer
+    to the file. }
+  SrcTextRoundTrip = '''
+    program P;
+    uses Streams;
+    var Fout: TFileOutputStream;
+        Bout: TBufferedOutputStream;
+        W:    TStreamWriter;
+        Fin:  TFileInputStream;
+        Bin:  TBufferedInputStream;
+        R:    TStreamReader;
+        Line: string;
+        Count: Integer;
+    begin
+      Fout := TFileOutputStream.Create('/tmp/blaise_text_e2e.txt');
+      Bout := TBufferedOutputStream.Create(Fout);
+      W    := TStreamWriter.Create(Bout);
+      try
+        W.WriteLine('alpha');
+        W.WriteLine('beta');
+        W.WriteLine('gamma')
+      finally
+        W.Close;
+        W.Free
+      end;
+      Count := 0;
+      Fin := TFileInputStream.Create('/tmp/blaise_text_e2e.txt');
+      Bin := TBufferedInputStream.Create(Fin);
+      R   := TStreamReader.Create(Bin);
+      try
+        while not R.EndOfStream do
+        begin
+          Line := R.ReadLine;
+          WriteLn(Line);
+          Count := Count + 1
+        end
+      finally
+        R.Close;
+        R.Free
+      end;
+      WriteLn(Count)
+    end.
+    ''';
+
+  { In-memory mixed line endings: LF, CRLF, lone CR.  All three
+    terminators must be recognised; returned lines must not include
+    the terminator bytes. }
+  SrcTextMixedLineEndings = '''
+    program P;
+    uses Streams;
+    var M: TMemoryInputStream;
+        R: TStreamReader;
+        L: string;
+    begin
+      M := TMemoryInputStream.Create('aa' + #10 + 'bb' + #13#10 + 'cc' + #13 + 'dd');
+      R := TStreamReader.Create(M);
+      try
+        while not R.EndOfStream do
+        begin
+          L := R.ReadLine;
+          WriteLn('[', L, ']')
+        end
+      finally
+        R.Free
+      end
+    end.
+    ''';
+
+  { ReadAll returns the entire remaining stream as one string. }
+  SrcTextReadAll = '''
+    program P;
+    uses Streams;
+    var M: TMemoryInputStream;
+        R: TStreamReader;
+        S: string;
+    begin
+      M := TMemoryInputStream.Create('hello world');
+      R := TStreamReader.Create(M);
+      try
+        S := R.ReadAll;
+        WriteLn(S);
+        WriteLn(Length(S))
+      finally
+        R.Free
+      end
+    end.
+    ''';
+
   { TMemoryOutputStream implements ISeekable; Supports() must return
     True and let us query the buffered byte count. }
   SrcSupportsISeekable = '''
@@ -334,6 +429,36 @@ begin
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcOpenMissingRaises, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('EStreamError caught', 'caught' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TextRoundTrip_WriteLineReadLine;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextRoundTrip, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('text round-trip three lines',
+    'alpha' + LE + 'beta' + LE + 'gamma' + LE + '3' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TextReader_MixedLineEndings;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextMixedLineEndings, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('LF/CRLF/CR all recognised, terminators stripped',
+    '[aa]' + LE + '[bb]' + LE + '[cc]' + LE + '[dd]' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TextReader_ReadAll;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextReadAll, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('ReadAll returns entire stream',
+    'hello world' + LE + '11' + LE, Output)
 end;
 
 initialization

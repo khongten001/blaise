@@ -204,6 +204,60 @@ type
     procedure Close; override;
   end;
 
+  { TStreamReader — text decorator that reads lines from any TInputStream.
+
+    UTF-8 only in v1 (matches Blaise's string encoding); the Encoding
+    parameter is reserved for future expansion.  Line terminators on
+    read are tolerant: LF, CRLF, and lone CR are all recognised.  The
+    returned line does not include the terminator.
+
+    For efficient line reading wrap a TBufferedInputStream around the
+    real source — TStreamReader makes per-byte Read calls and a raw
+    TFileInputStream would be one syscall per byte.  Example:
+
+      var R := TStreamReader.Create(
+                 TBufferedInputStream.Create(
+                   TFileInputStream.Create('config.txt')));
+
+    OwnsInner=True (the default) tears the whole chain down on Close. }
+  TStreamReader = class(TInputStream)
+    FInner:      TInputStream;
+    FOwnsInner:  Boolean;
+    FAtEof:      Boolean;
+    FClosed:     Boolean;
+    FPending:    Byte;        { lookahead byte for CRLF handling, valid if FHasPending }
+    FHasPending: Boolean;
+    constructor Create(AInner: TInputStream); overload;
+    constructor Create(AInner: TInputStream; AOwnsInner: Boolean); overload;
+    procedure Destroy;
+    function Read(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Close; override;
+    function ReadLine: string;
+    function ReadAll: string;
+    function EndOfStream: Boolean;
+  end;
+
+  { TStreamWriter — text decorator that writes lines to any TOutputStream.
+
+    UTF-8 only in v1.  WriteLine appends LF (a future property could
+    switch to CRLF for Windows-style output).  Write writes the string
+    bytes verbatim.
+
+    OwnsInner=True closes the inner on Close.  Flush forwards to inner. }
+  TStreamWriter = class(TOutputStream)
+    FInner:     TOutputStream;
+    FOwnsInner: Boolean;
+    FClosed:    Boolean;
+    constructor Create(AInner: TOutputStream); overload;
+    constructor Create(AInner: TOutputStream; AOwnsInner: Boolean); overload;
+    procedure Destroy;
+    function Write(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Flush; override;
+    procedure Close; override;
+    procedure WriteString(const S: string);
+    procedure WriteLine(const S: string);
+  end;
+
   { TBufferedOutputStream — decorator that accumulates writes.
 
     Buffers up to FBufSize bytes; on overflow (or explicit Flush) the
@@ -753,6 +807,246 @@ begin
   Self.FClosed := True;
   if Self.FOwnsInner and (Self.FInner <> nil) then
     Self.FInner.Close
+end;
+
+{ ------------------------------------------------------------------ }
+{ TStreamReader                                                       }
+{ ------------------------------------------------------------------ }
+
+constructor TStreamReader.Create(AInner: TInputStream);
+begin
+  Self.Create(AInner, True)
+end;
+
+constructor TStreamReader.Create(AInner: TInputStream; AOwnsInner: Boolean);
+begin
+  Self.FInner := AInner;
+  Self.FOwnsInner := AOwnsInner;
+  Self.FAtEof := False;
+  Self.FClosed := False;
+  Self.FHasPending := False;
+  Self.FPending := 0
+end;
+
+procedure TStreamReader.Destroy;
+begin
+  if not Self.FClosed then
+    Self.Close
+end;
+
+function TStreamReader.Read(Buf: Pointer; Count: Integer): Integer;
+var
+  N:    Integer;
+  Dst:  Pointer;
+  Rest: Integer;
+  PB:   ^Byte;
+begin
+  { Drain the pending lookahead byte first (left over from CR handling
+    in ReadLine), then defer to the inner stream for the remainder. }
+  if Self.FClosed or (Count <= 0) then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Result := 0;
+  if Self.FHasPending then
+  begin
+    PB := Buf;
+    PB^ := Self.FPending;
+    Self.FHasPending := False;
+    Result := 1;
+    if Count = 1 then Exit;
+    Dst := Pointer(Int64(Buf) + 1);
+    Rest := Count - 1
+  end
+  else
+  begin
+    Dst := Buf;
+    Rest := Count
+  end;
+  N := Self.FInner.Read(Dst, Rest);
+  if N <= 0 then
+  begin
+    if N = 0 then Self.FAtEof := True;
+    Exit
+  end;
+  Result := Result + N
+end;
+
+procedure TStreamReader.Close;
+begin
+  if Self.FClosed then Exit;
+  Self.FClosed := True;
+  if Self.FOwnsInner and (Self.FInner <> nil) then
+    Self.FInner.Close
+end;
+
+function TStreamReader.ReadLine: string;
+{ Read up to and including a line terminator; return the line without
+  the terminator.  Tolerant: LF, CR, or CR LF all end a line.
+  Returns '' at EOF (use EndOfStream to disambiguate empty line vs end). }
+var
+  B:       Byte;
+  N:       Integer;
+  Acc:     string;
+  Peek:    Byte;
+  PN:      Integer;
+begin
+  Acc := '';
+  if Self.FClosed then begin Result := Acc; Exit end;
+  repeat
+    if Self.FHasPending then
+    begin
+      B := Self.FPending;
+      Self.FHasPending := False;
+      N := 1
+    end
+    else
+      N := Self.FInner.Read(@B, 1);
+    if N = 0 then
+    begin
+      Self.FAtEof := True;
+      Break
+    end;
+    if B = 10 then        { LF — end of line }
+      Break;
+    if B = 13 then        { CR — peek for LF (CRLF) }
+    begin
+      PN := Self.FInner.Read(@Peek, 1);
+      if PN = 1 then
+      begin
+        if Peek <> 10 then
+        begin
+          { Lone CR; the next byte belongs to the following line. }
+          Self.FPending := Peek;
+          Self.FHasPending := True
+        end
+      end
+      else
+        Self.FAtEof := True;
+      Break
+    end;
+    Acc := Acc + Chr(B)
+  until False;
+  Result := Acc
+end;
+
+function TStreamReader.ReadAll: string;
+var
+  Buf: array[0..4095] of Byte;
+  N:   Integer;
+  Acc: string;
+  I:   Integer;
+  Chunk: string;
+begin
+  Acc := '';
+  if Self.FClosed then begin Result := Acc; Exit end;
+  repeat
+    N := Self.Read(@Buf[0], 4096);
+    if N <= 0 then Break;
+    Chunk := '';
+    for I := 0 to N - 1 do
+      Chunk := Chunk + Chr(Buf[I]);
+    Acc := Acc + Chunk
+  until False;
+  Result := Acc
+end;
+
+function TStreamReader.EndOfStream: Boolean;
+var
+  B: Byte;
+  N: Integer;
+begin
+  if Self.FClosed then begin Result := True; Exit end;
+  if Self.FHasPending then begin Result := False; Exit end;
+  if Self.FAtEof then begin Result := True; Exit end;
+  { Probe the inner stream by reading one byte; stash it as pending. }
+  N := Self.FInner.Read(@B, 1);
+  if N <= 0 then
+  begin
+    Self.FAtEof := True;
+    Result := True
+  end
+  else
+  begin
+    Self.FPending := B;
+    Self.FHasPending := True;
+    Result := False
+  end
+end;
+
+{ ------------------------------------------------------------------ }
+{ TStreamWriter                                                       }
+{ ------------------------------------------------------------------ }
+
+constructor TStreamWriter.Create(AInner: TOutputStream);
+begin
+  Self.Create(AInner, True)
+end;
+
+constructor TStreamWriter.Create(AInner: TOutputStream; AOwnsInner: Boolean);
+begin
+  Self.FInner := AInner;
+  Self.FOwnsInner := AOwnsInner;
+  Self.FClosed := False
+end;
+
+procedure TStreamWriter.Destroy;
+begin
+  if not Self.FClosed then
+  begin
+    try
+      Self.Close
+    except
+      on E: Exception do
+        Self.FClosed := True
+    end
+  end
+end;
+
+function TStreamWriter.Write(Buf: Pointer; Count: Integer): Integer;
+begin
+  if Self.FClosed or (Count <= 0) then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Result := Self.FInner.Write(Buf, Count)
+end;
+
+procedure TStreamWriter.Flush;
+begin
+  if Self.FClosed then Exit;
+  Self.FInner.Flush
+end;
+
+procedure TStreamWriter.Close;
+begin
+  if Self.FClosed then Exit;
+  Self.FClosed := True;
+  if Self.FOwnsInner and (Self.FInner <> nil) then
+    Self.FInner.Close
+end;
+
+procedure TStreamWriter.WriteString(const S: string);
+var
+  L: Integer;
+begin
+  L := Length(S);
+  if L > 0 then
+    Self.FInner.Write(Pointer(S), L)
+end;
+
+procedure TStreamWriter.WriteLine(const S: string);
+var
+  L:  Integer;
+  LF: Byte;
+begin
+  L := Length(S);
+  if L > 0 then
+    Self.FInner.Write(Pointer(S), L);
+  LF := 10;
+  Self.FInner.Write(@LF, 1)
 end;
 
 end.
