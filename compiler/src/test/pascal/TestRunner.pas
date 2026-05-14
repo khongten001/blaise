@@ -96,7 +96,9 @@ uses
   cp.test.publishedrtti,
   cp.test.proctypes_ofobject,
   cp.test.textblock,
-  cp.test.tokenkindname;
+  cp.test.tokenkindname,
+  cp.test.strutils,
+  cp.test.e2e.strutils;
 
 begin
   Halt(RunAll);

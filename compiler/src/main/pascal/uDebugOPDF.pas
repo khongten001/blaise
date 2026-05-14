@@ -8,8 +8,6 @@
 
 unit uDebugOPDF;
 
-{$H+}
-
 { OPDF debug information emitter.
   Produces a companion .opdf.s GNU assembly file that the linker folds into
   the ELF .opdf section.  The existing pdr debugger reads that section without

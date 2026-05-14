@@ -89,8 +89,8 @@ begin
           WriteLn(I, J)
         end.
         ''');
-  WriteIntCalls := CountOccurrences(IR, 'call $_SysWriteInt(');
-  NewlineCalls  := CountOccurrences(IR, 'call $_SysWriteNewline(');
+  WriteIntCalls := Self.CountOccurrences(IR, 'call $_SysWriteInt(');
+  NewlineCalls  := Self.CountOccurrences(IR, 'call $_SysWriteNewline(');
   AssertEquals('2 _SysWriteInt calls for values', 2, WriteIntCalls);
   AssertEquals('1 _SysWriteNewline call', 1, NewlineCalls);
 end;
@@ -109,7 +109,7 @@ begin
         ''');
   AssertTrue('emits newline call', Pos('call $_SysWriteNewline(', IR) > 0);
   AssertEquals('3 _SysWriteInt calls for values',
-    3, CountOccurrences(IR, 'call $_SysWriteInt('));
+    3, Self.CountOccurrences(IR, 'call $_SysWriteInt('));
 end;
 
 procedure TMultiWriteTests.TestCodegen_Write_TwoArgs_NoTrailingNewline;
@@ -128,9 +128,9 @@ begin
     always defined in the data section, so we look specifically for the
     call (not the declaration). }
   AssertEquals('no _SysWriteNewline call', 0,
-    CountOccurrences(IR, 'call $_SysWriteNewline('));
+    Self.CountOccurrences(IR, 'call $_SysWriteNewline('));
   AssertEquals('2 _SysWriteInt calls', 2,
-    CountOccurrences(IR, 'call $_SysWriteInt('));
+    Self.CountOccurrences(IR, 'call $_SysWriteInt('));
 end;
 
 procedure TMultiWriteTests.TestCodegen_WriteLn_MixedStringAndInteger;
