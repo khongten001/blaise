@@ -98,7 +98,8 @@ uses
   cp.test.textblock,
   cp.test.tokenkindname,
   cp.test.strutils,
-  cp.test.e2e.strutils;
+  cp.test.e2e.strutils,
+  cp.test.dynarray;
 
 begin
   Halt(RunAll);

@@ -67,6 +67,21 @@ function  _StringCompare(S1, S2: Pointer): Integer;
 function  _StringCompareText(S1, S2: Pointer): Integer;
 function  _StringFromPChar(P: PChar): Pointer;
 
+{ ------------------------------------------------------------------ }
+{ Dynamic array RTL                                                    }
+{ ------------------------------------------------------------------ }
+
+{ Dynamic array memory layout — data-pointer convention:
+    [refcount:4][length:4][element 0][element 1]...
+  The variable slot holds the DATA POINTER (element 0 address).
+  nil represents an empty / unassigned array.
+  Refcount = -1 marks immortal (statically-allocated).
+
+  _DynArraySetLength(OldPtr, NewLen, ElemSize) → new data pointer.
+  _DynArrayLength(Ptr) → length (0 for nil). }
+function _DynArraySetLength(Ptr: Pointer; NewLen, ElemSize: Integer): Pointer;
+function _DynArrayLength(Ptr: Pointer): Integer;
+
 { _StringFormat is variadic and remains implemented in blaise_str.c }
 
 implementation
@@ -779,6 +794,76 @@ begin
   Result := StrAlloc(Len);
   if (Result <> nil) and (Len > 0) then
     MemCopy(StrData(Result), P, Len);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Dynamic array RTL                                                    }
+{ ------------------------------------------------------------------ }
+
+const
+  DA_HDR = 8;  { [refcount:4][length:4] before element 0 }
+
+function _DynArrayLength(Ptr: Pointer): Integer;
+var
+  LenPtr: ^Integer;
+begin
+  if Ptr = nil then
+  begin
+    Result := 0;
+    Exit;
+  end;
+  { length is stored at offset −4 from data pointer }
+  LenPtr := Ptr - 4;
+  Result := LenPtr^;
+end;
+
+procedure DaWriteInt32(P: ^Integer; V: Integer);
+begin
+  P^ := V;
+end;
+
+function _DynArraySetLength(Ptr: Pointer; NewLen, ElemSize: Integer): Pointer;
+var
+  NewBase:  Pointer;
+  DataSz:   Integer;
+  OldLen:   Integer;
+  CopyLen:  Integer;
+  ZP:       PChar;
+  ZI:       Integer;
+  HdrPtr:   ^Integer;
+begin
+  if NewLen <= 0 then
+  begin
+    if Ptr <> nil then
+      _libc_free(Ptr - DA_HDR);
+    Result := nil;
+    Exit;
+  end;
+  DataSz  := DA_HDR + NewLen * ElemSize;
+  NewBase := _libc_malloc(DataSz);
+  { write header: refcount = 1, length = NewLen }
+  HdrPtr    := NewBase;
+  DaWriteInt32(HdrPtr, 1);           { refcount }
+  HdrPtr    := NewBase + 4;
+  DaWriteInt32(HdrPtr, NewLen);      { length }
+  { zero element area }
+  ZP := PChar(NewBase) + DA_HDR;
+  ZI := 0;
+  while ZI < NewLen * ElemSize do
+  begin
+    ZP[ZI] := 0;
+    ZI := ZI + 1;
+  end;
+  { copy existing elements }
+  if Ptr <> nil then
+  begin
+    OldLen  := _DynArrayLength(Ptr);
+    if OldLen < NewLen then CopyLen := OldLen else CopyLen := NewLen;
+    if CopyLen > 0 then
+      MemCopy(PChar(NewBase) + DA_HDR, PChar(Ptr), CopyLen * ElemSize);
+    _libc_free(Ptr - DA_HDR);
+  end;
+  Result := PChar(NewBase) + DA_HDR;
 end;
 
 end.

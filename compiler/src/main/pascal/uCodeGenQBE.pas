@@ -142,6 +142,7 @@ type
       string. Emits ARC-correct release-old/addref-new/store sequence. }
     procedure EmitStringMutator(ACall: TProcCall;
       const ARtlName: string; AExtraArgCount: Integer);
+    procedure EmitDynArraySetLength(ACall: TProcCall);
     procedure EmitPointerWrite(AStmt: TPointerWriteStmt);
     procedure EmitStaticSubscriptAssign(AStmt: TStaticSubscriptAssign);
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
@@ -493,6 +494,7 @@ begin
     tyDouble:                               Result := 'd';  { 64-bit float }
     tySingle:                               Result := 's';  { 32-bit float }
     tyMetaClass:                            Result := 'l';  { typeinfo pointer }
+    tyDynArray:                             Result := 'l';  { heap data pointer }
   else
     Result := 'w';
   end;
@@ -1161,6 +1163,13 @@ begin
             if ArrSize > 0 then
               EmitLine(Format('  call $memset(l %%_var_%s, w 0, l %d)',
                 [VarName, ArrSize]));
+          end;
+
+        tyDynArray:
+          begin
+            { Dynamic array variable is a pointer slot (nil = empty). }
+            EmitLine(Format('  %%_var_%s =l alloc8 8', [VarName]));
+            EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
           end;
 
         tyInterface:
@@ -4900,8 +4909,11 @@ begin
   end
   else if UCaseName = 'SETLENGTH' then
   begin
-    { SetLength(var S; N) — string mutator. }
-    EmitStringMutator(ACall, '_StringSetLength', 1);
+    { SetLength(var S; N) — string or dynamic array resize. }
+    if TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tyDynArray then
+      EmitDynArraySetLength(ACall)
+    else
+      EmitStringMutator(ACall, '_StringSetLength', 1);
   end
   else
     raise ECodeGenError.Create(Format(
@@ -4942,6 +4954,30 @@ begin
   EmitLine(Format('  call $_StringAddRef(l %s)', [NewTemp]));
   EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
   EmitLine(Format('  storel %s, %s', [NewTemp, Addr]));
+end;
+
+procedure TCodeGenQBE.EmitDynArraySetLength(ACall: TProcCall);
+var
+  Addr:    string;
+  OldPtr:  string;
+  NewPtr:  string;
+  NTemp:   string;
+  ElemSz:  Integer;
+  DAT:     TDynArrayTypeDesc;
+begin
+  if not (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) then
+    raise ECodeGenError.Create(
+      'SetLength on dynamic array: first argument must be a variable');
+  Addr    := EmitVarArgAddr(TIdentExpr(TASTExpr(ACall.Args.Items[0])));
+  OldPtr  := AllocTemp;
+  EmitLine(Format('  %s =l loadl %s', [OldPtr, Addr]));
+  NTemp   := EmitExpr(TASTExpr(ACall.Args.Items[1]));
+  DAT     := TDynArrayTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType);
+  ElemSz  := DAT.ElementType.RawSize;
+  NewPtr  := AllocTemp;
+  EmitLine(Format('  %s =l call $_DynArraySetLength(l %s, w %s, w %d)',
+    [NewPtr, OldPtr, NTemp, ElemSz]));
+  EmitLine(Format('  storel %s, %s', [NewPtr, Addr]));
 end;
 
 procedure TCodeGenQBE.EmitPointerWrite(AStmt: TPointerWriteStmt);
@@ -5193,6 +5229,14 @@ begin
             R := AllocTemp;
             EmitLine(Format('  %s =l loadl %%_var_%s_high', [R, L]));
             EmitLine(Format('  %s =w add %s, 1', [T, R]));
+          end;
+          tyDynArray:
+          begin
+            { Length stored at data_ptr − 4; nil ptr → length 0 }
+            L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+            R := AllocTemp;
+            EmitLine(Format('  %s =w call $_DynArrayLength(l %s)', [R, L]));
+            EmitLine(Format('  %s =w copy %s', [T, R]));
           end;
         else
           { tyString: delegate to RTL }
@@ -7908,6 +7952,32 @@ begin
     Exit;
   end;
 
+  { Dynamic array element read: A[I] — data_ptr + I * ElemSize }
+  if AExpr.StrExpr.ResolvedType.Kind = tyDynArray then
+  begin
+    ElemSize := TDynArrayTypeDesc(AExpr.StrExpr.ResolvedType).ElementType.RawSize;
+    case TDynArrayTypeDesc(AExpr.StrExpr.ResolvedType).ElementType.Kind of
+      tyByte, tyBoolean:   QLoad := 'loadub';
+      tyInteger, tyUInt32, tyEnum: QLoad := 'loadw';
+      tyInt64, tyString, tyClass, tyPointer, tyMetaClass: QLoad := 'loadl';
+    else
+      QLoad := 'loadl';
+    end;
+    QType   := QbeTypeOf(TDynArrayTypeDesc(AExpr.StrExpr.ResolvedType).ElementType);
+    StrPtr  := EmitExpr(AExpr.StrExpr);
+    IdxW    := EmitExpr(AExpr.IndexExpr);
+    IdxL    := AllocTemp;
+    Offset  := AllocTemp;
+    ElemPtr := AllocTemp;
+    ByteVal := AllocTemp;
+    EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
+    EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
+    EmitLine(Format('  %s =l add %s, %s', [ElemPtr, StrPtr, Offset]));
+    EmitLine(Format('  %s =%s %s %s', [ByteVal, QType, QLoad, ElemPtr]));
+    Result := ByteVal;
+    Exit;
+  end;
+
   { PChar byte access: P[I] (0-based) — loadub at ptr + I }
   if AExpr.StrExpr.ResolvedType.Kind = tyPChar then
   begin
@@ -8094,6 +8164,46 @@ begin
     EmitLine(Format('  storeb %s, %s', [ElemVal, ElemPtr]));
     Exit;
   end;
+  { Dynamic array subscript write: A[I] := V — data_ptr + I * ElemSize }
+  if AStmt.ResolvedArrayType.Kind = tyDynArray then
+  begin
+    ElemType  := TDynArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
+    ElemSize  := ElemType.RawSize;
+    PCharBase := AllocTemp;
+    { load the data pointer from the variable slot }
+    if AStmt.IsGlobal then
+      EmitLine(Format('  %s =l loadl $%s', [PCharBase, AStmt.ArrayName]))
+    else
+      EmitLine(Format('  %s =l loadl %%_var_%s', [PCharBase, AStmt.ArrayName]));
+    IdxW    := EmitExpr(AStmt.IndexExpr);
+    IdxL    := AllocTemp;
+    Offset  := AllocTemp;
+    ElemPtr := AllocTemp;
+    ElemVal := EmitExpr(AStmt.ValueExpr);
+    EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
+    EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
+    EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, Offset]));
+    case ElemType.Kind of
+      tyByte, tyBoolean:           StoreInstr := 'storeb';
+      tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
+    else
+      begin
+        StoreInstr := 'storel';
+        { Sign-extend w-typed value to l if needed (e.g. integer literals into Int64 slots) }
+        if (ElemVal <> '') and (ElemType.Kind = tyInt64) and
+           (AStmt.ValueExpr.ResolvedType <> nil) and
+           (AStmt.ValueExpr.ResolvedType.Kind <> tyInt64) then
+        begin
+          Adj := AllocTemp;
+          EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
+          ElemVal := Adj;
+        end;
+      end;
+    end;
+    EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
+    Exit;
+  end;
+
   SAT      := TStaticArrayTypeDesc(AStmt.ResolvedArrayType);
   ElemType := SAT.ElementType;
   ElemSize := ElemType.RawSize;

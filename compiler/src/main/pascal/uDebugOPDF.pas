@@ -310,7 +310,7 @@ begin
       EmitClass(TRecordTypeDesc(AType));
     tyPointer:
       EmitPointer(TPointerTypeDesc(AType));
-    tyStaticArray, tyOpenArray:
+    tyStaticArray, tyOpenArray, tyDynArray:
       EmitArray(AType);
     tySet:
       EmitSet(TSetTypeDesc(AType));
@@ -725,6 +725,22 @@ begin
     EmitStrField(CName);
     L('    .quad ' + IntToStr(SA.LowBound) + '  # LowerBound');
     L('    .quad ' + IntToStr(SA.HighBound) + '  # UpperBound');
+  end
+  else if AType.Kind = tyDynArray then
+  begin
+    EmitTypeDesc(TDynArrayTypeDesc(AType).ElementType);
+    ElemName := CanonicalName(TDynArrayTypeDesc(AType).ElementType);
+    ElemID   := GetOrAllocTypeID(ElemName);
+    IsDyn    := 1;
+    RecSize  := 12 + Length(CName);
+    L('');
+    L('    # recArray (dynamic): ' + CName);
+    EmitRecHdr(REC_ARRAY, RecSize);
+    L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+    L('    .int  ' + IntToStr(ElemID) + '  # ElementTypeID');
+    L('    .byte 1  # Dimensions');
+    L('    .byte ' + IntToStr(IsDyn) + '  # IsDynamic');
+    EmitStrField(CName);
   end
   else
   begin

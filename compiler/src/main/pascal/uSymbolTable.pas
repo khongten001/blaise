@@ -34,8 +34,9 @@ type
     tyNil,        { Pseudo-type for the nil literal; compatible with tyClass }
     tyPointer,    { Typed or untyped pointer — QBE 'l'; see TPointerTypeDesc }
     tyEnum,       { Enumeration type — stored as QBE 'w' (Integer); see TEnumTypeDesc }
-    tyOpenArray,  { Open-array parameter — two-register ABI: data ptr + high index }
+    tyOpenArray,   { Open-array parameter — two-register ABI: data ptr + high index }
     tyStaticArray, { Fixed-size array: stack-allocated, compile-time bounds }
+    tyDynArray,    { Dynamic array: heap-allocated, ref-counted, runtime length }
     tyPChar, { Opaque C pointer for interop: PChar(str) / string(pchar) }
     tySet,   { Bit-set over an enum base type — QBE 'w' (≤32 members) or 'l' (≤64) }
     tyProcedural, { Bare procedural pointer — QBE 'l'; see TProceduralTypeDesc.
@@ -83,6 +84,16 @@ type
     Carries the element type; the two-register ABI (data ptr + high index)
     is handled entirely in the parser, semantic pass, and codegen. }
   TOpenArrayTypeDesc = class(TTypeDesc)
+  public
+    ElementType: TTypeDesc;  { not owned }
+  end;
+
+  { Dynamic array descriptor: heap-allocated, reference-counted, runtime length.
+    Layout: [refcount:4][length:4][element 0][element 1]...
+    The variable slot holds a pointer to element 0 (nil = empty/unassigned).
+    Element access: data_ptr + I × ElementType.RawSize.
+    Length is stored at data_ptr − 4; RefCount at data_ptr − 8. }
+  TDynArrayTypeDesc = class(TTypeDesc)
   public
     ElementType: TTypeDesc;  { not owned }
   end;
@@ -383,6 +394,9 @@ type
     { Creates a static array type descriptor. Registered in FAllTypes. }
     function NewStaticArrayType(AElementType: TTypeDesc;
       ALow, AHigh: Integer): TStaticArrayTypeDesc;
+
+    { Creates a dynamic array type descriptor. Registered in FAllTypes. }
+    function NewDynArrayType(AElementType: TTypeDesc): TDynArrayTypeDesc;
 
     { Generic template registry — stores TGenericTypeDef as TObject to avoid
       circular unit dependency with uAST. Callers cast the result. }
@@ -1072,6 +1086,15 @@ begin
   Result.ElementType := AElementType;
   Result.LowBound    := ALow;
   Result.HighBound   := AHigh;
+  FAllTypes.Add(Result);
+end;
+
+function TSymbolTable.NewDynArrayType(AElementType: TTypeDesc): TDynArrayTypeDesc;
+begin
+  Result             := TDynArrayTypeDesc.Create;
+  Result.Kind        := tyDynArray;
+  Result.Name        := 'array of ' + AElementType.Name;
+  Result.ElementType := AElementType;
   FAllTypes.Add(Result);
 end;
 

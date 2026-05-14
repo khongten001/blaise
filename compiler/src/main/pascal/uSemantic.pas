@@ -1096,9 +1096,24 @@ var
   DDotPos, RBrPos, OfPos: Integer;
   LStr, HStr, ElemName: string;
   SAT: TStaticArrayTypeDesc;
+  DAT: TDynArrayTypeDesc;
 begin
   Result := FTable.FindType(AName);
   if Result <> nil then Exit;
+  { Dynamic array: 'array of TypeName' — create on demand }
+  if (Length(AName) > 9) and (StrHead(AName, 9) = 'array of ') then
+  begin
+    ElemName := StrCopyTail(AName, 9);
+    BaseType := FindTypeOrInstantiate(ElemName);
+    if BaseType <> nil then
+    begin
+      DAT := FTable.NewDynArrayType(BaseType);
+      Sym := TSymbol.Create(AName, skType, DAT);
+      FTable.DefineGlobal(Sym);
+      Result := DAT;
+    end;
+    Exit;
+  end;
   { Static array: 'array[L..H] of TypeName' — create on demand }
   if (Length(AName) > 6) and (StrHead(AName, 6) = 'array[') then
   begin
@@ -4396,17 +4411,18 @@ begin
     else
     if SameText(ACall.Name, 'SetLength') then
     begin
-      { SetLength(var S: string; N: Integer) — string truncate/grow. }
+      { SetLength(var S: string; N: Integer) — string truncate/grow.
+        SetLength(var A: array of T; N: Integer) — dynamic array resize. }
       if ACall.Args.Count <> 2 then
         SemanticError('SetLength requires exactly 2 arguments',
           ACall.Line, ACall.Col);
       ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
-      if (ArgType = nil) or (ArgType.Kind <> tyString) then
-        SemanticError('First argument of ''SetLength'' must be a string variable',
+      if (ArgType = nil) or not (ArgType.Kind in [tyString, tyDynArray]) then
+        SemanticError('First argument of ''SetLength'' must be a string or dynamic array variable',
           ACall.Line, ACall.Col);
       if not ((TASTExpr(ACall.Args.Items[0]) is TIdentExpr) or
               (TASTExpr(ACall.Args.Items[0]) is TFieldAccessExpr)) then
-        SemanticError('First argument of ''SetLength'' must be an assignable string',
+        SemanticError('First argument of ''SetLength'' must be an assignable variable',
           ACall.Line, ACall.Col);
       AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
     end
@@ -4628,7 +4644,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Length requires exactly one argument', AExpr.Line, AExpr.Col);
     ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    if not (ArgType.Kind in [tyString, tyOpenArray, tyStaticArray]) then
+    if not (ArgType.Kind in [tyString, tyOpenArray, tyStaticArray, tyDynArray]) then
       SemanticError('Length argument must be a string or array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
@@ -6473,6 +6489,18 @@ begin
     AExpr.ResolvedType := Result;
     Exit;
   end;
+  { Dynamic array element access: A[I] — 0-based, returns element type }
+  if StrType.Kind = tyDynArray then
+  begin
+    IdxType := AnalyseExpr(AExpr.IndexExpr);
+    if not IdxType.IsNumeric then
+      SemanticError(
+        Format('Dynamic array index must be numeric, got ''%s''', [IdxType.Name]),
+        AExpr.Line, AExpr.Col);
+    Result := TDynArrayTypeDesc(StrType).ElementType;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
   { PChar byte access: P[I] — 0-based, reads one byte as Integer }
   if StrType.Kind = tyPChar then
   begin
@@ -6581,9 +6609,22 @@ begin
     AnalyseExpr(AStmt.ValueExpr);
     Exit;
   end;
+  { Dynamic array subscript write: A[I] := V }
+  if Sym.TypeDesc.Kind = tyDynArray then
+  begin
+    AStmt.IsGlobal          := Sym.IsGlobal;
+    AStmt.ResolvedArrayType := Sym.TypeDesc;
+    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    if not IdxType.IsNumeric then
+      SemanticError('Dynamic array index must be numeric', AStmt.Line, AStmt.Col);
+    ValType := AnalyseExpr(AStmt.ValueExpr);
+    CheckTypesMatch(TDynArrayTypeDesc(Sym.TypeDesc).ElementType, ValType,
+      Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
+    Exit;
+  end;
   if Sym.TypeDesc.Kind <> tyStaticArray then
     SemanticError(
-      Format('''%s'' is not a static array', [AStmt.ArrayName]),
+      Format('''%s'' is not a static array or dynamic array', [AStmt.ArrayName]),
       AStmt.Line, AStmt.Col);
   ArrType := TStaticArrayTypeDesc(Sym.TypeDesc);
   AStmt.IsGlobal := Sym.IsGlobal;

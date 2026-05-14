@@ -144,26 +144,37 @@ function TParser.ParseTypeName: string;
 var
   LStr, HStr, ElemTypeName: string;
 begin
-  { Static array: array[L..H] of T }
+  { Array type: static 'array[L..H] of T' or dynamic 'array of T' }
   if Check(tkArray) then
   begin
     Advance;  { consume 'array' }
-    Expect(tkLBracket);
-    if not Check(tkIntLit) then
-      raise EParseError.Create(Format('Expected integer bound at line %d col %d in %s',
-        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-    LStr := FCurrent.Value;
-    Advance;
-    Expect(tkDotDot);
-    if not Check(tkIntLit) then
-      raise EParseError.Create(Format('Expected integer bound at line %d col %d in %s',
-        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-    HStr := FCurrent.Value;
-    Advance;
-    Expect(tkRBracket);
-    Expect(tkOf);
-    ElemTypeName := Self.ParseTypeName;
-    Result := Format('array[%s..%s] of %s', [LStr, HStr, ElemTypeName]);
+    if Check(tkLBracket) then
+    begin
+      { Static array: array[L..H] of T }
+      Advance;  { consume '[' }
+      if not Check(tkIntLit) then
+        raise EParseError.Create(Format('Expected integer bound at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      LStr := FCurrent.Value;
+      Advance;
+      Expect(tkDotDot);
+      if not Check(tkIntLit) then
+        raise EParseError.Create(Format('Expected integer bound at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      HStr := FCurrent.Value;
+      Advance;
+      Expect(tkRBracket);
+      Expect(tkOf);
+      ElemTypeName := Self.ParseTypeName;
+      Result := Format('array[%s..%s] of %s', [LStr, HStr, ElemTypeName]);
+    end
+    else
+    begin
+      { Dynamic array: array of T }
+      Expect(tkOf);
+      ElemTypeName := Self.ParseTypeName;
+      Result := 'array of ' + ElemTypeName;
+    end;
     Exit;
   end;
   { Pointer-to type: '^TypeName' }

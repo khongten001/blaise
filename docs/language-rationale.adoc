@@ -2065,6 +2065,106 @@ to produce valid QBE identifiers (e.g. `$itab_TDictionary_Integer_Integer_IMap_I
 * *Non-generic `IMap` with `TObject` keys and values* — Pre-generics
   workaround; loses type safety and requires casts at every use site.
 
+== Dynamic Arrays (`array of T`)
+
+=== Decision
+
+Blaise supports heap-allocated, reference-counted dynamic arrays using the
+Delphi/FPC syntax `array of T`.  A dynamic array variable holds a pointer to
+element 0; the two 4-byte integers immediately before element 0 store the
+reference count and the current length (the "header").
+
+Memory layout (contiguous block)::
+  `[refcount:4][length:4][element 0][element 1]…[element N-1]`
+
+A nil pointer (zero value) represents an unassigned array.  The variable slot
+is 8 bytes on all platforms (a pointer).
+
+Supported built-ins::
+* `SetLength(A, N)` — resize the array to `N` elements; copies existing data.
+* `Length(A)` — returns the current element count.
+* `A[I]` — zero-based element read/write.
+
+=== Supported element types
+
+All scalar element types are fully supported:
+
+[cols="1,1,1"]
+|===
+|Type | RawSize | QBE store/load
+
+|`Byte`, `Boolean`
+|1 byte
+|`storeb` / `loadub`
+
+|`Integer`, `UInt32`, `enum`
+|4 bytes
+|`storew` / `loadw`
+
+|`Int64`, `string`, `class`, `pointer`
+|8 bytes
+|`storel` / `loadl`
+|===
+
+Record element types (`array of TMyRecord`) are structurally supported at the
+offset-computation level (element size = `TotalSize`), but element assignment
+currently emits a single `storel` rather than a `memcpy`, so only pointer-sized
+records are safe.  Full record-element support requires a `memcpy` emit path and
+is deferred.
+
+=== RTL contract
+
+Two RTL functions implement resize and length queries:
+
+`_DynArraySetLength(Ptr, NewLen, ElemSize)`::
+  Allocates `DA_HDR + NewLen × ElemSize` bytes, writes refcount=1 and the new
+  length into the header, zeroes the element area, copies `min(OldLen, NewLen)`
+  existing elements, frees the old block, and returns a pointer to element 0.
+
+`_DynArrayLength(Ptr)`::
+  Reads the 4-byte integer at `Ptr − 4`.  Returns 0 if `Ptr` is nil.
+
+Both functions are implemented in pure Pascal in `blaise_str.pas` and compiled
+into the RTL archive.
+
+=== Rationale
+
+*Heap allocation, not stack*: dynamic arrays grow at runtime, so stack
+allocation is not viable.  The pointer-to-element-0 convention matches Delphi
+and makes zero-based indexing natural: `A[I] = *(Ptr + I × ElemSize)`.
+
+*Header before element 0*: placing the header immediately before the data
+avoids a separate allocation and keeps cache locality for length checks
+(`Ptr − 4`).  Delphi uses the same layout.
+
+*`SetLength` allocates fresh on every call*: reference counting on arrays is
+deferred to Phase 3 (ARC).  The current implementation always allocates a new
+block and copies, which is correct and safe, though not optimal for in-place
+growth.
+
+=== Grammar
+
+----
+DynArrayType = ARRAY OF TypeName ;
+----
+
+This rule extends `TypeName`.  After consuming the `array` keyword, the parser
+checks for a `[` bracket.  If present it follows the static-array path
+(`ArrayType`); if absent it expects `of` and follows the dynamic-array path
+(`DynArrayType`).
+
+=== Alternatives rejected
+
+*Open-array parameters as the general dynamic-array type* — open-array
+parameters use a two-register ABI (data pointer + high index) and cannot be
+stored in a variable.  Dynamic arrays require a single-pointer variable form
+that can be resized independently.
+
+*`TList<T>` instead of native dynamic arrays* — `TList<T>` already exists for
+ordered, resizable sequences.  Native `array of T` is needed for ABI
+compatibility (passing slices to C, inter-op with RTL functions, future
+vectorised operations) and for conciseness in low-level code.
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.
