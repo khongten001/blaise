@@ -63,6 +63,19 @@ type
     { ------------------------------------------------------------------ }
     procedure TestCodegen_VirtualCall_IsIndirect;
     procedure TestCodegen_StaticMethod_IsDirectCall;
+
+    { ------------------------------------------------------------------ }
+    { Abstract methods                                                     }
+    { ------------------------------------------------------------------ }
+    procedure TestParse_AbstractMethod_IsAbstract;
+    procedure TestParse_AbstractMethod_IsVirtual;
+    procedure TestSemantic_AbstractClass_CannotInstantiate;
+    procedure TestSemantic_AbstractMethod_NoBody_OK;
+    procedure TestSemantic_ConcreteSubclass_OK;
+    procedure TestSemantic_ConcreteSubclass_MissingOverride_Error;
+    procedure TestCodegen_AbstractMethod_StubInVTable;
+    procedure TestCodegen_AbstractClass_VTableHasStub;
+    procedure TestCodegen_ConcreteSubclass_OverridesAbstract;
   end;
 
 implementation
@@ -460,6 +473,233 @@ begin
   IR := GenIR(SrcStaticMethod);
   AssertTrue('static method call is direct',
     IRContains(IR, 'call $TFoo_Bar'));
+end;
+
+{ ------------------------------------------------------------------ }
+{ Abstract methods                                                     }
+{ ------------------------------------------------------------------ }
+
+procedure TVTableTests.TestParse_AbstractMethod_IsAbstract;
+var
+  L:    TLexer;
+  P:    TParser;
+  Prog: TProgram;
+  TD:   TTypeDecl;
+  CD:   TClassTypeDef;
+  M:    TMethodDecl;
+begin
+  L := TLexer.Create(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+    begin end.
+    ''');
+  P    := TParser.Create(L);
+  Prog := P.Parse;
+  try
+    TD := TTypeDecl(Prog.Block.TypeDecls.Items[0]);
+    CD := TClassTypeDef(TD.Def);
+    M  := TMethodDecl(CD.Methods.Items[0]);
+    AssertTrue('IsAbstract set', M.IsAbstract);
+  finally
+    Prog.Free; P.Free; L.Free;
+  end;
+end;
+
+procedure TVTableTests.TestParse_AbstractMethod_IsVirtual;
+var
+  L:    TLexer;
+  P:    TParser;
+  Prog: TProgram;
+  TD:   TTypeDecl;
+  CD:   TClassTypeDef;
+  M:    TMethodDecl;
+begin
+  L := TLexer.Create(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+    begin end.
+    ''');
+  P    := TParser.Create(L);
+  Prog := P.Parse;
+  try
+    TD := TTypeDecl(Prog.Block.TypeDecls.Items[0]);
+    CD := TClassTypeDef(TD.Def);
+    M  := TMethodDecl(CD.Methods.Items[0]);
+    AssertTrue('IsVirtual set on abstract', M.IsVirtual);
+  finally
+    Prog.Free; P.Free; L.Free;
+  end;
+end;
+
+procedure TVTableTests.TestSemantic_AbstractClass_CannotInstantiate;
+var
+  L:  TLexer;
+  P:  TParser;
+  Pr: TProgram;
+  A:  TSemanticAnalyser;
+  GotError: Boolean;
+begin
+  GotError := False;
+  L := TLexer.Create(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+    var S: TShape;
+    begin
+      S := TShape.Create
+    end.
+    ''');
+  P  := TParser.Create(L);
+  Pr := P.Parse;
+  A  := TSemanticAnalyser.Create;
+  try
+    try
+      A.Analyse(Pr);
+    except
+      on E: ESemanticError do GotError := True;
+    end;
+  finally
+    A.Free; Pr.Free; P.Free; L.Free;
+  end;
+  AssertTrue('abstract class cannot be instantiated', GotError);
+end;
+
+procedure TVTableTests.TestSemantic_AbstractMethod_NoBody_OK;
+begin
+  AnalyseExpectOK(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+    begin end.
+    ''');
+end;
+
+procedure TVTableTests.TestSemantic_ConcreteSubclass_OK;
+begin
+  AnalyseExpectOK(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+      TCircle = class(TShape)
+        procedure Draw; override; begin end;
+      end;
+    var C: TCircle;
+    begin
+      C := TCircle.Create
+    end.
+    ''');
+end;
+
+procedure TVTableTests.TestSemantic_ConcreteSubclass_MissingOverride_Error;
+var
+  L:  TLexer;
+  P:  TParser;
+  Pr: TProgram;
+  A:  TSemanticAnalyser;
+  GotError: Boolean;
+begin
+  GotError := False;
+  L := TLexer.Create(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+      TCircle = class(TShape)
+        { Draw not overridden — should error on instantiation }
+      end;
+    var C: TCircle;
+    begin
+      C := TCircle.Create
+    end.
+    ''');
+  P  := TParser.Create(L);
+  Pr := P.Parse;
+  A  := TSemanticAnalyser.Create;
+  try
+    try
+      A.Analyse(Pr);
+    except
+      on E: ESemanticError do GotError := True;
+    end;
+  finally
+    A.Free; Pr.Free; P.Free; L.Free;
+  end;
+  AssertTrue('missing override of abstract raises error', GotError);
+end;
+
+procedure TVTableTests.TestCodegen_AbstractMethod_StubInVTable;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+    begin end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { Abstract method vtable slot must reference the abstract stub, not a real body }
+  AssertTrue('abstract stub in IR', IRContains(IR, '__abstract'));
+end;
+
+procedure TVTableTests.TestCodegen_AbstractClass_VTableHasStub;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      TBase = class
+        procedure Foo; virtual; abstract;
+        procedure Bar; virtual; abstract;
+      end;
+    begin end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('vtable emitted', IRContains(IR, 'vtable_TBase'));
+  AssertTrue('abstract stub present', IRContains(IR, '__abstract'));
+end;
+
+procedure TVTableTests.TestCodegen_ConcreteSubclass_OverridesAbstract;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      TShape = class
+        procedure Draw; virtual; abstract;
+      end;
+      TCircle = class(TShape)
+        procedure Draw; override; begin end;
+      end;
+    begin end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { TCircle vtable should point to TCircle_Draw, not the abstract stub }
+  AssertTrue('TCircle_Draw in IR', IRContains(IR, 'TCircle_Draw'));
+  AssertTrue('TCircle vtable in IR', IRContains(IR, 'vtable_TCircle'));
 end;
 
 initialization

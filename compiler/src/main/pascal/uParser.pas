@@ -1182,6 +1182,13 @@ begin
         Advance;
         if Check(tkSemicolon) then Advance;
       end
+      else if Check(tkIdent) and SameText(FCurrent.Value, 'abstract') then
+      begin
+        Result.IsAbstract := True;
+        Result.IsVirtual  := True;  { abstract implies virtual }
+        Advance;
+        if Check(tkSemicolon) then Advance;
+      end
       else if Check(tkIdent) and
               (SameText(FCurrent.Value, 'inline')      or
                SameText(FCurrent.Value, 'stdcall')     or
@@ -1189,7 +1196,6 @@ begin
                SameText(FCurrent.Value, 'register')    or
                SameText(FCurrent.Value, 'pascal')      or
                SameText(FCurrent.Value, 'safecall')    or
-               SameText(FCurrent.Value, 'abstract')    or
                SameText(FCurrent.Value, 'reintroduce') or
                SameText(FCurrent.Value, 'static')      or
                SameText(FCurrent.Value, 'final')       or

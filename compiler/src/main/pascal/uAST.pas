@@ -555,6 +555,7 @@ type
     OwnBody:            Boolean;     { False for cloned generic method stubs that share the body }
     IsVirtual:          Boolean;     { declared with 'virtual' directive }
     IsOverride:         Boolean;     { declared with 'override' directive }
+    IsAbstract:         Boolean;     { declared with 'abstract' directive; implies virtual }
     IsOverload:         Boolean;     { declared with 'overload' directive }
     IsPublished:        Boolean;     { declared inside a 'published' visibility
                                        section of a class.  Used by codegen to

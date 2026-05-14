@@ -4073,17 +4073,47 @@ procedure TCodeGenQBE.EmitVTableDefs(AProg: TProgram);
 { Vtable layout: slot 0 = $typeinfo_T pointer, slots 1..N = virtual method ptrs.
   Dispatch uses (VTableSlot + 1) * 8 to skip the typeinfo slot.
   TObject's vtable carries Destroy and ToString — referenced by every
-  user class through inheritance and by the typeinfo's vtable slot. }
+  user class through inheritance and by the typeinfo's vtable slot.
+  Abstract vtable slots point to $__abstract_method_error, a stub that
+  calls abort() to terminate the process if somehow reached at runtime. }
 var
-  I, S:  Integer;
-  TD:    TTypeDecl;
-  TDesc: TTypeDesc;
-  RT:    TRecordTypeDesc;
-  GI:    TGenericInstance;
-  E:     TVTableEntry;
-  Line:  string;
-  MName: string;
+  I, S:         Integer;
+  TD:           TTypeDecl;
+  TDesc:        TTypeDesc;
+  RT:           TRecordTypeDesc;
+  GI:           TGenericInstance;
+  E:            TVTableEntry;
+  Line:         string;
+  MName:        string;
+  NeedAbstStub: Boolean;
+  ERef:         string;
 begin
+  { Emit the abstract-method-error stub if any class in this program
+    has abstract methods that may appear in a vtable. }
+  NeedAbstStub := False;
+  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
+    if TRecordTypeDesc(TDesc).HasAbstractMethods then
+    begin
+      NeedAbstStub := True;
+      Break;
+    end;
+  end;
+  if NeedAbstStub then
+  begin
+    EmitLine('');
+    EmitLine('# Abstract method stub -- abort() if called at runtime');
+    EmitLine('function $__abstract_method_error() {');
+    EmitLine('@start');
+    EmitLine('  call $abort()');
+    EmitLine('  ret');
+    EmitLine('}');
+  end;
+
   EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
            ', l $TObject_Destroy, l $TObject_ToString }');
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
@@ -4098,12 +4128,14 @@ begin
     Line := 'data $vtable_' + TD.Name + ' = { l $typeinfo_' + TD.Name;
     for S := 0 to RT.VTableCount - 1 do
     begin
-      E    := RT.VTableEntryAt(S);
-      { ImplName has leading '$' already; mangle the rest }
-      if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
-        Line := Line + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
+      E := RT.VTableEntryAt(S);
+      if E.IsAbstract then
+        ERef := ', l $__abstract_method_error'
+      else if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+        ERef := ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
-        Line := Line + ', l ' + QBEMangle(E.ImplName);
+        ERef := ', l ' + QBEMangle(E.ImplName);
+      Line := Line + ERef;
     end;
     Line := Line + ' }';
     EmitLine(Line);
@@ -4119,11 +4151,14 @@ begin
     Line  := 'data $vtable_' + MName + ' = { l $typeinfo_' + MName;
     for S := 0 to RT.VTableCount - 1 do
     begin
-      E    := RT.VTableEntryAt(S);
-      if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
-        Line := Line + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
+      E := RT.VTableEntryAt(S);
+      if E.IsAbstract then
+        ERef := ', l $__abstract_method_error'
+      else if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+        ERef := ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
-        Line := Line + ', l ' + QBEMangle(E.ImplName);
+        ERef := ', l ' + QBEMangle(E.ImplName);
+      Line := Line + ERef;
     end;
     Line := Line + ' }';
     EmitLine(Line);

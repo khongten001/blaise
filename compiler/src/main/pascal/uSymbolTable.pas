@@ -176,9 +176,10 @@ type
   { One entry in a class vtable — tracks slot index and implementing method. }
   TVTableEntry = class
   public
-    Slot:     Integer;  { index in vtable }
-    MethName: string;   { unqualified method name }
-    ImplName: string;   { fully-qualified QBE label, e.g. $TDog_Speak }
+    Slot:       Integer;  { index in vtable }
+    MethName:   string;   { unqualified method name }
+    ImplName:   string;   { fully-qualified QBE label, e.g. $TDog_Speak }
+    IsAbstract: Boolean;  { True = slot has no implementation; codegen emits abort stub }
   end;
 
   { Property descriptor — one per declared property on a class. }
@@ -225,7 +226,8 @@ type
     FVTable:          TObjectList;  { owned TVTableEntry; nil if no virtual methods }
     FImplements:      TObjectList;  { not owned — TInterfaceTypeDesc references }
     FProperties:      TObjectList;  { owned TPropertyInfo }
-    FHasDestroyMethod: Boolean;     { True when the class declares a 'Destroy' method }
+    FHasDestroyMethod:      Boolean; { True when the class declares a 'Destroy' method }
+    FHasAbstractMethods:    Boolean; { True when any vtable slot is abstract (no impl) }
   public
     constructor Create(const AName: string; AKind: TTypeKind);
     destructor Destroy; override;
@@ -258,6 +260,8 @@ type
     property  Parent: TRecordTypeDesc read FParent write FParent;
     property  HasDestroyMethod: Boolean
               read FHasDestroyMethod write FHasDestroyMethod;
+    property  HasAbstractMethods: Boolean
+              read FHasAbstractMethods write FHasAbstractMethods;
   end;
 
   { ------------------------------------------------------------------ }
@@ -671,8 +675,9 @@ begin
     Src      := AParent.VTableEntryAt(I);
     Dst      := TVTableEntry.Create;
     Dst.Slot       := Src.Slot;
-    Dst.MethName := Src.MethName;
+    Dst.MethName   := Src.MethName;
     Dst.ImplName   := Src.ImplName;
+    Dst.IsAbstract := Src.IsAbstract;
     FVTable.Add(Dst);
   end;
 end;

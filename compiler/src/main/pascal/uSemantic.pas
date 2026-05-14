@@ -2323,7 +2323,14 @@ begin
           if MDecl.IsOverload then
             MangledKey := MangledKey + '$' + MangleParamSig(MDecl);
           if MDecl.IsVirtual then
-            RT.AddVTableSlot(MangledKey, '$' + TD.Name + '_' + MangledKey)
+          begin
+            Slot := RT.AddVTableSlot(MangledKey, '$' + TD.Name + '_' + MangledKey);
+            if MDecl.IsAbstract then
+            begin
+              RT.VTableEntryAt(Slot).IsAbstract := True;
+              RT.HasAbstractMethods := True;
+            end;
+          end
           else if MDecl.IsOverride then
           begin
             Slot := RT.FindVTableSlot(MangledKey);
@@ -2343,7 +2350,22 @@ begin
               end;
             end;
             RT.OverrideVTableSlot(Slot, '$' + TD.Name + '_' + MangledKey);
+            { Override clears the abstract flag on the inherited slot }
+            if Slot >= 0 then
+              RT.VTableEntryAt(Slot).IsAbstract := False;
           end;
+        end;
+    end;
+
+    { After building this class's vtable, check if any abstract slots remain
+      (inherited but not overridden). If so, mark the class as abstract. }
+    if RT <> nil then
+    begin
+      for J := 0 to RT.VTableCount - 1 do
+        if RT.VTableEntryAt(J).IsAbstract then
+        begin
+          RT.HasAbstractMethods := True;
+          Break;
         end;
     end;
 
@@ -2620,8 +2642,15 @@ begin
       end;
     end;
 
+    { Abstract methods must not have a body }
+    if AMethod.IsAbstract and (AMethod.Body <> nil) then
+      SemanticError(
+        Format('Abstract method ''%s'' must not have an implementation',
+          [AMethod.Name]),
+        AMethod.Line, AMethod.Col);
+
     { Analyse the method body block (pushes its own inner scope) }
-    if AMethod.Body <> nil then
+    if (AMethod.Body <> nil) and not AMethod.IsAbstract then
       AnalyseBlock(AMethod.Body);
   finally
     Dec(FScopeDepth);
@@ -5514,6 +5543,10 @@ begin
       SemanticError(
         Format('Cannot construct non-class type ''%s''', [AExpr.ObjectName]),
         AExpr.Line, AExpr.Col);
+    if TRecordTypeDesc(ObjSym.TypeDesc).HasAbstractMethods then
+      SemanticError(
+        Format('Cannot instantiate abstract class ''%s''', [AExpr.ObjectName]),
+        AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     { Try to find a user-defined constructor method for type checking }
@@ -6035,6 +6068,10 @@ begin
           [AAccess.FieldName, AAccess.RecordName]),
         AAccess.Line, AAccess.Col);
     end;
+    if TRecordTypeDesc(RecSym.TypeDesc).HasAbstractMethods then
+      SemanticError(
+        Format('Cannot instantiate abstract class ''%s''', [AAccess.RecordName]),
+        AAccess.Line, AAccess.Col);
     AAccess.IsConstructorCall := True;
     AAccess.ResolvedMethod    := FindMethodDecl(TRecordTypeDesc(RecSym.TypeDesc).Name, 'Create');
     Result := RecSym.TypeDesc;
