@@ -1,0 +1,480 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit Streams;
+
+// Blaise RTL — stream I/O.
+//
+// Design summary (see docs/language-rationale.adoc for full rationale):
+//
+//   * One-direction streams: TInputStream and TOutputStream are separate
+//     abstract roots.  Bidirectional read+write on a single handle is rare;
+//     a future TRandomAccessFile can cover that case without polluting the
+//     common API.
+//   * Capability interfaces alongside the abstract classes.  IInputStream
+//     and IOutputStream let consumers accept "anything readable / writable"
+//     without forcing single inheritance, mirroring the proven IMap<K,V>
+//     + TDictionary<K,V> pattern.  This is what lets TBuffer cleanly be
+//     both an input source and an output sink.
+//   * Wrappers own their inner stream by default (OwnsInner=True) — calling
+//     Close on the outer wrapper tears down the chain.  Pass OwnsInner=False
+//     to keep the inner stream alive past the wrapper's Close.
+//   * Resource cleanup: ARC guarantees eventual finalisation, but the
+//     idiomatic pattern is explicit Close in a try-finally so that flush
+//     errors surface.
+
+interface
+
+type
+  { TFileMode — how a file is opened.
+
+    fmOpenRead   — open existing file for reading; fail if missing.
+    fmCreate     — create new file (truncate if exists) for writing.
+    fmAppend     — open for appending; create if missing. }
+  TFileMode = (fmOpenRead, fmCreate, fmAppend);
+
+  { TSeekOrigin — reference point for ISeekable.Seek. }
+  TSeekOrigin = (soBeginning, soCurrent, soEnd);
+
+  { ICloseable — every stream supports Close.  Modelled on Java's Closeable
+    so a future `using` block can bind to it uniformly. }
+  ICloseable = interface
+    procedure Close;
+  end;
+
+  { IInputStream — capability interface for byte sources.
+
+    Read transfers up to Count bytes into the buffer at Buf and returns the
+    number actually read.  A return of 0 means end-of-stream.  A short read
+    (Result < Count) is permitted and does not imply EOF; callers that need
+    a fixed-size read must loop. }
+  IInputStream = interface(ICloseable)
+    function Read(Buf: Pointer; Count: Integer): Integer;
+  end;
+
+  { IOutputStream — capability interface for byte sinks.
+
+    Write transfers Count bytes from Buf and returns the number actually
+    written.  Implementations should write all bytes or raise on error;
+    short writes are reserved for non-blocking sinks (not used in v1).
+    Flush forces any buffered data to the underlying device. }
+  IOutputStream = interface(ICloseable)
+    function Write(Buf: Pointer; Count: Integer): Integer;
+    procedure Flush;
+  end;
+
+  { ISeekable — capability for streams that support random access.
+
+    Files and in-memory buffers are ISeekable; pipes and sockets are not.
+    Consumers query with the Supports() intrinsic. }
+  ISeekable = interface
+    function Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+    function Size: Int64;
+    function Position: Int64;
+  end;
+
+  { TInputStream — abstract base class for byte sources.
+
+    Subclasses override Read and Close.  The class exists so common stream
+    implementations get an inheritance target with shared infrastructure;
+    consumers that want maximum flexibility should accept IInputStream
+    instead. }
+  { Concrete subclasses (TFileInputStream etc.) declare the interfaces.
+    The abstract bases cannot, because the interface vtable needs concrete
+    method implementations and the base's are `virtual; abstract`. }
+  TInputStream = class
+    function Read(Buf: Pointer; Count: Integer): Integer; virtual; abstract;
+    procedure Close; virtual; abstract;
+  end;
+
+  { TOutputStream — abstract base class for byte sinks. }
+  TOutputStream = class
+    function Write(Buf: Pointer; Count: Integer): Integer; virtual; abstract;
+    procedure Flush; virtual; abstract;
+    procedure Close; virtual; abstract;
+  end;
+
+  { TFileInputStream — reads bytes from a file on disk. }
+  TFileInputStream = class(TInputStream, ISeekable)
+    FFd:     Integer;     // file descriptor; -1 once closed
+    FClosed: Boolean;
+    constructor Create(const APath: string);
+    procedure Destroy;
+    function Read(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Close; override;
+    function Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+    function Size: Int64;
+    function Position: Int64;
+  end;
+
+  { TFileOutputStream — writes bytes to a file on disk. }
+  TFileOutputStream = class(TOutputStream, ISeekable)
+    FFd:     Integer;
+    FClosed: Boolean;
+    constructor Create(const APath: string); overload;
+    constructor Create(const APath: string; AMode: TFileMode); overload;
+    procedure Destroy;
+    function Write(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Flush; override;
+    procedure Close; override;
+    function Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+    function Size: Int64;
+    function Position: Int64;
+  end;
+
+  { TMemoryInputStream — reads bytes from a Blaise string treated as bytes. }
+  TMemoryInputStream = class(TInputStream, ISeekable)
+    FData: string;
+    FPos:  Int64;
+    constructor Create(const AData: string);
+    function Read(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Close; override;
+    function Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+    function Size: Int64;
+    function Position: Int64;
+  end;
+
+  { TMemoryOutputStream — accumulates bytes into an in-memory buffer.
+
+    Use ToString to snapshot the accumulated bytes as a Blaise string. }
+  TMemoryOutputStream = class(TOutputStream, ISeekable)
+    FBuf:      Pointer;   // raw byte buffer
+    FCapacity: Integer;
+    FSize:     Integer;
+    FPos:      Integer;
+    constructor Create;
+    procedure Destroy;
+    function Write(Buf: Pointer; Count: Integer): Integer; override;
+    procedure Flush; override;
+    procedure Close; override;
+    function ToString: string; override;
+    function Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+    function Size: Int64;
+    function Position: Int64;
+  end;
+
+{ External C primitives — file descriptor I/O.
+
+  Declared in the interface section per Blaise convention (declaring
+  externals in implementation crashes the codegen for unit consumers). }
+function _FdOpenRead(Path: Pointer): Integer; external name '_FdOpenRead';
+function _FdOpenWrite(Path: Pointer): Integer; external name '_FdOpenWrite';
+function _FdOpenAppend(Path: Pointer): Integer; external name '_FdOpenAppend';
+function _FdRead(Fd: Integer; Buf: Pointer; Count: Integer): Integer;
+  external name '_FdRead';
+function _FdWrite(Fd: Integer; Buf: Pointer; Count: Integer): Integer;
+  external name '_FdWrite';
+function _FdSeek(Fd: Integer; Offset: Int64; Origin: Integer): Int64;
+  external name '_FdSeek';
+function _FdSize(Fd: Integer): Int64; external name '_FdSize';
+procedure _FdClose(Fd: Integer); external name '_FdClose';
+
+{ Raw memory helpers used by the memory streams.  These are libc functions
+  exposed by name; the Blaise codegen passes the arguments through unchanged. }
+function memcpy(Dst, Src: Pointer; Count: Integer): Pointer;
+  external name 'memcpy';
+function malloc(Count: Integer): Pointer; external name 'malloc';
+procedure free(P: Pointer); external name 'free';
+function realloc(P: Pointer; Count: Integer): Pointer; external name 'realloc';
+
+implementation
+
+{ ------------------------------------------------------------------ }
+{ TFileInputStream                                                    }
+{ ------------------------------------------------------------------ }
+
+constructor TFileInputStream.Create(const APath: string);
+begin
+  Self.FFd := _FdOpenRead(Pointer(APath));
+  Self.FClosed := False;
+  if Self.FFd < 0 then
+    Self.FClosed := True
+end;
+
+procedure TFileInputStream.Destroy;
+begin
+  if not Self.FClosed then
+  begin
+    _FdClose(Self.FFd);
+    Self.FClosed := True
+  end
+end;
+
+function TFileInputStream.Read(Buf: Pointer; Count: Integer): Integer;
+begin
+  if Self.FClosed then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Result := _FdRead(Self.FFd, Buf, Count)
+end;
+
+procedure TFileInputStream.Close;
+begin
+  if not Self.FClosed then
+  begin
+    _FdClose(Self.FFd);
+    Self.FClosed := True
+  end
+end;
+
+function TFileInputStream.Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  Result := _FdSeek(Self.FFd, Offset, Integer(Origin))
+end;
+
+function TFileInputStream.Size: Int64;
+begin
+  Result := _FdSize(Self.FFd)
+end;
+
+function TFileInputStream.Position: Int64;
+begin
+  Result := _FdSeek(Self.FFd, 0, Integer(soCurrent))
+end;
+
+{ ------------------------------------------------------------------ }
+{ TFileOutputStream                                                   }
+{ ------------------------------------------------------------------ }
+
+constructor TFileOutputStream.Create(const APath: string);
+begin
+  Self.Create(APath, fmCreate)
+end;
+
+constructor TFileOutputStream.Create(const APath: string; AMode: TFileMode);
+begin
+  case AMode of
+    fmCreate: Self.FFd := _FdOpenWrite(Pointer(APath));
+    fmAppend: Self.FFd := _FdOpenAppend(Pointer(APath));
+    else      Self.FFd := -1
+  end;
+  Self.FClosed := False;
+  if Self.FFd < 0 then
+    Self.FClosed := True
+end;
+
+procedure TFileOutputStream.Destroy;
+begin
+  if not Self.FClosed then
+  begin
+    _FdClose(Self.FFd);
+    Self.FClosed := True
+  end
+end;
+
+function TFileOutputStream.Write(Buf: Pointer; Count: Integer): Integer;
+begin
+  if Self.FClosed then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Result := _FdWrite(Self.FFd, Buf, Count)
+end;
+
+procedure TFileOutputStream.Flush;
+begin
+  // fd writes go directly to the OS; nothing to flush at this layer.
+end;
+
+procedure TFileOutputStream.Close;
+begin
+  if not Self.FClosed then
+  begin
+    _FdClose(Self.FFd);
+    Self.FClosed := True
+  end
+end;
+
+function TFileOutputStream.Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  Result := _FdSeek(Self.FFd, Offset, Integer(Origin))
+end;
+
+function TFileOutputStream.Size: Int64;
+begin
+  Result := _FdSize(Self.FFd)
+end;
+
+function TFileOutputStream.Position: Int64;
+begin
+  Result := _FdSeek(Self.FFd, 0, Integer(soCurrent))
+end;
+
+{ ------------------------------------------------------------------ }
+{ TMemoryInputStream                                                  }
+{ ------------------------------------------------------------------ }
+
+constructor TMemoryInputStream.Create(const AData: string);
+begin
+  Self.FData := AData;
+  Self.FPos := 0
+end;
+
+function TMemoryInputStream.Read(Buf: Pointer; Count: Integer): Integer;
+var
+  Remaining: Int64;
+  N:         Integer;
+  Src:       Pointer;
+begin
+  Remaining := Int64(Length(Self.FData)) - Self.FPos;
+  if Remaining <= 0 then
+  begin
+    Result := 0;
+    Exit
+  end;
+  if Count > Remaining then
+    N := Integer(Remaining)
+  else
+    N := Count;
+  Src := Pointer(Int64(Pointer(Self.FData)) + Self.FPos);
+  memcpy(Buf, Src, N);
+  Self.FPos := Self.FPos + N;
+  Result := N
+end;
+
+procedure TMemoryInputStream.Close;
+begin
+  Self.FData := '';
+  Self.FPos := 0
+end;
+
+function TMemoryInputStream.Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+var
+  NewPos: Int64;
+  Len:    Int64;
+begin
+  Len := Int64(Length(Self.FData));
+  case Origin of
+    soBeginning: NewPos := Offset;
+    soCurrent:   NewPos := Self.FPos + Offset;
+    soEnd:       NewPos := Len + Offset;
+    else         NewPos := Self.FPos
+  end;
+  if NewPos < 0 then NewPos := 0;
+  if NewPos > Len then NewPos := Len;
+  Self.FPos := NewPos;
+  Result := NewPos
+end;
+
+function TMemoryInputStream.Size: Int64;
+begin
+  Result := Int64(Length(Self.FData))
+end;
+
+function TMemoryInputStream.Position: Int64;
+begin
+  Result := Self.FPos
+end;
+
+{ ------------------------------------------------------------------ }
+{ TMemoryOutputStream                                                 }
+{ ------------------------------------------------------------------ }
+
+constructor TMemoryOutputStream.Create;
+begin
+  Self.FBuf := nil;
+  Self.FCapacity := 0;
+  Self.FSize := 0;
+  Self.FPos := 0
+end;
+
+procedure TMemoryOutputStream.Destroy;
+begin
+  if Self.FBuf <> nil then
+  begin
+    free(Self.FBuf);
+    Self.FBuf := nil
+  end
+end;
+
+function TMemoryOutputStream.Write(Buf: Pointer; Count: Integer): Integer;
+var
+  Needed: Integer;
+  NewCap: Integer;
+  Dst:    Pointer;
+begin
+  if Count <= 0 then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Needed := Self.FPos + Count;
+  if Needed > Self.FCapacity then
+  begin
+    NewCap := Self.FCapacity;
+    if NewCap = 0 then NewCap := 64;
+    while NewCap < Needed do
+      NewCap := NewCap * 2;
+    Self.FBuf := realloc(Self.FBuf, NewCap);
+    Self.FCapacity := NewCap
+  end;
+  Dst := Pointer(Int64(Self.FBuf) + Int64(Self.FPos));
+  memcpy(Dst, Buf, Count);
+  Self.FPos := Self.FPos + Count;
+  if Self.FPos > Self.FSize then
+    Self.FSize := Self.FPos;
+  Result := Count
+end;
+
+procedure TMemoryOutputStream.Flush;
+begin
+  // No buffering at this layer.
+end;
+
+procedure TMemoryOutputStream.Close;
+begin
+  // The accumulated buffer is freed on Destroy; Close is a no-op so callers
+  // can still read ToString afterwards.
+end;
+
+function TMemoryOutputStream.ToString: string;
+var
+  R:    string;
+  RPtr: Pointer;
+begin
+  if Self.FSize = 0 then
+  begin
+    Result := '';
+    Exit
+  end;
+  SetLength(R, Self.FSize);
+  RPtr := Pointer(R);
+  memcpy(RPtr, Self.FBuf, Self.FSize);
+  Result := R
+end;
+
+function TMemoryOutputStream.Seek(Offset: Int64; Origin: TSeekOrigin): Int64;
+var
+  NewPos: Int64;
+begin
+  case Origin of
+    soBeginning: NewPos := Offset;
+    soCurrent:   NewPos := Int64(Self.FPos) + Offset;
+    soEnd:       NewPos := Int64(Self.FSize) + Offset;
+    else         NewPos := Self.FPos
+  end;
+  if NewPos < 0 then NewPos := 0;
+  if NewPos > Int64(Self.FSize) then NewPos := Self.FSize;
+  Self.FPos := Integer(NewPos);
+  Result := NewPos
+end;
+
+function TMemoryOutputStream.Size: Int64;
+begin
+  Result := Int64(Self.FSize)
+end;
+
+function TMemoryOutputStream.Position: Int64;
+begin
+  Result := Int64(Self.FPos)
+end;
+
+end.

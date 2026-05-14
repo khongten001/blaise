@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
@@ -476,4 +477,61 @@ void* _ExtractFileExt(void* path) {
     if (last_dot == NULL || (last_sep != NULL && last_dot < last_sep))
         return io_str_from_cstr("");
     return io_str_from_cstr(last_dot);
+}
+
+/* ------------------------------------------------------------------ */
+/* File-descriptor primitives — used by the Streams unit.             */
+/*                                                                    */
+/* All functions return -1 / negative values on error to signal       */
+/* failure to the Pascal-side wrapper.  Path arguments are Blaise     */
+/* strings; buffer arguments are raw pointers.                        */
+/* ------------------------------------------------------------------ */
+
+int32_t _FdOpenRead(void* path) {
+    const char* p = io_str_data(path);
+    int fd = open(p, O_RDONLY);
+    return (int32_t)fd;
+}
+
+int32_t _FdOpenWrite(void* path) {
+    const char* p = io_str_data(path);
+    int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    return (int32_t)fd;
+}
+
+int32_t _FdOpenAppend(void* path) {
+    const char* p = io_str_data(path);
+    int fd = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    return (int32_t)fd;
+}
+
+int32_t _FdRead(int32_t fd, void* buf, int32_t count) {
+    if (fd < 0 || count <= 0) return 0;
+    ssize_t n = read((int)fd, buf, (size_t)count);
+    return (int32_t)n;
+}
+
+int32_t _FdWrite(int32_t fd, void* buf, int32_t count) {
+    if (fd < 0 || count <= 0) return 0;
+    ssize_t n = write((int)fd, buf, (size_t)count);
+    return (int32_t)n;
+}
+
+/* Origin: 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END (matches TSeekOrigin). */
+int64_t _FdSeek(int32_t fd, int64_t offset, int32_t origin) {
+    int whence = SEEK_SET;
+    if (origin == 1) whence = SEEK_CUR;
+    else if (origin == 2) whence = SEEK_END;
+    off_t r = lseek((int)fd, (off_t)offset, whence);
+    return (int64_t)r;
+}
+
+int64_t _FdSize(int32_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+
+void _FdClose(int32_t fd) {
+    if (fd >= 0) close((int)fd);
 }

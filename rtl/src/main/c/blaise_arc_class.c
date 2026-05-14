@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 typedef void (*BlaiseFieldCleanupFn)(void*);
 
@@ -54,4 +55,25 @@ void _ClassRelease(void* user_ptr) {
         if (h->cleanup) h->cleanup(user_ptr);
         free((char*)user_ptr - CLASS_HDR_SIZE);
     }
+}
+
+/* Abstract-method tombstone.
+ *
+ * The compiler emits references to this symbol in two places:
+ *   1. Vtable slots for `virtual; abstract` methods on an abstract class.
+ *      In normal use these are overwritten by the subclass's vtable when
+ *      the abstract class cannot itself be instantiated, but the abstract
+ *      class's own vtable still references this stub so that the IR links.
+ *   2. Interface dispatch tables (itabs) that map a class's interfaces to
+ *      methods which happen to be abstract on that class.
+ *
+ * The function should be statically unreachable in correct programs.  If
+ * control somehow reaches it (e.g. a future direct vtable dispatch on an
+ * abstract class), abort with a clear message so the bug is obvious. */
+void _AbstractMethodError(void) {
+    fprintf(stderr,
+        "Runtime error: abstract method called.\n"
+        "This indicates a bug in the compiler or RTL — a vtable slot that\n"
+        "should have been overridden was dispatched instead.\n");
+    abort();
 }

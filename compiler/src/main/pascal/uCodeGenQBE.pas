@@ -84,6 +84,8 @@ type
     procedure EmitVTableDefs(AProg: TProgram);
     procedure EmitMethodDefs(AProg: TProgram);
     procedure EmitInterfaceDefs(AProg: TProgram);
+    function  IsAbstractClassMethod(ARec: TRecordTypeDesc;
+                                    const AMethName: string): Boolean;
     procedure EmitFieldCleanupDefs(AProg: TProgram);
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ARec: TRecordTypeDesc);
@@ -4074,8 +4076,9 @@ procedure TCodeGenQBE.EmitVTableDefs(AProg: TProgram);
   Dispatch uses (VTableSlot + 1) * 8 to skip the typeinfo slot.
   TObject's vtable carries Destroy and ToString — referenced by every
   user class through inheritance and by the typeinfo's vtable slot.
-  Abstract vtable slots point to $__abstract_method_error, a stub that
-  calls abort() to terminate the process if somehow reached at runtime. }
+  Abstract vtable slots point to $_AbstractMethodError (defined in the C
+  RTL — blaise_arc_class.c — so program and unit IR can both reference it
+  without duplicate-symbol conflicts at link time). }
 var
   I, S:         Integer;
   TD:           TTypeDecl;
@@ -4085,35 +4088,8 @@ var
   E:            TVTableEntry;
   Line:         string;
   MName:        string;
-  NeedAbstStub: Boolean;
   ERef:         string;
 begin
-  { Emit the abstract-method-error stub if any class in this program
-    has abstract methods that may appear in a vtable. }
-  NeedAbstStub := False;
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
-  begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
-    if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
-    if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
-    if TRecordTypeDesc(TDesc).HasAbstractMethods then
-    begin
-      NeedAbstStub := True;
-      Break;
-    end;
-  end;
-  if NeedAbstStub then
-  begin
-    EmitLine('');
-    EmitLine('# Abstract method stub -- abort() if called at runtime');
-    EmitLine('function $__abstract_method_error() {');
-    EmitLine('@start');
-    EmitLine('  call $abort()');
-    EmitLine('  ret');
-    EmitLine('}');
-  end;
-
   EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
            ', l $TObject_Destroy, l $TObject_ToString }');
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
@@ -4130,7 +4106,7 @@ begin
     begin
       E := RT.VTableEntryAt(S);
       if E.IsAbstract then
-        ERef := ', l $__abstract_method_error'
+        ERef := ', l $_AbstractMethodError'
       else if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
         ERef := ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
@@ -4153,7 +4129,7 @@ begin
     begin
       E := RT.VTableEntryAt(S);
       if E.IsAbstract then
-        ERef := ', l $__abstract_method_error'
+        ERef := ', l $_AbstractMethodError'
       else if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
         ERef := ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
       else
@@ -4182,6 +4158,7 @@ var
   ItabLine:    string;
   ImplLine:    string;
   MethName:    string;
+  MethRef:     string;
   IntfMangle:  string;
   GII:         TGenericInterfaceInstance;
   GI:          TGenericInstance;
@@ -4212,7 +4189,11 @@ begin
     ClassRT := TRecordTypeDesc(TDesc);
     if ClassRT.ImplementsCount = 0 then Continue;
 
-    { One itab per interface }
+    { One itab per interface — when a class's vtable slot for a given
+      interface method is abstract (e.g. the class is an abstract base that
+      declares the interface but defers implementation to subclasses), the
+      itab entry must point at $_AbstractMethodError instead of the would-be
+      symbol, which does not exist. }
     for J := 0 to ClassRT.ImplementsCount - 1 do
     begin
       IntfDesc   := ClassRT.ImplementsIntfAt(J);
@@ -4221,10 +4202,14 @@ begin
       for K := 0 to IntfDesc.MethodCount - 1 do
       begin
         MethName := IntfDesc.MethodName(K);
-        if K = 0 then
-          ItabLine := ItabLine + ' l $' + TD.Name + '_' + MethName
+        if IsAbstractClassMethod(ClassRT, MethName) then
+          MethRef := '$_AbstractMethodError'
         else
-          ItabLine := ItabLine + ', l $' + TD.Name + '_' + MethName;
+          MethRef := '$' + TD.Name + '_' + MethName;
+        if K = 0 then
+          ItabLine := ItabLine + ' l ' + MethRef
+        else
+          ItabLine := ItabLine + ', l ' + MethRef;
       end;
       ItabLine := ItabLine + ' }';
       EmitLine(ItabLine);
@@ -4264,10 +4249,14 @@ begin
       for K := 0 to IntfDesc.MethodCount - 1 do
       begin
         MethName := IntfDesc.MethodName(K);
-        if K = 0 then
-          ItabLine := ItabLine + ' l $' + MName + '_' + MethName
+        if IsAbstractClassMethod(ClassRT, MethName) then
+          MethRef := '$_AbstractMethodError'
         else
-          ItabLine := ItabLine + ', l $' + MName + '_' + MethName;
+          MethRef := '$' + MName + '_' + MethName;
+        if K = 0 then
+          ItabLine := ItabLine + ' l ' + MethRef
+        else
+          ItabLine := ItabLine + ', l ' + MethRef;
       end;
       ItabLine := ItabLine + ' }';
       EmitLine(ItabLine);
@@ -4291,6 +4280,23 @@ begin
   end;
 
   EmitLine('');
+end;
+
+function TCodeGenQBE.IsAbstractClassMethod(ARec: TRecordTypeDesc;
+                                           const AMethName: string): Boolean;
+{ An interface method maps to one of ARec's vtable slots.  If that slot is
+  flagged abstract (no concrete implementation on this class), itab/vtable
+  emission must point at $_AbstractMethodError so linking succeeds.  The
+  abstract class itself can never be instantiated, so the stub is
+  statically unreachable; it exists purely to satisfy the linker. }
+var
+  Slot: Integer;
+begin
+  Slot := ARec.FindVTableSlot(AMethName);
+  if Slot < 0 then
+    Result := False
+  else
+    Result := ARec.VTableEntryAt(Slot).IsAbstract;
 end;
 
 procedure TCodeGenQBE.EmitFieldCleanupFn(const AMangledName: string;
@@ -7932,6 +7938,7 @@ var
   MethStr:      string;
   MethLine:     string;
   ItabLine:     string;
+  ItabRef:      string;
   ImplLine:     string;
   MethName:     string;
   IntfMangle:   string;
@@ -8062,7 +8069,10 @@ begin
                    ', l $vtable_' + TD.Name + ' }');
         end;
 
-        { Vtable data }
+        { Vtable data — abstract slots point at $__abstract_method_error
+          so the abstract class's vtable links even when no subclass
+          overrides the method.  Matches EmitVTableDefs behaviour for
+          program-level classes. }
         for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
         begin
           TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
@@ -8075,7 +8085,9 @@ begin
           for S := 0 to RT.VTableCount - 1 do
           begin
             E := RT.VTableEntryAt(S);
-            if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
+            if E.IsAbstract then
+              VLine := VLine + ', l $_AbstractMethodError'
+            else if (Length(E.ImplName) > 0) and (StrAt(E.ImplName, 0) = Ord('$')) then
               VLine := VLine + ', l $' + QBEMangle(StrCopyTail(E.ImplName, 1))
             else
               VLine := VLine + ', l ' + QBEMangle(E.ImplName);
@@ -8101,10 +8113,15 @@ begin
             for K := 0 to IntfDesc.MethodCount - 1 do
             begin
               MethName := IntfDesc.MethodName(K);
-              if K = 0 then
-                ItabLine := ItabLine + ' l $' + TD.Name + '_' + MethName
+              if (ClassRT.FindVTableSlot(MethName) >= 0) and
+                 ClassRT.VTableEntryAt(ClassRT.FindVTableSlot(MethName)).IsAbstract then
+                ItabRef := '$_AbstractMethodError'
               else
-                ItabLine := ItabLine + ', l $' + TD.Name + '_' + MethName;
+                ItabRef := '$' + TD.Name + '_' + MethName;
+              if K = 0 then
+                ItabLine := ItabLine + ' l ' + ItabRef
+              else
+                ItabLine := ItabLine + ', l ' + ItabRef;
             end;
             ItabLine := ItabLine + ' }';
             EmitLine(ItabLine);

@@ -101,7 +101,9 @@ uses
   cp.test.e2e.strutils,
   cp.test.dynarray,
   cp.test.math,
-  cp.test.e2e.math;
+  cp.test.e2e.math,
+  cp.test.streams,
+  cp.test.e2e.streams;
 
 begin
   Halt(RunAll);

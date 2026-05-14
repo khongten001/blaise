@@ -76,6 +76,12 @@ type
     procedure TestCodegen_AbstractMethod_StubInVTable;
     procedure TestCodegen_AbstractClass_VTableHasStub;
     procedure TestCodegen_ConcreteSubclass_OverridesAbstract;
+    { Abstract class that also declares an interface — itab slots for
+      the abstract methods must reference $_AbstractMethodError so the
+      IR links even though the methods have no body on the abstract
+      class.  The class is never instantiated, so the stub is
+      statically unreachable. }
+    procedure TestCodegen_AbstractClassWithInterface_ItabHasStub;
   end;
 
 implementation
@@ -659,8 +665,9 @@ begin
     begin end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
-  { Abstract method vtable slot must reference the abstract stub, not a real body }
-  AssertTrue('abstract stub in IR', IRContains(IR, '__abstract'));
+  { Abstract method vtable slot must reference the runtime abort stub
+    ($_AbstractMethodError, defined in blaise_arc_class.c), not a real body }
+  AssertTrue('abstract stub in IR', IRContains(IR, '_AbstractMethodError'));
 end;
 
 procedure TVTableTests.TestCodegen_AbstractClass_VTableHasStub;
@@ -678,7 +685,7 @@ begin
     ''');
   AssertTrue('IR non-empty', IR <> '');
   AssertTrue('vtable emitted', IRContains(IR, 'vtable_TBase'));
-  AssertTrue('abstract stub present', IRContains(IR, '__abstract'));
+  AssertTrue('abstract stub present', IRContains(IR, '_AbstractMethodError'));
 end;
 
 procedure TVTableTests.TestCodegen_ConcreteSubclass_OverridesAbstract;
@@ -700,6 +707,28 @@ begin
   { TCircle vtable should point to TCircle_Draw, not the abstract stub }
   AssertTrue('TCircle_Draw in IR', IRContains(IR, 'TCircle_Draw'));
   AssertTrue('TCircle vtable in IR', IRContains(IR, 'vtable_TCircle'));
+end;
+
+procedure TVTableTests.TestCodegen_AbstractClassWithInterface_ItabHasStub;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      IShape = interface
+        procedure Draw;
+      end;
+      TShape = class(TObject, IShape)
+        procedure Draw; virtual; abstract;
+      end;
+    begin end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('TShape itab emitted', IRContains(IR, 'itab_TShape_IShape'));
+  { The itab slot for Draw must reference the runtime stub, not the
+    nonexistent TShape_Draw symbol. }
+  AssertTrue('itab references stub', IRContains(IR, '_AbstractMethodError'));
 end;
 
 initialization
