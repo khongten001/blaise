@@ -198,7 +198,7 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
-  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);
   Result := True
@@ -244,7 +244,7 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
-  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProc(BinFile, AExtraArgs, AStdout);
   Result := True
@@ -288,7 +288,7 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then Exit;
-  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm'], ToolOut);
   if Rc <> 0 then Exit;
 
   Rc := RunProc('valgrind',
@@ -351,7 +351,7 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
-  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL], ToolOut);
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);
   Result := True

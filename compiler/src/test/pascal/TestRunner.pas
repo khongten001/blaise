@@ -99,7 +99,9 @@ uses
   cp.test.tokenkindname,
   cp.test.strutils,
   cp.test.e2e.strutils,
-  cp.test.dynarray;
+  cp.test.dynarray,
+  cp.test.math,
+  cp.test.e2e.math;
 
 begin
   Halt(RunAll);

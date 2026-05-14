@@ -599,9 +599,12 @@ begin
         ImplDecl.ResolvedReturnType := ParType;
       end;
 
-      { Match impl to forward by signature when overloaded.  Walk all
-        FProcIndex entries with this name; pick the one whose mangled
-        signature equals the impl's. }
+      { Match impl to forward by signature.
+        When any forward decl with this name is overloaded (or when the impl
+        itself is marked overload), use mangled-signature matching so that each
+        overload variant pairs with the correct forward decl.  This handles the
+        common pattern where the interface marks each overload but the
+        implementation body omits the 'overload' keyword. }
       ImplIdx := -1;
       if ImplDecl.IsOverload then
       begin
@@ -616,7 +619,21 @@ begin
           end;
       end
       else
-        ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+      begin
+        { Check if any forward decl with this name is overloaded.
+          If so, use signature matching even without 'overload' on the impl. }
+        for J := 0 to FProcIndex.Count - 1 do
+          if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
+             (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
+              MangleParamSig(ImplDecl)) then
+          begin
+            ImplIdx := J;
+            Break;
+          end;
+        if ImplIdx < 0 then
+          ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+      end;
 
       if ImplIdx >= 0 then
       begin
@@ -845,7 +862,13 @@ begin
         ImplDecl.ResolvedReturnType := ParType;
       end;
 
-      { Match impl to forward by signature when overloaded. }
+      { Match impl to forward by signature.
+        When any forward decl with this name is overloaded (or when the impl
+        itself is marked overload), use mangled-signature matching so that
+        each overload variant pairs with the correct forward decl.
+        This covers the common Pascal pattern where the interface marks each
+        overload with the 'overload' keyword but the implementation section
+        repeats the body without re-stating 'overload'. }
       ImplIdx := -1;
       if ImplDecl.IsOverload then
       begin
@@ -860,7 +883,21 @@ begin
           end;
       end
       else
-        ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+      begin
+        { Check if any forward decl with this name is overloaded.
+          If so, use signature matching even though the impl lacks 'overload'. }
+        for J := 0 to FProcIndex.Count - 1 do
+          if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
+             (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
+              MangleParamSig(ImplDecl)) then
+          begin
+            ImplIdx := J;
+            Break;
+          end;
+        if ImplIdx < 0 then
+          ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+      end;
 
       if ImplIdx >= 0 then
       begin
@@ -4775,6 +4812,104 @@ begin
       SemanticError(Format('Abs requires a numeric argument, got ''%s''', [Result.Name]),
         AExpr.Line, AExpr.Col);
     AExpr.ResolvedType := Result;  { return type matches argument type }
+    Exit;
+  end;
+
+  { Math builtins — Sqrt, Ceil, Floor, Round, Trunc, Ln, Log2, Log10,
+    Power, Sin, Cos, Tan, ArcTan, ArcTan2, IsNaN, IsInfinite.
+    These are implemented as compiler builtins rather than RTL functions
+    so that the codegen can emit dtosi/stosi for the float→integer
+    conversions (Ceil/Floor/Round/Trunc) and can dispatch to the *f
+    variants for Single arguments on the trig functions.
+    Min and Max are implemented in pure Pascal in math.pas because they
+    are handled correctly by normal overload resolution. }
+
+  if SameText(AExpr.Name, 'Sqrt') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('Sqrt requires exactly one argument', AExpr.Line, AExpr.Col);
+    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    if not Result.IsFloat then
+      SemanticError(Format('Sqrt requires a float argument, got ''%s''', [Result.Name]),
+        AExpr.Line, AExpr.Col);
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Ceil') or SameText(AExpr.Name, 'Floor') or
+     SameText(AExpr.Name, 'Round') or SameText(AExpr.Name, 'Trunc') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    if not ArgType.IsFloat then
+      SemanticError(Format('%s requires a float argument, got ''%s''', [AExpr.Name, ArgType.Name]),
+        AExpr.Line, AExpr.Col);
+    Result := FTable.TypeInteger;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Ln') or SameText(AExpr.Name, 'Log2') or
+     SameText(AExpr.Name, 'Log10') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    if not ArgType.IsFloat then
+      SemanticError(Format('%s requires a float argument, got ''%s''', [AExpr.Name, ArgType.Name]),
+        AExpr.Line, AExpr.Col);
+    Result := FTable.TypeDouble;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Power') then
+  begin
+    if AExpr.Args.Count <> 2 then
+      SemanticError('Power requires exactly two arguments', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Result := FTable.TypeDouble;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'Sin') or SameText(AExpr.Name, 'Cos') or
+     SameText(AExpr.Name, 'Tan') or SameText(AExpr.Name, 'ArcTan') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
+    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    if not Result.IsFloat then
+      SemanticError(Format('%s requires a float argument, got ''%s''', [AExpr.Name, Result.Name]),
+        AExpr.Line, AExpr.Col);
+    AExpr.ResolvedType := Result;  { return type matches argument type — Single→Single, Double→Double }
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'ArcTan2') then
+  begin
+    if AExpr.Args.Count <> 2 then
+      SemanticError('ArcTan2 requires exactly two arguments', AExpr.Line, AExpr.Col);
+    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    if not Result.IsFloat then
+      SemanticError('ArcTan2 requires float arguments', AExpr.Line, AExpr.Col);
+    AExpr.ResolvedType := Result;  { return type matches first argument type }
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'IsNaN') or SameText(AExpr.Name, 'IsInfinite') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
+    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    if not ArgType.IsFloat then
+      SemanticError(Format('%s requires a float argument, got ''%s''', [AExpr.Name, ArgType.Name]),
+        AExpr.Line, AExpr.Col);
+    Result := FTable.TypeBoolean;
+    AExpr.ResolvedType := Result;
     Exit;
   end;
 

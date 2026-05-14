@@ -1329,6 +1329,27 @@ begin
   Sym := TSymbol.Create('ProcessWaitOnExit', skProcedure, nil);          Define(Sym);
   Sym := TSymbol.Create('ProcessExitCode',   skFunction,  FTypeInteger); Define(Sym);
   Sym := TSymbol.Create('ProcessFree',       skProcedure, nil);          Define(Sym);
+  { Math builtins — Sqrt/Ceil/Floor/Round/Trunc/Ln/Log2/Log10/Power,
+    Sin/Cos/Tan/ArcTan/ArcTan2, IsNaN/IsInfinite.
+    Return types marked here are overridden in uSemantic.AnalyseFuncCallExpr
+    (e.g. Ceil/Floor/Round/Trunc return Integer; Sin/Cos/Tan return the arg
+    type; IsNaN/IsInfinite return Boolean). }
+  Sym := TSymbol.Create('Sqrt',       skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Ceil',       skFunction, FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('Floor',      skFunction, FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('Round',      skFunction, FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('Trunc',      skFunction, FTypeInteger); Define(Sym);
+  Sym := TSymbol.Create('Ln',         skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Log2',       skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Log10',      skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Power',      skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Sin',        skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Cos',        skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('Tan',        skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('ArcTan',     skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('ArcTan2',    skFunction, FTypeDouble);  Define(Sym);
+  Sym := TSymbol.Create('IsNaN',      skFunction, FTypeBoolean); Define(Sym);
+  Sym := TSymbol.Create('IsInfinite', skFunction, FTypeBoolean); Define(Sym);
 end;
 
 function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;

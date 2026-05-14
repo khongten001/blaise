@@ -126,6 +126,10 @@ type
     procedure AssertNotNull(AObject: TObject); overload;
     procedure AssertNull   (AMsg: string; AObject: TObject); overload;
     procedure AssertNull   (AObject: TObject); overload;
+    { AssertNotNil — verifies that a Pointer value is not nil.
+      Use for type descriptors, raw pointers, and other non-TObject values. }
+    procedure AssertNotNil(AMsg: string; APtr: Pointer); overload;
+    procedure AssertNotNil(APtr: Pointer); overload;
     procedure AssertSame   (AMsg: string; AExpected, AActual: TObject); overload;
     procedure AssertSame   (AExpected, AActual: TObject); overload;
 
@@ -420,6 +424,18 @@ procedure TAssert.AssertNull(AObject: TObject);
 begin
   if AObject <> nil then
     Self.Fail('Expected nil object');
+end;
+
+procedure TAssert.AssertNotNil(AMsg: string; APtr: Pointer);
+begin
+  if APtr = nil then
+    Self.Fail(AMsg + ' Expected non-nil pointer');
+end;
+
+procedure TAssert.AssertNotNil(APtr: Pointer);
+begin
+  if APtr = nil then
+    Self.Fail('Expected non-nil pointer');
 end;
 
 procedure TAssert.AssertSame(AMsg: string; AExpected, AActual: TObject);

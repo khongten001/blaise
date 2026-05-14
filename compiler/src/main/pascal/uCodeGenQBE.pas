@@ -3829,6 +3829,16 @@ begin
       EmitLine('  %_var_Result =l alloc4 1');
       EmitLine('  storew 0, %_var_Result');
     end
+    else if RetQType = 'd' then
+    begin
+      EmitLine('  %_var_Result =l alloc8 1');
+      EmitLine('  stored d_0, %_var_Result');
+    end
+    else if RetQType = 's' then
+    begin
+      EmitLine('  %_var_Result =l alloc4 1');
+      EmitLine('  stores s_0, %_var_Result');
+    end
     else
     begin
       EmitLine('  %_var_Result =l alloc8 1');
@@ -3874,6 +3884,10 @@ begin
         EmitLine(Format('  %s =%s copy %%_var_Result', [RetTemp, RetQType]))
       else if RetQType = 'w' then
         EmitLine(Format('  %s =w loadw %%_var_Result', [RetTemp]))
+      else if RetQType = 'd' then
+        EmitLine(Format('  %s =d loadd %%_var_Result', [RetTemp]))
+      else if RetQType = 's' then
+        EmitLine(Format('  %s =s loads %%_var_Result', [RetTemp]))
       else
         EmitLine(Format('  %s =l loadl %%_var_Result', [RetTemp]));
       EmitLine(Format('  ret %s', [RetTemp]));
@@ -4458,6 +4472,16 @@ begin
       EmitLine('  %_var_Result =l alloc4 1');
       EmitLine('  storew 0, %_var_Result');
     end
+    else if RetQType = 'd' then
+    begin
+      EmitLine('  %_var_Result =l alloc8 1');
+      EmitLine('  stored d_0, %_var_Result');
+    end
+    else if RetQType = 's' then
+    begin
+      EmitLine('  %_var_Result =l alloc4 1');
+      EmitLine('  stores s_0, %_var_Result');
+    end
     else
     begin
       EmitLine('  %_var_Result =l alloc8 1');
@@ -4504,6 +4528,10 @@ begin
         EmitLine(Format('  %s =%s copy %%_var_Result', [RetTemp, RetQType]))
       else if RetQType = 'w' then
         EmitLine(Format('  %s =w loadw %%_var_Result', [RetTemp]))
+      else if RetQType = 'd' then
+        EmitLine(Format('  %s =d loadd %%_var_Result', [RetTemp]))
+      else if RetQType = 's' then
+        EmitLine(Format('  %s =s loads %%_var_Result', [RetTemp]))
       else
         EmitLine(Format('  %s =l loadl %%_var_Result', [RetTemp]));
       EmitLine(Format('  ret %s', [RetTemp]));
@@ -5397,6 +5425,242 @@ begin
           's': EmitLine(Format('  %s =s call $fabsf(s %s)',     [T, L]));
         else   EmitLine(Format('  %s =w call $_AbsInt(w %s)',   [T, L]));
         end;
+        Result := T;
+        Exit;
+      end;
+
+      { Math builtins — Sqrt, Ceil, Floor, Round, Trunc, Ln, Log2, Log10,
+        Power, Sin, Cos, Tan, ArcTan, ArcTan2, IsNaN, IsInfinite.
+        These are compiler builtins so that:
+          - Ceil/Floor/Round/Trunc can emit dtosi (double→int) directly.
+          - Sin/Cos/Tan/ArcTan dispatch to *f variants for Single args.
+        Min/Max/Sign/DivMod/InRange/EnsureRange live in math.pas RTL. }
+
+      if SameText(FC.Name, 'Sqrt') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $sqrtf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $sqrt(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Ceil') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        R := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+        begin
+          EmitLine(Format('  %s =s call $ceilf(s %s)', [T, L]));
+          EmitLine(Format('  %s =w stosi %s', [R, T]));
+        end
+        else
+        begin
+          EmitLine(Format('  %s =d call $ceil(d %s)', [T, L]));
+          EmitLine(Format('  %s =w dtosi %s', [R, T]));
+        end;
+        Result := R;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Floor') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        R := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+        begin
+          EmitLine(Format('  %s =s call $floorf(s %s)', [T, L]));
+          EmitLine(Format('  %s =w stosi %s', [R, T]));
+        end
+        else
+        begin
+          EmitLine(Format('  %s =d call $floor(d %s)', [T, L]));
+          EmitLine(Format('  %s =w dtosi %s', [R, T]));
+        end;
+        Result := R;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Trunc') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =w stosi %s', [T, L]))
+        else
+          EmitLine(Format('  %s =w dtosi %s', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Round') then
+      begin
+        { Round half-away from zero: C99 round() rounds .5 away from zero,
+          matching the behaviour of Delphi/FPC Round(). }
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        R := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+        begin
+          EmitLine(Format('  %s =s call $roundf(s %s)', [T, L]));
+          EmitLine(Format('  %s =w stosi %s', [R, T]));
+        end
+        else
+        begin
+          EmitLine(Format('  %s =d call $round(d %s)', [T, L]));
+          EmitLine(Format('  %s =w dtosi %s', [R, T]));
+        end;
+        Result := R;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Ln') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $logf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $log(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Log2') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $log2f(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $log2(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Log10') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $log10f(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $log10(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Power') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =d call $pow(d %s, d %s)', [T, L, R]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Sin') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $sinf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $sin(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Cos') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $cosf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $cos(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'Tan') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $tanf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $tan(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'ArcTan') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $atanf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =d call $atan(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'ArcTan2') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =s call $atan2f(s %s, s %s)', [T, L, R]))
+        else
+          EmitLine(Format('  %s =d call $atan2(d %s, d %s)', [T, L, R]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'IsNaN') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =w call $__isnanf(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =w call $__isnan(d %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name, 'IsInfinite') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        QType := QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType);
+        if QType = 's' then
+          EmitLine(Format('  %s =w call $__isinff(s %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =w call $__isinf(d %s)', [T, L]));
         Result := T;
         Exit;
       end;

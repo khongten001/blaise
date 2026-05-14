@@ -432,6 +432,7 @@ begin
       Args.Add(AOPDFAsmFile);
     if RTLPath <> '' then
       Args.Add(RTLPath);
+    Args.Add('-lm');  { math functions (sqrt, sin, cos, etc.) }
     ExitCode := RunProcess('cc', Args, Msg);
   finally
     Args.Free;
