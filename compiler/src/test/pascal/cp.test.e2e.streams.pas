@@ -35,6 +35,9 @@ type
     procedure TestRun_TextRoundTrip_WriteLineReadLine;
     procedure TestRun_TextReader_MixedLineEndings;
     procedure TestRun_TextReader_ReadAll;
+    procedure TestRun_TBuffer_WriteThenRead;
+    procedure TestRun_TBuffer_TransferTo_SplitsCorrectly;
+    procedure TestRun_TBuffer_IndexOf_FindsByte;
   end;
 
 implementation
@@ -328,6 +331,85 @@ const
     end.
     ''';
 
+  { TBuffer write+read round-trip.  Verifies the byte-load fix in the
+    compiler's TDerefExpr lowering (loadub for ^Byte; previously loadw
+    read four bytes and corrupted values). }
+  SrcTBufferRoundTrip = '''
+    program P;
+    uses Streams;
+    var B: TBuffer;
+        Buf: array[0..15] of Byte;
+        Dst: array[0..31] of Byte;
+        I, N: Integer;
+    begin
+      B := TBuffer.Create;
+      try
+        for I := 0 to 9 do Buf[I] := 65 + I;
+        B.Write(@Buf[0], 10);
+        WriteLn(B.Size);
+        N := B.Read(@Dst[0], 32);
+        WriteLn(N);
+        for I := 0 to N - 1 do WriteLn(Dst[I]);
+        WriteLn(B.Size)
+      finally
+        B.Free
+      end
+    end.
+    ''';
+
+  { TransferTo moves a prefix of bytes from one buffer to another.
+    Verifies the segment-rope split: 7 bytes move to Dst, 3 remain. }
+  SrcTBufferTransferTo = '''
+    program P;
+    uses Streams;
+    var Src, Dst: TBuffer;
+        Buf: array[0..15] of Byte;
+        Got: array[0..31] of Byte;
+        I, N: Integer;
+    begin
+      Src := TBuffer.Create;
+      Dst := TBuffer.Create;
+      try
+        for I := 0 to 9 do Buf[I] := 65 + I;
+        Src.Write(@Buf[0], 10);
+        Src.TransferTo(Dst, 7);
+        WriteLn(Src.Size);
+        WriteLn(Dst.Size);
+        N := Dst.Read(@Got[0], 32);
+        for I := 0 to N - 1 do WriteLn(Got[I]);
+        N := Src.Read(@Got[0], 32);
+        for I := 0 to N - 1 do WriteLn(Got[I])
+      finally
+        Src.Free;
+        Dst.Free
+      end
+    end.
+    ''';
+
+  { IndexOf scans for a byte without consuming bytes.  Returns offset
+    from the read position, or -1 if not found. }
+  SrcTBufferIndexOf = '''
+    program P;
+    uses Streams;
+    var B: TBuffer;
+        Buf: array[0..15] of Byte;
+        I: Integer;
+    begin
+      B := TBuffer.Create;
+      try
+        for I := 0 to 9 do Buf[I] := 65 + I;
+        B.Write(@Buf[0], 10);
+        WriteLn(B.IndexOf(65));
+        WriteLn(B.IndexOf(67));
+        WriteLn(B.IndexOf(74));
+        WriteLn(B.IndexOf(99));
+        WriteLn(B.Size)
+      finally
+        B.Free
+      end
+    end.
+    ''';
+
   { TMemoryOutputStream implements ISeekable; Supports() must return
     True and let us query the buffered byte count. }
   SrcSupportsISeekable = '''
@@ -459,6 +541,42 @@ begin
   AssertEquals('exit code', 0, RCode);
   AssertEquals('ReadAll returns entire stream',
     'hello world' + LE + '11' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TBuffer_WriteThenRead;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTBufferRoundTrip, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('TBuffer round-trip A..J',
+    '10' + LE + '10' + LE +
+    '65' + LE + '66' + LE + '67' + LE + '68' + LE + '69' + LE +
+    '70' + LE + '71' + LE + '72' + LE + '73' + LE + '74' + LE +
+    '0' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TBuffer_TransferTo_SplitsCorrectly;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTBufferTransferTo, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('Src.Size=3, Dst.Size=7, then A..G + H..J',
+    '3' + LE + '7' + LE +
+    '65' + LE + '66' + LE + '67' + LE + '68' + LE +
+    '69' + LE + '70' + LE + '71' + LE +
+    '72' + LE + '73' + LE + '74' + LE, Output)
+end;
+
+procedure TE2EStreamsTests.TestRun_TBuffer_IndexOf_FindsByte;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTBufferIndexOf, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('IndexOf: 0, 2, 9, -1; size unchanged',
+    '0' + LE + '2' + LE + '9' + LE + '-1' + LE + '10' + LE, Output)
 end;
 
 initialization

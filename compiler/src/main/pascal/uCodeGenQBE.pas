@@ -5135,8 +5135,14 @@ begin
   end;
   ValTemp := EmitExpr(AStmt.ValExpr);
   QType   := QbeTypeOf(AStmt.BaseTy);
-  if QType = 'w' then StoreInstr := 'storew'
-                 else StoreInstr := 'storel';
+  { Byte/Boolean stores must use storeb — storew would write four
+    bytes and clobber three adjacent bytes.  Symmetric with the
+    loadub fix in the TDerefExpr branch of EmitExpr. }
+  if (AStmt.BaseTy <> nil) and
+     (AStmt.BaseTy.Kind in [tyByte, tyBoolean]) then
+    StoreInstr := 'storeb'
+  else if QType = 'w' then StoreInstr := 'storew'
+                      else StoreInstr := 'storel';
   EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));
 end;
 
@@ -7643,12 +7649,19 @@ begin
     begin
       QType := QbeTypeOf(AExpr.ResolvedType);
       L     := AllocTemp;
-      case QType of
-        'w': EmitLine(Format('  %s =w loadw %s', [L, T]));
-        'd': EmitLine(Format('  %s =d loadd %s', [L, T]));
-        's': EmitLine(Format('  %s =s loads %s', [L, T]));
-      else   EmitLine(Format('  %s =l loadl %s', [L, T]));
-      end;
+      { Byte / Boolean dereferences must use loadub — loadw would read
+        four bytes and corrupt the value with adjacent memory.  Same
+        narrowing applies to array element loads (line ~1886). }
+      if (AExpr.ResolvedType <> nil) and
+         (AExpr.ResolvedType.Kind in [tyByte, tyBoolean]) then
+        EmitLine(Format('  %s =w loadub %s', [L, T]))
+      else
+        case QType of
+          'w': EmitLine(Format('  %s =w loadw %s', [L, T]));
+          'd': EmitLine(Format('  %s =d loadd %s', [L, T]));
+          's': EmitLine(Format('  %s =s loads %s', [L, T]));
+        else   EmitLine(Format('  %s =l loadl %s', [L, T]));
+        end;
       Result := L;
     end;
   end

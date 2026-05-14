@@ -258,6 +258,61 @@ type
     procedure WriteLine(const S: string);
   end;
 
+  { TBuffer — segmented in-memory buffer that is both source and sink.
+
+    Internal representation is a singly-linked list of fixed-size
+    segments (kSegmentSize = 8192 bytes) drawn from a module-level
+    freelist.  Each segment carries Pos (next byte to read) and Limit
+    (one past the last written byte) so writes append and reads
+    consume from the same list without copying.
+
+    The defining operation is TransferTo(Dst, Count): instead of
+    memcpy'ing bytes from this buffer to Dst, the segments themselves
+    are unlinked and re-linked onto Dst.  For multi-layer pipelines
+    (decode → buffer → forward) this turns N memcpys per byte into 1,
+    matching Okio's performance characteristics.
+
+    TBuffer implements both IInputStream and IOutputStream directly
+    rather than extending the abstract bases — this is the case the
+    capability-interface split (over a single-class hierarchy) was
+    designed for.
+
+    TODO(threads): The segment pool is currently single-threaded.  When
+    Blaise gains thread support, the pool must be guarded (per-thread
+    freelist or a lock).  Audit AcquireSegment / ReleaseSegment at
+    that time. }
+  TBufferSegment = class
+    FData:  Pointer;     { 8 KiB raw bytes; owned by the pool }
+    FPos:   Integer;     { next byte to return on Read }
+    FLimit: Integer;     { one past last written byte (FLimit >= FPos) }
+    FNext:  TBufferSegment;
+  end;
+
+  TBuffer = class(TObject, IInputStream, IOutputStream, ICloseable)
+    FHead:   TBufferSegment;  { nil if empty }
+    FTail:   TBufferSegment;  { nil iff FHead is nil }
+    FSize:   Int64;           { sum of (Limit - Pos) across all segments }
+    FClosed: Boolean;
+    constructor Create;
+    procedure Destroy;
+    function Read(Buf: Pointer; Count: Integer): Integer;
+    function Write(Buf: Pointer; Count: Integer): Integer;
+    procedure Flush;
+    procedure Close;
+    function Size: Int64;
+    procedure Clear;
+    { TransferTo — move up to Count bytes from this buffer into Dst by
+      re-linking segments rather than copying bytes.  When a segment's
+      remaining bytes exceed the requested Count, only the prefix is
+      moved (via memcpy into Dst's tail segment); whole segments in
+      the middle are re-linked. }
+    procedure TransferTo(Dst: TBuffer; Count: Int64);
+    { IndexOf — return the offset (from the read position) of the
+      first occurrence of B, or -1 if not present.  Useful for line
+      scanning without consuming bytes. }
+    function IndexOf(B: Byte): Int64;
+  end;
+
   { TBufferedOutputStream — decorator that accumulates writes.
 
     Buffers up to FBufSize bytes; on overflow (or explicit Flush) the
@@ -1047,6 +1102,304 @@ begin
     Self.FInner.Write(Pointer(S), L);
   LF := 10;
   Self.FInner.Write(@LF, 1)
+end;
+
+{ ------------------------------------------------------------------ }
+{ TBuffer — segmented in-memory buffer                                }
+{ ------------------------------------------------------------------ }
+
+const
+  kSegmentSize = 8192;
+
+{ Module-level segment freelist — LIFO recycling via intrusive FNext.
+
+  Note: Generics.Collections.TStack<TBufferSegment> would be the
+  natural fit here, but Blaise does not currently support generic
+  instantiation at unit-global var scope.  The intrusive freelist
+  also avoids an allocation per pool op, which matters at the rate
+  TBuffer churns segments.
+
+  TODO(threads): guard with a mutex once Blaise gains threads.  All
+  AcquireSegment / ReleaseSegment sites need an audit at that time. }
+var
+  GSegmentPool: TBufferSegment;
+
+function AcquireSegment: TBufferSegment;
+begin
+  if GSegmentPool <> nil then
+  begin
+    Result := GSegmentPool;
+    GSegmentPool := Result.FNext;
+    Result.FNext := nil;
+    Result.FPos := 0;
+    Result.FLimit := 0;
+    Exit
+  end;
+  Result := TBufferSegment.Create;
+  Result.FData := malloc(kSegmentSize);
+  Result.FPos := 0;
+  Result.FLimit := 0;
+  Result.FNext := nil
+end;
+
+procedure ReleaseSegment(S: TBufferSegment);
+begin
+  if S = nil then Exit;
+  S.FPos := 0;
+  S.FLimit := 0;
+  S.FNext := GSegmentPool;
+  GSegmentPool := S
+end;
+
+constructor TBuffer.Create;
+begin
+  Self.FHead := nil;
+  Self.FTail := nil;
+  Self.FSize := 0;
+  Self.FClosed := False
+end;
+
+procedure TBuffer.Destroy;
+var
+  S, N: TBufferSegment;
+begin
+  S := Self.FHead;
+  while S <> nil do
+  begin
+    N := S.FNext;
+    ReleaseSegment(S);
+    S := N
+  end;
+  Self.FHead := nil;
+  Self.FTail := nil;
+  Self.FSize := 0
+end;
+
+procedure TBuffer.Clear;
+var
+  S, N: TBufferSegment;
+begin
+  S := Self.FHead;
+  while S <> nil do
+  begin
+    N := S.FNext;
+    ReleaseSegment(S);
+    S := N
+  end;
+  Self.FHead := nil;
+  Self.FTail := nil;
+  Self.FSize := 0
+end;
+
+function TBuffer.Size: Int64;
+begin
+  Result := Self.FSize
+end;
+
+function TBuffer.Write(Buf: Pointer; Count: Integer): Integer;
+var
+  Remaining: Integer;
+  Space:     Integer;
+  Take:      Integer;
+  Src:       Pointer;
+  Dst:       Pointer;
+  Offset:    Integer;
+  Seg:       TBufferSegment;
+begin
+  if Self.FClosed or (Count <= 0) then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Offset := 0;
+  Remaining := Count;
+  while Remaining > 0 do
+  begin
+    { Append to tail if there is room; otherwise allocate a new segment. }
+    if (Self.FTail = nil) or (Self.FTail.FLimit >= kSegmentSize) then
+    begin
+      Seg := AcquireSegment;
+      if Self.FTail = nil then
+        Self.FHead := Seg
+      else
+        Self.FTail.FNext := Seg;
+      Self.FTail := Seg
+    end;
+    Space := kSegmentSize - Self.FTail.FLimit;
+    Take := Remaining;
+    if Take > Space then Take := Space;
+    Src := Pointer(Int64(Buf) + Int64(Offset));
+    Dst := Pointer(Int64(Self.FTail.FData) + Int64(Self.FTail.FLimit));
+    memcpy(Dst, Src, Take);
+    Self.FTail.FLimit := Self.FTail.FLimit + Take;
+    Self.FSize := Self.FSize + Int64(Take);
+    Offset := Offset + Take;
+    Remaining := Remaining - Take
+  end;
+  Result := Count
+end;
+
+procedure TBuffer.Flush;
+begin
+  { No-op: writes land in segments immediately. }
+end;
+
+procedure TBuffer.Close;
+begin
+  Self.FClosed := True
+end;
+
+function TBuffer.Read(Buf: Pointer; Count: Integer): Integer;
+var
+  Total:     Integer;
+  Available: Integer;
+  Take:      Integer;
+  Src:       Pointer;
+  Dst:       Pointer;
+  Seg:       TBufferSegment;
+begin
+  if Count <= 0 then
+  begin
+    Result := 0;
+    Exit
+  end;
+  Total := 0;
+  while (Total < Count) and (Self.FHead <> nil) do
+  begin
+    Available := Self.FHead.FLimit - Self.FHead.FPos;
+    if Available = 0 then
+    begin
+      { Drained — recycle the segment and advance. }
+      Seg := Self.FHead;
+      Self.FHead := Seg.FNext;
+      if Self.FHead = nil then Self.FTail := nil;
+      ReleaseSegment(Seg);
+      Continue
+    end;
+    Take := Count - Total;
+    if Take > Available then Take := Available;
+    Src := Pointer(Int64(Self.FHead.FData) + Int64(Self.FHead.FPos));
+    Dst := Pointer(Int64(Buf) + Int64(Total));
+    memcpy(Dst, Src, Take);
+    Self.FHead.FPos := Self.FHead.FPos + Take;
+    Self.FSize := Self.FSize - Int64(Take);
+    Total := Total + Take
+  end;
+  Result := Total
+end;
+
+procedure TBuffer.TransferTo(Dst: TBuffer; Count: Int64);
+{ Move up to Count bytes from this buffer into Dst's tail.
+
+  Whole segments are unlinked from this buffer's head and re-linked
+  onto Dst's tail — no bytes are copied for the common case where a
+  segment is moved entirely.  If the head segment carries more bytes
+  than requested, only the prefix is moved via a single memcpy into
+  Dst's tail segment (a fresh segment is acquired if needed).
+
+  Partial-prefix moves still leave the original head intact (FPos
+  advanced); the segment continues to belong to this buffer. }
+var
+  Want:      Int64;
+  HeadAvail: Int64;
+  Take:      Integer;
+  Seg:       TBufferSegment;
+  Space:     Integer;
+  Src:       Pointer;
+  DstP:      Pointer;
+begin
+  if Count <= 0 then Exit;
+  Want := Count;
+  while (Want > 0) and (Self.FHead <> nil) do
+  begin
+    HeadAvail := Int64(Self.FHead.FLimit - Self.FHead.FPos);
+    if HeadAvail = 0 then
+    begin
+      Seg := Self.FHead;
+      Self.FHead := Seg.FNext;
+      if Self.FHead = nil then Self.FTail := nil;
+      ReleaseSegment(Seg);
+      Continue
+    end;
+    if (HeadAvail <= Want) and (Self.FHead.FPos = 0) then
+    begin
+      { Whole-segment move — unlink and re-link.  Requires FPos = 0
+        because Dst would see the segment from offset 0 and we cannot
+        rewrite the segment header to keep history. }
+      Seg := Self.FHead;
+      Self.FHead := Seg.FNext;
+      if Self.FHead = nil then Self.FTail := nil;
+      Self.FSize := Self.FSize - HeadAvail;
+      Seg.FNext := nil;
+      if Dst.FTail = nil then
+        Dst.FHead := Seg
+      else
+        Dst.FTail.FNext := Seg;
+      Dst.FTail := Seg;
+      Dst.FSize := Dst.FSize + HeadAvail;
+      Want := Want - HeadAvail
+    end
+    else
+    begin
+      { Partial prefix move — memcpy into Dst's tail, then advance our
+        FPos.  This is the "expensive" path; it only kicks in for
+        unaligned slice boundaries (FPos > 0 or HeadAvail > Want). }
+      Take := Integer(Want);
+      if Int64(Take) > HeadAvail then Take := Integer(HeadAvail);
+      if (Dst.FTail = nil) or (Dst.FTail.FLimit >= kSegmentSize) then
+      begin
+        Seg := AcquireSegment;
+        if Dst.FTail = nil then
+          Dst.FHead := Seg
+        else
+          Dst.FTail.FNext := Seg;
+        Dst.FTail := Seg
+      end;
+      Space := kSegmentSize - Dst.FTail.FLimit;
+      if Take > Space then Take := Space;
+      Src := Pointer(Int64(Self.FHead.FData) + Int64(Self.FHead.FPos));
+      DstP := Pointer(Int64(Dst.FTail.FData) + Int64(Dst.FTail.FLimit));
+      memcpy(DstP, Src, Take);
+      Self.FHead.FPos := Self.FHead.FPos + Take;
+      Self.FSize := Self.FSize - Int64(Take);
+      Dst.FTail.FLimit := Dst.FTail.FLimit + Take;
+      Dst.FSize := Dst.FSize + Int64(Take);
+      Want := Want - Int64(Take)
+    end
+  end
+end;
+
+function TBuffer.IndexOf(B: Byte): Int64;
+{ Scan segments from head to tail looking for B; return the offset
+  from the current read position, or -1 if not found.  Does not
+  consume bytes. }
+var
+  Seg:    TBufferSegment;
+  I:      Integer;
+  Base:   Int64;
+  PB:     ^Byte;
+  Addr:   Int64;
+begin
+  Base := 0;
+  Seg := Self.FHead;
+  while Seg <> nil do
+  begin
+    I := Seg.FPos;
+    while I < Seg.FLimit do
+    begin
+      Addr := Int64(Seg.FData) + Int64(I);
+      PB := Pointer(Addr);
+      if PB^ = B then
+      begin
+        Result := Base + Int64(I - Seg.FPos);
+        Exit
+      end;
+      I := I + 1
+    end;
+    Base := Base + Int64(Seg.FLimit - Seg.FPos);
+    Seg := Seg.FNext
+  end;
+  Result := -1
 end;
 
 end.
