@@ -370,45 +370,6 @@ Blaise class system supports the TTestCase inheritance hierarchy and the
 virtual dispatch pattern fptest relies on.
 
 
-== Stream I/O
-
-=== Formal TStream decorator hierarchy
-
-*What.* Define a `TStream` / `TFilterStream` base pair in the Blaise RTL,
-together with canonical concrete implementations: `TFileStream`,
-`TBufferedStream`, `TDataReader`, and `TDataWriter`.
-
-*Why it matters.* FPC and Delphi define `TStream` as an abstract base, but
-the standard library lacks a `TFilterStream` root for decorator chains.
-Each unit that wraps a stream (ZLib, Cipher, LZMA) reinvents the
-constructor convention, making chains non-uniform and difficult to compose.
-A `TFilterStream` base ensures that every decorator follows the same
-ownership and lifetime contract, enabling composable pipelines such as:
-
-[source,pascal]
-----
-Pipe := TBufferedStream.Create(TFileStream.Create(Path, fmOpenRead));
-----
-
-*ARC advantage.* Under Blaise’s ARC model the outer stream holds a strong
-reference to the inner stream; teardown is automatic when the outermost
-wrapper goes out of scope.  No explicit free-order management is required,
-which eliminates a common source of bugs in FPC code that builds nested
-stream chains.
-
-*Implementation notes.*
-
-* `TStream` — abstract base: `Read`, `Write`, `Seek`, `Size`, `Position`.
-* `TFilterStream` — abstract decorator base: holds `FInner: TStream`; all
-  abstract methods default to forwarding to `FInner`.
-* `TDataReader` / `TDataWriter` — typed I/O over an arbitrary `TStream`
-  (mirrors Java’s `DataInputStream` / `DataOutputStream`).
-* Connection to `TProcess`: process I/O output is currently accumulated as
-  a `string`.  Once `TStream` exists, `TProcessOutput` can expose a
-  `TStream` interface, enabling streaming reads without a full buffer.
-
-*Effort.* Moderate.  Blocked on abstract method support in the class system.
-
 == Debugger
 
 === PIE (ASLR) support in PDR

@@ -2165,6 +2165,160 @@ ordered, resizable sequences.  Native `array of T` is needed for ABI
 compatibility (passing slices to C, inter-op with RTL functions, future
 vectorised operations) and for conciseness in low-level code.
 
+== Stream I/O
+
+=== Decision
+
+The Blaise RTL provides a stream subsystem in the `Streams` unit
+modelled on Go's `io` interfaces and Square's Okio rather than on
+Delphi/FPC's single-class `TStream` hierarchy.  The shape is:
+
+* Two abstract base classes, *one direction each*: `TInputStream` and
+  `TOutputStream`.  Bidirectional read+write on a single handle is rare
+  enough (database engines, file-format backpatching) that it does not
+  justify polluting the common API; a future `TRandomAccessFile` can
+  cover it.
+
+* Three capability interfaces alongside the abstract classes:
+  `ICloseable` (every stream supports it), `IInputStream`,
+  `IOutputStream`.  Concrete classes implement both the abstract base
+  *and* the matching capability interface.  Two capabilities orthogonal
+  to read/write — `ISeekable` (file/memory streams), `IReaderFrom` /
+  `IWriterTo` (optional zero-copy markers consumed by `CopyStream`) —
+  round out the surface.
+
+* The wrappers are decorators: `TBufferedInputStream` wraps any
+  `TInputStream`; `TStreamReader` wraps that for line-oriented reads;
+  similarly on the write side.  Each wrapper owns its inner stream by
+  default (`OwnsInner: Boolean = True`); closing the outer wrapper
+  tears the chain down.
+
+* `TBuffer` is an in-memory segmented buffer (Okio-style segment rope,
+  8 KiB segments from a shared pool) that implements *both*
+  `IInputStream` and `IOutputStream`.  Its `TransferTo` operation
+  re-links segments between buffers without copying bytes, so
+  multi-layer pipelines (decode → buffer → forward) drop from O(N)
+  memcpys per byte to O(1).
+
+* `CopyStream(Src, Dst): Int64` is a free function that runtime-checks
+  for `IReaderFrom` / `IWriterTo` markers and dispatches to the
+  optimised path, with a byte-loop fallback.  Adding a fast-path
+  implementation (e.g. `sendfile(2)` between two `TFileOutputStream`s)
+  later is a non-breaking change — existing callers automatically
+  benefit.
+
+=== Rationale
+
+The design draws explicitly from a cross-language survey (Java, Go,
+Rust, Swift, Kotlin/Okio, C#, Oxygene, Python).  The recurring lessons:
+
+* *Java's `java.io` is the textbook bad case of GoF Decorator* — 70+
+  classes, two parallel byte/char hierarchies, wrapping order silently
+  load-bearing (forget the buffer → 100× slower).  Decorator works
+  *if the decorated interface is tiny* (Go's `io.Reader` has one
+  method; Okio's `Source` has three).  Blaise's abstract bases follow
+  that constraint: `TInputStream` has `Read` and `Close`, and that is
+  the whole protocol.
+
+* *Go's `io.Copy` capability discovery is near-free to provide and
+  hugely valuable.*  Callers write `CopyStream(src, dst)` once; the
+  framework upgrades to zero-copy when both sides cooperate.  The Go
+  team consider this the single most impactful design choice in the
+  package.
+
+* *Okio's segment-rope buffer is the modern answer to multi-layer
+  buffering churn.*  Naive layers each `memcpy` between their own byte
+  arrays; segments are reassigned by pointer, turning the dominant
+  cost into a no-op.  We pay for it with ~300 LOC of pool/segment
+  bookkeeping, which is reasonable.
+
+* *.NET's `StreamReader`-owns-the-inner-stream behaviour is a
+  surprising footgun.*  Blaise wrappers are explicit about ownership
+  (`OwnsInner` parameter), defaulting to True for ergonomics but
+  opting out cleanly when a helper returns a wrapper.
+
+* *Rust's `BufWriter` ignoring drop errors is the cautionary tale on
+  finaliser-based cleanup.*  Blaise's ARC `Destroy` is best-effort: it
+  flushes but absorbs errors silently.  Callers who care about
+  correctness call `Close` explicitly inside a try-finally, which
+  raises `EStreamError` on failure.
+
+* *Python's three-layer `io` (raw / buffered / text) is the right
+  shape for composition* — short reads are a layer-1 concern, charset
+  is a layer-3 concern, mixing them (as `java.io` did) confuses the
+  semantics.  Blaise mirrors this: byte streams (Layer 1+2), buffered
+  decorators (Layer 2/3), text wrappers (Layer 4), segmented buffer
+  (Layer 5), copy framework (Layer 6).
+
+=== Why capability interfaces alongside abstract classes
+
+A defining moment in the design was recognising that `TBuffer` is both
+a source and a sink.  With Blaise's single inheritance, it cannot
+extend both `TInputStream` and `TOutputStream`.  Two solutions exist:
+
+* *Pure interfaces, no abstract classes* — would force every concrete
+  stream to re-implement common machinery (close idempotency, default
+  flush, etc.).
+* *Capability interfaces alongside abstract classes* — abstract
+  classes serve implementers (default code, less boilerplate); the
+  interfaces serve consumers (accept "anything readable" without
+  caring about the inheritance chain).  `TBuffer` implements both
+  interfaces directly without picking a parent.
+
+Blaise chose the latter, matching the existing `IMap<K,V>` +
+`TDictionary<K,V>` pattern in the collections.
+
+=== UTF-8 only in v1
+
+`TStreamReader` and `TStreamWriter` are UTF-8 only.  Strings in Blaise
+are already UTF-8, so the wrappers are effectively pass-through.  The
+constructors accept an `Encoding` parameter for forward compatibility
+(reserved); other encodings are deferred until there is a real
+consumer.  This avoids Java's parallel byte/char hierarchy mistake —
+charset is a parameter, not a type-system axis.
+
+=== Alternatives Rejected
+
+* *Delphi-style single `TStream` root* — rejected.  Accumulates too
+  many methods (`Read`/`Write`/`Seek`/`Size`/`Position`), forces every
+  implementer to override slots that make no sense for their stream
+  (pipes have no size; sockets cannot seek).  Splits cleanly along
+  read/write *and* seekability axes, which is what the abstract
+  bases + capability interfaces achieve.
+
+* *`TFilterStream` decorator root* — rejected.  Decoration is
+  structural (hold an `FInner`), not nominal.  A separate class adds
+  no shared behaviour and forces an inheritance commitment that
+  excludes other useful parents.
+
+* *Stream-of-bytes only* — rejected for v1.  `TBuffer.IndexOf` and the
+  future `TBuffer.TransferTo` cover the framed-I/O use case (parsers,
+  protocol handling) that pure byte streams handle awkwardly.  The
+  upgrade path to a full `TPipeReader` (System.IO.Pipelines style)
+  remains open.
+
+* *Async-ready interfaces from day one* — deferred.  Blaise has no
+  async runtime today.  The byte interface is shaped so an async
+  variant could be added later without a parallel hierarchy (Rust's
+  `std::io` vs `tokio::io` split is the cautionary tale).
+
+=== TODOs flagged in code
+
+* `TBuffer`'s segment pool is single-threaded.  The comment on
+  `AcquireSegment` / `ReleaseSegment` flags the audit needed once
+  Blaise gains thread support — likely a per-thread freelist or a
+  mutex.
+
+* `CopyStream`'s fast paths (`IReaderFrom` on `TFileOutputStream` via
+  `sendfile(2)`; `IWriterTo` on `TBuffer` via `TransferTo`) are
+  intentionally not implemented in v1.  Adding them is non-breaking;
+  benchmark first.
+
+* Interface argument expressions other than plain identifiers
+  (function returns, casts, field accesses) are not yet supported as
+  parameters by the codegen.  Assign to a local interface variable
+  first.
+
 == Open Language Questions
 
 These items are under active consideration but not yet decided.
