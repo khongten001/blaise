@@ -1,0 +1,131 @@
+= Blaise Testing Strategy
+:author: Graeme Geldenhuys
+:revdate: 2026-05-16
+:toc:
+
+== Overview
+
+The Blaise project uses three test layers, each targeting a different level of
+the system.  This document records the rationale behind each layer, which
+framework it uses, where the tests live, and why.
+
+== Project directory structure
+
+The Blaise repository separates *runtime* code (always linked into every
+binary) from *standard library* code (opt-in via `uses`):
+
+----
+new-pascal-compiler/
+  compiler/    — compiler source and compiler tests
+  runtime/     — always-linked runtime (system.pas, ARC, strings, platform)
+  stdlib/      — opt-in standard library (sysutils, strutils, math, etc.)
+----
+
+This separation mirrors the approach taken by Go (`runtime/` vs standard
+library packages), Rust (`core`/`alloc` vs `std`), and Swift (`SwiftRuntime`
+vs `SwiftCore`/`Foundation`).
+
+== Test frameworks
+
+The project provides two test frameworks:
+
+blaise.testing::
+A full-featured xUnit-style framework written in Blaise.  Provides
+`TTestCase`, `SetUp`/`TearDown`, `AssertEquals`/`AssertTrue`/`AssertNotNil`,
+`--suite` filtering, and a text runner (`blaise.testing.runner.text`).  This
+is the default framework for all tests that can use the full language
+(strings, classes, exceptions, ARC).
+
+punit::
+A minimal, dependency-free test harness using raw `GetMem`/`ZeroMem` and
+`IntToStr`.  Designed for testing code that operates *beneath* the standard
+library — specifically the memory allocator, ARC engine, and other runtime
+primitives that cannot depend on strings or classes without creating circular
+dependencies.
+
+== Test layers
+
+[cols="1,1,1,2,2"]
+|===
+| Layer | Location | Framework | What it tests | Why this framework
+
+| Compiler IR tests
+| `compiler/src/test/pascal/cp.test.*.pas`
+| blaise.testing
+| Parser, semantic analysis, and codegen logic.  Feed source strings through
+  the compiler pipeline and assert on generated QBE IR substrings.
+| Tests import compiler internals (`uParser`, `uSemantic`, `uCodeGenQBE`) and
+  run in-process.  Fast (~5 s for 1800+ tests).
+
+| Compiler E2E tests
+| `compiler/src/test/pascal/cp.test.e2e.*.pas`
+| blaise.testing
+| Full toolchain: compile -> QBE -> gcc -> run -> assert on stdout/exit code.
+  Catches QBE-validity errors, ABI mismatches, and RTL-contract bugs that the
+  IR harness cannot see.
+| Same runner as IR tests.  ~150 ms per test; kept focused on behaviour the
+  IR harness cannot catch.
+
+| Standard library tests
+| `stdlib/src/test/pascal/`
+| blaise.testing
+| Library behaviour at runtime.  Tests exercise stdlib units (`strutils`,
+  `dateutils`, `generics.collections`, etc.) directly via assertions, without
+  going through the compiler pipeline.
+| Stdlib code has full access to strings, classes, and exceptions — no reason
+  to use the constrained punit harness.
+
+| Runtime tests
+| `runtime/src/test/pascal/`
+| punit
+| Memory allocator, ARC engine, string primitives, and other low-level runtime
+  code that cannot depend on the standard library.
+| punit has zero dependencies on stdlib or ARC, avoiding circular dependency
+  issues when testing the very subsystems that stdlib depends on.
+|===
+
+== Why compiler tests stay in compiler/
+
+Tests in `compiler/src/test/pascal/` — including those that exercise stdlib
+units like `strutils`, `dateutils`, and `generics.collections` — are
+*compiler integration tests*, not library tests.  They belong in the compiler
+module for the following reasons:
+
+Import dependencies::
+IR tests import compiler internals (`uLexer`, `uParser`, `uAST`,
+`uSymbolTable`, `uSemantic`, `uCodeGenQBE`, `uUnitLoader`).  Moving them
+to `stdlib/` would create a circular build dependency: stdlib tests would
+depend on the compiler module, while the compiler module already depends on
+stdlib for its unit search path.
+
+What they verify::
+These tests verify that the *compiler* correctly parses, type-checks, and
+emits code for programs that use stdlib units.  They are testing the
+compiler's handling of stdlib constructs, not the stdlib's runtime
+correctness.  A test named `TestCodegen_ContainsStr_Found` is asserting
+that the codegen emits the right IR for a `ContainsStr` call — it is not
+testing whether `ContainsStr` returns the right answer at runtime.
+
+E2E tests compile, link, and execute::
+E2E tests shell out to the Blaise compiler binary.  They are toolchain
+smoke tests that happen to use stdlib units as representative input.  Their
+true purpose is to verify the compile -> QBE -> link -> run pipeline.
+
+Complementary, not redundant::
+Compiler tests and stdlib tests cover different failure modes.  A compiler
+IR test catches "the codegen emits invalid QBE for this construct."  A
+stdlib test catches "this function returns the wrong result at runtime."
+Both are needed; neither replaces the other.
+
+== Required tests for new features
+
+Every new language feature requires both an IR test and an E2E test in the
+compiler module — see the project CLAUDE.md for details.
+
+Every new stdlib unit or function should additionally have direct runtime
+tests in `stdlib/src/test/pascal/` using blaise.testing.  These tests
+exercise the library at full speed without the overhead of shelling out to
+the compiler.
+
+Runtime primitives (memory allocator, ARC, string internals) are tested via
+punit in `runtime/src/test/pascal/`.
