@@ -118,6 +118,8 @@ type
     function  CountTryStmts(AStmt: TASTStmt): Integer;
     procedure EmitExcFrameAllocs(ABlock: TBlock);
     procedure EmitGlobalVarData(ABlock: TBlock);
+    procedure EmitArrayConstData(CD: TConstDecl; const APrefix: string);
+    procedure EmitClassConstData(AClassDef: TClassTypeDef; const AClassName: string);
     procedure EmitGlobalConstData(ABlock: TBlock);
     procedure EmitParamAllocs(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
     procedure EmitArcCleanup(ABlock: TBlock);
@@ -1264,6 +1266,53 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitArrayConstData(CD: TConstDecl; const APrefix: string);
+var
+  J:          Integer;
+  ElemVal:    string;
+  Parts:      string;
+  StrIdx:     Integer;
+  IsStrArray: Boolean;
+  Label_:     string;
+begin
+  if not CD.IsArrayConst then Exit;
+  if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Exit;
+  if APrefix <> '' then
+    Label_ := APrefix + '_' + CD.Name
+  else
+    Label_ := CD.Name;
+  IsStrArray := SameText(CD.ArrayElemType, 'string');
+  if IsStrArray then
+  begin
+    for J := 0 to CD.ArrayElements.Count - 1 do
+      if FStrLits.IndexOf(CD.ArrayElements[J]) < 0 then
+        FStrLits.Add(CD.ArrayElements[J]);
+    EmitPendingStrLits;
+  end;
+  Parts := '';
+  for J := 0 to CD.ArrayElements.Count - 1 do
+  begin
+    ElemVal := CD.ArrayElements[J];
+    if J > 0 then Parts := Parts + ', ';
+    if IsStrArray then
+    begin
+      StrIdx := FStrLits.IndexOf(ElemVal);
+      Parts := Parts + Format('l $__s%d + 12', [StrIdx]);
+    end
+    else
+      Parts := Parts + Format('w %s', [ElemVal]);
+  end;
+  EmitLine(Format('export data $%s = { %s }', [Label_, Parts]));
+end;
+
+procedure TCodeGenQBE.EmitClassConstData(AClassDef: TClassTypeDef; const AClassName: string);
+var
+  I: Integer;
+begin
+  for I := 0 to AClassDef.ConstDecls.Count - 1 do
+    EmitArrayConstData(TConstDecl(AClassDef.ConstDecls.Items[I]), AClassName);
+end;
+
 procedure TCodeGenQBE.EmitGlobalConstData(ABlock: TBlock);
 { Emit QBE data-section entries for array-typed constants.
   Each array const is emitted as a labelled data object whose elements are
@@ -1271,42 +1320,16 @@ procedure TCodeGenQBE.EmitGlobalConstData(ABlock: TBlock);
   String literals are pre-registered in FStrLits so EmitPendingStrLits writes
   their headers before the referencing data object. }
 var
-  I, J:       Integer;
-  CD:         TConstDecl;
-  ElemVal:    string;
-  Parts:      string;
-  StrIdx:     Integer;
-  IsStrArray: Boolean;
+  I:          Integer;
+  TD:         TTypeDecl;
 begin
   for I := 0 to ABlock.ConstDecls.Count - 1 do
+    EmitArrayConstData(TConstDecl(ABlock.ConstDecls.Items[I]), '');
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
   begin
-    CD := TConstDecl(ABlock.ConstDecls.Items[I]);
-    if not CD.IsArrayConst then Continue;
-    if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Continue;
-    IsStrArray := SameText(CD.ArrayElemType, 'string');
-    { Pre-register string literals so their data labels exist before the array }
-    if IsStrArray then
-    begin
-      for J := 0 to CD.ArrayElements.Count - 1 do
-        if FStrLits.IndexOf(CD.ArrayElements[J]) < 0 then
-          FStrLits.Add(CD.ArrayElements[J]);
-      EmitPendingStrLits;
-    end;
-    { Build the data initialiser }
-    Parts := '';
-    for J := 0 to CD.ArrayElements.Count - 1 do
-    begin
-      ElemVal := CD.ArrayElements[J];
-      if J > 0 then Parts := Parts + ', ';
-      if IsStrArray then
-      begin
-        StrIdx := FStrLits.IndexOf(ElemVal);
-        Parts := Parts + Format('l $__s%d + 12', [StrIdx]);
-      end
-      else
-        Parts := Parts + Format('w %s', [ElemVal]);
-    end;
-    EmitLine(Format('export data $%s = { %s }', [CD.Name, Parts]));
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if TD.Def is TClassTypeDef then
+      EmitClassConstData(TClassTypeDef(TD.Def), TD.Name);
   end;
 end;
 
@@ -5272,6 +5295,8 @@ var
   IdxTemp:      string;
   IdxQType:     string;
   Ptr2:         string;
+  SAT:          TStaticArrayTypeDesc;
+  ElemSize:     Integer;
 begin
   if AExpr is TFuncCallExpr then
   begin
@@ -7021,8 +7046,41 @@ begin
     end
     else if FldAccess.IsConstant then
     begin
-      { Class-level constant: TypeName.ConstName — emit as an integer or string literal }
-      if FldAccess.ResolvedType.Kind = tyString then
+      if FldAccess.ConstArraySymbol <> '' then
+      begin
+        if FldAccess.PropIndexExpr <> nil then
+        begin
+          SAT      := TStaticArrayTypeDesc(FldAccess.ConstArrayType);
+          ElemSize := SAT.ElementType.RawSize;
+          IdxTemp  := EmitExpr(FldAccess.PropIndexExpr);
+          L        := AllocTemp;
+          EmitLine(Format('  %s =l extsw %s', [L, IdxTemp]));
+          if SAT.LowBound <> 0 then
+          begin
+            Ptr := AllocTemp;
+            EmitLine(Format('  %s =l sub %s, %d', [Ptr, L, SAT.LowBound]));
+            L := Ptr;
+          end;
+          Ptr := AllocTemp;
+          EmitLine(Format('  %s =l mul %s, %d', [Ptr, L, ElemSize]));
+          L := AllocTemp;
+          EmitLine(Format('  %s =l add $%s, %s', [L, FldAccess.ConstArraySymbol, Ptr]));
+          QType := QbeTypeOf(SAT.ElementType);
+          T     := AllocTemp;
+          case SAT.ElementType.Kind of
+            tyByte, tyBoolean: LoadInstr := 'loadub';
+            tyInteger, tyUInt32, tyEnum: LoadInstr := 'loadw';
+          else
+            LoadInstr := 'loadl';
+          end;
+          EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, L]));
+          Result := T;
+          Exit;
+        end;
+        Result := '$' + FldAccess.ConstArraySymbol;
+        Exit;
+      end
+      else if FldAccess.ResolvedType.Kind = tyString then
       begin
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_StringRetain(l $%s)',

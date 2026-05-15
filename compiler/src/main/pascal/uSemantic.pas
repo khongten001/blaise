@@ -2011,6 +2011,10 @@ var
   BaseType:   TTypeDesc;
   MangledKey: string;
   VarFlags:   string;
+  ElemTD:     TTypeDesc;
+  IdxTD:      TTypeDesc;
+  ArrTD:      TStaticArrayTypeDesc;
+  Expected:   Integer;
 begin
   { Pass 1 — register all type symbols with empty descriptors.
     This allows self-referential field types to resolve in pass 2. }
@@ -2510,22 +2514,75 @@ begin
       for J := 0 to TClassTypeDef(TD.Def).ConstDecls.Count - 1 do
       begin
         CD := TConstDecl(TClassTypeDef(TD.Def).ConstDecls.Items[J]);
-        if CD.IsString then
-          ParType := FTable.TypeString
+        if CD.IsArrayConst then
+        begin
+          ElemTD := FTable.FindType(CD.ArrayElemType);
+          if ElemTD = nil then
+            SemanticError(Format('Unknown element type ''%s'' in class array const ''%s''',
+              [CD.ArrayElemType, CD.Name]), CD.Line, CD.Col);
+          if CD.ArrayIsRangeIndexed then
+          begin
+            Expected := CD.ArrayHighBound - CD.ArrayLowBound + 1;
+            if CD.ArrayElements.Count <> Expected then
+              SemanticError(Format(
+                'Class array const ''%s'' has %d element(s) but range [%d..%d] needs %d',
+                [CD.Name, CD.ArrayElements.Count, CD.ArrayLowBound,
+                 CD.ArrayHighBound, Expected]),
+                CD.Line, CD.Col);
+            ArrTD := FTable.NewStaticArrayType(ElemTD, CD.ArrayLowBound, CD.ArrayHighBound);
+          end
+          else
+          begin
+            IdxTD := FTable.FindType(CD.ArrayIndexType);
+            if IdxTD = nil then
+              SemanticError(Format('Unknown index type ''%s'' in class array const ''%s''',
+                [CD.ArrayIndexType, CD.Name]), CD.Line, CD.Col);
+            if IdxTD.Kind <> tyEnum then
+              SemanticError(Format('Class array const index must be an enum, got ''%s''',
+                [IdxTD.Name]), CD.Line, CD.Col);
+            EnumDesc := TEnumTypeDesc(IdxTD);
+            Expected := EnumDesc.Members.Count;
+            if CD.ArrayElements.Count <> Expected then
+              SemanticError(Format(
+                'Class array const ''%s'' has %d element(s) but index type ''%s'' has %d member(s)',
+                [CD.Name, CD.ArrayElements.Count, CD.ArrayIndexType, Expected]),
+                CD.Line, CD.Col);
+            ArrTD := FTable.NewStaticArrayType(ElemTD, 0, Expected - 1);
+          end;
+          Sym := TSymbol.Create(CD.Name, skConstant, ArrTD);
+          Sym.IsGlobal := True;
+          Sym.ConstArray := TStringList.Create;
+          for K := 0 to CD.ArrayElements.Count - 1 do
+            Sym.ConstArray.Add(CD.ArrayElements[K]);
+          if not FTable.Define(Sym) then
+            Sym.Free;
+          Sym := TSymbol.Create(TD.Name + '.' + CD.Name, skConstant, ArrTD);
+          Sym.IsGlobal := True;
+          Sym.ConstArray := TStringList.Create;
+          for K := 0 to CD.ArrayElements.Count - 1 do
+            Sym.ConstArray.Add(CD.ArrayElements[K]);
+          if not FTable.Define(Sym) then
+            Sym.Free;
+        end
         else
-          ParType := FTable.TypeInteger;
-        { Unqualified name — usable inside class methods without prefix }
-        Sym := TSymbol.Create(CD.Name, skConstant, ParType);
-        Sym.ConstValue  := CD.IntVal;
-        Sym.ConstString := CD.StrVal;
-        if not FTable.Define(Sym) then
-          Sym.Free;
-        { Qualified name — usable as TFoo.MaxItems from anywhere }
-        Sym := TSymbol.Create(TD.Name + '.' + CD.Name, skConstant, ParType);
-        Sym.ConstValue  := CD.IntVal;
-        Sym.ConstString := CD.StrVal;
-        if not FTable.Define(Sym) then
-          Sym.Free;
+        begin
+          if CD.IsString then
+            ParType := FTable.TypeString
+          else
+            ParType := FTable.TypeInteger;
+          { Unqualified name — usable inside class methods without prefix }
+          Sym := TSymbol.Create(CD.Name, skConstant, ParType);
+          Sym.ConstValue  := CD.IntVal;
+          Sym.ConstString := CD.StrVal;
+          if not FTable.Define(Sym) then
+            Sym.Free;
+          { Qualified name — usable as TFoo.MaxItems from anywhere }
+          Sym := TSymbol.Create(TD.Name + '.' + CD.Name, skConstant, ParType);
+          Sym.ConstValue  := CD.IntVal;
+          Sym.ConstString := CD.StrVal;
+          if not FTable.Define(Sym) then
+            Sym.Free;
+        end;
       end;
 
     { Verify class implements all methods of each declared interface }
@@ -5938,6 +5995,22 @@ begin
         AAccess.ResolvedType := Result;
         Exit;
       end;
+      { Class-level constant (scalar or array): look up ClassName.ConstName }
+      Sym := FTable.Lookup(BaseType.Name + '.' + AAccess.FieldName);
+      if (Sym <> nil) and (Sym.Kind = skConstant) then
+      begin
+        AAccess.IsConstant := True;
+        AAccess.ConstValue := Sym.ConstValue;
+        AAccess.ConstString := Sym.ConstString;
+        if Sym.ConstArray <> nil then
+        begin
+          AAccess.ConstArraySymbol := BaseType.Name + '_' + AAccess.FieldName;
+          AAccess.ConstArrayType := Sym.TypeDesc;
+        end;
+        AAccess.ResolvedType := Sym.TypeDesc;
+        Result := Sym.TypeDesc;
+        Exit;
+      end;
       SemanticError(
         Format('Type ''%s'' has no field ''%s''',
           [BaseType.Name, AAccess.FieldName]),
@@ -6091,6 +6164,18 @@ begin
         AAccess.IsConstant  := True;
         AAccess.ConstValue  := Sym.ConstValue;
         AAccess.ConstString := Sym.ConstString;
+        if Sym.ConstArray <> nil then
+        begin
+          AAccess.ConstArraySymbol := AAccess.RecordName + '_' + AAccess.FieldName;
+          AAccess.ConstArrayType := Sym.TypeDesc;
+          if AAccess.PropIndexExpr <> nil then
+          begin
+            AnalyseExpr(AAccess.PropIndexExpr);
+            AAccess.ResolvedType := TStaticArrayTypeDesc(Sym.TypeDesc).ElementType;
+            Result := AAccess.ResolvedType;
+            Exit;
+          end;
+        end;
         AAccess.ResolvedType := Sym.TypeDesc;
         Result := Sym.TypeDesc;
         Exit;
@@ -6222,6 +6307,29 @@ begin
         AAccess.ResolvedType := Result;
         Exit;
       end;
+    end;
+    { Class-level constant (scalar or array) via instance: T.Const }
+    Sym := FTable.Lookup(RT.Name + '.' + AAccess.FieldName);
+    if (Sym <> nil) and (Sym.Kind = skConstant) then
+    begin
+      AAccess.IsConstant := True;
+      AAccess.ConstValue := Sym.ConstValue;
+      AAccess.ConstString := Sym.ConstString;
+      if Sym.ConstArray <> nil then
+      begin
+        AAccess.ConstArraySymbol := RT.Name + '_' + AAccess.FieldName;
+        AAccess.ConstArrayType := Sym.TypeDesc;
+        if AAccess.PropIndexExpr <> nil then
+        begin
+          AnalyseExpr(AAccess.PropIndexExpr);
+          AAccess.ResolvedType := TStaticArrayTypeDesc(Sym.TypeDesc).ElementType;
+          Result := AAccess.ResolvedType;
+          Exit;
+        end;
+      end;
+      AAccess.ResolvedType := Sym.TypeDesc;
+      Result := Sym.TypeDesc;
+      Exit;
     end;
     SemanticError(
       Format('Type ''%s'' has no field ''%s''',

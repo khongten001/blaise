@@ -92,6 +92,8 @@ type
     IsConstant:        Boolean;       { set by uSemantic — TypeName.ConstName resolves to a class constant }
     ConstValue:        Int64;         { valid when IsConstant = True }
     ConstString:       string;        { valid when IsConstant = True and type is tyString }
+    ConstArraySymbol:  string;        { non-empty for class-level array const — global data label }
+    ConstArrayType:    TObject;       { TStaticArrayTypeDesc — not owned; set when ConstArraySymbol is set }
     IsConstructorCall: Boolean;       { set by uSemantic — TypeName.Create }
     IsClassAccess:     Boolean;       { set by uSemantic — pointer deref needed }
     PropRead:          TPropertyInfo; { non-nil if this is a method-backed property read }

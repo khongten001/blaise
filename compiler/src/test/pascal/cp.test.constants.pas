@@ -82,6 +82,10 @@ type
     procedure TestArrayConst_RangeIndexed_StringElements;
     procedure TestArrayConst_RangeIndexed_WrongCount_Error;
     procedure TestArrayConst_RangeIndexed_IndexedByVar;
+
+    { Class-level array constants }
+    procedure TestClassArrayConst_RangeIndexed_InIR;
+    procedure TestClassArrayConst_EnumIndexed_InIR;
   end;
 
 implementation
@@ -900,6 +904,51 @@ begin
     ''');
   AssertTrue('IR non-empty', IR <> '');
   AssertTrue('Days in IR', IRContains(IR, 'Days'));
+end;
+
+procedure TConstTests.TestClassArrayConst_RangeIndexed_InIR;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      TMyClass = class
+      public
+        const Items: array[0..2] of string = ('A', 'B', 'C');
+      end;
+    var T: TMyClass;
+    begin
+      T := TMyClass.Create;
+      WriteLn(T.Items[1]);
+      T.Free
+    end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('Items in IR', IRContains(IR, 'Items'));
+end;
+
+procedure TConstTests.TestClassArrayConst_EnumIndexed_InIR;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type
+      TColor = (Red, Green, Blue);
+      TPalette = class
+      public
+        const Names: array[TColor] of string = ('Red', 'Green', 'Blue');
+      end;
+    var P2: TPalette;
+    begin
+      P2 := TPalette.Create;
+      WriteLn(P2.Names[0]);
+      P2.Free
+    end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('Names in IR', IRContains(IR, 'Names'));
 end;
 
 initialization

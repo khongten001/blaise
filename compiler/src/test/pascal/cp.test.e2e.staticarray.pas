@@ -38,6 +38,10 @@ type
     { Range-indexed const array: const X: array[L..H] of T = (...) }
     procedure TestRun_ConstArray_RangeIndexed_Strings;
     procedure TestRun_ConstArray_RangeIndexed_Integers;
+
+    { Class-level array constants }
+    procedure TestRun_ClassConstArray_RangeIndexed;
+    procedure TestRun_ClassConstArray_EnumIndexed;
   end;
 
 implementation
@@ -351,6 +355,75 @@ begin
     AssertEquals('Primes[0]', '2', Lines.Strings[0]);
     AssertEquals('Primes[2]', '5', Lines.Strings[1]);
     AssertEquals('Primes[4]', '11', Lines.Strings[2]);
+  finally Lines.Free end
+end;
+
+procedure TE2EStaticArrayTests.TestRun_ClassConstArray_RangeIndexed;
+const
+  Src =
+    '''
+    program P;
+    type
+      TMyDays = class
+      public
+        const Days: array[0..6] of string =
+          ('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat');
+      end;
+    var T: TMyDays; I: Integer;
+    begin
+      T := TMyDays.Create;
+      WriteLn(T.Days[0]);
+      WriteLn(T.Days[1]);
+      I := 5;
+      WriteLn(T.Days[I]);
+      T.Free
+    end.
+    ''';
+var Output: string; RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('Days[0]', 'Sun', Lines.Strings[0]);
+    AssertEquals('Days[1]', 'Mon', Lines.Strings[1]);
+    AssertEquals('Days[5]', 'Fri', Lines.Strings[2]);
+  finally Lines.Free end
+end;
+
+procedure TE2EStaticArrayTests.TestRun_ClassConstArray_EnumIndexed;
+const
+  Src =
+    '''
+    program P;
+    type
+      TColor = (Red, Green, Blue);
+      TPalette = class
+      public
+        const Names: array[TColor] of string = ('Red', 'Green', 'Blue');
+      end;
+    var P2: TPalette;
+    begin
+      P2 := TPalette.Create;
+      WriteLn(P2.Names[0]);
+      WriteLn(P2.Names[2]);
+      P2.Free
+    end.
+    ''';
+var Output: string; RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('Names[0]', 'Red', Lines.Strings[0]);
+    AssertEquals('Names[2]', 'Blue', Lines.Strings[1]);
   finally Lines.Free end
 end;
 
