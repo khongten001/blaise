@@ -16,7 +16,7 @@ unit cp.test.e2e.strutils;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EStrUtilsTests = class(TE2ETestCase)

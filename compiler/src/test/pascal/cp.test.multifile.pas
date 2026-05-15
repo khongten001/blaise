@@ -17,7 +17,7 @@ unit cp.test.multifile;
 interface
 
 uses
-  Classes, SysUtils, Contnrs, bcl.testing,
+  Classes, SysUtils, Contnrs, blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE,
   uUnitLoader;
 

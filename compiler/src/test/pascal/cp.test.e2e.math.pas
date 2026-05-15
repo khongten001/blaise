@@ -20,7 +20,7 @@ unit cp.test.e2e.math;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EMathTests = class(TE2ETestCase)

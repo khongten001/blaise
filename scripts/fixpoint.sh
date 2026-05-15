@@ -36,14 +36,14 @@ if [ ! -x "$STAGE1_BIN" ]; then
 fi
 echo "stage-1: $STAGE1_BIN"
 
-echo "[1/5] rebuild + install RTL"
-( cd rtl && make > /tmp/fp_rtl.log 2>&1 && make install >> /tmp/fp_rtl.log 2>&1 ) || {
-  echo "RTL_FAIL"; tail -5 /tmp/fp_rtl.log; exit 11;
+echo "[1/5] rebuild + install runtime"
+( cd runtime && make > /tmp/fp_rtl.log 2>&1 && make install >> /tmp/fp_rtl.log 2>&1 ) || {
+  echo "RUNTIME_FAIL"; tail -5 /tmp/fp_rtl.log; exit 11;
 }
 
 echo "[2/5] stage-1 -> stage-2 IR"
 "$STAGE1_BIN" --source compiler/src/main/pascal/Blaise.pas \
-  --unit-path compiler/src/main/pascal --unit-path rtl/src/main/pascal \
+  --unit-path compiler/src/main/pascal --unit-path runtime/src/main/pascal --unit-path stdlib/src/main/pascal \
   --emit-ir > /tmp/fp_stage2.ssa 2>/tmp/fp_stage2.err
 if [ ! -s /tmp/fp_stage2.ssa ] || head -1 /tmp/fp_stage2.ssa | grep -qi 'error\|exception'; then
   echo "STAGE2_IR_FAIL"
@@ -63,7 +63,7 @@ gcc -o /tmp/fp_blaise2 /tmp/fp_stage2.s compiler/target/blaise_rtl.a 2>/tmp/fp_g
 
 echo "[4/5] stage-2 -> stage-3 IR (5min timeout)"
 timeout 300 /tmp/fp_blaise2 --source compiler/src/main/pascal/Blaise.pas \
-  --unit-path compiler/src/main/pascal --unit-path rtl/src/main/pascal \
+  --unit-path compiler/src/main/pascal --unit-path runtime/src/main/pascal --unit-path stdlib/src/main/pascal \
   --emit-ir > /tmp/fp_stage3.ssa 2>/tmp/fp_stage3.err
 RC=$?
 if [ $RC -eq 124 ]; then
@@ -99,7 +99,7 @@ gcc -o /tmp/fp_blaise3 /tmp/fp_stage3.s compiler/target/blaise_rtl.a 2>/tmp/fp_g
 
 echo "[+2] stage-3 -> stage-4 IR (5min timeout)"
 timeout 300 /tmp/fp_blaise3 --source compiler/src/main/pascal/Blaise.pas \
-  --unit-path compiler/src/main/pascal --unit-path rtl/src/main/pascal \
+  --unit-path compiler/src/main/pascal --unit-path runtime/src/main/pascal --unit-path stdlib/src/main/pascal \
   --emit-ir > /tmp/fp_stage4.ssa 2>/tmp/fp_stage4.err
 RC=$?
 if [ $RC -eq 124 ]; then

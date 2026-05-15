@@ -16,7 +16,7 @@ unit cp.test.e2e.tordereddictionary;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EOrdDictTests = class(TE2ETestCase)

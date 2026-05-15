@@ -13,7 +13,7 @@ unit cp.test.records;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 type

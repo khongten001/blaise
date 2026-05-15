@@ -11,8 +11,8 @@ program TestRunner;
 {$mode objfpc}{$H+}
 
 uses
-  bcl.testing,
-  bcl.testing.runner.text,
+  blaise.testing,
+  blaise.testing.runner.text,
   cp.test.lexer,
   cp.test.parser,
   cp.test.codegen,

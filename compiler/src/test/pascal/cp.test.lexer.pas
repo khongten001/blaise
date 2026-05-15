@@ -13,7 +13,7 @@ unit cp.test.lexer;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uLexer;
 
 type

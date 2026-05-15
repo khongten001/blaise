@@ -13,7 +13,7 @@ unit cp.test.e2e.caseenum;
 interface
 
 uses
-  bcl.testing, classes, cp.test.e2e.base;
+  blaise.testing, classes, cp.test.e2e.base;
 
 type
   TE2ECaseEnumTests = class(TE2ETestCase)

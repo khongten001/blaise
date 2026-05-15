@@ -13,7 +13,7 @@ unit cp.test.e2e.exceptions;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EExceptionTests = class(TE2ETestCase)

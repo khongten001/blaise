@@ -21,13 +21,14 @@ unit cp.test.strutils;
 interface
 
 uses
-  SysUtils, Classes, contnrs, bcl.testing,
+  SysUtils, Classes, contnrs, blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE, uUnitLoader;
 
 type
   TStrUtilsTests = class(TTestCase)
   private
     FRTLUnitPath: string;
+    FStdlibUnitPath: string;
     function  GenIR(const ASrc: string): string;
     function  IRContains(const AIR, AFragment: string): Boolean;
     procedure SemanticOK(const ASrc: string);
@@ -123,8 +124,8 @@ var
 begin
   inherited SetUp;
   ExeDir := ExtractFilePath(ParamStr(0));
-  { TestRunner lives in compiler/target/; RTL sources are at ../../rtl/src/main/pascal }
-  FRTLUnitPath := ExpandFileName(ExeDir + '../../rtl/src/main/pascal');
+  FRTLUnitPath := ExpandFileName(ExeDir + '../../runtime/src/main/pascal');
+  FStdlibUnitPath := ExpandFileName(ExeDir + '../../stdlib/src/main/pascal');
 end;
 
 procedure TStrUtilsTests.SemanticOK(const ASrc: string);
@@ -147,6 +148,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -180,6 +182,7 @@ begin
       Semantic    := TSemanticAnalyser.Create;
       SearchPaths := TStringList.Create;
       SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
       Loader := TUnitLoader.Create(SearchPaths);
       Units  := Loader.LoadAll(Prog.UsedUnits);
       for I := 0 to Units.Count - 1 do
@@ -217,6 +220,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -286,6 +290,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -401,6 +406,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -451,6 +457,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -520,6 +527,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -580,6 +588,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -650,6 +659,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -734,6 +744,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -784,6 +795,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -858,6 +870,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -913,6 +926,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do
@@ -968,6 +982,7 @@ begin
     Semantic    := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do

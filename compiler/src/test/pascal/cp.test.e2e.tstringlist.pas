@@ -18,7 +18,7 @@ unit cp.test.e2e.tstringlist;
 interface
 
 uses
-  classes, bcl.testing, cp.test.e2e.base;
+  classes, blaise.testing, cp.test.e2e.base;
 
 type
   TE2ETStringListTests = class(TE2ETestCase)

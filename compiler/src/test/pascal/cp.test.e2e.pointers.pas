@@ -14,7 +14,7 @@ unit cp.test.e2e.pointers;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EPointersTests = class(TE2ETestCase)

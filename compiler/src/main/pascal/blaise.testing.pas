@@ -10,7 +10,7 @@
 }
 
 {
-  bcl.testing — minimum xUnit runtime surface for Blaise.
+  blaise.testing — minimum xUnit runtime surface for Blaise.
 
   Step 11d.  Direct port of the runtime surface of fpcunit.pp, scoped to the
   slice the 54 cp.test.*.pas regression units actually use.  The runner
@@ -29,7 +29,7 @@
       classes for the runner to walk later.
 }
 
-unit bcl.testing;
+unit blaise.testing;
 
 interface
 

@@ -14,7 +14,7 @@ unit cp.test.e2e.arc;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EArcTests = class(TE2ETestCase)

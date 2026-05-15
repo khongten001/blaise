@@ -14,7 +14,7 @@ unit cp.test.e2e.classes2;
 interface
 
 uses
-  bcl.testing, classes, sysutils, cp.test.e2e.base;
+  blaise.testing, classes, sysutils, cp.test.e2e.base;
 
 type
   TE2EClasses2Tests = class(TE2ETestCase)

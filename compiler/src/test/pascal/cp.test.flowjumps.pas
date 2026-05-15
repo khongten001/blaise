@@ -15,7 +15,7 @@ unit cp.test.flowjumps;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  Classes, SysUtils, blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 type

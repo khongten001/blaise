@@ -13,7 +13,7 @@ unit cp.test.constants;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  Classes, SysUtils, blaise.testing,
   uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
 
 type

@@ -5147,7 +5147,7 @@ begin
 
   { MethodAddress(Obj, Name): walks the object's typeinfo chain looking for
     a published method named 'Name'.  Returns nil when not found.  Used by
-    bcl.testing's RegisterTest path to dispatch test methods by name. }
+    blaise.testing's RegisterTest path to dispatch test methods by name. }
   if SameText(AExpr.Name, 'MethodAddress') then
   begin
     if AExpr.Args.Count <> 2 then

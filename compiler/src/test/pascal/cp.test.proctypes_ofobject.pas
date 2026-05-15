@@ -21,7 +21,7 @@ unit cp.test.proctypes_ofobject;
 interface
 
 uses
-  Classes, SysUtils, Process, bcl.testing,
+  Classes, SysUtils, Process, blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 function ProjectRootOFO: string;

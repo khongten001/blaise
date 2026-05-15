@@ -15,7 +15,7 @@ unit cp.test.exceptions;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  Classes, SysUtils, blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 type
@@ -482,7 +482,7 @@ procedure TExceptionTests.TestSemantic_ExceptionSubclass_CreateAndMessage_OK;
 begin
   { Verify that an Exception base class with a string property and a subclass
     that inherits it can be declared, instantiated, and raised without semantic
-    errors.  This mirrors the API exposed by rtl/src/main/pascal/sysutils.pas. }
+    errors.  This mirrors the API exposed by stdlib/src/main/pascal/sysutils.pas. }
   AnalyseSrc(
     '''
         program P;

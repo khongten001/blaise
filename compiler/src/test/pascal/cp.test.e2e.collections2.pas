@@ -13,7 +13,7 @@ unit cp.test.e2e.collections2;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2ECollections2Tests = class(TE2ETestCase)

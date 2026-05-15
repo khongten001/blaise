@@ -7,8 +7,8 @@
 }
 
 { Driver program to exercise blaise_str unit — compile with Blaise compiler:
-    blaise --source rtl/src/test/pascal/test_blaise_str.pas
-           --unit-path rtl/src/main/pascal
+    blaise --source runtime/src/test/pascal/test_blaise_str.pas
+           --unit-path runtime/src/main/pascal
 }
 
 program test_blaise_str;

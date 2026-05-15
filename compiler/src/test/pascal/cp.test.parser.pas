@@ -13,7 +13,7 @@ unit cp.test.parser;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uLexer, uParser, uAST;
 
 type

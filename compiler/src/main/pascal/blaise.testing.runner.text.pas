@@ -7,9 +7,9 @@
 }
 
 {
-  bcl.testing.runner.text — plain-text test runner for bcl.testing.
+  blaise.testing.runner.text — plain-text test runner for blaise.testing.
 
-  Step 11e.  Walks the bcl.testing global registry, instantiates one
+  Step 11e.  Walks the blaise.testing global registry, instantiates one
   TTestCase per published method per registered class, runs each
   against a single TTestResult, and prints PASS / FAIL output plus a
   summary line.
@@ -28,12 +28,12 @@
   codegen emits for class-typed locals.  No explicit Free calls.
 }
 
-unit bcl.testing.runner.text;
+unit blaise.testing.runner.text;
 
 interface
 
 uses
-  bcl.testing;
+  blaise.testing;
 
 { Run every test method of every TTestCase class registered via
   RegisterTest.  Returns the result so the caller can compute an

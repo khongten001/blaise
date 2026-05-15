@@ -13,7 +13,7 @@ unit cp.test.textblock;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  Classes, SysUtils, blaise.testing,
   uLexer;
 
 type

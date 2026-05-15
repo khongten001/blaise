@@ -7,7 +7,7 @@
 }
 
 {
-  testbcl — end-to-end smoke test for bcl.testing + bcl.testing.runner.text.
+  testbcl — end-to-end smoke test for blaise.testing + blaise.testing.runner.text.
 
   Declares one TTestCase fixture with two published methods (one passes,
   one fails), registers the class via RegisterTest, then hands off to
@@ -27,8 +27,8 @@ program testbcl;
 {$mode objfpc}{$H+}
 
 uses
-  bcl.testing,
-  bcl.testing.runner.text;
+  blaise.testing,
+  blaise.testing.runner.text;
 
 type
   TSampleTests = class(TTestCase)

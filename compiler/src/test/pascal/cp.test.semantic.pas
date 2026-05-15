@@ -13,7 +13,7 @@ unit cp.test.semantic;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uLexer, uParser, uAST, uSymbolTable, uSemantic;
 
 type

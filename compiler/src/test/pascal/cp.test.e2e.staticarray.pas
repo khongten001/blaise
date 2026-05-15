@@ -16,7 +16,7 @@ unit cp.test.e2e.staticarray;
 interface
 
 uses
-  classes, bcl.testing, cp.test.e2e.base;
+  classes, blaise.testing, cp.test.e2e.base;
 
 type
   TE2EStaticArrayTests = class(TE2ETestCase)

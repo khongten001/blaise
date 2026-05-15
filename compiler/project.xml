@@ -7,14 +7,16 @@
     <mainSource>Blaise.pas</mainSource>
     <executableName>blaise</executableName>
     <unitPaths>
-      <path>../rtl/src/main/pascal</path>
+      <path>../runtime/src/main/pascal</path>
+      <path>../stdlib/src/main/pascal</path>
     </unitPaths>
   </build>
 
   <test>
     <testSource>TestRunner.pas</testSource>
     <unitPaths>
-      <path>../rtl/src/main/pascal</path>
+      <path>../runtime/src/main/pascal</path>
+      <path>../stdlib/src/main/pascal</path>
     </unitPaths>
   </test>
 

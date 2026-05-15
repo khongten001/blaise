@@ -124,13 +124,20 @@ project.xml                       Root aggregator (packaging=pom)
 │   ├── project.xml
 │   └── src/
 │       ├── main/pascal/          uLexer, uParser, uAST, uCodeGenQBE, ...
-│       └── test/pascal/          Test suite (bcl.testing, compiled by Blaise)
+│       └── test/pascal/          Test suite (blaise.testing, compiled by Blaise)
 │
-├── rtl/                          Runtime library (packaging=library)
+├── runtime/                      Always-linked runtime (packaging=library)
+│   ├── project.xml
+│   ├── Makefile
+│   └── src/
+│       ├── main/c/               C shims (blaise_exc.c, blaise_io.c, ...)
+│       ├── main/pascal/          system.pas, blaise_str.pas, blaise_arc.pas, ...
+│       └── test/pascal/          Runtime tests (punit, compiled by Blaise)
+│
+├── stdlib/                       Standard library — opt-in via uses clause
 │   ├── project.xml
 │   └── src/
-│       ├── main/pascal/          System.pas, SysUtils.pas, Classes.pas, ...
-│       └── test/pascal/          RTL test suite (punit, compiled by Blaise)
+│       └── main/pascal/          sysutils.pas, classes.pas, math.pas, ...
 │
 ├── tools/
 │   └── migration-analyser/       FPC/Delphi migration report tool (packaging=application)
@@ -153,7 +160,7 @@ never committed to the repository.
 * A previously released Blaise binary (see `releases/`)
 * https://github.com/graemeg/pasbuild[PasBuild]
 * A C compiler (`gcc` or `clang`) for building the vendored QBE backend and linking
-* GNU `make` for the RTL build
+* GNU `make` for the runtime build
 
 NOTE: FPC is *not* required. Blaise is fully self-hosting — each release binary
 compiles the next version. The bootstrap chain starts from the binary in
@@ -161,7 +168,7 @@ compiles the next version. The bootstrap chain starts from the binary in
 
 === Bootstrap from a release
 
-The RTL build compiles its Pascal units (`blaise_str.pas`, `blaise_arc.pas`,
+The runtime build compiles its Pascal units (`blaise_str.pas`, `blaise_arc.pas`,
 `blaise_sys.pas`) using the Blaise binary at `compiler/target/blaise`. On a
 clean checkout that binary does not exist yet, so the release binary must be
 passed explicitly via the `BLAISE` make variable.
@@ -172,14 +179,15 @@ passed explicitly via the `BLAISE` make variable.
 #    you update vendor/qbe/)
 cd vendor/qbe && make && cd ../..
 
-# 1. Build the RTL using the release binary (BLAISE= avoids chicken-and-egg)
-cd rtl && make BLAISE=../releases/v0.7.0/blaise && make install && cd ..
+# 1. Build the runtime using the release binary (BLAISE= avoids chicken-and-egg)
+cd runtime && make BLAISE=../releases/v0.7.0/blaise && make install && cd ..
 
 # 2. Compile the compiler using the latest release binary
 releases/v0.7.0/blaise \
   --source compiler/src/main/pascal/Blaise.pas \
   --unit-path compiler/src/main/pascal \
-  --unit-path rtl/src/main/pascal \
+  --unit-path runtime/src/main/pascal \
+  --unit-path stdlib/src/main/pascal \
   --emit-ir > /tmp/blaise.ssa
 
 # 3. Assemble and link

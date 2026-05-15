@@ -17,7 +17,7 @@ unit cp.test.e2e.base;
 interface
 
 uses
-  classes, sysutils, process, contnrs, bcl.testing,
+  classes, sysutils, process, contnrs, blaise.testing,
   uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader;
 
 type
@@ -26,6 +26,7 @@ type
     FQBE:         string;
     FRTL:         string;
     FRTLUnitPath: string;
+    FStdlibUnitPath: string;
     FScratch:     string;
     FCounter:     Integer;
     function  ProjectRoot: string;
@@ -67,7 +68,7 @@ begin
   for Steps := 0 to 5 do
   begin
     if DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'vendor/qbe') and
-       DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'rtl') then
+       DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'runtime') then
     begin
       Result := IncludeTrailingPathDelimiter(Dir);
       Exit
@@ -100,8 +101,9 @@ begin
     FQBE := ProjectRoot + 'vendor/qbe/qbe';
   FRTL := GetEnvironmentVariable('BLAISE_RTL');
   if FRTL = '' then
-    FRTL := ProjectRoot + 'rtl/target/blaise_rtl.a';
-  FRTLUnitPath := ProjectRoot + 'rtl/src/main/pascal'
+    FRTL := ProjectRoot + 'runtime/target/blaise_rtl.a';
+  FRTLUnitPath := ProjectRoot + 'runtime/src/main/pascal';
+  FStdlibUnitPath := ProjectRoot + 'stdlib/src/main/pascal'
 end;
 
 procedure TE2ETestCase.SetUpScratch(const ADirName: string);
@@ -331,6 +333,7 @@ begin
     Semantic := TSemanticAnalyser.Create;
     SearchPaths := TStringList.Create;
     SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
     Units  := Loader.LoadAll(Prog.UsedUnits);
     for I := 0 to Units.Count - 1 do

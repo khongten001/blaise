@@ -13,7 +13,7 @@ unit cp.test.symtable;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uSymbolTable;
 
 type

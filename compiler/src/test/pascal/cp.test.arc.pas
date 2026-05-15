@@ -13,7 +13,7 @@ unit cp.test.arc;
 interface
 
 uses
-  Classes, SysUtils, bcl.testing,
+  Classes, SysUtils, blaise.testing,
   uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
 
 type

@@ -17,7 +17,7 @@ unit cp.test.e2e.textblock;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2ETextBlockTests = class(TE2ETestCase)

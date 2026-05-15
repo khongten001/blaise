@@ -17,7 +17,7 @@ unit cp.test.e2e.dateutils;
 interface
 
 uses
-  classes, bcl.testing, cp.test.e2e.base;
+  classes, blaise.testing, cp.test.e2e.base;
 
 type
   TE2EDateUtilsTests = class(TE2ETestCase)

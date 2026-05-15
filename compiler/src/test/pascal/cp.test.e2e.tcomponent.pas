@@ -15,7 +15,7 @@ unit cp.test.e2e.tcomponent;
 interface
 
 uses
-  classes, bcl.testing, cp.test.e2e.base;
+  classes, blaise.testing, cp.test.e2e.base;
 
 type
   TE2ETComponentTests = class(TE2ETestCase)

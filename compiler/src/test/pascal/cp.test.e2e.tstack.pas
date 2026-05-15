@@ -15,7 +15,7 @@ unit cp.test.e2e.tstack;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2EStackTests = class(TE2ETestCase)

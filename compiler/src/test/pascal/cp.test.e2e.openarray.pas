@@ -17,7 +17,7 @@ unit cp.test.e2e.openarray;
 interface
 
 uses
-  classes, bcl.testing, cp.test.e2e.base;
+  classes, blaise.testing, cp.test.e2e.base;
 
 type
   TE2EOpenArrayTests = class(TE2ETestCase)

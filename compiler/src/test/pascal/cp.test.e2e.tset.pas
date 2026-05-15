@@ -15,7 +15,7 @@ unit cp.test.e2e.tset;
 interface
 
 uses
-  bcl.testing, cp.test.e2e.base;
+  blaise.testing, cp.test.e2e.base;
 
 type
   TE2ESetTests = class(TE2ETestCase)

@@ -13,7 +13,7 @@ unit cp.test.codegen;
 interface
 
 uses
-  bcl.testing,
+  blaise.testing,
   uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
 
 type
