@@ -68,6 +68,19 @@ type
     FPromotedLocals: TStringList;
     FPromotedTypes:  TStringList;
 
+    { Inlining: stack of active inline contexts.
+      When non-empty, the topmost context maps parameter names of the
+      callee (currently being emitted inline) to caller-side temps,
+      and supplies a result-temp and end-label for Exit/Result handling.
+      Each entry encodes one frame as 'PN1=T1\0PN2=T2\0...|ResultTemp|EndLabel|ResultQType'
+      via parallel lists for simplicity.  See docs/inlining-design.adoc. }
+    FInlineParamNames:   TStringList;  { CSV per frame: 'P1,P2,...' }
+    FInlineParamTemps:   TStringList;  { CSV per frame: 'T1,T2,...' }
+    FInlineResultTemps:  TStringList;  { one temp per frame }
+    FInlineEndLabels:    TStringList;  { one label per frame }
+    FInlineResultQTypes: TStringList;  { one QBE type per frame }
+    FInlineDepth:        Integer;      { active inline depth; cap to prevent runaway }
+
     function  AllocTemp: string;
     function  AllocLabel(const APrefix: string): string;
     function  CoerceArg(const AArgTemp: string; AArgExpr: TASTExpr; const AParamQType: string): string;
@@ -113,6 +126,19 @@ type
     procedure CollectAddressTakenExpr(AExpr: TASTExpr; ASet: TStringList);
     { Returns True if AName is currently a promoted SSA temp. }
     function  IsPromoted(const AName: string): Boolean;
+
+    { Inline helpers: top-of-stack lookups and frame push/pop. }
+    function  InlineParamTemp(const AName: string; out ATemp: string): Boolean;
+    function  InlineResultTemp: string;
+    function  InlineEndLabel: string;
+    function  InlineResultQType: string;
+    procedure PushInlineFrame(const AParamCsv, ATempCsv, AResultTemp,
+                              AEndLabel, AResultQType: string);
+    procedure PopInlineFrame;
+    function  InsideInlineFrame: Boolean;
+    { Try to inline the call at AExpr.  Returns True (and sets ATemp) when the
+      call was emitted inline; False means the caller should emit a regular call. }
+    function  TryEmitInlineCall(AExpr: TFuncCallExpr; out ATemp: string): Boolean;
     { Returns the QBE type of a promoted local ('' if not promoted). }
     function  PromotedType(const AName: string): string;
     function  CountTryStmts(AStmt: TASTStmt): Integer;
@@ -322,6 +348,12 @@ begin
   FPromotedLocals  := TStringList.Create;
   FPromotedLocals.CaseSensitive := True;
   FPromotedTypes   := TStringList.Create;
+  FInlineParamNames   := TStringList.Create;
+  FInlineParamTemps   := TStringList.Create;
+  FInlineResultTemps  := TStringList.Create;
+  FInlineEndLabels    := TStringList.Create;
+  FInlineResultQTypes := TStringList.Create;
+  FInlineDepth        := 0;
   FTempCount       := 0;
   FStrLitsEmitted  := 0;
 end;
@@ -333,6 +365,11 @@ begin
   FUnitInitNames.Free;
   FPromotedLocals.Free;
   FPromotedTypes.Free;
+  FInlineParamNames.Free;
+  FInlineParamTemps.Free;
+  FInlineResultTemps.Free;
+  FInlineEndLabels.Free;
+  FInlineResultQTypes.Free;
   FOutput.Free;
   FStrLits.Free;
   inherited Destroy;
@@ -670,6 +707,237 @@ begin
     Result := FPromotedTypes.Strings[Idx]
   else
     Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
+{ Inline frame helpers                                                 }
+{ ------------------------------------------------------------------ }
+
+function TCodeGenQBE.InsideInlineFrame: Boolean;
+begin
+  Result := FInlineDepth > 0;
+end;
+
+function TCodeGenQBE.InlineResultTemp: string;
+begin
+  if FInlineDepth = 0 then Result := ''
+  else Result := FInlineResultTemps.Strings[FInlineDepth - 1];
+end;
+
+function TCodeGenQBE.InlineEndLabel: string;
+begin
+  if FInlineDepth = 0 then Result := ''
+  else Result := FInlineEndLabels.Strings[FInlineDepth - 1];
+end;
+
+function TCodeGenQBE.InlineResultQType: string;
+begin
+  if FInlineDepth = 0 then Result := ''
+  else Result := FInlineResultQTypes.Strings[FInlineDepth - 1];
+end;
+
+{ Parameter remap: search the topmost frame's name CSV for AName.
+  Returns True (and the mapped temp via ATemp) when found. }
+function TCodeGenQBE.InlineParamTemp(const AName: string;
+                                      out ATemp: string): Boolean;
+var
+  Names, Temps: string;
+  NL, TL:       TStringList;
+  Idx:          Integer;
+begin
+  Result := False;
+  ATemp  := '';
+  if FInlineDepth = 0 then Exit;
+  Names := FInlineParamNames.Strings[FInlineDepth - 1];
+  Temps := FInlineParamTemps.Strings[FInlineDepth - 1];
+  NL := TStringList.Create;
+  TL := TStringList.Create;
+  try
+    NL.CommaText := Names;
+    TL.CommaText := Temps;
+    Idx := NL.IndexOf(AName);
+    if Idx >= 0 then
+    begin
+      ATemp  := TL.Strings[Idx];
+      Result := True;
+    end;
+  finally
+    NL.Free;
+    TL.Free;
+  end;
+end;
+
+procedure TCodeGenQBE.PushInlineFrame(const AParamCsv, ATempCsv,
+                                       AResultTemp, AEndLabel,
+                                       AResultQType: string);
+begin
+  FInlineParamNames.Add(AParamCsv);
+  FInlineParamTemps.Add(ATempCsv);
+  FInlineResultTemps.Add(AResultTemp);
+  FInlineEndLabels.Add(AEndLabel);
+  FInlineResultQTypes.Add(AResultQType);
+  Inc(FInlineDepth);
+end;
+
+procedure TCodeGenQBE.PopInlineFrame;
+begin
+  if FInlineDepth = 0 then Exit;
+  FInlineParamNames.Delete(FInlineDepth - 1);
+  FInlineParamTemps.Delete(FInlineDepth - 1);
+  FInlineResultTemps.Delete(FInlineDepth - 1);
+  FInlineEndLabels.Delete(FInlineDepth - 1);
+  FInlineResultQTypes.Delete(FInlineDepth - 1);
+  Dec(FInlineDepth);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Inline call emitter                                                  }
+{ ------------------------------------------------------------------ }
+{ Attempts to inline AExpr.  Returns True (and sets ATemp to the      }
+{ result-temp) when successful.  False = caller should emit a regular }
+{ call.                                                                }
+{                                                                      }
+{ Pre-conditions checked here (defence in depth — analyser should     }
+{ have caught these):                                                  }
+{   - ResolvedDecl exists and is_inline_candidate                     }
+{   - argument count matches parameter count                           }
+{   - we are not already deeply nested                                 }
+{ ------------------------------------------------------------------ }
+function TCodeGenQBE.TryEmitInlineCall(AExpr: TFuncCallExpr;
+                                        out ATemp: string): Boolean;
+const
+  MAX_INLINE_DEPTH = 2;
+var
+  Callee:       TMethodDecl;
+  ResultTemp:   string;
+  EndLabel:     string;
+  ResultQType:  string;
+  ParamCsv:     string;
+  TempCsv:      string;
+  ArgTemp:      string;
+  ParamQType:   string;
+  I:            Integer;
+  Par:          TMethodParam;
+  ParamNames:   TStringList;
+  ArgTemps:     TStringList;
+  IsFunc:       Boolean;
+begin
+  Result := False;
+  ATemp  := '';
+  if AExpr = nil then Exit;
+  if AExpr.ResolvedDecl = nil then Exit;
+  Callee := TMethodDecl(AExpr.ResolvedDecl);
+  if not Callee.IsInlineCandidate then Exit;
+  if FInlineDepth >= MAX_INLINE_DEPTH then Exit;
+  if AExpr.Args.Count <> Callee.Params.Count then Exit;
+  { Refuse to inline inside loop bodies — the inline result slot is allocated
+    via alloc4/alloc8 at the call site, and QBE materialises each non-@start
+    alloc as a dynamic stack bump.  Inside a loop that runs N times the stack
+    would grow by 8*N bytes per inline call, leading to stack overflow.
+    Detect via the active break/continue label stack. }
+  if (FBreakLabels.Count > 0) or (FContinueLabels.Count > 0) then Exit;
+
+  IsFunc := Callee.ResolvedReturnType <> nil;
+
+  { Evaluate arguments to fresh caller-side temps.  We rely on the
+    analyser to have rejected by-ref/open-array/aggregate params, so
+    every argument is a simple value expression. }
+  ParamNames := TStringList.Create;
+  ArgTemps   := TStringList.Create;
+  try
+    for I := 0 to Callee.Params.Count - 1 do
+    begin
+      Par := TMethodParam(Callee.Params.Items[I]);
+      ParamQType := QbeTypeOf(Par.ResolvedType);
+      ArgTemp := EmitExpr(TASTExpr(AExpr.Args.Items[I]));
+      ArgTemp := CoerceArg(ArgTemp, TASTExpr(AExpr.Args.Items[I]), ParamQType);
+      ParamNames.Add(Par.ParamName);
+      ArgTemps.Add(ArgTemp);
+    end;
+
+    { Allocate the result slot.  Inlined bodies may contain control flow
+      (early Exit, nested if branches) that would emit multiple writes to
+      a single SSA temp — QBE rejects that pattern when the temp also
+      participates in a downstream phi.  So we use a stack slot (alloc4/
+      alloc8) instead, identical to how the regular function-call return
+      lands in a temp via store-then-load.  The slot is read once at the
+      inline end label to produce the call-expression's value. }
+    if IsFunc then
+    begin
+      ResultQType := QbeTypeOf(Callee.ResolvedReturnType);
+      ResultTemp  := '%_var_inline_r' + IntToStr(FInlineDepth) + '_' + IntToStr(FTempCount);
+      Inc(FTempCount);
+      case ResultQType of
+        'w':
+          begin
+            EmitLine(Format('  %s =l alloc4 1', [ResultTemp]));
+            EmitLine(Format('  storew 0, %s', [ResultTemp]));
+          end;
+        'l':
+          begin
+            EmitLine(Format('  %s =l alloc8 1', [ResultTemp]));
+            EmitLine(Format('  storel 0, %s', [ResultTemp]));
+          end;
+        'd':
+          begin
+            EmitLine(Format('  %s =l alloc8 1', [ResultTemp]));
+            EmitLine(Format('  stored d_0, %s', [ResultTemp]));
+          end;
+        's':
+          begin
+            EmitLine(Format('  %s =l alloc4 1', [ResultTemp]));
+            EmitLine(Format('  stores s_0, %s', [ResultTemp]));
+          end;
+      else
+        EmitLine(Format('  %s =l alloc8 1', [ResultTemp]));
+        EmitLine(Format('  storel 0, %s', [ResultTemp]));
+      end;
+    end
+    else
+    begin
+      ResultQType := '';
+      ResultTemp  := '';
+    end;
+    EndLabel := AllocLabel('inline_end');
+
+    ParamCsv := ParamNames.CommaText;
+    TempCsv  := ArgTemps.CommaText;
+  finally
+    ParamNames.Free;
+    ArgTemps.Free;
+  end;
+
+  PushInlineFrame(ParamCsv, TempCsv, ResultTemp, EndLabel, ResultQType);
+  try
+    { Emit the callee body's statements.  EmitStmt / EmitExpr consult the
+      inline frame stack to remap parameter ident reads and to redirect
+      Exit and Result assignments. }
+    for I := 0 to Callee.Body.Stmts.Count - 1 do
+      EmitStmt(TASTStmt(Callee.Body.Stmts.Items[I]));
+  finally
+    PopInlineFrame;
+  end;
+
+  EmitLine(Format('  jmp @%s', [EndLabel]));
+  EmitLine('@' + EndLabel);
+
+  { Load the result from the slot into a fresh temp so callers receive an
+    SSA value, not a slot address. }
+  if IsFunc then
+  begin
+    ATemp := AllocTemp;
+    case ResultQType of
+      'w': EmitLine(Format('  %s =w loadw %s', [ATemp, ResultTemp]));
+      'l': EmitLine(Format('  %s =l loadl %s', [ATemp, ResultTemp]));
+      'd': EmitLine(Format('  %s =d loadd %s', [ATemp, ResultTemp]));
+      's': EmitLine(Format('  %s =s loads %s', [ATemp, ResultTemp]));
+    else
+      EmitLine(Format('  %s =l loadl %s', [ATemp, ResultTemp]));
+    end;
+  end
+  else
+    ATemp := '';
+  Result := True;
 end;
 
 procedure TCodeGenQBE.CollectAddressTakenExpr(AExpr: TASTExpr; ASet: TStringList);
@@ -1540,11 +1808,19 @@ begin
     EmitProcCall(TProcCall(AStmt))
   else if AStmt is TExitStmt then
   begin
-    EmitExcUnwind(0);
-    if FExitLabel <> '' then
-      EmitLine(Format('  jmp @%s', [FExitLabel]))
+    { Inline frame: Exit jumps to the per-call-site end label, not the
+      caller's exit.  No exception unwinding needed because the analyser
+      rejects bodies that contain try frames. }
+    if InsideInlineFrame then
+      EmitLine(Format('  jmp @%s', [InlineEndLabel]))
     else
-      EmitLine('  ret 0');
+    begin
+      EmitExcUnwind(0);
+      if FExitLabel <> '' then
+        EmitLine(Format('  jmp @%s', [FExitLabel]))
+      else
+        EmitLine('  ret 0');
+    end;
     { QBE basic blocks must follow a terminator with a new labelled block. }
     DeadLbl := AllocLabel('after_exit');
     EmitLine('@' + DeadLbl);
@@ -2457,6 +2733,24 @@ begin
   if AAssign.Expr.ResolvedType = nil then
     raise ECodeGenError.Create(Format(
       'Expression in assignment to ''%s'' has no resolved type', [AAssign.Name]));
+
+  { Inline frame: assignment to Result inside an inlined body stores into
+    the per-call-site result slot, not the caller's Result. }
+  if InsideInlineFrame and SameText(AAssign.Name, 'Result') then
+  begin
+    ValTemp := EmitExpr(AAssign.Expr);
+    QType   := InlineResultQType;
+    ValTemp := CoerceArg(ValTemp, AAssign.Expr, QType);
+    case QType of
+      'w': EmitLine(Format('  storew %s, %s', [ValTemp, InlineResultTemp]));
+      'l': EmitLine(Format('  storel %s, %s', [ValTemp, InlineResultTemp]));
+      'd': EmitLine(Format('  stored %s, %s', [ValTemp, InlineResultTemp]));
+      's': EmitLine(Format('  stores %s, %s', [ValTemp, InlineResultTemp]));
+    else
+      EmitLine(Format('  storel %s, %s', [ValTemp, InlineResultTemp]));
+    end;
+    Exit;
+  end;
 
   { Implicit Self.Field assignment: bare field name like FPos := ... }
   if AAssign.ImplicitSelfField <> nil then
@@ -6373,6 +6667,23 @@ begin
 
       MDecl    := TMethodDecl(FC.ResolvedDecl);
       QType    := QbeTypeOf(MDecl.ResolvedReturnType);
+
+      { Try inline emission first.  Falls through to the regular call when
+        the callee is not an inline candidate or the call shape does not
+        qualify (recursive nesting, etc.).
+        Inlining only fires for non-record return; the sret path below
+        handles records and inlining would not save the buffer alloc. }
+      if MDecl.IsInlineCandidate and not FC.IsImplicitSelfMethod and
+         (MDecl.ResolvedReturnType <> nil) and
+         (MDecl.ResolvedReturnType.Kind <> tyRecord) then
+      begin
+        if TryEmitInlineCall(FC, T) then
+        begin
+          Result := T;
+          Exit;
+        end;
+      end;
+
       { sret: record-returning function — caller allocates a zero-init buffer
         and passes its address as the first (hidden) parameter. }
       if MDecl.ResolvedReturnType.Kind = tyRecord then
@@ -7320,6 +7631,36 @@ begin
   else if AExpr is TIdentExpr then
   begin
     T := AllocTemp;
+
+    { Inline frame: identifier may name a callee parameter (mapped to a
+      caller-side temp) or the callee's Result variable.  We check this
+      before any other ident handling because inlined bodies should not
+      consult the surrounding caller's variable scope for these names. }
+    if InsideInlineFrame then
+    begin
+      if InlineParamTemp(TIdentExpr(AExpr).Name, ArgTemp) then
+      begin
+        QType := QbeTypeOf(AExpr.ResolvedType);
+        EmitLine(Format('  %s =%s copy %s', [T, QType, ArgTemp]));
+        Result := T;
+        Exit;
+      end;
+      if SameText(TIdentExpr(AExpr).Name, 'Result') then
+      begin
+        QType := InlineResultQType;
+        case QType of
+          'w': EmitLine(Format('  %s =w loadw %s', [T, InlineResultTemp]));
+          'l': EmitLine(Format('  %s =l loadl %s', [T, InlineResultTemp]));
+          'd': EmitLine(Format('  %s =d loadd %s', [T, InlineResultTemp]));
+          's': EmitLine(Format('  %s =s loads %s', [T, InlineResultTemp]));
+        else
+          EmitLine(Format('  %s =l loadl %s', [T, InlineResultTemp]));
+        end;
+        Result := T;
+        Exit;
+      end;
+    end;
+
     if TIdentExpr(AExpr).IsImplicitSelf then
     begin
       { Bare field name — equivalent to Self.FieldName: load Self, add offset }

@@ -86,6 +86,8 @@ type
                                  var AStmtCount: Integer): Boolean;
     function  ExprRejectsInline(AExpr: TASTExpr;
                                  const ASelfDecl: TMethodDecl): Boolean;
+    function  AssignmentTargetsParameter(const AName: string;
+                                          const ADecl: TMethodDecl): Boolean;
     procedure AnalyseVarDecls(ABlock: TBlock);
     procedure AnalyseStmts(ABlock: TBlock);
     procedure AnalyseStmt(AStmt: TASTStmt);
@@ -714,6 +716,9 @@ begin
       AnalyseStandaloneDecl(ImplDecl);
     end;
 
+    { After all unit-impl bodies are analysed, mark inline candidates. }
+    MarkInlineCandidates(AUnit.ImplBlock);
+
     { Analyse initialization/finalization section statements at unit scope. }
     if AUnit.InitStmts <> nil then
       for I := 0 to AUnit.InitStmts.Count - 1 do
@@ -976,6 +981,9 @@ begin
       if ImplDecl.OwnerTypeName <> '' then Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
+
+    { After all unit-impl bodies are analysed, mark inline candidates. }
+    MarkInlineCandidates(AUnit.ImplBlock);
 
     { Analyse initialization/finalization section statements at unit scope. }
     if AUnit.InitStmts <> nil then
@@ -3136,6 +3144,21 @@ end;
 { Implementation: walks Body.Stmts and the parameter/return type list. }
 { Used by codegen — see docs/inlining-design.adoc.                     }
 
+function TSemanticAnalyser.AssignmentTargetsParameter(const AName: string;
+                                                       const ADecl: TMethodDecl): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if ADecl = nil then Exit;
+  for I := 0 to ADecl.Params.Count - 1 do
+    if SameText(TMethodParam(ADecl.Params.Items[I]).ParamName, AName) then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
 function TSemanticAnalyser.ExprRejectsInline(AExpr: TASTExpr;
                                               const ASelfDecl: TMethodDecl): Boolean;
 var
@@ -3234,6 +3257,9 @@ begin
     Asg := TAssignment(AStmt);
     Inc(AStmtCount);
     if ExprRejectsInline(Asg.Expr, ASelfDecl) then Exit;
+    { Assignment to a parameter requires updating the caller-side temp,
+      which the simple inliner does not support.  Reject. }
+    if AssignmentTargetsParameter(Asg.Name, ASelfDecl) then Exit;
     Result := False;
     Exit;
   end;

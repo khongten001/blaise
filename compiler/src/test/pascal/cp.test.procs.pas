@@ -161,8 +161,10 @@ const
         program P;
         var N: Integer;
         function Add(A, B: Integer): Integer;
+        var Tmp: Integer;
         begin
-          Result := A + B
+          Tmp := A + B;
+          Result := Tmp
         end;
         begin
           N := Add(3, 4)
