@@ -533,8 +533,7 @@ begin
 
     try
       Semantic := TSemanticAnalyser.Create;
-      if (SearchPaths <> nil) and (SearchPaths.Count > 0) and
-         (Prog.UsedUnits.Count > 0) then
+      if (SearchPaths <> nil) and (Prog.UsedUnits.Count > 0) then
       begin
         Loader := TUnitLoader.Create(SearchPaths);
         Units  := Loader.LoadAll(Prog.UsedUnits);

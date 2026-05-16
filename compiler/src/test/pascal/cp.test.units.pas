@@ -17,7 +17,7 @@ interface
 
 uses
   Classes, SysUtils, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE, uUnitLoader;
 
 type
   TUnitTests = class(TTestCase)
@@ -75,6 +75,13 @@ type
     procedure TestCodegen_Unit_FunctionBodyInIR;
     procedure TestCodegen_Unit_ImplOnlyFuncNotExported;
     procedure TestCodegen_Unit_CorrectArithmetic;
+
+    { ------------------------------------------------------------------ }
+    { Unit loader                                                          }
+    { ------------------------------------------------------------------ }
+    { Missing unit with no search paths must raise EUnitNotFound, not
+      silently succeed (regression for issue #31). }
+    procedure TestUnitLoader_MissingUnit_NoSearchPaths_RaisesError;
   end;
 
 implementation
@@ -478,6 +485,43 @@ begin
         end.
         ''');
   U.Free;
+end;
+
+procedure TUnitTests.TestUnitLoader_MissingUnit_NoSearchPaths_RaisesError;
+var
+  Lexer:      TLexer;
+  Parser:     TParser;
+  Prog:       TProgram;
+  Loader:     TUnitLoader;
+  SearchPaths: TStringList;
+  Units:      TObjectList;
+begin
+  Lexer  := TLexer.Create('program nounit; uses zip, zilch, nada; begin end.');
+  Parser := TParser.Create(Lexer);
+  Prog   := Parser.Parse;
+  try
+    SearchPaths := TStringList.Create;
+    try
+      Loader := TUnitLoader.Create(SearchPaths);
+      try
+        try
+          Units := Loader.LoadAll(Prog.UsedUnits);
+          Units.Free;
+          Fail('Expected EUnitNotFound');
+        except
+          on E: EUnitNotFound do ;
+        end;
+      finally
+        Loader.Free;
+      end;
+    finally
+      SearchPaths.Free;
+    end;
+  finally
+    Prog.Free;
+    Parser.Free;
+    Lexer.Free;
+  end;
 end;
 
 initialization
