@@ -82,6 +82,15 @@ function  _StringFromPChar(P: PChar): Pointer;
 function _DynArraySetLength(Ptr: Pointer; NewLen, ElemSize: Integer): Pointer;
 function _DynArrayLength(Ptr: Pointer): Integer;
 
+{ File-path manipulation — pure string operations, no OS calls }
+function _ChangeFileExt(Path, Ext: Pointer): Pointer;
+function _ExtractFileName(Path: Pointer): Pointer;
+function _ExtractFilePath(Path: Pointer): Pointer;
+function _ExtractFileDir(Path: Pointer): Pointer;
+function _ExtractFileExt(Path: Pointer): Pointer;
+function _IncludeTrailingPathDelimiter(Path: Pointer): Pointer;
+function _ExcludeTrailingPathDelimiter(Path: Pointer): Pointer;
+
 { _StringFormat is variadic and remains implemented in blaise_str.c }
 
 implementation
@@ -794,6 +803,146 @@ begin
   Result := StrAlloc(Len);
   if (Result <> nil) and (Len > 0) then
     MemCopy(StrData(Result), P, Len);
+end;
+
+{ ------------------------------------------------------------------ }
+{ File-path manipulation                                               }
+{ ------------------------------------------------------------------ }
+
+function _ChangeFileExt(Path, Ext: Pointer): Pointer;
+var
+  P, E: PChar;
+  PLen, ELen, I, DotPos, StemLen: Integer;
+begin
+  P := StrData(Path);
+  E := StrData(Ext);
+  PLen := StrLen(Path);
+  ELen := StrLen(Ext);
+  DotPos := -1;
+  I := PLen - 1;
+  while I >= 0 do
+  begin
+    if P[I] = 47 then Break;
+    if P[I] = 46 then begin DotPos := I; Break end;
+    Dec(I);
+  end;
+  if DotPos >= 0 then StemLen := DotPos else StemLen := PLen;
+  Result := StrAlloc(StemLen + ELen);
+  if Result = nil then Exit;
+  if StemLen > 0 then MemCopy(Result, P, StemLen);
+  if ELen > 0 then MemCopy(Result + StemLen, E, ELen);
+end;
+
+function _ExtractFileName(Path: Pointer): Pointer;
+var
+  P: PChar;
+  PLen, I, Start: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  Start := 0;
+  for I := 0 to PLen - 1 do
+    if P[I] = 47 then Start := I + 1;
+  Result := StrAlloc(PLen - Start);
+  if (Result <> nil) and (PLen - Start > 0) then
+    MemCopy(Result, P + Start, PLen - Start);
+end;
+
+function _ExtractFilePath(Path: Pointer): Pointer;
+var
+  P: PChar;
+  PLen, I, SlashPos: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  SlashPos := -1;
+  for I := 0 to PLen - 1 do
+    if P[I] = 47 then SlashPos := I;
+  if SlashPos < 0 then
+  begin
+    Result := StrAlloc(0);
+    Exit;
+  end;
+  Result := StrAlloc(SlashPos + 1);
+  if Result <> nil then MemCopy(Result, P, SlashPos + 1);
+end;
+
+function _ExtractFileDir(Path: Pointer): Pointer;
+var
+  P: PChar;
+  PLen, I, SlashPos: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  SlashPos := -1;
+  for I := 0 to PLen - 1 do
+    if P[I] = 47 then SlashPos := I;
+  if (SlashPos < 0) or (SlashPos = 0) then
+  begin
+    Result := StrAlloc(0);
+    Exit;
+  end;
+  Result := StrAlloc(SlashPos);
+  if Result <> nil then MemCopy(Result, P, SlashPos);
+end;
+
+function _ExtractFileExt(Path: Pointer): Pointer;
+var
+  P: PChar;
+  PLen, I, LastDot, LastSep: Integer;
+  ExtLen: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  LastDot := -1;
+  LastSep := -1;
+  for I := 0 to PLen - 1 do
+  begin
+    if P[I] = 47 then LastSep := I;
+    if P[I] = 46 then LastDot := I;
+  end;
+  if (LastDot < 0) or ((LastSep >= 0) and (LastDot < LastSep)) then
+  begin
+    Result := StrAlloc(0);
+    Exit;
+  end;
+  ExtLen := PLen - LastDot;
+  Result := StrAlloc(ExtLen);
+  if (Result <> nil) and (ExtLen > 0) then
+    MemCopy(Result, P + LastDot, ExtLen);
+end;
+
+function _IncludeTrailingPathDelimiter(Path: Pointer): Pointer;
+var
+  P, DP: PChar;
+  PLen: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  if (PLen > 0) and (P[PLen - 1] = 47) then
+  begin
+    Result := StrAlloc(PLen);
+    if Result <> nil then MemCopy(Result, P, PLen);
+    Exit;
+  end;
+  Result := StrAlloc(PLen + 1);
+  if Result = nil then Exit;
+  if PLen > 0 then MemCopy(Result, P, PLen);
+  DP := StrData(Result);
+  DP[PLen] := 47;
+end;
+
+function _ExcludeTrailingPathDelimiter(Path: Pointer): Pointer;
+var
+  P: PChar;
+  PLen: Integer;
+begin
+  P := StrData(Path);
+  PLen := StrLen(Path);
+  if (PLen > 0) and (P[PLen - 1] = 47) then Dec(PLen);
+  Result := StrAlloc(PLen);
+  if (Result <> nil) and (PLen > 0) then
+    MemCopy(Result, P, PLen);
 end;
 
 { ------------------------------------------------------------------ }

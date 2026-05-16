@@ -351,89 +351,10 @@ void _Sleep(int32_t ms) {
     nanosleep(&ts, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* File-path manipulation (SysUtils equivalents)                       */
-/* ------------------------------------------------------------------ */
-
-/* _ChangeFileExt(path, ext) : string
-   Replaces the extension of path with ext.  ext should include the
-   leading dot (e.g. ".bak"), or be empty to strip the extension.
-   Only the last dot in the base-name (after the last '/') is replaced. */
-void* _ChangeFileExt(void* path, void* ext) {
-    const char* p    = io_str_data(path);
-    const char* e    = io_str_data(ext);
-    const char* slash = strrchr(p, '/');
-    const char* base  = slash ? slash + 1 : p;
-    const char* dot   = strrchr(base, '.');
-    int32_t stem_len  = dot ? (int32_t)(dot - p) : (int32_t)strlen(p);
-    int32_t ext_len   = (int32_t)strlen(e);
-    void*   r         = io_str_alloc(stem_len + ext_len);
-    memcpy((char*)r,            p, (size_t)stem_len);
-    memcpy((char*)r + stem_len, e, (size_t)ext_len);
-    return r;
-}
-
-/* _ExtractFileName(path) : string
-   Returns the filename portion of path (everything after the last '/'). */
-void* _ExtractFileName(void* path) {
-    const char* p     = io_str_data(path);
-    const char* slash = strrchr(p, '/');
-    return io_str_from_cstr(slash ? slash + 1 : p);
-}
-
-/* _ExtractFilePath(path) : string
-   Returns the directory portion of path including the trailing '/'.
-   Returns an empty string when path contains no directory separator. */
-void* _ExtractFilePath(void* path) {
-    const char* p     = io_str_data(path);
-    const char* slash = strrchr(p, '/');
-    if (!slash) return io_str_from_cstr("");
-    int32_t len = (int32_t)(slash - p + 1);
-    void*   r   = io_str_alloc(len);
-    memcpy((char*)r, p, (size_t)len);
-    return r;
-}
-
-/* _ExcludeTrailingPathDelimiter(path) : string
-   Removes a trailing '/' if present. */
-void* _ExcludeTrailingPathDelimiter(void* path) {
-    const char* p   = io_str_data(path);
-    int32_t     len = (int32_t)strlen(p);
-    if (len > 0 && p[len - 1] == '/') len--;
-    void* r = io_str_alloc(len);
-    memcpy((char*)r, p, (size_t)len);
-    return r;
-}
-
 /* _RemoveDir(path) — removes an empty directory (ignores errors). */
 void _RemoveDir(void* path) {
     const char* p = io_str_data(path);
     rmdir(p);
-}
-
-/* _ExtractFileDir(path) : string
-   Returns the directory portion of path WITHOUT the trailing '/'.
-   Returns an empty string when path contains no directory separator. */
-void* _ExtractFileDir(void* path) {
-    const char* p     = io_str_data(path);
-    const char* slash = strrchr(p, '/');
-    if (!slash || slash == p) return io_str_from_cstr("");
-    int32_t len = (int32_t)(slash - p);  /* exclude trailing slash */
-    void*   r   = io_str_alloc(len);
-    memcpy((char*)r, p, (size_t)len);
-    return r;
-}
-
-/* _IncludeTrailingPathDelimiter(path) : string
-   Ensures path ends with '/'.  Returns path unchanged if it already does. */
-void* _IncludeTrailingPathDelimiter(void* path) {
-    const char* p   = io_str_data(path);
-    int32_t     len = (int32_t)strlen(p);
-    if (len > 0 && p[len - 1] == '/') return io_str_from_cstr(p);
-    void* r   = io_str_alloc(len + 1);
-    memcpy((char*)r, p, (size_t)len);
-    ((char*)r)[len] = '/';
-    return r;
 }
 
 /* ------------------------------------------------------------------ */
@@ -455,28 +376,6 @@ int32_t _RenameFile(void* oldpath, void* newpath) {
 int32_t _SetCurrentDir(void* path) {
     const char* p = io_str_data(path);
     return (chdir(p) == 0) ? 1 : 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* _ExtractFileExt(path) : string                                       */
-/* Returns the file extension of path including the leading dot.        */
-/* Returns an empty string when path has no extension, or when the      */
-/* last dot appears before the last directory separator.                */
-/* ------------------------------------------------------------------ */
-
-void* _ExtractFileExt(void* path) {
-    const char* p = io_str_data(path);
-    const char* last_dot = NULL;
-    const char* last_sep = NULL;
-    const char* c = p;
-    while (*c) {
-        if (*c == '/') last_sep = c;
-        if (*c == '.') last_dot = c;
-        c++;
-    }
-    if (last_dot == NULL || (last_sep != NULL && last_dot < last_sep))
-        return io_str_from_cstr("");
-    return io_str_from_cstr(last_dot);
 }
 
 /* ------------------------------------------------------------------ */
