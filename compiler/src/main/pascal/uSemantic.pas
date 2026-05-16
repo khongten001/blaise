@@ -75,6 +75,17 @@ type
     procedure AnalyseStandaloneDecls(ABlock: TBlock);
     procedure AnalyseStandaloneBodies(ABlock: TBlock);
     procedure AnalyseStandaloneDecl(ADecl: TMethodDecl);
+    { Inlining: after bodies are analysed, mark each TMethodDecl whose body
+      qualifies for codegen-side inlining.  Conservative: primitive params
+      + return + locals only; no try/loops/raise/nested defs; small body.
+      See docs/inlining-design.adoc. }
+    procedure MarkInlineCandidates(ABlock: TBlock);
+    function  IsInlineEligible(ADecl: TMethodDecl): Boolean;
+    function  StmtRejectsInline(AStmt: TASTStmt;
+                                 const ASelfDecl: TMethodDecl;
+                                 var AStmtCount: Integer): Boolean;
+    function  ExprRejectsInline(AExpr: TASTExpr;
+                                 const ASelfDecl: TMethodDecl): Boolean;
     procedure AnalyseVarDecls(ABlock: TBlock);
     procedure AnalyseStmts(ABlock: TBlock);
     procedure AnalyseStmt(AStmt: TASTStmt);
@@ -1845,6 +1856,9 @@ begin
     AnalyseVarDecls(ABlock);
     AnalyseStandaloneBodies(ABlock);
     AnalyseStmts(ABlock);
+    { After all bodies are analysed, mark inline candidates so codegen can
+      decide whether to emit a call or inline the body at each call site. }
+    MarkInlineCandidates(ABlock);
   finally
     Dec(FScopeDepth);
     FTable.PopScope;
@@ -3100,6 +3114,212 @@ begin
     { Forward declarations have no body; the later impl handles analysis }
     if ADecl.Body = nil then Continue;
     AnalyseStandaloneDecl(ADecl);
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Inlining: eligibility analyser                                       }
+{ ------------------------------------------------------------------ }
+{ A function is inlinable when all of:                                 }
+{   - has a body (not external, not forward)                           }
+{   - not a method on a class or record                                }
+{   - not generic (TypeParams = nil)                                   }
+{   - has no var-params, open-array params, interface params, or       }
+{     record-by-value params                                           }
+{   - return type is nil (procedure) or a primitive scalar fitting     }
+{     in a register (no record/string/class returns)                   }
+{   - body has no try/except/finally, no raise, no loops, no nested    }
+{     function/method calls that are themselves recursive, and no      }
+{     references to the function itself (no self-recursion)            }
+{   - body has at most a small number of statements                    }
+{                                                                      }
+{ Implementation: walks Body.Stmts and the parameter/return type list. }
+{ Used by codegen — see docs/inlining-design.adoc.                     }
+
+function TSemanticAnalyser.ExprRejectsInline(AExpr: TASTExpr;
+                                              const ASelfDecl: TMethodDecl): Boolean;
+var
+  FC:  TFuncCallExpr;
+  Bin: TBinaryExpr;
+  I:   Integer;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  if AExpr is TFuncCallExpr then
+  begin
+    FC := TFuncCallExpr(AExpr);
+    { Self-recursion makes inlining unbounded. }
+    if FC.ResolvedDecl = ASelfDecl then begin Result := True; Exit; end;
+    for I := 0 to FC.Args.Count - 1 do
+      if ExprRejectsInline(TASTExpr(FC.Args.Items[I]), ASelfDecl) then
+        begin Result := True; Exit; end;
+    Exit;
+  end;
+  if AExpr is TMethodCallExpr then begin Result := True; Exit; end;
+  if AExpr is TBinaryExpr then
+  begin
+    Bin := TBinaryExpr(AExpr);
+    if ExprRejectsInline(Bin.Left, ASelfDecl) then begin Result := True; Exit; end;
+    if ExprRejectsInline(Bin.Right, ASelfDecl) then begin Result := True; Exit; end;
+    Exit;
+  end;
+  if AExpr is TNotExpr then
+  begin
+    Result := ExprRejectsInline(TNotExpr(AExpr).Expr, ASelfDecl);
+    Exit;
+  end;
+end;
+
+function TSemanticAnalyser.StmtRejectsInline(AStmt: TASTStmt;
+                                              const ASelfDecl: TMethodDecl;
+                                              var AStmtCount: Integer): Boolean;
+var
+  I:    Integer;
+  Cmp:  TCompoundStmt;
+  Asg:  TAssignment;
+  Ifs:  TIfStmt;
+begin
+  Result := True;
+  if AStmt = nil then begin Result := False; Exit; end;
+
+  { Hard rejects: loops, try, raise, method calls, nested calls we can't trace. }
+  if (AStmt is TWhileStmt) or
+     (AStmt is TRepeatStmt) or
+     (AStmt is TForStmt) or
+     (AStmt is TForInStmt) or
+     (AStmt is TTryFinallyStmt) or
+     (AStmt is TTryExceptStmt) or
+     (AStmt is TRaiseStmt) or
+     (AStmt is TBreakStmt) or
+     (AStmt is TContinueStmt) or
+     (AStmt is TCaseStmt) or
+     (AStmt is TMethodCallStmt) or
+     (AStmt is TInheritedCallStmt) or
+     (AStmt is TPointerWriteStmt) or
+     (AStmt is TFieldAssignment) or
+     (AStmt is TStaticSubscriptAssign) then
+    Exit;
+
+  if AStmt is TCompoundStmt then
+  begin
+    Cmp := TCompoundStmt(AStmt);
+    for I := 0 to Cmp.Stmts.Count - 1 do
+      if StmtRejectsInline(TASTStmt(Cmp.Stmts.Items[I]), ASelfDecl, AStmtCount) then
+        Exit;
+    Result := False;
+    Exit;
+  end;
+
+  if AStmt is TExitStmt then
+  begin
+    Inc(AStmtCount);
+    Result := False;
+    Exit;
+  end;
+
+  if AStmt is TIfStmt then
+  begin
+    Ifs := TIfStmt(AStmt);
+    Inc(AStmtCount);
+    if ExprRejectsInline(Ifs.Condition, ASelfDecl) then Exit;
+    if StmtRejectsInline(Ifs.ThenStmt, ASelfDecl, AStmtCount) then Exit;
+    if (Ifs.ElseStmt <> nil) and
+       StmtRejectsInline(Ifs.ElseStmt, ASelfDecl, AStmtCount) then Exit;
+    Result := False;
+    Exit;
+  end;
+
+  if AStmt is TAssignment then
+  begin
+    Asg := TAssignment(AStmt);
+    Inc(AStmtCount);
+    if ExprRejectsInline(Asg.Expr, ASelfDecl) then Exit;
+    Result := False;
+    Exit;
+  end;
+
+  if AStmt is TProcCall then
+  begin
+    Inc(AStmtCount);
+    { Calls to other functions inside an inline candidate are allowed as long
+      as they are not the function itself.  The codegen will emit them as
+      regular calls or inline them in turn. }
+    if TProcCall(AStmt).ResolvedDecl = ASelfDecl then Exit;
+    for I := 0 to TProcCall(AStmt).Args.Count - 1 do
+      if ExprRejectsInline(TASTExpr(TProcCall(AStmt).Args.Items[I]), ASelfDecl) then
+        Exit;
+    Result := False;
+    Exit;
+  end;
+
+  { Unknown statement form: reject conservatively. }
+end;
+
+function TSemanticAnalyser.IsInlineEligible(ADecl: TMethodDecl): Boolean;
+const
+  MAX_STMTS = 8;
+var
+  I:   Integer;
+  Par: TMethodParam;
+  K:   TTypeKind;
+  Cnt: Integer;
+begin
+  Result := False;
+  if ADecl = nil then Exit;
+  if ADecl.IsExternal then Exit;
+  if ADecl.Body = nil then Exit;
+  if ADecl.OwnerTypeName <> '' then Exit;       { class/record method — phase 2 }
+  if ADecl.TypeParams <> nil then Exit;         { generic template }
+  if ADecl.VTableSlot >= 0 then Exit;           { virtual dispatch }
+  if ADecl.IsVirtual or ADecl.IsAbstract then Exit;
+
+  { Return type: nil (procedure) or primitive scalar only. }
+  if ADecl.ResolvedReturnType <> nil then
+  begin
+    K := ADecl.ResolvedReturnType.Kind;
+    if not (K in [tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum,
+                  tyInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
+      Exit;
+  end;
+
+  { Parameters: only primitive by-value. }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if Par.IsVarParam or Par.IsOpenArray then Exit;
+    if Par.ResolvedType = nil then Exit;
+    K := Par.ResolvedType.Kind;
+    if not (K in [tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum,
+                  tyInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
+      Exit;
+  end;
+
+  { No local variables (phase 1 keeps it simple — only the implicit Result). }
+  if (ADecl.Body.Decls <> nil) and (ADecl.Body.Decls.Count > 0) then Exit;
+  if (ADecl.Body.TypeDecls <> nil) and (ADecl.Body.TypeDecls.Count > 0) then Exit;
+  if (ADecl.Body.ConstDecls <> nil) and (ADecl.Body.ConstDecls.Count > 0) then Exit;
+  if (ADecl.Body.ProcDecls <> nil) and (ADecl.Body.ProcDecls.Count > 0) then Exit;
+
+  { Walk body statements, counting and checking. }
+  Cnt := 0;
+  for I := 0 to ADecl.Body.Stmts.Count - 1 do
+  begin
+    if StmtRejectsInline(TASTStmt(ADecl.Body.Stmts.Items[I]), ADecl, Cnt) then Exit;
+    if Cnt > MAX_STMTS then Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure TSemanticAnalyser.MarkInlineCandidates(ABlock: TBlock);
+var
+  I:     Integer;
+  ADecl: TMethodDecl;
+begin
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+  begin
+    ADecl := TMethodDecl(ABlock.ProcDecls.Items[I]);
+    ADecl.IsInlineCandidate := IsInlineEligible(ADecl);
   end;
 end;
 

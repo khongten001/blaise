@@ -575,6 +575,10 @@ type
     TypeParamConstraints: TStringList; { parallel to TypeParams; '' = unconstrained,
                                          'class', 'record', or a concrete type name }
     OwnerTypeParams:    TStringList; { non-nil = generic owner: 'T' in TList<T>.Add }
+    IsInlineCandidate:  Boolean;     { set by uSemantic — body is small, leaf-only, primitive
+                                       params and locals, no try/loops/raise/nested defs.
+                                       Codegen may inline calls to this function at the call
+                                       site instead of emitting a real call instruction. }
     constructor Create;
     destructor Destroy; override;
   end;
