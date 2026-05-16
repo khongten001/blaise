@@ -38,10 +38,14 @@ interface
 { ------------------------------------------------------------------ }
 { Libc bindings                                                        }
 { ------------------------------------------------------------------ }
-function  _libc_malloc(Size: Int64): Pointer;                          external name 'malloc';
-procedure _libc_free(Ptr: Pointer);                                    external name 'free';
 procedure _libc_memcpy(Dst, Src: Pointer; N: Int64);                   external name 'memcpy';
-function  _libc_memcmp(P1, P2: Pointer; N: Int64): Integer;            external name 'memcmp';
+
+{ blaise_mem bindings — link directly by symbol name.  We avoid
+  'uses blaise_mem' because that would pull blaise_mem's implementation-
+  section _libc_memcpy declaration into our namespace and conflict with
+  the one above. }
+function  _BlaiseGetMem(Size: Integer): Pointer; external name '_BlaiseGetMem';
+procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
 
 { ------------------------------------------------------------------ }
 { String RTL public interface                                          }
@@ -143,7 +147,7 @@ var
   NulPtr: PChar;
 begin
   TotalL := Int64(HDR_SIZE) + Int64(Len) + 1;
-  Base   := _libc_malloc(TotalL);
+  Base   := _BlaiseGetMem(Integer(TotalL));
   if Base = nil then
   begin
     Result := nil;
@@ -496,7 +500,7 @@ var
   I, J:  Integer;
   Digit: Integer;
 begin
-  Tmp := _libc_malloc(22);
+  Tmp := _BlaiseGetMem(22);
   TP  := PChar(Tmp);
   IsNeg := N < 0;
   if IsNeg then
@@ -532,7 +536,7 @@ begin
     Inc(I);
     Dec(J);
   end;
-  _libc_free(Tmp);
+  _BlaiseFreeMem(Tmp);
   Result := I;
 end;
 
@@ -546,13 +550,13 @@ var
   BP:      PChar;
   Written: Integer;
 begin
-  Buf     := _libc_malloc(22);
+  Buf     := _BlaiseGetMem(22);
   BP      := PChar(Buf);
   Written := WriteDecimal(Int64(N), BP);
   Result  := StrAlloc(Written);
   if (Result <> nil) and (Written > 0) then
     MemCopy(StrData(Result), Buf, Written);
-  _libc_free(Buf);
+  _BlaiseFreeMem(Buf);
 end;
 
 { ------------------------------------------------------------------ }
@@ -565,13 +569,13 @@ var
   BP:      PChar;
   Written: Integer;
 begin
-  Buf     := _libc_malloc(22);
+  Buf     := _BlaiseGetMem(22);
   BP      := PChar(Buf);
   Written := WriteDecimal(N, BP);
   Result  := StrAlloc(Written);
   if (Result <> nil) and (Written > 0) then
     MemCopy(StrData(Result), Buf, Written);
-  _libc_free(Buf);
+  _BlaiseFreeMem(Buf);
 end;
 
 { ------------------------------------------------------------------ }
@@ -984,12 +988,12 @@ begin
   if NewLen <= 0 then
   begin
     if Ptr <> nil then
-      _libc_free(Ptr - DA_HDR);
+      _BlaiseFreeMem(Ptr - DA_HDR);
     Result := nil;
     Exit;
   end;
   DataSz  := DA_HDR + NewLen * ElemSize;
-  NewBase := _libc_malloc(DataSz);
+  NewBase := _BlaiseGetMem(DataSz);
   { write header: refcount = 1, length = NewLen }
   HdrPtr    := NewBase;
   DaWriteInt32(HdrPtr, 1);           { refcount }
@@ -1010,7 +1014,7 @@ begin
     if OldLen < NewLen then CopyLen := OldLen else CopyLen := NewLen;
     if CopyLen > 0 then
       MemCopy(PChar(NewBase) + DA_HDR, PChar(Ptr), CopyLen * ElemSize);
-    _libc_free(Ptr - DA_HDR);
+    _BlaiseFreeMem(Ptr - DA_HDR);
   end;
   Result := PChar(NewBase) + DA_HDR;
 end;

@@ -278,8 +278,8 @@ var
   IR: string;
 begin
   IR := GenIR(SrcPush);
-  AssertTrue('Grow emits realloc call',
-    Pos('call $realloc', IR) >= 0);
+  AssertTrue('Grow emits _BlaiseReallocMem call',
+    Pos('call $_BlaiseReallocMem', IR) >= 0);
 end;
 
 initialization

@@ -26,10 +26,15 @@
 
 #define HDR_SIZE 12
 
+/* Blaise strings must be allocated through _BlaiseGetMem so that
+   _StringRelease frees them via _BlaiseFreeMem.  Mixing libc malloc
+   here would corrupt the blaise_mem freelist. */
+extern void* _BlaiseGetMem(int32_t size);
+
 static void* blaise_alloc_str(const char* src, int32_t len)
 {
     int32_t cap  = len + 1;
-    char*   base = (char*)malloc(HDR_SIZE + cap);
+    char*   base = (char*)_BlaiseGetMem((int32_t)(HDR_SIZE + cap));
     if (!base) return NULL;
     *(int32_t*)(base)     = 1;    /* refcount */
     *(int32_t*)(base + 4) = len;  /* length   */

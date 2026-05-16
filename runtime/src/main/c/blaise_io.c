@@ -47,8 +47,13 @@ static inline int32_t io_str_len(void* data_ptr) {
     return data_ptr ? ((int32_t*)data_ptr)[-2] : 0;  /* length at -8 */
 }
 
+/* Blaise strings are allocated through _BlaiseGetMem so that
+   _StringRelease in blaise_arc.pas frees them via _BlaiseFreeMem.
+   Mixing libc malloc here would corrupt the blaise_mem freelist. */
+extern void* _BlaiseGetMem(int32_t size);
+
 static void* io_str_alloc(int32_t len) {
-    char* base = (char*)malloc((size_t)(BLAISE_STR_HDR + len + 1));
+    char* base = (char*)_BlaiseGetMem((int32_t)(BLAISE_STR_HDR + len + 1));
     if (!base) return NULL;
     ((int32_t*)base)[0] = 0;    /* refcount  */
     ((int32_t*)base)[1] = len;  /* length    */

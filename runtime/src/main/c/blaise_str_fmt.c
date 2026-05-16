@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <ctype.h>
 
+/* Forward declaration — implemented in blaise_mem.pas. */
+extern void* _BlaiseGetMem(int32_t size);
+
 #define HDR_SIZE 12
 
 /* data_ptr IS the char data — identity helper */
@@ -39,7 +42,7 @@ static inline int32_t str_len(void* data_ptr) {
 
 /* Allocate: header first, then data.  Return DATA POINTER. */
 static void* str_alloc(int32_t len) {
-    char* base = malloc((size_t)(HDR_SIZE + len + 1));
+    char* base = (char*)_BlaiseGetMem((int32_t)(HDR_SIZE + len + 1));
     if (!base) return NULL;
     ((int32_t*)base)[0] = 0;    /* refcount  */
     ((int32_t*)base)[1] = len;  /* length    */

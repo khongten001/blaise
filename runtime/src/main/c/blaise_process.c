@@ -40,12 +40,16 @@
 
 #define BLAISE_STR_HDR 12   /* refcount + length + capacity */
 
+/* Blaise strings must be allocated through _BlaiseGetMem so that
+   _StringRelease frees them via _BlaiseFreeMem. */
+extern void* _BlaiseGetMem(int32_t size);
+
 static inline const char* proc_str_data(void* data_ptr) {
     return data_ptr ? (const char*)data_ptr : "";
 }
 
 static void* proc_str_alloc(int32_t len) {
-    char* base = (char*)malloc((size_t)(BLAISE_STR_HDR + len + 1));
+    char* base = (char*)_BlaiseGetMem((int32_t)(BLAISE_STR_HDR + len + 1));
     if (!base) return NULL;
     ((int32_t*)base)[0] = 0;    /* refcount  */
     ((int32_t*)base)[1] = len;  /* length    */

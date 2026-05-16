@@ -25,11 +25,16 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Forward declaration — implemented in blaise_mem.pas.  Blaise strings
+   must be allocated through _BlaiseGetMem so that _StringRelease can
+   free them via _BlaiseFreeMem without a heap mismatch. */
+extern void* _BlaiseGetMem(int32_t size);
+
 /* Forward-declared string helper to build a Blaise string from a C string. */
 static void* exc_str_from_cstr(const char* s) {
     typedef struct { int32_t refcnt; int32_t length; int32_t capacity; } StrHdr;
     int32_t len = s ? (int32_t)strlen(s) : 0;
-    StrHdr* h = (StrHdr*)malloc(sizeof(StrHdr) + len + 1);
+    StrHdr* h = (StrHdr*)_BlaiseGetMem((int32_t)(sizeof(StrHdr) + len + 1));
     if (!h) return NULL;
     h->refcnt = 0; h->length = len; h->capacity = len;
     if (len > 0) memcpy((char*)(h + 1), s, (size_t)len);

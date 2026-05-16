@@ -59,8 +59,6 @@ const
   HDR_SIZE  = 12;   { string header: RefCount + Length + Capacity }
   CLASS_HDR = 16;   { class header:  RefCount + pad + cleanup ptr }
 
-function  _libc_malloc(Size: Int64): Pointer;              external name 'malloc';
-procedure _libc_free(Ptr: Pointer);                        external name 'free';
 procedure _libc_memcpy(Dst, Src: Pointer; N: Int64);       external name 'memcpy';
 function  _libc_memcmp(P1, P2: Pointer; N: Int64): Integer; external name 'memcmp';
 
@@ -69,6 +67,10 @@ function  _libc_memcmp(P1, P2: Pointer; N: Int64): Integer; external name 'memcm
   on corruption. }
 procedure _StringReleaseCheck(DataPtr: Pointer; RefCount, Length, Capacity: Integer);
   external name '_StringReleaseCheck';
+
+{ blaise_mem bindings — direct symbol-name link, no 'uses' clause. }
+function  _BlaiseGetMem(Size: Integer): Pointer; external name '_BlaiseGetMem';
+procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
 
 procedure MemCopy(Dst, Src: Pointer; N: Integer);
 begin
@@ -114,7 +116,7 @@ begin
   CP := Base + 8;
   _StringReleaseCheck(Ptr, RC^, LN^, CP^);
   RC^ := RC^ - 1;
-  if RC^ = 0 then _libc_free(Base);
+  if RC^ = 0 then _BlaiseFreeMem(Base);
 end;
 
 function _StringEquals(S1, S2: Pointer): Integer;
@@ -183,7 +185,7 @@ begin
     Len2 := LN^;
   end;
   Total  := Len1 + Len2;
-  Base   := _libc_malloc(Int64(HDR_SIZE + Total + 1));
+  Base   := _BlaiseGetMem(HDR_SIZE + Total + 1);
   if Base = nil then Exit;
   RC    := Base;             { RefCount at base+0 }
   RC^   := 0;
@@ -370,7 +372,7 @@ end;
 procedure _ClassFree(UserPtr: Pointer);
 begin
   if UserPtr = nil then Exit;
-  _libc_free(UserPtr - CLASS_HDR);
+  _BlaiseFreeMem(UserPtr - CLASS_HDR);
 end;
 
 end.

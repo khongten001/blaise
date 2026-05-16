@@ -416,8 +416,9 @@ var
   IR: string;
 begin
   IR := GenIR(SrcTListFull);
-  { Grow method calls realloc for dynamic resizing }
-  AssertTrue('Grow emits realloc', Pos('call $realloc', IR) > 0);
+  { Grow method calls _BlaiseReallocMem for dynamic resizing }
+  AssertTrue('Grow emits _BlaiseReallocMem',
+    Pos('call $_BlaiseReallocMem', IR) > 0);
   { Add method stores elements }
   AssertTrue('Add emits storew for Integer elements', Pos('storew', IR) > 0);
   { Get method loads elements }

@@ -305,8 +305,8 @@ begin
   IR := GenIR(SrcEnqueue);
   { Grow allocates a fresh buffer via GetMem rather than realloc,
     because it must copy in insertion order from the circular buffer }
-  AssertTrue('Grow emits malloc/GetMem call',
-    Pos('call $malloc', IR) >= 0);
+  AssertTrue('Grow emits _BlaiseGetMem call',
+    Pos('call $_BlaiseGetMem', IR) >= 0);
 end;
 
 initialization

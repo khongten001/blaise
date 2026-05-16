@@ -340,7 +340,8 @@ var
   IR: string;
 begin
   IR := GenIR(SrcGetMem);
-  AssertTrue('GetMem should emit malloc', Pos('call $malloc', IR) > 0);
+  AssertTrue('GetMem should emit _BlaiseGetMem',
+    Pos('call $_BlaiseGetMem', IR) > 0);
 end;
 
 procedure TPointerTests.TestCodegen_FreeMem_EmitsFree;
@@ -348,7 +349,8 @@ var
   IR: string;
 begin
   IR := GenIR(SrcFreeMem);
-  AssertTrue('FreeMem should emit free', Pos('call $free', IR) > 0);
+  AssertTrue('FreeMem should emit _BlaiseFreeMem',
+    Pos('call $_BlaiseFreeMem', IR) > 0);
 end;
 
 procedure TPointerTests.TestCodegen_Deref_EmitsLoad;

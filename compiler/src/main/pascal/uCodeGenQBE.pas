@@ -5277,7 +5277,7 @@ begin
   else if UCaseName = 'FREEMEM' then
   begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
-    EmitLine(Format('  call $free(l %s)', [ArgTemp]));
+    EmitLine(Format('  call $_BlaiseFreeMem(l %s)', [ArgTemp]));
   end
   else if UCaseName = 'ZEROMEM' then
   begin
@@ -5691,28 +5691,25 @@ begin
         Exit;
       end;
 
-      { GetMem(N) → malloc(N) → pointer }
+      { GetMem(N) → _BlaiseGetMem(N) → pointer.  _BlaiseGetMem takes
+        Integer (w), no extension needed. }
       if SameText(FC.Name,'GetMem') then
       begin
         ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
-        { Extend arg to l for malloc }
-        L := AllocTemp;
-        EmitLine(Format('  %s =l extsw %s', [L, ArgTemp]));
-        EmitLine(Format('  %s =l call $malloc(l %s)', [T, L]));
+        EmitLine(Format('  %s =l call $_BlaiseGetMem(w %s)', [T, ArgTemp]));
         Result := T;
         Exit;
       end;
 
-      { ReallocMem(P, N) → realloc(P, N) → pointer }
+      { ReallocMem(P, N) → _BlaiseReallocMem(P, N) → pointer.  Size arg
+        is Integer (w). }
       if SameText(FC.Name,'ReallocMem') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
-        ArgTemp := AllocTemp;
-        EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
         T := AllocTemp;
-        EmitLine(Format('  %s =l call $realloc(l %s, l %s)', [T, L, ArgTemp]));
+        EmitLine(Format('  %s =l call $_BlaiseReallocMem(l %s, w %s)', [T, L, R]));
         Result := T;
         Exit;
       end;

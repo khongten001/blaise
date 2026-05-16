@@ -21,6 +21,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+
+/* Forward declarations — implemented in blaise_mem.pas. */
+extern void* _BlaiseGetMem(int32_t size);
+extern void  _BlaiseFreeMem(void* ptr);
 
 typedef void (*BlaiseFieldCleanupFn)(void*);
 
@@ -37,8 +42,10 @@ static inline BlaiseObjHdr* obj_hdr(void* user_ptr) {
 }
 
 void* _ClassAlloc(size_t size, BlaiseFieldCleanupFn cleanup) {
-    char* base = (char*)calloc(1, size + CLASS_HDR_SIZE);
+    size_t total = size + CLASS_HDR_SIZE;
+    char* base = (char*)_BlaiseGetMem((int32_t)total);
     if (!base) return NULL;
+    memset(base, 0, total);
     BlaiseObjHdr* h = (BlaiseObjHdr*)base;
     h->cleanup = cleanup;
     return base + CLASS_HDR_SIZE;
@@ -53,7 +60,7 @@ void _ClassRelease(void* user_ptr) {
     if (--h->refcnt == 0) {
         _WeakZeroSlots(user_ptr);
         if (h->cleanup) h->cleanup(user_ptr);
-        free((char*)user_ptr - CLASS_HDR_SIZE);
+        _BlaiseFreeMem((char*)user_ptr - CLASS_HDR_SIZE);
     }
 }
 
