@@ -3509,6 +3509,7 @@ begin
       SemanticError(
         Format('Undeclared loop variable ''%s''', [ForS.VarName]),
         ForS.Line, ForS.Col);
+    ForS.VarName  := VarSym.Name;  { normalise to declared casing }
     ForS.IsGlobal := (VarSym <> nil) and VarSym.IsGlobal;
     if VarSym.Kind <> skVariable then
       SemanticError(
@@ -3552,6 +3553,7 @@ begin
         SemanticError(
           Format('Undeclared loop variable ''%s''', [ForInS.VarName]),
           ForInS.Line, ForInS.Col);
+      ForInS.VarName := VarSym.Name;  { normalise to declared casing }
       if VarSym.Kind <> skVariable then
         SemanticError(
           Format('''%s'' is not a variable', [ForInS.VarName]),
@@ -3641,6 +3643,7 @@ begin
         SemanticError(
           Format('Undeclared loop variable ''%s''', [ForInS.VarName]),
           ForInS.Line, ForInS.Col);
+      ForInS.VarName := VarSym.Name;  { normalise to declared casing }
       if VarSym.Kind <> skVariable then
         SemanticError(
           Format('''%s'' is not a variable', [ForInS.VarName]),
@@ -3984,6 +3987,7 @@ begin
       Format('Undeclared variable ''%s''', [ACall.ObjectName]),
       ACall.Line, ACall.Col);
   end;
+  ACall.ObjectName := ObjSym.Name;  { normalise to declared casing }
   if not (ObjSym.Kind in [skVariable, skParameter, skVarParameter]) then
     SemanticError(
       Format('''%s'' is not a variable', [ACall.ObjectName]),
@@ -4284,6 +4288,7 @@ begin
       Format('''%s'' is not a record or class variable', [AAssign.RecordName]),
       AAssign.Line, AAssign.Col);
 
+  AAssign.RecordName    := RecSym.Name;  { normalise to declared casing }
   AAssign.IsClassAccess := RecSym.TypeDesc.Kind = tyClass;
   AAssign.IsGlobal      := RecSym.IsGlobal;
   { Treat value record/array params as by-reference at QBE ABI level. }
@@ -4817,6 +4822,7 @@ begin
         Format('Undeclared procedure ''%s''', [ACall.Name]),
         ACall.Line, ACall.Col);
   end;
+  ACall.Name := Sym.Name;  { normalise to declared casing }
   { Indirect call through a procedural-typed variable used as a statement:
     e.g. 'MyHandler(Arg1, Arg2)' where MyHandler is 'var MyHandler: TMyProc'. }
   if (Sym.Kind in [skVariable, skParameter, skVarParameter]) and
@@ -5122,6 +5128,7 @@ begin
         Format('Undeclared function ''%s''', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
   end;
+  AExpr.Name := Sym.Name;  { normalise to declared casing }
   { Type cast: TypeName(Expr) — single-argument call to a type name }
   if Sym.Kind = skType then
   begin
@@ -5957,6 +5964,8 @@ begin
       AExpr.Line, AExpr.Col);
   end;
 
+  AExpr.ObjectName := ObjSym.Name;  { normalise to declared casing }
+
   { Constructor call with args: TypeName.Create(arg1, arg2, ...) or any
     method on a class type starting with Create (e.g. CreateFmt). }
   if (ObjSym.Kind = skType) and
@@ -6482,6 +6491,8 @@ begin
       AAccess.Line, AAccess.Col);
   end;
 
+  AAccess.RecordName := RecSym.Name;  { normalise to declared casing }
+
   { Constructor call: TypeName.Create }
   if RecSym.Kind = skType then
   begin
@@ -6980,6 +6991,7 @@ begin
         Format('Supports() third argument must be an interface-typed variable, got ''%s''',
           [AExpr.OutVarName]),
         AExpr.Line, AExpr.Col);
+    AExpr.OutVarName     := OutSym.Name;  { normalise to declared casing }
     AExpr.OutVarIsGlobal := OutSym.IsGlobal;
   end;
 
@@ -7074,7 +7086,10 @@ begin
       else
         BaseType := nil;
       if BaseType <> nil then
+      begin
+        FldExpr.RecordName := Sym.Name;  { normalise to declared casing }
         FldExpr.IsGlobal := Sym.IsGlobal;
+      end;
     end
     else
       BaseType := AnalyseExpr(FldExpr.Base);
@@ -7316,6 +7331,7 @@ begin
     SemanticError(
       Format('Undeclared variable ''%s''', [AStmt.ArrayName]),
       AStmt.Line, AStmt.Col);
+  AStmt.ArrayName := Sym.Name;  { normalise to declared casing }
   { PChar subscript write: P[I] := Integer — storeb at ptr + I }
   if Sym.TypeDesc.Kind = tyPChar then
   begin

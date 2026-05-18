@@ -63,6 +63,11 @@ type
     { Case-insensitive identifier normalisation }
     procedure TestResult_LowercaseAssign_CompilesOK;
     procedure TestIdent_WrongCase_NormalisedInIR;
+    procedure TestFieldAccess_WrongCase_NormalisedInIR;
+    procedure TestForLoop_WrongCase_NormalisedInIR;
+    procedure TestFuncCall_WrongCase_NormalisedInIR;
+    procedure TestAssign_WrongCase_NormalisedInIR;
+    procedure TestMethodCallObj_WrongCase_NormalisedInIR;
   end;
 
 implementation
@@ -392,6 +397,111 @@ begin
     'end.');
   AssertTrue('canonical $N global used', IRContains(IR, '$N'));
   AssertFalse('no mis-cased $n global', IRContains(IR, '$n ='));
+end;
+
+procedure TCodeGenTests.TestFieldAccess_WrongCase_NormalisedInIR;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                                     + LineEnding +
+    'type'                                           + LineEnding +
+    '  TFoo = class'                                 + LineEnding +
+    '    FVal: Integer;'                             + LineEnding +
+    '    function GetVal: Integer;'                  + LineEnding +
+    '  end;'                                         + LineEnding +
+    'function TFoo.GetVal: Integer;'                 + LineEnding +
+    'begin Result := Self.FVal end;'                 + LineEnding +
+    'var MyObj: TFoo;'                               + LineEnding +
+    'begin'                                          + LineEnding +
+    '  MyObj := TFoo.Create;'                        + LineEnding +
+    '  WriteLn(myobj.GetVal)'                        + LineEnding +
+    'end.');
+  AssertTrue('definition uses declared $MyObj',
+    Pos('data $MyObj', IR) >= 0);
+  AssertTrue('reference uses declared $MyObj',
+    Pos('loadl $MyObj', IR) >= 0);
+  AssertFalse('no mis-cased $myobj reference',
+    Pos('$myobj', IR) >= 0);
+end;
+
+procedure TCodeGenTests.TestForLoop_WrongCase_NormalisedInIR;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                                     + LineEnding +
+    'var Counter: Integer;'                          + LineEnding +
+    'begin'                                          + LineEnding +
+    '  for counter := 1 to 5 do'                    + LineEnding +
+    '    WriteLn(counter)'                           + LineEnding +
+    'end.');
+  AssertTrue('definition uses declared $Counter',
+    Pos('data $Counter', IR) >= 0);
+  AssertFalse('no mis-cased $counter in IR',
+    Pos('$counter', IR) >= 0);
+end;
+
+procedure TCodeGenTests.TestFuncCall_WrongCase_NormalisedInIR;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                                     + LineEnding +
+    'procedure DoStuff(X: Integer);'                 + LineEnding +
+    'begin WriteLn(X) end;'                          + LineEnding +
+    'begin'                                          + LineEnding +
+    '  dostuff(3)'                                   + LineEnding +
+    'end.');
+  AssertTrue('proc def uses declared name DoStuff',
+    Pos('function $DoStuff', IR) >= 0);
+  AssertTrue('call uses declared name DoStuff',
+    Pos('call $DoStuff', IR) >= 0);
+  AssertFalse('no mis-cased $dostuff in IR',
+    Pos('$dostuff', IR) >= 0);
+end;
+
+procedure TCodeGenTests.TestAssign_WrongCase_NormalisedInIR;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                                     + LineEnding +
+    'type'                                           + LineEnding +
+    '  TRec = record'                                + LineEnding +
+    '    Val: Integer;'                              + LineEnding +
+    '  end;'                                         + LineEnding +
+    'var MyRec: TRec;'                               + LineEnding +
+    'begin'                                          + LineEnding +
+    '  myrec.Val := 42'                              + LineEnding +
+    'end.');
+  AssertTrue('definition uses declared $MyRec',
+    Pos('data $MyRec', IR) >= 0);
+  AssertFalse('no mis-cased $myrec in IR',
+    Pos('$myrec', IR) >= 0);
+end;
+
+procedure TCodeGenTests.TestMethodCallObj_WrongCase_NormalisedInIR;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                                     + LineEnding +
+    'type'                                           + LineEnding +
+    '  TFoo = class'                                 + LineEnding +
+    '    procedure DoIt;'                            + LineEnding +
+    '  end;'                                         + LineEnding +
+    'procedure TFoo.DoIt;'                           + LineEnding +
+    'begin end;'                                     + LineEnding +
+    'var Obj: TFoo;'                                 + LineEnding +
+    'begin'                                          + LineEnding +
+    '  Obj := TFoo.Create;'                          + LineEnding +
+    '  obj.DoIt'                                     + LineEnding +
+    'end.');
+  AssertTrue('definition uses declared $Obj',
+    Pos('data $Obj', IR) >= 0);
+  AssertFalse('no mis-cased $obj in IR (lowercase)',
+    Pos('$obj', IR) >= 0);
 end;
 
 initialization
