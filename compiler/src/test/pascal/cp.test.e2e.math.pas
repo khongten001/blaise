@@ -107,6 +107,32 @@ type
 
     { Pi constant }
     procedure TestRun_Pi_Approx;
+
+    { Int64 → Double promotion }
+    procedure TestRun_Int64MulDouble_LargeValue;
+
+    { DoubleToStr }
+    procedure TestRun_DoubleToStr_Pi;
+    procedure TestRun_DoubleToStr_Zero;
+    procedure TestRun_DoubleToStr_Negative;
+    procedure TestRun_DoubleToStr_SmallFractions;
+    procedure TestRun_DoubleToStr_ExponentialSmall;
+    procedure TestRun_DoubleToStr_ExponentialLarge;
+    procedure TestRun_DoubleToStr_LargeInteger;
+    procedure TestRun_DoubleToStr_VerySmallPositive;
+
+    { StrToDouble }
+    procedure TestRun_StrToDouble_Simple;
+    procedure TestRun_StrToDouble_Negative;
+    procedure TestRun_StrToDouble_ScientificPos;
+    procedure TestRun_StrToDouble_ScientificNeg;
+    procedure TestRun_StrToDouble_LargeMantissa;
+    procedure TestRun_StrToDouble_Zero;
+    procedure TestRun_StrToDouble_RoundTrip;
+
+    { Abs }
+    procedure TestRun_AbsInt_Positive;
+    procedure TestRun_AbsInt_Negative;
   end;
 
 implementation
@@ -934,6 +960,310 @@ begin
     ''', Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('round(pi)', '3', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_Int64MulDouble_LargeValue;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var M: Int64; D: Double;
+    begin
+      M := 123456789012345;
+      D := M * 1.0;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('Int64*Double', '123456789012345', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_Pi;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double;
+    begin
+      D := 3.14159;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('DoubleToStr(3.14159)', '3.14159', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_Zero;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(0.0))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('DoubleToStr(0.0)', '0', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_Negative;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double;
+    begin
+      D := -42.5;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('DoubleToStr(-42.5)', '-42.5', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_SmallFractions;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(0.1));
+      WriteLn(DoubleToStr(0.2));
+      WriteLn(DoubleToStr(0.3))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('fractions', '0.1' + LineEnding + '0.2' + LineEnding + '0.3',
+    Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_ExponentialSmall;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(1e-10));
+      WriteLn(DoubleToStr(1e-100))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('small exp', '1e-10' + LineEnding + '1e-100', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_ExponentialLarge;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(1e+100));
+      WriteLn(DoubleToStr(1e+308))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('large exp', '1e+100' + LineEnding + '1e+308', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_LargeInteger;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(1000000.0));
+      WriteLn(DoubleToStr(99999999999999.0))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('large int', '1000000' + LineEnding + '99999999999999',
+    Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_DoubleToStr_VerySmallPositive;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(DoubleToStr(0.0001))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('DoubleToStr(0.0001)', '0.0001', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_Simple;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '3.14';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble(3.14)', '3.14', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_Negative;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '-1.5';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble(-1.5)', '-1.5', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_ScientificPos;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '1e10';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble(1e10)', '10000000000', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_ScientificNeg;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '1e-10';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble(1e-10)', '1e-10', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_LargeMantissa;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '1234567890.12345';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble large mantissa', '1234567890.12345', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_Zero;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double; S: String;
+    begin
+      S := '0';
+      D := StrToDouble(S);
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('StrToDouble(0)', '0', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_StrToDouble_RoundTrip;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double;
+    begin
+      D := StrToDouble(DoubleToStr(3.14159265358979));
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('roundtrip pi', '3.14159265358979', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_AbsInt_Positive;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(Abs(42))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('Abs(42)', '42', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_AbsInt_Negative;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    begin
+      WriteLn(Abs(-7))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('Abs(-7)', '7', Trim(Output));
 end;
 
 initialization

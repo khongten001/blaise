@@ -68,6 +68,10 @@ type
     procedure TestFuncCall_WrongCase_NormalisedInIR;
     procedure TestAssign_WrongCase_NormalisedInIR;
     procedure TestMethodCallObj_WrongCase_NormalisedInIR;
+
+    { Int64 to Double conversion }
+    procedure TestInt64MulDouble_EmitsSltof;
+    procedure TestIntMulDouble_EmitsSwtof;
   end;
 
 implementation
@@ -502,6 +506,38 @@ begin
     Pos('data $Obj', IR) >= 0);
   AssertFalse('no mis-cased $obj in IR (lowercase)',
     Pos('$obj', IR) >= 0);
+end;
+
+procedure TCodeGenTests.TestInt64MulDouble_EmitsSltof;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                       + LineEnding +
+    'var M: Int64; D: Double;'         + LineEnding +
+    'begin'                            + LineEnding +
+    '  M := 123456789012345;'          + LineEnding +
+    '  D := M * 1.0'                   + LineEnding +
+    'end.');
+  AssertTrue('should emit sltof for Int64→Double',
+    IRContains(IR, 'sltof'));
+  AssertFalse('should not use swtof for Int64',
+    IRContains(IR, 'swtof'));
+end;
+
+procedure TCodeGenTests.TestIntMulDouble_EmitsSwtof;
+var
+  IR: string;
+begin
+  IR := GenerateIR(
+    'program P;'                       + LineEnding +
+    'var N: Integer; D: Double;'       + LineEnding +
+    'begin'                            + LineEnding +
+    '  N := 42;'                       + LineEnding +
+    '  D := N * 1.0'                   + LineEnding +
+    'end.');
+  AssertTrue('should emit swtof for Integer→Double',
+    IRContains(IR, 'swtof'));
 end;
 
 initialization

@@ -3278,6 +3278,14 @@ begin
         ValTemp := ExtTemp;
       end
       else if (AAssign.Expr.ResolvedType <> nil) and
+              (QbeTypeOf(AAssign.Expr.ResolvedType) = 'l') and
+              not AAssign.Expr.ResolvedType.IsFloat then
+      begin
+        ExtTemp := AllocTemp;
+        EmitLine(Format('  %s =d sltof %s', [ExtTemp, ValTemp]));
+        ValTemp := ExtTemp;
+      end
+      else if (AAssign.Expr.ResolvedType <> nil) and
               (AAssign.Expr.ResolvedType.Kind = tySingle) then
       begin
         ExtTemp := AllocTemp;
@@ -8386,14 +8394,20 @@ begin
          not BinExpr.Left.ResolvedType.IsFloat then
       begin
         ArgTemp := AllocTemp;
-        EmitLine(Format('  %s =d swtof %s', [ArgTemp, L]));
+        if QbeTypeOf(BinExpr.Left.ResolvedType) = 'l' then
+          EmitLine(Format('  %s =d sltof %s', [ArgTemp, L]))
+        else
+          EmitLine(Format('  %s =d swtof %s', [ArgTemp, L]));
         L := ArgTemp;
       end;
       if (BinExpr.Right.ResolvedType <> nil) and
          not BinExpr.Right.ResolvedType.IsFloat then
       begin
         ArgTemp := AllocTemp;
-        EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
+        if QbeTypeOf(BinExpr.Right.ResolvedType) = 'l' then
+          EmitLine(Format('  %s =d sltof %s', [ArgTemp, R]))
+        else
+          EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
         R := ArgTemp;
       end;
       case BinExpr.Op of
@@ -8415,7 +8429,10 @@ begin
            not BinExpr.Right.ResolvedType.IsFloat then
         begin
           ArgTemp := AllocTemp;
-          EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
+          if QbeTypeOf(BinExpr.Right.ResolvedType) = 'l' then
+            EmitLine(Format('  %s =d sltof %s', [ArgTemp, R]))
+          else
+            EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
           R := ArgTemp;
         end;
         case BinExpr.Op of
