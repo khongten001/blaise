@@ -5938,6 +5938,7 @@ var
   FmtSlotTemp:  string;
   FmtValTemp:   string;
   IsIntArg:     Boolean;
+  FT:           string;
 begin
   if AExpr is TFuncCallExpr then
   begin
@@ -8452,18 +8453,29 @@ begin
       EmitLine(Format('  %s =l %s %s, %s', [T, Op, L, R]));
     end
     { Float arithmetic/comparison: QBE uses d/s typed instructions.
-      Integer operands mixed with float are promoted via exts/extd. }
+      Integer operands mixed with float are promoted via swtof/sltof.
+      Single operands are widened to Double via exts when result is Double. }
     else if (BinExpr.ResolvedType <> nil) and BinExpr.ResolvedType.IsFloat then
     begin
-      { Promote integer operands to double if needed }
+      if BinExpr.ResolvedType.Kind = tySingle then
+        FT := 's'
+      else
+        FT := 'd';
       if (BinExpr.Left.ResolvedType <> nil) and
          not BinExpr.Left.ResolvedType.IsFloat then
       begin
         ArgTemp := AllocTemp;
         if QbeTypeOf(BinExpr.Left.ResolvedType) = 'l' then
-          EmitLine(Format('  %s =d sltof %s', [ArgTemp, L]))
+          EmitLine(Format('  %s =%s sltof %s', [ArgTemp, FT, L]))
         else
-          EmitLine(Format('  %s =d swtof %s', [ArgTemp, L]));
+          EmitLine(Format('  %s =%s swtof %s', [ArgTemp, FT, L]));
+        L := ArgTemp;
+      end
+      else if (FT = 'd') and (BinExpr.Left.ResolvedType <> nil) and
+              (BinExpr.Left.ResolvedType.Kind = tySingle) then
+      begin
+        ArgTemp := AllocTemp;
+        EmitLine(Format('  %s =d exts %s', [ArgTemp, L]));
         L := ArgTemp;
       end;
       if (BinExpr.Right.ResolvedType <> nil) and
@@ -8471,9 +8483,16 @@ begin
       begin
         ArgTemp := AllocTemp;
         if QbeTypeOf(BinExpr.Right.ResolvedType) = 'l' then
-          EmitLine(Format('  %s =d sltof %s', [ArgTemp, R]))
+          EmitLine(Format('  %s =%s sltof %s', [ArgTemp, FT, R]))
         else
-          EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
+          EmitLine(Format('  %s =%s swtof %s', [ArgTemp, FT, R]));
+        R := ArgTemp;
+      end
+      else if (FT = 'd') and (BinExpr.Right.ResolvedType <> nil) and
+              (BinExpr.Right.ResolvedType.Kind = tySingle) then
+      begin
+        ArgTemp := AllocTemp;
+        EmitLine(Format('  %s =d exts %s', [ArgTemp, R]));
         R := ArgTemp;
       end;
       case BinExpr.Op of
@@ -8483,32 +8502,52 @@ begin
         boDiv: Op := 'div';
       else    Op := 'add';
       end;
-      EmitLine(Format('  %s =d %s %s, %s', [T, Op, L, R]));
+      EmitLine(Format('  %s =%s %s %s, %s', [T, FT, Op, L, R]));
     end
     else if BinExpr.ResolvedType.Kind = tyBoolean then
     begin
-      { Float comparison — at least one operand is float }
+      { Float comparison — at least one operand is float.
+        Both-Single → s-typed compares; otherwise widen to d. }
       if (BinExpr.Left.ResolvedType <> nil) and BinExpr.Left.ResolvedType.IsFloat then
       begin
-        { Both already evaluated; coerce integer side if needed }
+        if (BinExpr.Left.ResolvedType.Kind = tySingle) and
+           (BinExpr.Right.ResolvedType <> nil) and
+           (BinExpr.Right.ResolvedType.Kind = tySingle) then
+          FT := 's'
+        else
+          FT := 'd';
         if (BinExpr.Right.ResolvedType <> nil) and
            not BinExpr.Right.ResolvedType.IsFloat then
         begin
           ArgTemp := AllocTemp;
           if QbeTypeOf(BinExpr.Right.ResolvedType) = 'l' then
-            EmitLine(Format('  %s =d sltof %s', [ArgTemp, R]))
+            EmitLine(Format('  %s =%s sltof %s', [ArgTemp, FT, R]))
           else
-            EmitLine(Format('  %s =d swtof %s', [ArgTemp, R]));
+            EmitLine(Format('  %s =%s swtof %s', [ArgTemp, FT, R]));
+          R := ArgTemp;
+        end
+        else if (FT = 'd') and (BinExpr.Right.ResolvedType <> nil) and
+                (BinExpr.Right.ResolvedType.Kind = tySingle) then
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =d exts %s', [ArgTemp, R]));
           R := ArgTemp;
         end;
+        if (FT = 'd') and (BinExpr.Left.ResolvedType <> nil) and
+           (BinExpr.Left.ResolvedType.Kind = tySingle) then
+        begin
+          ArgTemp := AllocTemp;
+          EmitLine(Format('  %s =d exts %s', [ArgTemp, L]));
+          L := ArgTemp;
+        end;
         case BinExpr.Op of
-          boEQ: Op := 'ceqd';
-          boNE: Op := 'cned';
-          boLT: Op := 'cltd';
-          boGT: Op := 'cgtd';
-          boLE: Op := 'cled';
-          boGE: Op := 'cged';
-        else    Op := 'ceqd';
+          boEQ: Op := 'ceq' + FT;
+          boNE: Op := 'cne' + FT;
+          boLT: Op := 'clt' + FT;
+          boGT: Op := 'cgt' + FT;
+          boLE: Op := 'cle' + FT;
+          boGE: Op := 'cge' + FT;
+        else    Op := 'ceq' + FT;
         end;
         EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
       end

@@ -77,6 +77,13 @@ type
     procedure TestIntAssignDouble_EmitsSwtof;
     procedure TestInt64AssignDouble_EmitsSltof;
     procedure TestIntAssignSingle_EmitsSwtof;
+
+    { Mixed Single×Double arithmetic }
+    procedure TestSingleMulDouble_PromotesSingleToDouble;
+    procedure TestSingleAddSingle_EmitsSTypedOp;
+    procedure TestSingleMulSingle_EmitsSTypedOp;
+    procedure TestIntAddSingle_PromotesIntToSingle;
+    procedure TestSingleCompare_EmitsSTypedCmp;
   end;
 
 implementation
@@ -586,6 +593,80 @@ begin
     ''');
   AssertTrue('should emit swtof for Integer literal→Single',
     IRContains(IR, 'swtof'));
+end;
+
+procedure TCodeGenTests.TestSingleMulDouble_PromotesSingleToDouble;
+var IR: string;
+begin
+  IR := GenerateIR('''
+    program P;
+    var S: Single; D: Double;
+    begin
+      D := S * 1.0
+    end.
+    ''');
+  AssertTrue('should widen Single to Double via exts',
+    IRContains(IR, 'exts'));
+  AssertTrue('result should be =d mul',
+    IRContains(IR, '=d mul'));
+end;
+
+procedure TCodeGenTests.TestSingleAddSingle_EmitsSTypedOp;
+var IR: string;
+begin
+  IR := GenerateIR('''
+    program P;
+    var A, B, C: Single;
+    begin
+      C := A + B
+    end.
+    ''');
+  AssertTrue('Single+Single should emit =s add',
+    IRContains(IR, '=s add'));
+end;
+
+procedure TCodeGenTests.TestSingleMulSingle_EmitsSTypedOp;
+var IR: string;
+begin
+  IR := GenerateIR('''
+    program P;
+    var A, B, C: Single;
+    begin
+      C := A * B
+    end.
+    ''');
+  AssertTrue('Single*Single should emit =s mul',
+    IRContains(IR, '=s mul'));
+end;
+
+procedure TCodeGenTests.TestIntAddSingle_PromotesIntToSingle;
+var IR: string;
+begin
+  IR := GenerateIR('''
+    program P;
+    var S, R: Single;
+        N: Integer;
+    begin
+      R := S + N
+    end.
+    ''');
+  AssertTrue('Int+Single result should be promoted to Double (=d)',
+    IRContains(IR, '=d'));
+end;
+
+procedure TCodeGenTests.TestSingleCompare_EmitsSTypedCmp;
+var IR: string;
+begin
+  IR := GenerateIR('''
+    program P;
+    var A, B: Single;
+    begin
+      if A < B then
+        WriteLn('yes')
+    end.
+    ''');
+  AssertTrue('Single<Single should emit clts (s-typed compare)',
+    IRContains(IR, 'clts'));
 end;
 
 initialization

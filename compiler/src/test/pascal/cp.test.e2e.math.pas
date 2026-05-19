@@ -138,6 +138,11 @@ type
     procedure TestRun_IntAssignDouble;
     procedure TestRun_IntAssignSingle;
     procedure TestRun_Int64AssignDouble;
+
+    { Mixed Single/Double arithmetic }
+    procedure TestRun_SingleMulDouble;
+    procedure TestRun_SingleAddSingle;
+    procedure TestRun_SingleCompareSingle;
   end;
 
 implementation
@@ -1328,6 +1333,67 @@ begin
     ''', Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('123456789 as Double', '123456789', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_SingleMulDouble;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var S: Single;
+        D: Double;
+    begin
+      S := 3.5;
+      D := S * 2.0;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('3.5*2.0', '7', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_SingleAddSingle;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var A, B, C: Single;
+        D: Double;
+    begin
+      A := 1.5;
+      B := 2.5;
+      C := A + B;
+      D := C;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('1.5+2.5', '4', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_SingleCompareSingle;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var A, B: Single;
+    begin
+      A := 1.5;
+      B := 2.5;
+      if A < B then
+        WriteLn('less')
+      else
+        WriteLn('not less')
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('1.5<2.5', 'less', Trim(Output));
 end;
 
 initialization
