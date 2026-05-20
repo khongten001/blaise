@@ -434,7 +434,8 @@ begin
       Args.Add(AOPDFAsmFile);
     if RTLPath <> '' then
       Args.Add(RTLPath);
-    Args.Add('-lm');  { math functions (sqrt, sin, cos, etc.) }
+    Args.Add('-lm');       { math functions (sqrt, sin, cos, etc.) }
+    Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
     ExitCode := RunProcess('cc', Args, Msg);
   finally
     Args.Free;

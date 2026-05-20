@@ -32,6 +32,9 @@ unit Classes;
 
 interface
 
+uses
+  blaise_arc, blaise_thread;
+
 type
   TDuplicates = (dupAccept, dupIgnore, dupError);
 
@@ -59,6 +62,45 @@ type
     property Owner:          TComponent read FOwner;
     property ComponentCount: Integer    read FChildCnt;
     property Components[Index: Integer]: TComponent read GetComponent;
+  end;
+
+  { ------------------------------------------------------------------ }
+  { TCriticalSection                                                     }
+  { ------------------------------------------------------------------ }
+
+  TCriticalSection = class
+  private
+    FMutexBuf: array[0..5] of Int64;
+  public
+    constructor Create;
+    procedure Destroy;
+    procedure Enter;
+    procedure Leave;
+  end;
+
+  { ------------------------------------------------------------------ }
+  { TThread                                                              }
+  { ------------------------------------------------------------------ }
+
+  TThreadProc = procedure(Arg: Pointer);
+
+  TThread = class
+  private
+    FHandle:          Int64;
+    FFinished:        Boolean;
+    FFreeOnTerminate: Boolean;
+    FTerminated:      Boolean;
+  protected
+    procedure Execute; virtual;
+  public
+    constructor Create(ACreateSuspended: Boolean);
+    procedure Destroy;
+    procedure Start;
+    procedure Terminate;
+    procedure WaitFor;
+    property Finished:        Boolean read FFinished;
+    property FreeOnTerminate: Boolean read FFreeOnTerminate write FFreeOnTerminate;
+    property Terminated:      Boolean read FTerminated;
   end;
 
   { ------------------------------------------------------------------ }
@@ -827,6 +869,107 @@ begin
         I    := I + 1
       end
     end
+  end
+end;
+
+{ ================================================================== }
+{ TCriticalSection                                                     }
+{ ================================================================== }
+
+constructor TCriticalSection.Create;
+var P: Pointer;
+begin
+  P := Pointer(Self) + 8;
+  ZeroMem(P, 48);
+  pthread_mutex_init(P, nil)
+end;
+
+procedure TCriticalSection.Destroy;
+var P: Pointer;
+begin
+  P := Pointer(Self) + 8;
+  pthread_mutex_destroy(P)
+end;
+
+procedure TCriticalSection.Enter;
+var P: Pointer;
+begin
+  P := Pointer(Self) + 8;
+  pthread_mutex_lock(P)
+end;
+
+procedure TCriticalSection.Leave;
+var P: Pointer;
+begin
+  P := Pointer(Self) + 8;
+  pthread_mutex_unlock(P)
+end;
+
+{ ================================================================== }
+{ TThread                                                              }
+{ ================================================================== }
+
+procedure ThreadTrampoline(Arg: Pointer);
+var
+  T: TThread;
+begin
+  T := TThread(Arg);
+  try
+    T.Execute
+  finally
+    T.FFinished := True;
+    if T.FFreeOnTerminate then
+      _ClassRelease(Arg);
+    _ClassRelease(Arg)
+  end
+end;
+
+constructor TThread.Create(ACreateSuspended: Boolean);
+begin
+  Self.FHandle := 0;
+  Self.FFinished := False;
+  Self.FFreeOnTerminate := False;
+  Self.FTerminated := False;
+  if not ACreateSuspended then
+    Self.Start
+end;
+
+procedure TThread.Destroy;
+begin
+  if (Self.FHandle <> 0) and (not Self.FFinished) then
+    Self.WaitFor
+end;
+
+procedure TThread.Execute;
+begin
+end;
+
+procedure TThread.Start;
+var
+  Fn: TThreadProc;
+  H: Int64;
+begin
+  if Self.FHandle <> 0 then Exit;
+  _ClassAddRef(Pointer(Self));
+  if Self.FFreeOnTerminate then
+    _ClassAddRef(Pointer(Self));
+  Fn := @ThreadTrampoline;
+  H := 0;
+  pthread_create(@H, nil, Pointer(Fn), Pointer(Self));
+  Self.FHandle := H
+end;
+
+procedure TThread.Terminate;
+begin
+  Self.FTerminated := True
+end;
+
+procedure TThread.WaitFor;
+begin
+  if Self.FHandle <> 0 then
+  begin
+    pthread_join(Self.FHandle, nil);
+    Self.FHandle := 0
   end
 end;
 
