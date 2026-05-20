@@ -65,6 +65,7 @@ type
     procedure AddFailure(AName, AMessage: string);
     procedure AddError  (AName, AMessage: string);
     procedure AddIgnored(AName, AMessage: string);
+    procedure MergeFrom(ASource: TTestResult);
 
     function  Summary: string;
 
@@ -163,6 +164,12 @@ type
 
   { TTestCaseClass — class-of reference used by RegisterTest. }
   TTestCaseClass = class of TTestCase;
+
+  { ThreadedAttribute — apply [Threaded] to a TTestCase subclass to signal
+    the test runner to execute that suite in a dedicated subprocess, enabling
+    parallel execution of independent test suites. }
+  ThreadedAttribute = class(TCustomAttribute)
+  end;
 
   { EAssertionFailed — raised by Fail / Assert* on failure.  Descends
     from TObject (not Exception) to keep this unit standalone. }
@@ -599,6 +606,19 @@ end;
 procedure TTestResult.AddIgnored(AName, AMessage: string);
 begin
   Self.FNumberOfIgnored := Self.FNumberOfIgnored + 1;
+end;
+
+procedure TTestResult.MergeFrom(ASource: TTestResult);
+var I: Integer;
+begin
+  Self.FNumberOfTests    := Self.FNumberOfTests    + ASource.FNumberOfTests;
+  Self.FNumberOfFailures := Self.FNumberOfFailures + ASource.FNumberOfFailures;
+  Self.FNumberOfErrors   := Self.FNumberOfErrors   + ASource.FNumberOfErrors;
+  Self.FNumberOfIgnored  := Self.FNumberOfIgnored  + ASource.FNumberOfIgnored;
+  for I := 0 to ASource.FFailureList.Count - 1 do
+    Self.FFailureList.Add(ASource.FFailureList.Strings[I]);
+  for I := 0 to ASource.FErrorList.Count - 1 do
+    Self.FErrorList.Add(ASource.FErrorList.Strings[I]);
 end;
 
 function TTestResult.Summary: string;

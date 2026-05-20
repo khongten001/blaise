@@ -17,6 +17,7 @@ uses
   blaise.testing, classes, sysutils, cp.test.e2e.base;
 
 type
+  [Threaded]
   TE2ESysUtilsTests = class(TE2ETestCase)
   protected
     procedure SetUp; override;

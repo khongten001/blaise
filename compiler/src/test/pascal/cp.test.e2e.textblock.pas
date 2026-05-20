@@ -20,6 +20,7 @@ uses
   blaise.testing, cp.test.e2e.base;
 
 type
+  [Threaded]
   TE2ETextBlockTests = class(TE2ETestCase)
   protected
     procedure SetUp; override;

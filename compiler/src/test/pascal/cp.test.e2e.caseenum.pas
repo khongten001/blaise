@@ -16,6 +16,7 @@ uses
   blaise.testing, classes, cp.test.e2e.base;
 
 type
+  [Threaded]
   TE2ECaseEnumTests = class(TE2ETestCase)
   protected
     procedure SetUp; override;

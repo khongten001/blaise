@@ -33,7 +33,7 @@ unit blaise.testing.runner.text;
 interface
 
 uses
-  blaise.testing;
+  blaise.testing, Classes, SysUtils, Process;
 
 { Run every test method of every TTestCase class registered via
   RegisterTest.  Returns the result so the caller can compute an
@@ -48,6 +48,7 @@ procedure PrintSummary(AResult: TTestResult);
   Respects --suite / --suite Class.Method command-line filtering.
   Programs can do 'Halt(RunAll)' as the last statement. }
 function RunAll: Integer;
+
 
 implementation
 
@@ -187,41 +188,151 @@ begin
 end;
 
 { -----------------------------------------------------------------------
+  Subprocess-based parallel runner
+  ----------------------------------------------------------------------- }
+
+function IsThreadedClass(ATestClass: TTestCaseClass): Boolean;
+begin
+  Result := HasClassAttribute(ATestClass, ThreadedAttribute);
+end;
+
+{ ParseSubprocessOutput: parse --verbose output from a suite subprocess
+  into AResult.  Called in the main thread after subprocess completes. }
+procedure ParseSubprocessOutput(const AOutput: string; AResult: TTestResult);
+var
+  Lines:   TStringList;
+  I:       Integer;
+  Line:    string;
+  InFail:  Boolean;
+  InErr:   Boolean;
+  P:       Integer;
+  MsgName: string;
+  MsgBody: string;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Text := AOutput;
+    InFail := False;
+    InErr  := False;
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := Lines.Strings[I];
+      if Line = 'Failures:' then begin InFail := True; InErr := False; Continue end;
+      if Line = 'Errors:'   then begin InErr  := True; InFail := False; Continue end;
+      if InFail or InErr then
+      begin
+        { Indented detail lines: "  MethodName: message" }
+        if (Length(Line) > 2) and (Copy(Line, 0, 2) = '  ') then
+        begin
+          P := Pos(': ', Line);
+          if P >= 0 then
+          begin
+            MsgName := Copy(Line, 2, P - 2);
+            MsgBody := Copy(Line, P + 2, Length(Line));
+            if InFail then
+              AResult.AddFailure(MsgName, MsgBody)
+            else
+              AResult.AddError(MsgName, MsgBody);
+          end;
+          Continue;
+        end;
+        InFail := False; InErr := False;
+      end;
+      { Verbose outcome line: "CName.MName ... OUTCOME" }
+      if Pos(' ... ', Line) >= 0 then
+      begin
+        AResult.StartTest('', '');
+        if (Pos(' ... FAIL', Line) >= 0) or (Pos(' ... ERROR', Line) >= 0) then
+          AResult.EndTest('FAIL')
+        else if Pos(' ... IGNORED', Line) >= 0 then
+          AResult.EndTest('IGNORED')
+        else
+          AResult.EndTest('OK');
+      end;
+    end;
+  finally
+    Lines.Free;
+  end;
+end;
+
+{ -----------------------------------------------------------------------
   Test execution
   ----------------------------------------------------------------------- }
 
 { Run tests with optional class/method filtering and verbosity.
-  Pass '' for both ASuite and AMethod to run all registered tests. }
+  Pass '' for both ASuite and AMethod to run all registered tests.
+
+  [Threaded] suites are dispatched as subprocesses and launched in
+  parallel while non-threaded suites run in-process.  After in-process
+  tests finish, remaining subprocess output is collected.
+  When --suite is given, the named suite runs directly (no subprocess). }
 function RunFilteredTests(const ASuite: string;
   const AMethod: string; AVerbose: Boolean): TTestResult;
 var
-  ClsIdx:   Integer;
-  Cls:      TTestCaseClass;
-  CName:    string;
-  MethCnt:  Integer;
-  MethIdx:  Integer;
-  MethName: string;
-  Inst:     TTestCase;
+  ClsIdx:    Integer;
+  Cls:       TTestCaseClass;
+  CName:     string;
+  MethCnt:   Integer;
+  MethIdx:   Integer;
+  MethName:  string;
+  Inst:      TTestCase;
+  Procs:     array[0..63] of TProcess;
+  ProcCount: Integer;
+  Proc:      TProcess;
+  Output:    string;
+  Chunk:     string;
+  SubResult: TTestResult;
+  I:         Integer;
 begin
   Result := TTestResult.Create;
   Result.Verbose := AVerbose;
+  ProcCount := 0;
   for ClsIdx := 0 to GetRegisteredTestCount - 1 do
   begin
     Cls   := GetRegisteredTest(ClsIdx);
     CName := TestClassName(Cls);
     if (ASuite <> '') and (CName <> ASuite) then
       Continue;
-    MethCnt := PublishedMethodCount(Cls);
-    for MethIdx := 0 to MethCnt - 1 do
+    if (ASuite = '') and IsThreadedClass(Cls) and (ProcCount < 64) then
     begin
-      MethName := PublishedMethodName(Cls, MethIdx);
-      if MethName = '' then Continue;
-      if (AMethod <> '') and (MethName <> AMethod) then
-        Continue;
-      Inst := ClassCreate(Cls, MethName);
-      Inst.SetClassName(CName);
-      Inst.Run(Result);
+      Proc := TProcess.Create(nil);
+      Proc.Executable := ParamStr(0);
+      Proc.Parameters.Add('--suite');
+      Proc.Parameters.Add(CName);
+      Proc.Parameters.Add('--verbose');
+      Proc.Execute;
+      Procs[ProcCount] := Proc;
+      ProcCount := ProcCount + 1;
+    end
+    else
+    begin
+      MethCnt := PublishedMethodCount(Cls);
+      for MethIdx := 0 to MethCnt - 1 do
+      begin
+        MethName := PublishedMethodName(Cls, MethIdx);
+        if MethName = '' then Continue;
+        if (AMethod <> '') and (MethName <> AMethod) then
+          Continue;
+        Inst := ClassCreate(Cls, MethName);
+        Inst.SetClassName(CName);
+        Inst.Run(Result);
+      end;
     end;
+  end;
+  for I := 0 to ProcCount - 1 do
+  begin
+    Proc := Procs[I];
+    Output := '';
+    repeat
+      Chunk  := Proc.ReadOutput;
+      Output := Output + Chunk;
+    until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit;
+    SubResult := TTestResult.Create;
+    ParseSubprocessOutput(Output, SubResult);
+    Result.MergeFrom(SubResult);
+    if AVerbose then
+      Write(Output);
   end;
 end;
 
