@@ -8,8 +8,6 @@
 
 unit cp.test.arc;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses
@@ -21,6 +19,7 @@ type
   private
     function GenIR(const ASrc: string): string;
     function IRContains(const AIR, AFragment: string): Boolean;
+    function CountSubstring(const AHaystack, ANeedle: string): Integer;
   published
     { String variable assignment inserts retain before release }
     procedure TestARC_StringAssign_CallsRetain;
@@ -57,6 +56,13 @@ type
     procedure TestARC_ClassDestroy_FieldCleanupCallsIt;
     procedure TestARC_ClassWithoutDestroy_FieldCleanupNoCall;
     procedure TestARC_GenericClass_Destroy_FieldCleanupCallsIt;
+
+    { Nil-slot release elision: first store to a class-typed local in the
+      function entry block must skip _ClassRelease (slot is provably nil
+      from EmitVarAllocs). }
+    procedure TestARC_FirstClassAssign_ElidesRelease;
+    procedure TestARC_SecondClassAssign_StillReleases;
+    procedure TestARC_ClassAssign_AfterBranch_StillReleases;
   end;
 
 implementation
@@ -93,6 +99,31 @@ end;
 function TARCTests.IRContains(const AIR, AFragment: string): Boolean;
 begin
   Result := Pos(AFragment, AIR) > 0;
+end;
+
+function TARCTests.CountSubstring(const AHaystack, ANeedle: string): Integer;
+var
+  Found: Integer;
+  Tail:  string;
+begin
+  Result := 0;
+  if (ANeedle = '') or (AHaystack = '') then
+    Exit;
+  Tail := AHaystack;
+  while True do
+  begin
+    { Pos here follows the surrounding test-file convention (>0 = found).
+      For a 0-based interpretation we'd use >=0; either way a needle that
+      starts at index 0 is exceedingly unlikely against IR text. }
+    Found := Pos(ANeedle, Tail);
+    if Found <= 0 then break;
+    Result := Result + 1;
+    { Move past this match.  Copy/Length here are 1-based to match the
+      Pos convention used above. }
+    Tail := Copy(Tail, Found + Length(ANeedle),
+                 Length(Tail) - (Found + Length(ANeedle)) + 1);
+    if Tail = '' then break;
+  end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -405,6 +436,112 @@ begin
   IR := GenIR(SrcGenericDestroy);
   AssertTrue('monomorphized field cleanup calls Destroy',
     IRContains(IR, 'call $TBox_Integer_Destroy'));
+end;
+
+procedure TARCTests.TestARC_FirstClassAssign_ElidesRelease;
+var
+  IR:      string;
+  FnPos:   Integer;
+  FnBody:  string;
+begin
+  { First class-typed assignment to a local in the function entry block:
+    the slot was just zeroed by EmitVarAllocs, so _ClassRelease(nil) is
+    elided. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TFoo = class
+            X: Integer;
+          end;
+        procedure DoIt;
+        var f: TFoo;
+        begin
+          f := TFoo.Create
+        end;
+        begin
+          DoIt
+        end.
+        ''');
+  FnPos := Pos('function $DoIt', IR);
+  AssertTrue('DoIt function emitted', FnPos > 0);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  AssertTrue('first store calls AddRef',
+    Pos('call $_ClassAddRef', FnBody) > 0);
+  { Block-exit release of f is still emitted, but the first-assignment
+    release must NOT appear before the block-exit one.  Exactly one
+    _ClassRelease in DoIt is the expected post-elision count. }
+  AssertEquals('exactly one _ClassRelease in DoIt',
+    1, CountSubstring(FnBody, 'call $_ClassRelease'));
+end;
+
+procedure TARCTests.TestARC_SecondClassAssign_StillReleases;
+var
+  IR:     string;
+  FnPos:  Integer;
+  FnBody: string;
+begin
+  { Two assignments to the same local class slot.  The first elides
+    release (nil slot); the second must release the prior value or we
+    leak. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TFoo = class
+            X: Integer;
+          end;
+        procedure DoIt;
+        var f: TFoo;
+        begin
+          f := TFoo.Create;
+          f := TFoo.Create
+        end;
+        begin
+          DoIt
+        end.
+        ''');
+  FnPos  := Pos('function $DoIt', IR);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  { 2nd assign + block-exit cleanup = 2 _ClassRelease. }
+  AssertEquals('two _ClassRelease in DoIt (2nd assign + block exit)',
+    2, CountSubstring(FnBody, 'call $_ClassRelease'));
+end;
+
+procedure TARCTests.TestARC_ClassAssign_AfterBranch_StillReleases;
+var
+  IR:     string;
+  FnPos:  Integer;
+  FnBody: string;
+begin
+  { An assignment after an if-branch is conservatively treated as
+    "not provably nil" and must emit the release. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TFoo = class
+            X: Integer;
+          end;
+        procedure DoIt;
+        var f: TFoo; c: Boolean;
+        begin
+          c := True;
+          if c then
+            f := TFoo.Create;
+          f := TFoo.Create
+        end;
+        begin
+          DoIt
+        end.
+        ''');
+  FnPos  := Pos('function $DoIt', IR);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  { Post-branch assign + block-exit cleanup → at least 2.
+    The inside-branch assign may itself be elided since it was in a
+    branch that started before the slot was written. }
+  AssertTrue('at least two _ClassRelease (post-branch + block exit)',
+    CountSubstring(FnBody, 'call $_ClassRelease') >= 2);
 end;
 
 initialization

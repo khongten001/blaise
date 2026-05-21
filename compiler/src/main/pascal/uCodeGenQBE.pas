@@ -67,6 +67,19 @@ type
     FPromotedLocals: TStringList;
     FPromotedTypes:  TStringList;
 
+    { Nil-slot ARC tracking: set of local variable names whose class/string
+      slot has already been written in the current function.  EmitVarAllocs
+      zeroes all class/string slots at function entry, so the *first* store
+      to a slot is provably writing into a nil location and does not need
+      to call _ClassRelease/_StringRelease on the prior content.  Subsequent
+      stores to the same slot do need the release.
+
+      Tracking is conservative: any branch (if/while/case) or call that
+      could have written to the slot through aliasing must invalidate the
+      "still nil" claim.  To stay simple, the set is cleared whenever we
+      leave the linear entry-prelude region of a function — see SeenArcStore. }
+    FArcSlotWritten: TStringList;
+
     { Inlining: stack of active inline contexts.
       When non-empty, the topmost context maps parameter names of the
       callee (currently being emitted inline) to caller-side temps,
@@ -126,6 +139,13 @@ type
     procedure CollectAddressTakenExpr(AExpr: TASTExpr; ASet: TStringList);
     { Returns True if AName is currently a promoted SSA temp. }
     function  IsPromoted(const AName: string): Boolean;
+    { Returns True if the named local class/string slot is still provably nil
+      at the current emit position.  Used to elide _ClassRelease/_StringRelease
+      on the slot's first write within the function entry block. }
+    function  ArcSlotIsNil(const AName: string): Boolean;
+    { Mark the named local's ARC slot as having been written.  Subsequent
+      assignments to the same slot will emit release as normal. }
+    procedure MarkArcSlotWritten(const AName: string);
 
     { Inline helpers: top-of-stack lookups and frame push/pop. }
     function  InlineParamTemp(const AName: string; out ATemp: string): Boolean;
@@ -352,6 +372,8 @@ begin
   FPromotedLocals  := TStringList.Create;
   FPromotedLocals.CaseSensitive := True;
   FPromotedTypes   := TStringList.Create;
+  FArcSlotWritten  := TStringList.Create;
+  FArcSlotWritten.CaseSensitive := True;
   FInlineParamNames   := TStringList.Create;
   FInlineParamTemps   := TStringList.Create;
   FInlineResultTemps  := TStringList.Create;
@@ -369,6 +391,7 @@ begin
   FUnitInitNames.Free;
   FPromotedLocals.Free;
   FPromotedTypes.Free;
+  FArcSlotWritten.Free;
   FInlineParamNames.Free;
   FInlineParamTemps.Free;
   FInlineResultTemps.Free;
@@ -742,6 +765,23 @@ end;
 function TCodeGenQBE.IsPromoted(const AName: string): Boolean;
 begin
   Result := FPromotedLocals.IndexOf(AName) >= 0;
+end;
+
+function TCodeGenQBE.ArcSlotIsNil(const AName: string): Boolean;
+begin
+  { Slot is still nil only when:
+    1. We are still in the function's entry block (@start) — once a branch
+       starts a new label we conservatively give up, since the slot could
+       have been written along a branch we are not currently emitting.
+    2. The slot has not been written yet in the current function. }
+  Result := (FCurrentBlockLabel = 'start') and
+            (FArcSlotWritten.IndexOf(AName) < 0);
+end;
+
+procedure TCodeGenQBE.MarkArcSlotWritten(const AName: string);
+begin
+  if FArcSlotWritten.IndexOf(AName) < 0 then
+    FArcSlotWritten.Add(AName);
 end;
 
 function TCodeGenQBE.PromotedType(const AName: string): string;
@@ -1328,6 +1368,9 @@ begin
     the setjmp/longjmp used by the exception frame. }
   FPromotedLocals.Clear;
   FPromotedTypes.Clear;
+  { Reset nil-slot tracking: every class/string slot starts zero because
+    EmitVarAllocs below emits `storel 0, ...` for them. }
+  FArcSlotWritten.Clear;
   if not BlockHasTry(ABlock) then
   begin
     AddrTaken := CollectAddressTaken(ABlock);
@@ -3246,20 +3289,42 @@ begin
   end
   else if AAssign.Expr.ResolvedType.Kind = tyClass then
   begin
-    { ARC: load old class reference, evaluate new, retain new, release old,
-      store new.  Matches the string ARC idiom one-for-one. }
-    OldTemp := AllocTemp;
-    if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
-      EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
+    { ARC: retain new, release prior slot content, store new.
+
+      When the LHS is a local non-promoted slot that has not been written
+      yet within the function entry block, EmitVarAllocs has already
+      zeroed it via `storel 0, %%_var_X`.  Releasing nil is a no-op at
+      runtime but still pays a function-call/ret per assignment — so the
+      nil-slot fast path elides the load+release entirely.
+
+      Note: promoted locals (mem2reg SSA copies) live in registers and
+      track value-history through copies, so they require their own
+      old-value bookkeeping; we conservatively skip elision for them. }
+    if not AAssign.IsGlobal and not IsPromoted(AAssign.Name) and
+       ArcSlotIsNil(AAssign.Name) then
+    begin
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+      EmitLine(Format('  storel %s, %s',
+        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      MarkArcSlotWritten(AAssign.Name);
+    end
     else
-      EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
-    ValTemp := EmitExpr(AAssign.Expr);
-    EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
-    EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-    if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
-      EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
-    else
-      EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    begin
+      OldTemp := AllocTemp;
+      if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
+        EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
+      else
+        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+      if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
+        EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
+      else
+        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      MarkArcSlotWritten(AAssign.Name);
+    end;
   end
   else
   begin
