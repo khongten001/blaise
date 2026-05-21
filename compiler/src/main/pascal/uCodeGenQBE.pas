@@ -7334,7 +7334,7 @@ begin
     begin
       SelfTemp := AllocTemp;
       EmitLine(Format('  %s =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)',
-        [SelfTemp, RT.TotalSize, RT.Name]));
+        [SelfTemp, RT.TotalSize, QBEMangle(RT.Name)]));
       if RT.HasVTable then
         EmitLine(Format('  storel $vtable_%s, %s',
           [QBEMangle(RT.Name), SelfTemp]));

@@ -16,6 +16,19 @@ unit Generics.Collections;
 interface
 
 type
+  { Generic forward enumerator for TList<T>.  Holds a pointer to the list's
+    backing buffer and the count at the time GetEnumerator was called.
+    MoveNext advances the cursor; Current returns the element at the cursor. }
+  TListEnumerator<T> = class
+    FData:  ^T;
+    FIndex: Integer;
+    FCount: Integer;
+    constructor Create(AData: ^T; ACount: Integer);
+    function MoveNext: Boolean;
+    function GetCurrent: T;
+    property Current: T read GetCurrent;
+  end;
+
   TList<T> = class
     FData:     ^T;
     FCount:    Integer;
@@ -26,6 +39,7 @@ type
     procedure Delete(AIndex: Integer);
     procedure Clear;
     procedure Destroy;
+    function  GetEnumerator: TListEnumerator<T>;
     property Count: Integer read FCount;
   end;
 
@@ -202,6 +216,36 @@ begin
   Self.FData     := nil;
   Self.FCount    := 0;
   Self.FCapacity := 0
+end;
+
+function TList<T>.GetEnumerator: TListEnumerator<T>;
+begin
+  Result := TListEnumerator<T>.Create(Self.FData, Self.FCount)
+end;
+
+{ ------------------------------------------------------------------ }
+{ TListEnumerator<T>                                                   }
+{ ------------------------------------------------------------------ }
+
+constructor TListEnumerator<T>.Create(AData: ^T; ACount: Integer);
+begin
+  Self.FData  := AData;
+  Self.FIndex := -1;
+  Self.FCount := ACount
+end;
+
+function TListEnumerator<T>.MoveNext: Boolean;
+begin
+  Self.FIndex := Self.FIndex + 1;
+  Result      := Self.FIndex < Self.FCount
+end;
+
+function TListEnumerator<T>.GetCurrent: T;
+var
+  Ptr: ^T;
+begin
+  Ptr    := Self.FData + Self.FIndex * SizeOf(T);
+  Result := Ptr^
 end;
 
 { ------------------------------------------------------------------ }

@@ -6041,6 +6041,16 @@ begin
   end;
 
   ObjSym := FTable.Lookup(AExpr.ObjectName);
+  { If the name contains '<' and wasn't found, resolve scope-bound type params
+    (e.g. 'TListEnumerator<T>' → 'TListEnumerator<Integer>' when T=Integer is
+    in scope) and trigger on-demand instantiation.  Mirrors the field-access
+    path so that 'TGen<T>.Create(args)' resolves inside a generic method body. }
+  if (ObjSym = nil) and (StrPos('<', AExpr.ObjectName) >= 0) then
+  begin
+    AExpr.ObjectName := ResolveScopeBoundTypeParams(AExpr.ObjectName);
+    FindTypeOrInstantiate(AExpr.ObjectName);
+    ObjSym := FTable.Lookup(AExpr.ObjectName);
+  end;
   if ObjSym = nil then
   begin
     { Implicit Self.Field.Method — ObjectName is a field of current class.
