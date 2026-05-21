@@ -364,10 +364,11 @@ procedure TInheritTests.TestCodegen_SelfRef_Create_AllocatesCorrectSize;
 var IR: string;
 begin
   IR := GenIR(SrcSelfRef);
-  { TNode: vptr (8) + Integer (4) + TNode pointer (8) = 20 bytes.
-    All class types carry the 8-byte vtable pointer at offset 0. }
-  AssertTrue('_ClassAlloc 20 bytes for TNode with cleanup fn',
-    Pos('call $_ClassAlloc(l 20, l $_FieldCleanup_TNode)', IR) > 0);
+  { TNode: vptr (8) + Integer Value @ 8 + 4-byte pad + TNode pointer @ 16
+    = 24 bytes.  The Next pointer must be 8-aligned so the alignment pad
+    sits between Value and Next. }
+  AssertTrue('_ClassAlloc 24 bytes for TNode with cleanup fn',
+    Pos('call $_ClassAlloc(l 24, l $_FieldCleanup_TNode)', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

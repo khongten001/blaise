@@ -246,6 +246,8 @@ type
       Used before overwriting a record slot to prevent reference leaks. }
     procedure EmitRecordReleaseFields(ARec: TRecordTypeDesc; const AAddr: string);
     function  QbeTypeOf(AType: TTypeDesc): string;
+    function  LoadInstrFor(AType: TTypeDesc): string;
+    function  StoreInstrFor(AType: TTypeDesc): string;
     function  QbeEscapeString(const AStr: string): string;
     { Mangle a type name for use in QBE symbols: '<' → '_', '>' → '', ',' → '_' }
     function  QBEMangle(const AName: string): string;
@@ -610,6 +612,38 @@ begin
     tyDynArray:                             Result := 'l';  { heap data pointer }
   else
     Result := 'w';
+  end;
+end;
+
+{ Return the QBE load instruction for reading a memory-resident value of
+  AType.  Byte-sized fields (tyByte, tyBoolean) must use loadub so that
+  only the single occupying byte is read — using loadw would over-read
+  into the adjacent field. }
+function TCodeGenQBE.LoadInstrFor(AType: TTypeDesc): string;
+begin
+  case AType.Kind of
+    tyByte, tyBoolean:                       Result := 'loadub';
+    tyInteger, tyUInt32, tyEnum:             Result := 'loadw';
+    tySet: if TSetTypeDesc(AType).BitCount <= 32 then Result := 'loadw' else Result := 'loadl';
+    tyDouble:                                Result := 'loadd';
+    tySingle:                                Result := 'loads';
+  else
+    Result := 'loadl';
+  end;
+end;
+
+{ Counterpart of LoadInstrFor for stores.  Byte-sized fields must use
+  storeb to avoid overwriting adjacent fields. }
+function TCodeGenQBE.StoreInstrFor(AType: TTypeDesc): string;
+begin
+  case AType.Kind of
+    tyByte, tyBoolean:                       Result := 'storeb';
+    tyInteger, tyUInt32, tyEnum:             Result := 'storew';
+    tySet: if TSetTypeDesc(AType).BitCount <= 32 then Result := 'storew' else Result := 'storel';
+    tyDouble:                                Result := 'stored';
+    tySingle:                                Result := 'stores';
+  else
+    Result := 'storel';
   end;
 end;
 
@@ -3223,10 +3257,8 @@ begin
     end
     else
     begin
-      QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
-      ValTemp := EmitExpr(AAssign.Expr);
-      if QType = 'w' then StoreInstr := 'storew'
-                     else StoreInstr := 'storel';
+      ValTemp    := EmitExpr(AAssign.Expr);
+      StoreInstr := StoreInstrFor(AAssign.Expr.ResolvedType);
       EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));
     end;
   end
@@ -4118,19 +4150,18 @@ begin
   end
   else
   begin
-    QType := QbeTypeOf(AAssign.FieldInfo.TypeDesc);
-    if QType = 'w' then StoreInstr := 'storew'
-                   else
-                   begin
-                     StoreInstr := 'storel';
-                     { Sign-extend if the value is word-typed but the field needs l }
-                     if QbeTypeOf(AAssign.Expr.ResolvedType) = 'w' then
-                     begin
-                       ExtTemp := AllocTemp;
-                       EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
-                       ValTemp := ExtTemp;
-                     end;
-                   end;
+    QType      := QbeTypeOf(AAssign.FieldInfo.TypeDesc);
+    StoreInstr := StoreInstrFor(AAssign.FieldInfo.TypeDesc);
+    if QType <> 'w' then
+    begin
+      { Sign-extend if the value is word-typed but the field needs l }
+      if QbeTypeOf(AAssign.Expr.ResolvedType) = 'w' then
+      begin
+        ExtTemp := AllocTemp;
+        EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
+        ValTemp := ExtTemp;
+      end;
+    end;
     EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, Ptr]));
   end;
 end;
@@ -7799,10 +7830,9 @@ begin
       end
       else
         Ptr := L;
-      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
-      T     := AllocTemp;
-      if QType = 'w' then LoadInstr := 'loadw'
-                     else LoadInstr := 'loadl';
+      QType     := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      LoadInstr := LoadInstrFor(FldAccess.FieldInfo.TypeDesc);
+      T         := AllocTemp;
       EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
       Result := T;
       Exit;
@@ -7891,10 +7921,9 @@ begin
         Result := Ptr;
         Exit;
       end;
-      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
-      T     := AllocTemp;
-      if QType = 'w' then LoadInstr := 'loadw'
-                     else LoadInstr := 'loadl';
+      QType     := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      LoadInstr := LoadInstrFor(FldAccess.FieldInfo.TypeDesc);
+      T         := AllocTemp;
       EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
       Result := T;
     end
@@ -8140,10 +8169,9 @@ begin
         Result := Ptr;
         Exit;
       end;
-      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
-      T     := AllocTemp;
-      if QType = 'w' then LoadInstr := 'loadw'
-                     else LoadInstr := 'loadl';
+      QType     := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      LoadInstr := LoadInstrFor(FldAccess.FieldInfo.TypeDesc);
+      T         := AllocTemp;
       EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
       Result := T;
     end
@@ -8179,10 +8207,9 @@ begin
         Result := Ptr;
         Exit;
       end;
-      QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
-      T     := AllocTemp;
-      if QType = 'w' then LoadInstr := 'loadw'
-                     else LoadInstr := 'loadl';
+      QType     := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
+      LoadInstr := LoadInstrFor(FldAccess.FieldInfo.TypeDesc);
+      T         := AllocTemp;
       EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
       Result := T;
     end;
@@ -9590,12 +9617,7 @@ begin
   begin
     ElemType := TOpenArrayTypeDesc(AExpr.StrExpr.ResolvedType);
     ElemSize := ElemType.ElementType.ByteSize;
-    case ElemType.ElementType.Kind of
-      tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum: QLoad := 'loadw';
-      tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: QLoad := 'loadl';
-    else
-      QLoad := 'loadl';
-    end;
+    QLoad    := LoadInstrFor(ElemType.ElementType);
     QType   := QbeTypeOf(ElemType.ElementType);
     StrPtr  := EmitExpr(AExpr.StrExpr);
     IdxW    := EmitExpr(AExpr.IndexExpr);

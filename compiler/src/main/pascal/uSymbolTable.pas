@@ -53,13 +53,17 @@ type
     function IsString: Boolean;
     function IsOrdinal: Boolean;
     function IsRecord: Boolean;
-    { Size in bytes for QBE allocation. }
+    { True byte size of a value: 1 for Byte/Boolean, 4 for Integer/Single, 8
+      for pointer/string/Int64/Double, sum-of-fields for records (with natural
+      alignment padding).  Currently identical to RawSize. }
     function ByteSize: Integer;
-    { QBE alloc alignment: 4 for integer-only records, 8 for pointer/string. }
+    { Natural alignment requirement: 1 for Byte/Boolean, 4 for Integer, 8 for
+      pointer/string/Int64.  Used to pad field offsets inside records and to
+      pick QBE alloc4/alloc8 for stack slots. }
     function AllocAlign: Integer;
-    { True storage footprint for a single value: 1 for Byte/Boolean, 4 for Integer,
-      8 for pointer/string/Int64.  Use for array element sizing; ByteSize pads
-      small scalars to 4 for standalone-variable alignment. }
+    { Same as ByteSize.  Retained for call sites that semantically want
+      "storage footprint of a single value" — e.g. static-array element
+      stride. }
     function RawSize: Integer;
   end;
 
@@ -232,6 +236,7 @@ type
     destructor Destroy; override;
     procedure AddField(const AName: string; AType: TTypeDesc);
     function  FindField(const AName: string): TFieldInfo;
+    function  PackedSize: Integer;
     function  TotalSize: Integer;
     function  MaxAlign: Integer;
 
@@ -484,7 +489,7 @@ begin
   case Kind of
     tyInteger, tyUInt32, tyEnum: Result := 4;
     tyInt64:             Result := 8;
-    tyByte, tyBoolean:   Result := 4;  { stored as word, same as AllocAlign }
+    tyByte, tyBoolean:   Result := 1;  { true byte; stack slots are alloc4-padded by codegen }
     tyString:            Result := 8;  { pointer size on 64-bit }
     tyRecord:            Result := TRecordTypeDesc(Self).TotalSize;
     tyNil:               Result := 8;
@@ -507,7 +512,7 @@ function TTypeDesc.AllocAlign: Integer;
 begin
   case Kind of
     tyInteger, tyUInt32, tyEnum: Result := 4;
-    tyByte, tyBoolean:   Result := 4;  { round up to word boundary }
+    tyByte, tyBoolean:   Result := 1;  { natural alignment }
     tyInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
     tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
@@ -548,12 +553,38 @@ begin
   inherited Destroy;
 end;
 
+{ Cumulative byte position immediately after the last field (or after the
+  vptr if no fields have been added yet).  Excludes the record's tail
+  padding — that is only applied in TotalSize. }
+function TRecordTypeDesc.PackedSize: Integer;
+var
+  I, A: Integer;
+  FT:   TTypeDesc;
+begin
+  if HasVTable then
+    Result := 8
+  else
+    Result := 0;
+  for I := 0 to FFields.Count - 1 do
+  begin
+    FT := TFieldInfo(FFields.Items[I]).TypeDesc;
+    A  := FT.AllocAlign;
+    if (A > 1) and (Result mod A <> 0) then
+      Inc(Result, A - Result mod A);
+    Inc(Result, FT.ByteSize);
+  end;
+end;
+
 procedure TRecordTypeDesc.AddField(const AName: string; AType: TTypeDesc);
 var
   Info:   TFieldInfo;
   Offset: Integer;
+  A:      Integer;
 begin
-  Offset := TotalSize;  { next available byte (includes vptr if present) }
+  Offset := PackedSize;
+  A      := AType.AllocAlign;
+  if (A > 1) and (Offset mod A <> 0) then
+    Offset := Offset + (A - Offset mod A);
   Info          := TFieldInfo.Create;
   Info.Name     := AName;
   Info.TypeDesc := AType;
@@ -574,22 +605,25 @@ end;
 
 function TRecordTypeDesc.TotalSize: Integer;
 var
-  I: Integer;
+  Algn: Integer;
 begin
-  { vptr (8 bytes) precedes all fields when this class has a vtable }
-  if HasVTable then
-    Result := 8
-  else
-    Result := 0;
-  for I := 0 to FFields.Count - 1 do
-    Inc(Result, TFieldInfo(FFields.Items[I]).TypeDesc.ByteSize);
+  Result := PackedSize;
+  { Tail-pad records up to their own alignment so that arrays of records
+    and back-to-back fields stay naturally aligned.  Class instances are
+    heap-allocated singletons (never directly in arrays — only references
+    to them are), so we leave their size unpadded to match FPC/Delphi
+    InstanceSize semantics. }
+  if Kind = tyClass then Exit;
+  Algn := MaxAlign;
+  if (Algn > 1) and (Result mod Algn <> 0) then
+    Inc(Result, Algn - Result mod Algn);
 end;
 
 function TRecordTypeDesc.MaxAlign: Integer;
 var
   I, A: Integer;
 begin
-  Result := 4;
+  Result := 1;
   if HasVTable then
     Result := 8;  { vptr requires 8-byte alignment }
   for I := 0 to FFields.Count - 1 do

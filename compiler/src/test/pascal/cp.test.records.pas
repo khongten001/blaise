@@ -60,6 +60,15 @@ type
     procedure TestCodegen_FieldLoad_EmitsOffset;
     procedure TestCodegen_TwoIntFields_CorrectSize;
     procedure TestCodegen_StringField_CorrectSize;
+
+    { ------------------------------------------------------------------ }
+    { Byte sizing and record packing                                      }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_FourByteRecord_TotalSizeIs4;
+    procedure TestSemantic_ByteThenInteger_AlignsInteger;
+    procedure TestSemantic_ByteFieldOffsets_Are0123;
+    procedure TestCodegen_SizeOfByte_Is1;
+    procedure TestCodegen_SizeOfFourByteRecord_Is4;
   end;
 
 implementation
@@ -627,6 +636,135 @@ begin
         ''');
   { One string field = 8 bytes; program-level record uses data section }
   AssertTrue('8-byte record in data section', Pos('z 8', IR) > 0);
+end;
+
+procedure TRecordTests.TestSemantic_FourByteRecord_TotalSizeIs4;
+const
+  Src =
+    '''
+        program P;
+        type
+          TFourBytes = record
+            A: Byte;
+            B: Byte;
+            C: Byte;
+            D: Byte;
+          end;
+        var R: TFourBytes;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
+    AssertEquals('record of four Byte fields totals 4 bytes',
+      4, RT.TotalSize);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TRecordTests.TestSemantic_ByteThenInteger_AlignsInteger;
+const
+  Src =
+    '''
+        program P;
+        type
+          TMixed = record
+            A: Byte;
+            B: Integer;
+          end;
+        var R: TMixed;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+  F:    TFieldInfo;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
+    F  := RT.FindField('B');
+    AssertEquals('Integer after Byte aligns to offset 4', 4, F.Offset);
+    AssertEquals('record total size is 8 (1 byte + 3 pad + 4)', 8, RT.TotalSize);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TRecordTests.TestSemantic_ByteFieldOffsets_Are0123;
+const
+  Src =
+    '''
+        program P;
+        type
+          TFourBytes = record
+            A: Byte;
+            B: Byte;
+            C: Byte;
+            D: Byte;
+          end;
+        var R: TFourBytes;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
+    AssertEquals('A at 0', 0, RT.FindField('A').Offset);
+    AssertEquals('B at 1', 1, RT.FindField('B').Offset);
+    AssertEquals('C at 2', 2, RT.FindField('C').Offset);
+    AssertEquals('D at 3', 3, RT.FindField('D').Offset);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TRecordTests.TestCodegen_SizeOfByte_Is1;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        var N: Integer;
+        begin
+          N := SizeOf(Byte)
+        end.
+        ''');
+  { SizeOf(Byte) should be a compile-time literal 1, not 4 }
+  AssertTrue('SizeOf(Byte) emits copy 1', Pos('copy 1', IR) > 0);
+  AssertFalse('SizeOf(Byte) does not emit copy 4', Pos('copy 4', IR) > 0);
+end;
+
+procedure TRecordTests.TestCodegen_SizeOfFourByteRecord_Is4;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TFourBytes = record
+            A: Byte;
+            B: Byte;
+            C: Byte;
+            D: Byte;
+          end;
+        var N: Integer;
+        begin
+          N := SizeOf(TFourBytes)
+        end.
+        ''');
+  AssertTrue('SizeOf(TFourBytes) emits copy 4', Pos('copy 4', IR) > 0);
+  AssertFalse('not 16', Pos('copy 16', IR) > 0);
 end;
 
 initialization

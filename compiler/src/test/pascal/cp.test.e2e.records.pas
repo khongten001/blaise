@@ -27,6 +27,8 @@ type
     procedure TestRun_Record_PassByVar;
     procedure TestRun_Record_StringField_ARC;
     procedure TestRun_Record_NestedRecord;
+    procedure TestRun_Record_FourByteFields_PackedAndRoundTrip;
+    procedure TestRun_Record_ByteThenInteger_RoundTrip;
   end;
 
 implementation
@@ -109,6 +111,46 @@ const
     end.
     ''';
 
+  SrcRecordFourBytes = '''
+    program P;
+    type
+      TFourBytes = record
+        A: Byte;
+        B: Byte;
+        C: Byte;
+        D: Byte;
+      end;
+    var R: TFourBytes;
+    begin
+      R.A := 1;
+      R.B := 2;
+      R.C := 3;
+      R.D := 4;
+      WriteLn(SizeOf(TFourBytes));
+      WriteLn(R.A);
+      WriteLn(R.B);
+      WriteLn(R.C);
+      WriteLn(R.D)
+    end.
+    ''';
+
+  SrcRecordByteThenInteger = '''
+    program P;
+    type
+      TMixed = record
+        Tag: Byte;
+        Value: Integer;
+      end;
+    var R: TMixed;
+    begin
+      R.Tag := 7;
+      R.Value := 12345;
+      WriteLn(R.Tag);
+      WriteLn(R.Value);
+      WriteLn(SizeOf(TMixed))
+    end.
+    ''';
+
 procedure TE2ERecordsTests.TestRun_Record_FieldReadWrite;
 var Output: string; RCode: Integer;
 begin
@@ -152,6 +194,26 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcRecordNested, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('10 + 20 = 30', '30' + LE, Output);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_FourByteFields_PackedAndRoundTrip;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcRecordFourBytes, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('size 4, fields 1..4',
+    '4' + LE + '1' + LE + '2' + LE + '3' + LE + '4' + LE, Output);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_ByteThenInteger_RoundTrip;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcRecordByteThenInteger, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('tag=7, value=12345, size=8',
+    '7' + LE + '12345' + LE + '8' + LE, Output);
 end;
 
 initialization
