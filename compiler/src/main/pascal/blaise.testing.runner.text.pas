@@ -18,10 +18,14 @@
     --suite ClassName              run all tests in ClassName
     --suite ClassName.MethodName   run one specific test method
 
+  --suite may be passed multiple times, and each value may be a
+  comma-delimited list.  These three invocations are equivalent:
+    ./TestRunner --suite TA --suite TB.m
+    ./TestRunner --suite TA,TB.m
+    ./TestRunner --suite TA --suite TB,TB.m
+
   When invoked by 'pasbuild test' no arguments are passed, so all
-  registered tests run.  Manual invocation can narrow the run:
-    ./TestRunner --suite TClassTests
-    ./TestRunner --suite TClassTests.TestParse_ClassSection_Exists
+  registered tests run.
 
   ARC: TTestCase instances created via ClassCreate are released at
   loop-iteration end via the standard scope-based _ClassRelease the
@@ -48,6 +52,24 @@ procedure PrintSummary(AResult: TTestResult);
   Respects --suite / --suite Class.Method command-line filtering.
   Programs can do 'Halt(RunAll)' as the last statement. }
 function RunAll: Integer;
+
+{ Filter helpers — exposed for unit testing.  A filter list is a
+  TStringList where every entry is either a class-only filter ("TFooTests")
+  or a class.method filter ("TFooTests.TestBar"). }
+
+{ Split a single user-supplied filter spec into class and method parts.
+  Comma is not handled here (callers split first). }
+procedure SplitSuiteSpec(const ASpec: string;
+  out ASuite: string; out AMethod: string);
+
+{ Append ASpec to AFilters.  If ASpec contains commas, each
+  comma-delimited entry is appended individually after trimming. }
+procedure AppendSuiteFilter(AFilters: TStringList; const ASpec: string);
+
+{ True if the (ASuite, AMethod) pair matches at least one filter in
+  AFilters.  An empty filter list always matches. }
+function MatchesFilters(AFilters: TStringList;
+  const ASuite, AMethod: string): Boolean;
 
 
 implementation
@@ -148,19 +170,128 @@ end;
   CLI argument parsing
   ----------------------------------------------------------------------- }
 
-{ Parse --suite and --verbose from the process command line.
-  ASuite is set to the class name filter ('' = no filter).
-  AMethod is set to the method name filter ('' = all methods in the class).
-  AVerbose is set to True when --verbose is present. }
-procedure ParseArgs(out ASuite: string; out AMethod: string; out AVerbose: Boolean);
+procedure SplitSuiteSpec(const ASpec: string;
+  out ASuite: string; out AMethod: string);
 var
-  I:      Integer;
-  Arg:    string;
-  Filter: string;
-  Dot:    Integer;
+  Dot: Integer;
 begin
-  ASuite   := '';
-  AMethod  := '';
+  Dot := Pos('.', ASpec);
+  if Dot >= 0 then
+  begin
+    { Pos is 0-based in Blaise; Copy(s, start, count) where start is
+      also 0-based.  Dot is the 0-based index of '.'. }
+    ASuite  := Copy(ASpec, 0, Dot);
+    AMethod := Copy(ASpec, Dot + 1, Length(ASpec));
+  end
+  else
+  begin
+    ASuite  := ASpec;
+    AMethod := '';
+  end;
+end;
+
+{ Trim leading + trailing ASCII whitespace from a string. }
+function TrimWS(const S: string): string;
+var
+  Lo, Hi: Integer;
+begin
+  Lo := 0;
+  Hi := Length(S) - 1;
+  while (Lo <= Hi) and ((S[Lo] = ' ') or (S[Lo] = #9)) do
+    Lo := Lo + 1;
+  while (Hi >= Lo) and ((S[Hi] = ' ') or (S[Hi] = #9)) do
+    Hi := Hi - 1;
+  if Hi < Lo then
+    Result := ''
+  else
+    Result := Copy(S, Lo, Hi - Lo + 1);
+end;
+
+procedure AppendSuiteFilter(AFilters: TStringList; const ASpec: string);
+var
+  Start, I: Integer;
+  Part:     string;
+begin
+  if ASpec = '' then Exit;
+  Start := 0;
+  for I := 0 to Length(ASpec) - 1 do
+  begin
+    if ASpec[I] = ',' then
+    begin
+      Part := TrimWS(Copy(ASpec, Start, I - Start));
+      if Part <> '' then
+        AFilters.Add(Part);
+      Start := I + 1;
+    end;
+  end;
+  Part := TrimWS(Copy(ASpec, Start, Length(ASpec) - Start));
+  if Part <> '' then
+    AFilters.Add(Part);
+end;
+
+function MatchesFilters(AFilters: TStringList;
+  const ASuite, AMethod: string): Boolean;
+var
+  I:        Integer;
+  FSuite:   string;
+  FMethod:  string;
+begin
+  if (AFilters = nil) or (AFilters.Count = 0) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  for I := 0 to AFilters.Count - 1 do
+  begin
+    SplitSuiteSpec(AFilters.Strings[I], FSuite, FMethod);
+    if FSuite <> ASuite then
+      Continue;
+    if (FMethod = '') or (FMethod = AMethod) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+  Result := False;
+end;
+
+{ True if any filter in AFilters names ASuite (regardless of whether
+  the filter pins a specific method).  Used to decide whether a class
+  should be considered for execution at all. }
+function FiltersTouchSuite(AFilters: TStringList;
+  const ASuite: string): Boolean;
+var
+  I:        Integer;
+  FSuite:   string;
+  FMethod:  string;
+begin
+  if (AFilters = nil) or (AFilters.Count = 0) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  for I := 0 to AFilters.Count - 1 do
+  begin
+    SplitSuiteSpec(AFilters.Strings[I], FSuite, FMethod);
+    if FSuite = ASuite then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+  Result := False;
+end;
+
+{ Parse --suite and --verbose from the process command line.
+  AFilters receives one entry per filter; --suite may appear multiple
+  times and each --suite value may be comma-delimited.  Empty list
+  means "run everything".  AVerbose is True when --verbose is present.
+  AFilters must be created by the caller and is owned by the caller. }
+procedure ParseArgs(AFilters: TStringList; out AVerbose: Boolean);
+var
+  I:   Integer;
+  Arg: string;
+begin
   AVerbose := False;
   I := 1;
   while I <= ParamCount do
@@ -170,18 +301,8 @@ begin
       AVerbose := True
     else if (Arg = '--suite') and (I < ParamCount) then
     begin
-      I      := I + 1;
-      Filter := ParamStr(I);
-      Dot    := Pos('.', Filter);
-      if Dot >= 0 then
-      begin
-        { Pos is 0-based in Blaise; Copy(s, start, count) where start is
-          also 0-based.  Dot is the 0-based index of '.'. }
-        ASuite  := Copy(Filter, 0, Dot);
-        AMethod := Copy(Filter, Dot + 1, Length(Filter));
-      end
-      else
-        ASuite := Filter;
+      I := I + 1;
+      AppendSuiteFilter(AFilters, ParamStr(I));
     end;
     I := I + 1;
   end;
@@ -260,14 +381,13 @@ end;
   ----------------------------------------------------------------------- }
 
 { Run tests with optional class/method filtering and verbosity.
-  Pass '' for both ASuite and AMethod to run all registered tests.
+  Pass nil or an empty AFilters list to run every registered test.
 
   [Threaded] suites are dispatched as subprocesses and launched in
   parallel while non-threaded suites run in-process.  After in-process
   tests finish, remaining subprocess output is collected.
   When --suite is given, the named suite runs directly (no subprocess). }
-function RunFilteredTests(const ASuite: string;
-  const AMethod: string; AVerbose: Boolean): TTestResult;
+function RunFilteredTests(AFilters: TStringList; AVerbose: Boolean): TTestResult;
 var
   ClsIdx:    Integer;
   Cls:       TTestCaseClass;
@@ -283,17 +403,19 @@ var
   Chunk:     string;
   SubResult: TTestResult;
   I:         Integer;
+  HasFilter: Boolean;
 begin
   Result := TTestResult.Create;
   Result.Verbose := AVerbose;
   ProcCount := 0;
+  HasFilter := (AFilters <> nil) and (AFilters.Count > 0);
   for ClsIdx := 0 to GetRegisteredTestCount - 1 do
   begin
     Cls   := GetRegisteredTest(ClsIdx);
     CName := TestClassName(Cls);
-    if (ASuite <> '') and (CName <> ASuite) then
+    if not FiltersTouchSuite(AFilters, CName) then
       Continue;
-    if (ASuite = '') and IsThreadedClass(Cls) and (ProcCount < 64) then
+    if not HasFilter and IsThreadedClass(Cls) and (ProcCount < 64) then
     begin
       Proc := TProcess.Create(nil);
       Proc.Executable := ParamStr(0);
@@ -311,7 +433,7 @@ begin
       begin
         MethName := PublishedMethodName(Cls, MethIdx);
         if MethName = '' then Continue;
-        if (AMethod <> '') and (MethName <> AMethod) then
+        if not MatchesFilters(AFilters, CName, MethName) then
           Continue;
         Inst := ClassCreate(Cls, MethName);
         Inst.SetClassName(CName);
@@ -338,7 +460,7 @@ end;
 
 function RunRegisteredTests: TTestResult;
 begin
-  Result := RunFilteredTests('', '', False);
+  Result := RunFilteredTests(nil, False);
 end;
 
 { -----------------------------------------------------------------------
@@ -384,12 +506,12 @@ end;
 function RunAll: Integer;
 var
   R:       TTestResult;
-  Suite:   string;
-  Method:  string;
+  Filters: TStringList;
   Verbose: Boolean;
 begin
-  ParseArgs(Suite, Method, Verbose);
-  R := RunFilteredTests(Suite, Method, Verbose);
+  Filters := TStringList.Create;
+  ParseArgs(Filters, Verbose);
+  R := RunFilteredTests(Filters, Verbose);
   PrintSummary(R);
   if (R.NumberOfFailures = 0) and (R.NumberOfErrors = 0) then
     Result := 0
