@@ -8,8 +8,6 @@
 
 unit cp.test.generics;
 
-{$mode objfpc}{$H+}
-
 { Tests for generic type monomorphization.
   Phase 3 scope: single type-parameter classes with inline method bodies;
   standalone generic method implementations are not supported yet. }

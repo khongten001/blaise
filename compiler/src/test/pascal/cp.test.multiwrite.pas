@@ -8,8 +8,6 @@
 
 unit cp.test.multiwrite;
 
-{$mode objfpc}{$H+}
-
 { Tests for multi-argument Write and WriteLn code generation. }
 
 interface

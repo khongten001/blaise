@@ -8,8 +8,6 @@
 
 unit cp.test.parser;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

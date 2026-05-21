@@ -8,8 +8,6 @@
 
 unit cp.test.repeatloop;
 
-{$mode objfpc}{$H+}
-
 { Tests for repeat...until loop. }
 
 interface

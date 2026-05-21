@@ -8,8 +8,6 @@
 
 unit cp.test.process;
 
-{$mode objfpc}{$H+}
-
 { Tests for the process management built-ins:
     ProcessCreate, ProcessSetExe, ProcessAddArg, ProcessExecute,
     ProcessRunning, ProcessReadOutput, ProcessWaitOnExit,

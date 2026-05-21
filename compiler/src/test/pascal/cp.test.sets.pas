@@ -8,8 +8,6 @@
 
 unit cp.test.sets;
 
-{$mode objfpc}{$H+}
-
 { Tests for Pascal set types — set of EnumType, set literals, in operator,
   Include/Exclude built-ins, and set arithmetic operators. }
 
@@ -88,7 +86,7 @@ const
 
   { dNorth=0 → bit 0 = 1; dEast=2 → bit 2 = 4; mask = 5 }
   SrcSetTypeDecl =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         begin
@@ -96,7 +94,7 @@ const
         ''';
 
   SrcSetEmptyLiteral =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S: TDirSet;
@@ -106,15 +104,15 @@ const
         ''';
 
   SrcSetTwoElementLiteral =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
-    'var S: TDirSet;' + #10 + 
-    'begin' + #10 + 
+    'var S: TDirSet;' + #10 +
+    'begin' + #10 +
     '  S := [dNorth, dEast]' + #10 +   { mask = 1 + 4 = 5 }
     'end.';
 
   SrcSetInOperator =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S: TDirSet; B: Boolean;
@@ -125,7 +123,7 @@ const
         ''';
 
   SrcSetInclude =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S: TDirSet;
@@ -136,7 +134,7 @@ const
         ''';
 
   SrcSetExclude =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S: TDirSet;
@@ -147,7 +145,7 @@ const
         ''';
 
   SrcSetUnion =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S1, S2, S3: TDirSet;
@@ -159,7 +157,7 @@ const
         ''';
 
   SrcSetDifference =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S1, S2, S3: TDirSet;
@@ -171,7 +169,7 @@ const
         ''';
 
   SrcSetIntersection =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S1, S2, S3: TDirSet;
@@ -183,7 +181,7 @@ const
         ''';
 
   SrcSetEquality =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S1, S2: TDirSet; B: Boolean;
@@ -195,7 +193,7 @@ const
         ''';
 
   SrcSetInequality =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S1, S2: TDirSet; B: Boolean;
@@ -215,12 +213,12 @@ const
         ''';
 
   SrcSetBadLiteralElement =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
-    'type TColors = (cRed, cBlue);' + #10 + 
-    'type TColorSet = set of TColors;' + #10 + 
-    'var S: TDirSet;' + #10 + 
-    'begin' + #10 + 
+    'type TColors = (cRed, cBlue);' + #10 +
+    'type TColorSet = set of TColors;' + #10 +
+    'var S: TDirSet;' + #10 +
+    'begin' + #10 +
     '  S := [cRed]' + #10 +  { TColors element in TDirSet → error }
     'end.';
 
@@ -475,7 +473,7 @@ var
 begin
   { [dNorth] → ordinal 0 → bit 0 → mask 1 → emits "copy 1" }
   IR := GenIR(
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DirEnum +
     '''
         var S: TDirSet;

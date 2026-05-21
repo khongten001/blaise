@@ -8,8 +8,6 @@
 
 unit cp.test.tlist;
 
-{$mode objfpc}{$H+}
-
 { Tests for TList<T> generic dynamic list: type substitution with ^T fields,
   SizeOf built-in, nil/Pointer compatibility with typed pointers, and
   end-to-end Add/Get/Count codegen. }

@@ -8,8 +8,6 @@
 
 unit cp.test.proctypes_ofobject;
 
-{$mode objfpc}{$H+}
-
 { Tests for Step 11c — 'procedure of object' method-pointer types and the
   TMethod intrinsic record.
 

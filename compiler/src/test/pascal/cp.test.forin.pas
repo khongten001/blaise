@@ -8,8 +8,6 @@
 
 unit cp.test.forin;
 
-{$mode objfpc}{$H+}
-
 { Tests for for..in loop: class-based enumerators, static array, dynamic array, string, and set iteration. }
 
 interface
@@ -200,8 +198,8 @@ const
         ''';
 
   SrcForIn =
-    'program P;' + #10 + 
-    SrcEnumTypes + #10 + 
+    'program P;' + #10 +
+    SrcEnumTypes + #10 +
     '''
         var
           Col: TMyCol;
@@ -331,8 +329,8 @@ end;
 procedure TForInTests.TestSemantic_ForIn_VarTypeMismatch_RaisesError;
 begin
   AnalyseExpectError(
-    'program P;' + #10 + 
-    SrcEnumTypes + #10 + 
+    'program P;' + #10 +
+    SrcEnumTypes + #10 +
     '''
         var
           Col: TMyCol;

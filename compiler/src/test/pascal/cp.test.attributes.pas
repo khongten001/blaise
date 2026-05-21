@@ -8,8 +8,6 @@
 
 unit cp.test.attributes;
 
-{$mode objfpc}{$H+}
-
 { Tests for the custom attribute system.
 
   Covers:

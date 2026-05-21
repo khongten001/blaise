@@ -8,8 +8,6 @@
 
 unit cp.test.functions;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

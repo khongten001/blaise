@@ -8,8 +8,6 @@
 
 unit cp.test.math;
 
-{$mode objfpc}{$H+}
-
 { IR-level tests for Math unit functions and math compiler builtins.
 
   Builtins (handled in uSemantic + uCodeGenQBE, no RTL unit needed):

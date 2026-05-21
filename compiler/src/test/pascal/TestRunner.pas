@@ -8,8 +8,6 @@
 
 program TestRunner;
 
-{$mode objfpc}{$H+}
-
 uses
   blaise.testing,
   blaise.testing.runner.text,

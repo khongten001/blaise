@@ -8,8 +8,6 @@
 
 unit cp.test.booleanops;
 
-{$mode objfpc}{$H+}
-
 { Tests for the AND / OR / NOT logical operators on Boolean operands. }
 
 interface

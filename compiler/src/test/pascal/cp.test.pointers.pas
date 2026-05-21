@@ -8,8 +8,6 @@
 
 unit cp.test.pointers;
 
-{$mode objfpc}{$H+}
-
 { Tests for pointer type infrastructure: ^T types, P^ dereference,
   P^ := V store, GetMem/FreeMem/ReallocMem built-ins, and pointer arithmetic. }
 

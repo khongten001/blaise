@@ -8,8 +8,6 @@
 
 unit cp.test.properties;
 
-{$mode objfpc}{$H+}
-
 { Tests for Pascal property declarations — field-backed and method-backed.
   Properties are transparent syntactic sugar: reads and writes redirect to
   a backing field or method accessor. }

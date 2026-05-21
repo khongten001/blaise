@@ -8,8 +8,6 @@
 
 unit cp.test.stringops;
 
-{$mode objfpc}{$H+}
-
 { Tests for built-in string operation functions:
   Length, Pos, Copy, UpperCase, LowerCase, SameText, IntToStr, StrToInt. }
 

@@ -8,8 +8,6 @@
 
 unit cp.test.caseenum;
 
-{$mode objfpc}{$H+}
-
 { Tests for case statements and enum types — required for self-hosting.
   The compiler source uses both throughout (TTokenKind, TTypeKind, etc.). }
 
@@ -526,7 +524,7 @@ const
         begin
           S := 'foo';
           case S of
-            1: S := 'one'  
+            1: S := 'one'
           end
         end.
         ''';

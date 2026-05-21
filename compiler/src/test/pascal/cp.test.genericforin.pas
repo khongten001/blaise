@@ -8,8 +8,6 @@
 
 unit cp.test.genericforin;
 
-{$mode objfpc}{$H+}
-
 { Tests for for..in support on generic collections (Step 9b).
 
   Two blockers:

@@ -8,8 +8,6 @@
 
 unit cp.test.forloop;
 
-{$mode objfpc}{$H+}
-
 { Tests for for-loop: to and downto forms. }
 
 interface

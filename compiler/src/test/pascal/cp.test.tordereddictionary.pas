@@ -8,8 +8,6 @@
 
 unit cp.test.tordereddictionary;
 
-{$mode objfpc}{$H+}
-
 { IR unit tests for TOrderedDictionary<K,V>: insertion-ordered map.
   Verifies Add/TryGetValue/ContainsKey/Remove/GetKey/GetValue codegen.
   Uses Integer keys and Integer values throughout. }

@@ -8,8 +8,6 @@
 
 unit cp.test.codegen;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

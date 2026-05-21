@@ -8,8 +8,6 @@
 
 unit cp.test.tset;
 
-{$mode objfpc}{$H+}
-
 { IR unit tests for TSet<T>: Include/Exclude/Contains/Clear/Destroy and Grow.
   Uses Integer as the type parameter throughout. }
 

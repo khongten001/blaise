@@ -8,8 +8,6 @@
 
 unit cp.test.dynarray;
 
-{$mode objfpc}{$H+}
-
 { Tests for dynamic array type declarations:
   parsing, semantic analysis, and QBE IR code generation.
 

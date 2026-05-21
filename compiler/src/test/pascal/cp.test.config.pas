@@ -8,8 +8,6 @@
 
 unit cp.test.config;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

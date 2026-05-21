@@ -8,8 +8,6 @@
 
 unit cp.test.overload;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

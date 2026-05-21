@@ -8,8 +8,6 @@
 
 unit cp.test.selfhosting;
 
-{$mode objfpc}{$H+}
-
 { Tests for the two remaining self-hosting gaps:
     1. Multiple type/var sections in a single block
     2. File I/O and CLI builtins: ParamStr, ParamCount, ReadFile, WriteFile,

@@ -8,8 +8,6 @@
 
 unit cp.test.streams;
 
-{$mode objfpc}{$H+}
-
 { IR-level tests for the streams design.
 
   These tests are deliberately self-contained — they declare the stream

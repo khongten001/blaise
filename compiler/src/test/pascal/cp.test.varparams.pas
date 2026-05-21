@@ -8,8 +8,6 @@
 
 unit cp.test.varparams;
 
-{$mode objfpc}{$H+}
-
 { Tests for var parameters: pass-by-reference semantics across
   lexer, parser, semantic analysis, and code generation. }
 
@@ -235,10 +233,10 @@ end;
 procedure TVarParamTests.TestSemantic_VarParam_NonVariable_RaisesError;
 begin
   AnalyseExpectError(
-    'program Bad;' + #10 + 
-    'procedure Inc(var X: Integer);' + #10 + 
-    'begin X := X + 1 end;' + #10 + 
-    'begin' + #10 + 
+    'program Bad;' + #10 +
+    'procedure Inc(var X: Integer);' + #10 +
+    'begin X := X + 1 end;' + #10 +
+    'begin' + #10 +
     '  Inc(42)'                                     + #10 +  { literal, not a variable }
     'end.');
 end;
@@ -246,11 +244,11 @@ end;
 procedure TVarParamTests.TestSemantic_VarParam_TypeMismatch_RaisesError;
 begin
   AnalyseExpectError(
-    'program Bad;' + #10 + 
-    'procedure SetI(var X: Integer);' + #10 + 
-    'begin X := 1 end;' + #10 + 
-    'var B: Boolean;' + #10 + 
-    'begin' + #10 + 
+    'program Bad;' + #10 +
+    'procedure SetI(var X: Integer);' + #10 +
+    'begin X := 1 end;' + #10 +
+    'var B: Boolean;' + #10 +
+    'begin' + #10 +
     '  SetI(B)'                                     + #10 +  { wrong type }
     'end.');
 end;

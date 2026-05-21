@@ -8,8 +8,6 @@
 
 unit cp.test.flowjumps;
 
-{$mode objfpc}{$H+}
-
 { Tests for non-local flow statements: Exit and Break. }
 
 interface

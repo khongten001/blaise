@@ -8,8 +8,6 @@
 
 unit cp.test.publishedrtti;
 
-{$mode objfpc}{$H+}
-
 { Tests for Step 11b — published-method RTTI.  Exercises:
 
     * The parser tagging methods declared inside a 'published' visibility

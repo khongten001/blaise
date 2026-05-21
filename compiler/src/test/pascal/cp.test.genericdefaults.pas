@@ -8,8 +8,6 @@
 
 unit cp.test.genericdefaults;
 
-{$mode objfpc}{$H+}
-
 { Tests for Generics.Defaults: IEqualityComparer<T>, IComparer<T>, and the
   concrete implementations TIntegerEqualityComparer and TIntegerComparer.
   Exercises generic interface parsing, semantic instantiation, and codegen. }

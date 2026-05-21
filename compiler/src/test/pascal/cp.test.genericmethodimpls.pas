@@ -8,8 +8,6 @@
 
 unit cp.test.genericmethodimpls;
 
-{$mode objfpc}{$H+}
-
 { Tests for generic class method implementations in standalone form:
     procedure TList<T>.Add(Value: T);
     begin ... end;

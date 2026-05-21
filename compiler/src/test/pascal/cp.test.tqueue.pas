@@ -8,8 +8,6 @@
 
 unit cp.test.tqueue;
 
-{$mode objfpc}{$H+}
-
 { IR unit tests for TQueue<T>: Enqueue/Dequeue/Peek/Clear/Destroy and Grow.
   Uses Integer as the type parameter throughout. }
 

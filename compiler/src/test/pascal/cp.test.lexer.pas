@@ -8,8 +8,6 @@
 
 unit cp.test.lexer;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

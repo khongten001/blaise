@@ -8,8 +8,6 @@
 
 unit cp.test.multifile;
 
-{$mode objfpc}{$H+}
-
 { Tests for multi-file compilation: TUnitLoader (search, cycle detection,
   dependency ordering), TSemanticAnalyser.AnalyseUnitForExport (cross-unit
   symbol visibility), and combined code generation via AppendUnit/AppendProgram. }

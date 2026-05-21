@@ -8,8 +8,6 @@
 
 unit cp.test.control;
 
-{$mode objfpc}{$H+}
-
 { Tests for control flow: if/else, comparison operators, compound statements.
   Future: while, repeat, for. }
 

@@ -8,8 +8,6 @@
 
 unit cp.test.inherit;
 
-{$mode objfpc}{$H+}
-
 { Tests for class inheritance, self-referential types, and nil. }
 
 interface
@@ -147,7 +145,7 @@ end;
 
 const
   SrcNilAssign =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     'var C: TNode;'       + #10 +  { forward ref — TNode defined after }
     '''
         type

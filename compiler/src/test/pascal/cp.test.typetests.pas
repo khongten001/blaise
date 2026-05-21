@@ -8,8 +8,6 @@
 
 unit cp.test.typetests;
 
-{$mode objfpc}{$H+}
-
 { Tests for the 'is' and 'as' type-test operators. }
 
 interface

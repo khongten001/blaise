@@ -8,8 +8,6 @@
 
 unit cp.test.symtable;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

@@ -8,8 +8,6 @@
 
 unit cp.test.chainedfields;
 
-{$mode objfpc}{$H+}
-
 { Tests for chained field access expressions: A.B.C and deeper. }
 
 interface

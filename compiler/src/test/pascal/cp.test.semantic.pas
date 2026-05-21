@@ -8,8 +8,6 @@
 
 unit cp.test.semantic;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

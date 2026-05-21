@@ -8,8 +8,6 @@
 
 unit cp.test.tdictionary;
 
-{$mode objfpc}{$H+}
-
 { Tests for TDictionary<K,V> generic map: two-type-param generic,
   FindKey/Add/TryGetValue/ContainsKey/Remove operations, Count property.
 
@@ -187,7 +185,7 @@ const
   { Complete programs using TDictionary<Integer,Integer> }
 
   SrcCreate =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DictDecl +
     DictImpls +
     '''
@@ -198,7 +196,7 @@ const
         ''';
 
   SrcAddGet =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DictDecl +
     DictImpls +
     '''
@@ -214,7 +212,7 @@ const
         ''';
 
   SrcTryGet =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DictDecl +
     DictImpls +
     '''
@@ -230,7 +228,7 @@ const
         ''';
 
   SrcRemove =
-    'program P;' + #10 + 
+    'program P;' + #10 +
     DictDecl +
     DictImpls +
     '''

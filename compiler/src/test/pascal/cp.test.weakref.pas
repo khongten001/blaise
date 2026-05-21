@@ -25,8 +25,6 @@
 
 unit cp.test.weakref;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

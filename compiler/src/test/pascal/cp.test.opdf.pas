@@ -8,8 +8,6 @@
 
 unit cp.test.opdf;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

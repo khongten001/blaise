@@ -8,8 +8,6 @@
 
 unit cp.test.tstack;
 
-{$mode objfpc}{$H+}
-
 { IR unit tests for TStack<T>: Push/Pop/Peek/Clear/Destroy and Grow.
   Uses Integer as the type parameter throughout. }
 

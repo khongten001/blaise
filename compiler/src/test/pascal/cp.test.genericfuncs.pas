@@ -8,8 +8,6 @@
 
 unit cp.test.genericfuncs;
 
-{$mode objfpc}{$H+}
-
 { Tests for standalone generic function monomorphization.
   Syntax: function Name<T>(Param: T): T — demand-driven instantiation on first call. }
 

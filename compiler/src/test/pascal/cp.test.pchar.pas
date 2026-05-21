@@ -8,8 +8,6 @@
 
 unit cp.test.pchar;
 
-{$mode objfpc}{$H+}
-
 { Tests for PChar type: PChar(str) cast and string(pchar) cast.
   Covers semantic analysis and QBE IR code generation. }
 

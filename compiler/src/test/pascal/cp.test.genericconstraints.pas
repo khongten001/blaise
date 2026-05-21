@@ -8,8 +8,6 @@
 
 unit cp.test.genericconstraints;
 
-{$mode objfpc}{$H+}
-
 { Tests for generic type parameter constraints:
     <T: class>        — T must be a class type
     <T: record>       — T must be a value type

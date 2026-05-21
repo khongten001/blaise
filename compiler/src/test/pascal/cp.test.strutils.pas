@@ -8,8 +8,6 @@
 
 unit cp.test.strutils;
 
-{$mode objfpc}{$H+}
-
 { IR-level tests for StrUtils unit functions.
   These tests verify that the compiler resolves StrUtils identifiers and
   type-checks arguments correctly.  Since StrUtils is now implemented in

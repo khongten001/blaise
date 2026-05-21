@@ -8,8 +8,6 @@
 
 unit cp.test.textblock;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses
@@ -59,8 +57,8 @@ procedure TTextBlockTests.TestTextBlock_Basic;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           'hello' + #10 + 
+  SetLexer(TQ + #10 +
+           'hello' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -71,9 +69,9 @@ procedure TTextBlockTests.TestTextBlock_MarginStrip;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           '  line one' + #10 + 
-           '  line two' + #10 + 
+  SetLexer(TQ + #10 +
+           '  line one' + #10 +
+           '  line two' + #10 +
            '  ' + TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -84,8 +82,8 @@ procedure TTextBlockTests.TestTextBlock_EmbeddedSingleQuote;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           'it' + #39 + 's here' + #10 + 
+  SetLexer(TQ + #10 +
+           'it' + #39 + 's here' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -96,7 +94,7 @@ procedure TTextBlockTests.TestTextBlock_EmptyBlock;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
+  SetLexer(TQ + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -107,8 +105,8 @@ procedure TTextBlockTests.TestTextBlock_SingleContentLine;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           'only line' + #10 + 
+  SetLexer(TQ + #10 +
+           'only line' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -119,8 +117,8 @@ procedure TTextBlockTests.TestTextBlock_NoMarginStrip_CloserAtCol1;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           '  indented' + #10 + 
+  SetLexer(TQ + #10 +
+           '  indented' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -131,10 +129,10 @@ procedure TTextBlockTests.TestTextBlock_PreservesRelativeIndent;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           '    begin' + #10 + 
-           '      X := 1;' + #10 + 
-           '    end.' + #10 + 
+  SetLexer(TQ + #10 +
+           '    begin' + #10 +
+           '      X := 1;' + #10 +
+           '    end.' + #10 +
            '    ' + TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -158,8 +156,8 @@ procedure TTextBlockTests.TestTextBlock_TrailingContentAfterCloser;
 var
   tok, tok2: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           'content' + #10 + 
+  SetLexer(TQ + #10 +
+           'content' + #10 +
            TQ + ';');
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -172,8 +170,8 @@ procedure TTextBlockTests.TestTextBlock_TabsInContent;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           #9 + 'tabbed' + #10 + 
+  SetLexer(TQ + #10 +
+           #9 + 'tabbed' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
@@ -184,10 +182,10 @@ procedure TTextBlockTests.TestTextBlock_BlankLinesPreserved;
 var
   tok: TToken;
 begin
-  SetLexer(TQ + #10 + 
-           'line one' + #10 + 
-           '' + #10 + 
-           'line three' + #10 + 
+  SetLexer(TQ + #10 +
+           'line one' + #10 +
+           '' + #10 +
+           'line three' + #10 +
            TQ);
   tok := FLexer.Next;
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));

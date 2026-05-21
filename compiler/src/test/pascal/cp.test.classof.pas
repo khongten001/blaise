@@ -8,8 +8,6 @@
 
 unit cp.test.classof;
 
-{$mode objfpc}{$H+}
-
 { Tests for 'class of TFoo' metaclass type support — Step 11a. }
 
 interface

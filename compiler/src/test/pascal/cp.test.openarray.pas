@@ -8,8 +8,6 @@
 
 unit cp.test.openarray;
 
-{$mode objfpc}{$H+}
-
 { Tests for const open array parameters: parsing, semantic analysis,
   and QBE IR code generation. }
 

@@ -8,8 +8,6 @@
 
 unit cp.test.external;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses

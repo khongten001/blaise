@@ -8,8 +8,6 @@
 
 unit cp.test.imap;
 
-{$mode objfpc}{$H+}
-
 { IR unit tests for IMap<K,V>: the generic map interface that TDictionary and
   TOrderedDictionary both implement.  Exercises:
     - parsing IMap<K,V> interface definition with two type params

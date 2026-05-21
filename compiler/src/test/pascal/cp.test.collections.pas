@@ -8,8 +8,6 @@
 
 unit cp.test.collections;
 
-{$mode objfpc}{$H+}
-
 { Tests for TObjectList and TStringList built in pure Blaise Pascal:
     - TObjectList: dynamic Pointer array, optional ownership
     - TStringList: dynamic string + Pointer parallel arrays with

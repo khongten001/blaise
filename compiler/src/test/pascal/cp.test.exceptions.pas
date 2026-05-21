@@ -8,8 +8,6 @@
 
 unit cp.test.exceptions;
 
-{$mode objfpc}{$H+}
-
 { Tests for try/finally, try/except, and raise statements. }
 
 interface

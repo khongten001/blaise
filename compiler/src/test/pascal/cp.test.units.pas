@@ -8,8 +8,6 @@
 
 unit cp.test.units;
 
-{$mode objfpc}{$H+}
-
 { Tests for unit interface/implementation: parsing, semantic analysis,
   and code generation. Cross-unit 'uses' loading is out of scope here. }
 
@@ -349,10 +347,10 @@ end;
 procedure TUnitTests.TestSemantic_Unit_SignatureMismatch_ParamCount_RaisesError;
 begin
   AnalyseUnitExpectError(
-    'unit Bad;' + #10 + 
-    'interface' + #10 + 
-    'function Add(A, B: Integer): Integer;' + #10 + 
-    'implementation' + #10 + 
+    'unit Bad;' + #10 +
+    'interface' + #10 +
+    'function Add(A, B: Integer): Integer;' + #10 +
+    'implementation' + #10 +
     'function Add(A: Integer): Integer;'         + #10 +  { wrong: 1 param }
     '''
         begin

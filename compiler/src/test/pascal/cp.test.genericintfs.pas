@@ -8,8 +8,6 @@
 
 unit cp.test.genericintfs;
 
-{$mode objfpc}{$H+}
-
 { Tests for generic interfaces: IFoo<T> = interface ... end, class implements
   IFoo<Integer>, and codegen for the resulting itab/typeinfo. }
 

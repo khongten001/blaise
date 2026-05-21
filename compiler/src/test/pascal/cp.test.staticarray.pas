@@ -8,8 +8,6 @@
 
 unit cp.test.staticarray;
 
-{$mode objfpc}{$H+}
-
 { Tests for static array declarations and element access:
   parsing, semantic analysis, and QBE IR code generation. }
 
