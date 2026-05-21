@@ -5880,6 +5880,19 @@ begin
     EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
     Exit;
   end;
+  { ARC: class reference stored through a typed pointer needs retain/release.
+    Mirrors the string path so generic ^T storage on TList<TObject>,
+    TStack<TObject> etc. keeps a strong reference to the stored object. }
+  if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tyClass) then
+  begin
+    OldTemp := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+    ValTemp := EmitExpr(AStmt.ValExpr);
+    EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+    EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    Exit;
+  end;
   if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind in [tyByte, tyBoolean]) then
     ValTemp := EmitByteRhs(AStmt.ValExpr)
   else
