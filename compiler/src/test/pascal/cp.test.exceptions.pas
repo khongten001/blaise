@@ -581,7 +581,7 @@ procedure TExceptionTests.TestCodegen_TryExcept_CallsSetjmp;
 var IR: string;
 begin
   IR := GenIR(SrcTryExcept);
-  AssertTrue('try/except calls setjmp', Pos('call $setjmp', IR) > 0);
+  AssertTrue('try/except calls _blaise_setjmp', Pos('call $_blaise_setjmp', IR) > 0);
 end;
 
 procedure TExceptionTests.TestCodegen_TryExcept_PopsFrame;

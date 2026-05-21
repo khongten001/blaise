@@ -18,9 +18,8 @@ interface
 uses
   SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat;
 
-// Raw byte copy used by TIRBuffer — maps to libc memcpy under both compilers.
-// FPC: {$linklib c} ensures libc is linked; Blaise links blaise_rtl.a which
-// already pulls in libc.
+// Raw byte copy used by TIRBuffer — maps to libc memcpy.
+// Blaise links blaise_rtl.a which already pulls in libc.
 procedure _ir_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
 
 type
@@ -2030,7 +2029,7 @@ begin
   Inc(FExcDepth);
 
   SjrTemp := AllocTemp;
-  EmitLine(Format('  %s =w call $setjmp(l %s)', [SjrTemp, FrameTemp]));
+  EmitLine(Format('  %s =w call $_blaise_setjmp(l %s)', [SjrTemp, FrameTemp]));
   EmitLine(Format('  jnz %s, @%s, @%s', [SjrTemp, LblFinExc, LblTry]));
 
   { Normal path: run try body, pop frame, run finally body }
@@ -2078,15 +2077,15 @@ begin
   LblEnd    := AllocLabel('except_end');
 
   { Use a pre-allocated exception frame slot from @start (see EmitExcFrameAllocs).
-    Matches the size contract in blaise_exc.c — must hold jmp_buf (200 B on
-    Linux x86_64, ~312 B on macOS ARM64) plus two pointer fields. }
+    Matches the size contract in blaise_exc.pas — must hold jmp_buf (64 B on
+    x86_64, larger on ARM64) plus two pointer fields. }
   FrameTemp := Format('%%_exc_frame_%d', [FExcFrameNext]);
   FExcFrameNext := FExcFrameNext + 1;
   EmitLine(Format('  call $_PushExcFrame(l %s)', [FrameTemp]));
   Inc(FExcDepth);
 
   SjrTemp := AllocTemp;
-  EmitLine(Format('  %s =w call $setjmp(l %s)', [SjrTemp, FrameTemp]));
+  EmitLine(Format('  %s =w call $_blaise_setjmp(l %s)', [SjrTemp, FrameTemp]));
   EmitLine(Format('  jnz %s, @%s, @%s', [SjrTemp, LblExcept, LblTry]));
 
   { Normal path: run try body, pop frame on clean exit }

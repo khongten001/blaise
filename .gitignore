@@ -9,6 +9,7 @@ releases/
 *.res
 *.rst
 *.s
+!runtime/src/main/asm/*.s
 
 # Shared / dynamic libraries
 *.so
