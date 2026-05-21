@@ -100,8 +100,8 @@ type
     { ------------------------------------------------------------------ }
     { Codegen — ARC cleanup on exception paths                            }
     { ------------------------------------------------------------------ }
-    procedure TestCodegen_TryFinally_ArcRelease_BeforeReraise;
-    procedure TestCodegen_TryFinally_ArcRelease_ZerosVar;
+    procedure TestCodegen_TryFinally_NoArcCleanup_BeforeReraise;
+    procedure TestCodegen_TryFinally_NoArcZero_BeforeReraise;
     procedure TestCodegen_ExceptionSubclass_CtorCallWithMessage;
 
     { ------------------------------------------------------------------ }
@@ -663,7 +663,7 @@ const
         end.
         ''';
 
-procedure TExceptionTests.TestCodegen_TryFinally_ArcRelease_BeforeReraise;
+procedure TExceptionTests.TestCodegen_TryFinally_NoArcCleanup_BeforeReraise;
 var
   IR:         string;
   PosFinExc:  Integer;
@@ -671,19 +671,19 @@ var
   PosReraise: Integer;
 begin
   IR := GenIR(SrcTryFinallyWithStr);
-  { Locate the exception handler block and _Reraise }
-  PosFinExc  := Pos('@fin_exc', IR);
+  PosFinExc  := Pos(#10 + '@fin_exc', IR);
   PosReraise := Pos('call $_Reraise', IR);
   AssertTrue('@fin_exc label present', PosFinExc > 0);
   AssertTrue('_Reraise present', PosReraise > 0);
-  { _StringRelease must appear INSIDE the exception handler, i.e. between
-    @fin_exc and _Reraise — not just anywhere in the IR }
+  { ARC cleanup must NOT appear in the finally-exception path — variables
+    must survive the re-raise so the outer handler can read them.  The
+    function-exit block handles final release. }
   PosRelease := PosEx('call $_StringRelease', IR, PosFinExc);
-  AssertTrue('_StringRelease in exception handler (after @fin_exc)', PosRelease > 0);
-  AssertTrue('_StringRelease before _Reraise', PosRelease < PosReraise);
+  if PosRelease > 0 then
+    AssertTrue('no _StringRelease before _Reraise', PosRelease > PosReraise);
 end;
 
-procedure TExceptionTests.TestCodegen_TryFinally_ArcRelease_ZerosVar;
+procedure TExceptionTests.TestCodegen_TryFinally_NoArcZero_BeforeReraise;
 var
   IR:         string;
   PosFinExc:  Integer;
@@ -691,16 +691,15 @@ var
   PosZero:    Integer;
 begin
   IR := GenIR(SrcTryFinallyWithStr);
-  { Locate exception handler boundaries }
-  PosFinExc  := Pos('@fin_exc', IR);
+  PosFinExc  := Pos(#10 + '@fin_exc', IR);
   PosReraise := Pos('call $_Reraise', IR);
   AssertTrue('@fin_exc label present', PosFinExc > 0);
   AssertTrue('_Reraise present', PosReraise > 0);
-  { After _StringRelease, the slot must be zeroed (storel 0) to prevent
-    double-release if a nested handler also walks the same scope }
+  { No storel 0 (variable zeroing) between @fin_exc and _Reraise — the
+    outer handler or function exit is responsible for cleanup. }
   PosZero := PosEx('storel 0,', IR, PosFinExc);
-  AssertTrue('storel 0 in exception handler (after @fin_exc)', PosZero > 0);
-  AssertTrue('storel 0 before _Reraise', PosZero < PosReraise);
+  if PosZero > 0 then
+    AssertTrue('no storel 0 before _Reraise', PosZero > PosReraise);
 end;
 
 procedure TExceptionTests.TestCodegen_ExceptionSubclass_CtorCallWithMessage;

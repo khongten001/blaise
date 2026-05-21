@@ -2042,8 +2042,10 @@ begin
     EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
-  { Exception path: capture exception, pop frame, run finally body, release
-    in-scope ARC vars (prevent leaks on unwind), then re-raise }
+  { Exception path: capture exception, pop frame, run finally body, re-raise.
+    ARC cleanup is NOT emitted here — the outer handler (or function exit)
+    is responsible for releasing variables that are still in scope. Releasing
+    them here would nil variables that the outer except handler still reads. }
   EmitLine('@' + LblFinExc);
   ExcTemp := AllocTemp;
   EmitLine(Format('  %s =l call $_CurrentException()', [ExcTemp]));
@@ -2051,7 +2053,6 @@ begin
   Dec(FExcDepth);
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
     EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
-  EmitExcPathArcCleanup(FCurrentBlock);
   EmitLine(Format('  call $_Reraise(l %s)', [ExcTemp]));
   EmitLine(Format('  jmp @%s', [LblEnd]));  { unreachable — satisfies QBE block exit }
 

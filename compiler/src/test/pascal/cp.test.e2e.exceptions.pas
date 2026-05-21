@@ -41,6 +41,9 @@ type
     procedure TestRun_TypedExcept_UnmatchedReraises;
     procedure TestRun_TypedExcept_BareRaisePropagatesToOuter;
     procedure TestRun_TypedExcept_ElseBodyRunsWhenNoMatch;
+
+    { String variable mutated in finally must be visible after re-raise. }
+    procedure TestRun_FinallyStringMutation_SurvivesReraise;
   end;
 
 implementation
@@ -223,6 +226,27 @@ const
         end.
         ''';
 
+  SrcFinallyStringMutationSurvives =
+    SrcExcBase +
+    '''
+        var S: string;
+        begin
+          S := '';
+          try
+            try
+              S := S + 'A,';
+              raise EFoo.Create
+            finally
+              S := S + 'F,'
+            end
+          except
+            on E: EFoo do
+              S := S + 'H,'
+          end;
+          WriteLn(S)
+        end.
+        ''';
+
 procedure TE2EExceptionTests.TestRun_BareTryFinally;
 var Output: string; RCode: Integer;
 begin
@@ -304,6 +328,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcTypedExceptElseRun, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('else body ran when no handler matched', '5', Trim(Output));
+end;
+
+procedure TE2EExceptionTests.TestRun_FinallyStringMutation_SurvivesReraise;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcFinallyStringMutationSurvives, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('string mutations in finally survive re-raise', 'A,F,H,', Trim(Output));
 end;
 
 initialization
