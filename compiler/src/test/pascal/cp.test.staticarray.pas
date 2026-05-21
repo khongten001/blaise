@@ -50,6 +50,10 @@ type
     procedure TestCodegen_StaticArray_WriteEmitted;
     procedure TestCodegen_StaticArray_ReadEmitted;
     procedure TestCodegen_StaticArray_NonZero_OffsetSubtracted;
+    procedure TestCodegen_StaticArray_StringWrite_EmitsARC;
+    procedure TestCodegen_StaticArray_ClassWrite_EmitsARC;
+    procedure TestCodegen_DynArray_StringWrite_EmitsARC;
+    procedure TestCodegen_DynArray_ClassWrite_EmitsARC;
 
     { ------------------------------------------------------------------ }
     { Low / High                                                           }
@@ -352,6 +356,90 @@ begin
   IR := GenIR(SrcNonZero);
   { R[5] with LowBound=5: offset = (5-5)*4 = 0; sub instruction emitted }
   AssertTrue('sub for low-bound adjustment', Pos('=l sub', IR) > 0);
+end;
+
+procedure TStaticArrayTests.TestCodegen_StaticArray_StringWrite_EmitsARC;
+const
+  Src =
+    '''
+        program P;
+        var A: array[0..2] of string;
+        begin
+          A[0] := 'hello';
+          A[0] := 'world'
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('string element write retains new value',
+    Pos('call $_StringAddRef(', IR) > 0);
+  AssertTrue('string element write releases old value',
+    Pos('call $_StringRelease(', IR) > 0);
+end;
+
+procedure TStaticArrayTests.TestCodegen_StaticArray_ClassWrite_EmitsARC;
+const
+  Src =
+    '''
+        program P;
+        type TC = class(TObject) end;
+        var A: array[0..2] of TC;
+        begin
+          A[0] := TC.Create;
+          A[0] := TC.Create
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('class element write retains new instance',
+    Pos('call $_ClassAddRef(', IR) > 0);
+  AssertTrue('class element write releases prior instance',
+    Pos('call $_ClassRelease(', IR) > 0);
+end;
+
+procedure TStaticArrayTests.TestCodegen_DynArray_StringWrite_EmitsARC;
+const
+  Src =
+    '''
+        program P;
+        var A: array of string;
+        begin
+          SetLength(A, 3);
+          A[0] := 'hello';
+          A[0] := 'world'
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('dynarray string element write retains new value',
+    Pos('call $_StringAddRef(', IR) > 0);
+  AssertTrue('dynarray string element write releases old value',
+    Pos('call $_StringRelease(', IR) > 0);
+end;
+
+procedure TStaticArrayTests.TestCodegen_DynArray_ClassWrite_EmitsARC;
+const
+  Src =
+    '''
+        program P;
+        type TC = class(TObject) end;
+        var A: array of TC;
+        begin
+          SetLength(A, 3);
+          A[0] := TC.Create;
+          A[0] := TC.Create
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('dynarray class element write retains new instance',
+    Pos('call $_ClassAddRef(', IR) > 0);
+  AssertTrue('dynarray class element write releases prior instance',
+    Pos('call $_ClassRelease(', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

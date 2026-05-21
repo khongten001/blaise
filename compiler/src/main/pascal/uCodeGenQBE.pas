@@ -9726,6 +9726,7 @@ var
   Offset:     string;
   ElemPtr:    string;
   ElemVal:    string;
+  OldVal:     string;
   PCharBase:  string;
 begin
   { PChar subscript write: P[I] := Integer — storeb at ptr + I.
@@ -9790,6 +9791,21 @@ begin
         end;
       end;
     end;
+    { ARC for managed element types: retain new, release old, then store. }
+    if ElemType.Kind = tyString then
+    begin
+      OldVal := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+      EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
+      EmitLine(Format('  call $_StringRelease(l %s)', [OldVal]));
+    end
+    else if ElemType.Kind = tyClass then
+    begin
+      OldVal := AllocTemp;
+      EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+      EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
+    end;
     EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
     Exit;
   end;
@@ -9829,6 +9845,21 @@ begin
     tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: StoreInstr := 'storel';
   else
     StoreInstr := 'storew';
+  end;
+  { ARC for managed element types: retain new, release old, then store. }
+  if ElemType.Kind = tyString then
+  begin
+    OldVal := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+    EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
+    EmitLine(Format('  call $_StringRelease(l %s)', [OldVal]));
+  end
+  else if ElemType.Kind = tyClass then
+  begin
+    OldVal := AllocTemp;
+    EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+    EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
   end;
   EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
 end;
