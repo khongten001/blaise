@@ -4016,6 +4016,15 @@ begin
     Exit;
   end;
 
+  { Method-pointer field: 16-byte inline TMethod (Code+Data).  ValTemp is the
+    address of a 16-byte source block.  Mirrors the variable-assign path. }
+  if (AAssign.FieldInfo.TypeDesc.Kind = tyProcedural) and
+     TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsMethodPtr then
+  begin
+    EmitLine(Format('  call $memcpy(l %s, l %s, l 16)', [Ptr, ValTemp]));
+    Exit;
+  end;
+
   IsStr := AAssign.FieldInfo.TypeDesc.IsString;
   IsArc := IsStr or (AAssign.FieldInfo.TypeDesc.Kind = tyClass);
   if AAssign.FieldInfo.IsWeak then
@@ -7796,6 +7805,14 @@ begin
       end
       else
         Ptr := L;
+      { Method-ptr field: 16-byte inline TMethod.  Return the field address so
+        callers (memcpy, call-site) treat the field's storage as the value. }
+      if (FldAccess.FieldInfo.TypeDesc.Kind = tyProcedural) and
+         TProceduralTypeDesc(FldAccess.FieldInfo.TypeDesc).IsMethodPtr then
+      begin
+        Result := Ptr;
+        Exit;
+      end;
       QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
       T     := AllocTemp;
       if QType = 'w' then LoadInstr := 'loadw'
@@ -8038,6 +8055,13 @@ begin
       end
       else
         Ptr := L;
+      { Method-ptr field: 16-byte inline TMethod — return field address. }
+      if (FldAccess.FieldInfo.TypeDesc.Kind = tyProcedural) and
+         TProceduralTypeDesc(FldAccess.FieldInfo.TypeDesc).IsMethodPtr then
+      begin
+        Result := Ptr;
+        Exit;
+      end;
       QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
       T     := AllocTemp;
       if QType = 'w' then LoadInstr := 'loadw'
@@ -8070,6 +8094,13 @@ begin
       end
       else
         Ptr := FieldPtr(FldAccess.RecordName, FldAccess.FieldInfo.Offset, FldAccess.IsGlobal);
+      { Method-ptr field: 16-byte inline TMethod — return field address. }
+      if (FldAccess.FieldInfo.TypeDesc.Kind = tyProcedural) and
+         TProceduralTypeDesc(FldAccess.FieldInfo.TypeDesc).IsMethodPtr then
+      begin
+        Result := Ptr;
+        Exit;
+      end;
       QType := QbeTypeOf(FldAccess.FieldInfo.TypeDesc);
       T     := AllocTemp;
       if QType = 'w' then LoadInstr := 'loadw'

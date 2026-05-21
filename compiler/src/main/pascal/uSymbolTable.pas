@@ -471,6 +471,9 @@ begin
       Result := (TStaticArrayTypeDesc(Self).HighBound -
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
                  TStaticArrayTypeDesc(Self).ElementType.RawSize;
+    tyProcedural:
+      if TProceduralTypeDesc(Self).IsMethodPtr then Result := 16
+      else Result := 8;
   else
     Result := 8;
   end;
@@ -492,6 +495,9 @@ begin
       Result := (TStaticArrayTypeDesc(Self).HighBound -
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
                  TStaticArrayTypeDesc(Self).ElementType.RawSize;
+    tyProcedural:
+      if TProceduralTypeDesc(Self).IsMethodPtr then Result := 16
+      else Result := 8;
   else
     Result := 8;
   end;

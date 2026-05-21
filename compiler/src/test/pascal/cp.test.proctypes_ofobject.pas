@@ -50,11 +50,16 @@ type
     procedure TestCodegen_MethodPtrGlobal_DataIs16Bytes;
     procedure TestCodegen_MethodPtrAssign_CallsMemcpy16;
     procedure TestCodegen_MethodPtrCall_LoadsCodeAndData;
+    procedure TestSemantic_MethodPtr_ByteSizeIs16;
+    procedure TestSemantic_BareProcPtr_ByteSizeIs8;
+    procedure TestCodegen_MethodPtrField_AssignUsesMemcpy16;
+    procedure TestCodegen_MethodPtrField_RecordTotalSizeIncludes16;
 
     { End-to-end }
     procedure TestE2E_MethodPtr_NoArgs;
     procedure TestE2E_MethodPtr_WithArgs;
     procedure TestE2E_MethodPtr_PreservesSelf;
+    procedure TestE2E_MethodPtrField_RoundTrip;
   end;
 
 implementation
@@ -510,6 +515,147 @@ const
 begin
   AssertEquals('Self is bound through the call: instance state visible',
     '99', CompileAndRun(Src));
+end;
+
+procedure TProcTypesOfObjectTests.TestSemantic_MethodPtr_ByteSizeIs16;
+const
+  Src =
+    '''
+        program P;
+        type TM = procedure of object;
+        var G: TM;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    TD := TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType;
+    AssertEquals('IsMethodPtr ByteSize is 16', 16, TD.ByteSize);
+    AssertEquals('IsMethodPtr RawSize is 16',  16, TD.RawSize);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TProcTypesOfObjectTests.TestSemantic_BareProcPtr_ByteSizeIs8;
+const
+  Src =
+    '''
+        program P;
+        type TP = procedure;
+        var G: TP;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    TD := TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType;
+    AssertEquals('bare procedural ByteSize stays 8', 8, TD.ByteSize);
+    AssertEquals('bare procedural RawSize stays 8',  8, TD.RawSize);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TProcTypesOfObjectTests.TestCodegen_MethodPtrField_AssignUsesMemcpy16;
+const
+  Src =
+    '''
+        program P;
+        type
+          TM   = procedure of object;
+          TRec = record
+            Handler: TM;
+          end;
+        var
+          R: TRec;
+          M: TMethod;
+        begin
+          R.Handler := TM(M)
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  { Field assignment must memcpy the full 16-byte TMethod, not store a single
+    pointer to a stack-allocated source block that goes out of scope. }
+  AssertTrue('method-ptr field assignment emits memcpy',
+    Pos('call $memcpy(', IR) > 0);
+  AssertTrue('memcpy length is 16',
+    Pos(', l 16)', IR) > 0);
+end;
+
+procedure TProcTypesOfObjectTests.TestCodegen_MethodPtrField_RecordTotalSizeIncludes16;
+const
+  Src =
+    '''
+        program P;
+        type
+          TM   = procedure of object;
+          TRec = record
+            Handler: TM;
+          end;
+        var R: TRec;
+        begin end.
+        ''';
+var
+  Prog: TProgram;
+  RT:   TRecordTypeDesc;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
+    AssertEquals('record holding a method-ptr field totals 16 bytes',
+      16, RT.TotalSize);
+  finally
+    Prog.Free;
+  end;
+end;
+
+procedure TProcTypesOfObjectTests.TestE2E_MethodPtrField_RoundTrip;
+const
+  Src =
+    '''
+        program P;
+        type
+          TFoo = class(TObject)
+          published
+            procedure SayHi;
+          end;
+          TGreet = procedure of object;
+          THolder = class(TObject)
+            Handler: TGreet;
+          end;
+        procedure TFoo.SayHi;
+        begin WriteLn('field-ok') end;
+        var
+          F: TFoo;
+          H: THolder;
+          M: TMethod;
+          G: TGreet;
+        begin
+          F := TFoo.Create;
+          H := THolder.Create;
+          M.Code := MethodAddress(F, 'SayHi');
+          M.Data := F;
+          H.Handler := TGreet(M);
+          { Read the field into a local and invoke — exercises the field-read
+            path (which must return the field address, not a single loadl). }
+          G := H.Handler;
+          G;
+          H.Free;
+          F.Free
+        end.
+        ''';
+begin
+  AssertEquals('method-ptr stored in a class field survives across statements',
+    'field-ok', CompileAndRun(Src));
 end;
 
 initialization
