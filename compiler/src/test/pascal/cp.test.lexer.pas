@@ -30,6 +30,10 @@ type
     procedure TestLineComment_Skipped;
     procedure TestBlockComment_Skipped;
     procedure TestBlockComment_MultiLine_Skipped;
+    procedure TestBlockComment_UTF8Bytes_Skipped;
+    procedure TestLineComment_UTF8Bytes_Skipped;
+    procedure TestParenStarComment_UTF8Bytes_Skipped;
+    procedure TestBlockComment_UTF8_FollowedByCode;
 
     { Keywords }
     procedure TestKeyword_Program;
@@ -179,6 +183,50 @@ begin
   SetLexer('{ line one' + #10 + '  line two }' + #10 + 'end');
   tok := FLexer.Next;
   AssertEquals('Kind after multiline {}', Ord(tkEnd), Ord(tok.Kind));
+end;
+
+procedure TLexerTests.TestBlockComment_UTF8Bytes_Skipped;
+var
+  tok: TToken;
+begin
+  (* U+00B1 PLUS-MINUS SIGN, U+2264 LESS-THAN-OR-EQUAL, U+1F600 GRINNING FACE.
+    High UTF-8 bytes inside a brace comment must not disturb the token stream. *)
+  SetLexer('{ tolerance: ' + #$C2#$B1 + ' x, ' + #$E2#$89#$A4 + ' y, ' +
+           #$F0#$9F#$98#$80 + ' z } begin');
+  tok := FLexer.Next;
+  AssertEquals('Kind after {} with UTF-8', Ord(tkBegin), Ord(tok.Kind));
+end;
+
+procedure TLexerTests.TestLineComment_UTF8Bytes_Skipped;
+var
+  tok: TToken;
+begin
+  SetLexer('// note: ' + #$E2#$86#$92 + ' arrow, ' + #$F0#$9F#$98#$80 + ' emoji' +
+           #10 + 'end');
+  tok := FLexer.Next;
+  AssertEquals('Kind after // with UTF-8', Ord(tkEnd), Ord(tok.Kind));
+end;
+
+procedure TLexerTests.TestParenStarComment_UTF8Bytes_Skipped;
+var
+  tok: TToken;
+begin
+  SetLexer('(* note ' + #$C2#$B1 + ' epsilon ' + #$E2#$89#$A4 + ' bound *) end');
+  tok := FLexer.Next;
+  AssertEquals('Kind after (* *) with UTF-8', Ord(tkEnd), Ord(tok.Kind));
+end;
+
+procedure TLexerTests.TestBlockComment_UTF8_FollowedByCode;
+var
+  tok: TToken;
+begin
+  { Regression: high UTF-8 continuation bytes used to leak into the next
+    token boundary, causing spurious identifiers after the comment closed.
+    Verify the identifier following the comment lexes cleanly. }
+  SetLexer('{ ' + #$C2#$B1 + ' }' + #10 + 'foo');
+  tok := FLexer.Next;
+  AssertEquals('Kind after UTF-8 comment', Ord(tkIdent), Ord(tok.Kind));
+  AssertEquals('Value after UTF-8 comment', 'foo', tok.Value);
 end;
 
 { Keywords }
