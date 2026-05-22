@@ -598,7 +598,7 @@ begin
   case AType.Kind of
     tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum: Result := 'w';
     tySet: if TSetTypeDesc(AType).BitCount <= 32 then Result := 'w' else Result := 'l';
-    tyInt64, tyString:                      Result := 'l';
+    tyInt64, tyUInt64, tyString:            Result := 'l';
     tyRecord:                               Result := 'l';  { pointer to aggregate }
     tyClass:                                Result := 'l';  { heap pointer }
     tyPointer:                              Result := 'l';  { pointer (typed or untyped) }
@@ -774,7 +774,7 @@ begin
     tyPointer, tyPChar are promotion-aware (audited 2026-05-16). }
   Result := AKind in [
     tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum,
-    tyInt64,
+    tyInt64, tyUInt64,
     tyDouble, tySingle,
     tySet,
     tyPointer, tyPChar
@@ -785,7 +785,7 @@ function TCodeGenQBE.PromotedQType(AKind: TTypeKind; AType: TTypeDesc): string;
 begin
   case AKind of
     tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum: Result := 'w';
-    tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: Result := 'l';
+    tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: Result := 'l';
     tyDouble: Result := 'd';
     tySingle: Result := 's';
     tySet:
@@ -1472,7 +1472,7 @@ begin
             EmitLine(Format('  storew 0, %%_var_%s', [VarName]));
           end;
 
-        tyInt64:
+        tyInt64, tyUInt64:
           begin
             EmitLine(Format('  %%_var_%s =l alloc8 1', [VarName]));
             EmitLine(Format('  storel 0, %%_var_%s', [VarName]));
@@ -1617,7 +1617,7 @@ begin
             EmitLine(Format('export data $%s = { w 0 }', [VarName]))
           else
             EmitLine(Format('export data $%s = { l 0 }', [VarName]));
-        tyInt64:
+        tyInt64, tyUInt64:
           EmitLine(Format('export data $%s = { l 0 }', [VarName]));
         tyString, tyClass, tyPointer, tyPChar, tyMetaClass:
           EmitLine(Format('export data $%s = { l 0 }', [VarName]));
@@ -4549,7 +4549,7 @@ begin
           EmitLine(Format('  storew %%_par_%s, %%_var_%s',
             [Par.ParamName, Par.ParamName]));
         end;
-      tyInt64, tyString, tyClass, tyMetaClass:
+      tyInt64, tyUInt64, tyString, tyClass, tyMetaClass:
         begin
           EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
           EmitLine(Format('  storel %%_par_%s, %%_var_%s',
@@ -5736,7 +5736,7 @@ begin
       ArgTemp  := TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name;
       ArgTemp2 := AllocTemp;
       if (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
-         (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyClass, tyPointer]) then
+         (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyUInt64, tyClass, tyPointer]) then
       begin
         EmitLine(Format('  %s =l copy %%_var_%s', [ArgTemp2, ArgTemp]));
         if ACall.Args.Count >= 2 then
@@ -5771,7 +5771,7 @@ begin
       ArgTemp  := EmitLValueAddr(TASTExpr(ACall.Args.Items[0]));
       ArgTemp2 := AllocTemp;
       if (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
-         (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyClass, tyPointer]) then
+         (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyUInt64, tyClass, tyPointer]) then
       begin
         EmitLine(Format('  %s =l loadl %s', [ArgTemp2, ArgTemp]));
         if ACall.Args.Count >= 2 then
@@ -6048,6 +6048,9 @@ begin
     ArgTemp  := EmitExpr(ArgExpr);
     if IsString then
       EmitLine(Format('  call $_SysWriteStr(w %s, l %s)', [FdLit, ArgTemp]))
+    else if (ArgExpr.ResolvedType <> nil) and
+            (ArgExpr.ResolvedType.Kind = tyUInt64) then
+      EmitLine(Format('  call $_SysWriteUInt64(w %s, l %s)', [FdLit, ArgTemp]))
     else
     begin
       IsInt64 := (ArgExpr.ResolvedType <> nil) and
@@ -6341,10 +6344,18 @@ begin
 
       if SameText(FC.Name,'IntToStr') then
       begin
-        { Route to _Int64ToStr when the argument is Int64-typed, matching FPC's
-          overloaded IntToStr resolution for Int64 values. }
+        { Route to _Int64ToStr / _UInt64ToStr / _IntToStr based on the
+          argument's resolved type.  Matches FPC's overloaded
+          IntToStr(Int64) / IntToStr(QWord) / IntToStr(Integer). }
         if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
-           (QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType) = 'l') then
+           (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt64) then
+        begin
+          L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+          T := AllocTemp;
+          EmitLine(Format('  %s =l call $_UInt64ToStr(l %s)', [T, L]));
+        end
+        else if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+                (QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType) = 'l') then
         begin
           L := EmitExpr(TASTExpr(FC.Args.Items[0]));
           T := AllocTemp;
@@ -6365,6 +6376,15 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp;
         EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', [T, L]));
+        Result := T;
+        Exit;
+      end;
+
+      if SameText(FC.Name,'UInt64ToStr') then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        T := AllocTemp;
+        EmitLine(Format('  %s =l call $_UInt64ToStr(l %s)', [T, L]));
         Result := T;
         Exit;
       end;
@@ -6805,13 +6825,13 @@ begin
             begin
               ArgTemp := EmitExpr(TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]));
               IsIntArg := TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]).ResolvedType.Kind in
-                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum];
+                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyUInt64, tyEnum];
             end
             else
             begin
               ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I + 1]));
               IsIntArg := TASTExpr(FC.Args.Items[I + 1]).ResolvedType.Kind in
-                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyEnum];
+                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyUInt64, tyEnum];
             end;
             FmtSlotTemp := AllocTemp;
             EmitLine(Format('  %s =l add %s, %d', [FmtSlotTemp, FmtArrTemp, I * 16]));
@@ -7222,10 +7242,16 @@ begin
           EmitLine(Format('  %s =w copy %s', [T, ArgTemp]))
         else
         begin
-          { Widening from w to l: sign-extend rather than copy (QBE rejects l copy w) }
+          { Widening from w to l: zero-extend for unsigned targets, sign-
+            extend otherwise (QBE rejects 'l copy w'). }
           if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
              (QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType) = 'w') then
-            EmitLine(Format('  %s =l extsw %s', [T, ArgTemp]))
+          begin
+            if FC.ResolvedType.Kind = tyUInt64 then
+              EmitLine(Format('  %s =l extuw %s', [T, ArgTemp]))
+            else
+              EmitLine(Format('  %s =l extsw %s', [T, ArgTemp]));
+          end
           else
             EmitLine(Format('  %s =l copy %s', [T, ArgTemp]));
         end;
@@ -7639,7 +7665,9 @@ begin
   if AExpr is TIntLiteral then
   begin
     T := AllocTemp;
-    if (TIntLiteral(AExpr).Value < -2147483648) or (TIntLiteral(AExpr).Value > 2147483647) then
+    if TIntLiteral(AExpr).IsUInt64 or
+       (TIntLiteral(AExpr).Value < -2147483648) or
+       (TIntLiteral(AExpr).Value > 2147483647) then
       EmitLine(Format('  %s =l copy %s', [T, IntToStr(TIntLiteral(AExpr).Value)]))
     else
       EmitLine(Format('  %s =w copy %s', [T, IntToStr(TIntLiteral(AExpr).Value)]));
@@ -8413,19 +8441,28 @@ begin
       L := EmitExpr(BinExpr.Left);
       R := EmitExpr(BinExpr.Right);
       T := AllocTemp;
-      if BinExpr.ResolvedType.Kind = tyInt64 then
+      if BinExpr.ResolvedType.Kind in [tyInt64, tyUInt64] then
       begin
-        { Extend w operands to l before the l-typed instruction. }
-        if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+        { Extend w operands to l before the l-typed instruction.
+          Sign-extend for tyInt64, zero-extend for tyUInt64. }
+        if (BinExpr.Left.ResolvedType = nil) or
+           not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp;
-          EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+          if BinExpr.ResolvedType.Kind = tyUInt64 then
+            EmitLine(Format('  %s =l extuw %s', [ArgTemp, L]))
+          else
+            EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
           L := ArgTemp;
         end;
-        if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+        if (BinExpr.Right.ResolvedType = nil) or
+           not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp;
-          EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+          if BinExpr.ResolvedType.Kind = tyUInt64 then
+            EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
+          else
+            EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
           R := ArgTemp;
         end;
         if BinExpr.Op = boAnd then
@@ -8583,68 +8620,121 @@ begin
       end;
       EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     end
-    { Int64 comparison: result is Boolean (w) but operands must be compared as l }
+    { Int64 / UInt64 comparison: result is Boolean (w) but operands must
+      be compared as l.  Unsigned comparison instructions are used when
+      either operand is tyUInt64. }
     else if (BinExpr.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
             (((BinExpr.Left.ResolvedType <> nil) and
-              (BinExpr.Left.ResolvedType.Kind = tyInt64)) or
+              (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64])) or
              ((BinExpr.Right.ResolvedType <> nil) and
-              (BinExpr.Right.ResolvedType.Kind = tyInt64))) then
+              (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]))) then
     begin
-      if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+      ArgTemp := '';  { silence "uninitialised" hint }
+      if (BinExpr.Left.ResolvedType = nil) or
+         not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp;
         EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
         L := ArgTemp;
       end;
-      if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+      if (BinExpr.Right.ResolvedType = nil) or
+         not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp;
         EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
         R := ArgTemp;
       end;
-      case BinExpr.Op of
-        boEQ: Op := 'ceql';
-        boNE: Op := 'cnel';
-        boLT: Op := 'csltl';
-        boGT: Op := 'csgtl';
-        boLE: Op := 'cslel';
-        boGE: Op := 'csgel';
+      if ((BinExpr.Left.ResolvedType <> nil) and
+          (BinExpr.Left.ResolvedType.Kind = tyUInt64)) or
+         ((BinExpr.Right.ResolvedType <> nil) and
+          (BinExpr.Right.ResolvedType.Kind = tyUInt64)) then
+      begin
+        case BinExpr.Op of
+          boEQ: Op := 'ceql';
+          boNE: Op := 'cnel';
+          boLT: Op := 'cultl';
+          boGT: Op := 'cugtl';
+          boLE: Op := 'culel';
+          boGE: Op := 'cugel';
+        end;
+      end
+      else
+      begin
+        case BinExpr.Op of
+          boEQ: Op := 'ceql';
+          boNE: Op := 'cnel';
+          boLT: Op := 'csltl';
+          boGT: Op := 'csgtl';
+          boLE: Op := 'cslel';
+          boGE: Op := 'csgel';
+        end;
       end;
       EmitLine(Format('  %s =w %s %s, %s', [T, Op, L, R]));
     end
-    // Int64 arithmetic: use l-typed instructions; extend w operands to l as needed.
-    else if (BinExpr.ResolvedType <> nil) and (BinExpr.ResolvedType.Kind = tyInt64) then
+    // Int64 / UInt64 arithmetic: l-typed instructions; extend w operands to
+    // l as needed.  Signed types sign-extend (extsw) and use signed div/rem;
+    // unsigned types zero-extend (extuw) and use udiv/urem.
+    else if (BinExpr.ResolvedType <> nil) and
+            (BinExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
     begin
-      if (BinExpr.Left.ResolvedType = nil) or (BinExpr.Left.ResolvedType.Kind <> tyInt64) then
+      if (BinExpr.Left.ResolvedType = nil) or
+         not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp;
-        EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+        if BinExpr.ResolvedType.Kind = tyUInt64 then
+          EmitLine(Format('  %s =l extuw %s', [ArgTemp, L]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
         L := ArgTemp;
       end;
       // For shift ops, the shift count stays w (QBE accepts w shift count for l shifts).
       // For arithmetic ops, extend the right operand to l too.
       if not (BinExpr.Op in [boShl, boShr]) then
       begin
-        if (BinExpr.Right.ResolvedType = nil) or (BinExpr.Right.ResolvedType.Kind <> tyInt64) then
+        if (BinExpr.Right.ResolvedType = nil) or
+           not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp;
-          EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+          if BinExpr.ResolvedType.Kind = tyUInt64 then
+            EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
+          else
+            EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
           R := ArgTemp;
         end;
       end;
-      case BinExpr.Op of
-        boAdd: Op := 'add';
-        boSub: Op := 'sub';
-        boMul: Op := 'mul';
-        boDiv: Op := 'div';
-        boMod: Op := 'rem';
-        boAnd: Op := 'and';
-        boOr:  Op := 'or';
-        boXor: Op := 'xor';
-        boShl: Op := 'shl';
-        boShr: Op := 'shr';
+      if BinExpr.ResolvedType.Kind = tyUInt64 then
+      begin
+        case BinExpr.Op of
+          boAdd: Op := 'add';
+          boSub: Op := 'sub';
+          boMul: Op := 'mul';
+          boDiv: Op := 'udiv';
+          boMod: Op := 'urem';
+          boAnd: Op := 'and';
+          boOr:  Op := 'or';
+          boXor: Op := 'xor';
+          boShl: Op := 'shl';
+          boShr: Op := 'shr';
+        else
+          Op := 'add';
+        end;
+      end
       else
-        Op := 'add';
+      begin
+        case BinExpr.Op of
+          boAdd: Op := 'add';
+          boSub: Op := 'sub';
+          boMul: Op := 'mul';
+          boDiv: Op := 'div';
+          boMod: Op := 'rem';
+          boAnd: Op := 'and';
+          boOr:  Op := 'or';
+          boXor: Op := 'xor';
+          boShl: Op := 'shl';
+          boShr: Op := 'shr';
+        else
+          Op := 'add';
+        end;
       end;
       EmitLine(Format('  %s =l %s %s, %s', [T, Op, L, R]));
     end
@@ -9601,7 +9691,7 @@ begin
     case SAT.ElementType.Kind of
       tyByte, tyBoolean: QLoad := 'loadub';
       tyInteger, tyUInt32, tyEnum: QLoad := 'loadw';
-      tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: QLoad := 'loadl';
+      tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: QLoad := 'loadl';
     else
       QLoad := 'loadl';
     end;
@@ -9640,7 +9730,7 @@ begin
     case TDynArrayTypeDesc(AExpr.StrExpr.ResolvedType).ElementType.Kind of
       tyByte, tyBoolean:   QLoad := 'loadub';
       tyInteger, tyUInt32, tyEnum: QLoad := 'loadw';
-      tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: QLoad := 'loadl';
+      tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: QLoad := 'loadl';
     else
       QLoad := 'loadl';
     end;
@@ -9880,13 +9970,17 @@ begin
     else
       begin
         StoreInstr := 'storel';
-        { Sign-extend w-typed value to l if needed (e.g. integer literals into Int64 slots) }
-        if (ElemVal <> '') and (ElemType.Kind = tyInt64) and
+        { Extend w-typed value to l if needed (e.g. integer literals into
+          Int64/UInt64 slots).  Signed for tyInt64, unsigned for tyUInt64. }
+        if (ElemVal <> '') and (ElemType.Kind in [tyInt64, tyUInt64]) and
            (AStmt.ValueExpr.ResolvedType <> nil) and
-           (AStmt.ValueExpr.ResolvedType.Kind <> tyInt64) then
+           not (AStmt.ValueExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           Adj := AllocTemp;
-          EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
+          if ElemType.Kind = tyUInt64 then
+            EmitLine(Format('  %s =l extuw %s', [Adj, ElemVal]))
+          else
+            EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
           ElemVal := Adj;
         end;
       end;
@@ -9942,7 +10036,7 @@ begin
   case ElemType.Kind of
     tyByte, tyBoolean: StoreInstr := 'storeb';
     tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
-    tyInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: StoreInstr := 'storel';
+    tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass: StoreInstr := 'storel';
   else
     StoreInstr := 'storew';
   end;
@@ -10019,7 +10113,7 @@ begin
   TotalBytes := AExpr.Elements.Count * ElemSize;
   if TotalBytes < 1 then TotalBytes := 1;
   case ElemType.Kind of
-    tyString, tyClass, tyPointer, tyPChar, tyInt64, tyMetaClass:
+    tyString, tyClass, tyPointer, tyPChar, tyInt64, tyUInt64, tyMetaClass:
     begin
       AllocInstr := 'alloc8';
       StoreInstr := 'storel';

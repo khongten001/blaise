@@ -22,6 +22,7 @@ type
     tyInteger,    { Int32  — QBE 'w' }
     tyInt64,      { Int64  — QBE 'l' }
     tyUInt32,     { UInt32 — QBE 'w' unsigned }
+    tyUInt64,     { UInt64 / QWord — QBE 'l' unsigned }
     tyByte,       { Byte   — QBE 'b' }
     tyBoolean,    { Boolean — stored as byte, 0/1 only }
     tyString,     { ARC-managed UTF-8 string }
@@ -351,6 +352,7 @@ type
     FTypeInteger: TTypeDesc;
     FTypeInt64:   TTypeDesc;
     FTypeUInt32:  TTypeDesc;
+    FTypeUInt64:  TTypeDesc;
     FTypeByte:    TTypeDesc;
     FTypeBoolean: TTypeDesc;
     FTypeString:  TTypeDesc;
@@ -421,6 +423,7 @@ type
     property TypeInteger: TTypeDesc read FTypeInteger;
     property TypeInt64:   TTypeDesc read FTypeInt64;
     property TypeUInt32:  TTypeDesc read FTypeUInt32;
+    property TypeUInt64:  TTypeDesc read FTypeUInt64;
     property TypeByte:    TTypeDesc read FTypeByte;
     property TypeBoolean: TTypeDesc read FTypeBoolean;
     property TypeString:  TTypeDesc read FTypeString;
@@ -440,7 +443,7 @@ implementation
 
 function TTypeDesc.IsNumeric: Boolean;
 begin
-  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyEnum, tyDouble, tySingle];
+  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyUInt64, tyByte, tyEnum, tyDouble, tySingle];
 end;
 
 function TTypeDesc.IsFloat: Boolean;
@@ -455,7 +458,7 @@ end;
 
 function TTypeDesc.IsOrdinal: Boolean;
 begin
-  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean, tyEnum];
+  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyUInt64, tyByte, tyBoolean, tyEnum];
 end;
 
 function TTypeDesc.IsRecord: Boolean;
@@ -468,7 +471,7 @@ begin
   case Kind of
     tyByte, tyBoolean: Result := 1;
     tyInteger, tyUInt32, tyEnum: Result := 4;
-    tyInt64, tyString, tyClass, tyPointer, tyNil, tyDouble: Result := 8;
+    tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyNil, tyDouble: Result := 8;
     tySingle: Result := 4;
     tyRecord: Result := TRecordTypeDesc(Self).TotalSize;
     tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
@@ -488,7 +491,7 @@ function TTypeDesc.ByteSize: Integer;
 begin
   case Kind of
     tyInteger, tyUInt32, tyEnum: Result := 4;
-    tyInt64:             Result := 8;
+    tyInt64, tyUInt64:   Result := 8;
     tyByte, tyBoolean:   Result := 1;  { true byte; stack slots are alloc4-padded by codegen }
     tyString:            Result := 8;  { pointer size on 64-bit }
     tyRecord:            Result := TRecordTypeDesc(Self).TotalSize;
@@ -513,7 +516,7 @@ begin
   case Kind of
     tyInteger, tyUInt32, tyEnum: Result := 4;
     tyByte, tyBoolean:   Result := 1;  { natural alignment }
-    tyInt64, tyString:   Result := 8;
+    tyInt64, tyUInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
     tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
     tyStaticArray: Result := TStaticArrayTypeDesc(Self).ElementType.AllocAlign;
@@ -1205,6 +1208,7 @@ begin
   FTypeInteger := NewType(tyInteger, 'Integer');
   FTypeInt64   := NewType(tyInt64,   'Int64');
   FTypeUInt32  := NewType(tyUInt32,  'UInt32');
+  FTypeUInt64  := NewType(tyUInt64,  'UInt64');
   FTypeByte    := NewType(tyByte,    'Byte');
   FTypeBoolean := NewType(tyBoolean, 'Boolean');
   FTypeString  := NewType(tyString,  'string');
@@ -1220,7 +1224,9 @@ begin
   Define(TSymbol.Create('Int64',   skType, FTypeInt64));
   Define(TSymbol.Create('UInt32',  skType, FTypeUInt32));
   Define(TSymbol.Create('Cardinal', skType, FTypeUInt32));  { FPC/Delphi alias }
-  Define(TSymbol.Create('PtrUInt', skType, FTypeInt64));    { FPC: pointer-sized unsigned = QWord on 64-bit }
+  Define(TSymbol.Create('UInt64',  skType, FTypeUInt64));
+  Define(TSymbol.Create('QWord',   skType, FTypeUInt64));   { FPC alias }
+  Define(TSymbol.Create('PtrUInt', skType, FTypeUInt64));   { pointer-sized unsigned on 64-bit }
   Define(TSymbol.Create('Byte',    skType, FTypeByte));
   Define(TSymbol.Create('Boolean', skType, FTypeBoolean));
   Define(TSymbol.Create('string',  skType, FTypeString));

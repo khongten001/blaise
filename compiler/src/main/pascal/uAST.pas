@@ -33,7 +33,10 @@ type
 
   TIntLiteral = class(TASTExpr)
   public
-    Value: Int64;
+    Value:    Int64;
+    IsUInt64: Boolean;  { True when the source literal exceeds MaxInt64 and
+                          must be interpreted as an unsigned 64-bit value.
+                          Set by the parser; Value carries the bit pattern. }
   end;
 
   TFloatLiteral = class(TASTExpr)

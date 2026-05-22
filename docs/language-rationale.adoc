@@ -480,15 +480,17 @@ onwards without an explicit type annotation.
 
 ==== Decision
 
-Blaise defines three integer types with fixed, platform-independent widths:
+Blaise defines five integer types with fixed, platform-independent widths:
 
-[cols="1,1,2", options="header"]
+[cols="1,1,2,2", options="header"]
 |===
-| Type | Width | QBE IR type
+| Type | Width | QBE IR type | Aliases
 
-| `Integer` | 32-bit signed | `w`
-| `Int64` | 64-bit signed | `l`
-| `Byte` | 8-bit unsigned (stored as 32-bit in registers) | `w`
+| `Integer` | 32-bit signed   | `w` |
+| `Int64`   | 64-bit signed   | `l` |
+| `UInt32`  | 32-bit unsigned | `w` | `Cardinal`
+| `UInt64`  | 64-bit unsigned | `l` | `QWord`, `PtrUInt`
+| `Byte`    | 8-bit unsigned  | `w` (1 byte in storage) |
 |===
 
 `Integer` is 32-bit on all platforms.  This matches FPC's behaviour and
@@ -498,9 +500,38 @@ macos-arm64) without requiring a platform-sized integer type.
 `Int64` is 64-bit signed on all platforms.  It is used wherever values may
 exceed the 32-bit range.
 
+`UInt32` and `UInt64` are the unsigned counterparts of `Integer` and
+`Int64`.  `Cardinal` is provided as an alias for `UInt32` and `QWord` as
+an alias for `UInt64` so code ported from either FPC or Delphi compiles
+unchanged.  `PtrUInt` is the pointer-sized unsigned integer; on 64-bit
+targets it is identical to `UInt64`.
+
 `Byte` is 8-bit unsigned.  In registers and temporaries it is widened to
-`w` (32-bit QBE word).  Array element allocation uses 1 byte per `Byte`
-element, consistent with FPC.
+`w` (32-bit QBE word).  Field and array element storage uses 1 byte per
+`Byte` element, consistent with FPC.
+
+==== Int64 ↔ UInt64 conversion is explicit
+
+`Int64` and `UInt64` are not implicitly compatible — mixing them in an
+arithmetic or comparison expression is a type error.  An explicit cast
+(`UInt64(x)` or `Int64(x)`) is required, and the cast reinterprets the
+bit pattern rather than performing a numeric conversion.  This matches
+FPC's strict-mode behaviour and avoids the silent footgun where a
+negative `Int64` becomes a huge `UInt64` (or vice versa) without
+warning.  All narrower integer types (`Integer`, `UInt32`, `Byte`) widen
+implicitly into both `Int64` and `UInt64`.
+
+==== Integer literal typing
+
+Untyped integer literals are typed by magnitude:
+
+* `[MinInt32..MaxInt32]` → `Integer`
+* outside Int32 range but in `[MinInt64..MaxInt64]` → `Int64`
+* in `(MaxInt64..MaxUInt64]` → `UInt64`
+
+The bit pattern is preserved in every case; the literal type only
+selects which signed/unsigned interpretation the surrounding expression
+sees.
 
 ==== Built-in constant
 
@@ -525,10 +556,11 @@ for any realistic string length.
 |===
 | Built-in | Signature | Notes
 
-| `IntToStr` | `(Integer): string` | 32-bit integer to decimal string; when the argument resolves to `Int64` the codegen automatically routes the call to `_Int64ToStr`, matching FPC's overloaded resolution
-| `Int64ToStr` | `(Int64): string` | 64-bit integer to decimal string
+| `IntToStr` | `(Integer): string` | 32-bit integer to decimal string; when the argument resolves to `Int64` the codegen automatically routes the call to `_Int64ToStr`, and when it resolves to `UInt64` / `QWord` to `_UInt64ToStr`, matching FPC's overloaded resolution
+| `Int64ToStr` | `(Int64): string` | 64-bit signed integer to decimal string
+| `UInt64ToStr` | `(UInt64): string` | 64-bit unsigned integer to decimal string
 | `StrToInt` | `(string): Integer` | Decimal string to 32-bit integer; truncates silently on overflow
-| `StrToInt64` | `(string): Int64` | Decimal string to 64-bit integer
+| `StrToInt64` | `(string): Int64` | Decimal string to 64-bit signed integer
 |===
 
 ==== Alternatives rejected
@@ -538,10 +570,11 @@ for any realistic string length.
   interoperating with existing 32-bit FPC code or C functions that expect
   `int32_t`.  Explicit `Int64` covers the cases that genuinely need 64 bits.
 
-* *`LongInt`, `SmallInt`, `Word`, `Cardinal` aliases* — deferred.  These
-  FPC/Delphi aliases map to fixed widths and could be added as type aliases
-  in a future release.  They are not present in the current implementation
-  because the compiler's own source uses only `Integer`, `Int64`, and `Byte`.
+* *`LongInt`, `SmallInt`, `Word` aliases* — deferred.  These FPC/Delphi
+  aliases map to fixed widths (32-bit, 16-bit, 16-bit unsigned) and
+  could be added as type aliases in a future release alongside true
+  `SmallInt` / `Word` types.  `Cardinal` is provided as an alias for
+  `UInt32` since the unsigned-32 type is already present.
 
 ---
 
@@ -785,9 +818,10 @@ Blaise supports fixed-size, stack-allocated arrays declared as
   offset 0.
 * `sizeof(T)` for array element sizing uses the _raw_ byte footprint of the
   element type: 1 for `Byte`/`Boolean`, 4 for `Integer`/`UInt32`, 8 for
-  `Int64`/`String`/pointer types.  This differs from the standalone-variable
-  allocation size (which pads `Byte` to 4 for alignment), because array
-  elements are packed consecutively.
+  `Int64`/`UInt64`/`String`/pointer types.  This differs from the
+  standalone-variable allocation size on the stack, which always allocates
+  at least 4 bytes (QBE's smallest `alloc4`), because array elements are
+  packed consecutively.
 * Write access `A[I] := val` is parsed as a `TStaticSubscriptAssign`
   statement node distinct from `TAssignment`, because the LHS is not a bare
   identifier.
@@ -2579,11 +2613,10 @@ formatting and a substantial fraction of real-world timezone needs.
 
 `TInstant` and `TDuration` use signed `Int64` nanoseconds — large enough to
 cover ±292 years from epoch with nanosecond precision.  `TDate` / `TTime` /
-`TDateTime` use `Integer` per sub-field.  Blaise does not yet implement
-`packed` records, so each `Byte`-sized field would still consume 4 bytes
-due to alignment padding; using `Integer` everywhere is simpler and the
-record size is identical.  When `packed` records arrive, the field types
-can be tightened without changing the API.
+`TDateTime` use `Integer` per sub-field.  `Byte`-sized fields now pack at
+their natural 1-byte stride, but the existing public API is locked in on
+`Integer` for the per-field accessors, so changing the storage type would
+break call sites for no observable benefit.
 
 === Alternatives Rejected
 

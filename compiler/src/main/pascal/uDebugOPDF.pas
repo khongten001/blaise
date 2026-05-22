@@ -298,7 +298,7 @@ begin
   CName := CanonicalName(AType);
   if HasBeenEmitted(CName) then Exit;
   case AType.Kind of
-    tyInteger, tyInt64, tyUInt32, tyByte, tyBoolean:
+    tyInteger, tyInt64, tyUInt32, tyUInt64, tyByte, tyBoolean:
       EmitPrimitive(AType);
     tyString:
       EmitUtf8Str;

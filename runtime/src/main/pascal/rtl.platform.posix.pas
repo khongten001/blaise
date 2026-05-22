@@ -65,6 +65,7 @@ type
     procedure SysWriteStr(Fd: Integer; S: Pointer); override;
     procedure SysWriteInt(Fd: Integer; N: Integer); override;
     procedure SysWriteInt64(Fd: Integer; N: Int64); override;
+    procedure SysWriteUInt64(Fd: Integer; N: UInt64); override;
     procedure SysWriteNewline(Fd: Integer); override;
 
     { File-descriptor primitives }
@@ -155,6 +156,7 @@ procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
 { String ARC }
 function  _IntToStr(N: Integer): Pointer;   external name '_IntToStr';
 function  _Int64ToStr(N: Int64): Pointer;   external name '_Int64ToStr';
+function  _UInt64ToStr(N: UInt64): Pointer; external name '_UInt64ToStr';
 procedure _StringAddRef(Ptr: Pointer);      external name '_StringAddRef';
 procedure _StringRelease(Ptr: Pointer);     external name '_StringRelease';
 
@@ -234,6 +236,7 @@ function  _Exec(Cmd: Pointer): Integer;
 procedure _SysWriteStr(Fd: Integer; S: Pointer);
 procedure _SysWriteInt(Fd: Integer; N: Integer);
 procedure _SysWriteInt64(Fd: Integer; N: Int64);
+procedure _SysWriteUInt64(Fd: Integer; N: UInt64);
 procedure _SysWriteNewline(Fd: Integer);
 
 { File-descriptor primitives }
@@ -751,6 +754,20 @@ begin
   _StringRelease(S);
 end;
 
+procedure TRtlPlatformPosix.SysWriteUInt64(Fd: Integer; N: UInt64);
+var
+  S: Pointer;
+  LPtr: ^Integer;
+  Len: Integer;
+begin
+  S := _UInt64ToStr(N);
+  _StringAddRef(S);
+  LPtr := S - 8;
+  Len := LPtr^;
+  WriteAllToFd(Fd, PChar(S), Len);
+  _StringRelease(S);
+end;
+
 { ================================================================== }
 { TRtlPlatformPosix — File-descriptor primitives                      }
 { ================================================================== }
@@ -1210,6 +1227,11 @@ end;
 procedure _SysWriteInt64(Fd: Integer; N: Int64);
 begin
   GRtlPlatform.SysWriteInt64(Fd, N);
+end;
+
+procedure _SysWriteUInt64(Fd: Integer; N: UInt64);
+begin
+  GRtlPlatform.SysWriteUInt64(Fd, N);
 end;
 
 procedure _SysWriteNewline(Fd: Integer);

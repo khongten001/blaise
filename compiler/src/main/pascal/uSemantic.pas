@@ -330,8 +330,8 @@ begin
 
   if SameText(AConstraint, 'record') then
   begin
-    if not (ArgType.Kind in [tyRecord, tyInteger, tyInt64, tyUInt32, tyByte,
-                             tyBoolean, tyString, tyPointer]) then
+    if not (ArgType.Kind in [tyRecord, tyInteger, tyInt64, tyUInt32, tyUInt64,
+                             tyByte, tyBoolean, tyString, tyPointer]) then
       raise ESemanticError.Create(Format(
         'Type ''%s'' does not satisfy constraint ''%s: record'' in %s',
         [AArgName, AParamName, AContext]));
@@ -441,11 +441,18 @@ begin
   if (AActual.Kind  = tyEnum) and AExpected.IsNumeric then Exit;
   { Numeric widening: allow within the integer family, within the float family
     (Single ↔ Double), and integer → float (implicit widening, same as
-    Delphi/FPC).  Float → integer still requires explicit Trunc/Round. }
+    Delphi/FPC).  Float → integer still requires explicit Trunc/Round.
+    Exception: Int64 ↔ UInt64 requires an explicit cast since the same
+    bit pattern means different values across the sign boundary. }
   if AExpected.IsFloat and AActual.IsFloat then Exit;
   if AExpected.IsFloat and AActual.IsNumeric and (not AActual.IsFloat) then Exit;
   if AExpected.IsNumeric and AActual.IsNumeric
-     and (not AExpected.IsFloat) and (not AActual.IsFloat) then Exit;
+     and (not AExpected.IsFloat) and (not AActual.IsFloat) then
+  begin
+    if not (((AExpected.Kind = tyInt64)  and (AActual.Kind = tyUInt64)) or
+            ((AExpected.Kind = tyUInt64) and (AActual.Kind = tyInt64))) then
+      Exit;
+  end;
   { subtype assignment: TDerived → TBase is allowed }
   if IsSubtypeOf(AActual, AExpected) then
     Exit;
@@ -3496,7 +3503,7 @@ begin
   begin
     K := ADecl.ResolvedReturnType.Kind;
     if not (K in [tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum,
-                  tyInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
+                  tyInt64, tyUInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
       Exit;
   end;
 
@@ -3508,7 +3515,7 @@ begin
     if Par.ResolvedType = nil then Exit;
     K := Par.ResolvedType.Kind;
     if not (K in [tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum,
-                  tyInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
+                  tyInt64, tyUInt64, tyDouble, tySingle, tyPointer, tyPChar]) then
       Exit;
   end;
 
@@ -4559,6 +4566,7 @@ begin
     tyInteger:  Base := 'i';
     tyInt64:    Base := 'l';
     tyUInt32:   Base := 'u';
+    tyUInt64:   Base := 'Q';
     tyByte:     Base := 'y';
     tyBoolean:  Base := 'b';
     tyDouble:   Base := 'd';
@@ -4762,7 +4770,7 @@ begin
     when both are candidates. }
   if (AArgExpr is TIntLiteral) and AParam.IsNumeric then
   begin
-    if AParam.Kind in [tyInteger, tyInt64, tyUInt32, tyByte] then
+    if AParam.Kind in [tyInteger, tyInt64, tyUInt32, tyUInt64, tyByte] then
       Result := 2
     else
       Result := 1;  { Double, Single — widening }
@@ -5512,6 +5520,16 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Int64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := FTable.TypeString;
+    AExpr.ResolvedType := Result;
+    Exit;
+  end;
+
+  if SameText(AExpr.Name, 'UInt64ToStr') then
+  begin
+    if AExpr.Args.Count <> 1 then
+      SemanticError('UInt64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
     AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
@@ -6343,7 +6361,10 @@ begin
   if AExpr is TNilLiteral then
     Result := FTable.TypeNil
   else if AExpr is TIntLiteral then
-    if (TIntLiteral(AExpr).Value < -2147483648) or (TIntLiteral(AExpr).Value > 2147483647) then
+    if TIntLiteral(AExpr).IsUInt64 then
+      Result := FTable.TypeUInt64
+    else if (TIntLiteral(AExpr).Value < -2147483648) or
+            (TIntLiteral(AExpr).Value > 2147483647) then
       Result := FTable.TypeInt64
     else
       Result := FTable.TypeInteger
@@ -7020,7 +7041,15 @@ begin
     { Bitwise or/and for integer types }
     if LType.IsNumeric and RType.IsNumeric then
     begin
-      if (LType.Kind = tyInt64) or (RType.Kind = tyInt64) then
+      if ((LType.Kind = tyInt64) and (RType.Kind = tyUInt64)) or
+         ((LType.Kind = tyUInt64) and (RType.Kind = tyInt64)) then
+        SemanticError(
+          Format('Cannot mix signed Int64 and UInt64 in ''%s'' '
+                 + 'without an explicit cast', [BinaryOpName(ABin.Op)]),
+          ABin.Line, ABin.Col);
+      if (LType.Kind = tyUInt64) or (RType.Kind = tyUInt64) then
+        Result := FTable.TypeUInt64
+      else if (LType.Kind = tyInt64) or (RType.Kind = tyInt64) then
         Result := FTable.TypeInt64
       else
         Result := FTable.TypeInteger;
@@ -7143,10 +7172,17 @@ begin
     else
     begin
       CheckTypesMatch(LType, RType, 'binary expression', ABin.Line, ABin.Col);
-      { Int64 wins over narrower integer types — promotes the result so codegen
-        emits l-typed instructions (avoids truncating 64-bit values).  Without
-        this, "0 - X" where X is Int64 silently truncates to 32 bits. }
-      if (LType.Kind = tyInt64) or (RType.Kind = tyInt64) then
+      { Int64 / UInt64 wins over narrower integer types so codegen emits
+        l-typed instructions and the high bits are preserved.  Signed and
+        unsigned 64-bit types cannot be mixed without an explicit cast. }
+      if ((LType.Kind = tyInt64) and (RType.Kind = tyUInt64)) or
+         ((LType.Kind = tyUInt64) and (RType.Kind = tyInt64)) then
+        SemanticError(
+          'Cannot mix signed Int64 and UInt64 in arithmetic without '
+          + 'an explicit cast', ABin.Line, ABin.Col);
+      if (LType.Kind = tyUInt64) or (RType.Kind = tyUInt64) then
+        Result := FTable.TypeUInt64
+      else if (LType.Kind = tyInt64) or (RType.Kind = tyInt64) then
         Result := FTable.TypeInt64
       else
         Result := LType;

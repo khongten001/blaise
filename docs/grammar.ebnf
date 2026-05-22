@@ -784,11 +784,26 @@ ArrayLiteral
  *   Integer   — 32-bit signed integer   (QBE type: w)
  *   Int64     — 64-bit signed integer   (QBE type: l)
  *   UInt32    — 32-bit unsigned integer (QBE type: w)
- *   Boolean   — 32-bit boolean          (QBE type: w; 0 = false, 1 = true)
+ *               Alias: Cardinal
+ *   UInt64    — 64-bit unsigned integer (QBE type: l)
+ *               Aliases: QWord, PtrUInt (the pointer-sized unsigned)
+ *   Boolean   — 1-byte boolean          (QBE type: w; 0 = false, 1 = true)
  *   Byte      — 8-bit unsigned integer  (QBE type: w)
  *   String    — ARC-managed UTF-8 string pointer (QBE type: l)
  *   Pointer   — untyped pointer         (QBE type: l)
  *   ^T        — typed pointer to T; created on demand (QBE type: l)
+ *
+ * Integer literal typing rules (untyped constant promotion):
+ *
+ *   - Decimal/hex/oct/bin literal whose value fits in [MinInt32..MaxInt32]
+ *     resolves to Integer.
+ *   - Literal in [MinInt64..MaxInt64] but outside Int32 range resolves
+ *     to Int64.
+ *   - Literal in (MaxInt64..MaxUInt64] resolves to UInt64.  The bit
+ *     pattern is preserved; signedness is selected by the type.
+ *   - Mixing Int64 and UInt64 in an arithmetic or comparison expression
+ *     requires an explicit cast (UInt64(x) / Int64(x)).  All other
+ *     integer types widen implicitly into both.
  *)
 
 

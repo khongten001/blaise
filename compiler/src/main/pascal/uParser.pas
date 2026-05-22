@@ -2894,6 +2894,8 @@ var
   NegNode:    TBinaryExpr;
   SubNode:    TStringSubscriptExpr;
   ArrNode:    TArrayLiteralExpr;
+  ParseIntV:    Int64;
+  ParseIntFlag: Boolean;
 begin
   case FCurrent.Kind of
     tkAt:
@@ -2943,7 +2945,9 @@ begin
         IntNode       := TIntLiteral.Create;
         IntNode.Line  := FCurrent.Line;
         IntNode.Col   := FCurrent.Col;
-        IntNode.Value := ParseIntLiteral(FCurrent.Value);
+        ParseIntOrUInt64Literal(FCurrent.Value, ParseIntV, ParseIntFlag);
+        IntNode.Value    := ParseIntV;
+        IntNode.IsUInt64 := ParseIntFlag;
         Advance;
         Result := IntNode;
       end;

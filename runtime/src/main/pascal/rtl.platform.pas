@@ -57,6 +57,7 @@ type
     procedure SysWriteStr(Fd: Integer; S: Pointer); virtual; abstract;
     procedure SysWriteInt(Fd: Integer; N: Integer); virtual; abstract;
     procedure SysWriteInt64(Fd: Integer; N: Int64); virtual; abstract;
+    procedure SysWriteUInt64(Fd: Integer; N: UInt64); virtual; abstract;
     procedure SysWriteNewline(Fd: Integer); virtual; abstract;
 
     { File-descriptor primitives — used by streams }

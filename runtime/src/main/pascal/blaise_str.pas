@@ -60,6 +60,7 @@ function  _StringTrim(S: Pointer): Pointer;
 function  _StringSameText(S1, S2: Pointer): Integer;
 function  _IntToStr(N: Integer): Pointer;
 function  _Int64ToStr(N: Int64): Pointer;
+function  _UInt64ToStr(N: UInt64): Pointer;
 function  _StrToInt(S: Pointer): Integer;
 function  _StrToInt64(S: Pointer): Int64;
 function  _OrdAt(S: Pointer; I: Integer): Integer;
@@ -574,6 +575,63 @@ begin
   Buf     := _BlaiseGetMem(22);
   BP      := PChar(Buf);
   Written := WriteDecimal(N, BP);
+  Result  := StrAlloc(Written);
+  if (Result <> nil) and (Written > 0) then
+    MemCopy(StrData(Result), Buf, Written);
+  _BlaiseFreeMem(Buf);
+end;
+
+{ Write a UInt64 value (passed as Int64 bit pattern during bootstrap) as
+  decimal digits into Buf (no NUL).  Buf must have at least 21 bytes.
+  Returns character count.  Distinct from WriteDecimal because the
+  magnitude can exceed Int64 range. }
+function WriteDecimalU(N: UInt64; Buf: PChar): Integer;
+var
+  Pos:   Integer;
+  Tmp:   Pointer;
+  TP:    PChar;
+  I, J:  Integer;
+  Digit: Integer;
+begin
+  Tmp := _BlaiseGetMem(22);
+  TP  := PChar(Tmp);
+  if N = UInt64(0) then
+  begin
+    TP[0] := 48;  { '0' }
+    Pos   := 1;
+  end
+  else
+  begin
+    Pos := 0;
+    while N > UInt64(0) do
+    begin
+      Digit   := Integer(N mod UInt64(10));
+      TP[Pos] := 48 + Digit;
+      N       := N div UInt64(10);
+      Inc(Pos);
+    end;
+  end;
+  I := 0;
+  J := Pos - 1;
+  while J >= 0 do
+  begin
+    Buf[I] := TP[J];
+    Inc(I);
+    Dec(J);
+  end;
+  _BlaiseFreeMem(Tmp);
+  Result := I;
+end;
+
+function _UInt64ToStr(N: UInt64): Pointer;
+var
+  Buf:     Pointer;
+  BP:      PChar;
+  Written: Integer;
+begin
+  Buf     := _BlaiseGetMem(22);
+  BP      := PChar(Buf);
+  Written := WriteDecimalU(N, BP);
   Result  := StrAlloc(Written);
   if (Result <> nil) and (Written > 0) then
     MemCopy(StrData(Result), Buf, Written);
