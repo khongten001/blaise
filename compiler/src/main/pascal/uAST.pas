@@ -144,7 +144,10 @@ type
     destructor Destroy; override;
   end;
 
-  TBinaryOp = (boAdd, boSub, boMul, boDiv, boMod, boEQ, boNE, boLT, boGT, boLE, boGE,
+  { boSlash is the `/` operator: real division, always yields a float.
+    boDiv is the `div` operator: integer division between integer operands. }
+  TBinaryOp = (boAdd, boSub, boMul, boSlash, boDiv, boMod,
+               boEQ, boNE, boLT, boGT, boLE, boGE,
                boAnd, boOr, boXor, boIn, boShl, boShr, boSar);
 
   TBinaryExpr = class(TASTExpr)
@@ -783,6 +786,7 @@ begin
     boAdd: Result := '+';
     boSub: Result := '-';
     boMul: Result := '*';
+    boSlash: Result := '/';
     boDiv: Result := 'div';
     boMod: Result := 'mod';
     boEQ:  Result := '=';

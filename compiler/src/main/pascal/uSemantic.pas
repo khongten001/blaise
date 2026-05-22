@@ -7182,9 +7182,23 @@ begin
         Format('Right operand of ''%s'' must be numeric, got ''%s''',
           [BinaryOpName(ABin.Op), RType.Name]),
         ABin.Line, ABin.Col);
+    { `div` is integer division; reject float operands. }
+    if (ABin.Op = boDiv) and (LType.IsFloat or RType.IsFloat) then
+      SemanticError(
+        '''div'' requires integer operands; use ''/'' for real division',
+        ABin.Line, ABin.Col);
+    { `/` is real division: always yields a float, even with Integer operands.
+      Result is Single when both operands are Single, Double otherwise. }
+    if ABin.Op = boSlash then
+    begin
+      if (LType.Kind = tySingle) and (RType.Kind = tySingle) then
+        Result := FTable.TypeSingle
+      else
+        Result := FTable.TypeDouble;
+    end
     { Float promotion: if either side is float, result is float.
       Double wins over Single; any integer mixed with float promotes to Double. }
-    if LType.IsFloat or RType.IsFloat then
+    else if LType.IsFloat or RType.IsFloat then
     begin
       if (LType.Kind = tyDouble) or (RType.Kind = tyDouble) or
          (not LType.IsFloat) or (not RType.IsFloat) then

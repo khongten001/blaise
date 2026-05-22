@@ -2865,14 +2865,15 @@ begin
         or Check(tkAnd) or Check(tkXor) or Check(tkShl) or Check(tkShr)
         or Check(tkSar) do
   begin
-    if      Check(tkStar) then Op := boMul
-    else if Check(tkMod)  then Op := boMod
-    else if Check(tkAnd)  then Op := boAnd
-    else if Check(tkXor)  then Op := boXor
-    else if Check(tkShl)  then Op := boShl
-    else if Check(tkShr)  then Op := boShr
-    else if Check(tkSar)  then Op := boSar
-    else                       Op := boDiv;
+    if      Check(tkStar)  then Op := boMul
+    else if Check(tkSlash) then Op := boSlash
+    else if Check(tkMod)   then Op := boMod
+    else if Check(tkAnd)   then Op := boAnd
+    else if Check(tkXor)   then Op := boXor
+    else if Check(tkShl)   then Op := boShl
+    else if Check(tkShr)   then Op := boShr
+    else if Check(tkSar)   then Op := boSar
+    else                        Op := boDiv;
     OpLine     := FCurrent.Line;
     OpCol      := FCurrent.Col;
     Advance;

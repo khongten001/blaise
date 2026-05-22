@@ -159,6 +159,14 @@ type
     procedure TestSemantic_Assign_DoubleToDouble_OK;
     procedure TestSemantic_Assign_SingleToSingle_OK;
     procedure TestSemantic_Assign_SingleToDouble_OK;
+
+    { `/` is real division — Integer / Integer → Double }
+    procedure TestSemantic_RealDiv_IntegerIntegerReturnsDouble;
+    procedure TestSemantic_RealDiv_IntegerDoubleReturnsDouble;
+    procedure TestSemantic_RealDiv_AsTruncArg_OK;
+    procedure TestSemantic_RealDiv_AsRoundArg_OK;
+    procedure TestSemantic_IntegerDiv_RejectsFloat;
+    procedure TestCodegen_RealDiv_IntegerOperands_EmitsFloatDiv;
   end;
 
 implementation
@@ -1412,6 +1420,71 @@ begin
     var S: Single; D: Double;
     begin D := S end.
     ''');
+end;
+
+{ ------------------------------------------------------------------ }
+{ `/` is real division (Pascal-standard semantics)                    }
+{ `/` always yields a float, even with Integer operands.  `div` is    }
+{ the integer-division operator.                                      }
+{ ------------------------------------------------------------------ }
+
+procedure TMathTests.TestSemantic_RealDiv_IntegerIntegerReturnsDouble;
+var
+  Lexer:    TLexer;
+  Parser:   TParser;
+  Prog:     TProgram;
+  Semantic: TSemanticAnalyser;
+  Assign:   TAssignment;
+begin
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil;
+  try
+    Lexer    := TLexer.Create(
+      'program P; var X, Y: Integer; R: Double; begin R := Y / X end.');
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse;
+    Semantic := TSemanticAnalyser.Create;
+    Semantic.Analyse(Prog);
+    Assign := TAssignment(Prog.Block.Stmts.Items[0]);
+    AssertNotNil('resolved type', Assign.Expr.ResolvedType);
+    AssertEquals('Y / X type', 'Double', Assign.Expr.ResolvedType.Name);
+  finally
+    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+  end;
+end;
+
+procedure TMathTests.TestSemantic_RealDiv_IntegerDoubleReturnsDouble;
+begin
+  SemanticOKBuiltin(
+    'program P; var X: Integer; Y, R: Double; begin R := X / Y end.');
+end;
+
+procedure TMathTests.TestSemantic_RealDiv_AsTruncArg_OK;
+begin
+  SemanticOKBuiltin(
+    'program P; var X, Y: Integer; R: Integer; begin R := Trunc(Y / X) end.');
+end;
+
+procedure TMathTests.TestSemantic_RealDiv_AsRoundArg_OK;
+begin
+  SemanticOKBuiltin(
+    'program P; var X, Y: Integer; R: Integer; begin R := Round(Y / X) end.');
+end;
+
+procedure TMathTests.TestSemantic_IntegerDiv_RejectsFloat;
+begin
+  SemanticError(
+    'program P; var X, Y: Double; R: Integer; begin R := Trunc(Y div X) end.');
+end;
+
+procedure TMathTests.TestCodegen_RealDiv_IntegerOperands_EmitsFloatDiv;
+var IR: string;
+begin
+  IR := GenIRBuiltin(
+    'program P; var X, Y: Integer; R: Double; begin R := Y / X end.');
+  { Float division uses QBE's `div` with type d, after promoting both Integer
+    operands to Double via swtof. }
+  AssertTrue('swtof in IR (integer→double promotion)', IRContains(IR, 'swtof'));
+  AssertTrue('float div in IR', IRContains(IR, '=d div'));
 end;
 
 initialization

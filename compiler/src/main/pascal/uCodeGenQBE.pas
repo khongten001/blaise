@@ -8800,10 +8800,11 @@ begin
         R := ArgTemp;
       end;
       case BinExpr.Op of
-        boAdd: Op := 'add';
-        boSub: Op := 'sub';
-        boMul: Op := 'mul';
-        boDiv: Op := 'div';
+        boAdd:   Op := 'add';
+        boSub:   Op := 'sub';
+        boMul:   Op := 'mul';
+        boDiv:   Op := 'div';
+        boSlash: Op := 'div';
       else    Op := 'add';
       end;
       EmitLine(Format('  %s =%s %s %s, %s', [T, FT, Op, L, R]));

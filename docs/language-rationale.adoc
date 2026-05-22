@@ -2788,3 +2788,62 @@ value.  Verbose and noisy in bit-manipulation code.
 but read less naturally next to Pascal's other keyword operators
 (`shl`, `shr`, `and`, `or`).  Three-letter mnemonic keywords match the
 established Pascal style.
+
+== `/` vs `div` — Real Division and Integer Division
+
+=== Decision
+
+Blaise distinguishes real division from integer division with two
+separate operators:
+
+* `/` — real division.  Always yields a floating-point result, even
+  when both operands are integers.  Integer operands are promoted to
+  `Double` before the division.  The result type is `Single` only when
+  both operands are `Single`; in every other case the result is
+  `Double`.
+* `div` — integer division.  Both operands must be integer types;
+  passing a `Single` or `Double` operand is a semantic error.
+
+This matches standard Pascal, Delphi, and Free Pascal.
+
+=== Rationale
+
+Conflating `/` and `div` produces silently-wrong code in numerical
+expressions.  A user writing `Round(Y / X)` where `X` and `Y` are
+`Integer` reasonably expects the same result as `Round(Y / X)` written
+with floating-point operands — i.e. the rational quotient rounded to
+the nearest integer.  Treating `/` as integer division when both
+operands are integers makes `Round(10 / 3)` evaluate as `Round(3) = 3`
+rather than `Round(3.333…) = 3`; the example happens to coincide, but
+`Round(7 / 2)` produces `3` instead of `4`.  The operator's name also
+becomes misleading: `/` reads as the mathematical division symbol.
+
+Keeping `/` and `div` as distinct operators makes the programmer's
+intent explicit and matches every other Pascal dialect.  `Trunc`,
+`Round`, `Ceil`, and `Floor` continue to require a float argument; the
+ergonomic case for integer-quotient rounding is now `Round(Y / X)`,
+which naturally has a float subexpression and therefore type-checks.
+
+=== Implementation
+
+`uParser.pas` maps the `/` token to `boSlash` and the `div` keyword to
+`boDiv`.  `uSemantic.pas` (`AnalyseBinaryExpr`) gives `boSlash` a
+float result type unconditionally; `boDiv` retains the existing
+integer-promotion rules and now rejects float operands explicitly.
+`uCodeGenQBE.pas` lowers both `boSlash` and `boDiv` to QBE's `div`
+instruction; the difference is whether the operands have already been
+promoted to a float type (`d`/`s`) on the float arithmetic path.
+
+=== Alternatives Rejected
+
+*Map both operators to a single `boDiv` and infer the kind from operand
+types* — this is what the compiler did before this change.  The
+inference path that says "two integer operands → integer division" is
+exactly the bug: Pascal source distinguishes the two operators
+deliberately, and the AST should preserve that distinction.
+
+*Make `Trunc`/`Round` accept Integer arguments* — this would mask the
+underlying bug rather than fix it.  `Round(10 / 3)` would still
+evaluate `10 / 3` as integer division to `3` before passing it to
+`Round`, so the result would silently be `3` regardless of whether
+the rational answer rounds up or down.

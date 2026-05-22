@@ -144,6 +144,10 @@ type
     procedure TestRun_SingleMulDouble;
     procedure TestRun_SingleAddSingle;
     procedure TestRun_SingleCompareSingle;
+
+    { Real division `/` with Integer operands yields a float }
+    procedure TestRun_RealDiv_IntegerOperands_RoundTrunc;
+    procedure TestRun_RealDiv_TenOverFour_Half;
   end;
 
 implementation
@@ -1395,6 +1399,46 @@ begin
     ''', Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('1.5<2.5', 'less', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_RealDiv_IntegerOperands_RoundTrunc;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var X, Y, Z: Integer;
+    begin
+      X := 3;
+      Y := 10;
+      Z := Round(Y / X);
+      WriteLn(IntToStr(Z));
+      Z := Trunc(Y / X);
+      WriteLn(IntToStr(Z))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('Round(10/3) and Trunc(10/3)', '3' + LineEnding + '3', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_RealDiv_TenOverFour_Half;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var X, Y: Integer; D: Double;
+    begin
+      X := 4;
+      Y := 10;
+      D := Y / X;
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('10/4', '2.5', Trim(Output));
 end;
 
 initialization
