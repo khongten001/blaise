@@ -24,7 +24,7 @@ uses
   SysUtils, Classes, Process, contnrs,
   uLexer, uParser, uAST, uSemantic, uCodeGen, uCodeGenQBE,
   blaise.codegen.target, blaise.codegen.native, uToolchain,
-  uUnitLoader, uDebugOPDF, uUnitInterface, uSemanticExport,
+  uUnitLoader, uDebugOPDF, uUnitInterface, uSemanticExport, uUnitInterfaceIO,
   uStrCompat, uConfig;
 
 const
@@ -49,6 +49,7 @@ begin
   WriteLn('                      freebsd-x86_64, windows-x86_64, macos-arm64');
   WriteLn('  --emit-ir           Print QBE IR to stdout and exit');
   WriteLn('  --emit-asm          Print native assembly to stdout (requires --backend native)');
+  WriteLn('  --emit-iface <dir>  Write each unit''s TUnitInterface as <dir>/<unit>.bif');
   WriteLn('  --debug             Enable runtime memory leak reporting on exit');
   WriteLn('  --debug-opdf        Emit OPDF debug info (.opdf.s companion file)');
   WriteLn('');
@@ -191,7 +192,8 @@ function ParseArgs(
   out UseNative:      Boolean;
   out Target:         TTargetDesc;
   out SearchPaths:    TStringList;
-  out SkipDepCodegen: Boolean): Boolean;
+  out SkipDepCodegen: Boolean;
+  out EmitIfaceDir:   string): Boolean;
 var
   I: Integer;
   Arg: string;
@@ -206,6 +208,7 @@ begin
   UseNative      := False;
   Target         := HostTarget;
   SkipDepCodegen := False;
+  EmitIfaceDir   := '';
   SearchPaths    := TStringList.Create;
 
   I := 1;
@@ -232,6 +235,13 @@ begin
         unit call becomes an extern reference.  Caller is responsible
         for linking pre-built dep object files at link time. }
       SkipDepCodegen := True
+    else if (Arg = '--emit-iface') and (I < ParamCount) then
+    begin
+      { Write each compiled unit's TUnitInterface as <Dir>/<Unit>.bif
+        for later use as a separate-compilation cache. }
+      Inc(I);
+      EmitIfaceDir := ParamStr(I);
+    end
     else if Arg = '--emit-ir' then
       EmitIR := True
     else if Arg = '--emit-asm' then
@@ -495,6 +505,7 @@ var
   Target:      TTargetDesc;
   OPDFAsmFile: string;
   SkipDepCodegen: Boolean;
+  EmitIfaceDir: string;
   Source:   TStringList;
   Lexer:    TLexer;
   Parser:   TParser;
@@ -530,6 +541,7 @@ begin
   DebugMode      := False;
   OPDFAsmFile    := '';
   SkipDepCodegen := False;
+  EmitIfaceDir   := '';
   TopUnit        := nil;
   IsUnitMode     := False;
   if IsFPCStyleInvocation then
@@ -545,7 +557,7 @@ begin
   else
   begin
     if not ParseArgs(SourceFile, OutputFile, EmitIR, EmitAsm, OPDFEnabled, DebugMode,
-                     UseNative, Target, SearchPaths, SkipDepCodegen) then
+                     UseNative, Target, SearchPaths, SkipDepCodegen, EmitIfaceDir) then
     begin
       PrintUsage;
       Halt(1);
@@ -630,6 +642,16 @@ begin
             UnitIfaces.Add(ExportUnitInterface(TUnit(Units.Items[I]),
                                                UnitIfaces,
                                                Semantic.GetSymbolTable));
+            { Emit on-disk artifact when --emit-iface DIR was passed.
+              Naming is <DIR>/<UnitName>.bif — flat directory, lower-
+              cased unit name is intentional so case-insensitive
+              filesystems behave.  Caller is responsible for ensuring
+              DIR exists. }
+            if EmitIfaceDir <> '' then
+              WriteUnitInterfaceToFile(
+                TUnitInterface(UnitIfaces.Items[I]),
+                IncludeTrailingPathDelimiter(EmitIfaceDir) +
+                  LowerCase(TUnit(Units.Items[I]).Name) + '.bif');
           end;
         end;
       end;
