@@ -116,6 +116,7 @@ uses
   cp.test.streams,
   cp.test.e2e.streams,
   cp.test.e2e.dateutils,
+  cp.test.e2e.useschain,
   cp.test.config;
 
 begin
