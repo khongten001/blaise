@@ -5363,13 +5363,23 @@ var
   MName:           string;
   MethLine:        string;
 begin
-  EmitLine('data $typeinfo_TObject = { l 0, l 0, l ' +
-           EmitClassNameRef('TObject') + ', l 0' +
-           ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
-  EmitLine('data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
-           EmitClassNameRef('TCustomAttribute') + ', l 0' +
-           ', l 8, l $_FieldCleanup_TCustomAttribute' +
-           ', l $vtable_TCustomAttribute, l 0 }');
+  { System-unit emission gated on FSystemDefsEmitted so AppendUnit
+    (phase 6c-J emission below) can emit these earlier without
+    duplicating against the program path.  Once set, both paths
+    skip the System block; per-class typeinfo continues for both. }
+  if not FSystemDefsEmitted then
+  begin
+    EmitLine('data $typeinfo_TObject = { l 0, l 0, l ' +
+             EmitClassNameRef('TObject') + ', l 0' +
+             ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
+    EmitLine('data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
+             EmitClassNameRef('TCustomAttribute') + ', l 0' +
+             ', l 8, l $_FieldCleanup_TCustomAttribute' +
+             ', l $vtable_TCustomAttribute, l 0 }');
+    { Don't set FSystemDefsEmitted here — EmitTypeInfoDefs only
+      emits typeinfo, not vtable or FieldCleanup.  The flag is set
+      by AppendUnit which emits all three blocks together. }
+  end;
 
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
@@ -5480,10 +5490,13 @@ var
   MName:        string;
   ERef:         string;
 begin
-  EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
-           ', l $TObject_Destroy, l $TObject_ToString }');
-  EmitLine('data $vtable_TCustomAttribute = { l $typeinfo_TCustomAttribute' +
-           ', l $TObject_Destroy, l $TObject_ToString }');
+  if not FSystemDefsEmitted then
+  begin
+    EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
+             ', l $TObject_Destroy, l $TObject_ToString }');
+    EmitLine('data $vtable_TCustomAttribute = { l $typeinfo_TCustomAttribute' +
+             ', l $TObject_Destroy, l $TObject_ToString }');
+  end;
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
@@ -5783,16 +5796,19 @@ var
   RT:    TRecordTypeDesc;
   GI:    TGenericInstance;
 begin
-  EmitLine('function $_FieldCleanup_TObject(l %self) {');
-  EmitLine('@start');
-  EmitLine('  ret');
-  EmitLine('}');
-  EmitLine('');
-  EmitLine('function $_FieldCleanup_TCustomAttribute(l %self) {');
-  EmitLine('@start');
-  EmitLine('  ret');
-  EmitLine('}');
-  EmitLine('');
+  if not FSystemDefsEmitted then
+  begin
+    EmitLine('function $_FieldCleanup_TObject(l %self) {');
+    EmitLine('@start');
+    EmitLine('  ret');
+    EmitLine('}');
+    EmitLine('');
+    EmitLine('function $_FieldCleanup_TCustomAttribute(l %self) {');
+    EmitLine('@start');
+    EmitLine('  ret');
+    EmitLine('}');
+    EmitLine('');
+  end;
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
@@ -10127,6 +10143,31 @@ begin
             EmitFieldCleanupFn(TD.Name, RT);
           end;
 
+        { System-unit (TObject / TCustomAttribute) FieldCleanup stubs.
+          Emitted once per codegen pass when this unit declares any
+          class.  QBE emits these as local symbols (no .globl), so
+          each .o gets its own private copy — collapses the
+          rtl.platform.posix carve-out from the runtime Makefile. }
+        if (not FSystemDefsEmitted) and (FSymTable <> nil) then
+          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          begin
+            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            if TD.Def is TClassTypeDef then
+            begin
+              EmitLine('function $_FieldCleanup_TObject(l %self) {');
+              EmitLine('@start');
+              EmitLine('  ret');
+              EmitLine('}');
+              EmitLine('');
+              EmitLine('function $_FieldCleanup_TCustomAttribute(l %self) {');
+              EmitLine('@start');
+              EmitLine('  ret');
+              EmitLine('}');
+              EmitLine('');
+              Break;
+            end;
+          end;
+
         { Generic class instances declared in this unit — method bodies and
           per-instance field cleanup functions.  Mirrors the program path in
           EmitMethodDefs and EmitFieldCleanupFns for AProg.GenericInstances. }
@@ -10161,6 +10202,36 @@ begin
           if TD.Def is TInterfaceTypeDef then
             EmitLine('data $typeinfo_' + TD.Name + ' = { l 0 }');
         end;
+
+        { System-unit (TObject / TCustomAttribute) typeinfo + vtable.
+          Emitted alongside the FieldCleanup stubs above, also gated
+          on FSystemDefsEmitted.  This is the block that sets the
+          flag — after it runs, EmitTypeInfoDefs / EmitVTableDefs /
+          EmitFieldCleanupDefs in the program path skip their System
+          portions (they still emit per-class typeinfo/vtable). }
+        if not FSystemDefsEmitted then
+          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          begin
+            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            if TD.Def is TClassTypeDef then
+            begin
+              EmitLine('data $typeinfo_TObject = { l 0, l 0, l ' +
+                       EmitClassNameRef('TObject') + ', l 0' +
+                       ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
+              EmitLine('data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
+                       EmitClassNameRef('TCustomAttribute') + ', l 0' +
+                       ', l 8, l $_FieldCleanup_TCustomAttribute' +
+                       ', l $vtable_TCustomAttribute, l 0 }');
+              EmitLine('');
+              EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
+                       ', l $TObject_Destroy, l $TObject_ToString }');
+              EmitLine('data $vtable_TCustomAttribute = { l $typeinfo_TCustomAttribute' +
+                       ', l $TObject_Destroy, l $TObject_ToString }');
+              EmitLine('');
+              FSystemDefsEmitted := True;
+              Break;
+            end;
+          end;
 
         { Class typeinfo blocks — full 8-slot layout matching EmitTypeInfoDefs }
         for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
