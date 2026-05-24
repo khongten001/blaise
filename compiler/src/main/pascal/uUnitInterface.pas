@@ -78,6 +78,17 @@ type
                                    Populated by ExportUnitInterface
                                    only when AnalyseUnitForExport has
                                    run first.  Pre-semantic stays -1. }
+    ResolvedQbeName: string;     { mangled symbol label.  For class
+                                   methods: 'ClassName_MethodName'
+                                   (with optional '$sig' suffix for
+                                   overloads).  For free routines:
+                                   'Name' (or 'Name$sig').  Used by
+                                   importers to construct vtable
+                                   ImplName ('$' + ResolvedQbeName)
+                                   without re-running mangling. }
+    IsVirtual:    Boolean;       { virtual method that allocates a new
+                                   vtable slot }
+    IsOverride:   Boolean;       { override that replaces a parent slot }
     constructor Create;
     destructor Destroy; override;
   end;

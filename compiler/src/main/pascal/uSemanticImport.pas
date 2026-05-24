@@ -106,6 +106,32 @@ end;
 { Resolve a class parent reference into the symbol table.  Returns nil
   if AEntry has no parent (root) or if the parent name resolves to
   something that is not a class. }
+{ Add or override a single vtable slot on ART for ASig.
+  Virtual → AddVTableSlot, Override → OverrideVTableSlot at the
+  inherited slot.  Static methods are no-ops on the descriptor side
+  (they live as direct-call symbols only). }
+procedure RegisterClassMethod(ART: TRecordTypeDesc; ASig: TRoutineSig);
+var
+  Slot:     Integer;
+  ImplName: string;
+begin
+  if (not ASig.IsVirtual) and (not ASig.IsOverride) then Exit;
+  if ASig.ResolvedQbeName = '' then Exit;
+  ImplName := '$' + ASig.ResolvedQbeName;
+
+  if ASig.IsVirtual then
+    ART.AddVTableSlot(ASig.Name, ImplName)
+  else { IsOverride }
+  begin
+    Slot := ART.FindVTableSlot(ASig.Name);
+    if Slot >= 0 then
+      ART.OverrideVTableSlot(Slot, ImplName);
+    { If the slot wasn't found, the override targets a method only
+      reachable through a grand-parent we haven't fully copied —
+      treat as a no-op for now; class-level test will catch this. }
+  end;
+end;
+
 function ResolveParentClassByName(const AParentName: string;
                                   ATable: TSymbolTable): TRecordTypeDesc;
 var
@@ -184,10 +210,15 @@ begin
       RT.AddField(FldDecl.Names.Strings[J], FldSym.TypeDesc);
   end;
 
-  { TODO 6c-B-methods: TRoutineSig does not yet carry ImplName (the
-    QBE/LLVM symbol label).  Without it we cannot AddVTableSlot.
-    Imported classes therefore have no callable methods yet —
-    enough for layout-only consumers (typeinfo, field access). }
+  { Methods: walk TRoutineSig list; for virtual/override, register
+    vtable slots.  ResolvedQbeName comes pre-mangled from semantic,
+    so ImplName is '$' + ResolvedQbeName.  The MethodName used as
+    the vtable lookup key is just the unqualified routine name; for
+    overloaded methods the mangled suffix is included in
+    ResolvedQbeName but the lookup-key dance is left to a follow-up
+    (overloaded class methods are not in the 6c-B happy path). }
+  for I := 0 to AEntry.Methods.Count - 1 do
+    RegisterClassMethod(RT, TRoutineSig(AEntry.Methods.Items[I]));
 end;
 
 procedure RegisterRecord(AEntry: TTypeEntry; ATable: TSymbolTable);

@@ -243,6 +243,8 @@ type
     procedure TestImport_Class_ImplicitTObjectParent;
     procedure TestImport_Class_FieldOffsetAfterParentVptr;
     procedure TestImport_Class_ExplicitParentChain;
+    procedure TestImport_Class_VirtualMethod_AddsVTableSlot;
+    procedure TestImport_Class_Override_ReusesParentSlot;
   end;
 
 implementation
@@ -2154,6 +2156,82 @@ begin
     AssertTrue('B reachable', Fb <> nil);
     AssertEquals('A offset',  8,  Fa.Offset);  { after vptr }
     AssertEquals('B offset', 12,  Fb.Offset);  { after A }
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Class_VirtualMethod_AddsVTableSlot;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TFoo = class' + #10 +
+    '  procedure Speak; virtual;' + #10 +
+    'end;' + #10+
+    'implementation' + #10 +
+    'procedure TFoo.Speak; begin end;' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  RT:    TRecordTypeDesc;
+  Slot:  Integer;
+  Ent:   TVTableEntry;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    RT := TRecordTypeDesc(Tab.FindType('TFoo'));
+    AssertTrue('TFoo defined', RT <> nil);
+    Slot := RT.FindVTableSlot('Speak');
+    AssertTrue('Speak has vtable slot', Slot >= 0);
+    Ent := RT.VTableEntryAt(Slot);
+    AssertEquals('ImplName', '$TFoo_Speak', Ent.ImplName);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Class_Override_ReusesParentSlot;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type' + #10 +
+    '  TBase = class procedure Speak; virtual; end;' + #10 +
+    '  TDerived = class(TBase) procedure Speak; override; end;' + #10 +
+    'implementation' + #10 +
+    'procedure TBase.Speak; begin end;' + #10 +
+    'procedure TDerived.Speak; begin end;' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Base, Derived: TRecordTypeDesc;
+  BaseSlot, DerSlot: Integer;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Base    := TRecordTypeDesc(Tab.FindType('TBase'));
+    Derived := TRecordTypeDesc(Tab.FindType('TDerived'));
+    AssertTrue('TBase defined',    Base    <> nil);
+    AssertTrue('TDerived defined', Derived <> nil);
+    BaseSlot := Base.FindVTableSlot('Speak');
+    DerSlot  := Derived.FindVTableSlot('Speak');
+    AssertTrue('TBase has slot', BaseSlot >= 0);
+    AssertEquals('same slot', BaseSlot, DerSlot);
+    AssertEquals('TDerived ImplName',
+      '$TDerived_Speak',
+      Derived.VTableEntryAt(DerSlot).ImplName);
+    AssertEquals('TBase ImplName still own',
+      '$TBase_Speak',
+      Base.VTableEntryAt(BaseSlot).ImplName);
   finally
     Tab.Free;
     Iface.Free;

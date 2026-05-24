@@ -226,6 +226,9 @@ begin
   Result.VTableSlot   := ASrc.VTableSlot;
   Result.IsExternal   := ASrc.IsExternal;
   Result.ExternalName := ASrc.ExternalName;
+  Result.ResolvedQbeName := ASrc.ResolvedQbeName;
+  Result.IsVirtual    := ASrc.IsVirtual;
+  Result.IsOverride   := ASrc.IsOverride;
   Result.ReturnType   := ResolveTypeRef(ASrc.ReturnTypeName, AIface, ADeps);
 
   for I := 0 to ASrc.Params.Count - 1 do
