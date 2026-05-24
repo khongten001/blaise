@@ -280,7 +280,30 @@ type
           here", NOT a fall-through. }
     function IsVisibleFromUnit(ASym: TSymbol;
                                const AFromUnit: string;
-                               AFromClass: TRecordTypeDesc): Boolean;
+                               AFromClass: TRecordTypeDesc): Boolean; overload;
+
+    { String-flavor overload — at member-access sites we typically
+      have an owning-unit string but no TSymbol (e.g. a TMethodDecl /
+      TFieldInfo).  Same semantics as the TSymbol form.  Task #44
+      step 6. }
+    function IsVisibleFromUnit(const AMemberOwningUnit: string;
+                               const AFromUnit: string;
+                               AFromClass: TRecordTypeDesc): Boolean; overload;
+
+    { Hard-error wrapper for qualified member access (`obj.Foo` /
+      `Self.Foo` / `TypeName.Foo`).  Calls IsVisibleFromUnit; on
+      False raises ESemanticError with a "not accessible" message
+      at AMemberName's source location.  This is the rule from
+      project_per_unit_visibility.md: an invisible *qualified*
+      member is a hard error, never a fall-through.
+
+      Today the filter returns True so this never raises; the seam
+      is in place for when class members gain private/protected
+      modifiers and a per-member OwningUnit. }
+    procedure AssertMemberVisible(const AMemberOwningUnit: string;
+                                  AClassContext: TRecordTypeDesc;
+                                  const AMemberName: string;
+                                  ALine, ACol: Integer);
 
     { Uses-chain lookup for *unqualified* identifiers.  Walks
       FCurrentUsesChain right-to-left ("last in uses wins"); for
@@ -1367,6 +1390,27 @@ begin
                              and AFromClassDescendsFromDeclarer(...);
     Free symbols default to public so AFromClass is ignored for them. }
   Result := True;
+end;
+
+function TSemanticAnalyser.IsVisibleFromUnit(const AMemberOwningUnit: string;
+                                             const AFromUnit: string;
+                                             AFromClass: TRecordTypeDesc): Boolean;
+begin
+  { String-flavor stub.  Same future logic as the TSymbol form,
+    keyed on the AMemberOwningUnit string directly. }
+  Result := True;
+end;
+
+procedure TSemanticAnalyser.AssertMemberVisible(const AMemberOwningUnit: string;
+                                                AClassContext: TRecordTypeDesc;
+                                                const AMemberName: string;
+                                                ALine, ACol: Integer);
+begin
+  if not IsVisibleFromUnit(AMemberOwningUnit, FCurrentUnitName, AClassContext) then
+    SemanticError(
+      Format('Identifier ''%s'' is not accessible from this context',
+        [AMemberName]),
+      ALine, ACol);
 end;
 
 procedure TSemanticAnalyser.LinkClassMethodImpls(ABlock: TBlock);
@@ -3522,6 +3566,7 @@ var
   Key:      string;
   Sym:      TSymbol;
   RT:       TRecordTypeDesc;
+  OwnerUnit: string;
 begin
   CurrName := ATypeName;
   while CurrName <> '' do
@@ -3530,7 +3575,15 @@ begin
     Idx := FMethodIndex.IndexOf(Key);
     if Idx >= 0 then
     begin
-      Exit(TMethodDecl(FMethodIndex.Objects[Idx]));
+      Result := TMethodDecl(FMethodIndex.Objects[Idx]);
+      { Visibility seam: treat the class's owning unit as the member's
+        effective owner.  Currently a no-op (returns True); activates
+        without call-site work when class members gain private/protected. }
+      OwnerUnit := '';
+      Sym := FTable.Lookup(CurrName);
+      if Sym <> nil then OwnerUnit := Sym.OwningUnit;
+      AssertMemberVisible(OwnerUnit, FCurrentClass, AMethodName, 0, 0);
+      Exit;
     end;
     { Walk to parent }
     Sym := FTable.Lookup(CurrName);
