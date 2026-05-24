@@ -26,7 +26,7 @@ interface
 uses
   Classes, contnrs, blaise.testing,
   uAST, uLexer, uParser, uSemantic, uSymbolTable,
-  uUnitInterface, uSemanticExport, uSemanticImport;
+  uUnitInterface, uSemanticExport, uSemanticImport, uUnitInterfaceIO;
 
 type
   { ParseAndExport helper — shared across fixtures.  Stubbed for now;
@@ -219,6 +219,25 @@ type
     procedure TestSourceFile_MatchesPath;
     procedure TestSourceHash_NonEmpty;
     procedure TestCompilerVersion_NonEmpty;
+  end;
+
+  { ----- TUnitInterface disk format (Phase 6c-E starter) --------- }
+
+  [Threaded]
+  TIfaceIOTests = class(TTestCase)
+  published
+    { Header carries magic + version. }
+    procedure TestWrite_StartsWithMagicAndVersion;
+    { Unit name round-trips. }
+    procedure TestRoundTrip_UnitNamePreserved;
+    { Int const round-trips. }
+    procedure TestRoundTrip_IntConstPreserved;
+    { String const round-trips, even with newlines + colons in the value. }
+    procedure TestRoundTrip_StringConstWithAwkwardChars;
+    { Empty interface round-trips (zero consts). }
+    procedure TestRoundTrip_EmptyInterface;
+    { Version mismatch is rejected. }
+    procedure TestRead_VersionMismatch_Raises;
   end;
 
   { ----- ImportUnitInterface round-trip (Phase 6c-A) -------------- }
@@ -2576,6 +2595,145 @@ begin
   end;
 end;
 
+{ ----- TIfaceIOTests --------------------------------------------- }
+
+function BuildIfaceWithIntConst: TUnitInterface;
+var
+  C: TConstEntry;
+begin
+  Result := TUnitInterface.Create('TestU');
+  C := TConstEntry.Create;
+  C.Decl := TConstDecl.Create;
+  C.Decl.Name   := 'MaxBuf';
+  C.Decl.IntVal := 4096;
+  C.TypeRef     := MakeBuiltinRef('Integer');
+  Result.AddConst(C);
+end;
+
+procedure TIfaceIOTests.TestWrite_StartsWithMagicAndVersion;
+var
+  Iface: TUnitInterface;
+  Buf:   string;
+begin
+  Iface := TUnitInterface.Create('U');
+  try
+    Buf := WriteUnitInterface(Iface);
+    { Blaise Pos is 0-based; match-at-start returns 0. }
+    AssertTrue('starts with magic',
+      Pos('BLAISE-IFACE 1', Buf) = 0);
+  finally
+    Iface.Free;
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_UnitNamePreserved;
+var
+  Src, Dst: TUnitInterface;
+  Buf:      string;
+begin
+  Src := TUnitInterface.Create('MyUnit');
+  try
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      AssertEquals('unit name', 'MyUnit', Dst.Name);
+    finally
+      Dst.Free;
+    end;
+  finally
+    Src.Free;
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_IntConstPreserved;
+var
+  Src, Dst: TUnitInterface;
+  C:        TConstEntry;
+  Buf:      string;
+begin
+  Src := BuildIfaceWithIntConst;
+  try
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      C := Dst.FindConst('MaxBuf');
+      AssertTrue('MaxBuf present', C <> nil);
+      AssertEquals('value',  Int64(4096), C.Decl.IntVal);
+      AssertEquals('type ref unit', '$builtin', C.TypeRef.UnitName);
+      AssertEquals('type ref name', 'Integer',  C.TypeRef.TypeName);
+    finally
+      Dst.Free;
+    end;
+  finally
+    Src.Free;
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_StringConstWithAwkwardChars;
+const
+  WEIRD = 'multi' + #10 + 'line: with ":" inside';
+var
+  Src, Dst: TUnitInterface;
+  C:        TConstEntry;
+  Buf:      string;
+begin
+  Src := TUnitInterface.Create('U');
+  C := TConstEntry.Create;
+  C.Decl := TConstDecl.Create;
+  C.Decl.Name     := 'Weird';
+  C.Decl.StrVal   := WEIRD;
+  C.Decl.IsString := True;
+  C.TypeRef       := MakeBuiltinRef('string');
+  Src.AddConst(C);
+  try
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      C := Dst.FindConst('Weird');
+      AssertTrue('Weird present', C <> nil);
+      AssertEquals('exact bytes', WEIRD, C.Decl.StrVal);
+      AssertTrue('IsString', C.Decl.IsString);
+    finally
+      Dst.Free;
+    end;
+  finally
+    Src.Free;
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_EmptyInterface;
+var
+  Src, Dst: TUnitInterface;
+  Buf:      string;
+begin
+  Src := TUnitInterface.Create('Empty');
+  try
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      AssertEquals('name', 'Empty', Dst.Name);
+      AssertEquals('zero consts', 0, Dst.Consts.Count);
+    finally
+      Dst.Free;
+    end;
+  finally
+    Src.Free;
+  end;
+end;
+
+procedure TIfaceIOTests.TestRead_VersionMismatch_Raises;
+var
+  Caught: Boolean;
+begin
+  Caught := False;
+  try
+    ReadUnitInterface('BLAISE-IFACE 99' + #10 + '0:' + #10 + 'CONST 0' + #10 + 'END' + #10).Free;
+  except
+    on E: EIfaceFormatError do Caught := True;
+  end;
+  AssertTrue('version mismatch raised', Caught);
+end;
+
 initialization
   RegisterTest(TSelfContainmentTests);
   RegisterTest(TCrossUnitRefTests);
@@ -2590,5 +2748,6 @@ initialization
   RegisterTest(TUsedUnitsTests);
   RegisterTest(TLookupTests);
   RegisterTest(TMetadataTests);
+  RegisterTest(TIfaceIOTests);
   RegisterTest(TImportRoundTripTests);
 end.
