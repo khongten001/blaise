@@ -248,6 +248,8 @@ type
     procedure TestImport_Interface_MethodsRegistered;
     procedure TestImport_Class_ImplementsInterface;
     procedure TestImport_Class_AttributePreserved;
+    procedure TestImport_GenericClass_RegisteredAsTemplate;
+    procedure TestImport_GenericInterface_RegisteredAsTemplate;
   end;
 
 implementation
@@ -2329,6 +2331,67 @@ begin
     AssertTrue('TFoo defined', RT <> nil);
     AssertEquals('one attribute',  1, RT.ClassAttributeCount);
     AssertEquals('MarkerAttribute', 'MarkerAttribute', RT.ClassAttributeAt(0));
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_GenericClass_RegisteredAsTemplate;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TBox<T> = class V: T; end;' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Templ: TObject;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Templ := Tab.FindGeneric('TBox');
+    AssertTrue('TBox template registered', Templ <> nil);
+    AssertTrue('template is TGenericTypeDef', Templ is TGenericTypeDef);
+    AssertEquals('one type param',
+      1, TGenericTypeDef(Templ).ParamNames.Count);
+    AssertEquals('param name',
+      'T', TGenericTypeDef(Templ).ParamNames.Strings[0]);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_GenericInterface_RegisteredAsTemplate;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type IBox<T> = interface' + #10 +
+    '  function Get: T;' + #10 +
+    'end;' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Templ: TObject;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Templ := Tab.FindGeneric('IBox');
+    AssertTrue('IBox template registered', Templ <> nil);
+    AssertTrue('template is TGenericInterfaceDef',
+               Templ is TGenericInterfaceDef);
+    AssertEquals('one type param', 1,
+      TGenericInterfaceDef(Templ).ParamNames.Count);
   finally
     Tab.Free;
     Iface.Free;

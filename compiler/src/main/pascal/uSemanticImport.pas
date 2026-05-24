@@ -385,10 +385,16 @@ begin
   for I := 0 to AIface.Types.Count - 1 do
   begin
     Entry := TTypeEntry(AIface.Types.Items[I]);
-    if Entry.IsGeneric then
-      raise EImportError.CreateFmt(
-        'Generic import not implemented yet (6c-C): %s.%s',
-        [AIface.Name, Entry.Name]);
+
+    { Generic type templates — register the AST template so the
+      consumer's FindTypeOrInstantiate path can clone-and-substitute
+      on demand.  Matches uSemantic.AnalyseTypeDecls pass-1 for
+      TGenericTypeDef / TGenericInterfaceDef. }
+    if Entry.IsGeneric or (Entry.Def is TGenericInterfaceDef) then
+    begin
+      ATable.RegisterGeneric(Entry.Name, Entry.Def);
+      Continue;
+    end;
 
     if Entry.Def is TEnumTypeDef then
       RegisterEnum(Entry, ATable)

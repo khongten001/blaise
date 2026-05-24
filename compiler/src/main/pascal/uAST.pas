@@ -1534,6 +1534,7 @@ function CloneFieldDecl(ASrc: TFieldDecl): TFieldDecl; forward;
   CloneTypeDef are now declared in the interface section. }
 function CloneGenericTypeDef(ASrc: TGenericTypeDef): TGenericTypeDef; forward;
 function CloneInterfaceTypeDef(ASrc: TInterfaceTypeDef): TInterfaceTypeDef; forward;
+function CloneGenericInterfaceDef(ASrc: TGenericInterfaceDef): TGenericInterfaceDef; forward;
 function CloneProceduralTypeDef(ASrc: TProceduralTypeDef): TProceduralTypeDef; forward;
 function CloneExceptHandler(ASrc: TExceptHandlerClause): TExceptHandlerClause; forward;
 function CloneCaseBranch(ASrc: TCaseBranch): TCaseBranch; forward;
@@ -2111,6 +2112,10 @@ begin
   begin
     Result := CloneGenericTypeDef(TGenericTypeDef(ASrc));
   end
+  else if ASrc is TGenericInterfaceDef then
+  begin
+    Result := CloneGenericInterfaceDef(TGenericInterfaceDef(ASrc));
+  end
   else if ASrc is TInterfaceTypeDef then
   begin
     Result := CloneInterfaceTypeDef(TInterfaceTypeDef(ASrc));
@@ -2178,6 +2183,24 @@ begin
   Result.ParentName := ASrc.ParentName;
   for I := 0 to ASrc.Methods.Count - 1 do
     Result.Methods.Add(CloneMethodDecl(TMethodDecl(ASrc.Methods.Items[I])));
+end;
+
+function CloneGenericInterfaceDef(ASrc: TGenericInterfaceDef): TGenericInterfaceDef;
+var
+  I: Integer;
+begin
+  if ASrc = nil then begin Result := nil; Exit; end;
+  Result := TGenericInterfaceDef.Create;
+  for I := 0 to ASrc.ParamNames.Count - 1 do
+  begin
+    Result.ParamNames.Add(ASrc.ParamNames.Strings[I]);
+    if I < ASrc.ParamConstraints.Count then
+      Result.ParamConstraints.Add(ASrc.ParamConstraints.Strings[I])
+    else
+      Result.ParamConstraints.Add('');
+  end;
+  Result.IntfDef.Free;
+  Result.IntfDef := CloneInterfaceTypeDef(ASrc.IntfDef);
 end;
 
 function CloneProceduralTypeDef(ASrc: TProceduralTypeDef): TProceduralTypeDef;
