@@ -722,6 +722,10 @@ begin
   FCurrentUnitName := AProg.Name;
   BuildUsesChain(AProg.UsedUnits);
   FTable.UsesChainProvider := Self;
+  { Tag program-level globals with the program's name so layer-3
+    lookup (current compilation's own symbols) finds them ahead of
+    a use'd unit's same-named export. }
+  FTable.DefineOwningUnit := AProg.Name;
   AnalyseBlock(AProg.Block);
   { Transfer symbol table ownership to the program so that TTypeDesc
     objects (referenced by ResolvedType pointers on AST nodes) outlive

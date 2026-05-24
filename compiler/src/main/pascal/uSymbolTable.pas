@@ -1681,31 +1681,56 @@ end;
 function TSymbolTable.Lookup(const AName: string): TSymbol;
 var
   I: Integer;
+  Sym: TSymbol;
 begin
-  { Walk pushed scopes (1..N) first — locals, params, for-loop vars
-    etc.  Those don't carry OwningUnit and aren't subject to the
-    uses-chain filter. }
+  { Resolution layers, highest to lowest priority:
+
+      1. Pushed scopes (locals, params, nested-routine outer locals)
+      2. Class context — class members, walked via the parent chain.
+         Currently handled at caller sites (FCurrentClass.FindField
+         fallback) because TFieldInfo isn't a TSymbol; promotion into
+         this function lands with the step-9 refactor.
+      3. Current compilation unit's own symbols
+      4. Uses chain, right-to-left (last in `uses` wins)
+      5. System — implicitly prepended to the chain at index 0, so
+         it falls out of layer 4 naturally
+      6. True global — language builtins from RegisterBuiltins, and
+         (today) any flat-merged unit symbols not caught by layer 3
+         or 4.  The flat residue goes away in step 9. }
+
+  { Layer 1. }
   for I := FScopeStack.Count - 1 downto 1 do
   begin
     Result := TScope(FScopeStack.Items[I]).LookupLocal(AName);
     if Result <> nil then Exit;
   end;
 
-  { Pushed scopes exhausted.  Consult the uses-chain provider before
-    the global merged scope — this is the per-unit visibility switch
-    (task #44 step 7).  Bypassed when the chain walker itself is
-    calling us back for the canonical TSymbol. }
+  { Layer 3 — probe the global scope but only return a hit when the
+    symbol is owned by the unit currently being analysed.  This makes
+    `MyUnit.X` declared in the interface section beat an X from a
+    used unit, the same way it would have if we'd stored current-unit
+    symbols in a dedicated pool.  Builtins (OwningUnit = '') and
+    symbols owned by other units fall through to later layers. }
+  Sym := TScope(FScopeStack.Items[0]).LookupLocal(AName);
+  if (Sym <> nil) and (FDefineOwningUnit <> '')
+     and SameText(Sym.OwningUnit, FDefineOwningUnit) then
+  begin
+    Result := Sym;
+    Exit;
+  end;
+
+  { Layer 4 + 5 — the chain walker prepends System so we don't probe
+    it separately.  Bypassed when the chain walker itself is calling
+    us back to retrieve a canonical TSymbol. }
   if (FUsesChainProvider <> nil) and not FBypassUsesChain then
   begin
     Result := FUsesChainProvider.LookupViaUsesChain(AName);
     if Result <> nil then Exit;
   end;
 
-  { Final fallback: global scope.  Holds language builtins (Length,
-    IntToStr, …) registered by RegisterBuiltins.  Today it also still
-    holds flat-merged unit imports — that redundancy goes away in
-    step 9 once the flat-merge is removed. }
-  Result := TScope(FScopeStack.Items[0]).LookupLocal(AName);
+  { Layer 6 — whatever the global walk produced earlier (builtins, or
+    flat-merged residue not yet caught above). }
+  Result := Sym;
 end;
 
 function TSymbolTable.FindType(const AName: string): TTypeDesc;
