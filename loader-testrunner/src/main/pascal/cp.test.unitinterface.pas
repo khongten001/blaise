@@ -25,7 +25,8 @@ interface
 
 uses
   Classes, contnrs, blaise.testing,
-  uAST, uLexer, uParser, uSemantic, uUnitInterface, uSemanticExport;
+  uAST, uLexer, uParser, uSemantic, uSymbolTable,
+  uUnitInterface, uSemanticExport, uSemanticImport;
 
 type
   { ParseAndExport helper — shared across fixtures.  Stubbed for now;
@@ -218,6 +219,26 @@ type
     procedure TestSourceFile_MatchesPath;
     procedure TestSourceHash_NonEmpty;
     procedure TestCompilerVersion_NonEmpty;
+  end;
+
+  { ----- ImportUnitInterface round-trip (Phase 6c-A) -------------- }
+
+  { Each test below exports a unit's interface, then imports that
+    interface into a fresh TSymbolTable, and asserts the symbol
+    table looks like a from-scratch AnalyseUnitForExport would have
+    produced.  Class/generic cases are intentionally NOT covered
+    here — they land with 6c-B/C. }
+  [Threaded]
+  TImportRoundTripTests = class(TTestCase)
+  published
+    procedure TestImport_IntConst_DefinedWithValue;
+    procedure TestImport_StringConst_DefinedWithValue;
+    procedure TestImport_Enum_TypeAndMembersDefined;
+    procedure TestImport_Set_BaseEnumLinked;
+    procedure TestImport_Alias_ResolvesToBase;
+    procedure TestImport_ProcedureRoutine_DefinedAsSkProcedure;
+    procedure TestImport_FunctionRoutine_DefinedAsSkFunction;
+    procedure TestImport_GlobalVar_MarkedIsGlobal;
   end;
 
 implementation
@@ -1784,6 +1805,229 @@ begin
   end;
 end;
 
+{ ----- TImportRoundTripTests (Phase 6c-A) ----------------------- }
+
+{ Build a fresh symbol table seeded with the builtins, ready to
+  receive an ImportUnitInterface call. }
+function FreshTableWithBuiltins: TSymbolTable;
+begin
+  { TSymbolTable.Create already calls RegisterBuiltins. }
+  Result := TSymbolTable.Create;
+end;
+
+procedure TImportRoundTripTests.TestImport_IntConst_DefinedWithValue;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'const Answer = 42;' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Sym:   TSymbol;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Sym := Tab.Lookup('Answer');
+    AssertTrue('Answer defined', Sym <> nil);
+    AssertTrue('skConstant', Sym.Kind = skConstant);
+    AssertEquals('value', 42, Sym.ConstValue);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_StringConst_DefinedWithValue;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'const Greeting = ''hello'';' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Sym:   TSymbol;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Sym := Tab.Lookup('Greeting');
+    AssertTrue('Greeting defined', Sym <> nil);
+    AssertTrue('skConstant', Sym.Kind = skConstant);
+    AssertEquals('value', 'hello', Sym.ConstString);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Enum_TypeAndMembersDefined;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TColor = (Red, Green, Blue);' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  TyDesc: TTypeDesc;
+  Sym:   TSymbol;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    TyDesc := Tab.FindType('TColor');
+    AssertTrue('TColor type defined', TyDesc <> nil);
+    AssertTrue('TColor is enum', TyDesc is TEnumTypeDesc);
+    AssertEquals('three members', 3, TEnumTypeDesc(TyDesc).Members.Count);
+    Sym := Tab.Lookup('Green');
+    AssertTrue('Green defined', Sym <> nil);
+    AssertTrue('Green is skConstant', Sym.Kind = skConstant);
+    AssertEquals('Green ordinal', 1, Sym.ConstValue);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Set_BaseEnumLinked;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type' + #10 +
+    '  TColor = (Red, Green, Blue);' + #10 +
+    '  TColors = set of TColor;' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  TyDesc: TTypeDesc;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    TyDesc := Tab.FindType('TColors');
+    AssertTrue('TColors defined', TyDesc <> nil);
+    AssertTrue('TColors is set', TyDesc is TSetTypeDesc);
+    AssertTrue('base is the enum',
+      TSetTypeDesc(TyDesc).BaseType =
+        TEnumTypeDesc(Tab.FindType('TColor')));
+    AssertEquals('bit count', 3, TSetTypeDesc(TyDesc).BitCount);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Alias_ResolvesToBase;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TMyInt = Integer;' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  TyDesc: TTypeDesc;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    TyDesc := Tab.FindType('TMyInt');
+    AssertTrue('TMyInt defined', TyDesc <> nil);
+    AssertTrue('Aliases to Integer', TyDesc = Tab.FindType('Integer'));
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_ProcedureRoutine_DefinedAsSkProcedure;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'procedure DoIt(N: Integer);' + #10 +
+    'implementation' + #10 +
+    'procedure DoIt(N: Integer); begin end;' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Sym:   TSymbol;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Sym := Tab.Lookup('DoIt');
+    AssertTrue('DoIt defined', Sym <> nil);
+    AssertTrue('skProcedure', Sym.Kind = skProcedure);
+    AssertEquals('one param', 1, Sym.Params.Count);
+    AssertTrue('param type Integer',
+      TParamDesc(Sym.Params.Items[0]).TypeDesc = Tab.FindType('Integer'));
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_FunctionRoutine_DefinedAsSkFunction;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'function Sum(A, B: Integer): Integer;' + #10 +
+    'implementation' + #10 +
+    'function Sum(A, B: Integer): Integer; begin Result := A + B; end;' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Tab:   TSymbolTable;
+  Sym:   TSymbol;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Tab   := FreshTableWithBuiltins;
+  try
+    ImportUnitInterface(Iface, Tab);
+    Sym := Tab.Lookup('Sum');
+    AssertTrue('Sum defined', Sym <> nil);
+    AssertTrue('skFunction', Sym.Kind = skFunction);
+    AssertTrue('returns Integer', Sym.TypeDesc = Tab.FindType('Integer'));
+    AssertEquals('two params', 2, Sym.Params.Count);
+  finally
+    Tab.Free;
+    Iface.Free;
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_GlobalVar_MarkedIsGlobal;
+begin
+  { uSemanticExport does not currently emit TVarEntry records — vars
+    are not part of the exported interface yet.  Once that gap is
+    closed (planned alongside 6c-B coverage audit), wire up the
+    round-trip assertion here.  Documenting the gap as a pending
+    test so the green/red bar tracks coverage. }
+  Fail('Pending TVarEntry export from uSemanticExport');
+end;
+
 initialization
   RegisterTest(TSelfContainmentTests);
   RegisterTest(TCrossUnitRefTests);
@@ -1798,4 +2042,5 @@ initialization
   RegisterTest(TUsedUnitsTests);
   RegisterTest(TLookupTests);
   RegisterTest(TMetadataTests);
+  RegisterTest(TImportRoundTripTests);
 end.
