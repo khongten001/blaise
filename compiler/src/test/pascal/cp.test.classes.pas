@@ -85,6 +85,12 @@ type
     procedure TestCodegen_ClassFieldAssign_InsertsAddRefRelease;
     procedure TestCodegen_FieldCleanup_EmittedPerClass;
     procedure TestCodegen_FieldCleanup_ReleasesClassField;
+    { Regression — a class with an overloaded Destroy emits the
+      destructor as '<Class>_Destroy$...' (mangled).  The field-cleanup
+      helper must call that mangled name; the bare '<Class>_Destroy'
+      label is never emitted in that case, so a hard-coded call would
+      leave the binary with an undefined-symbol link error. }
+    procedure TestCodegen_FieldCleanup_OverloadedDestroy_CallsMangledSymbol;
 
     { ------------------------------------------------------------------ }
     { vtable initialisation                                                }
@@ -930,6 +936,38 @@ begin
   OuterBody := Copy(OuterBody, 1, EndPos);
   AssertTrue('TOuter cleanup releases class-typed field',
     Pos('call $_ClassRelease', OuterBody) > 0);
+end;
+
+procedure TClassTests.TestCodegen_FieldCleanup_OverloadedDestroy_CallsMangledSymbol;
+var IR: string;
+begin
+  { When Destroy is overloaded, the destructor symbol is emitted with
+    the overload-mangled suffix (e.g. '$TFoo_Destroy_D_').  The
+    field-cleanup helper must call that same symbol; previously it
+    hard-coded the bare '<Class>_Destroy' which was never emitted,
+    leaving the binary with an undefined-symbol link error. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TFoo = class
+          public
+            Buf: string;
+            destructor Destroy(why: Integer); overload;
+            destructor Destroy; overload;
+          end;
+        destructor TFoo.Destroy(why: Integer); begin end;
+        destructor TFoo.Destroy; begin end;
+        var f: TFoo;
+        begin f := TFoo.Create; f.Free end.
+        '''
+  );
+  AssertTrue('Overloaded no-arg Destroy emits the mangled symbol',
+    Pos('function $TFoo_Destroy_D_(', IR) > 0);
+  AssertTrue('_FieldCleanup_TFoo calls the mangled destructor',
+    Pos('call $TFoo_Destroy_D_(l %self)', IR) > 0);
+  AssertFalse('_FieldCleanup_TFoo MUST NOT call the bare unmangled label',
+    Pos('call $TFoo_Destroy(l %self)', IR) > 0);
 end;
 
 procedure TClassTests.TestCodegen_Constructor_NoArgs_StoresVTable;

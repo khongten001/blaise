@@ -239,6 +239,11 @@ type
     FImplements:      TObjectList;  { not owned — TInterfaceTypeDesc references }
     FProperties:      TObjectList;  { owned TPropertyInfo }
     FHasDestroyMethod:      Boolean; { True when the class declares a 'Destroy' method }
+    FDestroyResolvedQbeName: string; { Mangled symbol of the no-arg Destroy when this
+                                       class declares its own destructor; empty otherwise.
+                                       Codegen reads this for ARC field cleanup so the
+                                       call target matches the emitted method symbol when
+                                       Destroy is overloaded (e.g. 'TFoo_Destroy$'). }
     FHasAbstractMethods:    Boolean; { True when any vtable slot is abstract (no impl) }
     FClassAttributes:       TStringList; { resolved attribute type names e.g. 'ThreadedAttribute' }
     FIsPacked:              Boolean; { True for `packed record` — skip per-field
@@ -283,6 +288,8 @@ type
     property  Parent: TRecordTypeDesc read FParent write FParent;
     property  HasDestroyMethod: Boolean
               read FHasDestroyMethod write FHasDestroyMethod;
+    property  DestroyResolvedQbeName: string
+              read FDestroyResolvedQbeName write FDestroyResolvedQbeName;
     property  HasAbstractMethods: Boolean
               read FHasAbstractMethods write FHasAbstractMethods;
   end;

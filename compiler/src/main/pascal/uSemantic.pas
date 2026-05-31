@@ -2739,7 +2739,15 @@ begin
           end;
         FMethodIndex.AddObject(Key, MDecl);
         if SameText(MDecl.Name, 'Destroy') then
+        begin
           RT.HasDestroyMethod := True;
+          { Stash the resolved emit name of the no-arg Destroy so ARC
+            field cleanup calls the symbol that was actually emitted.
+            Critical when Destroy is overloaded — the bare
+            '<Class>_Destroy' label is never written in that case. }
+          if (MDecl.Params.Count = 0) and (RT.DestroyResolvedQbeName = '') then
+            RT.DestroyResolvedQbeName := MDecl.ResolvedQbeName;
+        end;
 
         { Retrieve the vtable slot assigned in the pre-pass above. }
         if MDecl.IsVirtual or MDecl.IsOverride then

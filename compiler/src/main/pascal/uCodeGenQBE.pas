@@ -5465,7 +5465,15 @@ begin
   begin
     if Walk.HasDestroyMethod then
     begin
-      EmitLine(Format('  call $%s_Destroy(l %%self)', [QBEMangle(Walk.Name)]));
+      { Prefer the destructor's resolved emit name when set by semantic
+        (this carries the overload-mangled '<Class>_Destroy$...' form);
+        fall back to the bare '<Class>_Destroy' for classes whose
+        Destroy is non-overloaded or inherited from a built-in. }
+      if Walk.DestroyResolvedQbeName <> '' then
+        EmitLine(Format('  call $%s(l %%self)',
+          [QBEMangle(Walk.DestroyResolvedQbeName)]))
+      else
+        EmitLine(Format('  call $%s_Destroy(l %%self)', [QBEMangle(Walk.Name)]));
       Break;
     end;
     Walk := Walk.Parent;
