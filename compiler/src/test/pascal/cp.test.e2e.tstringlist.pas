@@ -37,6 +37,7 @@ type
     procedure TestRun_AddStrings;
     procedure TestRun_ForIn;
     procedure TestRun_TextGet;
+    procedure TestRun_TextGet_ManyLines;
     procedure TestRun_TextSet;
     procedure TestRun_GrowBeyondInitialCapacity;
     procedure TestRun_Sorted_Add_OrderedOutput;
@@ -232,6 +233,32 @@ const
       { Pos is 0-based in Blaise; >= 0 means found }
       WriteLn(Pos('line1', T) >= 0);
       WriteLn(Pos('line2', T) >= 0);
+      L.Free
+    end.
+    ''';
+
+  SrcTextGetMany =
+    '''
+    program P;
+    uses Classes;
+    var L: TStringList; I: Integer; T: string;
+    begin
+      L := TStringList.Create;
+      I := 0;
+      while I < 500 do
+      begin
+        if (I mod 7) = 0 then
+          L.Add('')
+        else
+          L.Add('line_' + IntToStr(I));
+        I := I + 1
+      end;
+      T := L.Text;
+      WriteLn(L.Count);
+      WriteLn(Length(T));
+      WriteLn(Pos('line_1' + #10, T) >= 0);
+      WriteLn(Pos('line_250' + #10, T) >= 0);
+      WriteLn(Pos('line_499' + #10, T) >= 0);
       L.Free
     end.
     ''';
@@ -618,6 +645,30 @@ begin
     AssertEquals('Count=2',             '2', Lines.Strings[0]);
     AssertEquals('Text contains line1', '1', Lines.Strings[1]);
     AssertEquals('Text contains line2', '1', Lines.Strings[2]);
+  finally
+    Lines.Free
+  end
+end;
+
+procedure TE2ETStringListTests.TestRun_TextGet_ManyLines;
+var
+  Output: string;
+  RCode:  Integer;
+  Lines:  TStringList;
+  LenStr: string;
+begin
+  if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextGetMany, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('Count=500',            '500', Lines.Strings[0]);
+    LenStr := Lines.Strings[1];
+    AssertTrue('Length(Text) > 3500', StrToInt(LenStr) > 3500);
+    AssertEquals('contains line_1',   '1', Lines.Strings[2]);
+    AssertEquals('contains line_250', '1', Lines.Strings[3]);
+    AssertEquals('contains line_499', '1', Lines.Strings[4]);
   finally
     Lines.Free
   end

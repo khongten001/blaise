@@ -33,7 +33,7 @@ unit Classes;
 interface
 
 uses
-  blaise_arc, blaise_thread;
+  blaise_arc, blaise_thread, StrUtils;
 
 type
   TDuplicates = (dupAccept, dupIgnore, dupError);
@@ -600,16 +600,22 @@ end;
 
 function TStringList.GetText: string;
 var
+  SB:  TStringBuilder;
   I:   Integer;
   Ptr: ^string;
 begin
-  Result := '';
-  I := 0;
-  while I < Self.FCount do
-  begin
-    Ptr    := Self.FStrings + I * SizeOf(string);
-    Result := Result + Ptr^ + #10;
-    I      := I + 1
+  SB := TStringBuilder.Create;
+  try
+    I := 0;
+    while I < Self.FCount do
+    begin
+      Ptr := Self.FStrings + I * SizeOf(string);
+      SB.AppendLine(Ptr^);
+      I := I + 1
+    end;
+    Result := SB.ToString;
+  finally
+    SB.Free
   end
 end;
 
@@ -753,50 +759,59 @@ end;
 
 function TStringList.GetCommaText: string;
 var
+  SB:   TStringBuilder;
   I:    Integer;
   Item: string;
   Need: Boolean;
   J:    Integer;
   Ch:   Integer;
 begin
-  Result := '';
-  I := 0;
-  while I < Self.FCount do
-  begin
-    Item := Self.Get(I);
-    { Quote if item contains comma, space, or double-quote }
-    Need := False;
-    J := 0;
-    while J < Length(Item) do
+  SB := TStringBuilder.Create;
+  try
+    I := 0;
+    while I < Self.FCount do
     begin
-      Ch := OrdAt(Item, J);
-      if (Ch = Ord(',')) or (Ch = Ord(' ')) or (Ch = Ord('"')) then
-      begin
-        Need := True;
-        Break
-      end;
-      J := J + 1
-    end;
-    if I > 0 then Result := Result + ',';
-    if Need then
-    begin
-      { Wrap in double quotes; escape inner double-quotes as "" }
-      Result := Result + '"';
+      Item := Self.Get(I);
+      { Quote if item contains comma, space, or double-quote }
+      Need := False;
       J := 0;
       while J < Length(Item) do
       begin
         Ch := OrdAt(Item, J);
-        if Ch = Ord('"') then
-          Result := Result + '""'
-        else
-          Result := Result + Chr(Ch);
+        if (Ch = Ord(',')) or (Ch = Ord(' ')) or (Ch = Ord('"')) then
+        begin
+          Need := True;
+          Break
+        end;
         J := J + 1
       end;
-      Result := Result + '"'
-    end
-    else
-      Result := Result + Item;
-    I := I + 1
+      if I > 0 then SB.AppendByte(Ord(','));
+      if Need then
+      begin
+        { Wrap in double quotes; escape inner double-quotes as "" }
+        SB.AppendByte(Ord('"'));
+        J := 0;
+        while J < Length(Item) do
+        begin
+          Ch := OrdAt(Item, J);
+          if Ch = Ord('"') then
+          begin
+            SB.AppendByte(Ord('"'));
+            SB.AppendByte(Ord('"'))
+          end
+          else
+            SB.AppendByte(Ch);
+          J := J + 1
+        end;
+        SB.AppendByte(Ord('"'))
+      end
+      else
+        SB.Append(Item);
+      I := I + 1
+    end;
+    Result := SB.ToString;
+  finally
+    SB.Free
   end
 end;
 
