@@ -49,6 +49,12 @@ type
     procedure TestCodegen_ExternalWordReturn_MaskedToLow16;
     procedure TestCodegen_ExternalSmallIntReturn_SignExtendedFromLow16;
     procedure TestCodegen_ExternalIntegerReturn_NoNormalisation;
+    { A double-typed expression (literal, arithmetic result) passed to
+      a Single FFI parameter must narrow to 4-byte float on the wire
+      before the call.  Without the narrowing, 8 bytes of double go
+      into the float-by-value slot and the C `float` callee reads the
+      low mantissa half as IEEE-754 single — pure noise. }
+    procedure TestCodegen_ExternalSingleParam_DoubleArgNarrowed;
   end;
 
 implementation
@@ -433,6 +439,24 @@ begin
   { Full-width returns need no fix-up — must not emit a stray mask. }
   AssertFalse('Integer FFI return must not be masked',
     IRContains(IR, ', 255') or IRContains(IR, ', 65535'));
+end;
+
+procedure TExternalTests.TestCodegen_ExternalSingleParam_DoubleArgNarrowed;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+        program Test;
+        function sinf(x: Single): Single; cdecl; external name 'sinf';
+        var s: Single;
+        begin
+          s := sinf(1.5707964);
+        end.
+        '''
+  );
+  { Double literal narrowed to single via truncd before the arg slot. }
+  AssertTrue('Double-typed arg narrowed to Single before FFI call',
+    IRContains(IR, '=s truncd'));
 end;
 
 initialization

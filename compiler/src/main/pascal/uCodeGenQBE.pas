@@ -484,7 +484,12 @@ begin
     Result := ExtTemp;
     Exit;
   end;
-  { Integer → Single. }
+  { Integer → Single, or Double → Single via truncd.  Without the d→s
+    narrowing, a double-typed literal or sub-expression passed to a
+    Single-typed parameter reaches the assembler as `d` against an `s`
+    slot — QBE rejects with "invalid type for first operand in arg",
+    and the C `float`-by-value callee at the other end would see the
+    low half of the double mantissa instead of the intended Single. }
   if AParamQType = 's' then
   begin
     ExtTemp := AllocTemp;
@@ -492,6 +497,8 @@ begin
       EmitLine(Format('  %s =s swtof %s', [ExtTemp, AArgTemp]))
     else if ArgQ = 'l' then
       EmitLine(Format('  %s =s sltof %s', [ExtTemp, AArgTemp]))
+    else if ArgQ = 'd' then
+      EmitLine(Format('  %s =s truncd %s', [ExtTemp, AArgTemp]))
     else
       Exit;
     Result := ExtTemp;
