@@ -49,7 +49,7 @@ unit uUnitInterfaceIO;
 interface
 
 uses
-  Classes, SysUtils, streams, uAST, uUnitInterface;
+  Classes, SysUtils, streams, strutils, uAST, uUnitInterface;
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
@@ -114,23 +114,23 @@ function WriteConsts(AIface: TUnitInterface): string;
 var
   I:  Integer;
   C:  TConstEntry;
-  SB: TStringList;
+  SB: TStringBuilder;
 begin
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
-    SB.Add('CONST ' + IntToStr(AIface.Consts.Count));
+    SB.AppendLine('CONST ' + IntToStr(AIface.Consts.Count));
     for I := 0 to AIface.Consts.Count - 1 do
     begin
       C := TConstEntry(AIface.Consts.Items[I]);
-      SB.Add(
+      SB.AppendLine(
         EncodeLpstr(C.Decl.Name) +
         EncodeQualRefParts(C.TypeRef.UnitName, C.TypeRef.TypeName) +
         EncodeInt64(C.Decl.IntVal) +
         EncodeLpstr(C.Decl.StrVal) +
         EncodeFlags(C.Decl.IsString, C.Decl.IsFloat));
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
   end;
@@ -140,20 +140,20 @@ function WriteVars(AIface: TUnitInterface): string;
 var
   I:  Integer;
   V:  TVarEntry;
-  SB: TStringList;
+  SB: TStringBuilder;
 begin
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
-    SB.Add('VAR ' + IntToStr(AIface.Vars.Count));
+    SB.AppendLine('VAR ' + IntToStr(AIface.Vars.Count));
     for I := 0 to AIface.Vars.Count - 1 do
     begin
       V := TVarEntry(AIface.Vars.Items[I]);
-      SB.Add(
+      SB.AppendLine(
         EncodeLpstr(V.Name) +
         EncodeQualRefParts(V.TypeRef.UnitName, V.TypeRef.TypeName));
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
   end;
@@ -463,12 +463,12 @@ function WriteTypes(AIface: TUnitInterface): string;
 var
   I:      Integer;
   E:      TTypeEntry;
-  SB:     TStringList;
+  SB:     TStringBuilder;
   Kind:   string;
   Eligible: TObjectList;
 begin
   Eligible := TObjectList.Create(False);
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
     for I := 0 to AIface.Types.Count - 1 do
     begin
@@ -476,50 +476,50 @@ begin
       if TypeEntryKind(E) <> '' then Eligible.Add(E);
     end;
 
-    SB.Add('TYPE ' + IntToStr(Eligible.Count));
+    SB.AppendLine('TYPE ' + IntToStr(Eligible.Count));
     for I := 0 to Eligible.Count - 1 do
     begin
       E := TTypeEntry(Eligible.Items[I]);
       Kind := TypeEntryKind(E);
       if Kind = 'enum' then
-        SB.Add(EncodeLpstr('enum') +
+        SB.AppendLine(EncodeLpstr('enum') +
                EncodeLpstr(E.Name) +
                EncodeEnumMembers(TEnumTypeDef(E.Def)))
       else if Kind = 'set' then
-        SB.Add(EncodeLpstr('set') +
+        SB.AppendLine(EncodeLpstr('set') +
                EncodeLpstr(E.Name) +
                EncodeLpstr(TSetTypeDef(E.Def).BaseTypeName))
       else if Kind = 'alias' then
-        SB.Add(EncodeLpstr('alias') +
+        SB.AppendLine(EncodeLpstr('alias') +
                EncodeLpstr(E.Name) +
                EncodeLpstr(TTypeAliasDef(E.Def).TypeName))
       else if Kind = 'record' then
-        SB.Add(EncodeLpstr('record') +
+        SB.AppendLine(EncodeLpstr('record') +
                EncodeLpstr(E.Name) +
                WriteRecordPayload(E))
       else if Kind = 'class' then
-        SB.Add(EncodeLpstr('class') +
+        SB.AppendLine(EncodeLpstr('class') +
                EncodeLpstr(E.Name) +
                WriteClassPayload(E))
       else if Kind = 'interface' then
-        SB.Add(EncodeLpstr('interface') +
+        SB.AppendLine(EncodeLpstr('interface') +
                EncodeLpstr(E.Name) +
                WriteInterfacePayload(E))
       else if Kind = 'proc' then
-        SB.Add(EncodeLpstr('proc') +
+        SB.AppendLine(EncodeLpstr('proc') +
                EncodeLpstr(E.Name) +
                WriteProcPayload(E))
       else if Kind = 'generic-class' then
-        SB.Add(EncodeLpstr('generic-class') +
+        SB.AppendLine(EncodeLpstr('generic-class') +
                EncodeLpstr(E.Name) +
                WriteGenericClassPayload(E))
       else { generic-interface }
-        SB.Add(EncodeLpstr('generic-interface') +
+        SB.AppendLine(EncodeLpstr('generic-interface') +
                EncodeLpstr(E.Name) +
                WriteGenericInterfacePayload(E));
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
     Eligible.Free;
@@ -545,12 +545,12 @@ var
   I, J:   Integer;
   R:      TRoutineSig;
   P:      TMethodParam;
-  SB:     TStringList;
+  SB:     TStringBuilder;
   Line:   string;
 begin
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
-    SB.Add('ROUT ' + IntToStr(AIface.Routines.Count));
+    SB.AppendLine('ROUT ' + IntToStr(AIface.Routines.Count));
     for I := 0 to AIface.Routines.Count - 1 do
     begin
       R := TRoutineSig(AIface.Routines.Items[I]);
@@ -567,10 +567,10 @@ begin
                 EncodeLpstr(P.TypeName) +
                 EncodeParamFlags(P);
       end;
-      SB.Add(Line);
+      SB.AppendLine(Line);
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
   end;
@@ -578,18 +578,18 @@ end;
 
 function WriteMeta(AIface: TUnitInterface): string;
 var
-  SB: TStringList;
+  SB: TStringBuilder;
 begin
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
-    SB.Add('META');
-    SB.Add(EncodeLpstr(AIface.SourceFile) +
+    SB.AppendLine('META');
+    SB.AppendLine(EncodeLpstr(AIface.SourceFile) +
            EncodeLpstr(AIface.SourceHash) +
            EncodeLpstr(AIface.CompilerId) +
            EncodeInt64(AIface.SourceModTime) +
            EncodeStringList(AIface.UsedUnits));
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
   end;
@@ -851,29 +851,29 @@ function WriteGenericRoutines(AIface: TUnitInterface): string;
 var
   I:   Integer;
   G:   TGenericBody;
-  SB:  TStringList;
+  SB:  TStringBuilder;
   Eligible: TObjectList;
 begin
   Eligible := TObjectList.Create(False);
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
     for I := 0 to AIface.GenericBodies.Count - 1 do
     begin
       G := TGenericBody(AIface.GenericBodies.Items[I]);
       if not G.IsType then Eligible.Add(G);
     end;
-    SB.Add('GENROUT ' + IntToStr(Eligible.Count));
+    SB.AppendLine('GENROUT ' + IntToStr(Eligible.Count));
     for I := 0 to Eligible.Count - 1 do
     begin
       G := TGenericBody(Eligible.Items[I]);
-      SB.Add(
+      SB.AppendLine(
         EncodeLpstr(G.Name) +
         EncodeTypeParamList(G.TypeParams, G.Constraints) +
         EncodeMethodDecl(G.MethodDecl) +
         EncodeBlock(G.MethodDecl.Body));
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
     Eligible.Free;
@@ -884,18 +884,18 @@ function WriteInlineBodies(AIface: TUnitInterface): string;
 var
   I:  Integer;
   B:  TInlineBody;
-  SB: TStringList;
+  SB: TStringBuilder;
 begin
-  SB := TStringList.Create;
+  SB := TStringBuilder.Create;
   try
-    SB.Add('INLINE ' + IntToStr(AIface.InlineBodies.Count));
+    SB.AppendLine('INLINE ' + IntToStr(AIface.InlineBodies.Count));
     for I := 0 to AIface.InlineBodies.Count - 1 do
     begin
       B := TInlineBody(AIface.InlineBodies.Items[I]);
-      SB.Add(EncodeLpstr(B.RoutineName) + EncodeBlock(B.Block));
+      SB.AppendLine(EncodeLpstr(B.RoutineName) + EncodeBlock(B.Block));
     end;
-    SB.Add('END');
-    Result := SB.Text;
+    SB.AppendLine('END');
+    Result := SB.ToString;
   finally
     SB.Free;
   end;
