@@ -332,7 +332,7 @@ type
 
   TScope = class
   private
-    FParent:  TScope;
+    [Weak] FParent: TScope;  { non-owning back-pointer; parent outlives child }
     FSymbols: TObjectList;  { owns all TSymbol in this scope }
     FKeys:    TStringList;  { sorted, case-insensitive; Objects[] = TSymbol (not owned) }
   public

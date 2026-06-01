@@ -3230,6 +3230,13 @@ begin
         ValTemp := ExtTemp;
       end;
       { ARC for class/string field stored via implicit Self.Field }
+      if ISFld.IsWeak and (ISFld.TypeDesc.Kind = tyClass) then
+      begin
+        { Weak class field: route through _WeakAssign so the runtime can
+          zero the slot if the target is freed.  No strong refcount change. }
+        EmitLine(Format('  call $_WeakAssign(l %s, l %s)', [ObjTemp, ValTemp]));
+        Exit;
+      end;
       if ISFld.TypeDesc.IsString then
       begin
         OldTemp := AllocTemp;
