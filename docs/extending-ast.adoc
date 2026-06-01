@@ -1,0 +1,508 @@
+= Extending the AST and `.bif` Format
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:icons: font
+:source-highlighter: rouge
+
+== When to Read This
+
+You're adding to `uAST.pas`. Maybe a new node class (a new statement or
+expression form), maybe a new field on an existing one. This document is
+the checklist that keeps the rest of the compiler — semantic analysis,
+codegen, and the `.bif` serialiser — in sync.
+
+The single load-bearing rule: *every AST shape change must be reflected
+in three places*.
+
+. The AST declaration itself (`uAST.pas`).
+. The semantic pass that consumes it (`uSemantic.pas`).
+. The `.bif` serialiser and deserialiser (`uUnitInterfaceIO.pas`).
+
+Codegen (`uCodeGenQBE.pas`) is a fourth
+place, but only when the node carries runtime semantics. A
+type-system-only change (e.g. adding a marker attribute) may need no
+codegen work.
+
+Skipping any of these is loud — the build's stage-2 → stage-3
+fixpoint catches mismatched serialisers within a few seconds — but the
+error message points at low-level length-prefix violations, not at the
+field you forgot. Saves time to be deliberate.
+
+
+== The Three Categories
+
+[cols="1,3,1",options="header"]
+|===
+| Category | Example | Effort
+
+| Add a field to an existing node
+| `IsThreaded: Boolean` on `TMethodDecl`
+| Small (~30 min)
+
+| Add a new node class
+| `TWhenStmt` — guarded multi-branch conditional
+| Medium (1–3 hours)
+
+| Add a new top-level interface kind
+| A new "macro" body section alongside `INLINE` / `GENERIC`
+| Large — touches the loader, semantic export, and `.bif` block dispatch
+|===
+
+This document covers the first two in detail. The third is rare enough
+that it should always be discussed before implementation.
+
+
+== Always-Required Steps (Both Categories)
+
+. *Bump `IFACE_VERSION`* in `uUnitInterfaceIO.pas`. Existing `.bif` files
+  become unreadable; the loader rejects them with a clear error and the
+  source-compile path takes over. If your change is codegen-only (no
+  serialiser surface), bump `COMPILER_ID` in `uCompilerId.pas` instead —
+  same effect for the binary-only-dep case but cheaper to reason about.
+
+. *Run the full gate* before pushing, from the project root:
++
+[source,bash]
+----
+# Rebuild the compiler.
+pasbuild compile -f project.xml --compiler compiler/target/blaise
+
+# Rebuild the RTL (only needed when runtime/ sources changed, or if
+# you bumped IFACE_VERSION / COMPILER_ID and want to refresh the
+# embedded .bif sections inside blaise_rtl.a).
+make -C runtime clean all install
+
+# Test suites.
+./compiler/target/TestRunner                            # 2248/0 expected
+./loader-testrunner/target/loader-testrunner            # 92/92 expected
+
+# Multi-stage fixpoint — the catch-all for serialiser asymmetry.
+STAGE1=/path/to/known-good/blaise ./scripts/fixpoint.sh # FIXPOINT_OK
+----
++
+`STAGE1` should point at a working pre-change `blaise` binary —
+typically the most recent `releases/v*/blaise` or a copy of `master`'s
+build. The script will use it to bootstrap a fresh compile of the new
+sources.
++
+The fixpoint check is the one that catches encoder/decoder asymmetries —
+if you forget to update the reader to match the writer (or vice versa),
+stage-2 emits `.bifs` stage-3 can't read.
+
+. *Add a test under `compiler/src/test/pascal/`* exercising the new
+  shape. For a new statement form, both an IR-level test
+  (`cp.test.<name>.pas`) asserting the emitted QBE shape and an
+  end-to-end test (`cp.test.e2e.<name>.pas`) that runs the resulting
+  binary.
+
+
+== Walked-Through Example: Adding a `when` Statement
+
+We'll add a `when` statement — a guarded multi-branch conditional
+distinct from `case`. Unlike `case`, each branch evaluates an arbitrary
+Boolean expression rather than matching a constant.
+
+[source,pascal]
+----
+when
+  X > 0:  WriteLn('positive');
+  X = 0:  WriteLn('zero');
+  X < -10: begin
+            WriteLn('big negative');
+            Y := -X
+          end
+  else    WriteLn('mild negative')
+end;
+----
+
+Semantics:
+
+* Each guard is evaluated top-to-bottom.
+* The first guard returning True executes its body; subsequent branches
+  are skipped.
+* `else` (optional) fires when no guard matched.
+
+This is bigger than a "new field" change but small enough to walk
+through end-to-end.
+
+
+=== Step 1: AST Declaration
+
+In `uAST.pas`, alongside `TIfStmt`, declare the new node and a helper
+record for one branch.
+
+[source,pascal]
+----
+TWhenBranch = class(TObject)
+public
+  Cond:  TASTExpr;  { owned — the guard expression }
+  Body:  TASTStmt;  { owned — single statement; use TBlock for multi }
+  Line:  Integer;
+  Col:   Integer;
+  destructor Destroy; override;
+end;
+
+TWhenStmt = class(TASTStmt)
+public
+  Branches: TObjectList;  { owned TWhenBranch; ordered top-to-bottom }
+  ElseBody: TASTStmt;     { owned; nil when no else clause }
+  constructor Create;
+  destructor Destroy; override;
+end;
+----
+
+Implement `Destroy` to free `Branches` and `ElseBody`. Set
+`Line`/`Col` in the parser; the analyser uses them for error messages.
+
+[NOTE]
+====
+Always set `Line`/`Col` on synthesised AST nodes. The compiler's error
+messages collapse to `line 0 col 0` when these are zero — see
+`feedback_line_col_ast.md` in the auto-memory.
+====
+
+
+=== Step 2: Parser
+
+In `uParser.pas`, recognise the `when` keyword (you'll also add it to
+the lexer's keyword table; about a 5-line change in `uLexer.pas`).
+
+[source,pascal]
+----
+function TParser.ParseWhenStmt: TWhenStmt;
+var
+  Branch: TWhenBranch;
+begin
+  Result := TWhenStmt.Create;
+  Result.Line := FCurrent.Line;
+  Result.Col  := FCurrent.Col;
+  Expect(tkWhen);
+  while (FCurrent.Kind <> tkElse) and (FCurrent.Kind <> tkEnd) do
+  begin
+    Branch := TWhenBranch.Create;
+    Branch.Line := FCurrent.Line;
+    Branch.Col  := FCurrent.Col;
+    Branch.Cond := ParseExpr;
+    Expect(tkColon);
+    Branch.Body := ParseStmt;
+    Result.Branches.Add(Branch);
+    if FCurrent.Kind = tkSemicolon then Consume;
+  end;
+  if FCurrent.Kind = tkElse then
+  begin
+    Consume;
+    Result.ElseBody := ParseStmt;
+  end;
+  Expect(tkEnd);
+end;
+----
+
+Wire it into `ParseStmt`'s dispatch.
+
+
+=== Step 3: Semantic Analysis
+
+In `uSemantic.pas`, add an `AnalyseWhenStmt` method.
+
+[source,pascal]
+----
+procedure TSemanticAnalyser.AnalyseWhenStmt(AStmt: TWhenStmt);
+var
+  I:        Integer;
+  Branch:   TWhenBranch;
+  CondType: TTypeDesc;
+begin
+  for I := 0 to AStmt.Branches.Count - 1 do
+  begin
+    Branch := TWhenBranch(AStmt.Branches.Items[I]);
+    CondType := AnalyseExpr(Branch.Cond);
+    if (CondType = nil) or (CondType.Kind <> tyBoolean) then
+      SemanticError(
+        'when branch guard must be Boolean',
+        Branch.Line, Branch.Col);
+    AnalyseStmt(Branch.Body);
+  end;
+  if AStmt.ElseBody <> nil then
+    AnalyseStmt(AStmt.ElseBody);
+end;
+----
+
+Wire it into `AnalyseStmt`'s dispatch chain: `if AStmt is TWhenStmt then
+AnalyseWhenStmt(TWhenStmt(AStmt))`.
+
+
+=== Step 4: Codegen (QBE Backend)
+
+In `uCodeGenQBE.pas`, add `EmitWhenStmt`. Each branch becomes a guard /
+body / next-branch label triple, modelled on `EmitIfStmt`'s expansion.
+
+[source,pascal]
+----
+procedure TCodeGenQBE.EmitWhenStmt(AStmt: TWhenStmt);
+var
+  I:        Integer;
+  Branch:   TWhenBranch;
+  CondT:    string;
+  LblBody:  string;
+  LblNext:  string;
+  LblEnd:   string;
+begin
+  LblEnd := AllocLabel('when_end');
+  for I := 0 to AStmt.Branches.Count - 1 do
+  begin
+    Branch := TWhenBranch(AStmt.Branches.Items[I]);
+    LblBody := AllocLabel(Format('when_b%d_body', [I]));
+    LblNext := AllocLabel(Format('when_b%d_next', [I]));
+    CondT := EmitExpr(Branch.Cond);
+    EmitLine(Format('  jnz %s, @%s, @%s', [CondT, LblBody, LblNext]));
+    EmitLine('@' + LblBody);
+    EmitStmt(Branch.Body);
+    EmitLine(Format('  jmp @%s', [LblEnd]));
+    EmitLine('@' + LblNext);
+  end;
+  if AStmt.ElseBody <> nil then
+    EmitStmt(AStmt.ElseBody);
+  EmitLine('@' + LblEnd);
+end;
+----
+
+Wire it into `EmitStmt`'s dispatch.
+
+
+=== Step 5: `.bif` Serialiser — The One Most People Forget
+
+This is the step that catches people. The `.bif` format mirrors AST
+shape, so a new AST node that can appear inside an inline-body or
+generic-body needs encoder/decoder coverage in `uUnitInterfaceIO.pas`.
+
+Even if your node would never appear in an exported routine body
+*today*, add the serialiser anyway — it costs ten minutes and prevents
+a future shape from accidentally landing without one.
+
+==== Encoder
+
+Find `EncodeStmt` (the dispatch table that handles each AST statement
+class). Add a case:
+
+[source,pascal]
+----
+else if AStmt is TWhenStmt then
+  Result := 'WHEN ' + EncodeWhenStmt(TWhenStmt(AStmt))
+----
+
+And implement `EncodeWhenStmt`:
+
+[source,pascal]
+----
+function EncodeWhenStmt(AStmt: TWhenStmt): string;
+var
+  I:      Integer;
+  Branch: TWhenBranch;
+  Parts:  string;
+begin
+  Parts := EncodeInt32(AStmt.Branches.Count);
+  for I := 0 to AStmt.Branches.Count - 1 do
+  begin
+    Branch := TWhenBranch(AStmt.Branches.Items[I]);
+    Parts := Parts +
+             EncodeExpr(Branch.Cond) +
+             EncodeStmt(Branch.Body);
+  end;
+  if AStmt.ElseBody <> nil then
+    Parts := Parts + '1' + EncodeStmt(AStmt.ElseBody)
+  else
+    Parts := Parts + '0';
+  Result := Parts;
+end;
+----
+
+The encoded form uses a length-prefix on the Branches count and a
+present-or-absent flag for ElseBody. No newlines inside `Parts` — the
+reader consumes by length, not by line.
+
+==== Decoder
+
+In `uUnitInterfaceIO.pas`'s `ReadStmt` dispatch, add:
+
+[source,pascal]
+----
+else if Tag = 'WHEN' then
+  Result := ReadWhenStmt(AText, APos)
+----
+
+And implement `ReadWhenStmt`:
+
+[source,pascal]
+----
+function ReadWhenStmt(const AText: string; var APos: Integer): TWhenStmt;
+var
+  I, C:    Integer;
+  Branch:  TWhenBranch;
+  HasElse: string;
+begin
+  Result := TWhenStmt.Create;
+  C := DecodeCount(AText, APos);
+  for I := 1 to C do
+  begin
+    Branch := TWhenBranch.Create;
+    Branch.Cond := ReadExpr(AText, APos);
+    Branch.Body := ReadStmt(AText, APos);
+    Result.Branches.Add(Branch);
+  end;
+  HasElse := Copy(AText, APos, 1);
+  Inc(APos, 1);
+  if HasElse = '1' then
+    Result.ElseBody := ReadStmt(AText, APos);
+end;
+----
+
+==== Bump the Version
+
+In `uUnitInterfaceIO.pas`:
+
+[source,pascal]
+----
+const
+  IFACE_MAGIC   = 'BLAISE-IFACE';
+  IFACE_VERSION = 3;  { was 2 — TWhenStmt added }
+----
+
+Old `.bifs` (v2 and earlier) now refuse to load. The loader falls
+through to source-compile cleanly when source is available; emits an
+error when binary-only and the compiler-id no longer matches.
+
+
+=== Step 6: Tests
+
+Add the canonical pair:
+
+`compiler/src/test/pascal/cp.test.when.pas`::
+  IR-level. Compile a small program with a `when` and assert the QBE IR
+  contains the expected branching shape (`jnz` followed by `jmp
+  @when_end`).
+
+`compiler/src/test/pascal/cp.test.e2e.when.pas`::
+  End-to-end. Compile + run, assert the output matches the expected
+  branch behaviour for a few inputs (positive, negative, edge cases).
+
+Register both in `TestRunner.pas`'s uses-clause and add the
+`initialization RegisterTest(...);` block per
+`cp.test.e2e.useschain.pas`'s pattern.
+
+
+=== Step 7: Gate
+
+Run from the project root:
+
+[source,bash]
+----
+pasbuild compile -f project.xml --compiler compiler/target/blaise
+make -C runtime clean all install        # if you bumped IFACE_VERSION
+./compiler/target/TestRunner             # OK (2251 tests) — +3 from yours
+./loader-testrunner/target/loader-testrunner   # OK (92 tests)
+STAGE1=/path/to/known-good/blaise ./scripts/fixpoint.sh  # FIXPOINT_OK
+----
+
+The fixpoint stage is the diagnostic for serialiser asymmetry. If
+stage-2 != stage-3 != stage-4, you have an encoder that doesn't match
+the decoder (or vice versa). The diff lines usually contain enough
+context to spot the offending node.
+
+
+== Just Adding a Field
+
+The shorter checklist when you're adding (say) `IsThreaded: Boolean` to
+`TMethodDecl`:
+
+. *`uAST.pas`*: add the field; default it in `Create`.
+
+. *Parser* (`uParser.pas`): consume the new syntax if the field comes
+  from source, or leave default if it's purely semantic-inferred.
+
+. *Semantic* (`uSemantic.pas`): populate the field. If it affects
+  visibility, lookup, or overload resolution, wire it into the
+  relevant pass.
+
+. *Codegen*: only if the field changes IR emission. Many fields don't
+  (e.g. attributes consulted only at semantic time).
+
+. *`.bif`*: in `uUnitInterfaceIO.pas`, find the `EncodeRoutineSig` /
+  `WriteRoutineSig` and `ReadRoutineSig` pair. Emit/consume the new
+  field in both. The format is positional, so insert at a deliberate
+  point (typically end of the record, before nested sub-objects).
+
+. *Bump `IFACE_VERSION`*.
+
+. *Test*: add a unit-test asserting the field round-trips through the
+  `.bif` correctly.
+
+
+== Common Pitfalls
+
+*Mismatched encoder / decoder*::
+  The most common bug. Symptom: stage-2 ≠ stage-3 in fixpoint, with
+  errors like `length prefix exceeds remaining buffer`. Cause:
+  encoder writes N bytes, decoder consumes N±1. Re-read the helper
+  pair side by side until they're symmetric.
+
+*Forgot to bump `IFACE_VERSION`*::
+  Symptom: build appears fine, but `.bifs` from a previous compile
+  load successfully against new code and produce nonsense AST.
+  Sometimes catches via downstream semantic crashes; sometimes
+  miscompiles. Bump every time you touch the format.
+
+*Forgot to wire the new node into dispatch*::
+  Symptom: parser produces the new node, but `AnalyseStmt` or
+  `EmitStmt` falls through to its default and either errors with
+  `unhandled statement` or silently emits nothing. The `else raise
+  ECodeGenError` at the end of each dispatch is your friend — keep
+  it strict.
+
+*Forgot `Line`/`Col`*::
+  Symptom: error messages report `line 0 col 0`. Always set both when
+  constructing a new AST node, especially in the parser.
+
+*New AST class but not in `.bif` dispatch*::
+  Symptom: the new node never appears inside an inline body or generic
+  body, so `.bif` ignores it. *Until someone uses it in an inline
+  procedure.* Then the encoder emits nothing (no case matched), the
+  reader expects a node, length prefix violated. Add the serialiser
+  case even if you can't trigger the path today.
+
+
+== Why the Format is Positional, Not Tagged
+
+The `.bif` format is positional: each block has a fixed shape, and
+fields are consumed in order. This is denser than a tagged
+self-describing format (no node-kind byte per AST node) and faster to
+read (no dispatch table per record). The trade-off is exactly the
+fragility this document is about: the encoder and decoder must stay
+symmetric or everything downstream breaks.
+
+A future migration to a tagged format would catch missing-node-case
+bugs at load time with a clear "unknown tag" error instead of length-
+prefix corruption. It's a deliberate non-goal today — the gate's
+fixpoint check is loud enough that practical incidents are rare and
+the dense format compresses well.
+
+
+== Final Checklist
+
+For copy-paste convenience.
+
+[%interactive]
+* [ ] AST class / field added in `uAST.pas` with `Line`/`Col`
+* [ ] Constructor + destructor handle ownership
+* [ ] Parser recognises the new syntax (if user-facing)
+* [ ] Lexer keyword added if needed (`uLexer.pas`)
+* [ ] Semantic dispatch case in `AnalyseStmt` / `AnalyseExpr`
+* [ ] Codegen dispatch case in `EmitStmt` / `EmitExpr`
+* [ ] `.bif` encoder case in `EncodeStmt` / `EncodeExpr`
+* [ ] `.bif` decoder case in `ReadStmt` / `ReadExpr`
+* [ ] `IFACE_VERSION` bumped in `uUnitInterfaceIO.pas`
+* [ ] IR-level test under `compiler/src/test/pascal/cp.test.<name>.pas`
+* [ ] E2E test under `cp.test.e2e.<name>.pas`
+* [ ] Tests registered in `TestRunner.pas` + `RegisterTest` in unit body
+* [ ] Full gate green: TestRunner / fixpoint / loader-testrunner
