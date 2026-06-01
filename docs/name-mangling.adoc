@@ -1,0 +1,372 @@
+= Symbol Name Mangling
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:icons: font
+:source-highlighter: rouge
+
+== What and Why
+
+Blaise emits per-unit-prefixed symbol names so that two units exporting
+same-named entities can't collide at link time. Without prefixing, a
+user library defining `function Foo` and another library doing the same
+would produce duplicate `$Foo` definitions in their respective `.o`
+files, and the linker would either error or silently bind to the wrong
+one. With prefixing, those become `$UnitA_Foo` and `$UnitB_Foo` —
+distinct global symbols, each resolvable independently.
+
+The scheme is *unit-name-as-prefix*: the QBE symbol for entity `Bar`
+declared in unit `Foo.Sub` becomes `Foo_Sub_Bar`. Dots in unit names
+collapse to underscores. Case from the source is preserved (Pascal is
+case-insensitive at the language level, but linker symbols are
+case-sensitive and the mangler treats them literally).
+
+For most user code this prefixing is invisible — every reference site
+goes through the same mangler at codegen time, so producer and consumer
+agree.
+
+
+== When Mangling Applies
+
+Every QBE symbol emitted for a unit-scope entity is prefixed. The full
+list:
+
+[cols="1,2,2",options="header"]
+|===
+| Entity | Bare form | Prefixed form (unit `Classes`)
+
+| Free routine
+| `$SplitIntoList`
+| `$Classes_SplitIntoList`
+
+| Class method
+| `$TStringList_Add`
+| `$Classes_TStringList_Add`
+
+| Class typeinfo
+| `$typeinfo_TStringList`
+| `$typeinfo_Classes_TStringList`
+
+| Class vtable
+| `$vtable_TStringList`
+| `$vtable_Classes_TStringList`
+
+| Class name data string
+| `$__cn_TStringList`
+| `$__cn_Classes_TStringList`
+
+| Field-cleanup function
+| `$_FieldCleanup_TStringList`
+| `$_FieldCleanup_Classes_TStringList`
+
+| Published methods table
+| `$methods_TStringList`
+| `$methods_Classes_TStringList`
+
+| Class attributes table
+| `$attrs_TStringList`
+| `$attrs_Classes_TStringList`
+
+| Interface impl list
+| `$impllist_TStringList`
+| `$impllist_Classes_TStringList`
+
+| Interface tab
+| `$itab_TStringList_IList`
+| `$itab_Classes_TStringList_IList`
+
+| Generic instance
+| `$typeinfo_TBox_Integer`
+| `$typeinfo_Classes_TBox_Integer`
+|===
+
+Local symbols inside a function body — basic-block labels (`@start`,
+`@if_then_0`), QBE temporaries (`%_t12`), variable slots
+(`%_var_X`) — are not prefixed. They are scoped to the QBE function
+they appear in.
+
+
+== When Mangling Does *Not* Apply
+
+A small allowlist of units stay literal. Their exports keep bare names
+so the runtime's hand-written hooks and codegen-emitted hardcoded
+references continue to resolve.
+
+The allowlist lives in `uSemantic.pas` as `IsUnmangledUnit`:
+
+[source,pascal]
+----
+function IsUnmangledUnit(const AUnitName: string): Boolean;
+begin
+  Result := True;
+  if AUnitName = ''                                    then Exit;
+  if SameText(AUnitName, 'System')                     then Exit;
+  if (Length(AUnitName) >= 4)
+     and SameText(Copy(AUnitName, 0, 4), 'rtl.')       then Exit;
+  if (Length(AUnitName) >= 7)
+     and SameText(Copy(AUnitName, 0, 7), 'blaise_')    then Exit;
+  Result := False;
+end;
+----
+
+Five categories accepted as "unmangled":
+
+. **The empty unit name** — program-scope code. Program-private
+  routines and classes stay unprefixed because they aren't shared
+  across compilation units.
+
+. **`System`** — the implicit unit every program uses. Carries `TObject`,
+  `TCustomAttribute`, foundational routines.
+
+. **`rtl.*` family** — `rtl.platform`, `rtl.platform.posix`, etc.
+  The OS-abstraction layer.
+
+. **`blaise_*` family** — `blaise_arc`, `blaise_exc`, `blaise_float`,
+  `blaise_mem`, `blaise_str`, `blaise_thread`, `blaise_weak`. The
+  runtime support library.
+
+. **Anything else** is mangled.
+
+
+== Why These Specific Allowlist Rules
+
+The runtime is hand-written and has *hardcoded* references to specific
+symbol names that originate in these units. Concretely:
+
+`uCodeGenQBE.pas` emits calls and references like:
+
+* `$_StartUp` (program init, in `System` / `rtl.*`)
+* `$_SetArgs`
+* `$_SysWriteStr`
+* `$_StringRelease`
+* `$_BlaiseGetMem` (in `blaise_mem`)
+* `$_ClassAlloc`
+* `$_FieldCleanup_TObject` (System)
+* `$TObject_Destroy`
+* `$TObject_Cleanup`
+* `$TObject_ToString`
+* `$TCustomAttribute_Create`
+* `$_AbstractMethodError`
+
+These names appear *literally* in codegen — there is no symbol-table
+lookup at the call site. If the runtime emitted them with a prefix
+(`$blaise_mem_BlaiseGetMem`, `$System_TObject_Destroy`), every codegen
+call site would also need to know about the prefix, and a `grep` for
+the bare names in the codebase would suddenly miss what it used to
+catch.
+
+Two paths to fix this:
+
+[loweralpha]
+. **Allowlist** — exempt the small set of units the runtime lives in
+  from mangling. Bare names stay bare. *Chosen approach.* Minimal
+  churn; runtime hand-roll continues to work as is.
+. **Route everything through the symbol table** — every `$_Foo` in
+  codegen becomes `RtlSym('_Foo')`, which consults a registry mapping
+  logical names to mangled names. Cleaner long-term; mechanical refactor
+  of ~113 call sites in `uCodeGenQBE.pas`. Documented as a follow-up
+  in `memory/project_unit_prefix_mangling.md`.
+
+
+== Worked Examples
+
+=== User unit
+
+Source `Classes.pas`:
+
+[source,pascal]
+----
+unit Classes;
+interface
+type
+  TStringList = class
+    procedure Add(const S: string);
+    function Get(I: Integer): string;
+  end;
+function SplitIntoList(const S: string): TStringList;
+implementation
+... bodies ...
+end.
+----
+
+Emitted symbols:
+
+----
+$Classes_TStringList_Add
+$Classes_TStringList_Get
+$Classes_SplitIntoList
+$typeinfo_Classes_TStringList
+$vtable_Classes_TStringList
+$__cn_Classes_TStringList
+$_FieldCleanup_Classes_TStringList
+----
+
+A consumer `program P` using `Classes`:
+
+[source,pascal]
+----
+program P; uses Classes;
+var L: TStringList;
+begin
+  L := TStringList.Create;
+  WriteLn(L.Get(0))
+end.
+----
+
+Codegen produces a call to `$Classes_TStringList_Get`, allocates via
+`$_ClassAlloc` (literal — `System` unit), stores `$vtable_Classes_TStringList`
+into the new instance's vtable slot. All names match exactly.
+
+=== Program-scope routine
+
+Source:
+
+[source,pascal]
+----
+program Test;
+function Add(A, B: Integer): Integer;
+begin
+  Result := A + B
+end;
+begin
+  WriteLn(Add(1, 2))
+end.
+----
+
+Emitted: `$Add` (bare). Program scope is unmangled — `Test_Add` would
+add noise for a symbol that never leaves the program's own `.o`.
+
+=== System TObject derived
+
+A user class extending `TObject`:
+
+[source,pascal]
+----
+unit MyUnit;
+interface
+type
+  TMyClass = class
+    procedure DoIt;
+  end;
+... etc.
+----
+
+Emitted: `$MyUnit_TMyClass_DoIt`, `$typeinfo_MyUnit_TMyClass`, etc.
+The class inherits `TObject_Destroy` (bare) via its vtable — the vtable
+entries are stored as `$TObject_Destroy` because `TObject` is in
+`System` (unmangled).
+
+=== Generic instance
+
+Source unit `Collections.pas` instantiates `TBox<Integer>` somewhere:
+
+----
+$typeinfo_Collections_TBox_Integer    { class typeinfo }
+$vtable_Collections_TBox_Integer
+$_FieldCleanup_Collections_TBox_Integer
+$Collections_TBox_Integer_Get          { method on the instance }
+----
+
+The angle brackets in `TBox<Integer>` collapse to underscore-separated
+text via `QBEMangle`, then get the unit prefix on top.
+
+
+== Adding a Unit to the Allowlist
+
+Rare. Don't do it unless the unit ships with hand-rolled assembly,
+codegen-emitted references to its symbols, or some other strong reason
+for bare names.
+
+To add `mynew_rtl_unit` to the allowlist:
+
+. In `uSemantic.pas`, edit `IsUnmangledUnit`:
++
+[source,pascal]
+----
+if SameText(AUnitName, 'mynew_rtl_unit') then Exit;  { add this line }
+----
+. In `uCodeGenQBE.pas`'s `ClassUnitPrefix`, mirror the same check.
+. Bump `COMPILER_ID` in `uCompilerId.pas` — the change affects which
+  units emit prefixed symbols, so previously-built `.bif`s on disk
+  become semantically incompatible.
+. Rebuild RTL: `make -C runtime clean all install`.
+. Run the gate.
+
+If you add a unit AND the existing allowlist no longer fits a clean
+pattern (e.g. the new unit is `core_rtl_x` not `blaise_x`), prefer
+extending the family-name check (`Copy(AUnitName, 0, 5) = 'core_'`)
+over a long list of explicit equality checks.
+
+
+== Subtleties
+
+=== Empty `OwningUnit`
+
+`TSymbol.OwningUnit` is empty for builtins (no unit owns them) and for
+program-scope symbols (`FProg <> nil` during `Analyse(AProg)`, so the
+analyser skips tagging). `IsUnmangledUnit('')` returns True, so empty
+flows through cleanly.
+
+=== Class methods and OwningUnit
+
+`TMethodDecl.OwningUnit` is set during semantic analysis from
+`FCurrentUnitName`. Imported `.bif`-loaded methods get their
+`OwningUnit` set from the `.bif`'s unit name during
+`uSemanticImport.RegisterClass`. So a class method's prefix matches
+whether the class was just compiled from source or pulled from a
+prebuilt `.o`.
+
+=== Property accessors
+
+Properties don't have their own symbols — they expand at call sites to
+calls into the read/write method. `uCodeGenQBE`'s property-access
+emission inserts the prefix via `ClassUnitPrefix(FldAccess.PropOwnerType)`
+so `MyList.Strings[0]` compiles to a call like
+`$Classes_TStringList_GetStrings`.
+
+=== Inherited destructor calls
+
+The `_FieldCleanup` emission walks the parent chain looking for the
+nearest `HasDestroyMethod = True` class and calls `<Class>_Destroy`.
+When that class is `TObject` (the typical case), the call site emits
+`$TObject_Destroy` (bare) because `TObject` is in the System
+allowlist. When the destructor is on a user class, the call emits
+`$UserUnit_TUserClass_Destroy` — prefix routed via `ClassUnitPrefix`.
+
+=== Imported class-method resolution
+
+When a consumer compiles a call to `TStringList.Get`, semantic does
+`FindMethodDecl('TStringList', 'Get')` and gets back a `TMethodDecl`
+whose `ResolvedQbeName` was deserialised from the imported `.bif`.
+That name is the *fully prefixed* form `Classes_TStringList_Get`.
+Codegen emits it as-is. The prefix never has to be reconstructed
+consumer-side.
+
+
+== Currently Out of Scope
+
+* **Unit-scope free variables** — `TUnitInterface.Vars` are exported
+  but `var` definitions in the implementation section don't yet flow
+  through the mangler at all sites. Today these aren't a collision
+  source in practice; revisit if it becomes one.
+* **Generic-instance prefix consistency** — generic instances created
+  in one unit and referenced by name in another may get different
+  prefixes if both units instantiate the same `TBox<Integer>`. Linker
+  dedupes by name so the cost is duplicate vtables in the binary, not
+  incorrect behaviour. Cleaner long-term: emit generic instances into
+  weakly-linked common symbols.
+
+
+== History
+
+* `5eb34b0` (2026-05-24) — `IsUnmangledUnit` + `MangleUnitPrefix`
+  helpers landed; no call sites.
+* `3dd6b5a` — free-routine `ResolvedQbeName` sites apply the prefix.
+  Added `TAddrOfExpr.ResolvedFreeRoutine` for `@FuncName` codegen.
+* `e25a48e` — class methods + vtable slot ImplName sites; class
+  context promoted to `ClassUnitPrefix` helper; imported class
+  methods registered in `FMethodIndex` so consumer-side resolution
+  works.
+* `18c7c72` — class data symbols (`typeinfo_`, `vtable_`, `__cn_`,
+  `_FieldCleanup_`, `methods_`, `attrs_`, `impllist_`, `itab_`).
