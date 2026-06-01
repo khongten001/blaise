@@ -234,6 +234,20 @@ begin
   _libc_write(STDERR_FD, @Buf[Pos + 1], Int64(19 - Pos));
 end;
 
+procedure WriteSignedInt(V: Integer);
+var
+  Neg: Byte;
+begin
+  if V < 0 then
+  begin
+    Neg := Ord('-');
+    _libc_write(STDERR_FD, @Neg, 1);
+    WriteInt(-V);
+  end
+  else
+    WriteInt(V);
+end;
+
 procedure _LeakTrackerReport;
 var
   I: Integer;
@@ -242,6 +256,8 @@ var
   ClassName: Pointer;
   LenSlot: ^Integer;
   NameLen: Integer;
+  RCSlot: ^Integer;
+  RC: Integer;
 begin
   if not GLTEnabled then Exit;
   if GLTCount = 0 then Exit;
@@ -270,6 +286,14 @@ begin
       end
       else
         WriteStr('(unknown)', 9);
+      { Refcount lives in the class header at UserPtr - CLASS_HDR.  A leaked
+        object with rc>1 indicates an over-retain (double-AddRef); rc=1
+        indicates a reference that was never released. }
+      RCSlot := Slot^ - CLASS_HDR;
+      RC     := RCSlot^;
+      WriteStr(' (rc=', 5);
+      WriteSignedInt(RC);
+      WriteStr(')', 1);
       WriteNL;
     end;
   end;
