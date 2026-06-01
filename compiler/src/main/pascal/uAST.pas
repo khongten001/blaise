@@ -842,9 +842,7 @@ end;
 
 destructor TIfStmt.Destroy;
 begin
-  Condition.Free;
-  ThenStmt.Free;
-  ElseStmt.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -858,7 +856,7 @@ end;
 
 destructor TCompoundStmt.Destroy;
 begin
-  Stmts.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -866,8 +864,7 @@ end;
 
 destructor TWhileStmt.Destroy;
 begin
-  Condition.Free;
-  Body.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -875,8 +872,7 @@ end;
 
 destructor TRepeatStmt.Destroy;
 begin
-  Body.Free;
-  Condition.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -884,9 +880,7 @@ end;
 
 destructor TForStmt.Destroy;
 begin
-  StartExpr.Free;
-  EndExpr.Free;
-  Body.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -894,8 +888,7 @@ end;
 
 destructor TForInStmt.Destroy;
 begin
-  CollExpr.Free;
-  Body.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -903,8 +896,7 @@ end;
 
 destructor TTryFinallyStmt.Destroy;
 begin
-  TryBody.Free;
-  FinallyBody.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -912,7 +904,7 @@ end;
 
 destructor TExceptHandlerClause.Destroy;
 begin
-  Body.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -926,10 +918,7 @@ end;
 
 destructor TTryExceptStmt.Destroy;
 begin
-  TryBody.Free;
-  Handlers.Free;
-  ElseBody.Free;
-  ExceptBody.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -937,7 +926,7 @@ end;
 
 destructor TRaiseStmt.Destroy;
 begin
-  Expr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -945,8 +934,7 @@ end;
 
 destructor TFieldAccessExpr.Destroy;
 begin
-  Base.Free;
-  PropIndexExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -954,7 +942,7 @@ end;
 
 destructor TIsExpr.Destroy;
 begin
-  Obj.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -962,7 +950,7 @@ end;
 
 destructor TAsExpr.Destroy;
 begin
-  Obj.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -970,7 +958,7 @@ end;
 
 destructor TSupportsExpr.Destroy;
 begin
-  Obj.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -978,8 +966,7 @@ end;
 
 destructor TBinaryExpr.Destroy;
 begin
-  Left.Free;
-  Right.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -987,7 +974,7 @@ end;
 
 destructor TNotExpr.Destroy;
 begin
-  Expr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -995,7 +982,7 @@ end;
 
 destructor TAssignment.Destroy;
 begin
-  Expr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1003,9 +990,7 @@ end;
 
 destructor TFieldAssignment.Destroy;
 begin
-  Expr.Free;
-  ObjExpr.Free;
-  PropIndexExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1013,8 +998,7 @@ end;
 
 destructor TStaticSubscriptAssign.Destroy;
 begin
-  IndexExpr.Free;
-  ValueExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1022,8 +1006,7 @@ end;
 
 destructor TPointerWriteStmt.Destroy;
 begin
-  PtrExpr.Free;
-  ValExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1031,20 +1014,19 @@ end;
 
 destructor TDerefExpr.Destroy;
 begin
-  Expr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
 destructor TAddrOfExpr.Destroy;
 begin
-  Expr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
 destructor TStringSubscriptExpr.Destroy;
 begin
-  StrExpr.Free;
-  IndexExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1058,7 +1040,7 @@ end;
 
 destructor TArrayLiteralExpr.Destroy;
 begin
-  Elements.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1072,7 +1054,7 @@ end;
 
 destructor TProcCall.Destroy;
 begin
-  Args.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1086,7 +1068,7 @@ end;
 
 destructor TFuncCallExpr.Destroy;
 begin
-  Args.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1100,8 +1082,7 @@ end;
 
 destructor TIndirectFuncCallExpr.Destroy;
 begin
-  CalleeExpr.Free;
-  Args.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1115,8 +1096,7 @@ end;
 
 destructor TMethodCallStmt.Destroy;
 begin
-  Args.Free;
-  ObjExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1130,7 +1110,7 @@ end;
 
 destructor TInheritedCallStmt.Destroy;
 begin
-  Args.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1138,7 +1118,7 @@ end;
 
 destructor TMethodParam.Destroy;
 begin
-  DefaultValue.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1154,8 +1134,7 @@ end;
 
 destructor TVarDecl.Destroy;
 begin
-  Attributes.Free;
-  Names.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1171,8 +1150,7 @@ end;
 
 destructor TFieldDecl.Destroy;
 begin
-  Attributes.Free;
-  Names.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1187,8 +1165,7 @@ end;
 
 destructor TRecordTypeDef.Destroy;
 begin
-  Fields.Free;
-  Methods.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1203,7 +1180,7 @@ end;
 
 destructor TProceduralTypeDef.Destroy;
 begin
-  Params.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1238,8 +1215,7 @@ end;
 
 destructor TMethodCallExpr.Destroy;
 begin
-  Args.Free;
-  ObjExpr.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1258,12 +1234,7 @@ end;
 
 destructor TClassTypeDef.Destroy;
 begin
-  Attributes.Free;
-  Properties.Free;
-  Methods.Free;
-  Fields.Free;
-  ConstDecls.Free;
-  ImplementsNames.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1277,7 +1248,7 @@ end;
 
 destructor TInterfaceTypeDef.Destroy;
 begin
-  Methods.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1293,9 +1264,7 @@ end;
 
 destructor TGenericTypeDef.Destroy;
 begin
-  ClassDef.Free;
-  ParamConstraints.Free;
-  ParamNames.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1310,7 +1279,7 @@ end;
 
 destructor TGenericFuncInstance.Destroy;
 begin
-  MethodDecl.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1326,9 +1295,7 @@ end;
 
 destructor TGenericInterfaceDef.Destroy;
 begin
-  IntfDef.Free;
-  ParamConstraints.Free;
-  ParamNames.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1342,7 +1309,7 @@ end;
 
 destructor TGenericInterfaceInstance.Destroy;
 begin
-  IntfDef.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1356,7 +1323,7 @@ end;
 
 destructor TGenericInstance.Destroy;
 begin
-  ClassDef.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1364,7 +1331,7 @@ end;
 
 destructor TTypeDecl.Destroy;
 begin
-  Def.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1382,11 +1349,7 @@ end;
 
 destructor TBlock.Destroy;
 begin
-  TypeDecls.Free;
-  ConstDecls.Free;
-  Decls.Free;
-  ProcDecls.Free;
-  Stmts.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1400,7 +1363,7 @@ end;
 
 destructor TEnumTypeDef.Destroy;
 begin
-  Members.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1424,8 +1387,7 @@ end;
 
 destructor TCaseBranch.Destroy;
 begin
-  Stmt.Free;
-  Values.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1439,9 +1401,7 @@ end;
 
 destructor TCaseStmt.Destroy;
 begin
-  ElseStmt.Free;
-  Branches.Free;
-  Selector.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1458,19 +1418,13 @@ end;
 
 destructor TConstDecl.Destroy;
 begin
-  ConstParts.Free;
-  ArrayElements.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
 destructor TProgram.Destroy;
 begin
-  GenericIntfInstances.Free;
-  GenericFuncInstances.Free;
-  GenericInstances.Free;
-  SymbolTable.Free;
-  UsedUnits.Free;
-  Block.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
@@ -1491,15 +1445,7 @@ end;
 
 destructor TUnit.Destroy;
 begin
-  GenericIntfInstances.Free;
-  GenericFuncInstances.Free;
-  GenericInstances.Free;
-  IntfBlock.Free;
-  ImplBlock.Free;
-  InitStmts.Free;
-  FinalStmts.Free;
-  UsedUnits.Free;
-  SymbolTable.Free;
+  { Owned class fields released by ARC field cleanup. }
   inherited Destroy;
 end;
 
