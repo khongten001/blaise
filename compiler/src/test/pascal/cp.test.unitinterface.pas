@@ -218,7 +218,7 @@ type
     procedure TestName_MatchesSource;
     procedure TestSourceFile_MatchesPath;
     procedure TestSourceHash_NonEmpty;
-    procedure TestCompilerVersion_NonEmpty;
+    procedure TestCompilerId_NonEmpty;
   end;
 
   { ----- TUnitInterface disk format (Phase 6c-E starter) --------- }
@@ -1851,7 +1851,7 @@ begin
   end;
 end;
 
-{ SourceHash and CompilerVersion are reserved for Phase 5+ .bpu work.
+{ SourceHash and CompilerId are reserved for Phase 5+ .bpu work.
   They are documented as empty strings at construction time.  The
   tests pin that contract so a later patch that starts populating
   them doesn't silently change semantics for downstream consumers. }
@@ -1868,13 +1868,13 @@ begin
   end;
 end;
 
-procedure TMetadataTests.TestCompilerVersion_NonEmpty;
+procedure TMetadataTests.TestCompilerId_NonEmpty;
 var
   U: TUnitInterface;
 begin
   U := TUnitInterface.Create('MyUnit');
   try
-    AssertEquals('compiler version empty in Phase 1', '', U.CompilerVersion);
+    AssertEquals('compiler version empty in Phase 1', '', U.CompilerId);
   finally
     U.Free;
   end;
@@ -2990,7 +2990,7 @@ begin
   Src := TUnitInterface.Create('U');
   Src.SourceFile      := '/a/b/U.pas';
   Src.SourceHash      := 'deadbeef';
-  Src.CompilerVersion := '0.8.0-test';
+  Src.CompilerId := '0.8.0-test';
   Src.UsedUnits.Add('SysUtils');
   Src.UsedUnits.Add('Classes');
   try
@@ -2999,7 +2999,7 @@ begin
     try
       AssertEquals('source file', '/a/b/U.pas', Round.SourceFile);
       AssertEquals('source hash', 'deadbeef',   Round.SourceHash);
-      AssertEquals('version',     '0.8.0-test', Round.CompilerVersion);
+      AssertEquals('version',     '0.8.0-test', Round.CompilerId);
       AssertEquals('2 used units', 2, Round.UsedUnits.Count);
       AssertEquals('first used',   'SysUtils', Round.UsedUnits.Strings[0]);
       AssertEquals('second used',  'Classes',  Round.UsedUnits.Strings[1]);
