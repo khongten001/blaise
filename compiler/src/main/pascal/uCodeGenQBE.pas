@@ -3110,6 +3110,13 @@ begin
     FA := TFieldAccessExpr(AExpr);
     if FA.IsConstructorCall then Exit;
     if FA.IsMethodCall then begin Result := True; Exit end;
+    { Method-backed property read (read GetX): the getter returns +1.
+      Field-backed reads (read FX) emit a plain load and do NOT own. }
+    if (FA.PropRead <> nil) and (FA.PropRead.ReadMethod <> '') then
+    begin
+      Result := True;
+      Exit;
+    end;
   end;
   { TMethodCallExpr: constructor calls do NOT own; all other method calls DO }
   if AExpr is TMethodCallExpr then
@@ -4415,6 +4422,10 @@ begin
       EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
       EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
       EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
+      { Receiver was a +1-owned temporary (function/property return) used
+        transiently — release it so the temporary does not leak. }
+      if ExprOwnsRef(ACall.ObjExpr) then
+        EmitLine(Format('  call $_ClassRelease(l %s)', [SelfTemp]));
       Exit;
     end;
     if MDecl.OwnerTypeName <> '' then
@@ -4422,6 +4433,8 @@ begin
     else
       FuncName := '$' + MethodEmitName(MDecl, RT.Name, ACall.Name);
     EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+    if ExprOwnsRef(ACall.ObjExpr) then
+      EmitLine(Format('  call $_ClassRelease(l %s)', [SelfTemp]));
     Exit;
   end;
 
@@ -7919,6 +7932,11 @@ begin
     end
     else
       EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
+    { Receiver was a +1-owned temporary (function/property return) used as
+      the call target — release it so the temporary does not leak.  The
+      method's return value (T) is independent and already owns its own ref. }
+    if (MCallExpr.ObjExpr <> nil) and ExprOwnsRef(MCallExpr.ObjExpr) then
+      EmitLine(Format('  call $_ClassRelease(l %s)', [SelfTemp]));
     Result := T;
     Exit;
   end;
