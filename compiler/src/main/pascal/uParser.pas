@@ -66,6 +66,7 @@ type
     procedure ParseTypeSection(ABlock: TBlock);
     procedure ParseTypeDecl(ABlock: TBlock);
     procedure ParseConstBlock(AList: TObjectList);
+    function  TryParseConstIntTypecast(out AValue: Int64): Boolean;
     function  ParseEnumDef: TEnumTypeDef;
     function  ParseSetDef: TSetTypeDef;
     function  ParseRecordDef: TRecordTypeDef;
@@ -565,9 +566,80 @@ begin
   end;
 end;
 
+{ Recognise a TypeName(IntLit) or TypeName(-IntLit) cast in a const-init
+  position and yield the truncated integer value.  Returns False (without
+  consuming any tokens) when the current token is not a known integer
+  type name followed by '('.
+
+  The cast applies the type's bit-width as an unsigned truncation mask;
+  signed types then sign-extend back to Int64 so e.g. Integer(-11) round-
+  trips to -11 while LongWord(-11) yields $FFFFFFF5 (4294967285).  Const
+  init only — full-expression casts are handled by ParseFactor. }
+function TParser.TryParseConstIntTypecast(out AValue: Int64): Boolean;
+var
+  TypeName: string;
+  Width:    Integer;  { bit-width of the target type; 64 = no truncation }
+  IsSigned: Boolean;
+  Negate:   Boolean;
+  Raw:      Int64;
+  Mask:     Int64;
+  SignBit:  Int64;
+begin
+  Result := False;
+  if not Check(tkIdent) then Exit;
+  if PeekKind <> tkLParen then Exit;
+  TypeName := FCurrent.Value;
+  Width := 0; IsSigned := False;
+  if SameText(TypeName, 'Byte') then
+    begin Width := 8;  IsSigned := False; end
+  else if SameText(TypeName, 'ShortInt') then
+    begin Width := 8;  IsSigned := True; end
+  else if SameText(TypeName, 'SmallInt') or SameText(TypeName, 'Int16') then
+    begin Width := 16; IsSigned := True; end
+  else if SameText(TypeName, 'Word') or SameText(TypeName, 'UInt16') then
+    begin Width := 16; IsSigned := False; end
+  else if SameText(TypeName, 'Integer') or SameText(TypeName, 'LongInt') then
+    begin Width := 32; IsSigned := True; end
+  else if SameText(TypeName, 'Cardinal') or SameText(TypeName, 'LongWord')
+       or SameText(TypeName, 'UInt32') then
+    begin Width := 32; IsSigned := False; end
+  else if SameText(TypeName, 'Int64') then
+    begin Width := 64; IsSigned := True; end
+  else if SameText(TypeName, 'UInt64') or SameText(TypeName, 'QWord')
+       or SameText(TypeName, 'PtrUInt') then
+    begin Width := 64; IsSigned := False; end
+  else
+    Exit;  { unknown / non-integer type name — not our cast }
+  Advance;          { consume type name }
+  Expect(tkLParen);
+  Negate := False;
+  if Check(tkMinus) then begin Negate := True; Advance; end;
+  if not Check(tkIntLit) then
+    raise EParseError.Create(Format(
+      'Expected integer literal inside ''%s(...)'' const cast at line %d col %d in %s',
+      [TypeName, FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  Raw := ParseIntLiteral(FCurrent.Value);
+  if Negate then Raw := -Raw;
+  Advance;
+  Expect(tkRParen);
+  { No truncation needed for 64-bit targets — the literal already fits. }
+  if Width < 64 then
+  begin
+    Mask    := (Int64(1) shl Width) - 1;
+    SignBit := Int64(1) shl (Width - 1);
+    Raw     := Raw and Mask;
+    { Sign-extend by toggling the sign bit and subtracting it back. }
+    if IsSigned and ((Raw and SignBit) <> 0) then
+      Raw := Raw - (SignBit shl 1);
+  end;
+  AValue := Raw;
+  Result := True;
+end;
+
 procedure TParser.ParseConstBlock(AList: TObjectList);
 var
-  CD: TConstDecl;
+  CD:          TConstDecl;
+  CastVal:     Int64;
 begin
   Expect(tkConst);
   while Check(tkIdent) do
@@ -672,6 +744,12 @@ begin
           CD.ArrayElements.Add(FCurrent.Value);
           Advance;
         end
+        else if Check(tkIdent) and (PeekKind = tkLParen)
+             and TryParseConstIntTypecast(CastVal) then
+        begin
+          { TypeName(IntLit) typecast — store the truncated value }
+          CD.ArrayElements.Add(IntToStr(CastVal));
+        end
         else if Check(tkIdent) then
         begin
           { named constant or boolean literal }
@@ -722,6 +800,13 @@ begin
       CD.IntVal   := ParseIntLiteral(FCurrent.Value);
       CD.IsString := False;
       Advance;
+    end
+    else if Check(tkIdent) and (PeekKind = tkLParen)
+         and TryParseConstIntTypecast(CastVal) then
+    begin
+      { TypeName(IntLit) typecast in scalar const init }
+      CD.IntVal   := CastVal;
+      CD.IsString := False;
     end
     else if Check(tkStringLit) or Check(tkIdent) then
     begin

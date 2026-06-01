@@ -90,6 +90,16 @@ type
     procedure TestArrayConst_LocalInFunction_EmitsDataItem;
     procedure TestArrayConst_LocalInProcedure_EmitsDataItem;
     procedure TestArrayConst_LocalInMethod_EmitsDataItem;
+
+    { Integer-type typecast in const initialiser — TypeName(Lit) and
+      TypeName(-Lit) — applies bit-width truncation with sign-extension
+      for signed targets.  Both scalar and array-element positions. }
+    procedure TestTypedConst_IntegerCast_NegativeSurvives;
+    procedure TestTypedConst_CardinalCast_NegativeTruncatesToUnsigned;
+    procedure TestTypedConst_ByteCast_NegativeOneIs255;
+    procedure TestTypedConst_SmallIntCast_NegativeOneIsMinusOne;
+    procedure TestTypedConst_WordCast_NegativeOneIs65535;
+    procedure TestArrayConst_CardinalCastElement_TruncatesToUnsigned;
   end;
 
 implementation
@@ -1030,6 +1040,95 @@ begin
   AssertTrue('IR non-empty', IR <> '');
   AssertTrue('$Vals data item emitted',
     Pos('data $Vals =', IR) >= 0);
+end;
+
+procedure TConstTests.TestTypedConst_IntegerCast_NegativeSurvives;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X: Integer = Integer(-11);
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { Integer(-11) sign-extends back to -11 in the i32 domain. }
+  AssertTrue('-11 reaches IR', IRContains(IR, '-11'));
+end;
+
+procedure TConstTests.TestTypedConst_CardinalCast_NegativeTruncatesToUnsigned;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X: Cardinal = Cardinal(-11);
+    var v: Cardinal;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { Cardinal(-11) = $FFFFFFF5 = 4294967285. }
+  AssertTrue('4294967285 reaches IR', IRContains(IR, '4294967285'));
+end;
+
+procedure TConstTests.TestTypedConst_ByteCast_NegativeOneIs255;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X: Byte = Byte(-1);
+    var v: Byte;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('255 reaches IR', IRContains(IR, '255'));
+end;
+
+procedure TConstTests.TestTypedConst_SmallIntCast_NegativeOneIsMinusOne;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X: SmallInt = SmallInt(-1);
+    var v: SmallInt;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { SmallInt is signed — sign-extend back to -1. }
+  AssertTrue('-1 reaches IR', IRContains(IR, '-1'));
+end;
+
+procedure TConstTests.TestTypedConst_WordCast_NegativeOneIs65535;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X: Word = Word(-1);
+    var v: Word;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('65535 reaches IR', IRContains(IR, '65535'));
+end;
+
+procedure TConstTests.TestArrayConst_CardinalCastElement_TruncatesToUnsigned;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const T: array[0..1] of Cardinal = (Cardinal(-11), 42);
+    var v: Cardinal;
+    begin v := T[0] end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { Element 0 of the data item should be the truncated value 4294967285. }
+  AssertTrue('4294967285 in $T data item',
+    IRContains(IR, 'w 4294967285'));
 end;
 
 initialization
