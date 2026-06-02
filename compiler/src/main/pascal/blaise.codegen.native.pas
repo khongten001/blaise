@@ -128,16 +128,15 @@ end;
 procedure TCodeGenNative.Generate(AProg: TProgram);
 begin
   Self.EnsureBackend;
-  raise ENativeCodeGenError.Create(
-    'native code generation is not yet implemented (target ' +
-    TargetName(FTarget) + ')');
+  FBackend.SetSymbolTable(FSymTable);
+  FOutput := FBackend.GenerateProgram(AProg);
 end;
 
 procedure TCodeGenNative.GenerateUnit(AUnit: TUnit);
 begin
   Self.EnsureBackend;
   raise ENativeCodeGenError.Create(
-    'native code generation is not yet implemented (target ' +
+    'native backend: single-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');
 end;
 
@@ -145,7 +144,7 @@ procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
 begin
   Self.EnsureBackend;
   raise ENativeCodeGenError.Create(
-    'native code generation is not yet implemented (target ' +
+    'native backend: multi-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');
 end;
 
@@ -153,7 +152,7 @@ procedure TCodeGenNative.AppendProgram(AProg: TProgram);
 begin
   Self.EnsureBackend;
   raise ENativeCodeGenError.Create(
-    'native code generation is not yet implemented (target ' +
+    'native backend: multi-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');
 end;
 

@@ -23,16 +23,40 @@ unit blaise.codegen.native.backend;
 interface
 
 uses
-  SysUtils, blaise.codegen.target;
+  SysUtils, uAST, uSymbolTable, strutils, blaise.codegen.target;
 
 type
   ENativeCodeGenError = class(Exception);
 
   TNativeBackend = class
   protected
-    FTarget: TTargetDesc;
+    FTarget:   TTargetDesc;
+    FSymTable: TSymbolTable;     { not owned }
+    { Assembly text is built append-only and read once at the end, so a
+      TStringBuilder (single growable buffer, no per-line heap string and no
+      O(N^2) final concat) is the right structure — the same approach the QBE
+      backend's TIRBuffer uses. }
+    FAsm:      TStringBuilder;
+
+    { Append one line of assembly (a newline is added). }
+    procedure Emit(const ALine: string);
+    { Append a blank separator line. }
+    procedure EmitBlank;
+
+    { ---- target-specific program lowering (abstract) ---- }
+
+    { Emit the program entry function ($main): label, frame setup, the
+      _SetArgs runtime call, then lower the program body, then return 0. }
+    procedure EmitProgram(AProg: TProgram); virtual; abstract;
   public
     constructor Create(const ATarget: TTargetDesc); virtual;
+    destructor Destroy; override;
+
+    procedure SetSymbolTable(ASymTable: TSymbolTable);
+
+    { Lower a whole program to assembly text and return it. }
+    function GenerateProgram(AProg: TProgram): string;
+
     property Target: TTargetDesc read FTarget;
   end;
 
@@ -43,7 +67,37 @@ implementation
 constructor TNativeBackend.Create(const ATarget: TTargetDesc);
 begin
   inherited Create;
-  FTarget := ATarget;
+  FTarget   := ATarget;
+  FSymTable := nil;
+  FAsm      := TStringBuilder.Create;
+end;
+
+destructor TNativeBackend.Destroy;
+begin
+  FAsm.Free;
+  inherited Destroy;
+end;
+
+procedure TNativeBackend.SetSymbolTable(ASymTable: TSymbolTable);
+begin
+  FSymTable := ASymTable;
+end;
+
+procedure TNativeBackend.Emit(const ALine: string);
+begin
+  FAsm.AppendLine(ALine);
+end;
+
+procedure TNativeBackend.EmitBlank;
+begin
+  FAsm.AppendLine;
+end;
+
+function TNativeBackend.GenerateProgram(AProg: TProgram): string;
+begin
+  FAsm.Clear;
+  Self.EmitProgram(AProg);
+  Result := FAsm.ToString;
 end;
 
 end.

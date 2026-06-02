@@ -18,7 +18,8 @@ interface
 
 uses
   classes, sysutils, process, contnrs, blaise.testing,
-  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader;
+  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader,
+  uCodeGen, blaise.codegen.target, blaise.codegen.native;
 
 type
   TE2ETestCase = class(TTestCase)
@@ -45,6 +46,12 @@ type
                             out AStdout: string;
                             out AExitCode: Integer;
                             const AExtraArgs: array of string): Boolean; overload;
+    { Native-backend equivalent of CompileAndRun: lowers the program to
+      assembly via TCodeGenNative (no QBE), links with cc, and runs.  The
+      correctness oracle is parity with the QBE path on the same source. }
+    function  CompileAndRunNative(const ASrc: string;
+                            out AStdout: string;
+                            out AExitCode: Integer): Boolean;
     function  RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
     function  CompileAndRunWithRTL(const ASrc: string;
                                    out AStdout: string;
@@ -208,6 +215,52 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
+  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  AExitCode := RunProcNoArgs(BinFile, AStdout);
+  Result := True
+end;
+
+function TE2ETestCase.CompileAndRunNative(const ASrc: string;
+                                          out AStdout: string;
+                                          out AExitCode: Integer): Boolean;
+var
+  Lexer:    TLexer;
+  Parser:   TParser;
+  Prog:     TProgram;
+  Semantic: TSemanticAnalyser;
+  NCG:      TCodeGenNative;
+  CG:       ICodeGen;
+  AsmText:  string;
+  AsmFile:  string;
+  BinFile:  string;
+  ToolOut:  string;
+  Rc:       Integer;
+begin
+  Result := False;
+  Inc(FCounter);
+  AsmFile := FScratch + '/t' + IntToStr(FCounter) + '.s';
+  BinFile := FScratch + '/t' + IntToStr(FCounter);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse;
+    Semantic := TSemanticAnalyser.Create;
+    Semantic.Analyse(Prog);
+    NCG      := TCodeGenNative.Create;
+    NCG.SetTarget(HostTarget);
+    CG       := NCG;       { ARC-managed; released at scope exit }
+    CG.Generate(Prog);
+    AsmText  := CG.GetOutput
+  finally
+    { CG (ICodeGen) freed by ARC; do not Free. }
+    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+  end;
+
+  WriteFile(AsmFile, AsmText);
+  { Native backend emits assembly directly — no QBE step. }
   Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);
