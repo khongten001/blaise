@@ -63,6 +63,7 @@ type
     procedure TestRun_Native_WiderIntParamsAndReturn;
     procedure TestRun_Native_TypeCastConversions;
     procedure TestRun_Native_SignednessAndWraparound;
+    procedure TestRun_Native_WriteUnsigned32;
   end;
 
 implementation
@@ -348,6 +349,17 @@ const
     end.
     ''';
 
+  { A Cardinal/UInt32 value above 2^31 must print as the large unsigned value,
+    not a negative signed wrap. }
+  SrcWriteUnsigned32 = '''
+    program P;
+    var c: Cardinal;
+    begin
+      c := 3000000000;
+      WriteLn(c)
+    end.
+    ''';
+
 procedure TE2ENativeTests.TestRun_Native_EmptyProgram_ExitsZero;
 var Output: string; RCode: Integer;
 begin
@@ -534,6 +546,15 @@ begin
   { SmallInt -2 reads back -2; Word 65534 reads back 65534; -2 + 5 = 3 }
   AssertEquals('-2 65534 3',
     '-2' + LE + '65534' + LE + '3' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_WriteUnsigned32;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcWriteUnsigned32, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('3000000000 (unsigned, not negative)', '3000000000' + LE, Output);
 end;
 
 initialization

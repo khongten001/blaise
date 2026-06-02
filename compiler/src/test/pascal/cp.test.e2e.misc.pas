@@ -52,6 +52,7 @@ type
     { Type casts }
     procedure TestRun_TypeCast_IntegerByte;
     procedure TestRun_TypeCast_PointerInteger;
+    procedure TestRun_WriteUnsigned32_PrintsUnsigned;
 
     { Sets }
     procedure TestRun_Set_Include_Exclude;
@@ -298,6 +299,18 @@ const
       I  := 42;
       P1 := Pointer(I);
       WriteLn(Integer(P1))
+    end.
+    ''';
+
+  { A Cardinal/UInt32 value above 2^31 must print as the large unsigned value,
+    not a negative signed wrap.  3000000000 fits in UInt32 but is negative as a
+    signed Int32. }
+  SrcWriteUnsigned32 = '''
+    program P;
+    var c: Cardinal;
+    begin
+      c := 3000000000;
+      WriteLn(c)
     end.
     ''';
 
@@ -617,6 +630,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcTypeCastPointerInt, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('42', '42' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_WriteUnsigned32_PrintsUnsigned;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcWriteUnsigned32, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('3000000000 (unsigned, not negative)', '3000000000' + LE, Output);
 end;
 
 procedure TE2EMiscTests.TestRun_Set_Include_Exclude;

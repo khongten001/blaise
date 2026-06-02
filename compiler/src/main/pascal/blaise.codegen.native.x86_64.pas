@@ -609,29 +609,47 @@ procedure TX86_64Backend.EmitWrite(ACall: TProcCall; ANewline: Boolean);
 var
   I:       Integer;
   ArgExpr: TASTExpr;
-  Code:    Integer;
+  K:       TTypeKind;
 begin
   { One _SysWrite* call (fd=1) per integer argument, then a trailing newline
-    for WriteLn.  The writer is chosen by argument width and signedness,
-    matching the QBE backend: unsigned 8-byte -> _SysWriteUInt64; signed
-    8-byte -> _SysWriteInt64; everything narrower -> the 32-bit signed
-    _SysWriteInt.  M5 handles integer-family arguments only. }
+    for WriteLn.  The writer is chosen by the argument's type, matching the
+    QBE backend exactly:
+      UInt64                       -> _SysWriteUInt64 (64-bit unsigned)
+      other 8-byte (Int64)         -> _SysWriteInt64  (64-bit signed)
+      UInt32 / Word (unsigned-32)  -> _SysWriteUInt64, zero-extended, so a
+                                      value above 2^31 prints as a large
+                                      positive number, not a signed wrap
+      everything else (Integer,
+        Byte, Boolean, Enum, ...)  -> _SysWriteInt    (32-bit signed; their
+                                      value range is non-negative there)
+    The value is already in %rax 64-bit-extended (unsigned narrow loads
+    zero-extend), so the unsigned-32 path needs no extra extension.
+    M5 handles integer-family arguments only. }
   for I := 0 to ACall.Args.Count - 1 do
   begin
     ArgExpr := TASTExpr(ACall.Args.Items[I]);
     Self.EmitExprToEax(ArgExpr);     { value -> %rax (64-bit-extended) }
-    Code := Self.IntExprCode(ArgExpr);
-    if (DecodedSize(Code) = 8) and DecodedUnsigned(Code) then
+    if ArgExpr.ResolvedType <> nil then
+      K := ArgExpr.ResolvedType.Kind
+    else
+      K := tyInteger;
+    if K = tyUInt64 then
     begin
       Self.Emit(#9'movq %rax, %rsi');  { arg2 = value (64-bit) }
       Self.Emit(#9'movl $1, %edi');    { arg1 = fd (stdout) }
       Self.Emit(#9'callq _SysWriteUInt64');
     end
-    else if DecodedSize(Code) = 8 then
+    else if K = tyInt64 then
     begin
       Self.Emit(#9'movq %rax, %rsi');
       Self.Emit(#9'movl $1, %edi');
       Self.Emit(#9'callq _SysWriteInt64');
+    end
+    else if K in [tyUInt32, tyWord] then
+    begin
+      Self.Emit(#9'movq %rax, %rsi');  { zero-extended 32-bit value }
+      Self.Emit(#9'movl $1, %edi');
+      Self.Emit(#9'callq _SysWriteUInt64');
     end
     else
     begin

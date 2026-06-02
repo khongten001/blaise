@@ -6607,6 +6607,7 @@ procedure TCodeGenQBE.EmitWrite(ACall: TProcCall; ANewline: Boolean);
 var
   ArgExpr:  TASTExpr;
   ArgTemp:  string;
+  T2:       string;
   IsString: Boolean;
   IsInt64:  Boolean;
   I:        Integer;
@@ -6649,6 +6650,17 @@ begin
     else if (ArgExpr.ResolvedType <> nil) and
             (ArgExpr.ResolvedType.Kind = tyUInt64) then
       EmitLine(Format('  call $_SysWriteUInt64(w %s, l %s)', [FdLit, ArgTemp]))
+    else if (ArgExpr.ResolvedType <> nil) and
+            (ArgExpr.ResolvedType.Kind in [tyUInt32, tyWord]) then
+    begin
+      { Unsigned 32-bit value: zero-extend to 64 bits and use the unsigned
+        writer, so a value above 2^31 prints as a large positive number rather
+        than a negative signed wrap.  (Byte/Boolean/Enum stay on the signed
+        32-bit writer: their value range is always non-negative there.) }
+      T2 := AllocTemp;
+      EmitLine(Format('  %s =l extuw %s', [T2, ArgTemp]));
+      EmitLine(Format('  call $_SysWriteUInt64(w %s, l %s)', [FdLit, T2]));
+    end
     else
     begin
       IsInt64 := (ArgExpr.ResolvedType <> nil) and
