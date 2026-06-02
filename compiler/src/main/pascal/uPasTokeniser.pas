@@ -87,21 +87,9 @@ function PasIsKeyword(const AText: string): Boolean;
 implementation
 
 { PosOrd / PosSubstr: shims that accept a 1-based position I (matching the
-  tokeniser's FPos convention) and do the right thing under both FPC and Blaise.
-  Under FPC strings are 1-based so we pass I straight through.
-  Under Blaise strings are 0-based so we subtract 1 before indexing. }
+  tokeniser's FPos convention).  Blaise strings are 0-based, so subtract 1
+  before indexing. }
 
-{$IFDEF FPC}
-function PosOrd(const S: string; I: Integer): Integer;
-begin
-  Result := Ord(S[I]);
-end;
-
-function PosSubstr(const S: string; I, Len: Integer): string;
-begin
-  Result := Copy(S, I, Len);
-end;
-{$ELSE}
 function PosOrd(const S: string; I: Integer): Integer;
 begin
   Result := OrdAt(S, I - 1);
@@ -111,7 +99,6 @@ function PosSubstr(const S: string; I, Len: Integer): string;
 begin
   Result := Copy(S, I - 1, Len);
 end;
-{$ENDIF}
 
 var
   KwList: TStringList;

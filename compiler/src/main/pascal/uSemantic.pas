@@ -1869,7 +1869,6 @@ begin
     { Register the instantiation for codegen }
     GII          := TGenericInterfaceInstance.Create;
     GII.InstName := MangledName;
-    {$IFDEF FPC}GII.IntfDef.Free;{$ENDIF}
     GII.IntfDef  := nil;
     GII.TypeDesc := Result;
     if FCurrentUnit <> nil then
@@ -6565,7 +6564,6 @@ begin
         try
           ObjType := AnalyseExpr(AExpr.ObjExpr);
         except
-          {$IFDEF FPC}AExpr.ObjExpr.Free;{$ENDIF}
           AExpr.ObjExpr := nil;
           SemanticError(
             Format('Undeclared identifier ''%s''', [AExpr.ObjectName]),
@@ -6574,7 +6572,6 @@ begin
       end;
       if (ObjType = nil) or not (ObjType.Kind in [tyClass, tyInterface]) then
       begin
-        {$IFDEF FPC}AExpr.ObjExpr.Free;{$ENDIF}
         AExpr.ObjExpr := nil;
         SemanticError(
           Format('Undeclared identifier ''%s''', [AExpr.ObjectName]),

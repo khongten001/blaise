@@ -480,7 +480,6 @@ begin
           GID.Col        := TD.Col;
           GID.ParamNames.AddStrings(ParamNames);
           GID.ParamConstraints.AddStrings(ParamConstraints);
-          {$IFDEF FPC}GID.IntfDef.Free;{$ENDIF}
           GID.IntfDef := ParseInterfaceDef;
           TD.Def := GID;
         end
@@ -495,7 +494,6 @@ begin
           GD.Col        := TD.Col;
           GD.ParamNames.AddStrings(ParamNames);
           GD.ParamConstraints.AddStrings(ParamConstraints);
-          {$IFDEF FPC}GD.ClassDef.Free;{$ENDIF}
           GD.ClassDef := ParseClassDef;
           GD.ClassDef.Attributes.AddStrings(ClassAttrs);
           TD.Def := GD;

@@ -8,8 +8,6 @@
 
 unit uConfig;
 
-{$mode objfpc}{$H+}
-
 interface
 
 uses
