@@ -123,7 +123,7 @@ type
   public
     Obj:                TASTExpr;   { owned — left-hand side; must be class instance }
     TypeName:           string;     { right-hand side type name; resolved by uSemantic }
-    ResolvedTargetType: TTypeDesc;  { set by uSemantic — class or interface descriptor }
+    [Unretained] ResolvedTargetType: TTypeDesc;  { set by uSemantic — class or interface descriptor }
     destructor Destroy; override;
   end;
 
@@ -141,7 +141,7 @@ type
     Obj:                TASTExpr;  { owned — object being tested }
     IntfTypeName:       string;    { interface type name (second arg) }
     OutVarName:         string;    { variable to receive fat pointer (third arg; empty = 2-arg form) }
-    ResolvedIntfType:   TTypeDesc; { set by uSemantic — must be tyInterface }
+    [Unretained] ResolvedIntfType:   TTypeDesc; { set by uSemantic — must be tyInterface }
     OutVarIsGlobal:     Boolean;   { set by uSemantic }
     destructor Destroy; override;
   end;
@@ -178,7 +178,7 @@ type
     Expr:            TASTExpr;   { owned }
     IsVarParam:      Boolean;    { set by uSemantic — True if target is a var parameter }
     IsGlobal:        Boolean;    { set by uSemantic — True if target is a program-level global }
-    ResolvedLhsType: TTypeDesc;  { set by uSemantic — type of the target variable }
+    [Unretained] ResolvedLhsType: TTypeDesc;  { set by uSemantic — type of the target variable }
     IsWeakLhs:       Boolean;    { set by uSemantic — True if the LHS symbol
                                    was declared [Weak]; codegen emits a
                                    _WeakAssign in place of the strong
@@ -234,7 +234,7 @@ type
     CollExpr:             TASTExpr;   { owned — collection expression }
     Body:                 TASTStmt;   { owned }
     { Annotations set by the semantic pass }
-    ResolvedVarType:      TTypeDesc;  { element type }
+    [Unretained] ResolvedVarType:      TTypeDesc;  { element type }
     { Class-enumerator path (IsArrayIter = False) }
     IsArrayIter:          Boolean;    { True when collection is a static array }
     EnumVarName:          string;     { synthetic enumerator slot, e.g. __forin_0 }
@@ -468,7 +468,7 @@ type
   public
     Names:        TStringList;  { owned — one or more names: x, y: Integer }
     TypeName:     string;
-    ResolvedType: TTypeDesc;    { set by uSemantic; nil until analysed }
+    [Unretained] ResolvedType: TTypeDesc;    { set by uSemantic; nil until analysed }
     Attributes:   TStringList;  { owned — raw attribute names as written in
                                   source, e.g. 'Weak', 'SomeOther'; the
                                   Attribute suffix (if present) is preserved
@@ -523,7 +523,7 @@ type
   public
     Names:        TStringList;  { owned — e.g. X, Y: Integer }
     TypeName:     string;
-    ResolvedType: TTypeDesc;    { set by uSemantic }
+    [Unretained] ResolvedType: TTypeDesc;    { set by uSemantic }
     Attributes:   TStringList;  { owned — see TVarDecl.Attributes. }
     IsWeak:       Boolean;      { set by uSemantic when [Weak] is resolved. }
     IsUnretained: Boolean;      { set by uSemantic when [Unretained] is resolved. }
@@ -579,7 +579,7 @@ type
     IsVarParam:   Boolean;    { True = passed by reference (var keyword) }
     IsConstParam: Boolean;    { True = 'const' keyword present }
     IsOpenArray:  Boolean;    { True = 'array of T'; TypeName is the element type }
-    ResolvedType: TTypeDesc;  { set by uSemantic — TOpenArrayTypeDesc when IsOpenArray }
+    [Unretained] ResolvedType: TTypeDesc;  { set by uSemantic — TOpenArrayTypeDesc when IsOpenArray }
     DefaultValue: TASTExpr;   { owned — non-nil when the param has a default value
                                 ('= expr' after the type); restricted to literal forms
                                 (int/float/string/nil) and named-constant idents. }
@@ -592,7 +592,7 @@ type
     OwnerTypeName:      string;      { set by uSemantic — class that defines this method }
     Params:             TObjectList; { owned TMethodParam }
     ReturnTypeName:     string;      { empty = procedure }
-    ResolvedReturnType: TTypeDesc;   { set by uSemantic; nil = procedure }
+    [Unretained] ResolvedReturnType: TTypeDesc;   { set by uSemantic; nil = procedure }
     Body:               TBlock;      { owned unless OwnBody = False }
     OwnBody:            Boolean;     { False for cloned generic method stubs that share the body }
     IsVirtual:          Boolean;     { declared with 'virtual' directive }
