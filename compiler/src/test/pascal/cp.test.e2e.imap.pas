@@ -29,6 +29,7 @@ type
     procedure TestRun_IMap_TOrderedDictionary_AddAndContainsKey;
     procedure TestRun_IMap_TOrderedDictionary_TryGetValue;
     procedure TestRun_IMap_SwapImplementation_SameCallSite;
+    procedure TestRun_IMap_GenericDictInUnit_LinksAndRuns;
   end;
 
 implementation
@@ -409,6 +410,57 @@ begin
   AssertEquals('exit 0', 0, RCode);
   AssertTrue('TDict dispatch correct',    Pos('1', Output) >= 0);
   AssertTrue('TOrdDict dispatch correct', Pos('1', Output) >= 0);
+end;
+
+{ Regression: a generic class implementing a generic interface
+  (TDictionary<string,Integer> -> IMap<string,Integer>) instantiated inside a
+  USER UNIT (not the main program) must link.  Previously the unit codegen path
+  emitted the impllist that references typeinfo_IMap_string_Integer but never
+  emitted that typeinfo def, producing an undefined-symbol link error. }
+procedure TE2EIMapTests.TestRun_IMap_GenericDictInUnit_LinksAndRuns;
+const
+  UnitSrc =
+    '''
+    unit genmapunit;
+    interface
+    uses Generics.Collections;
+    type
+      TStore = class
+        FMap: TDictionary<string, Integer>;
+        constructor Create;
+        function Get(const AKey: string): Integer;
+      end;
+    implementation
+    constructor TStore.Create;
+    begin
+      FMap := TDictionary<string, Integer>.Create;
+      FMap.Add('answer', 42);
+    end;
+    function TStore.Get(const AKey: string): Integer;
+    begin
+      if not FMap.TryGetValue(AKey, Result) then Result := -1;
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program P;
+    uses genmapunit;
+    var S: TStore;
+    begin
+      S := TStore.Create;
+      WriteLn(S.Get('answer'))
+    end.
+    ''';
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnit('genmapunit', UnitSrc, ProgSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('Get(answer) = 42', '42' + #10, Output);
 end;
 
 initialization

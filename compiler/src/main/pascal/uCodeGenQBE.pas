@@ -10069,6 +10069,7 @@ var
   IntfMangle:   string;
   VLine:        string;
   E:            TVTableEntry;
+  GII:          TGenericInterfaceInstance;
 begin
   { No clears — output and string literal table accumulate across calls.
     Counter resets are safe: QBE temps and block labels are function-scoped. }
@@ -10259,6 +10260,19 @@ begin
           end;
           VLine := VLine + ' }';
           EmitLine(VLine);
+        end;
+
+        { Generic interface-instance typeinfo (e.g. IMap<string,Integer>).
+          The address of this block is the interface's runtime identity token;
+          the generic-class-instance impllist below references it.  The program
+          path emits these from AProg.GenericIntfInstances in EmitInterfaceDefs;
+          the unit path must do the same for AUnit.GenericIntfInstances, or a
+          generic class implementing a generic interface inside a unit (e.g.
+          TDictionary -> IMap) links against an undefined typeinfo symbol. }
+        for I := 0 to AUnit.GenericIntfInstances.Count - 1 do
+        begin
+          GII := TGenericInterfaceInstance(AUnit.GenericIntfInstances.Items[I]);
+          EmitLine('data $typeinfo_' + GII.InstName + ' = { l 0 }');
         end;
 
         { Generic class instance typeinfo + vtable + itab/impllist.  Mirrors

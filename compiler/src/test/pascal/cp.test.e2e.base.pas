@@ -64,6 +64,13 @@ type
                                    out AStdout: string;
                                    out AExitCode: Integer;
                                    ADebugMode: Boolean): Boolean;
+    { Compile a program that USES a user unit written to the scratch dir, so
+      the unit (not the program) is the compilation unit.  Exercises the
+      multi-unit codegen path.  AUnitName is the unit identifier; AUnitSrc and
+      ASrc are full sources.  RTL + stdlib units are also on the search path. }
+    function  CompileAndRunWithUnit(const AUnitName, AUnitSrc, ASrc: string;
+                                   out AStdout: string;
+                                   out AExitCode: Integer): Boolean;
   end;
 
 implementation
@@ -418,6 +425,69 @@ begin
     Semantic.Analyse(Prog);
     CG := TCodeGenQBE.Create;
     CG.SetDebugMode(ADebugMode);
+    CG.SetSymbolTable(Prog.SymbolTable);
+    for I := 0 to Units.Count - 1 do
+      CG.AppendUnit(TUnit(Units.Items[I]));
+    CG.AppendProgram(Prog);
+    IR := CG.GetOutput
+  finally
+    CG.Free; Semantic.Free;
+    Units.Free; Loader.Free; SearchPaths.Free;
+    Prog.Free; Parser.Free; Lexer.Free
+  end;
+
+  WriteFile(IRFile, IR);
+  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+  if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
+  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  AExitCode := RunProcNoArgs(BinFile, AStdout);
+  Result := True
+end;
+
+function TE2ETestCase.CompileAndRunWithUnit(const AUnitName, AUnitSrc, ASrc: string;
+                                            out AStdout: string;
+                                            out AExitCode: Integer): Boolean;
+var
+  Lexer:       TLexer;
+  Parser:      TParser;
+  Prog:        TProgram;
+  Semantic:    TSemanticAnalyser;
+  CG:          TCodeGenQBE;
+  Loader:      TUnitLoader;
+  Units:       TObjectList;
+  SearchPaths: TStringList;
+  IR:          string;
+  IRFile, AsmFile, BinFile, ToolOut, UnitFile: string;
+  Rc, I:       Integer;
+begin
+  Result := False;
+  Inc(FCounter);
+  IRFile   := FScratch + '/t' + IntToStr(FCounter) + '.ssa';
+  AsmFile  := FScratch + '/t' + IntToStr(FCounter) + '.s';
+  BinFile  := FScratch + '/t' + IntToStr(FCounter);
+  UnitFile := FScratch + '/' + AUnitName + '.pas';
+
+  { Write the user unit to the scratch dir so the unit loader resolves it. }
+  WriteFile(UnitFile, AUnitSrc);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  Loader := nil; Units := nil; SearchPaths := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse;
+    Semantic := TSemanticAnalyser.Create;
+    SearchPaths := TStringList.Create;
+    SearchPaths.Add(FScratch);            { the written user unit }
+    SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
+    Loader := TUnitLoader.Create(SearchPaths);
+    Units  := Loader.LoadAll(Prog.UsedUnits);
+    for I := 0 to Units.Count - 1 do
+      Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
+    Semantic.Analyse(Prog);
+    CG := TCodeGenQBE.Create;
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
