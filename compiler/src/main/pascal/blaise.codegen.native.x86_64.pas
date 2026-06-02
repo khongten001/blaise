@@ -40,8 +40,9 @@ type
       records each slot's byte width (1/2/4/8) so EmitDataSection picks the
       right .byte/.word/.long/.quad directive. }
     FDataGlobals: TStringList;
-    { Parallel to FDataGlobals: encoded width/signedness of each global slot. }
-    FGlobalTypes: TDictionary<string, Integer>;
+    { Parallel to FDataGlobals: the static type of each global slot, so loads,
+      stores and the .data directive pick the right width and signedness. }
+    FGlobalTypes: TDictionary<string, TTypeDesc>;
 
     { Current function's stack frame: maps a local name (param, var, or Result)
       to its negative %rbp-relative byte offset.  nil while emitting program
@@ -50,9 +51,9 @@ type
       key->value map, so TDictionary is the right container for the access
       pattern. }
     FFrame:     TDictionary<string, Integer>;
-    { Parallel to FFrame: the encoded width/signedness of each frame slot (see
-      EncodeIntType), so loads and stores pick the right width and signedness. }
-    FFrameTypes: TDictionary<string, Integer>;
+    { Parallel to FFrame: the static type of each frame slot, so loads and
+      stores pick the right width and signedness. }
+    FFrameTypes: TDictionary<string, TTypeDesc>;
     FFrameSize:  Integer;       { bytes to reserve for locals (16-aligned) }
 
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
@@ -61,11 +62,10 @@ type
       registration's type wins).  The width and signedness drive both the
       .data directive and every load/store of the slot. }
     procedure AddGlobal(const AName: string; AType: TTypeDesc);
-    { Encoded width/signedness (see EncodeIntType) of a frame-local slot, or 0
-      if AName is not a local. }
-    function LocalCode(const AName: string): Integer;
-    { Encoded width/signedness of a program global, or 0 if not registered. }
-    function GlobalCode(const AName: string): Integer;
+    { The static type of a frame-local slot, or nil if AName is not a local. }
+    function LocalType(const AName: string): TTypeDesc;
+    { The static type of a program global, or nil if AName is not registered. }
+    function GlobalType(const AName: string): TTypeDesc;
     { Emit the accumulated .data section (one slot per registered global). }
     procedure EmitDataSection;
 
@@ -75,11 +75,11 @@ type
       "name(%rip)" for a global. }
     function VarOperand(const AName: string): string;
     { Load an integer-family value from AOperand into %rax, extended to 64
-      bits per the encoded type ACode (sign/zero-extend by width+signedness). }
-    procedure EmitLoadVar(const AOperand: string; ACode: Integer);
+      bits per AType (sign/zero-extend by width and signedness). }
+    procedure EmitLoadVar(const AOperand: string; AType: TTypeDesc);
     { Store the integer-family value currently in %rax into AOperand, using
-      the right-width register sub-view for the encoded type ACode. }
-    procedure EmitStoreVar(const AOperand: string; ACode: Integer);
+      the right-width register sub-view for AType. }
+    procedure EmitStoreVar(const AOperand: string; AType: TTypeDesc);
     { Reserve an 8-byte-aligned frame slot for AName:AType, advancing AOffset. }
     procedure AddSlot(const AName: string; AType: TTypeDesc; var AOffset: Integer);
     { Build FFrame for a function: assign offsets to params, Result, locals. }
@@ -90,10 +90,9 @@ type
     procedure EmitProgram(AProg: TProgram); override;
     { Emit a standalone procedure/function definition. }
     procedure EmitFunctionDef(ADecl: TMethodDecl);
-    { Spill incoming arg register AIdx into a param slot at the encoded
-      type ACode's width. }
+    { Spill incoming arg register AIdx into a param slot at AType's width. }
     procedure EmitSpillArg(AIdx: Integer; const AOperand: string;
-                           ACode: Integer);
+                           AType: TTypeDesc);
     { Lower one statement. }
     procedure EmitStmt(AStmt: TASTStmt);
     { Lower a Write/WriteLn call (ANewline = WriteLn). }
@@ -104,10 +103,10 @@ type
     procedure EmitCall(const AFuncSym: string; AArgs: TObjectList);
     { Evaluate an integer expression; result left in %rax (64-bit-extended). }
     procedure EmitExprToEax(AExpr: TASTExpr);
-    { The encoded integer-family type to use when loading the value of AExpr:
-      the recorded slot encoding for a known local/global (authoritative),
-      otherwise derived from the node's ResolvedType. }
-    function IntExprCode(AExpr: TASTExpr): Integer;
+    { The integer-family type to use when loading the value of AExpr: the
+      recorded slot type for a known local/global (authoritative), otherwise
+      the node's ResolvedType. }
+    function IntExprType(AExpr: TASTExpr): TTypeDesc;
     { Re-truncate and re-extend the value in %rax to AType's width and
       signedness — used after a call (whose ABI return is 32-bit) and to
       implement an explicit narrowing/widening type cast. }
@@ -172,42 +171,6 @@ begin
   Result := AType.Kind in [tyByte, tyBoolean, tyWord, tyUInt32, tyUInt64, tyEnum];
 end;
 
-{ True when a value of this type lives in the full 64-bit register and must
-  be written / passed / returned as an 8-byte quantity. }
-function IsWide(AType: TTypeDesc): Boolean;
-begin
-  Result := IntByteSize(AType) = 8;
-end;
-
-{ Compact integer encoding of an integer-family type's width and signedness,
-  used as the value type of the frame/global slot maps.  This avoids a second
-  TDictionary<string,TTypeDesc> instantiation in this unit: the compiler's
-  generic-instance collection currently mis-handles two distinct TDictionary
-  instantiations in one unit (referenced-but-undefined vtable — see bugs.txt),
-  so every slot map reuses the single TDictionary<string,Integer>.
-  Encoding: magnitude = byte size (1/2/4/8); sign = signed(negative) vs
-  unsigned(positive).  0 is never produced (a nil type encodes as -4). }
-function EncodeIntType(AType: TTypeDesc): Integer;
-begin
-  Result := IntByteSize(AType);
-  if not IsUnsignedInt(AType) then
-    Result := -Result;
-end;
-
-{ The byte width recorded in a slot-map encoding. }
-function DecodedSize(ACode: Integer): Integer;
-begin
-  if ACode < 0 then
-    Result := -ACode
-  else
-    Result := ACode;
-end;
-
-{ True when a slot-map encoding denotes an unsigned type. }
-function DecodedUnsigned(ACode: Integer): Boolean;
-begin
-  Result := ACode > 0;
-end;
 
 { The assembly symbol for a procedure/function: the semantic pass sets
   ResolvedQbeName for overloaded/mangled names; otherwise use the source name
@@ -234,7 +197,7 @@ begin
   inherited Create(ATarget);
   FLabelCount  := 0;
   FDataGlobals := TStringList.Create;
-  FGlobalTypes := TDictionary<string, Integer>.Create;
+  FGlobalTypes := TDictionary<string, TTypeDesc>.Create;
   FFrame       := nil;
   FFrameTypes  := nil;
   FFrameSize   := 0;
@@ -259,14 +222,14 @@ begin
   if FDataGlobals.IndexOf(AName) < 0 then
   begin
     FDataGlobals.Add(AName);
-    FGlobalTypes.Add(AName, EncodeIntType(AType));
+    FGlobalTypes.Add(AName, AType);
   end;
 end;
 
-function TX86_64Backend.GlobalCode(const AName: string): Integer;
+function TX86_64Backend.GlobalType(const AName: string): TTypeDesc;
 begin
   if not FGlobalTypes.TryGetValue(AName, Result) then
-    Result := 0;
+    Result := nil;
 end;
 
 procedure TX86_64Backend.EmitDataSection;
@@ -281,7 +244,7 @@ begin
   for I := 0 to FDataGlobals.Count - 1 do
   begin
     Name := FDataGlobals.Strings[I];
-    Sz := DecodedSize(Self.GlobalCode(Name));
+    Sz := IntByteSize(Self.GlobalType(Name));
     { Align each slot to its own size; pick a zero-initialiser directive of
       matching width so the linker reserves the correct number of bytes. }
     case Sz of
@@ -319,26 +282,25 @@ begin
     Result := AName + '(%rip)';
 end;
 
-function TX86_64Backend.LocalCode(const AName: string): Integer;
+function TX86_64Backend.LocalType(const AName: string): TTypeDesc;
 begin
   if (FFrameTypes = nil) or (not FFrameTypes.TryGetValue(AName, Result)) then
-    Result := 0;
+    Result := nil;
 end;
 
 { Load an integer-family value from memory into %rax, extended to the full
-  64-bit register according to the encoded width and signedness.  Narrower-
-  than-32-bit loads use a sign/zero-extending move; 32-bit signed widens with
+  64-bit register according to AType's width and signedness.  Narrower-than-
+  32-bit loads use a sign/zero-extending move; 32-bit signed widens with
   movslq, 32-bit unsigned with a plain movl (which zero-extends the upper 32
-  bits on x86-64); 64-bit is a straight movq.  A zero code (unknown type)
-  defaults to a signed 32-bit load. }
-procedure TX86_64Backend.EmitLoadVar(const AOperand: string; ACode: Integer);
+  bits on x86-64); 64-bit is a straight movq. }
+procedure TX86_64Backend.EmitLoadVar(const AOperand: string; AType: TTypeDesc);
 begin
-  case DecodedSize(ACode) of
-    1: if DecodedUnsigned(ACode) then
+  case IntByteSize(AType) of
+    1: if IsUnsignedInt(AType) then
          Self.Emit(Format(#9'movzbq %s, %%rax', [AOperand]))
        else
          Self.Emit(Format(#9'movsbq %s, %%rax', [AOperand]));
-    2: if DecodedUnsigned(ACode) then
+    2: if IsUnsignedInt(AType) then
          Self.Emit(Format(#9'movzwq %s, %%rax', [AOperand]))
        else
          Self.Emit(Format(#9'movswq %s, %%rax', [AOperand]));
@@ -346,7 +308,7 @@ begin
   else
     { 4-byte: a movl into %eax zero-extends into %rax.  For a signed Integer
       sign-extend instead so the upper 32 bits carry the sign. }
-    if DecodedUnsigned(ACode) then
+    if IsUnsignedInt(AType) then
       Self.Emit(Format(#9'movl %s, %%eax', [AOperand]))
     else
       Self.Emit(Format(#9'movslq %s, %%rax', [AOperand]));
@@ -355,9 +317,9 @@ end;
 
 { Store the value in %rax to memory at the slot's natural width, using the
   matching register sub-view (%al / %ax / %eax / %rax). }
-procedure TX86_64Backend.EmitStoreVar(const AOperand: string; ACode: Integer);
+procedure TX86_64Backend.EmitStoreVar(const AOperand: string; AType: TTypeDesc);
 begin
-  case DecodedSize(ACode) of
+  case IntByteSize(AType) of
     1: Self.Emit(Format(#9'movb %%al, %s', [AOperand]));
     2: Self.Emit(Format(#9'movw %%ax, %s', [AOperand]));
     8: Self.Emit(Format(#9'movq %%rax, %s', [AOperand]));
@@ -375,7 +337,7 @@ procedure TX86_64Backend.AddSlot(const AName: string; AType: TTypeDesc;
 begin
   Inc(AOffset, 8);
   FFrame.Add(AName, AOffset);
-  FFrameTypes.Add(AName, EncodeIntType(AType));
+  FFrameTypes.Add(AName, AType);
 end;
 
 procedure TX86_64Backend.BuildFrame(ADecl: TMethodDecl);
@@ -386,7 +348,7 @@ var
 begin
   Self.ClearFrame;
   FFrame      := TDictionary<string, Integer>.Create;
-  FFrameTypes := TDictionary<string, Integer>.Create;
+  FFrameTypes := TDictionary<string, TTypeDesc>.Create;
   Offset := 0;
   { Params first (spilled from arg registers in the prologue). }
   for I := 0 to ADecl.Params.Count - 1 do
@@ -429,24 +391,24 @@ end;
 { Expression lowering                                                  }
 { ------------------------------------------------------------------ }
 
-function TX86_64Backend.IntExprCode(AExpr: TASTExpr): Integer;
+function TX86_64Backend.IntExprType(AExpr: TASTExpr): TTypeDesc;
 var
-  C: Integer;
+  T: TTypeDesc;
 begin
   if AExpr is TIdentExpr then
   begin
-    { Prefer the slot's recorded encoding (local then global) over the node's
-      ResolvedType: the slot encoding is what the memory actually holds. }
-    C := Self.LocalCode(TIdentExpr(AExpr).Name);
-    if C = 0 then
-      C := Self.GlobalCode(TIdentExpr(AExpr).Name);
-    if C <> 0 then
+    { Prefer the slot's recorded type (local then global) over the node's
+      ResolvedType: the slot type is what the memory actually holds. }
+    T := Self.LocalType(TIdentExpr(AExpr).Name);
+    if T = nil then
+      T := Self.GlobalType(TIdentExpr(AExpr).Name);
+    if T <> nil then
     begin
-      Result := C;
+      Result := T;
       Exit;
     end;
   end;
-  Result := EncodeIntType(AExpr.ResolvedType);
+  Result := AExpr.ResolvedType;
 end;
 
 { Re-narrow the value in %rax to AType, then re-extend so the register again
@@ -500,10 +462,10 @@ begin
       Self.Emit(Format(#9'movabsq $%s, %%rax',
         [IntToStr(TIdentExpr(AExpr).ConstValue)]))
     else
-      { A function-local frame slot uses the slot's recorded encoding; a
-        program global / other ident uses the expression's resolved type. }
+      { A function-local frame slot uses the slot's recorded type; a program
+        global / other ident uses the expression's resolved type. }
       Self.EmitLoadVar(Self.VarOperand(TIdentExpr(AExpr).Name),
-        Self.IntExprCode(AExpr));
+        Self.IntExprType(AExpr));
     Exit;
   end;
 
@@ -669,7 +631,7 @@ procedure TX86_64Backend.EmitForStmt(AFor: TForStmt);
 var
   VarOp, EndSlot:        string;
   LCond, LBody, LEnd:    string;
-  VarCode:               Integer;
+  VarType:               TTypeDesc;
 begin
   { Pascal `for` evaluates the end expression once.  Stash it in a hidden
     global slot, initialise the loop variable, then loop:
@@ -677,34 +639,34 @@ begin
       body: <body>; i := i +/- 1; goto cond
     The loop variable may be a function-local (frame slot) or a program global;
     VarOperand picks the right addressing.  The counter and the hidden end
-    slot share the counter's encoded type so every load/store/compare uses the
-    right width and signedness. }
+    slot share the counter's type so every load/store/compare uses the right
+    width and signedness. }
   if Self.IsLocal(AFor.VarName) then
-    VarCode := Self.LocalCode(AFor.VarName)
+    VarType := Self.LocalType(AFor.VarName)
   else
   begin
-    VarCode := EncodeIntType(AFor.StartExpr.ResolvedType); { counter type = start expr }
-    Self.AddGlobal(AFor.VarName, AFor.StartExpr.ResolvedType);
+    VarType := AFor.StartExpr.ResolvedType;   { counter type = start expr type }
+    Self.AddGlobal(AFor.VarName, VarType);
   end;
   VarOp   := Self.VarOperand(AFor.VarName);
   EndSlot := Self.NewLabel('forend');  { hidden file-local slot for the end value }
-  Self.AddGlobal(EndSlot, AFor.StartExpr.ResolvedType);
+  Self.AddGlobal(EndSlot, VarType);
   LCond := Self.NewLabel('fcond');
   LBody := Self.NewLabel('fbody');
   LEnd  := Self.NewLabel('fend');
 
   { i := start }
   Self.EmitExprToEax(AFor.StartExpr);
-  Self.EmitStoreVar(VarOp, VarCode);
+  Self.EmitStoreVar(VarOp, VarType);
   { endslot := end (evaluated once) }
   Self.EmitExprToEax(AFor.EndExpr);
-  Self.EmitStoreVar(EndSlot + '(%rip)', VarCode);
+  Self.EmitStoreVar(EndSlot + '(%rip)', VarType);
 
   Self.Emit(LCond + ':');
   { compare i against end (both loaded 64-bit-extended) }
-  Self.EmitLoadVar(VarOp, VarCode);
+  Self.EmitLoadVar(VarOp, VarType);
   Self.Emit(#9'pushq %rax');
-  Self.EmitLoadVar(EndSlot + '(%rip)', VarCode);
+  Self.EmitLoadVar(EndSlot + '(%rip)', VarType);
   Self.Emit(#9'movq %rax, %rcx');     { end in %rcx }
   Self.Emit(#9'popq %rax');            { i in %rax }
   Self.Emit(#9'cmpq %rcx, %rax');     { computes i - end }
@@ -717,12 +679,12 @@ begin
   Self.Emit(LBody + ':');
   Self.EmitStmt(AFor.Body);
   { i := i +/- 1 }
-  Self.EmitLoadVar(VarOp, VarCode);
+  Self.EmitLoadVar(VarOp, VarType);
   if AFor.IsDownTo then
     Self.Emit(#9'subq $1, %rax')
   else
     Self.Emit(#9'addq $1, %rax');
-  Self.EmitStoreVar(VarOp, VarCode);
+  Self.EmitStoreVar(VarOp, VarType);
   Self.Emit(#9'jmp ' + LCond);
   Self.Emit(LEnd + ':');
 end;
@@ -748,11 +710,11 @@ begin
       The store width comes from the LHS type so a narrow slot is written at
       its own width. }
     if Self.IsLocal(Asgn.Name) then
-      Self.EmitStoreVar(Self.VarOperand(Asgn.Name), Self.LocalCode(Asgn.Name))
+      Self.EmitStoreVar(Self.VarOperand(Asgn.Name), Self.LocalType(Asgn.Name))
     else
     begin
       Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-      Self.EmitStoreVar(Asgn.Name + '(%rip)', EncodeIntType(Asgn.ResolvedLhsType));
+      Self.EmitStoreVar(Asgn.Name + '(%rip)', Asgn.ResolvedLhsType);
     end;
     Exit;
   end;
@@ -885,9 +847,9 @@ end;
 { Spill the incoming argument register at index AIdx into the param slot
   AOperand, using the register sub-view matching the param's width. }
 procedure TX86_64Backend.EmitSpillArg(AIdx: Integer; const AOperand: string;
-                                      ACode: Integer);
+                                      AType: TTypeDesc);
 begin
-  case DecodedSize(ACode) of
+  case IntByteSize(AType) of
     1: Self.Emit(Format(#9'movb %s, %s', [SysVArgRegs8[AIdx],  AOperand]));
     2: Self.Emit(Format(#9'movw %s, %s', [SysVArgRegs16[AIdx], AOperand]));
     8: Self.Emit(Format(#9'movq %s, %s', [SysVArgRegs64[AIdx], AOperand]));
@@ -954,14 +916,14 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
-    Self.EmitSpillArg(I, Self.VarOperand(P.ParamName), EncodeIntType(P.ResolvedType));
+    Self.EmitSpillArg(I, Self.VarOperand(P.ParamName), P.ResolvedType);
   end;
   { Initialise Result to 0 (defined default), like the QBE backend.  Zero in
     %rax then store at the slot's width. }
   if ADecl.ResolvedReturnType <> nil then
   begin
     Self.Emit(#9'xorl %eax, %eax');
-    Self.EmitStoreVar(Self.VarOperand('Result'), EncodeIntType(ADecl.ResolvedReturnType));
+    Self.EmitStoreVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   end;
   { Body. }
   if ADecl.Body <> nil then
@@ -970,7 +932,7 @@ begin
   { Epilogue: load Result (64-bit-extended) into %rax for functions, restore
     frame, return. }
   if ADecl.ResolvedReturnType <> nil then
-    Self.EmitLoadVar(Self.VarOperand('Result'), EncodeIntType(ADecl.ResolvedReturnType));
+    Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   Self.Emit(#9'movq %rbp, %rsp');
   Self.Emit(#9'popq %rbp');
   Self.Emit(#9'ret');
