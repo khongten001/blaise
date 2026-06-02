@@ -94,6 +94,9 @@ type
     procedure TestCodegen_TryFinally_FinallyOnBothPaths;
     procedure TestCodegen_TryExcept_FrameAllocSize;
     procedure TestCodegen_TryFinally_FrameAllocSize;
+    { Exit inside try/finally must emit the finally body on the exit path,
+      not just pop the frame. }
+    procedure TestCodegen_ExitInTryFinally_RunsFinally;
 
     { ------------------------------------------------------------------ }
     { Codegen — ARC cleanup on exception paths                            }
@@ -227,6 +230,25 @@ const
             X := 0;
             Y := 0
           end
+        end.
+        ''';
+
+  { Exit inside the try body: the finally (X := 7) must be emitted on the
+    exit path too, so 'copy 7' appears three times — normal, exception, exit. }
+  SrcExitInTryFinally =
+    '''
+        program P;
+        var X: Integer;
+        procedure Run;
+        begin
+          try
+            Exit
+          finally
+            X := 7
+          end
+        end;
+        begin
+          Run
         end.
         ''';
 
@@ -621,6 +643,29 @@ begin
     Inc(Idx);
   end;
   AssertTrue('finally body appears on both paths (>= 2 occurrences)', N >= 2);
+end;
+
+procedure TExceptionTests.TestCodegen_ExitInTryFinally_RunsFinally;
+var
+  IR:  string;
+  N:   Integer;
+  Idx: Integer;
+begin
+  { With Exit inside the try body the finally (X := 7 → 'copy 7') must be
+    emitted on three paths: normal fall-through, exception, and the Exit
+    unwind.  Before the fix the Exit path only popped the frame and jumped
+    straight to the function exit, skipping the finally entirely. }
+  IR  := GenIR(SrcExitInTryFinally);
+  N   := 0;
+  Idx := 0;
+  while True do
+  begin
+    Idx := PosEx('copy 7', IR, Idx);
+    if Idx < 0 then Break;
+    Inc(N);
+    Inc(Idx);
+  end;
+  AssertTrue('finally body emitted on exit path too (>= 3 occurrences)', N >= 3);
 end;
 
 { Exception frame must be >= sizeof(BlaiseExcFrame) on every supported target.

@@ -56,6 +56,12 @@ type
                                        whenever a '@label' line is emitted; used by phi codegen }
     FExcFrameNext:  Integer;   { index of next pre-allocated exc frame slot to use }
     FExcDepth:      Integer;   { number of exc frames currently pushed in the try stack }
+    FFinallyStack:  TObjectList; { active try-block FinallyBody (TCompoundStmt, not
+                                   owned), index 0 = outermost; aligned 1:1 with the
+                                   FExcDepth exception frames.  A non-local exit
+                                   (Exit/Break/Continue) crossing a try/finally must
+                                   run its finally body; try/except pushes nil so the
+                                   indices stay aligned with FExcDepth. }
     FBreakLabels:    TStringList;  { stack of active loop-end labels; top = innermost }
     FContinueLabels: TStringList;  { stack of active loop-continue labels; top = innermost }
     FExitLabel:    string;       { label to jmp to for 'exit'; '' = main program }
@@ -387,6 +393,7 @@ begin
   FStrLits.CaseSensitive := True;
   FBreakLabels     := TStringList.Create;
   FContinueLabels  := TStringList.Create;
+  FFinallyStack    := TObjectList.Create(False);  { not owned — AST owns the blocks }
   FUnitInitNames   := TStringList.Create;
   FPromotedLocals  := TStringList.Create;
   FPromotedLocals.CaseSensitive := True;
@@ -407,6 +414,7 @@ destructor TCodeGenQBE.Destroy;
 begin
   FBreakLabels.Free;
   FContinueLabels.Free;
+  FFinallyStack.Free;
   FUnitInitNames.Free;
   FPromotedLocals.Free;
   FPromotedTypes.Free;
@@ -780,6 +788,7 @@ begin
     Total := Total + CountTryStmts(TASTStmt(ABlock.Stmts.Items[I]));
   FExcFrameNext := 0;
   FExcDepth := 0;
+  FFinallyStack.Clear;  { defensive: each function starts with no active finallys }
   for I := 0 to Total - 1 do
     EmitLine(Format('  %%_exc_frame_%d =l alloc16 512', [I]));
 end;
@@ -2002,10 +2011,26 @@ end;
 
 procedure TCodeGenQBE.EmitExcUnwind(ATargetDepth: Integer);
 var
-  I: Integer;
+  I, J:    Integer;
+  FinBody: TCompoundStmt;
 begin
+  { Unwind exception frames from innermost (FExcDepth) down to ATargetDepth+1.
+    For a try/finally frame, its finally body must run as control leaves the
+    try region via a non-local exit (Exit/Break/Continue) — pop the frame,
+    then emit the finally body inline (mirroring the normal/exception paths in
+    EmitTryFinallyStmt).  try/except frames have a nil FFinallyStack entry and
+    only need the frame popped. }
   for I := FExcDepth downto ATargetDepth + 1 do
+  begin
     EmitLine('  call $_PopExcFrame()');
+    if I - 1 < FFinallyStack.Count then
+    begin
+      FinBody := TCompoundStmt(FFinallyStack.Items[I - 1]);
+      if FinBody <> nil then
+        for J := 0 to FinBody.Stmts.Count - 1 do
+          EmitStmt(TASTStmt(FinBody.Stmts.Items[J]));
+    end;
+  end;
 end;
 
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
@@ -2148,17 +2173,23 @@ begin
   FExcFrameNext := FExcFrameNext + 1;
   EmitLine(Format('  call $_PushExcFrame(l %s)', [FrameTemp]));
   Inc(FExcDepth);
+  { Register this finally body so a non-local exit (Exit/Break/Continue) inside
+    the try body runs it on the way out.  Index aligns with FExcDepth-1. }
+  FFinallyStack.Add(AStmt.FinallyBody);
 
   SjrTemp := AllocTemp;
   EmitLine(Format('  %s =w call $_blaise_setjmp(l %s)', [SjrTemp, FrameTemp]));
   EmitLine(Format('  jnz %s, @%s, @%s', [SjrTemp, LblFinExc, LblTry]));
 
-  { Normal path: run try body, pop frame, run finally body }
+  { Normal path: run try body, pop frame, run finally body.  Remove this
+    frame's finally registration before emitting the normal-path finally so a
+    non-local exit *inside* the finally body itself does not re-run it. }
   EmitLine('@' + LblTry);
   for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
     EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
   EmitLine('  call $_PopExcFrame()');
   Dec(FExcDepth);
+  FFinallyStack.Delete(FFinallyStack.Count - 1);
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
     EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   EmitLine(Format('  jmp @%s', [LblEnd]));
@@ -2205,6 +2236,10 @@ begin
   FExcFrameNext := FExcFrameNext + 1;
   EmitLine(Format('  call $_PushExcFrame(l %s)', [FrameTemp]));
   Inc(FExcDepth);
+  { Push a nil finally entry so FFinallyStack stays index-aligned with
+    FExcDepth.  A non-local exit crossing a try/except frame only pops it;
+    there is no finally body to run. }
+  FFinallyStack.Add(nil);
 
   SjrTemp := AllocTemp;
   EmitLine(Format('  %s =w call $_blaise_setjmp(l %s)', [SjrTemp, FrameTemp]));
@@ -2216,6 +2251,7 @@ begin
     EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
   EmitLine('  call $_PopExcFrame()');
   Dec(FExcDepth);
+  FFinallyStack.Delete(FFinallyStack.Count - 1);
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
   { Exception path: capture exception before popping frame, then pop }

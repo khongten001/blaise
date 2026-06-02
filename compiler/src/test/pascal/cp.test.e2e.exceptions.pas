@@ -35,6 +35,11 @@ type
     { Virtual dispatch in expression position inside try/finally. }
     procedure TestRun_VirtualDispatchInsideTryFinally;
 
+    { Non-local exit (Exit/Break) must run intervening finally bodies. }
+    procedure TestRun_ExitThroughFinally;
+    procedure TestRun_ExitThroughNestedFinally;
+    procedure TestRun_BreakThroughFinally;
+
     { Typed except handlers }
     procedure TestRun_TypedExcept_CorrectHandlerMatched;
     procedure TestRun_TypedExcept_SubclassMatchesParentHandler;
@@ -97,6 +102,64 @@ const
       finally
         WriteLn('outer_fin')
       end
+    end.
+    ''';
+
+  { Exit inside a try/finally must run the finally body before leaving. }
+  SrcExitThroughFinally = '''
+    program P;
+    procedure Run;
+    begin
+      try
+        WriteLn('in_try');
+        Exit;
+        WriteLn('unreached')
+      finally
+        WriteLn('in_finally')
+      end
+    end;
+    begin
+      Run;
+      WriteLn('after')
+    end.
+    ''';
+
+  { Exit nested two levels deep must run both finally bodies, innermost first. }
+  SrcExitThroughNestedFinally = '''
+    program P;
+    procedure Run;
+    begin
+      try
+        try
+          Exit
+        finally
+          WriteLn('inner_fin')
+        end
+      finally
+        WriteLn('outer_fin')
+      end
+    end;
+    begin
+      Run;
+      WriteLn('after')
+    end.
+    ''';
+
+  { Break out of a loop from inside a try/finally must run the finally body. }
+  SrcBreakThroughFinally = '''
+    program P;
+    var I: Integer;
+    begin
+      for I := 0 to 3 do
+      begin
+        try
+          if I = 2 then Break;
+          WriteLn('iter')
+        finally
+          WriteLn('fin')
+        end
+      end;
+      WriteLn('done')
     end.
     ''';
 
@@ -274,6 +337,40 @@ begin
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout',
     'inner_try' + LE + 'inner_fin' + LE + 'outer_fin' + LE, Output);
+end;
+
+procedure TE2EExceptionTests.TestRun_ExitThroughFinally;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcExitThroughFinally, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  { Exit runs the finally body, then control returns to the caller. }
+  AssertEquals('stdout',
+    'in_try' + LE + 'in_finally' + LE + 'after' + LE, Output);
+end;
+
+procedure TE2EExceptionTests.TestRun_ExitThroughNestedFinally;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcExitThroughNestedFinally, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  { Both finally bodies run, innermost first, before the caller resumes. }
+  AssertEquals('stdout',
+    'inner_fin' + LE + 'outer_fin' + LE + 'after' + LE, Output);
+end;
+
+procedure TE2EExceptionTests.TestRun_BreakThroughFinally;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcBreakThroughFinally, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  { Iterations 0,1 print iter+fin; iteration 2 breaks but still runs fin. }
+  AssertEquals('stdout',
+    'iter' + LE + 'fin' + LE + 'iter' + LE + 'fin' + LE + 'fin' + LE +
+    'done' + LE, Output);
 end;
 
 procedure TE2EExceptionTests.TestRun_VirtualDispatchInsideTryFinally;
