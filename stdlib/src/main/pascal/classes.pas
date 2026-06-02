@@ -273,9 +273,12 @@ procedure SplitIntoList(const S: string; ASep: Integer; AList: TStringList);
 var
   I:     Integer;
   Start: Integer;
-  SLo:   Integer;
-  SHi:   Integer;
 begin
+  { Line-splitter for TStringList.Text / LoadFromFile.  Each segment between
+    separators is added verbatim — leading and trailing whitespace is part of
+    the line and must be preserved (standard TStringList semantics).  Trimming
+    here previously stripped indentation, which silently corrupted any
+    whitespace-significant text round-tripped through Text. }
   AList.Clear;
   Start := 0;
   I     := 0;
@@ -283,24 +286,13 @@ begin
   begin
     if OrdAt(S, I) = ASep then
     begin
-      { Trim surrounding spaces }
-      SLo := Start;
-      SHi := I - 1;
-      while (SLo <= SHi) and (OrdAt(S, SLo) = 32) do SLo := SLo + 1;
-      while (SHi >= SLo) and (OrdAt(S, SHi) = 32) do SHi := SHi - 1;
-      AList.Add(Copy(S, SLo, SHi - SLo + 1));
+      AList.Add(Copy(S, Start, I - Start));
       Start := I + 1;
     end;
     I := I + 1;
   end;
   if Start < Length(S) then
-  begin
-    SLo := Start;
-    SHi := Length(S) - 1;
-    while (SLo <= SHi) and (OrdAt(S, SLo) = 32) do SLo := SLo + 1;
-    while (SHi >= SLo) and (OrdAt(S, SHi) = 32) do SHi := SHi - 1;
-    AList.Add(Copy(S, SLo, SHi - SLo + 1));
-  end;
+    AList.Add(Copy(S, Start, Length(S) - Start));
 end;
 
 

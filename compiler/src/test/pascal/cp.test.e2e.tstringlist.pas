@@ -39,6 +39,7 @@ type
     procedure TestRun_TextGet;
     procedure TestRun_TextGet_ManyLines;
     procedure TestRun_TextSet;
+    procedure TestRun_TextSet_PreservesLeadingWhitespace;
     procedure TestRun_GrowBeyondInitialCapacity;
     procedure TestRun_Sorted_Add_OrderedOutput;
     procedure TestRun_Sorted_Find;
@@ -274,6 +275,31 @@ const
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
+      L.Free
+    end.
+    ''';
+
+  { Text/LoadFromFile must preserve each line verbatim, including leading and
+    trailing whitespace — standard TStringList semantics.  Regression for the
+    SplitIntoList trimming bug that silently dropped indentation (which in turn
+    masked failures in the threaded test-runner's subprocess output parser).
+    The program prints each line wrapped in [] so the harness can see the
+    surrounding spaces without itself round-tripping through Text. }
+  SrcTextSetPreservesWhitespace =
+    '''
+    program P;
+    uses Classes;
+    var L: TStringList; I: Integer;
+    begin
+      L := TStringList.Create;
+      L.Text := 'a' + #10 + '  indented' + #10 + 'trailing  ';
+      WriteLn(L.Count);
+      I := 0;
+      while I < L.Count do
+      begin
+        WriteLn('[' + L.Get(I) + ']');
+        I := I + 1
+      end;
       L.Free
     end.
     ''';
@@ -692,6 +718,22 @@ begin
   finally
     Lines.Free
   end
+end;
+
+procedure TE2ETStringListTests.TestRun_TextSet_PreservesLeadingWhitespace;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+run',
+    CompileAndRunWithRTL(SrcTextSetPreservesWhitespace, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  { Assert on the raw stdout so the leading/trailing spaces inside [] are
+    checked directly, without round-tripping through Text. }
+  AssertEquals('verbatim lines preserved',
+    '3' + #10 + '[a]' + #10 + '[  indented]' + #10 + '[trailing  ]' + #10,
+    Output);
 end;
 
 procedure TE2ETStringListTests.TestRun_GrowBeyondInitialCapacity;
