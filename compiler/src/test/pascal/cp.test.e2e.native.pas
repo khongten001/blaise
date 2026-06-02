@@ -20,7 +20,10 @@ unit cp.test.e2e.native;
     M2 — integer arithmetic (+ - * div mod, nesting, precedence) and
          Write/WriteLn of integers.
     M3 — control flow: if/else, while, repeat, and the comparison operators
-         (= <> < > <= >=). }
+         (= <> < > <= >=).
+    M4 — program-global integer variables (declare, assign, read) and the for
+         loop (to / downto, nesting, end-expression evaluated once), plus
+         counter-driven while/repeat. }
 
 interface
 
@@ -40,6 +43,10 @@ type
     procedure TestRun_Native_IfElse;
     procedure TestRun_Native_ComparisonsAndNestedIf;
     procedure TestRun_Native_Repeat;
+    procedure TestRun_Native_VarsAndForLoop;
+    procedure TestRun_Native_DownToAndNestedFor;
+    procedure TestRun_Native_CounterLoops;
+    procedure TestRun_Native_ForEndEvaluatedOnce;
   end;
 
 implementation
@@ -117,6 +124,65 @@ const
     end.
     ''';
 
+  SrcVarsForLoop = '''
+    program P;
+    var i, sum: Integer;
+    begin
+      sum := 0;
+      for i := 1 to 5 do
+        sum := sum + i;
+      WriteLn(sum)
+    end.
+    ''';
+
+  SrcDownToNested = '''
+    program P;
+    var i, j, total: Integer;
+    begin
+      for i := 5 downto 1 do Write(i);
+      WriteLn(0);
+      total := 0;
+      for i := 1 to 3 do
+        for j := 1 to 3 do
+          total := total + 1;
+      WriteLn(total)
+    end.
+    ''';
+
+  SrcCounterLoops = '''
+    program P;
+    var n: Integer;
+    begin
+      n := 0;
+      while n < 3 do
+      begin
+        Write(n);
+        n := n + 1
+      end;
+      WriteLn(9);
+      n := 0;
+      repeat
+        n := n + 2
+      until n >= 6;
+      WriteLn(n)
+    end.
+    ''';
+
+  SrcForEndOnce = '''
+    program P;
+    var i, limit, count: Integer;
+    begin
+      limit := 3;
+      count := 0;
+      for i := 1 to limit do
+      begin
+        count := count + 1;
+        limit := limit + 10
+      end;
+      WriteLn(count)
+    end.
+    ''';
+
 procedure TE2ENativeTests.TestRun_Native_EmptyProgram_ExitsZero;
 var Output: string; RCode: Integer;
 begin
@@ -180,6 +246,44 @@ begin
   AssertTrue('compile+run', CompileAndRunNative(SrcRepeat, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('8 once', '8' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_VarsAndForLoop;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcVarsForLoop, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('sum 1..5 = 15', '15' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_DownToAndNestedFor;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcDownToNested, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('54321 0 then 9', '543210' + LE + '9' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_CounterLoops;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcCounterLoops, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  { while writes 0,1,2 (Write, no newline), then WriteLn(9) -> "0129"; repeat
+    counts 0->2->4->6 and WriteLn(n) -> "6". }
+  AssertEquals('0129 then 6', '0129' + LE + '6' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ForEndEvaluatedOnce;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcForEndOnce, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('count = 3 (end not extended)', '3' + LE, Output);
 end;
 
 initialization

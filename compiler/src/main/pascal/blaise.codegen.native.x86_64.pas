@@ -32,16 +32,28 @@ uses
 type
   TX86_64Backend = class(TNativeBackend)
   protected
-    FLabelCount: Integer;   { monotonic source of unique local labels }
+    FLabelCount: Integer;       { monotonic source of unique local labels }
+    { Names of 4-byte global integer slots to define in the .data section:
+      program-level variables plus hidden for-loop end-value slots.  Collected
+      during code emission and written once at the end.  Append-and-iterate-
+      once access; a TStringList (small N = number of globals) suffices and
+      gives free dedup via IndexOf. }
+    FDataGlobals: TStringList;
 
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
     function NewLabel(const APrefix: string): string;
+    { Register a 4-byte global integer slot (idempotent). }
+    procedure AddGlobal(const AName: string);
+    { Emit the accumulated .data section (one slot per registered global). }
+    procedure EmitDataSection;
 
     procedure EmitProgram(AProg: TProgram); override;
     { Lower one statement. }
     procedure EmitStmt(AStmt: TASTStmt);
     { Lower a Write/WriteLn call (ANewline = WriteLn). }
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
+    { Lower a for loop. }
+    procedure EmitForStmt(AFor: TForStmt);
     { Evaluate an integer expression; result left in %eax. }
     procedure EmitExprToEax(AExpr: TASTExpr);
     { Evaluate a boolean condition and branch: if true jump ATrueLabel, else
@@ -50,6 +62,7 @@ type
                              const ATrueLabel, AFalseLabel: string);
   public
     constructor Create(const ATarget: TTargetDesc); override;
+    destructor Destroy; override;
   end;
 
 implementation
@@ -57,13 +70,45 @@ implementation
 constructor TX86_64Backend.Create(const ATarget: TTargetDesc);
 begin
   inherited Create(ATarget);
-  FLabelCount := 0;
+  FLabelCount  := 0;
+  FDataGlobals := TStringList.Create;
+end;
+
+destructor TX86_64Backend.Destroy;
+begin
+  FDataGlobals.Free;
+  inherited Destroy;
 end;
 
 function TX86_64Backend.NewLabel(const APrefix: string): string;
 begin
   Result := '.L' + APrefix + IntToStr(FLabelCount);
   Inc(FLabelCount);
+end;
+
+procedure TX86_64Backend.AddGlobal(const AName: string);
+begin
+  if FDataGlobals.IndexOf(AName) < 0 then
+    FDataGlobals.Add(AName);
+end;
+
+procedure TX86_64Backend.EmitDataSection;
+var
+  I: Integer;
+begin
+  if FDataGlobals.Count = 0 then
+    Exit;
+  Self.Emit('.data');
+  for I := 0 to FDataGlobals.Count - 1 do
+  begin
+    Self.Emit('.balign 4');
+    { Hidden compiler-generated slots (.L-prefixed) stay file-local; named
+      program variables are exported like the QBE backend's globals. }
+    if Copy(FDataGlobals.Strings[I], 1, 2) <> '.L' then
+      Self.Emit('.globl ' + FDataGlobals.Strings[I]);
+    Self.Emit(FDataGlobals.Strings[I] + ':');
+    Self.Emit(#9'.long 0');
+  end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -77,6 +122,18 @@ begin
   if AExpr is TIntLiteral then
   begin
     Self.Emit(Format(#9'movl $%d, %%eax', [TIntLiteral(AExpr).Value]));
+    Exit;
+  end;
+
+  if AExpr is TIdentExpr then
+  begin
+    { Named integer constant -> immediate; otherwise a global integer var
+      loaded RIP-relative.  (Locals are program-level globals at this stage,
+      matching the QBE backend's model for a program's top-level var block.) }
+    if TIdentExpr(AExpr).IsConstant then
+      Self.Emit(Format(#9'movl $%d, %%eax', [TIdentExpr(AExpr).ConstValue]))
+    else
+      Self.Emit(Format(#9'movl %s(%%rip), %%eax', [TIdentExpr(AExpr).Name]));
     Exit;
   end;
 
@@ -170,6 +227,53 @@ begin
   end;
 end;
 
+procedure TX86_64Backend.EmitForStmt(AFor: TForStmt);
+var
+  EndSlot:               string;
+  LCond, LBody, LEnd:    string;
+begin
+  { Pascal `for` evaluates the end expression once.  Stash it in a hidden
+    global slot, initialise the loop variable, then loop:
+      cond: if (i <= end) [downto: i >= end] goto body else end
+      body: <body>; i := i +/- 1; goto cond }
+  Self.AddGlobal(AFor.VarName);
+  EndSlot := Self.NewLabel('forend');  { hidden global for the once-evaluated end }
+  Self.AddGlobal(EndSlot);
+  LCond := Self.NewLabel('fcond');
+  LBody := Self.NewLabel('fbody');
+  LEnd  := Self.NewLabel('fend');
+
+  { i := start }
+  Self.EmitExprToEax(AFor.StartExpr);
+  Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [AFor.VarName]));
+  { endslot := end (evaluated once) }
+  Self.EmitExprToEax(AFor.EndExpr);
+  Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [EndSlot]));
+
+  Self.Emit(LCond + ':');
+  { compare i against end }
+  Self.Emit(Format(#9'movl %s(%%rip), %%eax', [AFor.VarName]));
+  Self.Emit(Format(#9'movl %s(%%rip), %%ecx', [EndSlot]));
+  Self.Emit(#9'cmpl %ecx, %eax');     { computes i - end }
+  if AFor.IsDownTo then
+    Self.Emit(#9'jge ' + LBody)       { continue while i >= end }
+  else
+    Self.Emit(#9'jle ' + LBody);      { continue while i <= end }
+  Self.Emit(#9'jmp ' + LEnd);
+
+  Self.Emit(LBody + ':');
+  Self.EmitStmt(AFor.Body);
+  { i := i +/- 1 }
+  Self.Emit(Format(#9'movl %s(%%rip), %%eax', [AFor.VarName]));
+  if AFor.IsDownTo then
+    Self.Emit(#9'subl $1, %eax')
+  else
+    Self.Emit(#9'addl $1, %eax');
+  Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [AFor.VarName]));
+  Self.Emit(#9'jmp ' + LCond);
+  Self.Emit(LEnd + ':');
+end;
+
 procedure TX86_64Backend.EmitStmt(AStmt: TASTStmt);
 var
   PC:    TProcCall;
@@ -177,10 +281,27 @@ var
   IfS:   TIfStmt;
   WhileS: TWhileStmt;
   RepS:  TRepeatStmt;
+  Asgn:  TAssignment;
   I:     Integer;
   LThen, LElse, LEnd:    string;
   LCond, LBody:          string;
 begin
+  if AStmt is TAssignment then
+  begin
+    Asgn := TAssignment(AStmt);
+    { Integer assignment to a (program-global) variable: value -> %eax, store. }
+    Self.AddGlobal(Asgn.Name);
+    Self.EmitExprToEax(Asgn.Expr);
+    Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [Asgn.Name]));
+    Exit;
+  end;
+
+  if AStmt is TForStmt then
+  begin
+    Self.EmitForStmt(TForStmt(AStmt));
+    Exit;
+  end;
+
   if AStmt is TProcCall then
   begin
     PC := TProcCall(AStmt);
@@ -275,8 +396,19 @@ end;
   site. }
 procedure TX86_64Backend.EmitProgram(AProg: TProgram);
 var
-  I: Integer;
+  I, J:  Integer;
+  VD:    TVarDecl;
 begin
+  { Register declared program-level integer variables as global slots, so even
+    unused declarations get a definition (matching the QBE backend). }
+  for I := 0 to AProg.Block.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(AProg.Block.Decls.Items[I]);
+    if (VD.ResolvedType <> nil) and (VD.ResolvedType.Kind = tyInteger) then
+      for J := 0 to VD.Names.Count - 1 do
+        Self.AddGlobal(VD.Names.Strings[J]);
+  end;
+
   Self.Emit('.text');
   Self.Emit('.globl main');
   Self.Emit('main:');
@@ -295,6 +427,9 @@ begin
   Self.Emit('.type main, @function');
   { Mark the stack non-executable (matches QBE output). }
   Self.Emit('.section .note.GNU-stack,"",@progbits');
+
+  { Data section: all registered global integer slots. }
+  Self.EmitDataSection;
 end;
 
 end.
