@@ -26,7 +26,12 @@ unit cp.test.e2e.native;
          counter-driven while/repeat.
     M5 — user procedures/functions: integer value parameters, integer/void
          return via Result, locals in a stack frame, direct calls (including
-         in expressions and nested), recursion, and for loops over a local. }
+         in expressions and nested), recursion, and for loops over a local.
+         Also: the wider integer family — Byte, Word, SmallInt, Int64 (and
+         signed/unsigned cousins) as globals, locals, parameters and return
+         values; mixed-width arithmetic (Int64 promotion); and explicit
+         type-cast conversions Byte(X) / Word(X) / Int64(X) that
+         truncate/extend correctly. }
 
 interface
 
@@ -53,6 +58,11 @@ type
     procedure TestRun_Native_FunctionsAndCalls;
     procedure TestRun_Native_Recursion;
     procedure TestRun_Native_ForLoopOverLocal;
+    procedure TestRun_Native_WiderIntGlobals;
+    procedure TestRun_Native_Int64Arithmetic;
+    procedure TestRun_Native_WiderIntParamsAndReturn;
+    procedure TestRun_Native_TypeCastConversions;
+    procedure TestRun_Native_SignednessAndWraparound;
   end;
 
 implementation
@@ -243,6 +253,101 @@ const
     end.
     ''';
 
+  { Wider integer family as program globals: declare, assign, read, and
+    WriteLn each.  Byte/Word/SmallInt are stored narrow but read back to the
+    full ordinal value; Int64 holds a value beyond 32 bits. }
+  SrcWiderIntGlobals = '''
+    program P;
+    var
+      b: Byte;
+      w: Word;
+      s: SmallInt;
+      big: Int64;
+    begin
+      b := 200;
+      w := 50000;
+      s := -1000;
+      big := 5000000000;
+      WriteLn(b);
+      WriteLn(w);
+      WriteLn(s);
+      WriteLn(big)
+    end.
+    ''';
+
+  { Int64 arithmetic must use 64-bit operations: a product that overflows 32
+    bits, and addition past the 32-bit boundary. }
+  SrcInt64Arith = '''
+    program P;
+    var a, b, r: Int64;
+    begin
+      a := 100000;
+      b := 100000;
+      r := a * b;
+      WriteLn(r);
+      r := 4000000000 + 4000000000;
+      WriteLn(r);
+      r := r div 1000000;
+      WriteLn(r)
+    end.
+    ''';
+
+  { Wider-int parameters and return values across a call boundary. }
+  SrcWiderIntParams = '''
+    program P;
+    function AddBytes(x, y: Byte): Integer;
+    begin
+      Result := x + y
+    end;
+    function ScaleBig(n: Int64): Int64;
+    begin
+      Result := n * 3
+    end;
+    function ClampWord(w: Word): Word;
+    begin
+      Result := w
+    end;
+    begin
+      WriteLn(AddBytes(200, 100));
+      WriteLn(ScaleBig(2000000000));
+      WriteLn(ClampWord(40000))
+    end.
+    ''';
+
+  { Explicit type-cast conversions truncate (narrowing) and extend (widening)
+    exactly like the QBE backend: Byte(X) keeps the low 8 bits, Word(X) the
+    low 16; Int64(X) widens a 32-bit value. }
+  SrcTypeCasts = '''
+    program P;
+    var i: Integer;
+    var big: Int64;
+    begin
+      i := 300;
+      WriteLn(Byte(i));
+      i := 70000;
+      WriteLn(Word(i));
+      i := 1000000;
+      big := Int64(i) * Int64(i);
+      WriteLn(big)
+    end.
+    ''';
+
+  { Signedness on read-back: a SmallInt holding a value whose 16-bit pattern
+    is negative reads back sign-extended; a Word with the same low-16 bits
+    reads back as the large unsigned ordinal. }
+  SrcSignedness = '''
+    program P;
+    var s: SmallInt;
+    var w: Word;
+    begin
+      s := -2;
+      w := 65534;
+      WriteLn(s);
+      WriteLn(w);
+      WriteLn(s + 5)
+    end.
+    ''';
+
 procedure TE2ENativeTests.TestRun_Native_EmptyProgram_ExitsZero;
 var Output: string; RCode: Integer;
 begin
@@ -374,6 +479,61 @@ begin
   AssertTrue('compile+run', CompileAndRunNative(SrcForOverLocal, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('55 then 5050', '55' + LE + '5050' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_WiderIntGlobals;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcWiderIntGlobals, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('200 50000 -1000 5000000000',
+    '200' + LE + '50000' + LE + '-1000' + LE + '5000000000' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Int64Arithmetic;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcInt64Arith, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  { 100000*100000 = 10000000000; 4e9+4e9 = 8000000000; /1e6 = 8000 }
+  AssertEquals('10000000000 8000000000 8000',
+    '10000000000' + LE + '8000000000' + LE + '8000' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_WiderIntParamsAndReturn;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcWiderIntParams, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  { AddBytes(200,100)=300; ScaleBig(2e9)*3=6000000000; ClampWord(40000)=40000 }
+  AssertEquals('300 6000000000 40000',
+    '300' + LE + '6000000000' + LE + '40000' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_TypeCastConversions;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcTypeCasts, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  { Byte(300)=44 (300 mod 256); Word(70000)=4464 (70000 mod 65536);
+    Int64(1000000)^2 = 1000000000000 }
+  AssertEquals('44 4464 1000000000000',
+    '44' + LE + '4464' + LE + '1000000000000' + LE, Output);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_SignednessAndWraparound;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunNative(SrcSignedness, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  { SmallInt -2 reads back -2; Word 65534 reads back 65534; -2 + 5 = 3 }
+  AssertEquals('-2 65534 3',
+    '-2' + LE + '65534' + LE + '3' + LE, Output);
 end;
 
 initialization
