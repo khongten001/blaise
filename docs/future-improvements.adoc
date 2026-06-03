@@ -21,6 +21,12 @@ prioritise them.
   instantiation as a parent — it needs template lookup + monomorphisation.
   Moderate-significant effort.
 
+- TComponent mixes a raw pointer array with ARC, which is inherently delicate. A cleaner long-term design would store children
+  in TList<TComponent> (per the project's "use Generics.Collections" policy) so the list itself holds ARC refs and the manual
+  _ClassAddRef/_ClassRelease bookkeeping disappears entirely. That's a larger refactor than fixing the red suite, so I kept it
+  minimal — but it's the right direction if you want to revisit classes.pas.
+
+
 == Language
 
 === Require `()` on all zero-argument function calls
@@ -57,6 +63,10 @@ migration-analyser auto-fix pass first.
 
 - reference to function/procedure (anonymous methods)
 - cdecl/stdcall calling-convention markers on procedural types
+
+=== Method level attributes
+
+Blaise only has class-level attribute RTTI today — there's no per-method attribute reflection, and adding it is a layout-changing compiler change (new method-table slot, stage-2 rebuild).
 
 == Language — Features Required to Complete the punit Port
 

@@ -1142,15 +1142,9 @@ begin
 end;
 
 procedure TE2ENativeTests.TestRun_Native_RecordReturnFunction;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  { QBE path must work. }
-  AssertTrue('[qbe] compile+run', CompileAndRun(SrcRecordReturnFunction, Output, RCode));
-  AssertEquals('[qbe] exit 0', 0, RCode);
-  AssertEquals('[qbe] output', '3' + LE + '7' + LE, Output);
-  { Native path deferred to M7 (sret / aggregate return not yet implemented). }
-  Ignore('TODO M7: record-returning function not yet supported on native backend');
+  AssertRunsOnBoth(SrcRecordReturnFunction, '3' + LE + '7' + LE, 0);
 end;
 
 { ------------------------------------------------------------------ }

@@ -59,6 +59,11 @@ type
     { Exit label: when non-empty, Exit jumps here (function epilogue).  Empty
       in program $main where Exit maps to a bare return. }
     FExitLabel: string;
+    { True when the current function returns a record via the sret convention:
+      the hidden first param (%rdi) is the caller's result buffer; Result maps
+      to the pointer stored in the Result frame slot; field writes dereference
+      through it; the epilogue emits a plain ret. }
+    FSretFunc: Boolean;
 
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
     function NewLabel(const APrefix: string): string;
@@ -109,6 +114,11 @@ type
       nil for type-cast calls. }
     procedure EmitCall(const AFuncSym: string; ADecl: TMethodDecl;
                        AArgs: TObjectList);
+    { Emit a call to a record-returning function using the sret convention:
+      ASretAddr is the AT&T operand for the destination buffer (already allocated
+      by the caller), passed as the hidden first integer argument in %rdi. }
+    procedure EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
+                           AArgs: TObjectList; const ASretAddr: string);
     { Indirect call: load a bare function pointer from APtrOperand (an AT&T
       memory operand, e.g. "-8(%rbp)"), set up args as for EmitCall, then
       dispatch via callq *%r10.  AProcType supplies the param list for
@@ -239,6 +249,7 @@ begin
   FFrameTypes     := nil;
   FFrameSize      := 0;
   FExitLabel      := '';
+  FSretFunc       := False;
 end;
 
 destructor TX86_64Backend.Destroy;
@@ -449,9 +460,21 @@ begin
       Inc(StackOff, 8);
     end;
   end;
-  { Result slot for a function (not a procedure). }
+  { Result slot for a function (not a procedure).
+    For a record-returning (sret) function the Result IS the caller's buffer —
+    we store the incoming sret pointer (%rdi) in an 8-byte slot and dereference
+    through it on every field write.  We record the slot as tyPointer so
+    VarOperand returns the slot address (not the record address). }
   if ADecl.ResolvedReturnType <> nil then
-    Self.AddSlot('Result', ADecl.ResolvedReturnType, Offset);
+  begin
+    if ADecl.ResolvedReturnType.Kind = tyRecord then
+    begin
+      FSretFunc := True;
+      Self.AddSlot('Result', nil, Offset);  { nil = pointer-size (8 bytes) }
+    end
+    else
+      Self.AddSlot('Result', ADecl.ResolvedReturnType, Offset);
+  end;
   { Local var declarations. }
   if ADecl.Body <> nil then
     for I := 0 to ADecl.Body.Decls.Count - 1 do
@@ -478,6 +501,7 @@ begin
     FFrameTypes := nil;
   end;
   FFrameSize := 0;
+  FSretFunc  := False;
 end;
 
 { ------------------------------------------------------------------ }
@@ -1127,6 +1151,30 @@ begin
   if AStmt is TAssignment then
   begin
     Asgn := TAssignment(AStmt);
+    { sret assignment: LHS is a record variable; RHS is a record-returning call.
+      Pass the destination buffer address as the hidden first arg (%rdi). }
+    if (Asgn.ResolvedLhsType <> nil) and
+       (Asgn.ResolvedLhsType.Kind = tyRecord) and
+       (Asgn.Expr is TFuncCallExpr) and
+       (TFuncCallExpr(Asgn.Expr).ResolvedDecl <> nil) and
+       (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
+       (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
+    begin
+      { Compute destination address: local → leaq N(%rbp); global → leaq sym(%rip). }
+      if Self.IsLocal(Asgn.Name) then
+        Self.EmitSretCall(
+          FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
+          TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
+          TFuncCallExpr(Asgn.Expr).Args,
+          Self.VarOperand(Asgn.Name))
+      else
+        Self.EmitSretCall(
+          FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
+          TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
+          TFuncCallExpr(Asgn.Expr).Args,
+          Asgn.Name + '(%rip)');
+      Exit;
+    end;
     if IsFloatFamily(Asgn.ResolvedLhsType) then
     begin
       { Float assignment: value → %xmm0, then store. }
@@ -1309,7 +1357,15 @@ begin
         'native backend: unsupported field assignment form');
     Self.EmitExprToEax(FA.Expr);
     { Compute destination address: base address + field byte offset. }
-    if Self.IsLocal(FA.RecordName) then
+    if FSretFunc and (FA.RecordName = 'Result') then
+    begin
+      { In a sret function, Result holds a pointer to the caller's buffer.
+        Load the pointer, then write through it. }
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Result')]));
+      Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]),
+        FA.FieldInfo.TypeDesc);
+    end
+    else if Self.IsLocal(FA.RecordName) then
     begin
       { Local record: VarOperand gives the base address of the record block. }
       if FA.FieldInfo.Offset = 0 then
@@ -1623,6 +1679,54 @@ begin
   Self.Emit(#9'callq *%r10');
 end;
 
+{ Emit a call to a record-returning function using the sret convention.
+  ASretAddr is the AT&T operand for the destination buffer already allocated
+  by the caller.  Strategy:
+    1. leaq ASretAddr → %r10  (save addr before arg eval clobbers %rax/%rdi)
+    2. Evaluate each normal arg (push/pop strategy for integer args)
+    3. Pop into %rsi/%rdx/... (index 1..N)
+    4. movq %r10, %rdi  (hidden first arg = sret ptr)
+    5. callq AFuncSym
+  All args must be integer-family value params (≤5 since %rdi is taken by sret). }
+procedure TX86_64Backend.EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
+                                      AArgs: TObjectList; const ASretAddr: string);
+var
+  I:   Integer;
+  Arg: TASTExpr;
+begin
+  { Save the destination address in %r10 (caller-saved scratch that survives
+    arg evaluation and the memset call). }
+  Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+  { Zero the destination buffer via memset(%r10, 0, size), mirroring the QBE
+    backend.  ADecl.ResolvedReturnType.Kind = tyRecord here. }
+  if (ADecl <> nil) and (ADecl.ResolvedReturnType <> nil) then
+  begin
+    Self.Emit(#9'movq %r10, %rdi');
+    Self.Emit(#9'xorl %esi, %esi');
+    Self.Emit(Format(#9'movq $%d, %%rdx',
+      [TRecordTypeDesc(ADecl.ResolvedReturnType).TotalSize]));
+    Self.Emit(#9'callq memset');
+    { Reload %r10 after the call (memset may have clobbered caller-saves). }
+    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+  end;
+  { Evaluate normal args left-to-right and push onto the stack. }
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    Self.EmitExprToEax(Arg);
+    Self.Emit(#9'pushq %rax');
+  end;
+  { Pop into arg registers starting at index 1 (index 0 = %rdi is the sret ptr). }
+  if AArgs.Count > 5 then
+    raise ENativeCodeGenError.Create(
+      'native backend: sret call with more than 5 explicit args not yet supported');
+  for I := AArgs.Count - 1 downto 0 do
+    Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+  { Place the sret pointer as the first integer arg. }
+  Self.Emit(#9'movq %r10, %rdi');
+  Self.Emit(#9'callq ' + AFuncSym);
+end;
+
 { True when AType is an integer-family type the backend can place in a
   general-purpose register (Byte..Int64).  Floats, records, strings, etc. are
   not yet handled and must fail loudly. }
@@ -1658,9 +1762,10 @@ begin
   end;
   if (ADecl.ResolvedReturnType <> nil) and
      not IsIntFamily(ADecl.ResolvedReturnType) and
-     not IsFloatFamily(ADecl.ResolvedReturnType) then
+     not IsFloatFamily(ADecl.ResolvedReturnType) and
+     (ADecl.ResolvedReturnType.Kind <> tyRecord) then
     raise ENativeCodeGenError.Create(
-      'native backend: only integer-family, float, or void return supported (function ' +
+      'native backend: only integer-family, float, record, or void return supported (function ' +
       ADecl.Name + ')');
 
   Sym := FuncSymbolFromDecl(ADecl);
@@ -1675,9 +1780,18 @@ begin
     Self.Emit(Format(#9'subq $%d, %%rsp', [FFrameSize]));
   { Spill incoming argument registers into param slots.  SysV AMD64 passes
     integer args in %rdi/%rsi/... and float args in %xmm0/%xmm1/... independently.
-    Track separate counters: IntIdx for integer params, XmmIdx for float params. }
+    Track separate counters: IntIdx for integer params, XmmIdx for float params.
+    For sret functions the hidden first integer arg (%rdi) is the destination
+    buffer pointer; spill it into the Result slot first, then continue with
+    the normal params starting at IntIdx=1. }
   IntIdx := 0;
   XmmIdx := 0;
+  if FSretFunc then
+  begin
+    { Save the sret buffer pointer from %rdi into the Result slot. }
+    Self.Emit(Format(#9'movq %%rdi, %s', [Self.VarOperand('Result')]));
+    IntIdx := 1;
+  end;
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
@@ -1712,8 +1826,9 @@ begin
       end;
     end;
   end;
-  { Initialise Result to 0 (defined default), like the QBE backend. }
-  if ADecl.ResolvedReturnType <> nil then
+  { Initialise Result to 0 (defined default), like the QBE backend.
+    For sret functions Result IS the caller's buffer (already zeroed by caller). }
+  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
   begin
     if IsFloatFamily(ADecl.ResolvedReturnType) then
     begin
@@ -1735,9 +1850,10 @@ begin
   if ADecl.Body <> nil then
     for I := 0 to ADecl.Body.Stmts.Count - 1 do
       Self.EmitStmt(TASTStmt(ADecl.Body.Stmts.Items[I]));
-  { Epilogue: Exit lands here; load Result into %rax (int) or %xmm0 (float). }
+  { Epilogue: Exit lands here; load Result into %rax (int) or %xmm0 (float).
+    For sret functions the caller's buffer already holds the result — just ret. }
   Self.Emit(FExitLabel + ':');
-  if ADecl.ResolvedReturnType <> nil then
+  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
   begin
     if IsFloatFamily(ADecl.ResolvedReturnType) then
       Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
