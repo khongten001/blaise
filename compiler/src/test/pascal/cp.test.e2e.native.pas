@@ -85,6 +85,8 @@ type
     procedure TestRun_Native_StaticArray_GlobalReadWrite;
     procedure TestRun_Native_StaticArray_LocalReadWrite;
     procedure TestRun_Native_StaticArray_NonZeroLow;
+    { TODO M7: record-returning function — deferred until sret/aggregate support }
+    procedure TestRun_Native_RecordReturnFunction;
   end;
 
 implementation
@@ -735,6 +737,27 @@ const
     end.
     ''';
 
+  { TODO M7: a function that returns a record value.  The QBE backend handles
+    this via the sret convention (hidden first pointer param); the native backend
+    must do the same once aggregate/sret support lands in M7.  Until then this
+    test is expected to fail on the native path with "only integer-family or void
+    return supported". }
+  SrcRecordReturnFunction = '''
+    program P;
+    type TPoint = record X: Integer; Y: Integer; end;
+    function MakePoint(X, Y: Integer): TPoint;
+    begin
+      Result.X := X;
+      Result.Y := Y
+    end;
+    var Pt: TPoint;
+    begin
+      Pt := MakePoint(3, 7);
+      WriteLn(Pt.X);
+      WriteLn(Pt.Y)
+    end.
+    ''';
+
 { Every test below runs its source through BOTH backends (beQBE, beNative)
   and asserts identical stdout/exit on each — the native backend's whole
   correctness model is parity with QBE on the same source, so this exercises
@@ -992,6 +1015,18 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   { 100 + 200 + 300 = 600 }
   AssertRunsOnBoth(SrcStaticArrayNonZeroLow, '600' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordReturnFunction;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { QBE path must work. }
+  AssertTrue('[qbe] compile+run', CompileAndRun(SrcRecordReturnFunction, Output, RCode));
+  AssertEquals('[qbe] exit 0', 0, RCode);
+  AssertEquals('[qbe] output', '3' + LE + '7' + LE, Output);
+  { Native path deferred to M7 (sret / aggregate return not yet implemented). }
+  Ignore('TODO M7: record-returning function not yet supported on native backend');
 end;
 
 initialization
