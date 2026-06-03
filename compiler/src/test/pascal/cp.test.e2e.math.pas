@@ -148,6 +148,10 @@ type
     { Real division `/` with Integer operands yields a float }
     procedure TestRun_RealDiv_IntegerOperands_RoundTrunc;
     procedure TestRun_RealDiv_TenOverFour_Half;
+
+    { WriteLn(Double) / WriteLn(Single) — direct float output without DoubleToStr }
+    procedure TestRun_WriteLn_Double_Direct;
+    procedure TestRun_WriteLn_Single_Direct;
   end;
 
 implementation
@@ -1439,6 +1443,44 @@ begin
     ''', Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('10/4', '2.5', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ WriteLn(Double) / WriteLn(Single) direct float output              }
+{ ------------------------------------------------------------------ }
+
+procedure TE2EMathTests.TestRun_WriteLn_Double_Direct;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double;
+    begin
+      D := 3.14;
+      WriteLn(D)
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('WriteLn(Double)', '3.14', Trim(Output));
+end;
+
+procedure TE2EMathTests.TestRun_WriteLn_Single_Direct;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var S: Single;
+    begin
+      S := 1.5;
+      WriteLn(S)
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('WriteLn(Single)', '1.5', Trim(Output));
 end;
 
 initialization

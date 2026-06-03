@@ -66,6 +66,8 @@ type
     procedure SysWriteInt(Fd: Integer; N: Integer); override;
     procedure SysWriteInt64(Fd: Integer; N: Int64); override;
     procedure SysWriteUInt64(Fd: Integer; N: UInt64); override;
+    procedure SysWriteDouble(Fd: Integer; V: Double); override;
+    procedure SysWriteSingle(Fd: Integer; V: Single); override;
     procedure SysWriteNewline(Fd: Integer); override;
 
     { File-descriptor primitives }
@@ -157,6 +159,8 @@ procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
 function  _IntToStr(N: Integer): Pointer;   external name '_IntToStr';
 function  _Int64ToStr(N: Int64): Pointer;   external name '_Int64ToStr';
 function  _UInt64ToStr(N: UInt64): Pointer; external name '_UInt64ToStr';
+function  _DoubleToStr(V: Double): Pointer; external name '_DoubleToStr';
+function  _SingleToStr(V: Single): Pointer; external name '_SingleToStr';
 procedure _StringAddRef(Ptr: Pointer);      external name '_StringAddRef';
 procedure _StringRelease(Ptr: Pointer);     external name '_StringRelease';
 
@@ -237,6 +241,8 @@ procedure _SysWriteStr(Fd: Integer; S: Pointer);
 procedure _SysWriteInt(Fd: Integer; N: Integer);
 procedure _SysWriteInt64(Fd: Integer; N: Int64);
 procedure _SysWriteUInt64(Fd: Integer; N: UInt64);
+procedure _SysWriteDouble(Fd: Integer; V: Double);
+procedure _SysWriteSingle(Fd: Integer; V: Single);
 procedure _SysWriteNewline(Fd: Integer);
 
 { File-descriptor primitives }
@@ -768,6 +774,34 @@ begin
   _StringRelease(S);
 end;
 
+procedure TRtlPlatformPosix.SysWriteDouble(Fd: Integer; V: Double);
+var
+  S: Pointer;
+  LPtr: ^Integer;
+  Len: Integer;
+begin
+  S := _DoubleToStr(V);
+  _StringAddRef(S);
+  LPtr := S - 8;
+  Len := LPtr^;
+  WriteAllToFd(Fd, PChar(S), Len);
+  _StringRelease(S);
+end;
+
+procedure TRtlPlatformPosix.SysWriteSingle(Fd: Integer; V: Single);
+var
+  S: Pointer;
+  LPtr: ^Integer;
+  Len: Integer;
+begin
+  S := _SingleToStr(V);
+  _StringAddRef(S);
+  LPtr := S - 8;
+  Len := LPtr^;
+  WriteAllToFd(Fd, PChar(S), Len);
+  _StringRelease(S);
+end;
+
 { ================================================================== }
 { TRtlPlatformPosix — File-descriptor primitives                      }
 { ================================================================== }
@@ -1231,6 +1265,16 @@ end;
 procedure _SysWriteUInt64(Fd: Integer; N: UInt64);
 begin
   GRtlPlatform.SysWriteUInt64(Fd, N);
+end;
+
+procedure _SysWriteDouble(Fd: Integer; V: Double);
+begin
+  GRtlPlatform.SysWriteDouble(Fd, V);
+end;
+
+procedure _SysWriteSingle(Fd: Integer; V: Single);
+begin
+  GRtlPlatform.SysWriteSingle(Fd, V);
 end;
 
 procedure _SysWriteNewline(Fd: Integer);

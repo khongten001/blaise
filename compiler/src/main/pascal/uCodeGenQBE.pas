@@ -6712,6 +6712,12 @@ begin
     if IsString then
       EmitLine(Format('  call $_SysWriteStr(w %s, l %s)', [FdLit, ArgTemp]))
     else if (ArgExpr.ResolvedType <> nil) and
+            (ArgExpr.ResolvedType.Kind = tyDouble) then
+      EmitLine(Format('  call $_SysWriteDouble(w %s, d %s)', [FdLit, ArgTemp]))
+    else if (ArgExpr.ResolvedType <> nil) and
+            (ArgExpr.ResolvedType.Kind = tySingle) then
+      EmitLine(Format('  call $_SysWriteSingle(w %s, s %s)', [FdLit, ArgTemp]))
+    else if (ArgExpr.ResolvedType <> nil) and
             (ArgExpr.ResolvedType.Kind = tyUInt64) then
       EmitLine(Format('  call $_SysWriteUInt64(w %s, l %s)', [FdLit, ArgTemp]))
     else if (ArgExpr.ResolvedType <> nil) and
