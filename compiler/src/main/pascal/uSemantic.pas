@@ -21,12 +21,13 @@ unit uSemantic;
 interface
 
 uses
-  SysUtils, Classes, contnrs, uAST, uSymbolTable, uStrCompat;
+  SysUtils, Classes, contnrs, uAST, uSymbolTable, uStrCompat,
+  uUnitInterface;
 
 type
   ESemanticError = class(Exception);
 
-  TSemanticAnalyser = class
+  TSemanticAnalyser = class(TUsesChainProvider)
   private
     FTable:                TSymbolTable;
     FProg:                 TProgram;      { current program being analysed; set in Analyse }
@@ -43,6 +44,40 @@ type
     FCurrentUnitName:      string;       { name of the unit/program currently being analysed }
     FCurrentEnclosingDecl: TMethodDecl;  { the innermost standalone proc/func currently being analysed;
                                            nil at program level.  Used to set EnclosingDecl on nested procs. }
+    FUnitIfaces:           TStringList;  { owned list (case-insensitive) — keys are unit
+                                           names, Objects[I] is the TUnitInterface (NOT
+                                           owned by the analyser; .bif ifaces are owned by
+                                           Loader.PrebuiltIfaces, source-built ifaces by
+                                           UnitIfaces in Blaise.pas).  Registered alongside
+                                           ImportUnitInterface and after AnalyseUnitForExport
+                                           so per-unit lookups can find an iface by name. }
+    FUnitSymbols:          TStringList;  { owned (case-insensitive); keys are
+                                           'UnitName' + #1 + 'SymbolName'; Objects[I] is
+                                           a TSymbol (NOT owned — the canonical TSymbol
+                                           is owned by FTable today, mirrored here as a
+                                           direct per-unit index.  Used by the chain
+                                           walker so retrieval doesn't need to filter
+                                           a flat global by OwningUnit.  Sentinel
+                                           character #1 keeps the key unambiguous even
+                                           when a unit name contains a colon (rare). }
+    FCurrentUsesChain:     TStringList;  { owned — uses-chain visible to FCurrentUnitName.
+                                           Index 0 is the implicit System unit; entries 1..N-1
+                                           come from the analysed program/unit's UsedUnits in
+                                           source order.  Lookup walks this list right-to-left
+                                           ("last in uses wins"); System is the final fallback.
+                                           Empty during pure import phases. }
+
+    { Add ADecl to FProcIndex under key AName, auto-tagging
+      ADecl.OwningUnit from FCurrentUnitName if not already set.
+      Wraps the seven free-routine registration sites so a future
+      chain-aware filter can read OwningUnit off any FProcIndex
+      entry. }
+    procedure RegisterProcDecl(const AName: string; ADecl: TMethodDecl);
+
+    { Populates FCurrentUsesChain from a program/unit's UsedUnits list.
+      Pure plumbing — no behavior change today; consumed by uses-chain
+      lookup in a later step. }
+    procedure BuildUsesChain(AUsedUnits: TStringList);
 
     { Generic type instantiation: resolves 'TBox<Integer>' on demand. }
     function  FindTypeOrInstantiate(const AName: string): TTypeDesc;
@@ -210,9 +245,119 @@ type
       scope so that subsequent Analyse(Prog) or AnalyseUnitForExport calls
       can resolve them.  Use this when compiling a unit as a dependency. }
     procedure AnalyseUnitForExport(AUnit: TUnit);
+    { Read-only handle to the analyser's symbol table.  Codegen needs it
+      in unit-as-top-level mode where no TProgram exists to hand it off.
+      Also used by uSemanticExport.ExportUnitInterface to look up resolved
+      types (e.g. for InstanceSize).  Non-owning — do not free. }
+    function  GetSymbolTable: TSymbolTable;
+    { Returns MangleUnitPrefix(FCurrentUnitName) when analysing a unit
+      via AnalyseUnitForExport (FProg=nil), '' otherwise.  Used by
+      ResolvedQbeName generation to prefix cross-unit symbol names. }
+    function  CurrentUnitPrefix: string;
+    { Push an imported free routine into FProcIndex (the call-site
+      lookup table used by AnalyseFuncCall et al.).  Used by
+      uSemanticImport when materialising symbols from a .bif —
+      FTable.Define alone isn't enough because the call-site path
+      goes through FProcIndex instead. }
+    procedure RegisterImportedRoutine(const AName: string;
+                                      ADecl: TMethodDecl);
+
+    { Register a TUnitInterface in FUnitIfaces, keyed by AIface.Name.
+      AIface is NOT owned — caller (Blaise.pas) retains lifetime.
+      Subsequent registrations of the same name replace the entry
+      (last-wins, paralleling "uses-chain last-wins").  Task #44 step 3. }
+    procedure RegisterUnitIface(AIface: TUnitInterface);
+
+    { Register a per-unit symbol mapping in FUnitSymbols.  ASym is
+      NOT owned — its lifetime is managed by FTable (or whatever
+      owner the caller designates).  Called by uSemanticImport
+      alongside the existing Define when an iface symbol is
+      materialised, and by the source-side Define wrapper for the
+      unit being analysed.  Task #44 step 9. }
+    procedure RegisterUnitSymbol(const AUnitName: string; ASym: TSymbol);
+
+    { Look up a per-unit symbol by (AUnitName, ASymName).  Returns
+      nil when not registered.  Used by LookupViaUsesChain to walk
+      the chain without going through the flat global. }
+    function FindUnitSymbol(const AUnitName, ASymName: string): TSymbol;
+
+    { Look up a registered TUnitInterface by unit name.  Returns nil
+      if not registered.  Case-insensitive. }
+    function FindUnitIface(const AUnitName: string): TUnitInterface;
+
+    { Visibility filter — single chokepoint for both unqualified
+      uses-chain lookup and qualified class-member access.  Task #44
+      step 4.
+
+      AFromUnit  — name of the unit currently being analysed
+                   (FCurrentUnitName).  Used by future private (Pascal
+                   "unit is the privacy boundary") logic.
+      AFromClass — the class whose method body the lookup is happening
+                   inside, or nil for free-routine / unit-level code.
+                   Used by future protected logic to walk ParentClass
+                   up to ASym's declaring class.
+
+      Stub returns True unconditionally — private/protected modifiers
+      don't exist on Blaise class members yet.  When they land, this
+      seam plugs in without changing call sites.
+
+      Critical correctness note (see project_per_unit_visibility.md):
+        - For *unqualified* lookups, False means skip-and-keep-walking
+          the uses chain — "wasn't this unit's Foo".
+        - For *qualified* member access (obj.Foo), False is a hard
+          error at the resolution site — "Foo is not accessible from
+          here", NOT a fall-through. }
+    function IsVisibleFromUnit(ASym: TSymbol;
+                               const AFromUnit: string;
+                               AFromClass: TRecordTypeDesc): Boolean; overload;
+
+    { String-flavor overload — at member-access sites we typically
+      have an owning-unit string but no TSymbol (e.g. a TMethodDecl /
+      TFieldInfo).  Same semantics as the TSymbol form.  Task #44
+      step 6. }
+    function IsVisibleFromUnit(const AMemberOwningUnit: string;
+                               const AFromUnit: string;
+                               AFromClass: TRecordTypeDesc): Boolean; overload;
+
+    { Hard-error wrapper for qualified member access (`obj.Foo` /
+      `Self.Foo` / `TypeName.Foo`).  Calls IsVisibleFromUnit; on
+      False raises ESemanticError with a "not accessible" message
+      at AMemberName's source location.  This is the rule from
+      project_per_unit_visibility.md: an invisible *qualified*
+      member is a hard error, never a fall-through.
+
+      Today the filter returns True so this never raises; the seam
+      is in place for when class members gain private/protected
+      modifiers and a per-member OwningUnit. }
+    procedure AssertMemberVisible(const AMemberOwningUnit: string;
+                                  AClassContext: TRecordTypeDesc;
+                                  const AMemberName: string;
+                                  ALine, ACol: Integer);
+
+    { Uses-chain lookup for *unqualified* identifiers.  Walks
+      FCurrentUsesChain right-to-left ("last in uses wins"); for
+      each chain entry whose TUnitInterface advertises AName via
+      HasSymbol, retrieves the canonical TSymbol from FTable and
+      applies IsVisibleFromUnit (with FCurrentClass for the class
+      context).  Returns the first visible hit, or nil.
+
+      Today the flat FTable holds only one TSymbol per name (no
+      conflicts are possible — semantics already error on name
+      duplicates), so this acts as an order-preserving probe that
+      will become load-bearing only once step 9 removes the flat
+      merge.  Until then it's plumbing.  Task #44 step 5.
+
+      Overrides TUsesChainProvider so TSymbolTable.Lookup can call
+      us back through the abstract base (step 7). }
+    function LookupViaUsesChain(const AName: string): TSymbol; override;
   end;
 
 implementation
+
+function TSemanticAnalyser.GetSymbolTable: TSymbolTable;
+begin
+  Result := FTable;
+end;
 
 constructor TSemanticAnalyser.Create;
 begin
@@ -224,11 +369,20 @@ begin
   FProcIndex.CaseSensitive := False;
   FGenericFuncTemplates := TStringList.Create;
   FGenericFuncTemplates.CaseSensitive := False;
+  FCurrentUsesChain     := TStringList.Create;
+  FCurrentUsesChain.CaseSensitive := False;
+  FUnitIfaces           := TStringList.Create;
+  FUnitIfaces.CaseSensitive := False;
+  FUnitSymbols          := TStringList.Create;
+  FUnitSymbols.CaseSensitive := False;
   FLoopDepth            := 0;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
+  FUnitSymbols.Free;
+  FUnitIfaces.Free;
+  FCurrentUsesChain.Free;
   FGenericFuncTemplates.Free;
   FProcIndex.Free;
   FMethodIndex.Free;
@@ -552,10 +706,65 @@ begin
     ALine, ACol);
 end;
 
+function TSemanticAnalyser.CurrentUnitPrefix: string;
+begin
+  { Program-scope routines (compiled via Analyse(AProg) with FProg
+    non-nil) keep their bare names — they aren't shared across
+    compilation units.  Unit-scope routines (AnalyseUnitForExport,
+    FProg = nil) get the unit prefix via MangleUnitPrefix's
+    allowlist semantics. }
+  if FProg <> nil then
+    Result := ''
+  else
+    Result := MangleUnitPrefix(FCurrentUnitName);
+end;
+
+procedure TSemanticAnalyser.RegisterProcDecl(const AName: string; ADecl: TMethodDecl);
+begin
+  if (ADecl.OwningUnit = '') and (FCurrentUnitName <> '') then
+    ADecl.OwningUnit := FCurrentUnitName;
+  FProcIndex.AddObject(AName, ADecl);
+end;
+
+procedure TSemanticAnalyser.BuildUsesChain(AUsedUnits: TStringList);
+var
+  I: Integer;
+begin
+  FCurrentUsesChain.Clear;
+  { Implicit `System` is always the first entry in every unit's
+    effective uses chain (Pascal "Uses System(hidden), Classes;"
+    rule).  User code never has to write it; it sits at the bottom
+    of the right-to-left walk, so any user-supplied unit that
+    re-exports a System name shadows it.  TSymbolTable's
+    RegisterBuiltins also defines a small set of compiler intrinsics
+    directly in global scope — those remain reachable as the final
+    fallback after the chain.
+
+    Skip the prepend when the unit being analysed IS System — a unit
+    cannot use itself.  FCurrentUnitName is set by Analyse/
+    AnalyseUnitForExport just before BuildUsesChain runs. }
+  if not SameText(FCurrentUnitName, 'System') then
+    FCurrentUsesChain.Add('System');
+  if AUsedUnits = nil then Exit;
+  for I := 0 to AUsedUnits.Count - 1 do
+    { Defensive: a user `uses System` (case-insensitive) is the same
+      as the implicit one — skip the dup so right-to-left doesn't
+      shadow itself.  TStringList is CaseSensitive=False so IndexOf
+      handles it. }
+    if FCurrentUsesChain.IndexOf(AUsedUnits.Strings[I]) < 0 then
+      FCurrentUsesChain.Add(AUsedUnits.Strings[I]);
+end;
+
 procedure TSemanticAnalyser.Analyse(AProg: TProgram);
 begin
   FProg := AProg;
   FCurrentUnitName := AProg.Name;
+  BuildUsesChain(AProg.UsedUnits);
+  FTable.UsesChainProvider := Self;
+  { Tag program-level globals with the program's name so layer-3
+    lookup (current compilation's own symbols) finds them ahead of
+    a use'd unit's same-named export. }
+  FTable.DefineOwningUnit := AProg.Name;
   AnalyseBlock(AProg.Block);
   { Transfer symbol table ownership to the program so that TTypeDesc
     objects (referenced by ResolvedType pointers on AST nodes) outlive
@@ -623,6 +832,12 @@ begin
     begin
       MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
 
+      { Generic free routines: skip param/return resolution and
+        global-symbol registration; the impl-side AnalyseStandaloneDecl
+        registers the template for on-demand instantiation. }
+      if MDecl.TypeParams <> nil then
+        Continue;
+
       for J := 0 to MDecl.Params.Count - 1 do
       begin
         Par              := TMethodParam(MDecl.Params.Items[J]);
@@ -642,11 +857,11 @@ begin
 
       { Compute mangled QBE name for overloaded forward decls. }
       if MDecl.IsOverload then
-        MDecl.ResolvedQbeName := MDecl.Name + '$' + MangleParamSig(MDecl)
+        MDecl.ResolvedQbeName := CurrentUnitPrefix + MDecl.Name + '$' + MangleParamSig(MDecl)
       else
-        MDecl.ResolvedQbeName := MDecl.Name;
+        MDecl.ResolvedQbeName := CurrentUnitPrefix + MDecl.Name;
 
-      FProcIndex.AddObject(MDecl.Name, MDecl);
+      RegisterProcDecl(MDecl.Name, MDecl);
 
       if MDecl.ReturnTypeName <> '' then
         Sym := TSymbol.Create(MDecl.Name, skFunction, MDecl.ResolvedReturnType)
@@ -704,6 +919,11 @@ begin
     begin
       ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if (ImplDecl.OwnerTypeName <> '') and (ImplDecl.OwnerTypeParams <> nil) then
+        Continue;
+      { Generic free routine impls — handled via AnalyseStandaloneDecl /
+        FGenericFuncTemplates; their param types only resolve at
+        instantiation time. }
+      if (ImplDecl.OwnerTypeName = '') and (ImplDecl.TypeParams <> nil) then
         Continue;
 
       for J := 0 to ImplDecl.Params.Count - 1 do
@@ -778,10 +998,10 @@ begin
       begin
         { Impl-only declaration — register symbol and index it }
         if ImplDecl.IsOverload then
-          ImplDecl.ResolvedQbeName := ImplDecl.Name + '$' + MangleParamSig(ImplDecl)
+          ImplDecl.ResolvedQbeName := CurrentUnitPrefix + ImplDecl.Name + '$' + MangleParamSig(ImplDecl)
         else
-          ImplDecl.ResolvedQbeName := ImplDecl.Name;
-        FProcIndex.AddObject(ImplDecl.Name, ImplDecl);
+          ImplDecl.ResolvedQbeName := CurrentUnitPrefix + ImplDecl.Name;
+        RegisterProcDecl(ImplDecl.Name, ImplDecl);
         if ImplDecl.ReturnTypeName <> '' then
           Sym := TSymbol.Create(ImplDecl.Name, skFunction, ImplDecl.ResolvedReturnType)
         else
@@ -804,8 +1024,11 @@ begin
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
     begin
       MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
-      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if MDecl.IsExternal then Continue;
+      { Generic free routines live in FGenericFuncTemplates, not FProcIndex —
+        their impl is checked by AnalyseStandaloneDecl. }
+      if MDecl.TypeParams <> nil then Continue;
+      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
         SemanticError(
@@ -813,11 +1036,15 @@ begin
           MDecl.Line, MDecl.Col);
     end;
 
-    { Analyse standalone implementation bodies (skip generic class method impls) }
+    { Analyse standalone implementation bodies (skip generic class method
+      impls and generic free routines — both defer body analysis to
+      instantiation time). }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
       ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if (ImplDecl.OwnerTypeName <> '') and (ImplDecl.OwnerTypeParams <> nil) then
+        Continue;
+      if (ImplDecl.OwnerTypeName = '') and (ImplDecl.TypeParams <> nil) then
         Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
@@ -853,6 +1080,14 @@ var
 begin
   FCurrentUnitName := AUnit.Name;
   FCurrentUnit := AUnit;
+  BuildUsesChain(AUnit.UsedUnits);
+  FTable.UsesChainProvider := Self;
+  { Auto-tag every global Define within this unit's analysis with the
+    unit name — populates TSymbol.OwningUnit for the source-compiled-
+    dep path, paralleling uSemanticImport for the .bif-loaded path.
+    Consumed by codegen's unit-prefix mangling and by per-unit
+    visibility.  Cleared at the end. }
+  FTable.DefineOwningUnit := AUnit.Name;
   { --- Interface section ------------------------------------------------
     No scope is pushed here: all FTable.Define calls go to the global scope,
     making these symbols visible to callers of this unit. }
@@ -902,6 +1137,13 @@ begin
   begin
     MDecl := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
 
+    { Generic free routines: defer param/return resolution to
+      instantiation time and skip global symbol registration —
+      the template is registered through FGenericFuncTemplates by
+      AnalyseStandaloneDecl on the impl side. }
+    if MDecl.TypeParams <> nil then
+      Continue;
+
     for J := 0 to MDecl.Params.Count - 1 do
     begin
       Par              := TMethodParam(MDecl.Params.Items[J]);
@@ -920,11 +1162,11 @@ begin
     end;
 
     if MDecl.IsOverload then
-      MDecl.ResolvedQbeName := MDecl.Name + '$' + MangleParamSig(MDecl)
+      MDecl.ResolvedQbeName := CurrentUnitPrefix + MDecl.Name + '$' + MangleParamSig(MDecl)
     else
-      MDecl.ResolvedQbeName := MDecl.Name;
+      MDecl.ResolvedQbeName := CurrentUnitPrefix + MDecl.Name;
 
-    FProcIndex.AddObject(MDecl.Name, MDecl);
+    RegisterProcDecl(MDecl.Name, MDecl);
 
     if MDecl.ReturnTypeName <> '' then
       Sym := TSymbol.Create(MDecl.Name, skFunction, MDecl.ResolvedReturnType)
@@ -981,6 +1223,10 @@ begin
     begin
       ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if ImplDecl.OwnerTypeName <> '' then Continue;  { class method — already handled }
+      { Generic free routines defer all param/return resolution to
+        instantiation time; AnalyseStandaloneDecl below registers
+        the template. }
+      if ImplDecl.TypeParams <> nil then Continue;
 
       for J := 0 to ImplDecl.Params.Count - 1 do
       begin
@@ -1054,10 +1300,10 @@ begin
       begin
         { Impl-only declaration — register in impl scope (does not persist) }
         if ImplDecl.IsOverload then
-          ImplDecl.ResolvedQbeName := ImplDecl.Name + '$' + MangleParamSig(ImplDecl)
+          ImplDecl.ResolvedQbeName := CurrentUnitPrefix + ImplDecl.Name + '$' + MangleParamSig(ImplDecl)
         else
-          ImplDecl.ResolvedQbeName := ImplDecl.Name;
-        FProcIndex.AddObject(ImplDecl.Name, ImplDecl);
+          ImplDecl.ResolvedQbeName := CurrentUnitPrefix + ImplDecl.Name;
+        RegisterProcDecl(ImplDecl.Name, ImplDecl);
         if ImplDecl.ReturnTypeName <> '' then
           Sym := TSymbol.Create(ImplDecl.Name, skFunction, ImplDecl.ResolvedReturnType)
         else
@@ -1080,8 +1326,10 @@ begin
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
     begin
       MDecl   := TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]);
-      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if MDecl.IsExternal then Continue;
+      { Generic free routines: impl lives in FGenericFuncTemplates. }
+      if MDecl.TypeParams <> nil then Continue;
+      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
         SemanticError(
@@ -1089,11 +1337,14 @@ begin
           MDecl.Line, MDecl.Col);
     end;
 
-    { Analyse standalone implementation bodies (skip class method impls) }
+    { Analyse standalone implementation bodies (skip class method impls
+      and generic free routines, whose bodies only re-type-check at
+      instantiation time). }
     for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
     begin
       ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
       if ImplDecl.OwnerTypeName <> '' then Continue;
+      if ImplDecl.TypeParams <> nil then Continue;
       AnalyseStandaloneDecl(ImplDecl);
     end;
 
@@ -1111,6 +1362,168 @@ begin
     FTable.PopScope;
   end;
   FCurrentUnit := nil;
+  FTable.DefineOwningUnit := '';
+end;
+
+procedure TSemanticAnalyser.RegisterImportedRoutine(const AName: string;
+                                                    ADecl: TMethodDecl);
+begin
+  { ADecl.OwningUnit is set by the caller (uSemanticImport) to the
+    iface's unit name before we get here; don't overwrite with
+    FCurrentUnitName since the analyser may not be mid-analysis. }
+  FProcIndex.AddObject(AName, ADecl);
+end;
+
+procedure TSemanticAnalyser.RegisterUnitIface(AIface: TUnitInterface);
+var
+  Idx, I:  Integer;
+  Scope:   TScope;
+  Sym:     TSymbol;
+begin
+  if AIface = nil then Exit;
+  Idx := FUnitIfaces.IndexOf(AIface.Name);
+  if Idx >= 0 then
+    FUnitIfaces.Objects[Idx] := AIface
+  else
+    FUnitIfaces.AddObject(AIface.Name, AIface);
+
+  { Absorb the symbols this unit Define'd into FTable's global scope
+    into the per-unit cache.  Lets LookupViaUsesChain do a direct
+    keyed retrieval without filtering the flat global by OwningUnit.
+    Walks each global-scope symbol once and grabs the ones whose
+    OwningUnit matches AIface.Name. }
+  if FTable = nil then Exit;
+  Scope := FTable.GlobalScope;
+  for I := 0 to Scope.SymbolCount - 1 do
+  begin
+    Sym := Scope.SymbolAt(I);
+    if (Sym <> nil) and SameText(Sym.OwningUnit, AIface.Name) then
+      RegisterUnitSymbol(AIface.Name, Sym);
+  end;
+end;
+
+function TSemanticAnalyser.FindUnitIface(const AUnitName: string): TUnitInterface;
+var
+  Idx: Integer;
+begin
+  Idx := FUnitIfaces.IndexOf(AUnitName);
+  if Idx >= 0 then
+    Result := TUnitInterface(FUnitIfaces.Objects[Idx])
+  else
+    Result := nil;
+end;
+
+procedure TSemanticAnalyser.RegisterUnitSymbol(const AUnitName: string;
+                                               ASym: TSymbol);
+var
+  Key: string;
+  Idx: Integer;
+begin
+  if (AUnitName = '') or (ASym = nil) then Exit;
+  Key := AUnitName + #1 + ASym.Name;
+  Idx := FUnitSymbols.IndexOf(Key);
+  if Idx >= 0 then
+    FUnitSymbols.Objects[Idx] := ASym
+  else
+    FUnitSymbols.AddObject(Key, ASym);
+end;
+
+function TSemanticAnalyser.FindUnitSymbol(const AUnitName,
+                                          ASymName: string): TSymbol;
+var
+  Idx: Integer;
+begin
+  Idx := FUnitSymbols.IndexOf(AUnitName + #1 + ASymName);
+  if Idx >= 0 then
+    Result := TSymbol(FUnitSymbols.Objects[Idx])
+  else
+    Result := nil;
+end;
+
+function TSemanticAnalyser.LookupViaUsesChain(const AName: string): TSymbol;
+var
+  I:        Integer;
+  UnitName: string;
+  Iface:    TUnitInterface;
+  Sym:      TSymbol;
+begin
+  Result := nil;
+  if FTable = nil then Exit;
+  { Right-to-left walk = "last in uses wins". }
+  FTable.BypassUsesChain := True;
+  try
+    for I := FCurrentUsesChain.Count - 1 downto 0 do
+    begin
+      UnitName := FCurrentUsesChain.Strings[I];
+
+      { Prefer the per-unit symbol cache — direct keyed lookup, no
+        flat-global filtering needed.  Populated by uSemanticImport
+        when materialising iface symbols. }
+      Sym := FindUnitSymbol(UnitName, AName);
+
+      { Fallback: probe the iface's HasSymbol and the flat FTable.
+        Covers entries the per-unit cache hasn't seen yet (e.g.
+        symbols defined by the unit currently mid-analysis whose
+        AnalyseUnitForExport hasn't completed its Register*-equivalent
+        path). }
+      if Sym = nil then
+      begin
+        Iface := FindUnitIface(UnitName);
+        if (Iface <> nil) and Iface.HasSymbol(AName) then
+        begin
+          Sym := FTable.Lookup(AName);
+          if (Sym <> nil) and (Sym.OwningUnit <> '')
+             and not SameText(Sym.OwningUnit, UnitName) then
+            Sym := nil;
+        end;
+      end;
+
+      if Sym = nil then Continue;
+
+      if IsVisibleFromUnit(Sym, FCurrentUnitName, FCurrentClass) then
+      begin
+        Result := Sym;
+        Exit;
+      end;
+    end;
+  finally
+    FTable.BypassUsesChain := False;
+  end;
+end;
+
+function TSemanticAnalyser.IsVisibleFromUnit(ASym: TSymbol;
+                                             const AFromUnit: string;
+                                             AFromClass: TRecordTypeDesc): Boolean;
+begin
+  { Stub — see declaration in interface section.  When private/
+    protected modifiers arrive on class members:
+      - private:   Result := (AFromUnit = ASym.OwningUnit);
+      - protected: Result := (AFromUnit = ASym.OwningUnit)
+                          or (AFromClass <> nil)
+                             and AFromClassDescendsFromDeclarer(...);
+    Free symbols default to public so AFromClass is ignored for them. }
+  Result := True;
+end;
+
+function TSemanticAnalyser.IsVisibleFromUnit(const AMemberOwningUnit: string;
+                                             const AFromUnit: string;
+                                             AFromClass: TRecordTypeDesc): Boolean;
+begin
+  { String-flavor stub.  Same future logic as the TSymbol form,
+    keyed on the AMemberOwningUnit string directly. }
+  Result := True;
+end;
+
+procedure TSemanticAnalyser.AssertMemberVisible(const AMemberOwningUnit: string;
+                                                AClassContext: TRecordTypeDesc;
+                                                const AMemberName: string;
+                                                ALine, ACol: Integer);
+begin
+  if not IsVisibleFromUnit(AMemberOwningUnit, FCurrentUnitName, AClassContext) then
+    SemanticError(
+      Format('Identifier ''%s'' is not accessible from this context',
+        [AMemberName]),
+      ALine, ACol);
 end;
 
 procedure TSemanticAnalyser.LinkClassMethodImpls(ABlock: TBlock);
@@ -1654,11 +2067,11 @@ begin
     begin
       NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
       if NewMDecl.IsVirtual then
-        RT.AddVTableSlot(NewMDecl.Name, '$' + ATypeName + '_' + NewMDecl.Name)
+        RT.AddVTableSlot(NewMDecl.Name, '$' + CurrentUnitPrefix + ATypeName + '_' + NewMDecl.Name)
       else if NewMDecl.IsOverride then
         RT.OverrideVTableSlot(
           RT.FindVTableSlot(NewMDecl.Name),
-          '$' + ATypeName + '_' + NewMDecl.Name);
+          '$' + CurrentUnitPrefix + ATypeName + '_' + NewMDecl.Name);
     end;
 
     { Resolve fields }
@@ -1684,6 +2097,15 @@ begin
       NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
       Key      := ATypeName + '.' + NewMDecl.Name;
       FMethodIndex.AddObject(Key, NewMDecl);
+      { Pin the QBE symbol now so the def and call sites agree.  The
+        instance's type symbol inherits OwningUnit from the analysing
+        compilation (program/unit name) via DefineGlobal's auto-tag;
+        the same prefix has to appear on every method this loop clones
+        otherwise codegen emits 'TBox_Integer_Create' on one side and
+        'UseBox_TBox_Integer_Create' on the other. }
+      NewMDecl.OwningUnit     := Sym.OwningUnit;
+      NewMDecl.ResolvedQbeName := MangleUnitPrefix(Sym.OwningUnit) +
+                                  ATypeName + '_' + NewMDecl.Name;
       if SameText(NewMDecl.Name, 'Destroy') then
         RT.HasDestroyMethod := True;
 
@@ -1923,10 +2345,16 @@ begin
   BaseName := StrHead(AInstName, BracPos);
   ArgsStr  := StrCopyFrom(AInstName, BracPos + 1, Length(AInstName) - BracPos - 2);
 
+  { Check both the in-unit template index and any imported templates
+    registered through the symbol table.  Imports landed via
+    uSemanticImport.RegisterUnitInterface populate FTable; in-unit
+    AnalyseStandaloneDecl populates both. }
   TemplIdx := FGenericFuncTemplates.IndexOf(BaseName);
-  if TemplIdx < 0 then Exit;  { not a known generic function template }
-
-  Templ := TMethodDecl(FGenericFuncTemplates.Objects[TemplIdx]);
+  if TemplIdx >= 0 then
+    Templ := TMethodDecl(FGenericFuncTemplates.Objects[TemplIdx])
+  else
+    Templ := TMethodDecl(FTable.FindGenericRoutine(BaseName));
+  if Templ = nil then Exit;  { not a known generic function template }
 
   Args := TStringList.Create;
   try
@@ -2014,7 +2442,7 @@ begin
     AnalyseStandaloneDecl(NewMDecl);
 
     { Register in proc index and global symbol table }
-    FProcIndex.AddObject(AInstName, NewMDecl);
+    RegisterProcDecl(AInstName, NewMDecl);
     if NewMDecl.ReturnTypeName <> '' then
       Sym := TSymbol.Create(AInstName, skFunction, NewMDecl.ResolvedReturnType)
     else
@@ -2810,7 +3238,7 @@ begin
             MangledKey := MangledKey + '$' + MangleParamSig(MDecl);
           if MDecl.IsVirtual then
           begin
-            Slot := RT.AddVTableSlot(MangledKey, '$' + TD.Name + '_' + MangledKey);
+            Slot := RT.AddVTableSlot(MangledKey, '$' + CurrentUnitPrefix + TD.Name + '_' + MangledKey);
             if MDecl.IsAbstract then
             begin
               RT.VTableEntryAt(Slot).IsAbstract := True;
@@ -2835,7 +3263,7 @@ begin
                 end;
               end;
             end;
-            RT.OverrideVTableSlot(Slot, '$' + TD.Name + '_' + MangledKey);
+            RT.OverrideVTableSlot(Slot, '$' + CurrentUnitPrefix + TD.Name + '_' + MangledKey);
             { Override clears the abstract flag on the inherited slot }
             if Slot >= 0 then
               RT.VTableEntryAt(Slot).IsAbstract := False;
@@ -2916,7 +3344,7 @@ begin
         MangledKey := MDecl.Name;
         if MDecl.IsOverload then
           MangledKey := MangledKey + '$' + MangleParamSig(MDecl);
-        MDecl.ResolvedQbeName := TD.Name + '_' + MangledKey;
+        MDecl.ResolvedQbeName := CurrentUnitPrefix + TD.Name + '_' + MangledKey;
 
         { Reject duplicate-without-overload at registration time.  Walk
           existing FMethodIndex entries for this (TypeName.Name) — if
@@ -3251,6 +3679,7 @@ var
   Key:      string;
   Sym:      TSymbol;
   RT:       TRecordTypeDesc;
+  OwnerUnit: string;
 begin
   CurrName := ATypeName;
   while CurrName <> '' do
@@ -3259,7 +3688,15 @@ begin
     Idx := FMethodIndex.IndexOf(Key);
     if Idx >= 0 then
     begin
-      Exit(TMethodDecl(FMethodIndex.Objects[Idx]));
+      Result := TMethodDecl(FMethodIndex.Objects[Idx]);
+      { Visibility seam: treat the class's owning unit as the member's
+        effective owner.  Currently a no-op (returns True); activates
+        without call-site work when class members gain private/protected. }
+      OwnerUnit := '';
+      Sym := FTable.Lookup(CurrName);
+      if Sym <> nil then OwnerUnit := Sym.OwningUnit;
+      AssertMemberVisible(OwnerUnit, FCurrentClass, AMethodName, 0, 0);
+      Exit;
     end;
     { Walk to parent }
     Sym := FTable.Lookup(CurrName);
@@ -3438,10 +3875,13 @@ begin
     ADecl := TMethodDecl(ABlock.ProcDecls.Items[I]);
     { Class method implementations have their body transferred; skip them here }
     if ADecl.OwnerTypeName <> '' then Continue;
-    { Generic function templates — registered for on-demand instantiation }
+    { Generic function templates — registered for on-demand instantiation.
+      Mirrored on FTable so imported units (uSemanticImport) can share
+      the same lookup surface as in-unit templates. }
     if ADecl.TypeParams <> nil then
     begin
       FGenericFuncTemplates.AddObject(ADecl.Name, ADecl);
+      FTable.RegisterGenericRoutine(ADecl.Name, ADecl);
       Continue;
     end;
 
@@ -3491,7 +3931,7 @@ begin
       make same-named nested procs in different outer procs appear as
       ambiguous overloads of each other. }
     if FCurrentEnclosingDecl = nil then
-      FProcIndex.AddObject(ADecl.Name, ADecl);
+      RegisterProcDecl(ADecl.Name, ADecl);
 
     { Register in symbol table }
     if ADecl.ReturnTypeName <> '' then
@@ -8010,6 +8450,11 @@ begin
       ProcDesc.ReturnType := MD.ResolvedReturnType;  { nil for procedure }
       Result := ProcDesc;
       IdentExpr.ResolvedType := ProcDesc;
+      { Stash the resolved decl on the address-of node so codegen can
+        read MD.ResolvedQbeName directly — keeps the mangled label
+        out of TIdentExpr and lets a future patch evolve the mangling
+        without touching every reference site. }
+      AExpr.ResolvedFreeRoutine := MD;
       AExpr.ResolvedType := Result;
       Exit;
     end;

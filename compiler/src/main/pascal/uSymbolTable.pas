@@ -338,6 +338,13 @@ type
                                 nil = last (or only) overload }
     [Unretained] Decl:         TObject;    { not owned — TMethodDecl backing this proc/func symbol;
                                 nil for non-callable symbols }
+    OwningUnit:   string;     { name of the unit that exported this symbol; empty
+                                for builtins, program-local symbols, and locals.
+                                Populated by uSemanticImport when registering an
+                                imported iface, and by AnalyseUnitForExport for
+                                symbols owned by the unit being analysed.  Read
+                                by per-unit visibility and by unit-prefix
+                                mangling on cross-unit references. }
     constructor Create(const AName: string; AKind: TSymbolKind; AType: TTypeDesc);
     destructor Destroy; override;
   end;
@@ -359,11 +366,26 @@ type
     function Define(ASymbol: TSymbol): Boolean;
     function LookupLocal(const AName: string): TSymbol;
     function Lookup(const AName: string): TSymbol;
+    { Iteration over symbols defined directly in this scope (no
+      parent walk).  Used by the analyser to harvest unit-imported
+      symbols into per-unit caches without threading semantic
+      references through every Register* helper. }
+    function SymbolCount: Integer;
+    function SymbolAt(AIdx: Integer): TSymbol;
   end;
 
   { ------------------------------------------------------------------ }
   {  Symbol table                                                       }
   { ------------------------------------------------------------------ }
+
+  { Abstract chain-lookup provider.  TSemanticAnalyser inherits from
+    this and overrides LookupViaUsesChain so TSymbolTable can call
+    back without depending on uSemantic.  Returns nil when the chain
+    has no visible binding for AName. }
+  TUsesChainProvider = class
+  public
+    function LookupViaUsesChain(const AName: string): TSymbol; virtual;
+  end;
 
   TSymbolTable = class
   private
@@ -379,6 +401,15 @@ type
       the same generic returns a wrong-class object and silently mis-wires the
       instance (no parent, no vtable). }
     FGenericTemplates: TObjectList;
+    FGenericRoutines: TStringList; { non-owning: routine name → TMethodDecl
+                                     (generic free-routine templates, populated
+                                     by AnalyseStandaloneDecl and by
+                                     uSemanticImport when registering a unit
+                                     interface's generic free routines) }
+    FImportedDecls:   TObjectList; { owned TMethodDecl — synthesised by
+                                     uSemanticImport when materialising
+                                     routines / methods that came in via a
+                                     .bif (no source TUnit holds them). }
 
     FTypeInteger:  TTypeDesc;
     FTypeInt64:    TTypeDesc;
@@ -396,6 +427,23 @@ type
     FTypePointer: TPointerTypeDesc;  { untyped Pointer }
     FTypePChar:   TTypeDesc;         { opaque C pointer }
 
+    { Optional hook into uses-chain lookup.  Set by TSemanticAnalyser
+      so Lookup() can consult per-unit visibility after exhausting the
+      pushed scopes but BEFORE falling back to the global scope.
+      Task #44 step 7. }
+    FUsesChainProvider: TUsesChainProvider;
+
+    { Recursion guard.  TSemanticAnalyser.LookupViaUsesChain (which
+      sits behind FUsesChainLookup) calls FTable.Lookup itself to
+      retrieve the canonical TSymbol — without this flag we'd loop. }
+    FBypassUsesChain: Boolean;
+
+    FDefineOwningUnit: string;       { auto-applied to Sym.OwningUnit on Define
+                                       when the symbol has no explicit value;
+                                       set by AnalyseUnit/AnalyseUnitForExport
+                                       so semantic-side Define sites don't
+                                       each need to thread the unit name. }
+
     function GetCurrentScope: TScope;
     function GetScopeDepth: Integer;
     function NewType(AKind: TTypeKind; const AName: string): TTypeDesc;
@@ -409,12 +457,32 @@ type
     procedure PopScope;
     property  CurrentScope: TScope read GetCurrentScope;
     property  ScopeDepth: Integer read GetScopeDepth;
+    function  GlobalScope: TScope;
 
     { Symbol management — owns ASymbol on success; caller must free on False }
     function Define(ASymbol: TSymbol): Boolean;
     { Define in global (outermost) scope regardless of current push depth. }
     function DefineGlobal(ASymbol: TSymbol): Boolean;
     function Lookup(const AName: string): TSymbol;
+
+    { Auto-OwningUnit context.  When set, Define()/DefineGlobal() will
+      populate Sym.OwningUnit from this string if the symbol has no
+      explicit value.  Empty string clears the context. }
+    property DefineOwningUnit: string read FDefineOwningUnit
+                                       write FDefineOwningUnit;
+
+    { Hook into the analyser's uses-chain lookup.  When non-nil,
+      Lookup() consults the chain after pushed scopes and before the
+      global scope.  Wired by TSemanticAnalyser.  Task #44 step 7. }
+    property UsesChainProvider: TUsesChainProvider read FUsesChainProvider
+                                                    write FUsesChainProvider;
+
+    { Recursion guard for the chain hook.  TSemanticAnalyser's chain
+      walker calls Lookup itself to retrieve the canonical TSymbol;
+      flipping this flag for the duration of that call bypasses the
+      hook to break recursion. }
+    property BypassUsesChain: Boolean read FBypassUsesChain
+                                       write FBypassUsesChain;
 
     { Type lookup — case-insensitive, returns nil if not found }
     function FindType(const AName: string): TTypeDesc;
@@ -451,6 +519,12 @@ type
       circular unit dependency with uAST. Callers cast the result. }
     procedure RegisterGeneric(const AName: string; ATempl: TObject);
     function  FindGeneric(const AName: string): TObject;
+    procedure RegisterGenericRoutine(const AName: string; ATempl: TObject);
+    function  FindGenericRoutine(const AName: string): TObject;
+    { Take ownership of a synthesised TMethodDecl produced during
+      .bif import.  Lifetime tracks the symbol table; callers do
+      not free.  Returns the same pointer for caller convenience. }
+    function  OwnImportedDecl(ADecl: TObject): TObject;
 
     { Convenience type accessors }
     property TypeInteger:  TTypeDesc read FTypeInteger;
@@ -470,7 +544,33 @@ type
     property TypeSingle:  TTypeDesc        read FTypeSingle;
   end;
 
+{ Foundational units whose exports stay as literal global symbols (no
+  unit prefix) so codegen-emitted hardcoded references like
+  @_BlaiseGetMem, @TObject_Destroy, @_StartUp, @_StringRelease keep
+  resolving.  The empty unit name is also unmangled — that's
+  program-level code or builtins. }
+function IsUnmangledUnit(const AUnitName: string): Boolean;
+
+{ Returns 'UnitName_' (dots collapse to underscores) for mangled
+  units, '' for unmangled ones.  The same prefix is applied at both
+  the symbol-defining site (codegen of the exporting unit) and the
+  symbol-using site (call/reference in another unit), so they always
+  agree on the QBE global name. }
+function MangleUnitPrefix(const AUnitName: string): string;
+
 implementation
+
+{ ------------------------------------------------------------------ }
+{ TUsesChainProvider                                                  }
+{ ------------------------------------------------------------------ }
+
+function TUsesChainProvider.LookupViaUsesChain(const AName: string): TSymbol;
+begin
+  { Base impl never matches; descendants override.  Provided so a
+    standalone TSymbolTable (no analyser attached) still behaves
+    sensibly if a provider isn't wired. }
+  Result := nil;
+end;
 
 { ------------------------------------------------------------------ }
 { TTypeDesc                                                           }
@@ -1043,6 +1143,16 @@ begin
   Result := nil;
 end;
 
+function TScope.SymbolCount: Integer;
+begin
+  Result := FSymbols.Count;
+end;
+
+function TScope.SymbolAt(AIdx: Integer): TSymbol;
+begin
+  Result := TSymbol(FSymbols.Items[AIdx]);
+end;
+
 { ------------------------------------------------------------------ }
 { TEnumTypeDesc                                                       }
 { ------------------------------------------------------------------ }
@@ -1132,6 +1242,9 @@ begin
   { Owns (retains) registered generic templates so FGenerics' references stay
     valid even after the originating AST is torn down. }
   FGenericTemplates := TObjectList.Create(True);
+  FGenericRoutines := TStringList.Create;
+  FGenericRoutines.CaseSensitive := False;
+  FImportedDecls   := TObjectList.Create(True);
   { Global scope — parent = nil }
   FScopeStack.Add(TScope.Create(nil));
   RegisterBuiltins;
@@ -1139,7 +1252,9 @@ end;
 
 destructor TSymbolTable.Destroy;
 begin
-  { FGenerics, FScopeStack, FAllTypes are owned class fields — released by
+  FImportedDecls.Free;
+  FGenericRoutines.Free;
+  { FGenerics, FGenericTemplates, FScopeStack, FAllTypes are owned class fields — released by
     ARC field cleanup. }
   inherited Destroy;
 end;
@@ -1255,6 +1370,28 @@ begin
     Result := TObject(FGenerics.Objects[Idx])
   else
     Result := nil;
+end;
+
+procedure TSymbolTable.RegisterGenericRoutine(const AName: string; ATempl: TObject);
+begin
+  FGenericRoutines.AddObject(AName, ATempl);
+end;
+
+function TSymbolTable.FindGenericRoutine(const AName: string): TObject;
+var
+  Idx: Integer;
+begin
+  Idx := FGenericRoutines.IndexOf(AName);
+  if Idx >= 0 then
+    Result := FGenericRoutines.Objects[Idx]
+  else
+    Result := nil;
+end;
+
+function TSymbolTable.OwnImportedDecl(ADecl: TObject): TObject;
+begin
+  FImportedDecls.Add(ADecl);
+  Result := ADecl;
 end;
 
 procedure TSymbolTable.RegisterBuiltins;
@@ -1519,7 +1656,14 @@ end;
 
 function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;
 begin
+  if (ASymbol.OwningUnit = '') and (FDefineOwningUnit <> '') then
+    ASymbol.OwningUnit := FDefineOwningUnit;
   Result := TScope(FScopeStack.Items[0]).Define(ASymbol);
+end;
+
+function TSymbolTable.GlobalScope: TScope;
+begin
+  Result := TScope(FScopeStack.Items[0]);
 end;
 
 function TSymbolTable.GetCurrentScope: TScope;
@@ -1546,23 +1690,112 @@ end;
 
 function TSymbolTable.Define(ASymbol: TSymbol): Boolean;
 begin
+  { Only auto-tag global-scope symbols.  Locals (parameters, var
+    blocks inside method bodies, etc.) live in pushed scopes and
+    must remain OwningUnit='' — uses-chain visibility doesn't apply
+    to them. }
+  if (ASymbol.OwningUnit = '') and (FDefineOwningUnit <> '')
+     and (FScopeStack.Count = 1) then
+    ASymbol.OwningUnit := FDefineOwningUnit;
   Result := CurrentScope.Define(ASymbol);
 end;
 
 function TSymbolTable.Lookup(const AName: string): TSymbol;
+var
+  I: Integer;
+  Sym: TSymbol;
 begin
-  Result := CurrentScope.Lookup(AName);
+  { Resolution layers, highest to lowest priority:
+
+      1. Pushed scopes (locals, params, nested-routine outer locals)
+      2. Class context — class members, walked via the parent chain.
+         Currently handled at caller sites (FCurrentClass.FindField
+         fallback) because TFieldInfo isn't a TSymbol; promotion into
+         this function lands with the step-9 refactor.
+      3. Current compilation unit's own symbols
+      4. Uses chain, right-to-left (last in `uses` wins)
+      5. System — implicitly prepended to the chain at index 0, so
+         it falls out of layer 4 naturally
+      6. True global — language builtins from RegisterBuiltins, and
+         (today) any flat-merged unit symbols not caught by layer 3
+         or 4.  The flat residue goes away in step 9. }
+
+  { Layer 1. }
+  for I := FScopeStack.Count - 1 downto 1 do
+  begin
+    Result := TScope(FScopeStack.Items[I]).LookupLocal(AName);
+    if Result <> nil then Exit;
+  end;
+
+  { Layer 3 — probe the global scope but only return a hit when the
+    symbol is owned by the unit currently being analysed.  This makes
+    `MyUnit.X` declared in the interface section beat an X from a
+    used unit, the same way it would have if we'd stored current-unit
+    symbols in a dedicated pool.  Builtins (OwningUnit = '') and
+    symbols owned by other units fall through to later layers. }
+  Sym := TScope(FScopeStack.Items[0]).LookupLocal(AName);
+  if (Sym <> nil) and (FDefineOwningUnit <> '')
+     and SameText(Sym.OwningUnit, FDefineOwningUnit) then
+  begin
+    Result := Sym;
+    Exit;
+  end;
+
+  { Layer 4 + 5 — the chain walker prepends System so we don't probe
+    it separately.  Bypassed when the chain walker itself is calling
+    us back to retrieve a canonical TSymbol. }
+  if (FUsesChainProvider <> nil) and not FBypassUsesChain then
+  begin
+    Result := FUsesChainProvider.LookupViaUsesChain(AName);
+    if Result <> nil then Exit;
+  end;
+
+  { Layer 6 — whatever the global walk produced earlier (builtins, or
+    flat-merged residue not yet caught above). }
+  Result := Sym;
 end;
 
 function TSymbolTable.FindType(const AName: string): TTypeDesc;
 var
   Sym: TSymbol;
 begin
-  Sym := CurrentScope.Lookup(AName);
+  Sym := Lookup(AName);  { honour uses-chain visibility }
   if (Sym <> nil) and (Sym.Kind = skType) then
     Result := Sym.TypeDesc
   else
     Result := nil;
+end;
+
+function IsUnmangledUnit(const AUnitName: string): Boolean;
+begin
+  Result := True;
+  if AUnitName = '' then Exit;
+  if SameText(AUnitName, 'System') then Exit;
+  if (Length(AUnitName) >= 4)
+     and SameText(Copy(AUnitName, 0, 4), 'rtl.') then Exit;
+  if (Length(AUnitName) >= 7)
+     and SameText(Copy(AUnitName, 0, 7), 'blaise_') then Exit;
+  Result := False;
+end;
+
+function MangleUnitPrefix(const AUnitName: string): string;
+var
+  I:  Integer;
+  Ch: string;
+begin
+  if IsUnmangledUnit(AUnitName) then
+  begin
+    Result := '';
+    Exit;
+  end;
+  Result := '';
+  for I := 0 to Length(AUnitName) - 1 do
+  begin
+    Ch := Copy(AUnitName, I, 1);
+    if Ch = '.' then Result := Result + '_'
+    else             Result := Result + Ch;
+  end;
+  Result := Result + '_';
 end;
 
 end.

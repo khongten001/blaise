@@ -20,7 +20,8 @@ interface
 
 uses
   SysUtils, Classes, contnrs,
-  uLexer, uParser, uAST;
+  uLexer, uParser, uAST,
+  uUnitInterface, uUnitInterfaceIO, uIfaceObject, uCompilerId;
 
 type
   EUnitNotFound       = class(Exception);
@@ -31,17 +32,48 @@ type
     constructor Create(const ASearchPaths: TStringList);
     destructor Destroy; override;
     { Returns an owned TObjectList of TUnit in dependency order (leaves
-      first).  The caller is responsible for freeing the list. }
+      first).  The caller is responsible for freeing the list.
+
+      Auto-discovery: while resolving each dep, the loader looks for
+      a pre-built '<unitname>.o' alongside any '<unitname>.pas' on
+      the search path.  If the .o is found and carries an embedded
+      iface (.blaise.iface section), the dep is materialised as a
+      TUnitInterface (added to PrebuiltIfaces with path noted in
+      PrebuiltObjectPaths) and the source .pas is *not* parsed.
+      Otherwise we fall back to the existing parse+analyse path. }
     function LoadAll(const AUnitNames: TStringList): TObjectList;
+
+    { Pre-built ifaces discovered during the most recent LoadAll —
+      one TUnitInterface per dep that was satisfied via a .o on the
+      search path.  Order matches PrebuiltObjectPaths.  Owned by the
+      loader; freed in Destroy. }
+    property PrebuiltIfaces:      TObjectList read FPrebuiltIfaces;
+    { Filesystem paths to the .o files that backed the pre-built
+      ifaces.  Caller links against these alongside the main
+      program's object. }
+    property PrebuiltObjectPaths: TStringList read FPrebuiltObjectPaths;
   private
-    FSearchPaths: TStringList;  { not owned }
-    FLoading:     TStringList;  { units currently on the load stack — cycle detection }
-    FLoadedNames: TStringList;  { units already fully loaded }
-    FResult:      TObjectList;  { the in-progress output list (not owned here) }
+    FSearchPaths:          TStringList;  { not owned }
+    FLoading:              TStringList;  { units currently on the load stack — cycle detection }
+    FLoadedNames:          TStringList;  { units already fully loaded }
+    FResult:               TObjectList;  { the in-progress output list (not owned here) }
+    FPrebuiltIfaces:       TObjectList;  { owned TUnitInterface }
+    FPrebuiltObjectPaths:  TStringList;
     function IsBuiltin(const AName: string): Boolean;
     function Locate(const AName: string): string;
+    { Look for '<AName>.o' on the search paths (lowercase or as-cased).
+      Returns the path or '' if none found. }
+    function LocateObject(const AName: string): string;
+    { Read the embedded iface section out of an object file and
+      reconstitute a TUnitInterface.  Returns nil on failure. }
+    function LoadIfaceFromObject(const APath: string): TUnitInterface;
     function LoadOne(const APath: string): TUnit;
     procedure LoadTransitive(const AName: string);
+    { Decide whether to trust a freshly-loaded .bif.  Hash-compares
+      against the source .pas if present on the search path; falls
+      back to a CompilerId match when source is unavailable. }
+    function ValidateIface(AIface: TUnitInterface;
+                           const AName: string): Boolean;
   end;
 
 implementation
@@ -80,6 +112,103 @@ begin
   Result := '';
 end;
 
+function TUnitLoader.LocateObject(const AName: string): string;
+var
+  I:    Integer;
+  Base: string;
+  Path: string;
+begin
+  for I := 0 to FSearchPaths.Count - 1 do
+  begin
+    Base := IncludeTrailingPathDelimiter(FSearchPaths.Strings[I]);
+    Path := Base + LowerCase(AName) + '.o';
+    if FileExists(Path) then begin Result := Path; Exit; end;
+    Path := Base + AName + '.o';
+    if FileExists(Path) then begin Result := Path; Exit; end;
+  end;
+  Result := '';
+end;
+
+function TUnitLoader.ValidateIface(AIface: TUnitInterface;
+                                   const AName: string): Boolean;
+var
+  SrcPath: string;
+  Src:     TStringList;
+  Cur:     string;
+begin
+  Result := False;
+  if AIface = nil then Exit;
+  SrcPath := Locate(AName);
+  if SrcPath <> '' then
+  begin
+    { Source available — hash decides.  An empty SourceHash on the
+      iface means it was written before this format extension; treat
+      as a forced miss so the source-compile path takes over. }
+    if AIface.SourceHash = '' then
+    begin
+      WriteLn(StdErr,
+              'note: ', AName,
+              '.o iface has no source hash; recompiling from source');
+      Exit;
+    end;
+    Src := TStringList.Create;
+    try
+      try
+        Src.LoadFromFile(SrcPath);
+        Cur := ContentHashFnv1a64(Src.Text);
+      except
+        Cur := '';
+      end;
+    finally
+      Src.Free;
+    end;
+    if Cur = '' then Exit;
+    Result := SameText(Cur, AIface.SourceHash);
+    if not Result then
+      WriteLn(StdErr,
+              'note: ', AName,
+              '.o iface stale vs source on path; recompiling from source');
+    Exit;
+  end;
+  { No source available — CompilerId match is the only safe signal. }
+  if AIface.CompilerId = '' then
+  begin
+    WriteLn(StdErr,
+            'error: ', AName,
+            '.o iface has no compiler id and no source on path; cannot use');
+    Exit;
+  end;
+  Result := SameText(AIface.CompilerId, COMPILER_ID);
+  if not Result then
+    WriteLn(StdErr,
+            'error: ', AName,
+            '.o iface compiled by ''', AIface.CompilerId,
+            ''' (this compiler is ''', COMPILER_ID,
+            '''); source unavailable to rebuild');
+end;
+
+function TUnitLoader.LoadIfaceFromObject(const APath: string): TUnitInterface;
+var
+  Bytes: string;
+begin
+  Result := nil;
+  Bytes := LoadEmbeddedBifString(APath, ofELF);
+  if Bytes = '' then Exit;
+  try
+    Result := ReadUnitInterface(Bytes);
+  except
+    { A malformed iface section is non-fatal — fall back to the
+      .pas source.  Surface the error so the user knows to
+      regenerate the .o. }
+    on E: Exception do
+    begin
+      WriteLn(StdErr, 'warning: unreadable iface in ', APath, ': ',
+              Exception(E).Message);
+      Result := nil;
+    end;
+  end;
+end;
+
 function TUnitLoader.LoadOne(const APath: string): TUnit;
 var
   SL: TStringList;
@@ -108,9 +237,11 @@ end;
 
 procedure TUnitLoader.LoadTransitive(const AName: string);
 var
-  Path: string;
-  U:    TUnit;
-  I:    Integer;
+  Path:    string;
+  ObjPath: string;
+  Iface:   TUnitInterface;
+  U:       TUnit;
+  I:       Integer;
 begin
   if IsBuiltin(AName) then Exit;
   if FLoadedNames.IndexOf(AName) >= 0 then Exit;  { already in result list }
@@ -118,6 +249,45 @@ begin
   if FLoading.IndexOf(AName) >= 0 then
     raise ECircularDependency.Create(Format(
       'Circular unit dependency: ''%s''', [AName]));
+
+  { Auto-discovery: prefer a pre-built '<name>.o' on the search path
+    when it carries an embedded iface section.  The .o + embedded
+    .bif are inseparable, so no mismatch risk.  When found, recurse
+    into the iface's UsedUnits (which the .bif carries) instead of
+    parsing the .pas. }
+  ObjPath := LocateObject(AName);
+  if ObjPath <> '' then
+  begin
+    Iface := LoadIfaceFromObject(ObjPath);
+    if Iface <> nil then
+    begin
+      { Validate before trusting.  Two outcomes:
+          - source .pas present on path: hash-compare.  Match →
+            accept iface.  Mismatch → discard, fall through to
+            source-compile path (the iface is stale).
+          - source not present: a CompilerId match is the only
+            signal the iface is safe; mismatch → discard. }
+      if not ValidateIface(Iface, AName) then
+      begin
+        Iface.Free;
+        Iface := nil;
+      end;
+    end;
+    if Iface <> nil then
+    begin
+      FLoading.Add(AName);
+      try
+        for I := 0 to Iface.UsedUnits.Count - 1 do
+          LoadTransitive(Iface.UsedUnits.Strings[I]);
+        FPrebuiltIfaces.Add(Iface);
+        FPrebuiltObjectPaths.Add(ObjPath);
+        FLoadedNames.Add(AName);
+      finally
+        FLoading.Delete(FLoading.IndexOf(AName));
+      end;
+      Exit;
+    end;
+  end;
 
   Path := Locate(AName);
   if Path = '' then
@@ -128,9 +298,14 @@ begin
   U := nil;
   try
     U := LoadOne(Path);
-    { Post-order DFS: process dependencies before this unit }
+    { Post-order DFS: process dependencies before this unit.
+      Both interface- and implementation-section uses are loaded —
+      they are stored on separate lists since the parser was
+      taught to split them, but the loader still needs both. }
     for I := 0 to U.UsedUnits.Count - 1 do
       LoadTransitive(U.UsedUnits.Strings[I]);
+    for I := 0 to U.ImplUsedUnits.Count - 1 do
+      LoadTransitive(U.ImplUsedUnits.Strings[I]);
     { Append this unit after all its dependencies }
     FResult.Add(U);
     FLoadedNames.Add(AName);
@@ -149,10 +324,15 @@ begin
   FLoading.CaseSensitive := False;
   FLoadedNames := TStringList.Create;
   FLoadedNames.CaseSensitive := False;
+  FPrebuiltIfaces      := TObjectList.Create(True);
+  FPrebuiltObjectPaths := TStringList.Create;
+  FPrebuiltObjectPaths.CaseSensitive := False;
 end;
 
 destructor TUnitLoader.Destroy;
 begin
+  FPrebuiltObjectPaths.Free;
+  FPrebuiltIfaces.Free;
   FLoadedNames.Free;
   FLoading.Free;
   inherited Destroy;

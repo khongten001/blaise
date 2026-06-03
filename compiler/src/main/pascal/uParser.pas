@@ -110,6 +110,9 @@ type
     constructor Create(ALexer: TLexer);
     function Parse: TProgram;
     function ParseUnit: TUnit;
+    { True iff the primed first token is `unit` — caller forks to
+      ParseUnit instead of Parse.  Safe to call straight after Create. }
+    function IsUnitTopLevel: Boolean;
   end;
 
 implementation
@@ -269,6 +272,11 @@ end;
 function TParser.Parse: TProgram;
 begin
   Result := ParseProgram;
+end;
+
+function TParser.IsUnitTopLevel: Boolean;
+begin
+  Result := FCurrent.Kind = tkUnit;
 end;
 
 function TParser.ParseProgram: TProgram;
@@ -1519,6 +1527,8 @@ begin
                SameText(FCurrent.Value, 'platform')    or
                SameText(FCurrent.Value, 'experimental')) then
       begin
+        if SameText(FCurrent.Value, 'inline') then
+          Result.IsInline := True;
         Advance;
         if Check(tkSemicolon) then Advance;
       end
@@ -2826,6 +2836,8 @@ end;
 { ------------------------------------------------------------------ }
 
 function TParser.ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
+var
+  Constraint: string;
 begin
   Result := TMethodDecl.Create;
   try
@@ -2844,6 +2856,58 @@ begin
         [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
     Result.Name := FCurrent.Value;
     Advance;
+    { Optional generic type-parameter list: function Identity<T>(...).
+      Mirrors the subset of ParseMethodDecl's logic that applies to
+      forward declarations (no '.MethodName' continuation here — those
+      live in the implementation section). }
+    if Check(tkLessThan) and (PeekKind = tkIdent) and
+       (PeekKind2 in [tkGreaterThan, tkComma, tkColon]) then
+    begin
+      Result.TypeParams           := TStringList.Create;
+      Result.TypeParamConstraints := TStringList.Create;
+      Advance;  { consume '<' }
+      if not Check(tkIdent) then
+        raise EParseError.Create(Format('Expected type parameter name at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      Result.TypeParams.Add(FCurrent.Value);
+      Advance;
+      Constraint := '';
+      if Check(tkColon) then
+      begin
+        Advance;
+        if      Check(tkClass)  then begin Constraint := 'class';  Advance; end
+        else if Check(tkRecord) then begin Constraint := 'record'; Advance; end
+        else if Check(tkIdent)  then begin Constraint := FCurrent.Value; Advance; end
+        else
+          raise EParseError.Create(Format(
+            'Expected ''class'', ''record'', or a type name after '':'' at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      end;
+      Result.TypeParamConstraints.Add(Constraint);
+      while Check(tkComma) do
+      begin
+        Advance;
+        if not Check(tkIdent) then
+          raise EParseError.Create(Format('Expected type parameter name at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        Result.TypeParams.Add(FCurrent.Value);
+        Advance;
+        Constraint := '';
+        if Check(tkColon) then
+        begin
+          Advance;
+          if      Check(tkClass)  then begin Constraint := 'class';  Advance; end
+          else if Check(tkRecord) then begin Constraint := 'record'; Advance; end
+          else if Check(tkIdent)  then begin Constraint := FCurrent.Value; Advance; end
+          else
+            raise EParseError.Create(Format(
+              'Expected ''class'', ''record'', or a type name after '':'' at line %d col %d in %s',
+              [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        end;
+        Result.TypeParamConstraints.Add(Constraint);
+      end;
+      Expect(tkGreaterThan);
+    end;
     if Check(tkLParen) then
     begin
       Advance;
@@ -2891,6 +2955,8 @@ begin
                SameText(FCurrent.Value, 'platform')    or
                SameText(FCurrent.Value, 'experimental')) then
       begin
+        if SameText(FCurrent.Value, 'inline') then
+          Result.IsInline := True;
         Advance;
         if Check(tkSemicolon) then Advance;
       end
@@ -2953,7 +3019,7 @@ begin
     { Implementation section }
     Expect(tkImplementation);
     if Check(tkUses) then
-      ParseUsesList(Result.UsedUnits);  { implementation-only deps — loaded but not re-exported }
+      ParseUsesList(Result.ImplUsedUnits);  { implementation-only deps — loaded but not re-exported }
     while Check(tkProcedure) or Check(tkFunction) or
           Check(tkConstructor) or Check(tkDestructor) or
           Check(tkVar) or Check(tkConst) or Check(tkType) do

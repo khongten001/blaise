@@ -1,0 +1,589 @@
+= The Blaise Interface File (`.bif`) Format
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:icons: font
+:source-highlighter: rouge
+
+== Purpose
+
+A `.bif` ("Blaise Interface File") is the serialised form of a unit's
+**interface section** — every type, const, var, routine, generic body,
+and inlinable body that the compiler needs in order to consume the unit
+*without re-parsing the source*.
+
+It is the Blaise equivalent of FPC's `.ppu` or C/C++'s precompiled
+header: a stable wire format the compiler can read at unit-resolve time
+to populate a `TUnitInterface` (see `uUnitInterface.pas`) and feed
+import into the symbol table.
+
+There are two ways a `.bif` is consumed:
+
+. **Standalone file** next to the source (or in a cache dir), read via
+  `ReadUnitInterfaceFromFile`. Used by tooling and tests.
+. **Embedded section** inside a companion `.o`, read via
+  `LoadEmbeddedBifString`. This is the production path used by the
+  unit loader's auto-discovery (`uUnitLoader.LoadTransitive`). See
+  <<embedding>>.
+
+Both paths feed the same parser (`ReadUnitInterface`) and produce the
+same in-memory `TUnitInterface`.
+
+== Design Constraints
+
+The format is **text**, not binary. The rationale (from the unit
+header):
+
+> Why text and not binary: easier to diff and inspect during
+> development, no endianness concerns, no bit-twiddling. Once the
+> layout stabilises we can re-encode as a compact binary form without
+> changing the surface API.
+
+Three structural rules underpin everything else:
+
+. **Length-prefixed strings everywhere.** Every variable-length payload
+  is encoded as `<decimal-len>:` followed by exactly `<len>` raw bytes.
+  No escaping is needed — the reader consumes by byte count, never by
+  delimiter scan. Embedded `:`, newlines, quotes, and `END` markers
+  all flow through unmolested.
+
+. **A single primitive in the reader.** Everything — counts, booleans,
+  Int64 values, qualified type refs — is encoded as an lpstr. The
+  reader has exactly one byte-consumption primitive (`ReadLpstrAt`),
+  plus thin wrappers (`ReadInt64At`, `ReadFlagsAt`, `ReadTag`). Adding
+  a new field type is mechanical.
+
+. **Section-tagged framing.** Each top-level section opens with a tag
+  line (`META`, `TYPE 5`, `CONST 2`, …) and closes with `END`.
+  Out-of-order sections are tolerated; unknown sections are not.
+
+== Top-Level Layout
+
+A complete `.bif` has the following structure:
+
+----
+BLAISE-IFACE <version>\n        <-- magic + format version
+<unit-name lpstr>\n             <-- unit identifier
+META
+  <meta-line>
+END
+TYPE <count>
+  <type-line> × count
+END
+CONST <count>
+  <const-line> × count
+END
+VAR <count>
+  <var-line> × count
+END
+ROUT <count>
+  <routine-line> × count
+END
+GENROUT <count>
+  <generic-routine-line> × count
+END
+INLINE <count>
+  <inline-body-line> × count
+END
+----
+
+Section order is fixed in the writer (`WriteUnitInterface` at
+`uUnitInterfaceIO.pas:895`). The reader uses `ReadTag` to dispatch and
+will accept sections in any order, but does not skip unknown tags —
+they raise `EIfaceFormatError`.
+
+=== Magic + Version
+
+`BLAISE-IFACE 2` is the current header. The version field is the
+constant `IFACE_VERSION` in `uUnitInterfaceIO.pas`. The version was
+bumped from `1` → `2` when the `META` block grew `CompilerId` and
+`SourceModTime` fields (see <<versioning>>).
+
+A wrong magic or version raises `EIfaceFormatError` immediately from
+`ReadHeader`.
+
+=== Unit Name
+
+The single line after the header is `<lpstr>` carrying the unit's
+canonical name as written in the `unit ... ;` declaration. Case is
+preserved.
+
+== Encoding Primitives
+
+[cols="1,2,3",options="header"]
+|===
+| Primitive | Wire form | Notes
+
+| `lpstr`
+| `<n>:<n bytes>`
+| Length-prefixed byte sequence. The only variable-length primitive.
+
+| `Int64`
+| lpstr containing decimal digits
+| Signed. No size prefix on the digits themselves.
+
+| `Count` / `Bool`
+| lpstr containing `'0'`, `'1'`, …
+| Same shape as Int64; called out separately for documentation only.
+
+| `QualRef`
+| lpstr containing `"UnitName.TypeName"`
+| For cross-unit type references. `$builtin.Integer` denotes a
+  primitive; `.<empty>` denotes "untyped" (consts of an inferred
+  literal type).
+
+| `Flags`
+| lpstr containing a decimal byte
+| Bit-packed booleans. Bit assignments are call-site specific
+  (see `EncodeFlags`, `EncodeParamFlags`).
+
+| Enum members
+| lpstr containing `Name=Ord,Name=Ord,...`
+| Inner format is comma-separated `name=ordinal` pairs.
+|===
+
+A subtle but load-bearing detail: lpstrs are **concatenated without
+separators**. The reader doesn't skip whitespace between fields on a
+record line — it advances exactly `<len>` bytes for each field and
+the next field starts at the next byte. Newlines exist only between
+*lines* (added by the writer via `TStringList.Add`), not between
+fields within a line.
+
+== Section: META
+
+----
+META\n
+<source-file lpstr><source-hash lpstr><compiler-id lpstr>
+  <source-mod-time Int64><used-units stringlist>\n
+END\n
+----
+
+Fields:
+
+`SourceFile`::
+  Absolute or repo-relative path the iface was generated from. Used at
+  load time for staleness checks — if the file exists on the search
+  path, the loader hashes it and compares to `SourceHash`.
+
+`SourceHash`::
+  FNV-1a 64-bit hash, lowercase hex (16 chars), of the source file's
+  contents at write time. Empty string means "format predates
+  hashing" — the loader treats that as a forced miss and falls back to
+  recompiling from source. See `ContentHashFnv1a64`.
+
+`CompilerId`::
+  The string `COMPILER_ID` from `uCompilerId.pas` baked in at the
+  moment of write. Format: `blaise-<version>-<channel>+<phase>`.
+  Used as the freshness signal when source isn't available on the
+  search path.
+
+`SourceModTime`::
+  `Int64` modification timestamp captured at write. Currently
+  informational — the loader trusts the hash, not the mtime.
+
+`UsedUnits`::
+  List of unit names this unit `uses`. Stored so the loader can
+  recurse without re-parsing the source.
+
+A `stringlist` is encoded as `<count lpstr>` followed by `<count>`
+lpstrs back-to-back.
+
+== Section: TYPE
+
+----
+TYPE <count>\n
+<kind lpstr><name lpstr><payload...>  (× count)
+END\n
+----
+
+Each type record opens with two lpstrs: the discriminator (`enum`,
+`set`, `alias`, `record`, `class`, `interface`, `proc`,
+`generic-class`, `generic-interface`) and the type name. The payload
+shape depends on the kind:
+
+[cols="1,3",options="header"]
+|===
+| Kind | Payload
+
+| `enum`
+| lpstr containing `Name=Ord,Name=Ord,...`
+
+| `set`
+| `<base-type-name lpstr>`
+
+| `alias`
+| `<aliased-type-name lpstr>`
+
+| `record`
+| `<is-packed bool><field-list>`
+
+| `class`
+| `<parent qualref><instance-size lpstr><attributes stringlist>` +
+  `<implements stringlist><field-list><method-list>`
+
+| `interface`
+| `<parent-name lpstr><method-decl-list>`
+
+| `proc`
+| `<is-function bool><is-method-ptr bool><return-type-name lpstr>` +
+  `<param-count lpstr>(<param-name><param-type><param-flags>) × count`
+
+| `generic-class`
+| `<type-param-list>(<as for class>)`
+
+| `generic-interface`
+| `<type-param-list><parent-name lpstr><method-decl-list>`
+|===
+
+A `field-list` is a count lpstr followed by `<name><type-name><is-weak>`
+triples — flattened so multi-name declarations like `X, Y: Integer`
+produce two records.
+
+A `method-list` and `method-decl-list` are structurally similar but
+not identical:
+
+* `method-list` (from `EncodeMethodSig`) carries class-method extras
+  the **codegen** needs: `IsVirtual`, `IsOverride`, `ResolvedQbeName`,
+  `VTableSlot`. Used by classes.
+* `method-decl-list` (from `EncodeMethodDecl`) lacks the resolved
+  names — interfaces don't carry codegen state. Used by interfaces.
+
+A `type-param-list` is a count lpstr followed by
+`<param-name><constraint>` pairs.
+
+Three TTypeDef kinds are **not** serialised: anything for which
+`TypeEntryKind` returns `''`. These are filtered out of the count and
+skipped in the write loop. The reader will never see them.
+
+== Section: CONST
+
+----
+CONST <count>\n
+<name lpstr><type qualref><int-value Int64><str-value lpstr><flags>  (× count)
+END\n
+----
+
+A single record carries both the integer and string representations;
+the flags byte (low 2 bits) tells the reader which is live:
+
+* bit 0 = `IsString` — `<str-value>` is the value
+* bit 1 = `IsFloat` — `<str-value>` is a decimal float string
+* otherwise — `<int-value>` is the value
+
+`<type qualref>` is `<UnitName>.<TypeName>` or `$builtin.Integer` /
+`.<empty>` for inferred-typed literals.
+
+== Section: VAR
+
+----
+VAR <count>\n
+<name lpstr><type qualref>  (× count)
+END\n
+----
+
+Unit-level variable declarations. No initial value — initialisation
+runs in the unit's initialisation section (which is in the
+*implementation*, not the interface, and therefore not in the `.bif`).
+
+== Section: ROUT
+
+----
+ROUT <count>\n
+<name lpstr><is-function lpstr><return-type qualref>
+  <param-count lpstr>
+  (<param-name><param-type><param-flags>) × param-count
+(× count)
+END\n
+----
+
+Free routines (not methods). `<is-function>` is `'0'` or `'1'`
+encoded *as a decimal-digit lpstr*, not as an `EncodeBool` lpstr — a
+historical inconsistency, not a bug. The reader uses
+`ReadDecimalAt`-equivalent parsing.
+
+Param flags (`EncodeParamFlags`):
+
+* bit 0 = `IsVarParam`
+* bit 1 = `IsConstParam`
+* bit 2 = `IsOpenArray`
+
+== Section: GENROUT
+
+----
+GENROUT <count>\n
+<name lpstr><type-param-list><method-decl><block>  (× count)
+END\n
+----
+
+Generic *free* routines. The interface needs the full body because
+instantiation happens at the call site — the consumer has to be able
+to clone-substitute the body locally. `<block>` is a serialised
+`TBlock` (see <<ast-encoding>>).
+
+Generic *type* bodies (e.g. `TList<T>`) are skipped here — they ride
+along inside their owning class's `generic-class` TYPE record.
+
+== Section: INLINE
+
+----
+INLINE <count>\n
+<routine-name lpstr><block>  (× count)
+END\n
+----
+
+Inline-eligible routine bodies. The body is a serialised `TBlock`
+chunk encoded with the same expression/statement protocol as GENROUT.
+A consumer that wants to inline a call recovers the AST from this
+section instead of re-parsing the source.
+
+[#ast-encoding]
+== AST Encoding (Generic & Inline Bodies)
+
+`TASTExpr` / `TASTStmt` / `TBlock` are serialised inline within the
+surrounding lpstr stream. Each node is `<kind-tag lpstr>` followed by
+a kind-specific tail of further lpstrs. `nil` children are encoded as
+`<kind 'nil'>`.
+
+Kind tags (current set in `EncodeExpr` / `EncodeStmt`):
+
+[cols="1,2,3",options="header"]
+|===
+| Tag | Node class | Tail
+
+| `int`
+| `TIntLiteral`
+| `<value lpstr>`
+
+| `float`
+| `TFloatLiteral`
+| `<value lpstr>` (decimal string)
+
+| `str`
+| `TStringLiteral`
+| `<value lpstr>`
+
+| `nillit`
+| `TNilLiteral`
+| _none_
+
+| `id`
+| `TIdentExpr`
+| `<name lpstr>`
+
+| `bin`
+| `TBinaryExpr`
+| `<op-ord lpstr><lhs expr><rhs expr>`
+
+| `not`
+| `TNotExpr`
+| `<expr>`
+
+| `call`
+| `TFuncCallExpr`
+| `<name lpstr><arg expr-list>`
+
+| `mcall`
+| `TMethodCallExpr`
+| `<obj-name lpstr><method-name lpstr><obj-expr><arg expr-list>`
+
+| `field`
+| `TFieldAccessExpr`
+| `<record-name lpstr><field-name lpstr><base expr><prop-index expr>`
+
+| `deref`
+| `TDerefExpr`
+| `<expr>`
+
+| `addr`
+| `TAddrOfExpr`
+| `<expr>`
+
+| `ssub`
+| `TStringSubscriptExpr`
+| `<str expr><index expr>`
+
+| `alit`
+| `TArrayLiteralExpr`
+| `<elements expr-list>`
+
+| `isop` / `asop` / `supp`
+| `TIsExpr` / `TAsExpr` / `TSupportsExpr`
+| `<obj expr><type-name lpstr>(+<out-var-name> for supp)`
+|===
+
+(Statement kinds — `assign`, `if`, `while`, `repeat`, `for`, `case`,
+`break`, `continue`, `exit`, `try`, `raise`, `with`-`stub`, `block`,
+etc. — follow the same pattern. See `EncodeStmt` for the full table.)
+
+**Versioning implication**: any new node class added to `uAST.pas`
+that is reachable from a generic or inline body must get a new kind
+tag here, with reader-side dispatch in `ReadExpr` / `ReadStmt`. The
+reader's `else` branch raises `EIfaceFormatError`, so the failure
+mode is loud and well-localised. The version field bumps at the same
+time.
+
+[#embedding]
+== Embedding `.bif` Inside `.o`
+
+The production path doesn't ship `.bif` as a sidecar file. Instead,
+the `.bif` bytes are embedded inside the companion object file under
+a non-loaded section, via GNU `objcopy`:
+
+[source,shell]
+----
+# Embed
+objcopy --add-section .blaise.iface=foo.bif \
+        --set-section-flags .blaise.iface=noload,readonly \
+        foo.o foo.o
+
+# Extract
+objcopy --dump-section .blaise.iface=out.bif foo.o /dev/null
+----
+
+Section name varies by object format (`uIfaceObject.pas`):
+
+[cols="1,1",options="header"]
+|===
+| Format | Section name
+| ELF (Linux)        | `.blaise.iface`
+| PE/COFF (Windows)  | `.bliface` (8-char limit)
+|===
+
+PE/COFF support is stubbed out — only the constant is wired. The
+runtime currently only emits ELF.
+
+**Why embed at all?** From `uIfaceObject.pas`:
+
+> Keep .bif and .o in lock-step. When the iface lives as its own
+> file next to the .o, a build-system glitch or stale copy can
+> produce a mismatch where the compiler trusts an interface for
+> symbols that the object file no longer exports. Embedding the
+> bytes inside the .o makes the artefacts inseparable — copying the
+> .o brings the iface along, and a regenerated .o can't carry an
+> older iface by accident.
+
+The section is marked `noload` so it never reaches the final
+executable. GNU `ld` drops it at link time. `clang -fuse-ld=lld`
+preserves the same behaviour.
+
+[#versioning]
+== Versioning & Compatibility
+
+The `IFACE_VERSION` constant is the only version surface. The format
+gates compatibility on three checks, in order:
+
+. **Magic mismatch.** Anything other than `BLAISE-IFACE` at byte zero
+  is rejected outright.
+. **Version mismatch.** A `.bif` with a version other than
+  `IFACE_VERSION` is rejected. There is no down-conversion; producers
+  and consumers must use the same compiler revision (or the
+  `CompilerId`-match path, below, must apply).
+. **Content drift.** Even with a matching version, a `.bif` may be
+  stale relative to its source. The loader (`uUnitLoader.ValidateIface`)
+  decides:
+
+  ** **Source available on path** → recompute FNV-1a hash of the
+     source bytes; if it matches `SourceHash`, accept; otherwise
+     recompile from source.
+  ** **Source not available** → compare the embedded `CompilerId` to
+     this compiler's `COMPILER_ID`. Match → accept (the binary `.o`
+     and its `.bif` were produced together by an identical compiler
+     and there's no way to do better). Mismatch → fatal: we have no
+     way to regenerate.
+
+**When to bump `IFACE_VERSION`:**
+
+* Adding a new top-level section (e.g. `MACRO`, `RESOURCE`).
+* Changing the field set of an existing record kind.
+* Adding a new TYPE-kind discriminator.
+* Adding a new AST node kind referenced from generic/inline bodies.
+
+**When not to bump:**
+
+* Adding a new entry to a `stringlist` (the count drives parsing).
+* Adding a new flag bit to an existing flags byte (the bits we don't
+  use are presently zero; widening is forward-compatible as long as
+  readers mask the bits they care about).
+* Cosmetic changes to non-content (whitespace between sections is
+  consumed and ignored).
+
+== Failure Modes & Diagnostics
+
+`EIfaceFormatError` is the single error type. It's raised by
+`ReadLpstrAt` (bad length syntax, length runs off the end of input),
+`ReadTag` / `ReadHeader` (wrong magic / version / section tag),
+`ReadExpr` / `ReadStmt` (unknown kind tag), and the per-section
+readers (unexpected `END` or unexpected non-`END`).
+
+Higher up, `uUnitLoader.LoadIfaceFromObject` catches the exception
+and falls back to compiling from source — a malformed embedded iface
+is recoverable as long as the `.pas` is on the search path. The
+warning surfaces to stderr:
+
+----
+warning: unreadable iface in foo.o: <message>
+----
+
+A stale-but-readable iface (source hash mismatch) produces:
+
+----
+note: foo.o iface stale vs source on path; recompiling from source
+----
+
+A binary-only dep with a wrong compiler id produces an error and
+fails the build:
+
+----
+error: foo.o iface compiled by 'blaise-0.9.0-dev+6c-M' (this compiler
+is 'blaise-0.9.0-dev+6c-N'); source unavailable to rebuild
+----
+
+== Round-Trip Guarantee
+
+`ReadUnitInterface(WriteUnitInterface(I))` is structurally equal to
+`I` for every field the format encodes. **Fields the format does not
+encode** (mostly implementation-section state — initialisation blocks,
+private types, finalization order) are not part of the iface contract
+and are not carried.
+
+The "fields encoded" list is exactly:
+
+* Unit `Name`, `UsedUnits`
+* `Consts`, `Vars`
+* `Types` where `TypeEntryKind <> ''` (i.e. except untaggable kinds)
+* `Routines` (free routine signatures)
+* `GenericBodies` where `not G.IsType` (generic free routines with
+  bodies)
+* `InlineBodies` (inline-eligible routine bodies)
+* META: `SourceFile`, `SourceHash`, `CompilerId`, `SourceModTime`
+
+If a producer populates a field not in this list and expects the
+consumer to see it, that's a bug in the producer's expectations, not
+in the format.
+
+== References
+
+[cols="1,2",options="header"]
+|===
+| File | Role
+
+| `compiler/src/main/pascal/uUnitInterface.pas`
+| In-memory data model — `TUnitInterface` and its sub-records
+
+| `compiler/src/main/pascal/uUnitInterfaceIO.pas`
+| Serialiser + parser; the canonical source of truth for the format
+
+| `compiler/src/main/pascal/uIfaceObject.pas`
+| `.bif` ↔ `.o` embedding via `objcopy`
+
+| `compiler/src/main/pascal/uUnitLoader.pas`
+| Auto-discovery + freshness validation at unit-resolve time
+
+| `compiler/src/main/pascal/uCompilerId.pas`
+| The `COMPILER_ID` constant baked into the META block
+
+| `docs/extending-ast.adoc`
+| Companion doc — what to do when adding a new AST node that needs
+  serialisation
+|===
