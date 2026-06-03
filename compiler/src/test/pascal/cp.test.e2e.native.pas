@@ -71,6 +71,10 @@ type
     procedure TestRun_Native_VarParamPassThrough;
     procedure TestRun_Native_VarParamWiderInt;
     procedure TestRun_Native_OutParam;
+    procedure TestRun_Native_ForBreak;
+    procedure TestRun_Native_WhileContinue;
+    procedure TestRun_Native_ExitFromFunction;
+    procedure TestRun_Native_ExitValueShorthand;
   end;
 
 implementation
@@ -445,6 +449,67 @@ const
     end.
     ''';
 
+  { Break/continue/exit support. }
+
+  SrcForBreak = '''
+    program P;
+    var I, Last: Integer;
+    begin
+      Last := 0;
+      for I := 1 to 100 do
+      begin
+        Last := I;
+        if I = 5 then break
+      end;
+      WriteLn(Last)
+    end.
+    ''';
+
+  SrcWhileContinue = '''
+    program P;
+    var I, Sum: Integer;
+    begin
+      I := 0;
+      Sum := 0;
+      while I < 10 do
+      begin
+        I := I + 1;
+        if I mod 2 = 0 then continue;
+        Sum := Sum + I
+      end;
+      WriteLn(Sum)
+    end.
+    ''';
+
+  SrcExitFunc = '''
+    program P;
+    function FirstPositive(X: Integer): Integer;
+    begin
+      if X > 0 then
+      begin Result := X; exit end;
+      Result := 0 - X
+    end;
+    begin
+      WriteLn(FirstPositive(7));
+      WriteLn(FirstPositive(0 - 9))
+    end.
+    ''';
+
+  SrcExitValue = '''
+    program P;
+    function Clamp(X, Lo, Hi: Integer): Integer;
+    begin
+      if X < Lo then Exit(Lo);
+      if X > Hi then Exit(Hi);
+      Result := X
+    end;
+    begin
+      WriteLn(Clamp(5, 1, 10));
+      WriteLn(Clamp(0 - 3, 1, 10));
+      WriteLn(Clamp(99, 1, 10))
+    end.
+    ''';
+
 { Every test below runs its source through BOTH backends (beQBE, beNative)
   and asserts identical stdout/exit on each — the native backend's whole
   correctness model is parity with QBE on the same source, so this exercises
@@ -611,6 +676,32 @@ procedure TE2ENativeTests.TestRun_Native_OutParam;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcOutParam, '42' + LE + '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ForBreak;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcForBreak, '5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_WhileContinue;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { Sum of odd numbers 1..9: 1+3+5+7+9 = 25 }
+  AssertRunsOnBoth(SrcWhileContinue, '25' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ExitFromFunction;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcExitFunc, '7' + LE + '9' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ExitValueShorthand;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { Clamp(5,1,10)=5; Clamp(-3,1,10)=1; Clamp(99,1,10)=10 }
+  AssertRunsOnBoth(SrcExitValue, '5' + LE + '1' + LE + '10' + LE, 0);
 end;
 
 initialization

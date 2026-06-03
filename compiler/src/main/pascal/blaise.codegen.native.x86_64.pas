@@ -56,6 +56,14 @@ type
     FFrameTypes: TDictionary<string, TTypeDesc>;
     FFrameSize:  Integer;       { bytes to reserve for locals (16-aligned) }
 
+    { Loop label stacks for break/continue: the top entry is the innermost
+      loop's end-label (break) or condition-label (continue). }
+    FBreakLabels:    TStringList;
+    FContinueLabels: TStringList;
+    { Exit label: when non-empty, Exit jumps here (function epilogue).  Empty
+      in program $main where Exit maps to a bare return. }
+    FExitLabel: string;
+
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
     function NewLabel(const APrefix: string): string;
     { Register a global integer slot of the given type (idempotent; the first
@@ -197,17 +205,22 @@ end;
 constructor TX86_64Backend.Create(const ATarget: TTargetDesc);
 begin
   inherited Create(ATarget);
-  FLabelCount  := 0;
-  FDataGlobals := TStringList.Create;
-  FGlobalTypes := TDictionary<string, TTypeDesc>.Create;
-  FFrame       := nil;
-  FFrameTypes  := nil;
-  FFrameSize   := 0;
+  FLabelCount     := 0;
+  FDataGlobals    := TStringList.Create;
+  FGlobalTypes    := TDictionary<string, TTypeDesc>.Create;
+  FBreakLabels    := TStringList.Create;
+  FContinueLabels := TStringList.Create;
+  FFrame          := nil;
+  FFrameTypes     := nil;
+  FFrameSize      := 0;
+  FExitLabel      := '';
 end;
 
 destructor TX86_64Backend.Destroy;
 begin
   Self.ClearFrame;
+  FContinueLabels.Free;
+  FBreakLabels.Free;
   FGlobalTypes.Free;
   FDataGlobals.Free;
   inherited Destroy;
@@ -635,56 +648,51 @@ end;
 
 procedure TX86_64Backend.EmitForStmt(AFor: TForStmt);
 var
-  VarOp, EndSlot:        string;
-  LCond, LBody, LEnd:    string;
-  VarType:               TTypeDesc;
+  VarOp, EndSlot:              string;
+  LCond, LBody, LNext, LEnd:  string;
+  VarType:                     TTypeDesc;
 begin
-  { Pascal `for` evaluates the end expression once.  Stash it in a hidden
-    global slot, initialise the loop variable, then loop:
-      cond: if (i <= end) [downto: i >= end] goto body else end
-      body: <body>; i := i +/- 1; goto cond
-    The loop variable may be a function-local (frame slot) or a program global;
-    VarOperand picks the right addressing.  The counter and the hidden end
-    slot share the counter's type so every load/store/compare uses the right
-    width and signedness. }
   if Self.IsLocal(AFor.VarName) then
     VarType := Self.LocalType(AFor.VarName)
   else
   begin
-    VarType := AFor.StartExpr.ResolvedType;   { counter type = start expr type }
+    VarType := AFor.StartExpr.ResolvedType;
     Self.AddGlobal(AFor.VarName, VarType);
   end;
   VarOp   := Self.VarOperand(AFor.VarName);
-  EndSlot := Self.NewLabel('forend');  { hidden file-local slot for the end value }
+  EndSlot := Self.NewLabel('forend');
   Self.AddGlobal(EndSlot, VarType);
   LCond := Self.NewLabel('fcond');
   LBody := Self.NewLabel('fbody');
+  LNext := Self.NewLabel('fnext');
   LEnd  := Self.NewLabel('fend');
 
-  { i := start }
   Self.EmitExprToEax(AFor.StartExpr);
   Self.EmitStoreVar(VarOp, VarType);
-  { endslot := end (evaluated once) }
   Self.EmitExprToEax(AFor.EndExpr);
   Self.EmitStoreVar(EndSlot + '(%rip)', VarType);
 
   Self.Emit(LCond + ':');
-  { compare i against end (both loaded 64-bit-extended) }
   Self.EmitLoadVar(VarOp, VarType);
   Self.Emit(#9'pushq %rax');
   Self.EmitLoadVar(EndSlot + '(%rip)', VarType);
-  Self.Emit(#9'movq %rax, %rcx');     { end in %rcx }
-  Self.Emit(#9'popq %rax');            { i in %rax }
-  Self.Emit(#9'cmpq %rcx, %rax');     { computes i - end }
+  Self.Emit(#9'movq %rax, %rcx');
+  Self.Emit(#9'popq %rax');
+  Self.Emit(#9'cmpq %rcx, %rax');
   if AFor.IsDownTo then
-    Self.Emit(#9'jge ' + LBody)       { continue while i >= end }
+    Self.Emit(#9'jge ' + LBody)
   else
-    Self.Emit(#9'jle ' + LBody);      { continue while i <= end }
+    Self.Emit(#9'jle ' + LBody);
   Self.Emit(#9'jmp ' + LEnd);
 
   Self.Emit(LBody + ':');
+  FBreakLabels.Add(LEnd);
+  FContinueLabels.Add(LNext);
   Self.EmitStmt(AFor.Body);
-  { i := i +/- 1 }
+  FBreakLabels.Delete(FBreakLabels.Count - 1);
+  FContinueLabels.Delete(FContinueLabels.Count - 1);
+
+  Self.Emit(LNext + ':');
   Self.EmitLoadVar(VarOp, VarType);
   if AFor.IsDownTo then
     Self.Emit(#9'subq $1, %rax')
@@ -795,7 +803,11 @@ begin
     Self.Emit(LCond + ':');
     Self.EmitCondBranch(WhileS.Condition, LBody, LEnd);
     Self.Emit(LBody + ':');
+    FBreakLabels.Add(LEnd);
+    FContinueLabels.Add(LCond);
     Self.EmitStmt(WhileS.Body);
+    FBreakLabels.Delete(FBreakLabels.Count - 1);
+    FContinueLabels.Delete(FContinueLabels.Count - 1);
     Self.Emit(#9'jmp ' + LCond);
     Self.Emit(LEnd + ':');
     Exit;
@@ -805,13 +817,49 @@ begin
   begin
     RepS  := TRepeatStmt(AStmt);
     LBody := Self.NewLabel('rbody');
+    LCond := Self.NewLabel('rcond');
     LEnd  := Self.NewLabel('rend');
     Self.Emit(LBody + ':');
+    FBreakLabels.Add(LEnd);
+    FContinueLabels.Add(LCond);
     for I := 0 to RepS.Body.Stmts.Count - 1 do
       Self.EmitStmt(TASTStmt(RepS.Body.Stmts.Items[I]));
-    { repeat exits when the condition is TRUE: branch true->end, false->body. }
+    FBreakLabels.Delete(FBreakLabels.Count - 1);
+    FContinueLabels.Delete(FContinueLabels.Count - 1);
+    Self.Emit(LCond + ':');
     Self.EmitCondBranch(RepS.Condition, LEnd, LBody);
     Self.Emit(LEnd + ':');
+    Exit;
+  end;
+
+  if AStmt is TBreakStmt then
+  begin
+    if FBreakLabels.Count = 0 then
+      raise ENativeCodeGenError.Create('break outside loop');
+    Self.Emit(#9'jmp ' + FBreakLabels.Strings[FBreakLabels.Count - 1]);
+    Exit;
+  end;
+
+  if AStmt is TContinueStmt then
+  begin
+    if FContinueLabels.Count = 0 then
+      raise ENativeCodeGenError.Create('continue outside loop');
+    Self.Emit(#9'jmp ' + FContinueLabels.Strings[FContinueLabels.Count - 1]);
+    Exit;
+  end;
+
+  if AStmt is TExitStmt then
+  begin
+    if TExitStmt(AStmt).ResultAssign <> nil then
+      Self.EmitStmt(TExitStmt(AStmt).ResultAssign);
+    if FExitLabel <> '' then
+      Self.Emit(#9'jmp ' + FExitLabel)
+    else
+    begin
+      Self.Emit(#9'movl $0, %eax');
+      Self.Emit(#9'leave');
+      Self.Emit(#9'ret');
+    end;
     Exit;
   end;
 
@@ -954,12 +1002,13 @@ begin
     Self.Emit(#9'xorl %eax, %eax');
     Self.EmitStoreVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   end;
-  { Body. }
+  { Body.  FExitLabel directs Exit statements to the epilogue. }
+  FExitLabel := Self.NewLabel('exit');
   if ADecl.Body <> nil then
     for I := 0 to ADecl.Body.Stmts.Count - 1 do
       Self.EmitStmt(TASTStmt(ADecl.Body.Stmts.Items[I]));
-  { Epilogue: load Result (64-bit-extended) into %rax for functions, restore
-    frame, return. }
+  { Epilogue: Exit lands here; load Result into %rax, restore frame, return. }
+  Self.Emit(FExitLabel + ':');
   if ADecl.ResolvedReturnType <> nil then
     Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   Self.Emit(#9'movq %rbp, %rsp');
@@ -967,6 +1016,7 @@ begin
   Self.Emit(#9'ret');
   Self.Emit('.type ' + Sym + ', @function');
 
+  FExitLabel := '';
   Self.ClearFrame;
 end;
 

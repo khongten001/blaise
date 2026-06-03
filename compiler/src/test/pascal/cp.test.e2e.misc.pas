@@ -526,22 +526,15 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_ForBreak_StopsAtFiveHalt;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue(CompileAndRun(SrcForBreak, Output, RCode));
-  AssertEquals('exit 0', 0, RCode);
-  AssertEquals('loop broke at I=5', '5' + LE, Output);
+  AssertRunsOnBoth(SrcForBreak, '5' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ExitFromFunction_ReturnsImmediately;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue(CompileAndRun(SrcExitFunc, Output, RCode));
-  AssertEquals('exit 0', 0, RCode);
-  AssertEquals('exit early for positive, compute for negative',
-    '7' + LE + '9' + LE, Output);
+  AssertRunsOnBoth(SrcExitFunc, '7' + LE + '9' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ChainedRecordField_LoadsInner;
@@ -554,12 +547,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_Const_IntegerConst;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcConstInt, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('101', '101' + LE, Output);
+  AssertRunsOnBoth(SrcConstInt, '101' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_Const_StringConst;
@@ -582,12 +572,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_Const_NegativeConst;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcConstNeg, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('-20', '-20' + LE, Output);
+  AssertRunsOnBoth(SrcConstNeg, '-20' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ProcType_CallViaVariable;
@@ -609,12 +596,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_DefaultParam_OmitLast;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcDefaultParam, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('15 then 25', '15' + LE + '25' + LE, Output);
+  AssertRunsOnBoth(SrcDefaultParam, '15' + LE + '25' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_DefaultParam_OmitMultiple;
@@ -648,12 +632,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_TypeCast_IntegerByte;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcTypeCastIntByte, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('44', '44' + LE, Output);
+  AssertRunsOnBoth(SrcTypeCastIntByte, '44' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_TypeCast_PointerInteger;
