@@ -2104,10 +2104,19 @@ begin
         otherwise codegen emits 'TBox_Integer_Create' on one side and
         'UseBox_TBox_Integer_Create' on the other. }
       NewMDecl.OwningUnit     := Sym.OwningUnit;
-      NewMDecl.ResolvedQbeName := MangleUnitPrefix(Sym.OwningUnit) +
+      NewMDecl.ResolvedQbeName := CurrentUnitPrefix +
                                   ATypeName + '_' + NewMDecl.Name;
       if SameText(NewMDecl.Name, 'Destroy') then
+      begin
         RT.HasDestroyMethod := True;
+        { Pin the destructor's emit name to the same prefix the method def
+          uses, so $_FieldCleanup_<T> calls the symbol that actually exists.
+          Without this the cleanup falls back to ClassUnitPrefix(), which can
+          disagree with the method's ResolvedQbeName for program-scope
+          generics and produce an undefined-reference link error. }
+        if NewMDecl.Params.Count = 0 then
+          RT.DestroyResolvedQbeName := NewMDecl.ResolvedQbeName;
+      end;
 
       if NewMDecl.IsVirtual or NewMDecl.IsOverride then
         NewMDecl.VTableSlot := RT.FindVTableSlot(NewMDecl.Name);

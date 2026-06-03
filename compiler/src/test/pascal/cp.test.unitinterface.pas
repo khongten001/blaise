@@ -2258,7 +2258,7 @@ begin
     Slot := RT.FindVTableSlot('Speak');
     AssertTrue('Speak has vtable slot', Slot >= 0);
     Ent := RT.VTableEntryAt(Slot);
-    AssertEquals('ImplName', '$TFoo_Speak', Ent.ImplName);
+    AssertEquals('ImplName', '$U_TFoo_Speak', Ent.ImplName);
   finally
     Tab.Free;
     Iface.Free;
@@ -2296,10 +2296,10 @@ begin
     AssertTrue('TBase has slot', BaseSlot >= 0);
     AssertEquals('same slot', BaseSlot, DerSlot);
     AssertEquals('TDerived ImplName',
-      '$TDerived_Speak',
+      '$U_TDerived_Speak',
       Derived.VTableEntryAt(DerSlot).ImplName);
     AssertEquals('TBase ImplName still own',
-      '$TBase_Speak',
+      '$U_TBase_Speak',
       Base.VTableEntryAt(BaseSlot).ImplName);
   finally
     Tab.Free;
@@ -2902,7 +2902,7 @@ begin
       M := TRoutineSig(E.Methods.Items[0]);
       AssertEquals('method name', 'Speak', M.Name);
       AssertTrue('IsVirtual', M.IsVirtual);
-      AssertEquals('ResolvedQbeName', 'TFoo_Speak', M.ResolvedQbeName);
+      AssertEquals('ResolvedQbeName', 'U_TFoo_Speak', M.ResolvedQbeName);
       AssertTrue('VTableSlot assigned', M.VTableSlot >= 0);
     finally
       Round.Free;
@@ -3180,7 +3180,7 @@ begin
     Slot := RT.FindVTableSlot('Speak');
     AssertTrue('Speak in vtable', Slot >= 0);
     AssertEquals('Speak ImplName',
-      '$TFoo_Speak', RT.VTableEntryAt(Slot).ImplName);
+      '$U_TFoo_Speak', RT.VTableEntryAt(Slot).ImplName);
   finally
     Tab.Free;
     Iface.Free;
