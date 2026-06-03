@@ -1874,6 +1874,8 @@ begin
   if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Exit;
   if APrefix <> '' then
     Label_ := APrefix + '_' + CD.Name
+  else if CD.ResolvedQbeName <> '' then
+    Label_ := CD.ResolvedQbeName
   else
     Label_ := CD.Name;
   IsStrArray := SameText(CD.ArrayElemType, 'string');
@@ -1897,7 +1899,16 @@ begin
     else
       Parts := Parts + Format('w %s', [ElemVal]);
   end;
-  EmitLine(Format('export data $%s = { %s }', [Label_, Parts]));
+  { Class/record consts keep an exported, type-qualified label (referenced as
+    TFoo.Const across the compilation).  Block-local and program/unit array
+    consts use a mangled, file-local label: the mangled name is only unique
+    within one compilation, so it must NOT be exported — otherwise two
+    separately-compiled objects (e.g. the RTL and a user program) that each
+    mint '__bac_1_X' would collide at link time. }
+  if APrefix <> '' then
+    EmitLine(Format('export data $%s = { %s }', [Label_, Parts]))
+  else
+    EmitLine(Format('data $%s = { %s }', [Label_, Parts]));
 end;
 
 procedure TCodeGenQBE.EmitClassConstData(AClassDef: TClassTypeDef; const AClassName: string);
@@ -9048,6 +9059,12 @@ begin
         EmitLine(Format('  %s =l loadl %s', [T, Ptr]))
       else
         EmitLine(Format('  %s =w loadw %s', [T, Ptr]));
+    end
+    else if TIdentExpr(AExpr).ConstArraySymbol <> '' then
+    begin
+      { Array const referenced bare — its storage is a mangled global data
+        label (not $Name, which would collide with RTL/other-scope symbols). }
+      Exit('$' + TIdentExpr(AExpr).ConstArraySymbol);
     end
     else if (AExpr.ResolvedType <> nil) and
             (AExpr.ResolvedType.Kind in [tyRecord, tyStaticArray]) then

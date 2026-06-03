@@ -325,6 +325,8 @@ type
     ConstValue:  Int64;       { valid when Kind = skConstant; integer/bool/enum value }
     ConstString: string;      { valid when Kind = skConstant and type is tyString }
     ConstArray:  TStringList; { owned; non-nil for array-typed const; raw element values }
+    ConstArrayQbe: string;    { canonical QBE data-label for an array const; mangled
+                                to avoid collisions across scopes and with the RTL }
     IsWeak:     Boolean;      { true for variables declared [Weak]; codegen
                                 keys off this to emit _WeakAssign instead
                                 of the strong addref/release pattern. }

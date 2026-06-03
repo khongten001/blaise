@@ -86,6 +86,9 @@ type
     IsMetaclassRef:    Boolean;     { set by uSemantic — bare class type identifier used as
                                       metaclass value (typeinfo ptr); codegen emits
                                       $typeinfo_<Name> instead of loading a variable. }
+    ConstArraySymbol:  string;      { set by uSemantic — non-empty when this ident resolves
+                                      to an array const; the mangled QBE data-label codegen
+                                      must reference instead of $Name. }
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -790,6 +793,11 @@ type
       declared set type or the set type inferred from the members' enum. }
     IsSet:       Boolean;
     SetElements: TStringList;   { non-nil when IsSet; member ident names }
+    { Canonical QBE data-label for an array const, set by uSemantic.  Mangled
+      to a unique symbol so identically-named consts in different scopes (and
+      RTL-internal consts) do not collide at link time.  Empty for non-array
+      consts. }
+    ResolvedQbeName: string;
     destructor Destroy; override;
   end;
 

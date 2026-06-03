@@ -39,6 +39,7 @@ type
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
     FCurrentLocalBlock:    TBlock;       { block currently being stmt-analysed; for-in injects synthetic TVarDecl here }
     FForInCounter:         Integer;      { counter for generating unique __forin_N variable names }
+    FArrayConstCounter:    Integer;      { counter for generating unique array-const data labels }
     FCurrentUnitName:      string;       { name of the unit/program currently being analysed }
     FCurrentEnclosingDecl: TMethodDecl;  { the innermost standalone proc/func currently being analysed;
                                            nil at program level.  Used to set EnclosingDecl on nested procs. }
@@ -70,6 +71,11 @@ type
       CD.IntVal and register the const symbol with its tySet type. }
     procedure AnalyseSetConstDecl(ACD: TConstDecl);
     procedure AnalyseArrayConstDecls(ABlock: TBlock);
+    { Mint a unique, link-safe QBE data-label for an array const.  The source
+      name is kept for lookups; this mangled label is what codegen emits and
+      references so identically-named consts in different scopes (and consts
+      inside the RTL) never collide at link time. }
+    function  NewArrayConstLabel(const AName: string): string;
     function  FoldConstBitOpExpr(ATokens: TStringList;
                                  ALine, ACol: Integer): Int64;
     procedure AnalyseTypeDecls(ABlock: TBlock);
@@ -2293,6 +2299,12 @@ begin
   end;
 end;
 
+function TSemanticAnalyser.NewArrayConstLabel(const AName: string): string;
+begin
+  Inc(FArrayConstCounter);
+  Result := Format('__bac_%d_%s', [FArrayConstCounter, AName]);
+end;
+
 procedure TSemanticAnalyser.AnalyseArrayConstDecls(ABlock: TBlock);
 { Second-pass constant analysis for array-typed constants.
   Called after AnalyseTypeDecls so that enum index types are in scope. }
@@ -2358,8 +2370,11 @@ begin
            (J < CD.ArrayElements.Count) then
           CD.ArrayElements.Put(J, IntToStr(FoldConstBitOpExpr(
             TStringList(CD.ArrayElementParts.Items[J]), CD.Line, CD.Col)));
+    if CD.ResolvedQbeName = '' then
+      CD.ResolvedQbeName := Self.NewArrayConstLabel(CD.Name);
     Sym := TSymbol.Create(CD.Name, skConstant, ArrTD);
     Sym.IsGlobal := True;
+    Sym.ConstArrayQbe := CD.ResolvedQbeName;
     Sym.ConstArray := TStringList.Create;
     for J := 0 to CD.ArrayElements.Count - 1 do
       Sym.ConstArray.Add(CD.ArrayElements[J]);
@@ -7078,6 +7093,10 @@ begin
       TIdentExpr(AExpr).ConstValue  := Sym.ConstValue;
       TIdentExpr(AExpr).ConstString := Sym.ConstString;
     end;
+    { Array const referenced bare: codegen must use the mangled data-label,
+      not $Name, to avoid link collisions. }
+    if (Sym.ConstArray <> nil) and (Sym.ConstArrayQbe <> '') then
+      TIdentExpr(AExpr).ConstArraySymbol := Sym.ConstArrayQbe;
     { Bare class type identifier used as a value: metaclass reference.
       The result type is 'class of TFoo'; codegen emits the typeinfo
       address.  Compatibility with untyped Pointer (so 'Pointer(EError)'

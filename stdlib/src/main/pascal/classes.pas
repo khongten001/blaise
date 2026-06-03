@@ -47,7 +47,12 @@ type
   TComponent = class
   private
     FName:     string;
-    FOwner:    TComponent;
+    { Non-owning back-reference: the owner keeps its children alive (via the
+      raw FChildren array), not the other way round.  A strong ARC ref here
+      would form an owner<->child cycle and, worse, make the child's field
+      cleanup release the owner mid-destruction — re-entering the owner's
+      Destroy and crashing. }
+    [Unretained] FOwner: TComponent;
     FChildren: ^Pointer;
     FChildCap: Integer;
     FChildCnt: Integer;
@@ -195,7 +200,13 @@ begin
     Self.GrowChildren;
   Slot  := Self.FChildren + Self.FChildCnt * SizeOf(Pointer);
   Slot^ := Pointer(AComp);
-  Self.FChildCnt := Self.FChildCnt + 1
+  Self.FChildCnt := Self.FChildCnt + 1;
+  { The owner holds a strong reference to each child: that is what keeps the
+    child alive for as long as the owner lives and lets the owner free its
+    children on destruction.  The matching release happens in RemoveComponent
+    and Destroy.  FChildren is a raw pointer array, so the ref must be taken
+    manually here. }
+  _ClassAddRef(Pointer(AComp))
 end;
 
 procedure TComponent.RemoveComponent(AComp: TComponent);
@@ -252,19 +263,29 @@ var
   Slot:  ^Pointer;
   Child: TComponent;
 begin
-  { Free children in reverse order }
+  { Release the owner's strong reference to each child in reverse order.
+    Detaching FOwner first means the child's own Destroy (if this release
+    takes it to zero) skips the RemoveComponent call-back into this object,
+    which is already being torn down.  Releasing — rather than Free — is what
+    keeps a child alive that the caller still holds a reference to: the owner
+    only drops its hold, it does not force destruction. }
   while Self.FChildCnt > 0 do
   begin
     Slot   := Self.FChildren + (Self.FChildCnt - 1) * SizeOf(Pointer);
     Child  := TComponent(Slot^);
     Slot^  := nil;
     Self.FChildCnt := Self.FChildCnt - 1;
-    Child.FOwner   := nil;
-    Child.Free
+    if Child <> nil then
+    begin
+      Child.FOwner := nil;
+      _ClassRelease(Pointer(Child))
+    end
   end;
   FreeMem(Self.FChildren);
   Self.FChildren := nil;
-  { Unregister from owner }
+  { Detach from owner so its array does not keep a dangling pointer.  This
+    object's strong ref held by the owner is the one that just reached zero,
+    so RemoveComponent must only unlink the slot — it must not release again. }
   if Self.FOwner <> nil then
     Self.FOwner.RemoveComponent(Self)
 end;

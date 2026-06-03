@@ -997,10 +997,17 @@ begin
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
-  AssertTrue('$Days data item emitted',
-    Pos('data $Days =', IR) >= 0);
-  AssertTrue('Days[M] reference present',
-    Pos('add $Days', IR) >= 0);
+  { Local array consts get a mangled, file-local data label ('__bac_N_Days')
+    so they never collide with same-named consts elsewhere or with the RTL.
+    The label must NOT be exported. }
+  AssertTrue('mangled Days data item emitted',
+    Pos('data $__bac_', IR) >= 0);
+  AssertTrue('Days label suffix present',
+    Pos('_Days =', IR) >= 0);
+  AssertTrue('Days array const not exported',
+    Pos('export data $__bac_', IR) < 0);
+  AssertTrue('Days[M] reference uses mangled label',
+    Pos('add $__bac_', IR) >= 0);
 end;
 
 procedure TConstTests.TestArrayConst_LocalInProcedure_EmitsDataItem;
@@ -1019,8 +1026,12 @@ begin
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
-  AssertTrue('$Tbl data item emitted',
-    Pos('data $Tbl =', IR) >= 0);
+  AssertTrue('mangled Tbl data item emitted',
+    Pos('data $__bac_', IR) >= 0);
+  AssertTrue('Tbl label suffix present',
+    Pos('_Tbl =', IR) >= 0);
+  AssertTrue('Tbl array const not exported',
+    Pos('export data $__bac_', IR) < 0);
 end;
 
 procedure TConstTests.TestArrayConst_LocalInMethod_EmitsDataItem;
@@ -1048,8 +1059,12 @@ begin
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
-  AssertTrue('$Vals data item emitted',
-    Pos('data $Vals =', IR) >= 0);
+  AssertTrue('mangled Vals data item emitted',
+    Pos('data $__bac_', IR) >= 0);
+  AssertTrue('Vals label suffix present',
+    Pos('_Vals =', IR) >= 0);
+  AssertTrue('Vals array const not exported',
+    Pos('export data $__bac_', IR) < 0);
 end;
 
 procedure TConstTests.TestTypedConst_IntegerCast_NegativeSurvives;

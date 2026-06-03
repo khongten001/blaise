@@ -103,11 +103,16 @@ const
     procedure TLoopThread.Execute;
     var I: Integer;
     begin
+      { Spin until terminated.  The loop must exit *only* via the terminate
+        flag so FTerminated is guaranteed True when read — an early-break
+        escape would let the worker finish before the main thread's Terminate
+        landed, making the printed flag race between 0 and 1.  The large cap is
+        only a safety net so a missed Terminate cannot hang the test forever. }
       I := 0;
       while not Self.FTerminated do
       begin
         I := I + 1;
-        if I > 1000 then
+        if I > 2000000000 then
           break
       end;
       WriteLn(Self.FTerminated)
