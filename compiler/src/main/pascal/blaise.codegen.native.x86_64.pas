@@ -26,7 +26,7 @@ unit blaise.codegen.native.x86_64;
 interface
 
 uses
-  SysUtils, contnrs, Generics.Collections, uAST, uSymbolTable, uStrCompat,
+  SysUtils, Classes, contnrs, Generics.Collections, uAST, uSymbolTable, uStrCompat,
   blaise.codegen.native.backend, blaise.codegen.target;
 
 type
@@ -42,6 +42,10 @@ type
     { Class-name string blobs already emitted to avoid duplicate label errors.
       Keyed by mangled name. }
     FClassNameEmitted: TDictionary<string, Boolean>;
+    { String literal pool: unique string values in encounter order.  Each gets
+      a __sN label in .rodata (12-byte ARC header + data + NUL).  The data
+      pointer (str_ptr convention) is header+12. }
+    FStrLits: TStringList;
 
     { Current function's stack frame: maps a local name (param, var, or Result)
       to its negative %rbp-relative byte offset.  nil while emitting program
@@ -84,6 +88,13 @@ type
       typeinfo blocks, vtables, itab/impllist blocks.  Mirrors QBE backend's
       EmitTypeInfoDefs + EmitVTableDefs.  Called from EmitProgram. }
     procedure EmitClassSection(AProg: TProgram);
+    { Escape a Pascal string for use inside an AS .ascii directive. }
+    function AsmEscapeString(const AStr: string): string;
+    { Emit a leaq __sN+12(%rip), %rax for the string literal AValue,
+      registering a new .rodata blob if not yet seen. }
+    procedure EmitStrLitAddr(const AValue: string);
+    { Emit string literal blobs in .rodata. Called from EmitDataSection. }
+    procedure EmitStrLitSection;
     { Emit an immortal class-name string blob in the data section and return
       the label+12 expression that points to the character data. }
     function EmitClassNameString(const AClassName: string): string;
@@ -177,6 +188,10 @@ type
     procedure EmitMethodPtrCall(const APtrOperand: string;
                                 AProcType: TProceduralTypeDesc;
                                 AArgs: TObjectList);
+    { Emit a Format(Fmt, arg1, ...) built-in call via _StringFormatN.
+      Builds a temporary args array on the stack: each slot is 16 bytes
+      (type tag at [0], value at [8]), matching the QBE backend's layout. }
+    procedure EmitFormatCall(AArgs: TObjectList);
   public
     constructor Create(const ATarget: TTargetDesc); override;
     destructor Destroy; override;
@@ -273,6 +288,7 @@ begin
   FLabelCount          := 0;
   FDataGlobals         := TOrderedDictionary<>.Create;
   FClassNameEmitted    := TDictionary<>.Create;
+  FStrLits             := TStringList.Create;
   FBreakLabels    := TStack<>.Create;
   FContinueLabels := TStack<>.Create;
   FFrame          := nil;
@@ -288,6 +304,7 @@ begin
   FContinueLabels.Free;
   FBreakLabels.Free;
   FClassNameEmitted.Free;
+  FStrLits.Free;
   FDataGlobals.Free;
   inherited Destroy;
 end;
@@ -317,7 +334,10 @@ var
   Directive: string;
 begin
   if FDataGlobals.Count = 0 then
+  begin
+    Self.EmitStrLitSection;
     Exit;
+  end;
   Self.Emit('.data');
   for I := 0 to FDataGlobals.Count - 1 do
   begin
@@ -384,6 +404,79 @@ begin
       Self.Emit('.globl ' + Name);
     Self.Emit(Name + ':');
     Self.Emit(Directive);
+  end;
+  Self.EmitStrLitSection;
+end;
+
+{ ------------------------------------------------------------------ }
+{ String literal helpers (M7c)                                         }
+{ ------------------------------------------------------------------ }
+
+{ Escape a string for use in an AT&T .ascii directive.
+  GNU as accepts the same escapes as C string literals. }
+function TX86_64Backend.AsmEscapeString(const AStr: string): string;
+var
+  I, C, Hi, Lo: Integer;
+begin
+  Result := '';
+  for I := 0 to Length(AStr) - 1 do
+  begin
+    C := StrAt(AStr, I);
+    case C of
+      34:  Result := Result + '\"';
+      92:  Result := Result + '\\';
+      10:  Result := Result + '\n';
+      13:  Result := Result + '\r';
+      9:   Result := Result + '\t';
+    else
+      if (C < 32) or (C > 126) then
+      begin
+        Hi := C shr 4;
+        Lo := C and 15;
+        if Hi < 10 then Hi := 48 + Hi else Hi := 55 + Hi;
+        if Lo < 10 then Lo := 48 + Lo else Lo := 55 + Lo;
+        Result := Result + '\' + Chr(Hi) + Chr(Lo)
+      end
+      else
+        Result := Result + Chr(C);
+    end;
+  end;
+end;
+
+{ Evaluate a string literal: register it in the pool if new, then emit
+  leaq __sN+12(%rip), %rax so %rax holds the Blaise data pointer. }
+procedure TX86_64Backend.EmitStrLitAddr(const AValue: string);
+var
+  Idx: Integer;
+begin
+  Idx := FStrLits.IndexOf(AValue);
+  if Idx < 0 then
+    Idx := FStrLits.Add(AValue);
+  Self.Emit(Format(#9'leaq __s%d + 12(%%rip), %%rax', [Idx]));
+end;
+
+{ Emit all accumulated string literal blobs to .rodata.
+  Each blob: 4-byte refcnt=-1 (immortal), 4-byte length, 4-byte capacity,
+  then the ASCII bytes, then a NUL terminator.
+  The Blaise string data pointer convention: str_ptr = &header + 12. }
+procedure TX86_64Backend.EmitStrLitSection;
+var
+  I:   Integer;
+  Len: Integer;
+begin
+  if FStrLits.Count = 0 then Exit;
+  Self.Emit('.section .rodata');
+  for I := 0 to FStrLits.Count - 1 do
+  begin
+    Len := Length(FStrLits.Strings[I]);
+    Self.Emit('.balign 4');
+    Self.Emit(Format('__s%d:', [I]));
+    Self.Emit(Format(#9'.long -1', []));       { refcnt = immortal }
+    Self.Emit(Format(#9'.long %d', [Len]));    { length }
+    Self.Emit(Format(#9'.long %d', [Len]));    { capacity }
+    if Len > 0 then
+      Self.Emit(Format(#9'.ascii "%s"', [Self.AsmEscapeString(FStrLits.Strings[I])]));
+    Self.Emit(#9'.byte 0');                    { NUL terminator }
   end;
 end;
 
@@ -1089,6 +1182,12 @@ begin
     Exit;
   end;
 
+  if AExpr is TStringLiteral then
+  begin
+    Self.EmitStrLitAddr(TStringLiteral(AExpr).Value);
+    Exit;
+  end;
+
   if AExpr is TIdentExpr then
   begin
     { Static array identifier: return its base address for subscript use. }
@@ -1139,6 +1238,132 @@ begin
       { Result = method code pointer in %rax. }
       Exit;
     end;
+    { String built-ins: delegate to RTL helpers (M7c).
+      All string pointers are 64-bit (pointer-size) arguments. }
+    if SameText(FC.Name, 'Length') and (FC.Args.Count = 1) and
+       (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+       (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringLength');
+      Self.Emit(#9'movslq %eax, %rax');
+      Exit;
+    end;
+    if SameText(FC.Name, 'Pos') and (FC.Args.Count = 2) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringPos');
+      Self.Emit(#9'movslq %eax, %rax');
+      Exit;
+    end;
+    if SameText(FC.Name, 'Copy') and (FC.Args.Count = 3) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[2]));
+      Self.Emit(#9'movl %eax, %edx');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movl %eax, %esi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringCopy');
+      Exit;
+    end;
+    if SameText(FC.Name, 'UpperCase') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringUpperCase');
+      Exit;
+    end;
+    if SameText(FC.Name, 'LowerCase') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringLowerCase');
+      Exit;
+    end;
+    if SameText(FC.Name, 'Trim') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringTrim');
+      Exit;
+    end;
+    if SameText(FC.Name, 'SameText') and (FC.Args.Count = 2) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringSameText');
+      Self.Emit(#9'movslq %eax, %rax');
+      Exit;
+    end;
+    if SameText(FC.Name, 'IntToStr') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+         (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyInt64) then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _Int64ToStr');
+      end
+      else if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+              (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt64) then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _UInt64ToStr');
+      end
+      else
+      begin
+        Self.Emit(#9'movl %eax, %edi');
+        Self.Emit(#9'callq _IntToStr');
+      end;
+      Exit;
+    end;
+    if SameText(FC.Name, 'StrToInt') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StrToInt');
+      Self.Emit(#9'movslq %eax, %rax');
+      Exit;
+    end;
+    if SameText(FC.Name, 'StrToInt64') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StrToInt64');
+      Exit;
+    end;
+    if SameText(FC.Name, 'PChar') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      { PChar(str) is identity — the Blaise string data pointer IS the char data. }
+      Exit;
+    end;
+    if SameText(FC.Name, 'string') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringFromPChar');
+      Exit;
+    end;
+    { Format(Fmt, Arg1, ...) — built-in that builds an args array and calls
+      _StringFormatN; handled specially because it takes a variadic args list. }
+    if SameText(FC.Name, 'Format') and (FC.Args.Count >= 1) then
+    begin
+      Self.EmitFormatCall(FC.Args);
+      Exit;
+    end;
     if FC.IsIndirectCall then
     begin
       { Bare function-pointer call: load the pointer from the variable slot
@@ -1172,6 +1397,19 @@ begin
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
+    { String concatenation (boAdd on tyString): call _StringConcat(left, right). }
+    if (BE.Op = boAdd) and
+       (BE.Left.ResolvedType <> nil) and
+       (BE.Left.ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToEax(BE.Left);
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(BE.Right);
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringConcat');
+      Exit;
+    end;
     { left -> %rax, save; right -> %rax; left -> %rcx; combine in 64 bits. }
     Self.EmitExprToEax(BE.Left);
     Self.Emit(#9'pushq %rax');
@@ -1245,6 +1483,22 @@ begin
     Self.Emit(#9'addq %rcx, %rax');   { %rax = element address }
     Self.EmitLoadVar('(%rax)',
       TStaticArrayTypeDesc(SAE.StrExpr.ResolvedType).ElementType);
+    Exit;
+  end;
+
+  { String subscript S[I]: calls _OrdAt(str_ptr, index) -> byte value as Integer. }
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyString) then
+  begin
+    SAE := TStringSubscriptExpr(AExpr);
+    Self.EmitExprToEax(SAE.StrExpr);
+    Self.Emit(#9'pushq %rax');
+    Self.EmitExprToEax(SAE.IndexExpr);
+    Self.Emit(#9'movl %eax, %esi');
+    Self.Emit(#9'popq %rdi');
+    Self.Emit(#9'callq _OrdAt');
+    Self.Emit(#9'movslq %eax, %rax');
     Exit;
   end;
 
@@ -1545,7 +1799,14 @@ begin
       K := ArgExpr.ResolvedType.Kind
     else
       K := tyInteger;
-    if K = tyDouble then
+    if K in [tyString, tyPChar] then
+    begin
+      Self.EmitExprToEax(ArgExpr);
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'movl $1, %edi');
+      Self.Emit(#9'callq _SysWriteStr');
+    end
+    else if K = tyDouble then
     begin
       Self.EmitExprToXmm0(ArgExpr);
       Self.Emit(#9'movl $1, %edi');
@@ -1742,6 +2003,30 @@ begin
       end;
     end
     else if (Asgn.ResolvedLhsType <> nil) and
+            (Asgn.ResolvedLhsType.Kind = tyString) then
+    begin
+      { String assignment: _StringAddRef(new); _StringRelease(old); store.
+        Same ARC pattern as class assignment. }
+      Self.EmitExprToEax(Asgn.Expr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringAddRef');
+      if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Asgn.Name]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringRelease');
+      Self.Emit(#9'popq %rax');
+      if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]))
+      else
+      begin
+        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [Asgn.Name]));
+      end;
+    end
+    else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyClass) then
     begin
       { Class assignment: new := eval(RHS); _ClassAddRef(new); old := load(LHS);
@@ -1804,6 +2089,75 @@ begin
     if SameText(PC.Name, 'Write') then
     begin
       Self.EmitWrite(PC, False);
+      Exit;
+    end;
+    { Delete(S, Idx, Count): S := _StringDelete(S, Idx, Count) with ARC. }
+    if SameText(PC.Name, 'Delete') and (PC.Args.Count = 3) then
+    begin
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[2]));
+      Self.Emit(#9'movl %eax, %edx');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movl %eax, %esi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringDelete');
+      { Assign result back: addref new, release old, store. }
+      if TASTExpr(PC.Args.Items[0]) is TIdentExpr then
+      begin
+        Self.Emit(#9'pushq %rax');
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+        if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
+          Self.Emit(Format(#9'movq %s, %%rdi',
+            [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi',
+            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rax');
+        if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
+          Self.Emit(Format(#9'movq %%rax, %s',
+            [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
+        else
+          Self.Emit(Format(#9'movq %%rax, %s(%%rip)',
+            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+      end;
+      Exit;
+    end;
+    { SetLength(S, N): S := _StringSetLength(S, N) with ARC. }
+    if SameText(PC.Name, 'SetLength') and (PC.Args.Count = 2) and
+       (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
+       (TASTExpr(PC.Args.Items[0]).ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+      Self.Emit(#9'movl %eax, %esi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringSetLength');
+      if TASTExpr(PC.Args.Items[0]) is TIdentExpr then
+      begin
+        Self.Emit(#9'pushq %rax');
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+        if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
+          Self.Emit(Format(#9'movq %s, %%rdi',
+            [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi',
+            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rax');
+        if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
+          Self.Emit(Format(#9'movq %%rax, %s',
+            [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
+        else
+          Self.Emit(Format(#9'movq %%rax, %s(%%rip)',
+            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+      end;
       Exit;
     end;
     if PC.IsIndirectCall then
@@ -2375,6 +2729,72 @@ begin
                     tySmallInt, tyWord, tyByte, tyBoolean, tyEnum]);
 end;
 
+{ Emit a Format(Fmt, Arg1, ..., ArgN) call via the RTL's _StringFormatN.
+  The args array layout (matching the QBE backend and blaise_str.pas):
+    slot[I] at arr + I*16:  [0..7] = type tag (0=int, 1=string); [8..15] = value.
+  We allocate the array on the stack via subq, fill it, then call the RTL. }
+{ Emit a Format(Fmt, Arg1, ..., ArgN) call via the RTL's _StringFormatN.
+  Stack layout at the callq:
+    [%rbp - old_frame ... fmt_ptr ... arr[0]...arr[N-1]] → then call
+  The args array layout (matching the QBE backend and blaise_str.pas):
+    slot[I] at arr + I*16: [0..7]=type tag (0=int, 1=str); [8..15]=value. }
+{ Emit a Format(Fmt, Arg1, ..., ArgN) call via the RTL's _StringFormatN.
+  The args array layout (matching the QBE backend):
+    slot[I] at arr + I*16: [0..7]=type tag (0=int, 1=str); [8..15]=value.
+  Stack discipline: evaluate fmt first and push it (so later push/pop from
+  nested expr evaluation cannot overwrite the array we build below it). }
+procedure TX86_64Backend.EmitFormatCall(AArgs: TObjectList);
+var
+  I:         Integer;
+  FmtCount:  Integer;
+  Arg:       TASTExpr;
+  IsIntArg:  Boolean;
+  TotalSize: Integer;
+begin
+  FmtCount := AArgs.Count - 1;
+  { Evaluate the format string and save it on the stack first, so that
+    the args-array allocation lives below it and expression push/pop during
+    argument evaluation cannot corrupt the array area. }
+  Self.EmitExprToEax(TASTExpr(AArgs.Items[0]));
+  Self.Emit(#9'pushq %rax');     { [%rsp] = fmt ptr }
+  if FmtCount > 0 then
+  begin
+    TotalSize := ((FmtCount * 16) + 15) and (-16);
+    Self.Emit(Format(#9'subq $%d, %%rsp', [TotalSize]));
+    Self.Emit(#9'movq %rsp, %r11');
+    for I := 0 to FmtCount - 1 do
+    begin
+      Arg := TASTExpr(AArgs.Items[I + 1]);
+      IsIntArg := (Arg.ResolvedType = nil) or
+        (Arg.ResolvedType.Kind in [tyInteger, tyBoolean, tyByte, tyUInt32,
+                                    tyInt64, tyUInt64, tySmallInt, tyWord, tyEnum]);
+      if IsIntArg then
+        Self.Emit(Format(#9'movq $0, %d(%%r11)', [I * 16]))
+      else
+        Self.Emit(Format(#9'movq $1, %d(%%r11)', [I * 16]));
+      Self.EmitExprToEax(Arg);
+      Self.Emit(Format(#9'movq %%rax, %d(%%r11)', [I * 16 + 8]));
+    end;
+    { Set up args for the call.  The array at %r11 must remain under %rsp
+      during the callq (so the call's return-addr push does not overwrite it).
+      Load fmt from its pushed location above the array:
+        fmt is at %rsp + TotalSize (the push happened before the subq). }
+    Self.Emit(Format(#9'movq %d(%%rsp), %%rdi', [TotalSize]));
+    Self.Emit(#9'movq %r11, %rsi');
+    Self.Emit(Format(#9'movl $%d, %%edx', [FmtCount]));
+    Self.Emit(#9'callq _StringFormatN');
+    { Now clean up: array + saved fmt ptr. }
+    Self.Emit(Format(#9'addq $%d, %%rsp', [TotalSize + 8]));
+  end
+  else
+  begin
+    Self.Emit(#9'popq %rdi');
+    Self.Emit(#9'xorl %esi, %esi');
+    Self.Emit(#9'xorl %edx, %edx');
+    Self.Emit(#9'callq _StringFormatN');
+  end;
+end;
+
 { Emit a standalone procedure/function definition.  Frame layout mirrors the
   reference (FPC -O- and the QBE backend): params, Result and locals each get
   an 8-byte-aligned %rbp-relative slot sized by their type; the prologue
@@ -2384,7 +2804,7 @@ end;
   parameters and integer-family/void return. }
 procedure TX86_64Backend.EmitFunctionDef(ADecl: TMethodDecl);
 var
-  I:           Integer;
+  I, J:        Integer;
   P:           TMethodParam;
   Sym:         string;
   IntIdx:      Integer;
@@ -2393,18 +2813,18 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
-    if not IsIntFamily(P.ResolvedType) and not IsFloatFamily(P.ResolvedType) then
+    if not IsIntFamily(P.ResolvedType) and not IsFloatFamily(P.ResolvedType) and
+       ((P.ResolvedType = nil) or
+        not (P.ResolvedType.Kind in [tyString, tyPChar, tyPointer, tyClass])) then
       raise ENativeCodeGenError.Create(
-        'native backend: only integer-family or float parameters supported (param ' +
-        P.ParamName + ')');
+        'native backend: unsupported parameter type (param ' + P.ParamName + ')');
   end;
   if (ADecl.ResolvedReturnType <> nil) and
      not IsIntFamily(ADecl.ResolvedReturnType) and
      not IsFloatFamily(ADecl.ResolvedReturnType) and
-     (ADecl.ResolvedReturnType.Kind <> tyRecord) then
+     not (ADecl.ResolvedReturnType.Kind in [tyRecord, tyString, tyPChar, tyPointer, tyClass]) then
     raise ENativeCodeGenError.Create(
-      'native backend: only integer-family, float, record, or void return supported (function ' +
-      ADecl.Name + ')');
+      'native backend: unsupported return type (function ' + ADecl.Name + ')');
 
   Sym := FuncSymbolFromDecl(ADecl);
   Self.BuildFrame(ADecl);
@@ -2504,6 +2924,26 @@ begin
       Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
     else
       Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
+  end;
+  { Release ARC-managed local string vars (not params, not Result).
+    Result is returned to the caller who owns it; params are caller-owned. }
+  if ADecl.Body <> nil then
+  begin
+    for I := 0 to ADecl.Body.Decls.Count - 1 do
+    begin
+      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType = nil then Continue;
+      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind <> tyString then Continue;
+      { for each name in the VarDecl's name list }
+      begin
+        { Use the loop variable directly to iterate names in this VarDecl. }
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+        begin
+          Self.Emit(Format(#9'movq %s, %%rdi',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          Self.Emit(#9'callq _StringRelease');
+        end;
+      end;
+    end;
   end;
   Self.Emit(#9'movq %rbp, %rsp');
   Self.Emit(#9'popq %rbp');

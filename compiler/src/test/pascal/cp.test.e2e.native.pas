@@ -99,6 +99,27 @@ type
     procedure TestRun_Native_Single_GlobalReadWrite;
     procedure TestRun_Native_Double_FuncParam;
     procedure TestRun_Native_Double_FuncReturn;
+
+    { M7c — string operations }
+    procedure TestRun_Native_String_WriteLnLiteral;
+    procedure TestRun_Native_String_AssignAndWrite;
+    procedure TestRun_Native_String_Concat;
+    procedure TestRun_Native_String_Length;
+    procedure TestRun_Native_String_Pos;
+    procedure TestRun_Native_String_Copy;
+    procedure TestRun_Native_String_UpperCase;
+    procedure TestRun_Native_String_IntToStr;
+    procedure TestRun_Native_String_StrToInt;
+    procedure TestRun_Native_String_Param;
+    procedure TestRun_Native_String_FuncReturn;
+    procedure TestRun_Native_String_Delete;
+    procedure TestRun_Native_String_SetLength;
+    procedure TestRun_Native_String_Subscript;
+    procedure TestRun_Native_String_SameText;
+    procedure TestRun_Native_String_Format_IntArg;
+    procedure TestRun_Native_String_Format_StrArg;
+    procedure TestRun_Native_String_Format_MixedArgs;
+    procedure TestRun_Native_String_ConcatWithInt;
   end;
 
 implementation
@@ -1190,6 +1211,310 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   { Half(7.0) = 3.5 }
   AssertRunsOnBoth(SrcDoubleFuncReturn, '3.5' + LE, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ M7c — string operations                                              }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcStrWriteLnLiteral = '''
+    program P;
+    begin
+      WriteLn('hello')
+    end.
+    ''';
+
+  SrcStrAssignAndWrite = '''
+    program P;
+    var S: string;
+    begin
+      S := 'world';
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcStrConcat = '''
+    program P;
+    var A, B, C: string;
+    begin
+      A := 'foo';
+      B := 'bar';
+      C := A + B;
+      WriteLn(C)
+    end.
+    ''';
+
+  SrcStrLength = '''
+    program P;
+    var S: string;
+    begin
+      S := 'hello';
+      WriteLn(Length(S))
+    end.
+    ''';
+
+  SrcStrPos = '''
+    program P;
+    var S, Sub: string;
+    begin
+      S   := 'hello world';
+      Sub := 'world';
+      WriteLn(Pos(Sub, S))
+    end.
+    ''';
+
+  SrcStrCopy = '''
+    program P;
+    var S, T: string;
+    begin
+      S := 'hello';
+      T := Copy(S, 1, 3);
+      WriteLn(T)
+    end.
+    ''';
+
+  SrcStrUpperCase = '''
+    program P;
+    var S: string;
+    begin
+      S := 'hello';
+      WriteLn(UpperCase(S))
+    end.
+    ''';
+
+  SrcStrIntToStr = '''
+    program P;
+    var S: string;
+    begin
+      S := IntToStr(42);
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcStrStrToInt = '''
+    program P;
+    var N: Integer;
+    begin
+      N := StrToInt('123');
+      WriteLn(N)
+    end.
+    ''';
+
+  SrcStrParam = '''
+    program P;
+    function Greet(Name: string): string;
+    begin
+      Result := 'Hello ' + Name
+    end;
+    begin
+      WriteLn(Greet('World'))
+    end.
+    ''';
+
+  SrcStrFuncReturn = '''
+    program P;
+    function Twice(S: string): string;
+    begin
+      Result := S + S
+    end;
+    begin
+      WriteLn(Twice('ab'))
+    end.
+    ''';
+
+  SrcStrDelete = '''
+    program P;
+    var S: string;
+    begin
+      S := 'Hello World';
+      Delete(S, 5, 6);
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcStrSetLength = '''
+    program P;
+    var S: string;
+    begin
+      S := 'Hello';
+      SetLength(S, 3);
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcStrSubscript = '''
+    program P;
+    var S: string;
+    begin
+      S := 'ABC';
+      WriteLn(S[0]);
+      WriteLn(S[1]);
+      WriteLn(S[2])
+    end.
+    ''';
+
+procedure TE2ENativeTests.TestRun_Native_String_WriteLnLiteral;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrWriteLnLiteral, 'hello' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_AssignAndWrite;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrAssignAndWrite, 'world' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Concat;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrConcat, 'foobar' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Length;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrLength, '5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Pos;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { Pos is 0-based in Blaise: 'world' starts at index 6 }
+  AssertRunsOnBoth(SrcStrPos, '6' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Copy;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { Copy('hello', 1, 3) = 'ell' }
+  AssertRunsOnBoth(SrcStrCopy, 'ell' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_UpperCase;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrUpperCase, 'HELLO' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_IntToStr;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrIntToStr, '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_StrToInt;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrStrToInt, '123' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Param;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrParam, 'Hello World' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_FuncReturn;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrFuncReturn, 'abab' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Delete;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrDelete, 'Hello' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_SetLength;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrSetLength, 'Hel' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Subscript;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  { S[0]='A'=65, S[1]='B'=66, S[2]='C'=67 }
+  AssertRunsOnBoth(SrcStrSubscript,
+    '65' + LE + '66' + LE + '67' + LE, 0);
+end;
+
+const
+  SrcStrSameText = '''
+    program P;
+    var S, T: string;
+    begin
+      S := 'Hello';
+      T := 'hello';
+      WriteLn(SameText(S, T))
+    end.
+    ''';
+
+  SrcFormatIntArg = '''
+    program P;
+    var S: string;
+    begin
+      S := Format('val=%d', 42);
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcFormatStrArg = '''
+    program P;
+    var S: string;
+    begin
+      S := Format('hello %s', 'world');
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcFormatMixedArgs = '''
+    program P;
+    var S: string;
+    begin
+      S := Format('%s=%d', 'Alice', 30);
+      WriteLn(S)
+    end.
+    ''';
+
+  SrcConcatWithInt = '''
+    program P;
+    begin
+      WriteLn('x=' + IntToStr(7))
+    end.
+    ''';
+
+procedure TE2ENativeTests.TestRun_Native_String_SameText;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcStrSameText, '1' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Format_IntArg;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcFormatIntArg, 'val=42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Format_StrArg;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcFormatStrArg, 'hello world' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_Format_MixedArgs;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcFormatMixedArgs, 'Alice=30' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_String_ConcatWithInt;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcConcatWithInt, 'x=7' + LE, 0);
 end;
 
 initialization
