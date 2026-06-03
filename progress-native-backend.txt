@@ -159,8 +159,21 @@ Branch: native-codegen
         in _SysWriteInt call); boSlash (not boDiv) is the `/` operator for
         floats; float literals default to tyDouble so Single assignments need
         cvtsd2ss.
-[ ] M7  aggregates/sret + full data section (vtables/typeinfo/strings/itabs)
-        parity
+[x] M7a sret — record-returning functions. DONE 2026-06-03.
+        FSretFunc flag in BuildFrame when ResolvedReturnType.Kind = tyRecord;
+        Result slot is an 8-byte pointer slot (sret buffer addr from %rdi);
+        prologue spills hidden %rdi → Result slot (IntIdx starts at 1 so
+        normal params get %rsi/%rdx/...); no Result initialisation (caller
+        zeroes); epilogue emits plain ret. TFieldAssignment for RecordName='Result'
+        loads sret ptr from slot and writes through %rcx + field offset.
+        EmitSretCall: leaq dest → %r10; memset(%r10,0,TotalSize); reload %r10;
+        push/pop normal args into %rsi...; movq %r10,%rdi; callq func.
+        TAssignment detects record LHS + record-returning RHS and dispatches to
+        EmitSretCall. TestRun_Native_RecordReturnFunction promoted from Ignore.
+        2383 tests pass; FIXPOINT_OK.
+[ ] M7b class system — vtables, typeinfo, class allocation, method dispatch,
+        field access through class pointer, RTTI (MethodAddress).
+        Required for: TestRun_Native_IndirectCall_MethodPtr (currently Ignored)
 [ ] M8  full cp.test.e2e suite parity (stdout+exit), QBE vs native
 [ ] M9  self-hosting: native-built Blaise --emit-ir == QBE-built Blaise
 [ ] M10 (opt) linear-scan regalloc / direct ELF .o emission
