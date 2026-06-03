@@ -202,9 +202,9 @@ constructor TX86_64Backend.Create(const ATarget: TTargetDesc);
 begin
   inherited Create(ATarget);
   FLabelCount     := 0;
-  FDataGlobals    := TOrderedDictionary<string, TTypeDesc>.Create;
-  FBreakLabels    := TStack<string>.Create;
-  FContinueLabels := TStack<string>.Create;
+  FDataGlobals    := TOrderedDictionary<>.Create;
+  FBreakLabels    := TStack<>.Create;
+  FContinueLabels := TStack<>.Create;
   FFrame          := nil;
   FFrameTypes     := nil;
   FFrameSize      := 0;
@@ -354,8 +354,8 @@ var
   VD:   TVarDecl;
 begin
   Self.ClearFrame;
-  FFrame      := TDictionary<string, Integer>.Create;
-  FFrameTypes := TDictionary<string, TTypeDesc>.Create;
+  FFrame      := TDictionary<>.Create;
+  FFrameTypes := TDictionary<>.Create;
   Offset := 0;
   { Params first (spilled from arg registers in the prologue). }
   for I := 0 to ADecl.Params.Count - 1 do
