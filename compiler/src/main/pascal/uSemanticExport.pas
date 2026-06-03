@@ -226,6 +226,7 @@ begin
   Result.VTableSlot   := ASrc.VTableSlot;
   Result.IsExternal   := ASrc.IsExternal;
   Result.ExternalName := ASrc.ExternalName;
+  Result.CallingConv  := ASrc.CallingConv;
   Result.ResolvedQbeName := ASrc.ResolvedQbeName;
   Result.IsVirtual    := ASrc.IsVirtual;
   Result.IsOverride   := ASrc.IsOverride;

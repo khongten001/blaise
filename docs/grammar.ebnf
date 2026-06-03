@@ -330,6 +330,13 @@ MethodDirective
     | IDENT                               (* inline, stdcall, cdecl, abstract, reintroduce, … *)
     ;
 
+(* Calling-convention directives (cdecl, stdcall, register, pascal, safecall)
+ * are parsed as the IDENT alternative and recorded on the declaration
+ * (TMethodDecl.CallingConv, carried into TRoutineSig.CallingConv and the
+ * .bif interface metadata).  They are metadata only — the native backend
+ * currently emits the System V AMD64 convention regardless; the directive is
+ * preserved for FFI/tooling fidelity, not yet honoured at the ABI level. *)
+
 ExternalDirective
     = EXTERNAL [ NAME StrLit ]
     ;

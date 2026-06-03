@@ -973,6 +973,38 @@ is deferred).
 
 ---
 
+=== Calling-Convention Directives (`cdecl`, `stdcall`, …)
+
+==== Decision
+
+A routine or method declaration may carry a calling-convention directive —
+`cdecl`, `stdcall`, `register`, `pascal`, or `safecall`. The directive is
+recorded on the declaration (`TMethodDecl.CallingConv`), propagated into the
+exported interface signature (`TRoutineSig.CallingConv`) and persisted in the
+`.bif` interface metadata so it survives separate compilation.
+
+==== Rationale
+
+The directive is currently *metadata only*. The native backend emits the
+System V AMD64 convention for every routine regardless of the directive; on
+Linux x86_64 that is already the C ABI, so `cdecl` and the default agree and
+external C calls link correctly without honouring the keyword at the ABI
+level.
+
+Preserving the directive rather than discarding it keeps the door open for:
+
+* a future Windows/x86 target where `stdcall` and `cdecl` differ in stack
+  cleanup and must be emitted distinctly;
+* FFI tooling and the debugger, which need the declared convention to
+  describe a symbol faithfully.
+
+Discarding the keyword at parse time — the previous behaviour — would have
+forced a parser and interface-format change later to recover information that
+was present in the source all along. Recording it now is cheap and avoids
+that churn.
+
+---
+
 === Static Arrays (`array[L..H] of T`)
 
 ==== Decision

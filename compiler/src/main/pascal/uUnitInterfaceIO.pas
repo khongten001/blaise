@@ -568,6 +568,7 @@ begin
                 EncodeLpstr(P.TypeName) +
                 EncodeParamFlags(P);
       end;
+      Line := Line + EncodeLpstr(R.CallingConv);
       SB.AppendLine(Line);
     end;
     SB.AppendLine('END');
@@ -2033,6 +2034,7 @@ begin
       DecodeParamFlags(StrToInt(FlagsStr), Param);
       R.Params.Add(Param);
     end;
+    R.CallingConv := ReadLpstrAt(AText, APos);
     AIface.AddRoutine(R);
   end;
   if ReadTag(AText, APos) <> 'END' then

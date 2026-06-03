@@ -1608,12 +1608,27 @@ begin
 end;
 
 procedure TRoutineSigTests.TestCallingConv_Cdecl_Preserved;
+const
+  SRC = '''
+    unit TestU;
+    interface
+    procedure Beep; cdecl;
+    implementation
+    procedure Beep; cdecl; begin end;
+    end.
+    ''';
+var
+  Iface: TUnitInterface;
+  Sig:   TRoutineSig;
 begin
-  { Calling conventions (cdecl/stdcall) aren't carried on TMethodDecl
-    in the current uAST.  When they're added (Attributes-driven or
-    a dedicated field), this test should populate TRoutineSig.CallingConv.
-    Pending until uAST exposes the field. }
-  Fail('Pending uAST CallingConv support');
+  Iface := ParseAndExport(SRC);
+  try
+    Sig := Iface.FindRoutine('Beep');
+    AssertEquals('found',        True,    Sig <> nil);
+    AssertEquals('calling conv', 'cdecl', Sig.CallingConv);
+  finally
+    Iface.Free;
+  end;
 end;
 
 procedure TRoutineSigTests.TestExternal_NamePreserved;

@@ -1528,7 +1528,13 @@ begin
                SameText(FCurrent.Value, 'experimental')) then
       begin
         if SameText(FCurrent.Value, 'inline') then
-          Result.IsInline := True;
+          Result.IsInline := True
+        else if SameText(FCurrent.Value, 'cdecl')    or
+                SameText(FCurrent.Value, 'stdcall')  or
+                SameText(FCurrent.Value, 'register') or
+                SameText(FCurrent.Value, 'pascal')   or
+                SameText(FCurrent.Value, 'safecall') then
+          Result.CallingConv := LowerCase(FCurrent.Value);
         Advance;
         if Check(tkSemicolon) then Advance;
       end
@@ -2959,7 +2965,13 @@ begin
                SameText(FCurrent.Value, 'experimental')) then
       begin
         if SameText(FCurrent.Value, 'inline') then
-          Result.IsInline := True;
+          Result.IsInline := True
+        else if SameText(FCurrent.Value, 'cdecl')    or
+                SameText(FCurrent.Value, 'stdcall')  or
+                SameText(FCurrent.Value, 'register') or
+                SameText(FCurrent.Value, 'pascal')   or
+                SameText(FCurrent.Value, 'safecall') then
+          Result.CallingConv := LowerCase(FCurrent.Value);
         Advance;
         if Check(tkSemicolon) then Advance;
       end

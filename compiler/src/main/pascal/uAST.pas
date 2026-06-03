@@ -649,6 +649,8 @@ type
     CapturedVars:  TStringList; { owned; nil when no captures }
     [Unretained] EnclosingDecl: TMethodDecl; { not owned — enclosing standalone proc, or nil }
     IsInline: Boolean;    { set by uParser — 'inline' directive present }
+    CallingConv: string;  { set by uParser — 'cdecl'/'stdcall'/'register'/'pascal'/
+                            'safecall' directive (lowercased); '' = default }
     OwningUnit: string;   { set by uSemantic / uSemanticImport — unit that declares this routine }
     constructor Create;
     destructor Destroy; override;
@@ -2033,6 +2035,7 @@ begin
   Result.IsPublished    := ASrc.IsPublished;
   Result.IsExternal     := ASrc.IsExternal;
   Result.ExternalName   := ASrc.ExternalName;
+  Result.CallingConv    := ASrc.CallingConv;
   Result.IsRecordMethod := ASrc.IsRecordMethod;
   for I := 0 to ASrc.Params.Count - 1 do
     Result.Params.Add(CloneMethodParam(TMethodParam(ASrc.Params.Items[I])));
