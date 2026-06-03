@@ -31,7 +31,10 @@ unit cp.test.e2e.native;
          signed/unsigned cousins) as globals, locals, parameters and return
          values; mixed-width arithmetic (Int64 promotion); and explicit
          type-cast conversions Byte(X) / Word(X) / Int64(X) that
-         truncate/extend correctly. }
+         truncate/extend correctly.
+         Also: var/out parameters — pass by reference (pointer passing),
+         read/write through the pointer, pass-through to another var param,
+         and wider-int var params (Int64, Byte). }
 
 interface
 
@@ -64,6 +67,10 @@ type
     procedure TestRun_Native_TypeCastConversions;
     procedure TestRun_Native_SignednessAndWraparound;
     procedure TestRun_Native_WriteUnsigned32;
+    procedure TestRun_Native_VarParamSwap;
+    procedure TestRun_Native_VarParamPassThrough;
+    procedure TestRun_Native_VarParamWiderInt;
+    procedure TestRun_Native_OutParam;
   end;
 
 implementation
@@ -360,6 +367,84 @@ const
     end.
     ''';
 
+  { Var/out parameter support (M5 continuation). }
+
+  SrcVarParamSwap = '''
+    program P;
+    procedure Swap(var A, B: Integer);
+    var T: Integer;
+    begin
+      T := A; A := B; B := T
+    end;
+    var X, Y: Integer;
+    begin
+      X := 3; Y := 7;
+      Swap(X, Y);
+      WriteLn(X);
+      WriteLn(Y)
+    end.
+    ''';
+
+  { Pass a var param through to another var param (pointer forwarding). }
+  SrcVarParamPassThrough = '''
+    program P;
+    procedure Inc10(var N: Integer);
+    begin
+      N := N + 10
+    end;
+    procedure DoubleInc(var V: Integer);
+    begin
+      Inc10(V);
+      Inc10(V)
+    end;
+    var X: Integer;
+    begin
+      X := 5;
+      DoubleInc(X);
+      WriteLn(X)
+    end.
+    ''';
+
+  { Var params with wider integer types. }
+  SrcVarParamWiderInt = '''
+    program P;
+    procedure SetBig(var B: Int64);
+    begin
+      B := 9000000000
+    end;
+    procedure SetByte(var V: Byte);
+    begin
+      V := 255
+    end;
+    var Big: Int64;
+    var Small: Byte;
+    begin
+      Big := 0;
+      Small := 0;
+      SetBig(Big);
+      SetByte(Small);
+      WriteLn(Big);
+      WriteLn(Small)
+    end.
+    ''';
+
+  { Out parameter (same ABI as var — pointer passing). }
+  SrcOutParam = '''
+    program P;
+    procedure Init(out X, Y: Integer);
+    begin
+      X := 42;
+      Y := 99
+    end;
+    var A, B: Integer;
+    begin
+      A := 0; B := 0;
+      Init(A, B);
+      WriteLn(A);
+      WriteLn(B)
+    end.
+    ''';
+
 { Every test below runs its source through BOTH backends (beQBE, beNative)
   and asserts identical stdout/exit on each — the native backend's whole
   correctness model is parity with QBE on the same source, so this exercises
@@ -501,6 +586,31 @@ procedure TE2ENativeTests.TestRun_Native_WriteUnsigned32;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcWriteUnsigned32, '3000000000' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_VarParamSwap;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcVarParamSwap, '7' + LE + '3' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_VarParamPassThrough;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcVarParamPassThrough, '25' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_VarParamWiderInt;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcVarParamWiderInt,
+    '9000000000' + LE + '255' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_OutParam;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcOutParam, '42' + LE + '99' + LE, 0);
 end;
 
 initialization

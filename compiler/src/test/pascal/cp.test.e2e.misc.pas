@@ -627,12 +627,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_VarParam_SwapIntegers;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcVarParamSwap, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('7 then 3', '7' + LE + '3' + LE, Output);
+  AssertRunsOnBoth(SrcVarParamSwap, '7' + LE + '3' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_VarParam_ModifyString;
@@ -645,12 +642,9 @@ begin
 end;
 
 procedure TE2EMiscTests.TestRun_ConstParam_CanRead;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcConstParam, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('42', '42' + LE, Output);
+  AssertRunsOnBoth(SrcConstParam, '42' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_TypeCast_IntegerByte;

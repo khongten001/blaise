@@ -81,7 +81,8 @@ type
       the right-width register sub-view for AType. }
     procedure EmitStoreVar(const AOperand: string; AType: TTypeDesc);
     { Reserve an 8-byte-aligned frame slot for AName:AType, advancing AOffset. }
-    procedure AddSlot(const AName: string; AType: TTypeDesc; var AOffset: Integer);
+    procedure AddSlot(const AName: string; AType: TTypeDesc;
+                      var AOffset: Integer);
     { Build FFrame for a function: assign offsets to params, Result, locals. }
     procedure BuildFrame(ADecl: TMethodDecl);
     { Tear down the current frame. }
@@ -99,8 +100,11 @@ type
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     { Lower a for loop. }
     procedure EmitForStmt(AFor: TForStmt);
-    { Emit a direct call to a user procedure/function; result (if any) in %eax. }
-    procedure EmitCall(const AFuncSym: string; AArgs: TObjectList);
+    { Emit a direct call to a user procedure/function; result (if any) in %eax.
+      ADecl is the callee's declaration (needed for var/out param handling);
+      nil for type-cast calls. }
+    procedure EmitCall(const AFuncSym: string; ADecl: TMethodDecl;
+                       AArgs: TObjectList);
     { Evaluate an integer expression; result left in %rax (64-bit-extended). }
     procedure EmitExprToEax(AExpr: TASTExpr);
     { The integer-family type to use when loading the value of AExpr: the
@@ -269,6 +273,7 @@ function TX86_64Backend.IsLocal(const AName: string): Boolean;
 begin
   Result := (FFrame <> nil) and FFrame.ContainsKey(AName);
 end;
+
 
 function TX86_64Backend.VarOperand(const AName: string): string;
 var
@@ -458,9 +463,13 @@ begin
     if TIdentExpr(AExpr).IsConstant then
       Self.Emit(Format(#9'movabsq $%s, %%rax',
         [IntToStr(TIdentExpr(AExpr).ConstValue)]))
+    else if TIdentExpr(AExpr).IsVarParam then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand(TIdentExpr(AExpr).Name)]));
+      Self.EmitLoadVar('(%rcx)', Self.IntExprType(AExpr));
+    end
     else
-      { A function-local frame slot uses the slot's recorded type; a program
-        global / other ident uses the expression's resolved type. }
       Self.EmitLoadVar(Self.VarOperand(TIdentExpr(AExpr).Name),
         Self.IntExprType(AExpr));
     Exit;
@@ -481,7 +490,7 @@ begin
       Self.EmitNarrowToType(FC.ResolvedType);
       Exit;
     end;
-    Self.EmitCall(FuncSymbolOf(FC), FC.Args);
+    Self.EmitCall(FuncSymbolOf(FC), TMethodDecl(FC.ResolvedDecl), FC.Args);
     { Normalise the (32-bit-ABI) return value to the callee's return width so
       it is correctly extended in %rax before entering further arithmetic. }
     if FC.ResolvedType <> nil then
@@ -702,11 +711,13 @@ begin
   begin
     Asgn := TAssignment(AStmt);
     Self.EmitExprToEax(Asgn.Expr);     { value -> %rax (64-bit-extended) }
-    { A function-local frame slot (including Result), or a program global.
-      Blaise returns values via Result, so no function-name-as-result case.
-      The store width comes from the LHS type so a narrow slot is written at
-      its own width. }
-    if Self.IsLocal(Asgn.Name) then
+    if Asgn.IsVarParam then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand(Asgn.Name)]));
+      Self.EmitStoreVar('(%rcx)', Asgn.ResolvedLhsType);
+    end
+    else if Self.IsLocal(Asgn.Name) then
       Self.EmitStoreVar(Self.VarOperand(Asgn.Name), Self.LocalType(Asgn.Name))
     else
     begin
@@ -739,7 +750,8 @@ begin
       raise ENativeCodeGenError.Create(
         'native backend: indirect (procedural-type) calls not yet supported');
     { User procedure call (result, if any, ignored in statement position). }
-    Self.EmitCall(FuncSymbolFromDecl(TMethodDecl(PC.ResolvedDecl)), PC.Args);
+    Self.EmitCall(FuncSymbolFromDecl(TMethodDecl(PC.ResolvedDecl)),
+      TMethodDecl(PC.ResolvedDecl), PC.Args);
     Exit;
   end;
 
@@ -817,27 +829,45 @@ end;
   registers, so a complex argument expression cannot clobber an already-set
   arg register.  The pushes balance the pops, keeping %rsp 16-aligned at the
   call.  Result (if any) is left in %eax. }
-procedure TX86_64Backend.EmitCall(const AFuncSym: string; AArgs: TObjectList);
+procedure TX86_64Backend.EmitCall(const AFuncSym: string; ADecl: TMethodDecl;
+                                  AArgs: TObjectList);
 var
-  I: Integer;
+  I:     Integer;
+  Arg:   TASTExpr;
+  IsVar: Boolean;
 begin
   if AArgs.Count > 6 then
     raise ENativeCodeGenError.Create(
       'native backend: more than 6 arguments not yet supported');
-  { Evaluate left-to-right, pushing each result. }
+  { Evaluate left-to-right, pushing each result.  For var/out params push the
+    address of the actual argument instead of its value. }
   for I := 0 to AArgs.Count - 1 do
   begin
-    Self.EmitExprToEax(TASTExpr(AArgs.Items[I]));
-    Self.Emit(#9'pushq %rax');
+    Arg := TASTExpr(AArgs.Items[I]);
+    IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
+             TMethodParam(ADecl.Params.Items[I]).IsVarParam;
+    if IsVar then
+    begin
+      if (Arg is TIdentExpr) and TIdentExpr(Arg).IsVarParam then
+        Self.Emit(Format(#9'movq %s, %%rax',
+          [Self.VarOperand(TIdentExpr(Arg).Name)]))
+      else if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
+        Self.Emit(Format(#9'leaq %s, %%rax',
+          [Self.VarOperand(TIdentExpr(Arg).Name)]))
+      else if Arg is TIdentExpr then
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [TIdentExpr(Arg).Name]));
+      Self.Emit(#9'pushq %rax');
+    end
+    else
+    begin
+      Self.EmitExprToEax(Arg);
+      Self.Emit(#9'pushq %rax');
+    end;
   end;
-  { Pop into argument registers in reverse so register i gets argument i.
-    Each value was pushed 64-bit-extended, so moving the full register is
-    correct for every width (the callee re-narrows on spill); pass the 64-bit
-    register view uniformly. }
+  { Pop into argument registers in reverse so register i gets argument i. }
   for I := AArgs.Count - 1 downto 0 do
-  begin
     Self.Emit(#9'popq ' + SysVArgRegs64[I]);
-  end;
   Self.Emit(#9'callq ' + AFuncSym);
 end;
 
@@ -885,9 +915,6 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
-    if P.IsVarParam then
-      raise ENativeCodeGenError.Create(
-        'native backend: var/out parameters not yet supported');
     if not IsIntFamily(P.ResolvedType) then
       raise ENativeCodeGenError.Create(
         'native backend: only integer-family parameters supported (param ' +
@@ -909,11 +936,16 @@ begin
   Self.Emit(#9'movq %rsp, %rbp');
   if FFrameSize > 0 then
     Self.Emit(Format(#9'subq $%d, %%rsp', [FFrameSize]));
-  { Spill incoming argument registers into the param slots at their width. }
+  { Spill incoming argument registers into the param slots.  Var/out params
+    arrive as pointers (always 64-bit); value params spill at their width. }
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
-    Self.EmitSpillArg(I, Self.VarOperand(P.ParamName), P.ResolvedType);
+    if P.IsVarParam then
+      Self.Emit(Format(#9'movq %s, %s',
+        [SysVArgRegs64[I], Self.VarOperand(P.ParamName)]))
+    else
+      Self.EmitSpillArg(I, Self.VarOperand(P.ParamName), P.ResolvedType);
   end;
   { Initialise Result to 0 (defined default), like the QBE backend.  Zero in
     %rax then store at the slot's width. }
