@@ -40,6 +40,7 @@ type
     procedure TestRun_Is_WrongClass_False;
     procedure TestRun_As_DowncastCallsMethod;
     procedure TestRun_Inherited_CallsParentMethod;
+    procedure TestRun_Inherited_VarParam_PassesByReference;
     procedure TestRun_Virtual_OverrideDispatch;
     procedure TestRun_MultiLevel_Inheritance_Chain;
     procedure TestRun_Interface_Dispatch_CallsImpl;
@@ -337,6 +338,38 @@ const
       C := TChild.Create;
       WriteLn(C.Val);
       C.Free
+    end.
+    ''';
+
+  { Regression: `inherited Foo(X)` where the parent method has a var/out param.
+    The inherited-call arg loop had no var-param branch, so it passed the
+    loaded VALUE (a `w`) where the callee expects an address (`l`) — the parent
+    then dereferenced a small integer as a pointer and the program crashed. }
+  SrcInheritedVarParam = '''
+    program P;
+    type
+      TBase = class
+        procedure Bump(var X: Integer); virtual;
+      end;
+      TDer = class(TBase)
+        procedure Bump(var X: Integer); override;
+      end;
+    procedure TBase.Bump(var X: Integer);
+    begin X := X + 10 end;
+    procedure TDer.Bump(var X: Integer);
+    begin
+      inherited Bump(X);
+      X := X + 1
+    end;
+    var
+      D: TDer;
+      N: Integer;
+    begin
+      D := TDer.Create;
+      N := 5;
+      D.Bump(N);
+      WriteLn(N);
+      D.Free
     end.
     ''';
 
@@ -999,6 +1032,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcInherited, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15', '15' + LE, Output);
+end;
+
+procedure TE2EClasses2Tests.TestRun_Inherited_VarParam_PassesByReference;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcInheritedVarParam, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('5+10+1', '16' + LE, Output);
 end;
 
 procedure TE2EClasses2Tests.TestRun_Virtual_OverrideDispatch;

@@ -5115,6 +5115,13 @@ begin
   for I := 0 to ACall.Args.Count - 1 do
   begin
     Par     := TMethodParam(MDecl.Params.Items[I]);
+    if Par.IsVarParam then
+    begin
+      { var/out param: pass the argument's address, not its value. }
+      ArgLine := ArgLine + Format(', l %s',
+        [EmitLValueAddr(TASTExpr(ACall.Args.Items[I]))]);
+      Continue;
+    end;
     if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
     begin
       ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
