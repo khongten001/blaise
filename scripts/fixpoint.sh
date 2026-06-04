@@ -36,10 +36,30 @@ if [ ! -x "$STAGE1_BIN" ]; then
 fi
 echo "stage-1: $STAGE1_BIN"
 
-echo "[1/5] rebuild + install runtime"
-( cd runtime && make > /tmp/fp_rtl.log 2>&1 && make install >> /tmp/fp_rtl.log 2>&1 ) || {
+# The runtime Makefile defaults BLAISE to ../compiler/target/blaise, which may
+# not exist yet — e.g. straight after scripts/rolling-bootstrap.sh, which
+# installs only to releases/ and leaves the live compiler/target/ empty.
+# Drive the runtime build with the stage-1 binary explicitly so fixpoint never
+# depends on a pre-existing compiler/target/blaise. make runs inside runtime/,
+# so BLAISE must be an absolute path.
+ABS_STAGE1=$(readlink -f "$STAGE1_BIN")
+
+echo "[1/5] rebuild + install runtime (BLAISE=$ABS_STAGE1)"
+( cd runtime && make BLAISE="$ABS_STAGE1" > /tmp/fp_rtl.log 2>&1 \
+             && make BLAISE="$ABS_STAGE1" install >> /tmp/fp_rtl.log 2>&1 ) || {
   echo "RUNTIME_FAIL"; tail -5 /tmp/fp_rtl.log; exit 11;
 }
+
+# Resolve the RTL archive for the link steps below.  `make install` copies it
+# to compiler/target/, but fall back to the runtime build dir so the link
+# never fails on a tree where compiler/target/ was not populated.
+if [ -f compiler/target/blaise_rtl.a ]; then
+  RTL_ARCHIVE=compiler/target/blaise_rtl.a
+elif [ -f runtime/target/blaise_rtl.a ]; then
+  RTL_ARCHIVE=runtime/target/blaise_rtl.a
+else
+  echo "RUNTIME_FAIL: blaise_rtl.a not found after runtime build"; exit 11
+fi
 
 echo "[2/5] stage-1 -> stage-2 IR"
 "$STAGE1_BIN" --source compiler/src/main/pascal/Blaise.pas \
@@ -57,7 +77,7 @@ echo "[3/5] assemble + link stage-2 binary"
 vendor/qbe/qbe -o /tmp/fp_stage2.s /tmp/fp_stage2.ssa 2>/tmp/fp_qbe.err || {
   echo "QBE_FAIL"; cat /tmp/fp_qbe.err; exit 2;
 }
-gcc -o /tmp/fp_blaise2 /tmp/fp_stage2.s compiler/target/blaise_rtl.a 2>/tmp/fp_gcc.err || {
+gcc -o /tmp/fp_blaise2 /tmp/fp_stage2.s "$RTL_ARCHIVE" 2>/tmp/fp_gcc.err || {
   echo "GCC_FAIL"; cat /tmp/fp_gcc.err; exit 3;
 }
 
@@ -93,7 +113,7 @@ echo "[+1] assemble + link stage-3 binary"
 vendor/qbe/qbe -o /tmp/fp_stage3.s /tmp/fp_stage3.ssa 2>/tmp/fp_qbe3.err || {
   echo "QBE3_FAIL"; cat /tmp/fp_qbe3.err; exit 2;
 }
-gcc -o /tmp/fp_blaise3 /tmp/fp_stage3.s compiler/target/blaise_rtl.a 2>/tmp/fp_gcc3.err || {
+gcc -o /tmp/fp_blaise3 /tmp/fp_stage3.s "$RTL_ARCHIVE" 2>/tmp/fp_gcc3.err || {
   echo "GCC3_FAIL"; cat /tmp/fp_gcc3.err; exit 3;
 }
 
