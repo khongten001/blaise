@@ -28,12 +28,42 @@ uses
   SysUtils, Classes, Contnrs, uStrCompat;
 
 const
-  AST_FILE         = '../../compiler/src/main/pascal/uAST.pas';
-  IO_FILE          = '../../compiler/src/main/pascal/uUnitInterfaceIO.pas';
-  COMPILER_ID_FILE = '../../compiler/src/main/pascal/uCompilerId.pas';
-  ROOT_PROJECT     = '../../project.xml';
-  STATUS_FILE      = 'bif-coverage.status';
+  AST_REL          = 'compiler/src/main/pascal/uAST.pas';
+  IO_REL           = 'compiler/src/main/pascal/uUnitInterfaceIO.pas';
+  COMPILER_ID_REL  = 'compiler/src/main/pascal/uCompilerId.pas';
+  ROOT_REL         = 'project.xml';
+  STATUS_REL       = 'tools/bif-coverage/bif-coverage.status';
   COMPILER_ID_PREFIX = 'blaise-';
+
+var
+  GRoot:            string;
+  GAstFile:         string;
+  GIoFile:          string;
+  GCompilerIdFile:  string;
+  GRootProject:     string;
+  GStatusFile:      string;
+
+(* Walk up from CWD looking for a directory that contains both
+   `compiler/src/main/pascal/uAST.pas` and `project.xml`. Lets the
+   binary be invoked from any subdir of the repo - tests run from
+   compiler/, dev runs from tools/bif-coverage/, etc. *)
+function FindProjectRoot: string;
+var
+  Dir, Parent: string;
+  I: Integer;
+begin
+  Dir := GetCurrentDir;
+  for I := 0 to 6 do
+  begin
+    if FileExists(IncludeTrailingPathDelimiter(Dir) + AST_REL) and
+       FileExists(IncludeTrailingPathDelimiter(Dir) + ROOT_REL) then
+      Exit(IncludeTrailingPathDelimiter(Dir));
+    Parent := ExtractFileDir(Dir);
+    if (Parent = '') or (Parent = Dir) then Break;
+    Dir := Parent;
+  end;
+  Result := '';
+end;
 
 type
   TASTClass = class
@@ -346,7 +376,7 @@ var
   Cls: TASTClass;
   FieldNames: TStringList;
 begin
-  Lines := LoadLines(AST_FILE);
+  Lines := LoadLines(GAstFile);
   try
     InBlockComment := False;
     InClassBody := False;
@@ -589,7 +619,7 @@ var
   InBlockComment: Boolean;
   Body, Line: string;
 begin
-  Raw := LoadLines(IO_FILE);
+  Raw := LoadLines(GIoFile);
   Cleaned := TStringList.Create;
   try
     InBlockComment := False;
@@ -635,10 +665,10 @@ var
   Line: string;
 begin
   Result := '';
-  if not FileExists(ROOT_PROJECT) then Exit;
+  if not FileExists(GRootProject) then Exit;
   Lines := TStringList.Create;
   try
-    Lines.LoadFromFile(ROOT_PROJECT);
+    Lines.LoadFromFile(GRootProject);
     for I := 0 to Lines.Count - 1 do
     begin
       Line := Lines.Strings[I];
@@ -665,10 +695,10 @@ var
   Line: string;
 begin
   Result := '';
-  if not FileExists(COMPILER_ID_FILE) then Exit;
+  if not FileExists(GCompilerIdFile) then Exit;
   Lines := TStringList.Create;
   try
-    Lines.LoadFromFile(COMPILER_ID_FILE);
+    Lines.LoadFromFile(GCompilerIdFile);
     for I := 0 to Lines.Count - 1 do
     begin
       Line := Lines.Strings[I];
@@ -692,7 +722,7 @@ begin
   Inc(GErrors);
 end;
 
-(* Return the 1-based line number in IO_FILE of the first reference of
+(* Return the 1-based line number in GIoFile of the first reference of
    the form `<ClsName>(...).<FieldName>` (or any line carrying both
    `ClsName` and `.FieldName`). Returns 0 if not found. Used to point
    `[drift]` reports at the stale encoder/decoder line that needs
@@ -710,11 +740,11 @@ var
   Line, Needle: string;
 begin
   Result := 0;
-  if not FileExists(IO_FILE) then Exit;
+  if not FileExists(GIoFile) then Exit;
   Needle := '.' + AFieldName;
   Lines := TStringList.Create;
   try
-    Lines.LoadFromFile(IO_FILE);
+    Lines.LoadFromFile(GIoFile);
     for I := AStartLine to Lines.Count - 1 do
     begin
       Line := Lines.Strings[I];
@@ -746,10 +776,10 @@ begin
     Exit;
   end;
   Result := 0;
-  if not FileExists(IO_FILE) then Exit;
+  if not FileExists(GIoFile) then Exit;
   Lines := TStringList.Create;
   try
-    Lines.LoadFromFile(IO_FILE);
+    Lines.LoadFromFile(GIoFile);
     for I := 0 to Lines.Count - 1 do
     begin
       Line := Lines.Strings[I];
@@ -774,12 +804,12 @@ begin
   CompId := ReadCompilerId;
   if ProjVer = '' then
   begin
-    Report('  [version] could not read <version> from ' + ROOT_PROJECT);
+    Report('  [version] could not read <version> from ' + GRootProject);
     Exit;
   end;
   if CompId = '' then
   begin
-    Report('  [version] could not read COMPILER_ID from ' + COMPILER_ID_FILE);
+    Report('  [version] could not read COMPILER_ID from ' + GCompilerIdFile);
     Exit;
   end;
   if Pos(COMPILER_ID_PREFIX, CompId) <> 0 then
@@ -808,7 +838,7 @@ end;
 (* Bootstrap mode: walk every AST class that descends from TASTStmt or
    TASTExpr, dump each public field as either `serialise` (if found in
    the corresponding encoder block) or `safe` (if not). Outpput goes to
-   STATUS_FILE for hand-curation thereafter. *)
+   GStatusFile for hand-curation thereafter. *)
 procedure WriteStatus;
 var
   Outp: TStringList;
@@ -843,14 +873,14 @@ begin
       end;
       Outp.Add('');
     end;
-    Outp.SaveToFile(STATUS_FILE);
-    WriteLn('bif-coverage: wrote ' + STATUS_FILE);
+    Outp.SaveToFile(GStatusFile);
+    WriteLn('bif-coverage: wrote ' + GStatusFile);
   finally
     Outp.Free;
   end;
 end;
 
-(* Check mode: read STATUS_FILE as source of truth and verify against
+(* Check mode: read GStatusFile as source of truth and verify against
    live AST + encoder/decoder.
    - AST has a field not in status                       → "new, needs marking"
    - status names a field/class not in AST               → "stale entry"
@@ -866,7 +896,7 @@ var
   KnownFields: TStringList;
   EncoderHasField, DecoderHasField: Boolean;
 begin
-  if not FileExists(STATUS_FILE) then
+  if not FileExists(GStatusFile) then
   begin
     Report('  bif-coverage.status not found — run --reset first');
     Exit;
@@ -874,7 +904,7 @@ begin
   Status := TStringList.Create;
   KnownFields := TStringList.Create;
   try
-    Status.LoadFromFile(STATUS_FILE);
+    Status.LoadFromFile(GStatusFile);
     for I := 0 to Status.Count - 1 do
     begin
       Line := Trim(Status.Strings[I]);
@@ -992,6 +1022,18 @@ end;
 begin
   GErrors := 0;
   GDecoderStart := -1;
+  GRoot := FindProjectRoot;
+  if GRoot = '' then
+  begin
+    WriteLn('bif-coverage: could not locate project root from CWD ' +
+            GetCurrentDir);
+    Halt(2);
+  end;
+  GAstFile        := GRoot + AST_REL;
+  GIoFile         := GRoot + IO_REL;
+  GCompilerIdFile := GRoot + COMPILER_ID_REL;
+  GRootProject    := GRoot + ROOT_REL;
+  GStatusFile     := GRoot + STATUS_REL;
   GASTNames := TStringList.Create;
   GASTObjs := TObjectList.Create(True);
   GEncodeNames := TStringList.Create;
@@ -1000,14 +1042,14 @@ begin
   GDecodeObjs := TObjectList.Create(True);
   GEncodeNames.Duplicates := dupAccept;
   GDecodeNames.Duplicates := dupAccept;
-  if not FileExists(AST_FILE) then
+  if not FileExists(GAstFile) then
   begin
-    WriteLn('bif-coverage: cannot open ' + AST_FILE);
+    WriteLn('bif-coverage: cannot open ' + GAstFile);
     Halt(2);
   end;
-  if not FileExists(IO_FILE) then
+  if not FileExists(GIoFile) then
   begin
-    WriteLn('bif-coverage: cannot open ' + IO_FILE);
+    WriteLn('bif-coverage: cannot open ' + GIoFile);
     Halt(2);
   end;
   ScanAST;
