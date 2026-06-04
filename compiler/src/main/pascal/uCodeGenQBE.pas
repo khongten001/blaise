@@ -257,6 +257,11 @@ type
     function  EmitExpr(AExpr: TASTExpr): string;
     procedure EmitInterfaceExprPair(AExpr: TASTExpr;
       out AObjTemp, AItabTemp: string);
+    { Emit AExpr as an interface argument and return the ', l %obj, l %itab'
+      call-argument fragment.  Wraps EmitInterfaceExprPair so the method-call
+      arg loops can pass an interface param as the two-slot fat pointer the
+      callee now expects, without each site declaring extra temps. }
+    function  InterfaceArgFragment(AExpr: TASTExpr): string;
     function  EmitIsExpr(AExpr: TIsExpr): string;
     function  EmitAsExpr(AExpr: TAsExpr): string;
     function  EmitSupportsExpr(AExpr: TSupportsExpr): string;
@@ -4353,6 +4358,8 @@ begin
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
           [EmitLValueAddr(TASTExpr(FCallExpr.Args.Items[I]))])
+      else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]))
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(FCallExpr.Args.Items[I]));
@@ -4393,6 +4400,8 @@ begin
       if Par.IsVarParam then
         ArgLine := ArgLine + Format(', l %s',
           [EmitLValueAddr(TASTExpr(MCallExpr.Args.Items[I]))])
+      else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]))
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
@@ -4800,6 +4809,11 @@ begin
         ArgLine := ArgLine + Format(', l %s',
           [EmitLValueAddr(TASTExpr(ACall.Args.Items[I]))]);
       end
+      else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+      begin
+        ArgTemps.Add('');
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+      end
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
@@ -4965,6 +4979,11 @@ begin
         ArgLine := ArgLine + Format(', l %s',
           [EmitLValueAddr(TASTExpr(ACall.Args.Items[I]))]);
       end
+      else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+      begin
+        ArgTemps.Add('');
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+      end
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
@@ -5096,6 +5115,11 @@ begin
   for I := 0 to ACall.Args.Count - 1 do
   begin
     Par     := TMethodParam(MDecl.Params.Items[I]);
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+    begin
+      ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+      Continue;
+    end;
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
     QType   := QbeTypeOf(Par.ResolvedType);
     ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
@@ -5195,6 +5219,21 @@ begin
           EmitLine(Format('  stores %%_par_%s, %%_var_%s',
             [Par.ParamName, Par.ParamName]));
         end;
+      tyInterface:
+        begin
+          { Two-slot fat pointer (obj + itab) — matches the local-var layout
+            and the standalone-routine param path, so interface dispatch and
+            value-param ARC both find %_var_X_obj / %_var_X_itab.  Without this
+            a method with a by-value interface param fell into the generic
+            single-slot `else` below: the signature passed a single `w` and the
+            `storel %_par_X` here was invalid QBE. }
+          EmitLine(Format('  %%_var_%s_obj =l alloc8 1', [Par.ParamName]));
+          EmitLine(Format('  storel %%_par_%s_obj, %%_var_%s_obj',
+            [Par.ParamName, Par.ParamName]));
+          EmitLine(Format('  %%_var_%s_itab =l alloc8 1', [Par.ParamName]));
+          EmitLine(Format('  storel %%_par_%s_itab, %%_var_%s_itab',
+            [Par.ParamName, Par.ParamName]));
+        end;
     else
       EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
       EmitLine(Format('  storel %%_par_%s, %%_var_%s',
@@ -5237,6 +5276,14 @@ begin
         [Par.ParamName, Par.ParamName])
     else if Par.IsVarParam then
       Sig := Sig + Format(', l %%_par_%s', [Par.ParamName])
+    else if (Par.ResolvedType <> nil) and
+            (Par.ResolvedType.Kind = tyInterface) then
+      { Interfaces are two-slot fat pointers (obj + itab); caller passes both,
+        callee allocs two local slots in EmitParamAllocs.  Mirrors the
+        standalone-routine path so method dispatch and value-param ARC both
+        find %_var_<p>_obj / %_var_<p>_itab. }
+      Sig := Sig + Format(', l %%_par_%s_obj, l %%_par_%s_itab',
+        [Par.ParamName, Par.ParamName])
     else
       Sig := Sig + Format(', %s %%_par_%s',
         [QbeParamTypeOf(Par.ResolvedType), Par.ParamName]);
@@ -8393,6 +8440,11 @@ begin
         ArgLine := ArgLine + Format(', l %s',
           [EmitLValueAddr(TASTExpr(MCallExpr.Args.Items[I]))]);
       end
+      else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+      begin
+        ArgTemps.Add('');
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]));
+      end
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
@@ -9811,6 +9863,14 @@ begin
     raise ECodeGenError.Create(
       'Unsupported interface expression form for argument passing: ' +
       AExpr.ClassName);
+end;
+
+function TCodeGenQBE.InterfaceArgFragment(AExpr: TASTExpr): string;
+var
+  ObjTemp, ItabTemp: string;
+begin
+  EmitInterfaceExprPair(AExpr, ObjTemp, ItabTemp);
+  Result := Format(', l %s, l %s', [ObjTemp, ItabTemp]);
 end;
 
 function TCodeGenQBE.EmitIsExpr(AExpr: TIsExpr): string;

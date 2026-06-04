@@ -93,6 +93,8 @@ type
     { ------------------------------------------------------------------ }
     procedure TestCodegen_InterfaceArg_AsExpr_PassesBothSlots;
     procedure TestCodegen_InterfaceArg_Identifier_PassesBothSlots;
+    procedure TestCodegen_MethodInterfaceParam_FatPointerSignature;
+    procedure TestCodegen_MethodInterfaceArg_PassesBothSlots;
   end;
 
 implementation
@@ -326,6 +328,42 @@ const
           T := TFoo.Create;
           F := T as IFoo;
           UseIntf(F)
+        end.
+        ''';
+
+  { A class METHOD taking a by-value interface param.  The method-codegen path
+    must split the param into a two-slot fat pointer (obj + itab), exactly like
+    the standalone-routine path — otherwise it emits a single `w` slot and
+    QBE rejects the `storel %_par_X` in EmitParamAllocs. }
+  SrcMethodInterfaceParam =
+    '''
+        program P;
+        type
+          IFoo = interface
+            procedure DoIt;
+          end;
+          TFoo = class(TObject, IFoo)
+            procedure DoIt; virtual;
+          end;
+          TUser = class
+            procedure UseIntf(X: IFoo);
+          end;
+        procedure TFoo.DoIt;
+        begin
+        end;
+        procedure TUser.UseIntf(X: IFoo);
+        begin
+          X.DoIt;
+        end;
+        var
+          F: IFoo;
+          T: TFoo;
+          U: TUser;
+        begin
+          T := TFoo.Create;
+          F := T as IFoo;
+          U := TUser.Create;
+          U.UseIntf(F)
         end.
         ''';
 
@@ -1012,6 +1050,31 @@ begin
     Pos('loadl $F_itab', IR) > 0);
   AssertTrue('calls UseIntf',
     Pos('call $UseIntf', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_MethodInterfaceParam_FatPointerSignature;
+var IR: string;
+begin
+  IR := GenIR(SrcMethodInterfaceParam);
+  { The method must receive the interface param as a two-slot fat pointer and
+    alloc both local halves — not a single `w %_par_X` slot. }
+  AssertTrue('method signature splits param into obj + itab',
+    Pos('l %_par_X_obj, l %_par_X_itab', IR) > 0);
+  AssertTrue('allocs local obj slot for the param',
+    Pos('%_var_X_obj =l alloc8', IR) > 0);
+  AssertTrue('allocs local itab slot for the param',
+    Pos('%_var_X_itab =l alloc8', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_MethodInterfaceArg_PassesBothSlots;
+var IR: string;
+begin
+  IR := GenIR(SrcMethodInterfaceParam);
+  { The method call site must pass both halves of the caller's fat pointer. }
+  AssertTrue('passes _obj slot at the method call site',
+    Pos('loadl $F_obj', IR) > 0);
+  AssertTrue('passes _itab slot at the method call site',
+    Pos('loadl $F_itab', IR) > 0);
 end;
 
 initialization

@@ -46,6 +46,7 @@ type
     procedure TestRun_Interface_ARC_NoLeak;
     procedure TestRun_Interface_GlobalNil_LinksAndRuns;
     procedure TestRun_Interface_Is_As_Roundtrip;
+    procedure TestRun_Interface_MethodParam_ByValue_Dispatches;
     procedure TestRun_Supports_TwoArg_BooleanResult;
     procedure TestRun_Supports_ThreeArg_AssignsAndCalls;
     procedure TestRun_ConstructorOverload_PicksCorrectArity;
@@ -453,6 +454,39 @@ const
         P.Print
       end;
       Obj.Free
+    end.
+    ''';
+
+  { Regression: a class METHOD taking a by-value interface parameter.  The
+    method-codegen path emitted the param as a single `w` slot instead of the
+    two-slot fat pointer the standalone-routine path uses, so QBE rejected the
+    `storel %_par_X` ("invalid type for first operand") and the program failed
+    to compile.  The method must receive obj+itab and dispatch through them. }
+  SrcIntfMethodParam = '''
+    program P;
+    type
+      IGreeter = interface
+        function Greet: Integer;
+      end;
+      THello = class(TObject, IGreeter)
+        function Greet: Integer;
+      end;
+      TUser = class
+        function Use(G: IGreeter): Integer;
+      end;
+    function THello.Greet: Integer;
+    begin Result := 42 end;
+    function TUser.Use(G: IGreeter): Integer;
+    begin Result := G.Greet + 1 end;
+    var
+      H: THello;
+      I: IGreeter;
+      U: TUser;
+    begin
+      H := THello.Create;
+      I := H;
+      U := TUser.Create;
+      WriteLn(U.Use(I))
     end.
     ''';
 
@@ -1019,6 +1053,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcIntfIsAs, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('printing', 'printing' + LE, Output);
+end;
+
+procedure TE2EClasses2Tests.TestRun_Interface_MethodParam_ByValue_Dispatches;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcIntfMethodParam, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('greet+1', '43' + LE, Output);
 end;
 
 procedure TE2EClasses2Tests.TestRun_Supports_TwoArg_BooleanResult;
