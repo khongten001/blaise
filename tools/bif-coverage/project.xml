@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <name>blaise-bif-coverage</name>
+  <version>0.10.0-SNAPSHOT</version>
+
+  <build>
+    <packaging>application</packaging>
+    <mainSource>BifCoverage.pas</mainSource>
+    <executableName>bif-coverage</executableName>
+
+    <manualUnitPaths>true</manualUnitPaths>
+    <unitPaths>
+      <path>src/main/pascal</path>
+      <path>../../compiler/src/main/pascal</path>
+    </unitPaths>
+  </build>
+</project>

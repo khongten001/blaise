@@ -15,6 +15,7 @@
     <module>compiler</module>
     <module>tools/migration-analyser</module>
     <module>tools/kanban</module>
+    <module activeByDefault="false">tools/bif-coverage</module>
   </modules>
 
   <profiles>

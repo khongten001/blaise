@@ -1,0 +1,239 @@
+# bif-coverage status - one line per public AST field.
+# Format: <TClass>.<Field>  <serialise|safe>
+#   serialise  must appear in EncodeStmt/EncodeExpr AND ReadStmt/ReadExpr
+#   safe       intentionally not serialised (set by semantic etc.)
+# Regenerate from scratch with: bif-coverage --reset
+
+# TIntLiteral (uAST.pas:36)
+TIntLiteral.Value  serialise
+TIntLiteral.IsUInt64  safe
+
+# TFloatLiteral (uAST.pas:44)
+TFloatLiteral.Value  serialise
+
+# TStringLiteral (uAST.pas:49)
+TStringLiteral.Value  serialise
+TStringLiteral.IsCharCoerce  safe
+TStringLiteral.CharOrdValue  safe
+
+# TStringSubscriptExpr (uAST.pas:56)
+TStringSubscriptExpr.StrExpr  serialise
+TStringSubscriptExpr.IndexExpr  serialise
+
+# TArrayLiteralExpr (uAST.pas:63)
+TArrayLiteralExpr.Elements  serialise
+
+# TNilLiteral (uAST.pas:70)
+
+# TIdentExpr (uAST.pas:72)
+TIdentExpr.Name  serialise
+TIdentExpr.IsVarParam  safe
+TIdentExpr.IsConstant  safe
+TIdentExpr.ConstValue  safe
+TIdentExpr.ConstString  safe
+TIdentExpr.IsNoArgFuncCall  safe
+TIdentExpr.IsGlobal  safe
+TIdentExpr.IsImplicitSelf  safe
+TIdentExpr.IsImplicitSelfMethod  safe
+TIdentExpr.IsMetaclassRef  safe
+TIdentExpr.ConstArraySymbol  safe
+
+# TFieldAccessExpr (uAST.pas:94)
+TFieldAccessExpr.RecordName  serialise
+TFieldAccessExpr.FieldName  serialise
+TFieldAccessExpr.Base  serialise
+TFieldAccessExpr.FieldInfo  safe
+TFieldAccessExpr.IsConstant  safe
+TFieldAccessExpr.ConstValue  safe
+TFieldAccessExpr.ConstString  safe
+TFieldAccessExpr.ConstArraySymbol  safe
+TFieldAccessExpr.IsConstructorCall  safe
+TFieldAccessExpr.IsClassAccess  safe
+TFieldAccessExpr.PropRead  safe
+TFieldAccessExpr.PropOwnerType  safe
+TFieldAccessExpr.IsImplicitSelf  safe
+TFieldAccessExpr.IsMethodCall  safe
+TFieldAccessExpr.IsInterfaceCall  safe
+TFieldAccessExpr.IsGlobal  safe
+TFieldAccessExpr.IsClassNameAccess  safe
+TFieldAccessExpr.IsClassTypeAccess  safe
+TFieldAccessExpr.IsBuiltinToString  safe
+TFieldAccessExpr.IsVarParam  safe
+TFieldAccessExpr.PropIndexExpr  serialise
+TFieldAccessExpr.IsCharAccess  safe
+
+# TIsExpr (uAST.pas:125)
+TIsExpr.Obj  serialise
+TIsExpr.TypeName  serialise
+
+# TAsExpr (uAST.pas:133)
+TAsExpr.Obj  serialise
+TAsExpr.TypeName  serialise
+
+# TSupportsExpr (uAST.pas:142)
+TSupportsExpr.Obj  serialise
+TSupportsExpr.IntfTypeName  serialise
+TSupportsExpr.OutVarName  serialise
+TSupportsExpr.OutVarIsGlobal  safe
+
+# TBinaryExpr (uAST.pas:158)
+TBinaryExpr.Op  serialise
+TBinaryExpr.Left  serialise
+TBinaryExpr.Right  serialise
+
+# TNotExpr (uAST.pas:166)
+TNotExpr.Expr  serialise
+
+# TAssignment (uAST.pas:178)
+TAssignment.Name  serialise
+TAssignment.Expr  serialise
+TAssignment.IsVarParam  safe
+TAssignment.IsGlobal  safe
+TAssignment.IsWeakLhs  safe
+TAssignment.ImplicitSelfField  safe
+
+# TIfStmt (uAST.pas:193)
+TIfStmt.Condition  serialise
+TIfStmt.ThenStmt  serialise
+TIfStmt.ElseStmt  serialise
+
+# TCompoundStmt (uAST.pas:201)
+TCompoundStmt.Stmts  serialise
+
+# TWhileStmt (uAST.pas:208)
+TWhileStmt.Condition  serialise
+TWhileStmt.Body  serialise
+
+# TRepeatStmt (uAST.pas:215)
+TRepeatStmt.Body  serialise
+TRepeatStmt.Condition  serialise
+
+# TForStmt (uAST.pas:222)
+TForStmt.VarName  serialise
+TForStmt.IsGlobal  safe
+TForStmt.StartExpr  serialise
+TForStmt.EndExpr  serialise
+TForStmt.IsDownTo  serialise
+TForStmt.Body  serialise
+
+# TForInStmt (uAST.pas:233)
+TForInStmt.VarName  serialise
+TForInStmt.VarIsGlobal  safe
+TForInStmt.CollExpr  serialise
+TForInStmt.Body  serialise
+TForInStmt.IsArrayIter  safe
+TForInStmt.EnumVarName  safe
+TForInStmt.ResolvedEnumTypeName  safe
+TForInStmt.IdxVarName  safe
+TForInStmt.ArrayLow  safe
+TForInStmt.ArrayHigh  safe
+TForInStmt.IsDynArrayIter  safe
+TForInStmt.IsStringIter  safe
+TForInStmt.IsSetIter  safe
+TForInStmt.SetBitCount  safe
+TForInStmt.SetMaskVarName  safe
+
+# TTryFinallyStmt (uAST.pas:263)
+TTryFinallyStmt.TryBody  serialise
+TTryFinallyStmt.FinallyBody  serialise
+
+# TTryExceptStmt (uAST.pas:280)
+TTryExceptStmt.TryBody  serialise
+TTryExceptStmt.Handlers  serialise
+TTryExceptStmt.ElseBody  serialise
+TTryExceptStmt.ExceptBody  serialise
+
+# TRaiseStmt (uAST.pas:293)
+TRaiseStmt.Expr  serialise
+
+# TExitStmt (uAST.pas:304)
+TExitStmt.Value  safe
+TExitStmt.ResultAssign  safe
+
+# TBreakStmt (uAST.pas:312)
+
+# TContinueStmt (uAST.pas:315)
+
+# TCaseStmt (uAST.pas:326)
+TCaseStmt.Selector  serialise
+TCaseStmt.Branches  serialise
+TCaseStmt.ElseStmt  serialise
+TCaseStmt.IsStringCase  safe
+
+# TFieldAssignment (uAST.pas:337)
+TFieldAssignment.RecordName  serialise
+TFieldAssignment.FieldName  serialise
+TFieldAssignment.Expr  serialise
+TFieldAssignment.ObjExpr  serialise
+TFieldAssignment.FieldInfo  safe
+TFieldAssignment.IsClassAccess  safe
+TFieldAssignment.IsImplicitSelf  safe
+TFieldAssignment.IsGlobal  safe
+TFieldAssignment.IsVarParam  safe
+TFieldAssignment.PropIndexExpr  serialise
+TFieldAssignment.PropOwnerType  safe
+
+# TStaticSubscriptAssign (uAST.pas:356)
+TStaticSubscriptAssign.ArrayName  serialise
+TStaticSubscriptAssign.IndexExpr  serialise
+TStaticSubscriptAssign.ValueExpr  serialise
+TStaticSubscriptAssign.IsGlobal  safe
+
+# TPointerWriteStmt (uAST.pas:367)
+TPointerWriteStmt.PtrExpr  serialise
+TPointerWriteStmt.ValExpr  serialise
+
+# TProcCall (uAST.pas:375)
+TProcCall.Name  serialise
+TProcCall.Args  serialise
+TProcCall.IsImplicitSelfMethod  safe
+TProcCall.IsIndirectCall  safe
+TProcCall.IndirectCallIsGlobal  safe
+
+# TFuncCallExpr (uAST.pas:388)
+TFuncCallExpr.Name  serialise
+TFuncCallExpr.Args  serialise
+TFuncCallExpr.IsImplicitSelfMethod  safe
+TFuncCallExpr.IsIndirectCall  safe
+TFuncCallExpr.IndirectCallIsGlobal  safe
+TFuncCallExpr.IsBuiltinHasClassAttr  safe
+TFuncCallExpr.HasClassAttrClass  safe
+TFuncCallExpr.HasClassAttrAttr  safe
+
+# TIndirectFuncCallExpr (uAST.pas:414)
+TIndirectFuncCallExpr.CalleeExpr  safe
+TIndirectFuncCallExpr.Args  safe
+
+# TDerefExpr (uAST.pas:424)
+TDerefExpr.Expr  serialise
+
+# TAddrOfExpr (uAST.pas:431)
+TAddrOfExpr.Expr  serialise
+TAddrOfExpr.ResolvedFreeRoutine  safe
+
+# TMethodCallStmt (uAST.pas:443)
+TMethodCallStmt.ObjectName  serialise
+TMethodCallStmt.Name  serialise
+TMethodCallStmt.Args  serialise
+TMethodCallStmt.ObjExpr  serialise
+TMethodCallStmt.IsImplicitSelf  safe
+TMethodCallStmt.IsGlobal  safe
+TMethodCallStmt.IsVarParam  safe
+TMethodCallStmt.IsBuiltinToString  safe
+TMethodCallStmt.IsProcFieldCall  safe
+
+# TInheritedCallStmt (uAST.pas:470)
+TInheritedCallStmt.Name  serialise
+TInheritedCallStmt.Args  serialise
+
+# TMethodCallExpr (uAST.pas:659)
+TMethodCallExpr.ObjectName  serialise
+TMethodCallExpr.Name  serialise
+TMethodCallExpr.Args  serialise
+TMethodCallExpr.ObjExpr  serialise
+TMethodCallExpr.IsConstructorCall  safe
+TMethodCallExpr.IsGlobal  safe
+TMethodCallExpr.IsVarParam  safe
+TMethodCallExpr.IsBuiltinToString  safe
+TMethodCallExpr.IsBuiltinInheritsFrom  safe
+
