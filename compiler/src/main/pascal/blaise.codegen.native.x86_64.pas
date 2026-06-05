@@ -242,6 +242,10 @@ type
     procedure EmitMethodCallExpr(ACall: TMethodCallExpr);
     { Emit a TMethodCallStmt (class method call in statement position). }
     procedure EmitMethodCallStmt(ACall: TMethodCallStmt);
+    { Emit a TInheritedCallStmt (`inherited Method[(args)]`).  Direct static
+      dispatch to the parent method (no vtable); Self is the current method's
+      Self; a value-returning parent stores its result into the Result slot. }
+    procedure EmitInheritedCall(ACall: TInheritedCallStmt);
     { Emit a method-pointer (of-object) call: load Code from offset 0 and Data
       from offset 8 of the TMethod block at APtrOperand; call Code with Data as
       Self (%rdi) and the remaining args shifted. }
@@ -2303,6 +2307,53 @@ begin
   Self.Emit(#9'callq ' + Sym);
 end;
 
+procedure TX86_64Backend.EmitInheritedCall(ACall: TInheritedCallStmt);
+var
+  I:   Integer;
+  MD:  TMethodDecl;
+  Sym: string;
+  Par: TMethodParam;
+  Arg: TASTExpr;
+begin
+  { `inherited` on TObject (no parent body) is a no-op. }
+  MD := TMethodDecl(ACall.ResolvedMethod);
+  if MD = nil then Exit;
+  Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
+
+  { Evaluate value args left-to-right and push them.  var/out and interface
+    args are not yet supported in the native backend's call ABI — fail loudly
+    rather than pass the wrong thing. }
+  for I := 0 to ACall.Args.Count - 1 do
+  begin
+    Par := TMethodParam(MD.Params.Items[I]);
+    if Par.IsVarParam or
+       ((Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface)) then
+      raise ENativeCodeGenError.Create(
+        'native backend: inherited call with var/interface arg not yet supported');
+    Arg := TASTExpr(ACall.Args.Items[I]);
+    Self.EmitExprToEax(Arg);
+    Self.Emit(#9'pushq %rax');
+  end;
+
+  { Self is the current method's Self slot. }
+  Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
+  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self). }
+  for I := ACall.Args.Count - 1 downto 0 do
+    Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+  Self.Emit(#9'movq %r10, %rdi');
+  Self.Emit(#9'callq ' + Sym);
+
+  { A value-returning parent stores its result into the current Result slot,
+    so `Result := ...` is unnecessary for `inherited F;` to set Result. }
+  if (MD.ResolvedReturnType <> nil) and (MD.ResolvedReturnType.Kind <> tyVoid) then
+  begin
+    if IsFloatFamily(MD.ResolvedReturnType) then
+      Self.EmitStoreFloat(Self.VarOperand('Result'), MD.ResolvedReturnType)
+    else
+      Self.EmitStoreVar(Self.VarOperand('Result'), MD.ResolvedReturnType);
+  end;
+end;
+
 procedure TX86_64Backend.EmitCondBranch(AExpr: TASTExpr;
                                         const ATrueLabel, AFalseLabel: string);
 var
@@ -3228,6 +3279,12 @@ begin
   begin
     { Class method call in statement position (result discarded). }
     Self.EmitMethodCallStmt(TMethodCallStmt(AStmt));
+    Exit;
+  end;
+
+  if AStmt is TInheritedCallStmt then
+  begin
+    Self.EmitInheritedCall(TInheritedCallStmt(AStmt));
     Exit;
   end;
 

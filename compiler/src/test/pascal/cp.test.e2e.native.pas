@@ -150,6 +150,10 @@ type
     procedure TestRun_Native_Interface_IntfToIntfCopy;
     procedure TestRun_Native_Interface_AsCast;
     procedure TestRun_Native_Interface_NilClear;
+
+    { M8 — inherited calls }
+    procedure TestRun_Native_Inherited_Proc;
+    procedure TestRun_Native_Inherited_FuncSetsResult;
   end;
 
 implementation
@@ -2060,6 +2064,56 @@ const
     end.
     ''';
 
+  { M8 — inherited calls.  An override that chains to the parent body via
+    `inherited` must dispatch statically to the parent method. }
+  SrcInheritedProc = '''
+    program P;
+    type
+      TBase = class
+        procedure Hello; virtual;
+      end;
+      TDer = class(TBase)
+        procedure Hello; override;
+      end;
+    procedure TBase.Hello;
+    begin WriteLn('base') end;
+    procedure TDer.Hello;
+    begin
+      inherited Hello;
+      WriteLn('derived')
+    end;
+    var D: TDer;
+    begin
+      D := TDer.Create;
+      D.Hello
+    end.
+    ''';
+
+  { A value-returning `inherited Calc(N)` statement seeds Result with the
+    parent's return value (which the override then adjusts). }
+  SrcInheritedFunc = '''
+    program P;
+    type
+      TBase = class
+        function Calc(N: Integer): Integer; virtual;
+      end;
+      TDer = class(TBase)
+        function Calc(N: Integer): Integer; override;
+      end;
+    function TBase.Calc(N: Integer): Integer;
+    begin Result := N * 2 end;
+    function TDer.Calc(N: Integer): Integer;
+    begin
+      inherited Calc(N);
+      Result := Result + 1
+    end;
+    var D: TDer;
+    begin
+      D := TDer.Create;
+      WriteLn(D.Calc(10))
+    end.
+    ''';
+
 procedure TE2ENativeTests.TestRun_Native_OpenArray_Sum;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
@@ -2142,6 +2196,18 @@ procedure TE2ENativeTests.TestRun_Native_Interface_NilClear;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcIntfNilClear, '5' + LE + '13' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Inherited_Proc;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcInheritedProc, 'base' + LE + 'derived' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Inherited_FuncSetsResult;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcInheritedFunc, '21' + LE, 0);
 end;
 
 initialization
