@@ -10,15 +10,7 @@ unit kanban.data;
 
 interface
 
-uses Classes, Contnrs, StrUtils;
-
-function _TimeNow: Int64;
-  external name '_TimeNow';
-function _TimeLocalOffsetSecs: Integer;
-  external name '_TimeLocalOffsetSecs';
-procedure _TimeSplit(Nanos: Int64;
-  out Year, Month, Day, Hour, Min, Sec, NSec: Integer);
-  external name '_TimeSplit';
+uses Classes, Contnrs, StrUtils, DateUtils;
 
 type
   TTaskStatus = (tsTodo, tsInProgress, tsDone);
@@ -268,25 +260,16 @@ end;
 
 function TBoard.AddTask(const ATitle: string; AStatus: TTaskStatus): TTask;
 var
-  Now, LocalNanos: Int64;
-  OffsetSecs: Integer;
-  Y, Mo, D, H, Mi, S, Ns: Integer;
-  YS, MoS, DS: string;
+  Now: TInstant;
+  Local: TDateTime;
 begin
-  Now := _TimeNow;
-  OffsetSecs := _TimeLocalOffsetSecs;
-  LocalNanos := Now + Int64(OffsetSecs) * Int64(1000000000);
-  _TimeSplit(LocalNanos, Y, Mo, D, H, Mi, S, Ns);
-  YS := IntToStr(Y);
-  MoS := IntToStr(Mo);
-  if Length(MoS) < 2 then MoS := '0' + MoS;
-  DS := IntToStr(D);
-  if Length(DS) < 2 then DS := '0' + DS;
+  Now := InstantNow;
+  Local := Now.ToLocalDateTime(SystemOffset);
   Result := TTask.Create;
   Result.FId := FNextId;
   Result.FTitle := ATitle;
   Result.FStatus := AStatus;
-  Result.FCreated := YS + '-' + MoS + '-' + DS;
+  Result.FCreated := Local.Date.ToString;
   Result.FPriority := '';
   FNextId := FNextId + 1;
   FTasks.Add(Result)
