@@ -30,6 +30,7 @@ type
     procedure TestRun_Record_NestedRecord;
     procedure TestRun_Record_FourByteFields_PackedAndRoundTrip;
     procedure TestRun_Record_ByteThenInteger_RoundTrip;
+    procedure TestRun_Record_NestedFieldAssign_MethodCall;
   end;
 
 implementation
@@ -187,6 +188,37 @@ const
     end.
     ''';
 
+  SrcRecordNestedFieldAssignMethodCall = '''
+    program P;
+    type
+      TDate = record
+        Year: Integer;
+        Month: Integer;
+        Day: Integer;
+        function ToString: string;
+      end;
+      TDateTime = record
+        Date: TDate;
+        Hour: Integer;
+      end;
+    function TDate.ToString: string;
+    begin
+      Result := IntToStr(Self.Year) + '-' + IntToStr(Self.Month) + '-' + IntToStr(Self.Day)
+    end;
+    var
+      DT: TDateTime;
+      D: TDate;
+    begin
+      DT.Date.Year := 2026;
+      DT.Date.Month := 6;
+      DT.Date.Day := 5;
+      DT.Hour := 14;
+      D := DT.Date;
+      WriteLn(D.ToString);
+      WriteLn(DT.Date.ToString)
+    end.
+    ''';
+
 procedure TE2ERecordsTests.TestRun_Record_FieldReadWrite;
 var Output: string; RCode: Integer;
 begin
@@ -260,6 +292,16 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('tag=7, value=12345, size=8',
     '7' + LE + '12345' + LE + '8' + LE, Output);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_NestedFieldAssign_MethodCall;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcRecordNestedFieldAssignMethodCall, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('nested field assign + method call',
+    '2026-6-5' + LE + '2026-6-5' + LE, Output);
 end;
 
 initialization

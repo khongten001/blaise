@@ -89,6 +89,7 @@ type
     procedure TestRun_Native_IndirectCall_MethodPtr;
     { TODO M7: record-returning function — deferred until sret/aggregate support }
     procedure TestRun_Native_RecordReturnFunction;
+    procedure TestRun_Native_Record_NestedFieldAssign;
     { M6 — floats }
     procedure TestRun_Native_Double_GlobalReadWrite;
     procedure TestRun_Native_Double_LocalReadWrite;
@@ -861,6 +862,37 @@ const
       Pt := MakePoint(3, 7);
       WriteLn(Pt.X);
       WriteLn(Pt.Y)
+    end.
+    ''';
+
+  SrcNestedRecordFieldAssign = '''
+    program P;
+    type
+      TDate = record
+        Year: Integer;
+        Month: Integer;
+        Day: Integer;
+        function Sum: Integer;
+      end;
+      TDateTime = record
+        Date: TDate;
+        Hour: Integer;
+      end;
+    function TDate.Sum: Integer;
+    begin
+      Result := Self.Year + Self.Month + Self.Day
+    end;
+    var
+      DT: TDateTime;
+      D: TDate;
+    begin
+      DT.Date.Year := 2026;
+      DT.Date.Month := 6;
+      DT.Date.Day := 5;
+      DT.Hour := 14;
+      D := DT.Date;
+      WriteLn(D.Sum);
+      WriteLn(DT.Date.Sum)
     end.
     ''';
 
@@ -2890,6 +2922,12 @@ procedure TE2ENativeTests.TestRun_Native_GenericClass_Interface;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcGenericClassInterface, '55' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Record_NestedFieldAssign;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNestedRecordFieldAssign, '2037' + LE + '2037' + LE, 0);
 end;
 
 initialization
