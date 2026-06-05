@@ -2001,6 +2001,7 @@ var
   SAE: TStringSubscriptExpr;
   MD:  TMethodDecl;
   Unsigned: Boolean;
+  AOE: TAddrOfExpr;
 begin
   if AExpr is TIntLiteral then
   begin
@@ -2639,18 +2640,215 @@ begin
     Exit;
   end;
 
-  { TODO: @Rec.Arr[I] (TAddrOfExpr with TFieldAccessExpr.IsArrayAccess) — not yet lowered in native backend }
-
-  { @FuncName — load the function's code address into %rax.
-    The semantic pass sets ResolvedType.Kind = tyProcedural on the inner
-    TIdentExpr when it names a standalone procedure or function. }
-  if (AExpr is TAddrOfExpr) and
-     (TAddrOfExpr(AExpr).Expr is TIdentExpr) and
-     (TIdentExpr(TAddrOfExpr(AExpr).Expr).ResolvedType <> nil) and
-     (TIdentExpr(TAddrOfExpr(AExpr).Expr).ResolvedType.Kind = tyProcedural) then
+  { ── TAddrOfExpr: @Expr ── }
+  if AExpr is TAddrOfExpr then
   begin
-    Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-      [TIdentExpr(TAddrOfExpr(AExpr).Expr).Name]));
+    AOE := TAddrOfExpr(AExpr);
+
+    { @Array[I] — address of array element.  The inner expression is
+      TStringSubscriptExpr (the parser's postfix-bracket node).  Compute
+      base + index * elemSize without the final load. }
+    if AOE.Expr is TStringSubscriptExpr then
+    begin
+      SAE := TStringSubscriptExpr(AOE.Expr);
+      if (SAE.StrExpr.ResolvedType <> nil) and
+         (SAE.StrExpr.ResolvedType.Kind = tyStaticArray) then
+      begin
+        Self.EmitExprToEax(SAE.StrExpr);
+        Self.Emit(#9'movq %rax, %rcx');
+        Self.EmitExprToEax(SAE.IndexExpr);
+        if TStaticArrayTypeDesc(SAE.StrExpr.ResolvedType).LowBound <> 0 then
+          Self.Emit(Format(#9'subq $%d, %%rax',
+            [TStaticArrayTypeDesc(SAE.StrExpr.ResolvedType).LowBound]));
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TStaticArrayTypeDesc(SAE.StrExpr.ResolvedType).ElementType.RawSize]));
+        Self.Emit(#9'addq %rcx, %rax');
+        Exit;
+      end;
+      if (SAE.StrExpr.ResolvedType <> nil) and
+         (SAE.StrExpr.ResolvedType.Kind = tyOpenArray) then
+      begin
+        if (SAE.StrExpr is TIdentExpr) then
+          Self.Emit(Format(#9'movq %s, %%rcx',
+            [Self.VarOperand(TIdentExpr(SAE.StrExpr).Name)]))
+        else
+        begin
+          Self.EmitExprToEax(SAE.StrExpr);
+          Self.Emit(#9'movq %rax, %rcx');
+        end;
+        Self.EmitExprToEax(SAE.IndexExpr);
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TOpenArrayTypeDesc(SAE.StrExpr.ResolvedType).ElementType.RawSize]));
+        Self.Emit(#9'addq %rcx, %rax');
+        Exit;
+      end;
+      if (SAE.StrExpr.ResolvedType <> nil) and
+         (SAE.StrExpr.ResolvedType.Kind = tyDynArray) then
+      begin
+        Self.EmitExprToEax(SAE.StrExpr);
+        Self.Emit(#9'movq %rax, %rcx');
+        Self.EmitExprToEax(SAE.IndexExpr);
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TDynArrayTypeDesc(SAE.StrExpr.ResolvedType).ElementType.RawSize]));
+        Self.Emit(#9'addq %rcx, %rax');
+        Exit;
+      end;
+    end;
+
+    { @FuncName — load the function's code address into %rax. }
+    if (AOE.Expr is TIdentExpr) and
+       (TIdentExpr(AOE.Expr).ResolvedType <> nil) and
+       (TIdentExpr(AOE.Expr).ResolvedType.Kind = tyProcedural) then
+    begin
+      if AOE.ResolvedFreeRoutine <> nil then
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [NativeMangle(TMethodDecl(AOE.ResolvedFreeRoutine).ResolvedQbeName)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [TIdentExpr(AOE.Expr).Name]));
+      Exit;
+    end;
+
+    { @VarParam — the variable's slot holds a pointer to the caller's data;
+      load that pointer value (not the slot address). }
+    if (AOE.Expr is TIdentExpr) and TIdentExpr(AOE.Expr).IsVarParam then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand(TIdentExpr(AOE.Expr).Name)]));
+      Exit;
+    end;
+
+    { @Variable — take the address of a local or global variable. }
+    if AOE.Expr is TIdentExpr then
+    begin
+      if Self.IsLocal(TIdentExpr(AOE.Expr).Name) then
+        Self.Emit(Format(#9'leaq %s, %%rax',
+          [Self.VarOperand(TIdentExpr(AOE.Expr).Name)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [TIdentExpr(AOE.Expr).Name]));
+      Exit;
+    end;
+
+    { @Rec.Arr[I] — address of array-field element.  The field access has
+      IsArrayAccess set by semantic and PropIndexExpr holds the subscript. }
+    if (AOE.Expr is TFieldAccessExpr) and
+       TFieldAccessExpr(AOE.Expr).IsArrayAccess then
+    begin
+      FAE := TFieldAccessExpr(AOE.Expr);
+      if FAE.Base <> nil then
+      begin
+        Self.EmitExprToEax(FAE.Base);
+        Self.Emit(#9'movq %rax, %rcx');
+      end
+      else if FAE.IsClassAccess then
+      begin
+        if Self.IsLocal(FAE.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      end
+      else if FAE.IsImplicitSelf then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]))
+      else if FAE.IsVarParam then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+      else
+      begin
+        if Self.IsLocal(FAE.RecordName) then
+          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
+      end;
+      if FAE.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
+      if FAE.FieldInfo.TypeDesc.Kind = tyDynArray then
+      begin
+        Self.Emit(#9'movq (%rcx), %rcx');
+        Self.Emit(#9'pushq %rcx');
+        Self.EmitExprToEax(FAE.PropIndexExpr);
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TDynArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.RawSize]));
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'addq %rcx, %rax');
+      end
+      else if FAE.FieldInfo.TypeDesc.Kind = tyStaticArray then
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.EmitExprToEax(FAE.PropIndexExpr);
+        if TStaticArrayTypeDesc(FAE.FieldInfo.TypeDesc).LowBound <> 0 then
+          Self.Emit(Format(#9'subq $%d, %%rax',
+            [TStaticArrayTypeDesc(FAE.FieldInfo.TypeDesc).LowBound]));
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TStaticArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.RawSize]));
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'addq %rcx, %rax');
+      end
+      else
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.EmitExprToEax(FAE.PropIndexExpr);
+        Self.Emit(Format(#9'imulq $%d, %%rax',
+          [TOpenArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.RawSize]));
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'addq %rcx, %rax');
+      end;
+      Exit;
+    end;
+
+    { @Obj.MethodName — method-pointer construction is handled at statement
+      level (TAssignment) to write directly into the 16-byte destination slot. }
+    if (AOE.Expr is TFieldAccessExpr) and
+       (TFieldAccessExpr(AOE.Expr).ResolvedType <> nil) and
+       (TFieldAccessExpr(AOE.Expr).ResolvedType.Kind = tyProcedural) and
+       TProceduralTypeDesc(TFieldAccessExpr(AOE.Expr).ResolvedType).IsMethodPtr then
+      raise ENativeCodeGenError.Create(
+        'native backend: @Obj.Method must be used in assignment context');
+
+    { @Rec.Field — address of a record/class field (non-array). }
+    if AOE.Expr is TFieldAccessExpr then
+    begin
+      FAE := TFieldAccessExpr(AOE.Expr);
+      if FAE.Base <> nil then
+      begin
+        Self.EmitExprToEax(FAE.Base);
+        Self.Emit(#9'movq %rax, %rcx');
+      end
+      else if FAE.IsClassAccess then
+      begin
+        if Self.IsLocal(FAE.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      end
+      else if FAE.IsImplicitSelf then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]))
+      else if FAE.IsVarParam then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+      else
+      begin
+        if Self.IsLocal(FAE.RecordName) then
+          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
+      end;
+      if (FAE.FieldInfo <> nil) and (FAE.FieldInfo.Offset > 0) then
+        Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
+      Self.Emit(#9'movq %rcx, %rax');
+      Exit;
+    end;
+
+    raise ENativeCodeGenError.Create(
+      'native backend: unsupported TAddrOfExpr form (' +
+      AOE.Expr.ClassName + ')');
+  end;
+
+  { P^ — pointer dereference read.  Load the pointer into %rcx, then load
+    the pointed-to value into %rax through (%rcx). }
+  if AExpr is TDerefExpr then
+  begin
+    Self.EmitExprToEax(TDerefExpr(AExpr).Expr);
+    Self.Emit(#9'movq %rax, %rcx');
+    Self.EmitLoadVar('(%rcx)', AExpr.ResolvedType);
     Exit;
   end;
 
@@ -3510,7 +3708,9 @@ var
   RepS:  TRepeatStmt;
   Asgn:  TAssignment;
   FA:    TFieldAssignment;
+  FAE:   TFieldAccessExpr;
   SSA:   TStaticSubscriptAssign;
+  MD:    TMethodDecl;
   I:     Integer;
   LThen, LElse, LEnd:    string;
   LCond, LBody:          string;
@@ -3520,6 +3720,46 @@ begin
   if AStmt is TAssignment then
   begin
     Asgn := TAssignment(AStmt);
+    { Method-pointer assignment from @Obj.Method: directly store the
+      [CodePtr, ObjPtr] pair into the destination's 16-byte slot. }
+    if (Asgn.ResolvedLhsType <> nil) and
+       (Asgn.ResolvedLhsType.Kind = tyProcedural) and
+       (TProceduralTypeDesc(Asgn.ResolvedLhsType).IsMethodPtr) and
+       (Asgn.Expr is TAddrOfExpr) and
+       (TAddrOfExpr(Asgn.Expr).Expr is TFieldAccessExpr) and
+       (TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType <> nil) and
+       (TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType.Kind = tyProcedural) and
+       TProceduralTypeDesc(TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType).IsMethodPtr then
+    begin
+      FAE := TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr);
+      MD  := TMethodDecl(FAE.ResolvedMethod);
+      { Destination address → %rcx }
+      if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(Asgn.Name)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [Asgn.Name]));
+      { Store code pointer at offset 0 }
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+        [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
+      Self.Emit(#9'movq %rax, (%rcx)');
+      { Store object pointer at offset 8 }
+      if FAE.Base <> nil then
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.EmitExprToEax(FAE.Base);
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'movq %rax, 8(%rcx)');
+      end
+      else
+      begin
+        if Self.IsLocal(FAE.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+        Self.Emit(#9'movq %rax, 8(%rcx)');
+      end;
+      Exit;
+    end;
     { Method-pointer (of-object) assignment from a TMethod/TAddProc cast:
       P := TAddProc(M) — both sides are 16-byte Code+Data blocks.
       Emit as memcpy(dest, src, 16). }
@@ -4110,6 +4350,54 @@ begin
     Self.Emit(#9'movq %rax, %rcx');   { save element address to %rcx }
     Self.Emit(#9'popq %rax');          { restore value }
     Self.EmitStoreVar('(%rcx)', TStaticArrayTypeDesc(SSA.ResolvedArrayType).ElementType);
+    Exit;
+  end;
+
+  { P^ := Value — pointer dereference write.  Evaluate value into %rax,
+    save it, evaluate pointer into %rcx, then store through (%rcx). }
+  if AStmt is TPointerWriteStmt then
+  begin
+    if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+       TPointerWriteStmt(AStmt).BaseTy.IsString then
+    begin
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %rcx');
+      Self.Emit(#9'movq (%rcx), %rdi');
+      Self.Emit(#9'pushq %rcx');
+      Self.Emit(#9'callq _StringRelease');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _StringAddRef');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'popq %rcx');
+      Self.Emit(#9'movq %rax, (%rcx)');
+    end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyClass) then
+    begin
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %rcx');
+      Self.Emit(#9'movq (%rcx), %rdi');
+      Self.Emit(#9'pushq %rcx');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'popq %rcx');
+      Self.Emit(#9'movq %rax, (%rcx)');
+    end
+    else
+    begin
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %rcx');
+      Self.Emit(#9'popq %rax');
+      Self.EmitStoreVar('(%rcx)', TPointerWriteStmt(AStmt).BaseTy);
+    end;
     Exit;
   end;
 

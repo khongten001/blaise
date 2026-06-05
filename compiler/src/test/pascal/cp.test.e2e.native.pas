@@ -178,6 +178,13 @@ type
     procedure TestRun_Native_ArcValueParam_String;
     procedure TestRun_Native_ArcValueParam_Class;
 
+    { Address-of expressions }
+    procedure TestRun_Native_AddrOf_LocalVariable;
+    procedure TestRun_Native_AddrOf_StaticArrayElement;
+    procedure TestRun_Native_AddrOf_DynArrayElement;
+    procedure TestRun_Native_AddrOf_RecordFieldArrayElem;
+    procedure TestRun_Native_AddrOf_MethodPointer;
+
     { Generics }
     procedure TestRun_Native_GenericRecord_Method;
     procedure TestRun_Native_GenericClass_Method;
@@ -2457,6 +2464,90 @@ const
     end.
     ''';
 
+  SrcAddrOfLocalVar = '''
+    program P;
+    var
+      X: Integer;
+      P: ^Integer;
+    begin
+      X := 42;
+      P := @X;
+      P^ := 99;
+      WriteLn(X)
+    end.
+    ''';
+
+  SrcAddrOfStaticArrayElem = '''
+    program P;
+    var
+      A: array[0..3] of Integer;
+      P: ^Integer;
+    begin
+      A[0] := 10;
+      A[1] := 20;
+      A[2] := 30;
+      A[3] := 40;
+      P := @A[2];
+      WriteLn(P^)
+    end.
+    ''';
+
+  SrcAddrOfDynArrayElem = '''
+    program P;
+    var
+      A: array of Integer;
+      P: ^Integer;
+    begin
+      SetLength(A, 3);
+      A[0] := 100;
+      A[1] := 200;
+      A[2] := 300;
+      P := @A[1];
+      WriteLn(P^)
+    end.
+    ''';
+
+  SrcAddrOfRecFieldArrElem = '''
+    program P;
+    type
+      TRec = record
+        Items: array of Integer;
+      end;
+    var
+      A: array of Integer;
+      R: TRec;
+      P: ^Integer;
+    begin
+      SetLength(A, 3);
+      A[0] := 5;
+      A[1] := 15;
+      A[2] := 25;
+      R.Items := A;
+      P := @R.Items[2];
+      WriteLn(P^)
+    end.
+    ''';
+
+  SrcAddrOfMethodPtr = '''
+    program P;
+    type
+      TAddProc = procedure(A, B: Integer) of object;
+      TCalc = class
+        procedure Add(A, B: Integer);
+        begin
+          WriteLn(A + B)
+        end;
+      end;
+    var
+      C: TCalc;
+      F: TAddProc;
+    begin
+      C := TCalc.Create;
+      F := @C.Add;
+      F(3, 4)
+    end.
+    ''';
+
   SrcGenericRecordMethod = '''
     program P;
     type
@@ -2710,6 +2801,36 @@ procedure TE2ENativeTests.TestRun_Native_ArcValueParam_Class;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcArcValueParamClass, '7' + LE + '7' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_AddrOf_LocalVariable;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcAddrOfLocalVar, '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_AddrOf_StaticArrayElement;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcAddrOfStaticArrayElem, '30' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_AddrOf_DynArrayElement;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcAddrOfDynArrayElem, '200' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_AddrOf_RecordFieldArrayElem;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcAddrOfRecFieldArrElem, '25' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_AddrOf_MethodPointer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcAddrOfMethodPtr, '7' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_GenericRecord_Method;
