@@ -3630,6 +3630,7 @@ begin
     end
     else if FA.IsClassAccess then
     begin
+      { TODO: ARC for class fields — [Unretained] must release owned RHS, normal fields need addref/release }
       { Class field write: load the class ptr from its slot (movq), store through it. }
       Self.Emit(#9'pushq %rax');
       if Self.IsLocal(FA.RecordName) then
@@ -3641,6 +3642,7 @@ begin
     end
     else if FA.IsImplicitSelf then
     begin
+      { TODO: ARC for implicit-Self class fields — [Unretained] must release owned RHS }
       { Bare field assignment inside a class method: write through Self. }
       Self.Emit(#9'pushq %rax');
       Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]));

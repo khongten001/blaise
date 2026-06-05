@@ -3582,8 +3582,9 @@ begin
       { ARC for class/string field stored via implicit Self.Field }
       if ISFld.IsUnretained and (ISFld.TypeDesc.Kind = tyClass) then
       begin
-        { Unretained class field: non-owning store, no addref/release. }
         EmitLine(Format('  storel %s, %s', [ValTemp, ObjTemp]));
+        if ExprOwnsRef(AAssign.Expr) then
+          EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
         Exit;
       end;
       if ISFld.IsWeak and (ISFld.TypeDesc.Kind = tyClass) then
@@ -4709,8 +4710,11 @@ begin
   if AAssign.FieldInfo.IsUnretained and (AAssign.FieldInfo.TypeDesc.Kind = tyClass) then
   begin
     { Unretained class field: non-owning — store the pointer with no addref
-      and no release.  The referent is owned elsewhere and outlives this field. }
+      and no release of the old value.  If the RHS was a +1 temporary (e.g.
+      function return), release it — the field borrows, so nobody keeps the +1. }
     EmitLine(Format('  storel %s, %s', [ValTemp, Ptr]));
+    if ExprOwnsRef(AAssign.Expr) then
+      EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
   end
   else if AAssign.FieldInfo.IsWeak then
   begin

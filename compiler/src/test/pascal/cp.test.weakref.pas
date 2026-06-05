@@ -77,6 +77,7 @@ type
     procedure TestCodegen_UnretainedField_NoAddRefOnStore;
     procedure TestCodegen_UnretainedField_NoWeakAssign;
     procedure TestCodegen_UnretainedField_CleanupDoesNotRelease;
+    procedure TestCodegen_UnretainedField_ReleasesOwnedRHS;
   end;
 
 implementation
@@ -612,6 +613,40 @@ begin
     Pos('_ClassRelease', Cleanup) < 0);
   AssertTrue('unretained field cleanup does not weak-clear',
     Pos('_WeakClear', Cleanup) < 0);
+end;
+
+procedure TWeakRefTests.TestCodegen_UnretainedField_ReleasesOwnedRHS;
+var
+  IR, Body: string;
+  P0, P1: Integer;
+begin
+  IR := GenIR('''
+      program P;
+      type
+        TTarget = class end;
+        TPool = class
+          [Unretained] FCached: TTarget;
+          function MakeTarget: TTarget;
+          procedure CacheIt;
+        end;
+      function TPool.MakeTarget: TTarget;
+      begin
+        Result := TTarget.Create
+      end;
+      procedure TPool.CacheIt;
+      begin
+        FCached := MakeTarget
+      end;
+      begin
+      end.
+      ''');
+  P0 := Pos('$TPool_CacheIt', IR);
+  AssertTrue('TPool_CacheIt present', P0 > 0);
+  Body := Copy(IR, P0, Length(IR) - P0);
+  P1   := Pos('}', Body);
+  if P1 > 0 then Body := Copy(Body, 0, P1);
+  AssertTrue('unretained field release after store of owned RHS',
+    Pos('_ClassRelease', Body) > 0);
 end;
 
 initialization
