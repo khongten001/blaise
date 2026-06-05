@@ -40,6 +40,12 @@ type
     { Three instantiations of the same generic class: verifies the Pointer→class
       ARC coercion bug is fixed (the 3rd instantiation no longer uses freed memory). }
     procedure TestRun_ThreeGenericInstances_AllWork;
+    { A Pointer-returning rvalue (TObjectList.Items[K]) assigned into a TObject
+      local must retain, so the local's scope-exit release only balances that
+      retain and does not drop the list-held object's refcount.  Guards against
+      dispatching the assignment ARC on the RHS (Pointer) type instead of the
+      LHS (class) slot type. }
+    procedure TestRun_PtrRvalueToClassLocal_PreservesLifetime;
   end;
 
 implementation
@@ -469,6 +475,54 @@ begin
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('all three instances produce correct output',
     '10' + LE + '1' + LE + '30' + LE, Output);
+end;
+
+const
+  { Regression: assigning a Pointer-returning expression (TObjectList.Items[K])
+    into a TObject local must retain.  Builds the list inside the program, walks
+    it with a plain TObject local in Borrow, and tracks TThing.Destroy via a
+    counter.  Asserts the object survives Borrow (counter 0) and is freed only
+    when L.Free runs (counter 1).  If the assignment dispatched ARC on the RHS
+    Pointer type it would skip the retain, and Borrow's scope-exit release would
+    drop the list-held refcount to zero and run Destroy mid-program. }
+  SrcPtrRvalueClassLocal = '''
+    program P;
+    uses contnrs;
+    type
+      TThing = class
+        procedure Destroy; override;
+      end;
+    var
+      L:     TObjectList;
+      Freed: Integer;
+    procedure TThing.Destroy;
+    begin
+      Freed := Freed + 1
+    end;
+    procedure Borrow;
+    var S: TObject;
+    begin
+      S := L.Items[0]
+    end;
+    begin
+      Freed := 0;
+      L := TObjectList.Create;
+      L.Add(TThing.Create);
+      Borrow;
+      WriteLn(Freed);
+      L.Free;
+      WriteLn(Freed)
+    end.
+    ''';
+
+procedure TE2EArcTests.TestRun_PtrRvalueToClassLocal_PreservesLifetime;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcPtrRvalueClassLocal, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('counter after Borrow then after L.Free',
+    '0' + LE + '1' + LE, Output);
 end;
 
 initialization
