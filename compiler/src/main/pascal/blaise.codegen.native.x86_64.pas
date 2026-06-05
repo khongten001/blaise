@@ -248,12 +248,15 @@ type
       dispatch to the parent method (no vtable); Self is the current method's
       Self; a value-returning parent stores its result into the Result slot. }
     procedure EmitInheritedCall(ACall: TInheritedCallStmt);
-    { Evaluate one method-call argument and push it onto the stack.  For a var/out
-      param (APar.IsVarParam) the argument's ADDRESS is pushed (leaq for a local
-      or global; the stored pointer when the arg is itself a var param); otherwise
-      the value is pushed.  Used by the method-call statement/expression paths so
-      they handle var params identically to the standalone EmitCall path. }
+    { Evaluate one method-call argument and push it onto the stack.  Scalar and
+      var/out params push one value; interface params push two (itab first, then
+      obj — reversed so the pop loop restores them in the correct register order). }
     procedure EmitMethodArgPush(APar: TMethodParam; AArg: TASTExpr);
+    { Return the total number of integer register slots consumed by AParams.
+      Most params = 1 slot; interface params = 2 slots (obj + itab); open-array
+      params = 2 slots (ptr + high).  Used by pop loops so they count slots, not
+      logical argument positions. }
+    function CountArgSlots(AParams: TObjectList): Integer;
     { Emit a method-pointer (of-object) call: load Code from offset 0 and Data
       from offset 8 of the TMethod block at APtrOperand; call Code with Data as
       Self (%rdi) and the remaining args shifted. }
@@ -878,12 +881,33 @@ begin
   Ps := 8;
   ArgN := 0;
   if AArgs <> nil then ArgN := AArgs.Count;
-  { Evaluate args left-to-right and push them. }
+  { Evaluate args left-to-right and push them.  Interface args push two values
+    (obj then itab); all other args push one.  Pass nil as the TMethodParam so
+    EmitMethodArgPush falls through to scalar for non-interface args. }
   for I := 0 to ArgN - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    Self.EmitExprToEax(Arg);
-    Self.Emit(#9'pushq %rax');
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyInterface) then
+    begin
+      { Fabricate a synthetic param descriptor for the interface type. }
+      if Arg is TIdentExpr then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax',
+          [Self.IntfObjOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+        Self.Emit(Format(#9'movq %s, %%rcx',
+          [Self.IntfItabOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+        Self.Emit(#9'pushq %rax');   { obj }
+        Self.Emit(#9'pushq %rcx');   { itab }
+      end
+      else
+        raise ENativeCodeGenError.Create(
+          'native backend: unsupported interface arg expression in interface dispatch');
+    end
+    else
+    begin
+      Self.EmitExprToEax(Arg);
+      Self.Emit(#9'pushq %rax');
+    end;
   end;
   { Load obj (Self) into %r10 and the itab into %rax, then index the itab. }
   Self.Emit(Format(#9'movq %s, %%r10', [Self.IntfObjOperand(AObjName, AIsGlobal)]));
@@ -893,8 +917,18 @@ begin
     Self.Emit(#9'movq (%rax), %r11')
   else
     Self.Emit(Format(#9'movq %d(%%rax), %%r11', [SlotOff]));
-  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self). }
-  for I := ArgN - 1 downto 0 do
+  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self).
+    Count slots: interface args occupy 2 slots each. }
+  SlotOff := 0;
+  for I := 0 to ArgN - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyInterface) then
+      Inc(SlotOff, 2)
+    else
+      Inc(SlotOff);
+  end;
+  for I := SlotOff - 1 downto 0 do
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq *%r11');
@@ -910,14 +944,32 @@ var
 begin
   ArgN := 0;
   if AArgs <> nil then ArgN := AArgs.Count;
+  { Push args left-to-right; interface args push obj then itab (2 slots). }
   for I := 0 to ArgN - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    Self.EmitExprToEax(Arg);
-    Self.Emit(#9'pushq %rax');
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyInterface) then
+    begin
+      if Arg is TIdentExpr then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax',
+          [Self.IntfObjOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+        Self.Emit(Format(#9'movq %s, %%rcx',
+          [Self.IntfItabOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+        Self.Emit(#9'pushq %rax');   { obj }
+        Self.Emit(#9'pushq %rcx');   { itab }
+      end
+      else
+        raise ENativeCodeGenError.Create(
+          'native backend: unsupported interface arg expression in field dispatch');
+    end
+    else
+    begin
+      Self.EmitExprToEax(Arg);
+      Self.Emit(#9'pushq %rax');
+    end;
   end;
-  { Load Self and compute field base; use %r11 (caller-saved scratch) for
-    the obj pointer and %rax for the itab address. }
+  { Load Self and compute field base; use %r11 for base pointer. }
   Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('Self')]));
   if AFld.Offset > 0 then
     Self.Emit(Format(#9'addq $%d, %%r11', [AFld.Offset]));
@@ -929,7 +981,17 @@ begin
     Self.Emit(#9'movq (%rax), %r11')
   else
     Self.Emit(Format(#9'movq %d(%%rax), %%r11', [SlotOff]));
-  for I := ArgN - 1 downto 0 do
+  { Count total slots then pop in reverse. }
+  SlotOff := 0;
+  for I := 0 to ArgN - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyInterface) then
+      Inc(SlotOff, 2)
+    else
+      Inc(SlotOff);
+  end;
+  for I := SlotOff - 1 downto 0 do
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq *%r11');
@@ -1382,6 +1444,26 @@ begin
           FFrameTypes.Add(P.ParamName + '_high', nil);
           Inc(StackOff, 8);
         end;
+        Inc(IntIdx2);
+      end
+      else if (P.ResolvedType <> nil) and (P.ResolvedType.Kind = tyInterface) then
+      begin
+        { Interface param: fat pointer = two consecutive integer register slots.
+          Allocate a single 16-byte slot (obj at base, itab at base+8) so that
+          IntfObjOperand/IntfItabOperand can address both halves.  Two IntIdx
+          increments mirror the register-passing convention. }
+        if IntIdx2 < 6 then
+          Self.AddSlot(P.ParamName, P.ResolvedType, Offset)
+        else
+        begin
+          FFrame.Add(P.ParamName, StackOff);
+          FFrameTypes.Add(P.ParamName, P.ResolvedType);
+          Inc(StackOff, 16);
+        end;
+        Inc(IntIdx2);
+        { Second slot (itab): if register-passed, no separate frame entry needed
+          (AddSlot already reserved 16 bytes at ParamName); if stack-passed the
+          itab word sits at StackOff+8 which IntfItabOperand computes from Off+8. }
         Inc(IntIdx2);
       end
       else
@@ -2263,14 +2345,14 @@ begin
         [NativeMangle(FAE.ResolvedType.Name)]));
       Self.Emit(#9'movq %rcx, (%rax)');
     end;
-    { Call user-defined Create body if present. }
+    { Call user-defined zero-arg Create body if present. }
     if FAE.ResolvedMethod <> nil then
     begin
-      Self.Emit(#9'pushq %rax');              { save instance pointer }
-      Self.Emit(#9'movq %rax, %rdi');         { Self = instance }
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq ' + MethodEmitNameNative(
         TMethodDecl(FAE.ResolvedMethod), FAE.ResolvedType.Name, FAE.FieldName));
-      Self.Emit(#9'popq %rax');               { restore instance pointer }
+      Self.Emit(#9'popq %rax');
     end;
     { %rax = new instance pointer. }
     Exit;
@@ -2291,10 +2373,11 @@ end;
   %rsi/%rdx/etc.  The method symbol is OwnerTypeName_MethodName. }
 procedure TX86_64Backend.EmitMethodCallExpr(ACall: TMethodCallExpr);
 var
-  I:       Integer;
-  MD:      TMethodDecl;
-  Sym:     string;
-  Arg:     TASTExpr;
+  I:    Integer;
+  MD:   TMethodDecl;
+  Sym:  string;
+  Arg:  TASTExpr;
+  RT:   TRecordTypeDesc;
 begin
   { Interface method dispatch: receiver is an interface fat pointer; route
     through the itab rather than a static method symbol. }
@@ -2303,6 +2386,36 @@ begin
   begin
     Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal,
       TInterfaceTypeDesc(ACall.ResolvedClassType), ACall.Name, ACall.Args);
+    Exit;
+  end;
+
+  { Constructor call with args: TypeName.Create(args).
+    Allocate the instance, save it in %r10, push args, pop into registers,
+    call the constructor body, then return the instance in %rax. }
+  if ACall.IsConstructorCall then
+  begin
+    RT := TRecordTypeDesc(ACall.ResolvedClassType);
+    Self.Emit(Format(#9'movq $%d, %%rdi', [RT.TotalSize]));
+    Self.Emit(Format(#9'leaq _FieldCleanup_%s(%%rip), %%rsi', [NativeMangle(RT.Name)]));
+    Self.Emit(#9'callq _ClassAlloc');
+    if RT.HasVTable then
+    begin
+      Self.Emit(Format(#9'leaq vtable_%s(%%rip), %%rcx', [NativeMangle(RT.Name)]));
+      Self.Emit(#9'movq %rcx, (%rax)');
+    end;
+    MD := TMethodDecl(ACall.ResolvedMethod);
+    if MD <> nil then
+    begin
+      Self.Emit(#9'movq %rax, %r10');
+      for I := 0 to ACall.Args.Count - 1 do
+        Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
+          TASTExpr(ACall.Args.Items[I]));
+      for I := CountArgSlots(MD.Params) - 1 downto 0 do
+        Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'movq %r10, %rdi');
+      Self.Emit(#9'callq ' + MethodEmitNameNative(MD, RT.Name, ACall.Name));
+      Self.Emit(#9'movq %r10, %rax');
+    end;
     Exit;
   end;
 
@@ -2339,8 +2452,9 @@ begin
     Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
   end;
 
-  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self). }
-  for I := ACall.Args.Count - 1 downto 0 do
+  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self).
+    Use slot count so interface args (2 slots each) get two pops. }
+  for I := CountArgSlots(MD.Params) - 1 downto 0 do
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   { Place Self as first arg. }
   Self.Emit(#9'movq %r10, %rdi');
@@ -2349,6 +2463,10 @@ begin
 end;
 
 procedure TX86_64Backend.EmitMethodArgPush(APar: TMethodParam; AArg: TASTExpr);
+var
+  ClassRT: TRecordTypeDesc;
+  IntfDesc: TInterfaceTypeDesc;
+  ItabSym: string;
 begin
   if (APar <> nil) and APar.IsVarParam then
   begin
@@ -2367,10 +2485,95 @@ begin
         'native backend: var/out method argument must be a variable');
     Self.Emit(#9'pushq %rax');
   end
+  else if (APar <> nil) and (APar.ResolvedType <> nil) and
+          (APar.ResolvedType.Kind = tyInterface) then
+  begin
+    { Interface param: push obj first (lower register slot), then itab (higher
+      register slot).  The pop loop runs high-to-low, so itab (pushed last) is
+      popped first into the higher register, obj (pushed first) into the lower. }
+    IntfDesc := TInterfaceTypeDesc(APar.ResolvedType);
+    if AArg.ResolvedType.Kind = tyClass then
+    begin
+      { Class expression → interface: emit obj, look up static itab. }
+      ClassRT := TRecordTypeDesc(AArg.ResolvedType);
+      ItabSym := 'itab_' + NativeMangle(ClassRT.Name) + '_' + NativeMangle(IntfDesc.Name);
+      Self.EmitExprToEax(AArg);          { obj -> %rax }
+      Self.Emit(#9'pushq %rax');         { push obj }
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [ItabSym]));
+      Self.Emit(#9'pushq %rax');         { push itab }
+    end
+    else if AArg is TAsExpr then
+    begin
+      { T as IFoo: runtime itab lookup. }
+      Self.EmitExprToEax(TAsExpr(AArg).Obj);
+      Self.Emit(#9'pushq %rax');         { save obj for push below }
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(Format(#9'leaq typeinfo_%s(%%rip), %%rsi',
+        [NativeMangle(TAsExpr(AArg).TypeName)]));
+      Self.Emit(#9'callq _GetItab');
+      Self.Emit(#9'pushq %rax');         { itab on top; obj below }
+      { Stack top: itab, below: obj — but we need obj first (lower slot).
+        Swap: pop itab into %rcx, leave obj on stack, push itab back. }
+      Self.Emit(#9'popq %rcx');          { rcx = itab }
+      { %rax is still obj (was saved before callq). Re-load from stack: }
+      Self.Emit(#9'movq (%rsp), %rax'); { rax = obj (already on stack) }
+      { Stack already has obj; push itab on top. }
+      Self.Emit(#9'pushq %rcx');         { itab on top, obj below ✓ }
+    end
+    else if (AArg is TIdentExpr) and
+            TIdentExpr(AArg).IsImplicitSelf and
+            (TIdentExpr(AArg).ImplicitFieldInfo <> nil) then
+    begin
+      { Implicit Self.field of interface type: load from object layout. }
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+      if TFieldInfo(TIdentExpr(AArg).ImplicitFieldInfo).Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rax',
+          [TFieldInfo(TIdentExpr(AArg).ImplicitFieldInfo).Offset]));
+      Self.Emit(#9'movq (%rax), %rcx');  { obj }
+      Self.Emit(#9'movq 8(%rax), %rdx'); { itab }
+      Self.Emit(#9'pushq %rcx');         { push obj }
+      Self.Emit(#9'pushq %rdx');         { push itab }
+    end
+    else if AArg is TIdentExpr then
+    begin
+      { Interface variable: load both halves. }
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.IntfObjOperand(TIdentExpr(AArg).Name, TIdentExpr(AArg).IsGlobal)]));
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.IntfItabOperand(TIdentExpr(AArg).Name, TIdentExpr(AArg).IsGlobal)]));
+      Self.Emit(#9'pushq %rax');         { push obj }
+      Self.Emit(#9'pushq %rcx');         { push itab }
+    end
+    else
+      raise ENativeCodeGenError.Create(
+        'native backend: unsupported interface argument expression');
+  end
   else
   begin
     Self.EmitExprToEax(AArg);
     Self.Emit(#9'pushq %rax');
+  end;
+end;
+
+{ Count total integer register slots consumed by a parameter list.
+  Most params = 1 slot; interface params = 2 (obj + itab); open-array = 2.
+  Used by pop loops so they iterate over slots, not logical arg positions. }
+function TX86_64Backend.CountArgSlots(AParams: TObjectList): Integer;
+var
+  I: Integer;
+  P: TMethodParam;
+begin
+  Result := 0;
+  if AParams = nil then Exit;
+  for I := 0 to AParams.Count - 1 do
+  begin
+    P := TMethodParam(AParams.Items[I]);
+    if P.IsOpenArray then
+      Inc(Result, 2)
+    else if (P.ResolvedType <> nil) and (P.ResolvedType.Kind = tyInterface) then
+      Inc(Result, 2)
+    else
+      Inc(Result);
   end;
 end;
 
@@ -2425,8 +2628,9 @@ begin
   else
     Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
 
-  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self). }
-  for I := ACall.Args.Count - 1 downto 0 do
+  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self).
+    Use slot count so interface args (2 slots each) get two pops. }
+  for I := CountArgSlots(MD.Params) - 1 downto 0 do
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq ' + Sym);
@@ -2444,21 +2648,18 @@ begin
   if MD = nil then Exit;
   Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
 
-  { Evaluate args left-to-right and push them (var/out args by address).
-    Interface args are not yet supported in the native call ABI — fail loudly. }
+  { Evaluate args left-to-right and push them. }
   for I := 0 to ACall.Args.Count - 1 do
   begin
     Par := TMethodParam(MD.Params.Items[I]);
-    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
-      raise ENativeCodeGenError.Create(
-        'native backend: inherited call with interface arg not yet supported');
     Self.EmitMethodArgPush(Par, TASTExpr(ACall.Args.Items[I]));
   end;
 
   { Self is the current method's Self slot. }
   Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
-  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self). }
-  for I := ACall.Args.Count - 1 downto 0 do
+  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self).
+    Use slot count so interface args (2 slots each) get two pops. }
+  for I := CountArgSlots(MD.Params) - 1 downto 0 do
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq ' + Sym);
@@ -3607,7 +3808,7 @@ begin
       ParamType := Arg.ResolvedType;
     if IsFloatFamily(ParamType) then
       HasFloat := True;
-    if IsOA then
+    if IsOA or ((ParamType <> nil) and (ParamType.Kind = tyInterface)) then
       Inc(SlotCount, 2)
     else
       Inc(SlotCount);
@@ -3681,6 +3882,25 @@ begin
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
         Self.Emit(#9'pushq %rax');
+      end
+      else if (ParamType <> nil) and (ParamType.Kind = tyInterface) then
+      begin
+        { Interface param: push obj first (lower slot), then itab (higher slot).
+          Pop loop runs high-to-low, so itab is popped first into the higher reg. }
+        if (ADecl <> nil) and (I < ADecl.Params.Count) then
+          Self.EmitMethodArgPush(TMethodParam(ADecl.Params.Items[I]), Arg)
+        else if Arg is TIdentExpr then
+        begin
+          Self.Emit(Format(#9'movq %s, %%rax',
+            [Self.IntfObjOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+          Self.Emit(Format(#9'movq %s, %%rcx',
+            [Self.IntfItabOperand(TIdentExpr(Arg).Name, TIdentExpr(Arg).IsGlobal)]));
+          Self.Emit(#9'pushq %rax');
+          Self.Emit(#9'pushq %rcx');
+        end
+        else
+          raise ENativeCodeGenError.Create(
+            'native backend: unsupported interface arg expression in EmitCall');
       end
       else
       begin
@@ -4071,7 +4291,8 @@ begin
     if not IsIntFamily(P.ResolvedType) and not IsFloatFamily(P.ResolvedType) and
        ((P.ResolvedType = nil) or
         not (P.ResolvedType.Kind in [tyString, tyPChar, tyPointer,
-                                     tyClass, tyOpenArray, tyDynArray])) then
+                                     tyClass, tyInterface,
+                                     tyOpenArray, tyDynArray])) then
       raise ENativeCodeGenError.Create(
         'native backend: unsupported parameter type (param ' + P.ParamName + ')');
   end;
@@ -4143,6 +4364,24 @@ begin
           Self.Emit(Format(#9'movsd %s, %s',
             [SysVXmmArgRegs[XmmIdx], Self.VarOperand(P.ParamName)]));
         Inc(XmmIdx);
+      end;
+    end
+    else if (P.ResolvedType <> nil) and (P.ResolvedType.Kind = tyInterface) then
+    begin
+      { Interface param: spill obj register into the 16-byte slot base,
+        itab register into base+8.  IntfItabOperand computes Off+8 from the
+        frame entry, which lands correctly because AddSlot reserved 16 bytes. }
+      if IntIdx < 6 then
+      begin
+        Self.Emit(Format(#9'movq %s, %s',
+          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName)]));
+        Inc(IntIdx);
+      end;
+      if IntIdx < 6 then
+      begin
+        Self.Emit(Format(#9'movq %s, %s',
+          [SysVArgRegs64[IntIdx], Self.IntfItabOperand(P.ParamName, False)]));
+        Inc(IntIdx);
       end;
     end
     else if P.IsVarParam then

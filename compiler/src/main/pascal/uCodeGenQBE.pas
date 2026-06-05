@@ -4789,6 +4789,7 @@ var
   PT:       TProceduralTypeDesc;
   SlotAddr: string;
   DataTemp: string;
+  ItabName: string;
 begin
   { Interface method dispatch: load obj + itab, index by method slot }
   if (ACall.ResolvedClassType <> nil) and
@@ -5059,7 +5060,16 @@ begin
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
       begin
         ArgTemps.Add('');
-        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+        if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyClass then
+        begin
+          ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+          ItabName := '$itab_' +
+            ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+            + '_' + QBEMangle(Par.ResolvedType.Name);
+          ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ItabName]);
+        end
+        else
+          ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
       end
       else
       begin
@@ -5176,6 +5186,7 @@ var
   SelfTemp: string;
   ArgLine:  string;
   ArgTemp:  string;
+  ArgTemp2: string;
   Par:      TMethodParam;
   QType:    string;
   I:        Integer;
@@ -5203,7 +5214,16 @@ begin
     end;
     if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
     begin
-      ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+      if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyClass then
+      begin
+        ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+        ArgTemp2 := '$itab_' +
+          ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+          + '_' + QBEMangle(Par.ResolvedType.Name);
+        ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+      end
+      else
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
       Continue;
     end;
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
@@ -6493,9 +6513,20 @@ begin
           else if (Par.ResolvedType <> nil) and
                   (Par.ResolvedType.Kind = tyInterface) then
           begin
-            EmitInterfaceExprPair(TASTExpr(ACall.Args.Items[I]),
-              ArgTemp, ArgTemp2);
-            ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+            if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyClass then
+            begin
+              ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+              ArgTemp2 := '$itab_' +
+                ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+                + '_' + QBEMangle(Par.ResolvedType.Name);
+              ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+            end
+            else
+            begin
+              EmitInterfaceExprPair(TASTExpr(ACall.Args.Items[I]),
+                ArgTemp, ArgTemp2);
+              ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
+            end;
           end
           else
           begin
@@ -6576,9 +6607,20 @@ begin
                 (Par.ResolvedType.Kind = tyInterface) then
         begin
           ArgTemps.Add('');
-          EmitInterfaceExprPair(TASTExpr(ACall.Args.Items[I]),
-            ArgTemp, ArgTemp2);
-          ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
+          if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyClass then
+          begin
+            ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+            ArgTemp2 := '$itab_' +
+              ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+              + '_' + QBEMangle(Par.ResolvedType.Name);
+            ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
+          end
+          else
+          begin
+            EmitInterfaceExprPair(TASTExpr(ACall.Args.Items[I]),
+              ArgTemp, ArgTemp2);
+            ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
+          end;
         end
         else
         begin

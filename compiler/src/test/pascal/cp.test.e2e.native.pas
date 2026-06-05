@@ -153,6 +153,12 @@ type
     { Regression (issue #64): interface-typed field with same name as a
       program-level global of a different type }
     procedure TestRun_Native_InterfaceField_ShadowsGlobal;
+    { Interface parameters — fat pointer passing through all call sites }
+    procedure TestRun_Native_IntfParam_Proc;
+    procedure TestRun_Native_IntfParam_Method;
+    procedure TestRun_Native_IntfParam_Constructor;
+    procedure TestRun_Native_IntfParam_Inherited;
+    procedure TestRun_Native_IntfParam_ClassExpr;
 
     { M8 — inherited calls }
     procedure TestRun_Native_Inherited_Proc;
@@ -2106,6 +2112,149 @@ const
     end.
     ''';
 
+  { Interface params: passing interface fat pointers to procedures, methods,
+    constructors, and inherited calls.  Each program passes an interface value
+    as an argument and verifies correct dispatch through the received fat pointer. }
+
+  { 1. Interface arg to a standalone procedure. }
+  SrcNativeIntfParamProc = '''
+    program P;
+    type
+      IPrinter = interface
+        procedure Print;
+      end;
+      TDoc = class(TObject, IPrinter)
+        procedure Print;
+      end;
+    procedure TDoc.Print;
+    begin WriteLn('doc') end;
+    procedure UsePrinter(P: IPrinter);
+    begin P.Print end;
+    var
+      D: TDoc;
+      I: IPrinter;
+    begin
+      D := TDoc.Create;
+      I := D;
+      UsePrinter(I)
+    end.
+    ''';
+
+  { 2. Interface arg to a class method. }
+  SrcNativeIntfParamMethod = '''
+    program P;
+    type
+      IPrinter = interface
+        procedure Print;
+      end;
+      TDoc = class(TObject, IPrinter)
+        procedure Print;
+      end;
+      TRunner = class
+        procedure Run(P: IPrinter);
+      end;
+    procedure TDoc.Print;
+    begin WriteLn('method') end;
+    procedure TRunner.Run(P: IPrinter);
+    begin P.Print end;
+    var
+      D: TDoc;
+      I: IPrinter;
+      R: TRunner;
+    begin
+      D := TDoc.Create;
+      I := D;
+      R := TRunner.Create;
+      R.Run(I)
+    end.
+    ''';
+
+  { 3. Interface arg to a constructor. }
+  SrcNativeIntfParamCtor = '''
+    program P;
+    type
+      IPrinter = interface
+        procedure Print;
+      end;
+      TDoc = class(TObject, IPrinter)
+        procedure Print;
+      end;
+      THolder = class
+        FP: IPrinter;
+        constructor Create(P: IPrinter);
+        procedure Use;
+      end;
+    procedure TDoc.Print;
+    begin WriteLn('ctor') end;
+    constructor THolder.Create(P: IPrinter);
+    begin FP := P end;
+    procedure THolder.Use;
+    begin FP.Print end;
+    var
+      D: TDoc;
+      I: IPrinter;
+      H: THolder;
+    begin
+      D := TDoc.Create;
+      I := D;
+      H := THolder.Create(I);
+      H.Use
+    end.
+    ''';
+
+  { 4. Interface arg to an inherited call. }
+  SrcNativeIntfParamInherited = '''
+    program P;
+    type
+      IPrinter = interface
+        procedure Print;
+      end;
+      TDoc = class(TObject, IPrinter)
+        procedure Print;
+      end;
+      TBase = class
+        procedure Use(P: IPrinter); virtual;
+      end;
+      TChild = class(TBase)
+        procedure Use(P: IPrinter); override;
+      end;
+    procedure TDoc.Print;
+    begin WriteLn('inherited') end;
+    procedure TBase.Use(P: IPrinter);
+    begin P.Print end;
+    procedure TChild.Use(P: IPrinter);
+    begin inherited Use(P) end;
+    var
+      D: TDoc;
+      I: IPrinter;
+      C: TChild;
+    begin
+      D := TDoc.Create;
+      I := D;
+      C := TChild.Create;
+      C.Use(I)
+    end.
+    ''';
+
+  { 5. Passing a class expression directly as an interface parameter. }
+  SrcNativeIntfParamClassExpr = '''
+    program P;
+    type
+      IPrinter = interface
+        procedure Print;
+      end;
+      TDoc = class(TObject, IPrinter)
+        procedure Print;
+      end;
+    procedure TDoc.Print;
+    begin WriteLn('class-expr') end;
+    procedure UsePrinter(P: IPrinter);
+    begin P.Print end;
+    begin
+      UsePrinter(TDoc.Create)
+    end.
+    ''';
+
   { M8 — inherited calls.  An override that chains to the parent body via
     `inherited` must dispatch statically to the parent method. }
   SrcInheritedProc = '''
@@ -2307,14 +2456,40 @@ begin
 end;
 
 procedure TE2ENativeTests.TestRun_Native_InterfaceField_ShadowsGlobal;
-var Output: string; RCode: Integer;
 begin
-  { Native backend does not yet support interface parameters in constructors
-    (class-to-interface arg passing); test the QBE path only. }
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run (QBE)', CompileAndRun(SrcNativeIntfFieldShadowsGlobal, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('interface dispatch via field', 'printed' + LE, Output);
+  AssertRunsOnBoth(SrcNativeIntfFieldShadowsGlobal, 'printed' + LE, 0);
+end;
+
+
+procedure TE2ENativeTests.TestRun_Native_IntfParam_Proc;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNativeIntfParamProc, 'doc' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IntfParam_Method;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNativeIntfParamMethod, 'method' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IntfParam_Constructor;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNativeIntfParamCtor, 'ctor' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IntfParam_Inherited;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNativeIntfParamInherited, 'inherited' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IntfParam_ClassExpr;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcNativeIntfParamClassExpr, 'class-expr' + LE, 0);
 end;
 
 initialization
