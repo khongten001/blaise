@@ -3666,7 +3666,7 @@ begin
   begin
     IntfDesc := TInterfaceTypeDesc(AAssign.ResolvedLhsType);
     ClassRT  := TRecordTypeDesc(AAssign.Expr.ResolvedType);
-    ItabName := '$itab_' + ClassSymName(ClassRT.Name) + '_' + QBEMangle(IntfDesc.Name);
+    ItabName := '$itab_' + QBEMangle(ClassSymName(ClassRT.Name)) + '_' + QBEMangle(IntfDesc.Name);
     ValTemp  := EmitExpr(AAssign.Expr);
     if AAssign.IsWeakLhs then
       EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
