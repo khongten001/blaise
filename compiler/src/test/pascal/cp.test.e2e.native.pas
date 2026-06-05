@@ -170,6 +170,10 @@ type
     { Array field access }
     procedure TestRun_Native_RecordArrayField_StaticRead;
 
+    { ARC on class fields }
+    procedure TestRun_Native_ArcClassField_StoreAndRead;
+    procedure TestRun_Native_ArcStringField_StoreAndRead;
+
     { Generics }
     procedure TestRun_Native_GenericRecord_Method;
     procedure TestRun_Native_GenericClass_Method;
@@ -2380,6 +2384,42 @@ const
     end.
     ''';
 
+  SrcArcClassField = '''
+    program P;
+    type
+      TChild = class
+        X: Integer;
+      end;
+      TParent = class
+        Child: TChild;
+      end;
+    var
+      Pa: TParent;
+      C: TChild;
+    begin
+      Pa := TParent.Create;
+      C := TChild.Create;
+      C.X := 42;
+      Pa.Child := C;
+      C := Pa.Child;
+      WriteLn(C.X)
+    end.
+    ''';
+
+  SrcArcStringField = '''
+    program P;
+    type
+      THolder = class
+        S: string;
+      end;
+    var H: THolder;
+    begin
+      H := THolder.Create;
+      H.S := 'hello';
+      WriteLn(H.S)
+    end.
+    ''';
+
   SrcGenericRecordMethod = '''
     program P;
     type
@@ -2609,6 +2649,18 @@ procedure TE2ENativeTests.TestRun_Native_RecordArrayField_StaticRead;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcRecordStaticArrayField, '99' + LE + '0' + LE + '0' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ArcClassField_StoreAndRead;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcArcClassField, '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ArcStringField_StoreAndRead;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcArcStringField, 'hello' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_GenericRecord_Method;

@@ -645,6 +645,45 @@ begin
     Result := NativeMangle(ATypeName + '_' + AMethodName);
 end;
 
+function NativeExprOwnsRef(AExpr: TASTExpr): Boolean;
+var
+  FA: TFieldAccessExpr;
+  MC: TMethodCallExpr;
+  IE: TIdentExpr;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  if AExpr.ResolvedType = nil then Exit;
+  if AExpr.ResolvedType.Kind <> tyClass then Exit;
+  if AExpr is TIdentExpr then
+  begin
+    IE := TIdentExpr(AExpr);
+    if IE.IsNoArgFuncCall or IE.IsImplicitSelfMethod then
+      Exit(True);
+  end;
+  if AExpr is TFieldAccessExpr then
+  begin
+    FA := TFieldAccessExpr(AExpr);
+    if FA.IsConstructorCall then Exit;
+    if FA.IsMethodCall then begin Result := True; Exit end;
+    if (FA.PropRead <> nil) and (FA.PropRead.ReadMethod <> '') then
+      Exit(True);
+  end;
+  if AExpr is TMethodCallExpr then
+  begin
+    MC := TMethodCallExpr(AExpr);
+    if not MC.IsConstructorCall then Result := True;
+    Exit;
+  end;
+  if AExpr is TFuncCallExpr then
+  begin
+    if (TFuncCallExpr(AExpr).ResolvedDecl <> nil) or
+       TFuncCallExpr(AExpr).IsIndirectCall then
+      Result := True;
+    Exit;
+  end;
+end;
+
 { Emit an immortal class-name string blob and return the label+12 reference
   (the pointer to the character data, past the 12-byte ARC/length header). }
 function TX86_64Backend.EmitClassNameString(const AClassName: string): string;
@@ -3924,26 +3963,64 @@ begin
       Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]),
         FA.FieldInfo.TypeDesc);
     end
-    else if FA.IsClassAccess then
+    else if FA.IsClassAccess or FA.IsImplicitSelf then
     begin
-      { TODO: ARC for class fields — [Unretained] must release owned RHS, normal fields need addref/release }
-      { Class field write: load the class ptr from its slot (movq), store through it. }
       Self.Emit(#9'pushq %rax');
-      if Self.IsLocal(FA.RecordName) then
+      if FA.IsImplicitSelf then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]))
+      else if Self.IsLocal(FA.RecordName) then
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
-      Self.Emit(#9'popq %rax');
-      Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
-    end
-    else if FA.IsImplicitSelf then
-    begin
-      { TODO: ARC for implicit-Self class fields — [Unretained] must release owned RHS }
-      { Bare field assignment inside a class method: write through Self. }
-      Self.Emit(#9'pushq %rax');
-      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]));
-      Self.Emit(#9'popq %rax');
-      Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      if FA.FieldInfo.IsUnretained and (FA.FieldInfo.TypeDesc.Kind = tyClass) then
+      begin
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+        if NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'movq %rax, %rdi');
+          Self.Emit(#9'callq _ClassRelease');
+        end;
+      end
+      else if FA.FieldInfo.IsWeak then
+      begin
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'leaq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'movq %rax, %rsi');
+        Self.Emit(#9'callq _WeakAssign');
+      end
+      else if FA.FieldInfo.TypeDesc.Kind = tyClass then
+      begin
+        { ARC: addref(new), release(old), store new. }
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else if FA.FieldInfo.TypeDesc.IsString then
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else
+      begin
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end;
     end
     else if FA.IsVarParam then
     begin
