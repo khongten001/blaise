@@ -12,24 +12,28 @@
   A weak reference is a slot (variable or field) pointing at a class
   instance without contributing to its refcount.  When the backing
   object's last strong reference is released and the object is about to
-  be freed, every registered weak slot pointing at it is nil'd — so a
+  be freed, every registered weak slot pointing at it is nil'd -- so a
   subsequent dereference sees nil rather than dangling memory.
 
   Design: one global open-chained hash table, keyed on the user_ptr of
   the backing object.  Each entry carries a linked list of slot
   addresses (pointers-to-pointers) that reference it.  Inserts and
-  removals are O(bucket-chain + slot-list) — acceptable because weak
+  removals are O(bucket-chain + slot-list) -- acceptable because weak
   references are rare relative to strong references.
 
+  Thread safety: a single pthread mutex protects all table mutations.
+  The lock is coarse-grained but sufficient because weak references
+  are infrequent relative to strong ARC operations.
+
   API:
-    _WeakAssign(slot, new_target) — register slot under new_target and
+    _WeakAssign(slot, new_target) -- register slot under new_target and
                                     store new_target at *slot; any prior
                                     registration for *slot is removed.
                                     new_target may be nil (just unregister).
-    _WeakClear(slot)              — unregister and zero *slot.  Called at
+    _WeakClear(slot)              -- unregister and zero *slot.  Called at
                                     scope exit and field cleanup for weak
                                     declarations.
-    _WeakZeroSlots(target)        — nil every slot pointing at target and
+    _WeakZeroSlots(target)        -- nil every slot pointing at target and
                                     drop target's entry from the table.
                                     Called from _ClassRelease at refcount
                                     zero, before the field-cleanup fn
@@ -65,9 +69,16 @@ type
 
 function _BlaiseGetMem(Size: Integer): Pointer; external name '_BlaiseGetMem';
 procedure _BlaiseFreeMem(Ptr: Pointer); external name '_BlaiseFreeMem';
+function pthread_mutex_init(Mutex: Pointer; Attr: Pointer): Integer;
+  external name 'pthread_mutex_init';
+function pthread_mutex_lock(Mutex: Pointer): Integer;
+  external name 'pthread_mutex_lock';
+function pthread_mutex_unlock(Mutex: Pointer): Integer;
+  external name 'pthread_mutex_unlock';
 
 var
   WeakTable: array[0..255] of PWeakEntry;
+  WeakMutex: array[0..5] of Int64;
 
 function WeakHash(Ptr: Pointer): Integer;
 begin
@@ -152,6 +163,7 @@ var
 begin
   if Slot = nil then
     Exit;
+  pthread_mutex_lock(@WeakMutex);
   WeakUnregister(Slot);
   PP := Slot;
   PP^ := NewTarget;
@@ -159,14 +171,21 @@ begin
   begin
     E := WeakFindOrCreate(NewTarget);
     if E = nil then
+    begin
+      pthread_mutex_unlock(@WeakMutex);
       Exit;
+    end;
     S := PWeakSlot(_BlaiseGetMem(16));
     if S = nil then
+    begin
+      pthread_mutex_unlock(@WeakMutex);
       Exit;
+    end;
     S^.Addr := Slot;
     S^.Next := E^.Slots;
     E^.Slots := S;
   end;
+  pthread_mutex_unlock(@WeakMutex);
 end;
 
 procedure _WeakClear(Slot: Pointer);
@@ -175,9 +194,11 @@ var
 begin
   if Slot = nil then
     Exit;
+  pthread_mutex_lock(@WeakMutex);
   WeakUnregister(Slot);
   PP := Slot;
   PP^ := nil;
+  pthread_mutex_unlock(@WeakMutex);
 end;
 
 procedure _WeakZeroSlots(Target: Pointer);
@@ -192,6 +213,7 @@ var
 begin
   if Target = nil then
     Exit;
+  pthread_mutex_lock(@WeakMutex);
   H := WeakHash(Target);
   Prev := nil;
   E := WeakTable[H];
@@ -214,11 +236,16 @@ begin
       else
         Prev^.Next := Dead^.Next;
       _BlaiseFreeMem(Dead);
+      pthread_mutex_unlock(@WeakMutex);
       Exit;
     end;
     Prev := E;
     E := E^.Next;
   end;
+  pthread_mutex_unlock(@WeakMutex);
 end;
+
+initialization
+  pthread_mutex_init(@WeakMutex, nil);
 
 end.
