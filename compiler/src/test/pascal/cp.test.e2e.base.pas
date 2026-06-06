@@ -305,7 +305,11 @@ var
 begin
   AssertTrue('[' + AName + '] compile+run',
     Self.CompileAndRunOn(ABackend, ASrc, Output, RCode));
-  AssertEquals('[' + AName + '] exit code', AExpectedCode, RCode);
+  if RCode <> AExpectedCode then
+    AssertEquals('[' + AName + '] exit code (stdout: ' + Output + ')',
+      AExpectedCode, RCode)
+  else
+    AssertEquals('[' + AName + '] exit code', AExpectedCode, RCode);
   AssertEquals('[' + AName + '] stdout', AExpectedOut, Output)
 end;
 
