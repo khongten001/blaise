@@ -72,18 +72,18 @@ procedure TMultifileTests.WriteUnit(const AName, ASrc: string);
 var
   F: TStringList;
 begin
-  F := TStringList.Create;
+  F := TStringList.Create();
   try
     F.Text := ASrc;
     F.SaveToFile(FTmpDir + '/' + AName + '.pas');
   finally
-    F.Free;
+    F.Free();
   end;
 end;
 
 function TMultifileTests.MakeSearchPaths: TStringList;
 begin
-  Result := TStringList.Create;
+  Result := TStringList.Create();
   Result.Add(FTmpDir);
 end;
 
@@ -95,10 +95,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -110,10 +110,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.ParseUnit;
+    Result := P.ParseUnit();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -145,7 +145,7 @@ begin
 
   Paths  := MakeSearchPaths;
   Loader := TUnitLoader.Create(Paths);
-  Names  := TStringList.Create;
+  Names  := TStringList.Create();
   try
     Names.Add('MathUtils');
     Units := Loader.LoadAll(Names);
@@ -153,12 +153,12 @@ begin
       AssertEquals('one unit loaded', 1, Units.Count);
       AssertEquals('unit name', 'MathUtils', TUnit(Units.Items[0]).Name);
     finally
-      Units.Free;
+      Units.Free();
     end;
   finally
-    Names.Free;
-    Loader.Free;
-    Paths.Free;
+    Names.Free();
+    Loader.Free();
+    Paths.Free();
   end;
 end;
 
@@ -171,20 +171,20 @@ var
 begin
   Paths  := MakeSearchPaths;
   Loader := TUnitLoader.Create(Paths);
-  Names  := TStringList.Create;
+  Names  := TStringList.Create();
   try
     Names.Add('NoSuchUnit');
     try
       Units := Loader.LoadAll(Names);
-      Units.Free;
+      Units.Free();
       Fail('Expected EUnitNotFound');
     except
       on E: EUnitNotFound do ;  { expected }
     end;
   finally
-    Names.Free;
-    Loader.Free;
-    Paths.Free;
+    Names.Free();
+    Loader.Free();
+    Paths.Free();
   end;
 end;
 
@@ -217,20 +217,20 @@ begin
 
   Paths  := MakeSearchPaths;
   Loader := TUnitLoader.Create(Paths);
-  Names  := TStringList.Create;
+  Names  := TStringList.Create();
   try
     Names.Add('CycleA');
     try
       Units := Loader.LoadAll(Names);
-      Units.Free;
+      Units.Free();
       Fail('Expected ECircularDependency');
     except
       on E: ECircularDependency do ;  { expected }
     end;
   finally
-    Names.Free;
-    Loader.Free;
-    Paths.Free;
+    Names.Free();
+    Loader.Free();
+    Paths.Free();
   end;
 end;
 
@@ -271,7 +271,7 @@ begin
 
   Paths  := MakeSearchPaths;
   Loader := TUnitLoader.Create(Paths);
-  Names  := TStringList.Create;
+  Names  := TStringList.Create();
   try
     Names.Add('DepA');
     Units := Loader.LoadAll(Names);
@@ -281,12 +281,12 @@ begin
       AssertEquals('second is DepB',     'DepB', TUnit(Units.Items[1]).Name);
       AssertEquals('third is DepA',      'DepA', TUnit(Units.Items[2]).Name);
     finally
-      Units.Free;
+      Units.Free();
     end;
   finally
-    Names.Free;
-    Loader.Free;
-    Paths.Free;
+    Names.Free();
+    Loader.Free();
+    Paths.Free();
   end;
 end;
 
@@ -324,16 +324,16 @@ var
 begin
   U    := ParseUnitSrc(UnitSrc);
   Prog := ParseProg(ProgSrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     SA.AnalyseUnitForExport(U);
     { If TPoint is not in global scope, Analyse will raise ESemanticError }
     SA.Analyse(Prog);
     AssertNotNull('prog analysed', Prog.SymbolTable);
   finally
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -367,15 +367,15 @@ var
 begin
   U    := ParseUnitSrc(UnitSrc);
   Prog := ParseProg(ProgSrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     SA.AnalyseUnitForExport(U);
     SA.Analyse(Prog);
     AssertNotNull('prog analysed', Prog.SymbolTable);
   finally
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -415,21 +415,21 @@ var
 begin
   U    := ParseUnitSrc(UnitSrc);
   Prog := ParseProg(ProgSrc);
-  SA   := TSemanticAnalyser.Create;
-  CG   := TCodeGenQBE.Create;
+  SA   := TSemanticAnalyser.Create();
+  CG   := TCodeGenQBE.Create();
   try
     SA.AnalyseUnitForExport(U);
     SA.Analyse(Prog);
     CG.AppendUnit(U);
     CG.AppendProgram(Prog);
-    IR := CG.GetOutput;
+    IR := CG.GetOutput();
     AssertTrue('unit func exported',
       (Pos('export function', IR) > 0) and (Pos('$MathU_Add', IR) > 0));
   finally
-    CG.Free;
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    CG.Free();
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -465,21 +465,21 @@ var
 begin
   U    := ParseUnitSrc(UnitSrc);
   Prog := ParseProg(ProgSrc);
-  SA   := TSemanticAnalyser.Create;
-  CG   := TCodeGenQBE.Create;
+  SA   := TSemanticAnalyser.Create();
+  CG   := TCodeGenQBE.Create();
   try
     SA.AnalyseUnitForExport(U);
     SA.Analyse(Prog);
     CG.AppendUnit(U);
     CG.AppendProgram(Prog);
-    IR := CG.GetOutput;
+    IR := CG.GetOutput();
     AssertTrue('main function present',
       (Pos('export function', IR) > 0) and (Pos('$main', IR) > 0));
   finally
-    CG.Free;
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    CG.Free();
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 

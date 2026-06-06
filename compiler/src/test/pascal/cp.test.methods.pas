@@ -77,10 +77,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -89,11 +89,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -104,15 +104,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -122,7 +122,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -147,7 +147,7 @@ const
           end;
         var C: TCounter;
         begin
-          C := TCounter.Create;
+          C := TCounter.Create();
           C.SetValue(42)
         end.
         ''';
@@ -165,8 +165,8 @@ const
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
-          F.Reset
+          F := TFoo.Create();
+          F.Reset()
         end.
         ''';
 
@@ -181,10 +181,10 @@ var
 begin
   L := TLexer.Create('procedure');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('procedure token', Ord(tkProcedure), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -202,7 +202,7 @@ begin
     CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
     AssertEquals('one method', 1, CD.Methods.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -218,7 +218,7 @@ begin
     MD := TMethodDecl(CD.Methods[0]);
     AssertEquals('method name', 'SetValue', MD.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -234,7 +234,7 @@ begin
     MD := TMethodDecl(CD.Methods[0]);
     AssertEquals('zero params', 0, MD.Params.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -250,7 +250,7 @@ begin
     MD := TMethodDecl(CD.Methods[0]);
     AssertEquals('one param', 1, MD.Params.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -268,7 +268,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('param name', 'AVal', Par.ParamName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -286,7 +286,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('param type', 'Integer', Par.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -303,7 +303,7 @@ begin
     AssertEquals('body has 1 stmt', 1, MD.Body.Stmts.Count);
     AssertTrue('stmt is TFieldAssignment', MD.Body.Stmts[0] is TFieldAssignment);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -321,7 +321,7 @@ begin
     AssertEquals('object name', 'C', Stmt.ObjectName);
     AssertEquals('method name', 'SetValue', Stmt.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -336,7 +336,7 @@ begin
     AssertEquals('one arg', 1, Stmt.Args.Count);
     AssertTrue('arg is TIntLiteral', Stmt.Args[0] is TIntLiteral);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -351,7 +351,7 @@ begin
     AssertEquals('method name', 'Reset', Stmt.Name);
     AssertEquals('zero args', 0, Stmt.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -361,7 +361,7 @@ end;
 
 procedure TMethodTests.TestSemantic_MethodCall_Resolves;
 begin
-  AnalyseSrc(SrcCounter).Free;
+  AnalyseSrc(SrcCounter).Free();
 end;
 
 procedure TMethodTests.TestSemantic_MethodCall_UnknownMethod_RaisesError;
@@ -375,7 +375,7 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.NoSuchMethod
         end.
         ''');
@@ -396,7 +396,7 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.SetX('not an int')
         end.
         ''');
@@ -417,7 +417,7 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.SetX(1, 2)
         end.
         ''');
@@ -437,13 +437,13 @@ begin
     Stmt := TFieldAssignment(MD.Body.Stmts[0]);
     AssertTrue('Self.Value is class access', Stmt.IsClassAccess);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TMethodTests.TestSemantic_Method_SelfFieldWrite_OK;
 begin
-  AnalyseSrc(SrcCounter).Free;
+  AnalyseSrc(SrcCounter).Free();
 end;
 
 procedure TMethodTests.TestSemantic_Method_ParamResolved;
@@ -462,7 +462,7 @@ begin
     AssertEquals('param type is Integer',
       Ord(tyInteger), Ord(Par.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

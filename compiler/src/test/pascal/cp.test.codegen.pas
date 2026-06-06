@@ -97,22 +97,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -438,7 +438,7 @@ begin
     'begin Result := Self.FVal end;'                 + LineEnding +
     'var MyObj: TFoo;'                               + LineEnding +
     'begin'                                          + LineEnding +
-    '  MyObj := TFoo.Create;'                        + LineEnding +
+    '  MyObj := TFoo.Create();'                        + LineEnding +
     '  WriteLn(myobj.GetVal)'                        + LineEnding +
     'end.');
   AssertTrue('definition uses declared $MyObj',
@@ -515,12 +515,12 @@ begin
     '  TFoo = class'                                 + LineEnding +
     '    procedure DoIt;'                            + LineEnding +
     '  end;'                                         + LineEnding +
-    'procedure TFoo.DoIt;'                           + LineEnding +
+    'procedure TFoo.DoIt();'                           + LineEnding +
     'begin end;'                                     + LineEnding +
     'var Obj: TFoo;'                                 + LineEnding +
     'begin'                                          + LineEnding +
-    '  Obj := TFoo.Create;'                          + LineEnding +
-    '  obj.DoIt'                                     + LineEnding +
+    '  Obj := TFoo.Create();'                          + LineEnding +
+    '  obj.DoIt()'                                     + LineEnding +
     'end.');
   AssertTrue('definition uses declared $Obj',
     Pos('data $Obj', IR) >= 0);

@@ -94,9 +94,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.ParseUnit;
+    Result := P.ParseUnit();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -104,11 +104,11 @@ function TUnitTests.AnalyseUnit(const ASrc: string): TUnit;
 var A: TSemanticAnalyser;
 begin
   Result := ParseUnit(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.AnalyseUnit(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -117,15 +117,15 @@ var U: TUnit; CG: TCodeGenQBE;
 begin
   U := AnalyseUnit(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.GenerateUnit(U);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -134,7 +134,7 @@ var U: TUnit;
 begin
   try
     U := AnalyseUnit(ASrc);
-    U.Free;
+    U.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -208,9 +208,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('unit');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('unit token', Ord(tkUnit), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TUnitTests.TestLexer_Interface_Keyword;
@@ -218,9 +218,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('interface');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('interface token', Ord(tkIntf), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TUnitTests.TestLexer_Implementation_Keyword;
@@ -228,9 +228,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('implementation');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('implementation token', Ord(tkImplementation), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -243,7 +243,7 @@ begin
   U := ParseUnit(SrcUnitFuncs);
   try
     AssertNotNull('TUnit returned', U);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_Name;
@@ -252,7 +252,7 @@ begin
   U := ParseUnit(SrcUnitFuncs);
   try
     AssertEquals('unit name is MathUtils', 'MathUtils', U.Name);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_IntfHasForwardDecls;
@@ -261,7 +261,7 @@ begin
   U := ParseUnit(SrcUnitFuncs);
   try
     AssertEquals('intf has 2 forward decls', 2, U.IntfBlock.ProcDecls.Count);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_ForwardDeclHasNilBody;
@@ -271,7 +271,7 @@ begin
   try
     MD := TMethodDecl(U.IntfBlock.ProcDecls[0]);
     AssertNull('forward decl body is nil', MD.Body);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_ImplHasFullBodies;
@@ -280,7 +280,7 @@ begin
   U := ParseUnit(SrcUnitFuncs);
   try
     AssertEquals('impl has 2 full decls', 2, U.ImplBlock.ProcDecls.Count);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_ImplBodyIsNotNil;
@@ -290,7 +290,7 @@ begin
   try
     MD := TMethodDecl(U.ImplBlock.ProcDecls[0]);
     AssertNotNull('impl body is not nil', MD.Body);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_IntfTypeDecl;
@@ -301,7 +301,7 @@ begin
     AssertEquals('intf has 1 type decl', 1, U.IntfBlock.TypeDecls.Count);
     AssertEquals('type name is TBox',
       'TBox', TTypeDecl(U.IntfBlock.TypeDecls[0]).Name);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_ForwardDeclParamCount;
@@ -311,7 +311,7 @@ begin
   try
     MD := TMethodDecl(U.IntfBlock.ProcDecls[0]);  { Add }
     AssertEquals('Add has 2 params', 2, MD.Params.Count);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 procedure TUnitTests.TestParse_Unit_MultipleForwardDecls;
@@ -321,7 +321,7 @@ begin
   try
     AssertEquals('intf has 1 forward decl', 1, U.IntfBlock.ProcDecls.Count);
     AssertEquals('impl has 2 full decls',   2, U.ImplBlock.ProcDecls.Count);
-  finally U.Free; end;
+  finally U.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -330,18 +330,18 @@ end;
 
 procedure TUnitTests.TestSemantic_Unit_OK;
 begin
-  AnalyseUnit(SrcUnitFuncs).Free;
+  AnalyseUnit(SrcUnitFuncs).Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_WithType_OK;
 begin
-  AnalyseUnit(SrcUnitWithType).Free;
+  AnalyseUnit(SrcUnitWithType).Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_ImplBodyUsesIntfType;
 begin
   { TBox is declared in interface; impl body can reference it }
-  AnalyseUnit(SrcUnitWithType).Free;
+  AnalyseUnit(SrcUnitWithType).Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_SignatureMismatch_ParamCount_RaisesError;
@@ -375,7 +375,7 @@ end;
 procedure TUnitTests.TestSemantic_Unit_ImplOnlyDecl_OK;
 begin
   { Helper is impl-only; Pub calls Helper — both should resolve }
-  AnalyseUnit(SrcUnitImplOnly).Free;
+  AnalyseUnit(SrcUnitImplOnly).Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -442,7 +442,7 @@ begin
         begin Counter := Counter + 1 end;
         end.
         ''');
-  U.Free;
+  U.Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_ImplTypeDecl;
@@ -462,7 +462,7 @@ begin
         begin CurrentMode := mA end;
         end.
         ''');
-  U.Free;
+  U.Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_ForwardOverload_OK;
@@ -482,7 +482,7 @@ begin
         begin Result := A + B end;
         end.
         ''');
-  U.Free;
+  U.Free();
 end;
 
 procedure TUnitTests.TestUnitLoader_MissingUnit_NoSearchPaths_RaisesError;
@@ -496,29 +496,29 @@ var
 begin
   Lexer  := TLexer.Create('program nounit; uses zip, zilch, nada; begin end.');
   Parser := TParser.Create(Lexer);
-  Prog   := Parser.Parse;
+  Prog   := Parser.Parse();
   try
-    SearchPaths := TStringList.Create;
+    SearchPaths := TStringList.Create();
     try
       Loader := TUnitLoader.Create(SearchPaths);
       try
         try
           Units := Loader.LoadAll(Prog.UsedUnits);
-          Units.Free;
+          Units.Free();
           Fail('Expected EUnitNotFound');
         except
           on E: EUnitNotFound do ;
         end;
       finally
-        Loader.Free;
+        Loader.Free();
       end;
     finally
-      SearchPaths.Free;
+      SearchPaths.Free();
     end;
   finally
-    Prog.Free;
-    Parser.Free;
-    Lexer.Free;
+    Prog.Free();
+    Parser.Free();
+    Lexer.Free();
   end;
 end;
 

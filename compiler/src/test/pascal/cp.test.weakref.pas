@@ -94,10 +94,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -107,12 +107,12 @@ var
   Analyser: TSemanticAnalyser;
 begin
   Prog     := ParseSrc(ASrc);
-  Analyser := TSemanticAnalyser.Create;
+  Analyser := TSemanticAnalyser.Create();
   try
     Analyser.Analyse(Prog);
     Result := Prog;
   finally
-    Analyser.Free;
+    Analyser.Free();
   end;
 end;
 
@@ -123,15 +123,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -143,7 +143,7 @@ begin
   Raised := False;
   Msg    := '';
   try
-    AnalyseSrc(ASrc).Free;
+    AnalyseSrc(ASrc).Free();
   except
     on E: ESemanticError do
     begin
@@ -168,10 +168,10 @@ var
 begin
   L := TLexer.Create('[');
   try
-    Tok := L.Next;
+    Tok := L.Next();
     AssertEquals('kind is tkLBracket', Ord(tkLBracket), Ord(Tok.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -182,10 +182,10 @@ var
 begin
   L := TLexer.Create(']');
   try
-    Tok := L.Next;
+    Tok := L.Next();
     AssertEquals('kind is tkRBracket', Ord(tkRBracket), Ord(Tok.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -257,7 +257,7 @@ begin
     AssertTrue('Weak attribute recorded',
       VD.Attributes.IndexOf('Weak') >= 0);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -287,7 +287,7 @@ begin
     AssertTrue('Weak attribute recorded on field',
       FDecl.Attributes.IndexOf('Weak') >= 0);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -304,7 +304,7 @@ begin
     AssertTrue('attribute name captured',
       TVarDecl(Prog.Block.Decls[0]).Attributes.IndexOf('SomeUnknown') >= 0);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -319,7 +319,7 @@ begin
     AssertTrue('Weak recorded',      VD.Attributes.IndexOf('Weak') >= 0);
     AssertTrue('SomeOther recorded', VD.Attributes.IndexOf('SomeOther') >= 0);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -393,7 +393,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls[0]);
     AssertTrue('IsWeak flag set on class var', VD.IsWeak);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -407,7 +407,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls[0]);
     AssertTrue('IsWeak flag set on interface var', VD.IsWeak);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -433,7 +433,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls[0]);
     AssertTrue('IsWeak set via long form', VD.IsWeak);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -452,7 +452,7 @@ const
           Owner:       TFoo;
           [Weak] Peek: TFoo;
         begin
-          Owner := TFoo.Create;
+          Owner := TFoo.Create();
           Peek  := Owner
         end.
         ''';
@@ -477,7 +477,7 @@ const
         end;
         var H: THolder;
         begin
-          H := THolder.Create
+          H := THolder.Create()
         end.
         ''';
 
@@ -631,7 +631,7 @@ begin
         end;
       function TPool.MakeTarget: TTarget;
       begin
-        Result := TTarget.Create
+        Result := TTarget.Create()
       end;
       procedure TPool.CacheIt;
       begin

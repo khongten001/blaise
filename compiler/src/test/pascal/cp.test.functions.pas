@@ -75,10 +75,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -87,11 +87,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -102,15 +102,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -120,7 +120,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -149,7 +149,7 @@ const
           end;
         var B: TBox; N: Integer;
         begin
-          B := TBox.Create;
+          B := TBox.Create();
           B.SetValue(42);
           N := B.GetValue()
         end.
@@ -167,7 +167,7 @@ const
           end;
         var C: TCalc; N: Integer;
         begin
-          C := TCalc.Create;
+          C := TCalc.Create();
           N := C.Add(3, 4)
         end.
         ''';
@@ -183,10 +183,10 @@ var
 begin
   L := TLexer.Create('function');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('function token', Ord(tkFunction), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -204,7 +204,7 @@ begin
     CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
     AssertEquals('two methods (proc + func)', 2, CD.Methods.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -220,7 +220,7 @@ begin
     MD := TMethodDecl(CD.Methods[1]);  { second method = GetValue }
     AssertEquals('func name', 'GetValue', MD.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -236,7 +236,7 @@ begin
     MD := TMethodDecl(CD.Methods[1]);
     AssertEquals('return type name', 'Integer', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -253,7 +253,7 @@ begin
     AssertEquals('two params', 2, MD.Params.Count);
     AssertEquals('return type', 'Integer', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -268,7 +268,7 @@ begin
     Assign := TAssignment(Prog.Block.Stmts[2]);
     AssertTrue('RHS is TMethodCallExpr', Assign.Expr is TMethodCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -283,7 +283,7 @@ begin
     AssertEquals('object name', 'B', Expr.ObjectName);
     AssertEquals('method name', 'GetValue', Expr.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -302,7 +302,7 @@ begin
     AssertEquals('object', 'C', Expr.ObjectName);
     AssertEquals('method', 'Add', Expr.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -316,7 +316,7 @@ begin
     Expr := TMethodCallExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
     AssertEquals('two args', 2, Expr.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -338,18 +338,18 @@ begin
     AssertEquals('return type is Integer',
       Ord(tyInteger), Ord(MD.ResolvedReturnType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TFunctionTests.TestSemantic_FunctionCall_Resolves;
 begin
-  AnalyseSrc(SrcGetterClass).Free;
+  AnalyseSrc(SrcGetterClass).Free();
 end;
 
 procedure TFunctionTests.TestSemantic_FunctionCall_ReturnTypeAssign_OK;
 begin
-  AnalyseSrc(SrcGetterClass).Free;
+  AnalyseSrc(SrcGetterClass).Free();
 end;
 
 procedure TFunctionTests.TestSemantic_FunctionCall_ReturnTypeMismatch_RaisesError;
@@ -366,7 +366,7 @@ begin
           end;
         var F: TFoo; S: string;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           S := F.GetVal()
         end.
         ''');
@@ -386,7 +386,7 @@ begin
           end;
         var F: TFoo; N: Integer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           N := F.GetVal(1)
         end.
         ''');
@@ -408,11 +408,11 @@ begin
           end;
         var F: TFoo; N: Integer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           N := F.GetOne()
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TFunctionTests.TestSemantic_Result_WrongType_RaisesError;

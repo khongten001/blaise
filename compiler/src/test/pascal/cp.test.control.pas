@@ -113,10 +113,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -125,11 +125,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -140,15 +140,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -158,7 +158,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -221,9 +221,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('if');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('if token', Ord(tkIf), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_Then_Keyword;
@@ -231,9 +231,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('then');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('then token', Ord(tkThen), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_Else_Keyword;
@@ -241,9 +241,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('else');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('else token', Ord(tkElse), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_Equals_CompareOp;
@@ -251,9 +251,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('=');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('equals token', Ord(tkEquals), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_NotEquals;
@@ -261,9 +261,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('<>');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('<> token', Ord(tkNotEquals), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_LessThan;
@@ -271,9 +271,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('<');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('< token', Ord(tkLessThan), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_GreaterThan;
@@ -281,9 +281,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('>');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('> token', Ord(tkGreaterThan), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_LessEqual;
@@ -291,9 +291,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('<=');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('<= token', Ord(tkLessEqual), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_GreaterEqual;
@@ -301,9 +301,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('>=');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('>= token', Ord(tkGreaterEqual), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -316,7 +316,7 @@ begin
   Prog := ParseSrc(SrcIfOnly);
   try
     AssertTrue('second stmt is TIfStmt', Prog.Block.Stmts[1] is TIfStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_If_HasCondition;
@@ -326,7 +326,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertNotNull('condition not nil', S.Condition);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_If_ConditionIsBinaryExpr;
@@ -336,7 +336,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('condition is TBinaryExpr', S.Condition is TBinaryExpr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_If_NoElse;
@@ -346,7 +346,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertNull('no else stmt', S.ElseStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_IfElse_HasElseStmt;
@@ -356,7 +356,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertNotNull('else stmt present', S.ElseStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_If_ThenIsAssignment;
@@ -366,7 +366,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('then is TAssignment', S.ThenStmt is TAssignment);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_IfElse_ElseIsAssignment;
@@ -376,7 +376,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('else is TAssignment', S.ElseStmt is TAssignment);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_Compound_IsCompoundStmt;
@@ -386,7 +386,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('then is TCompoundStmt', S.ThenStmt is TCompoundStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_Compound_StmtCount;
@@ -397,7 +397,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     C := TCompoundStmt(S.ThenStmt);
     AssertEquals('two stmts in then block', 2, C.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_If_ThenIsCompound;
@@ -407,7 +407,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('then is TCompoundStmt', S.ThenStmt is TCompoundStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_IfElse_ElseIsCompound;
@@ -417,7 +417,7 @@ begin
   try
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertTrue('else is TCompoundStmt', S.ElseStmt is TCompoundStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -426,12 +426,12 @@ end;
 
 procedure TControlTests.TestSemantic_If_Resolves;
 begin
-  AnalyseSrc(SrcIfOnly).Free;
+  AnalyseSrc(SrcIfOnly).Free();
 end;
 
 procedure TControlTests.TestSemantic_IfElse_Resolves;
 begin
-  AnalyseSrc(SrcIfElse).Free;
+  AnalyseSrc(SrcIfElse).Free();
 end;
 
 procedure TControlTests.TestSemantic_Comparison_EQ_TypeIsBoolean;
@@ -445,7 +445,7 @@ begin
     AssertNotNull('condition resolved type', S.Condition.ResolvedType);
     AssertEquals('condition is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_NE_TypeIsBoolean;
@@ -467,7 +467,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertEquals('NE result is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_LT_TypeIsBoolean;
@@ -489,7 +489,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertEquals('LT result is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_GT_TypeIsBoolean;
@@ -502,7 +502,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertEquals('GT result is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_LE_TypeIsBoolean;
@@ -524,7 +524,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertEquals('LE result is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_GE_TypeIsBoolean;
@@ -546,7 +546,7 @@ begin
     S := TIfStmt(Prog.Block.Stmts[1]);
     AssertEquals('GE result is Boolean',
       Ord(tyBoolean), Ord(S.Condition.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_Comparison_TypeMismatch_RaisesError;
@@ -688,9 +688,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('while');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('while token', Ord(tkWhile), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestLexer_Do_Keyword;
@@ -698,9 +698,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('do');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('do token', Ord(tkDo), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TControlTests.TestParse_While_IsWhileStmt;
@@ -709,7 +709,7 @@ begin
   Prog := ParseSrc(SrcWhile);
   try
     AssertTrue('second stmt is TWhileStmt', Prog.Block.Stmts[1] is TWhileStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_While_HasCondition;
@@ -720,7 +720,7 @@ begin
     S := TWhileStmt(Prog.Block.Stmts[1]);
     AssertNotNull('condition not nil', S.Condition);
     AssertTrue('condition is TBinaryExpr', S.Condition is TBinaryExpr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_While_BodyIsAssignment;
@@ -730,7 +730,7 @@ begin
   try
     S := TWhileStmt(Prog.Block.Stmts[1]);
     AssertTrue('body is TAssignment', S.Body is TAssignment);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestParse_While_CompoundBody;
@@ -742,12 +742,12 @@ begin
     AssertTrue('body is TCompoundStmt', S.Body is TCompoundStmt);
     AssertEquals('two stmts in body', 2,
       TCompoundStmt(S.Body).Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TControlTests.TestSemantic_While_Resolves;
 begin
-  AnalyseSrc(SrcWhile).Free;
+  AnalyseSrc(SrcWhile).Free();
 end;
 
 procedure TControlTests.TestSemantic_While_NonBooleanCondition_RaisesError;

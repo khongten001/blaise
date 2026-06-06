@@ -69,9 +69,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -79,11 +79,11 @@ function TCustomAttributeTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -92,15 +92,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -141,12 +141,12 @@ begin
     Proc.Executable := AExe;
     for I := Low(AArgs) to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Execute;
-    repeat Chunk := Proc.ReadOutput; until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.Execute();
+    repeat Chunk := Proc.ReadOutput(); until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode;
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -176,12 +176,12 @@ begin
   BinFile := IncludeTrailingPathDelimiter(Scratch) + 'case.bin';
 
   IR := GenIR(ASrc);
-  Lst := TStringList.Create;
+  Lst := TStringList.Create();
   try
     Lst.Text := IR;
     Lst.SaveToFile(IRFile);
   finally
-    Lst.Free;
+    Lst.Free();
   end;
 
   if RunCmdAttr(QBE, ['-o', AsmFile, IRFile]) <> 0 then
@@ -199,15 +199,15 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := BinFile;
-    Proc.Execute;
+    Proc.Execute();
     Result := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       Result := Result + Chunk;
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -241,7 +241,7 @@ begin
     AssertEquals('one attribute stored', 1, CD.Attributes.Count);
     AssertEquals('attribute name', 'MyAttr', CD.Attributes.Strings[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -267,7 +267,7 @@ begin
     AssertEquals('first attr', 'AttrA', CD.Attributes.Strings[0]);
     AssertEquals('second attr', 'AttrB', CD.Attributes.Strings[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -291,7 +291,7 @@ begin
     AssertEquals('one attribute stored', 1, CD.Attributes.Count);
     AssertEquals('attribute name', 'MyAttr', CD.Attributes.Strings[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -313,7 +313,7 @@ begin
     CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
     AssertEquals('no attributes', 0, CD.Attributes.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -339,7 +339,7 @@ begin
     AssertEquals('one attribute on generic class', 1, GD.ClassDef.Attributes.Count);
     AssertEquals('attribute name', 'MyAttr', GD.ClassDef.Attributes.Strings[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -361,7 +361,7 @@ const
 var Prog: TProgram;
 begin
   Prog := AnalyseSrc(Src);
-  Prog.Free;
+  Prog.Free();
   AssertTrue('no semantic error raised', True);
 end;
 
@@ -379,7 +379,7 @@ const
 var Prog: TProgram;
 begin
   Prog := AnalyseSrc(Src);
-  Prog.Free;
+  Prog.Free();
   AssertTrue('suffix convention resolves [Threaded] to ThreadedAttribute', True);
 end;
 
@@ -400,7 +400,7 @@ begin
   OK := False;
   try
     Prog := AnalyseSrc(Src);
-    Prog.Free;
+    Prog.Free();
   except
     on E: Exception do
       if Pos('Unknown attribute', E.Message) >= 0 then
@@ -427,7 +427,7 @@ const
 var Prog: TProgram;
 begin
   Prog := AnalyseSrc(Src);
-  Prog.Free;
+  Prog.Free();
   AssertTrue('[Weak] on field still resolves correctly', True);
 end;
 

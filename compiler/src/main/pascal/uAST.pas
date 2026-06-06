@@ -1232,8 +1232,8 @@ end;
 constructor TVarDecl.Create;
 begin
   inherited Create;
-  Names      := TStringList.Create;
-  Attributes := TStringList.Create;
+  Names      := TStringList.Create();
+  Attributes := TStringList.Create();
   IsWeak     := False;
 end;
 
@@ -1248,8 +1248,8 @@ end;
 constructor TFieldDecl.Create;
 begin
   inherited Create;
-  Names      := TStringList.Create;
-  Attributes := TStringList.Create;
+  Names      := TStringList.Create();
+  Attributes := TStringList.Create();
   IsWeak       := False;
   IsUnretained := False;
 end;
@@ -1302,12 +1302,12 @@ end;
 
 destructor TMethodDecl.Destroy;
 begin
-  Params.Free;
-  TypeParams.Free;
-  TypeParamConstraints.Free;
-  OwnerTypeParams.Free;
-  CapturedVars.Free;
-  if OwnBody then Body.Free;
+  Params.Free();
+  TypeParams.Free();
+  TypeParamConstraints.Free();
+  OwnerTypeParams.Free();
+  CapturedVars.Free();
+  if OwnBody then Body.Free();
   inherited Destroy;
 end;
 
@@ -1330,12 +1330,12 @@ end;
 constructor TClassTypeDef.Create;
 begin
   inherited Create;
-  ImplementsNames := TStringList.Create;
+  ImplementsNames := TStringList.Create();
   ConstDecls      := TObjectList.Create(True);
   Fields          := TObjectList.Create(True);
   Methods         := TObjectList.Create(True);
   Properties      := TObjectList.Create(True);
-  Attributes      := TStringList.Create;
+  Attributes      := TStringList.Create();
 end;
 
 destructor TClassTypeDef.Destroy;
@@ -1363,9 +1363,9 @@ end;
 constructor TGenericTypeDef.Create;
 begin
   inherited Create;
-  ParamNames       := TStringList.Create;
-  ParamConstraints := TStringList.Create;
-  ClassDef         := TClassTypeDef.Create;
+  ParamNames       := TStringList.Create();
+  ParamConstraints := TStringList.Create();
+  ClassDef         := TClassTypeDef.Create();
 end;
 
 destructor TGenericTypeDef.Destroy;
@@ -1394,9 +1394,9 @@ end;
 constructor TGenericInterfaceDef.Create;
 begin
   inherited Create;
-  ParamNames       := TStringList.Create;
-  ParamConstraints := TStringList.Create;
-  IntfDef          := TInterfaceTypeDef.Create;
+  ParamNames       := TStringList.Create();
+  ParamConstraints := TStringList.Create();
+  IntfDef          := TInterfaceTypeDef.Create();
 end;
 
 destructor TGenericInterfaceDef.Destroy;
@@ -1409,9 +1409,9 @@ end;
 constructor TGenericRecordDef.Create;
 begin
   inherited Create;
-  ParamNames       := TStringList.Create;
-  ParamConstraints := TStringList.Create;
-  RecordDef        := TRecordTypeDef.Create;
+  ParamNames       := TStringList.Create();
+  ParamConstraints := TStringList.Create();
+  RecordDef        := TRecordTypeDef.Create();
 end;
 
 destructor TGenericRecordDef.Destroy;
@@ -1424,7 +1424,7 @@ end;
 constructor TGenericRecordInstance.Create;
 begin
   inherited Create;
-  RecordDef := TRecordTypeDef.Create;
+  RecordDef := TRecordTypeDef.Create();
 end;
 
 destructor TGenericRecordInstance.Destroy;
@@ -1437,7 +1437,7 @@ end;
 constructor TGenericInterfaceInstance.Create;
 begin
   inherited Create;
-  IntfDef := TInterfaceTypeDef.Create;
+  IntfDef := TInterfaceTypeDef.Create();
 end;
 
 destructor TGenericInterfaceInstance.Destroy;
@@ -1451,7 +1451,7 @@ end;
 constructor TGenericInstance.Create;
 begin
   inherited Create;
-  ClassDef := TClassTypeDef.Create;
+  ClassDef := TClassTypeDef.Create();
 end;
 
 destructor TGenericInstance.Destroy;
@@ -1491,7 +1491,7 @@ end;
 constructor TEnumTypeDef.Create;
 begin
   inherited Create;
-  Members := TStringList.Create;
+  Members := TStringList.Create();
 end;
 
 destructor TEnumTypeDef.Destroy;
@@ -1543,7 +1543,7 @@ end;
 constructor TProgram.Create;
 begin
   inherited Create;
-  UsedUnits              := TStringList.Create;
+  UsedUnits              := TStringList.Create();
   GenericInstances       := TObjectList.Create(True);
   GenericFuncInstances   := TObjectList.Create(True);
   GenericIntfInstances   := TObjectList.Create(True);
@@ -1567,10 +1567,10 @@ end;
 constructor TUnit.Create;
 begin
   inherited Create;
-  UsedUnits     := TStringList.Create;
-  ImplUsedUnits := TStringList.Create;
-  IntfBlock  := TBlock.Create;
-  ImplBlock  := TBlock.Create;
+  UsedUnits     := TStringList.Create();
+  ImplUsedUnits := TStringList.Create();
+  IntfBlock  := TBlock.Create();
+  ImplBlock  := TBlock.Create();
   InitStmts  := nil;
   FinalStmts := nil;
   GenericInstances       := TObjectList.Create(True);
@@ -1648,43 +1648,43 @@ begin
 
   if AExpr is TIntLiteral then
   begin
-    IL := TIntLiteral.Create;
+    IL := TIntLiteral.Create();
     IL.Value := TIntLiteral(AExpr).Value;
     Result := IL;
   end
   else if AExpr is TFloatLiteral then
   begin
-    FL := TFloatLiteral.Create;
+    FL := TFloatLiteral.Create();
     FL.Value := TFloatLiteral(AExpr).Value;
     Result := FL;
   end
   else if AExpr is TStringLiteral then
   begin
-    SL := TStringLiteral.Create;
+    SL := TStringLiteral.Create();
     SL.Value := TStringLiteral(AExpr).Value;
     Result := SL;
   end
   else if AExpr is TNilLiteral then
   begin
-    Result := TNilLiteral.Create;
+    Result := TNilLiteral.Create();
   end
   else if AExpr is TStringSubscriptExpr then
   begin
-    SS := TStringSubscriptExpr.Create;
+    SS := TStringSubscriptExpr.Create();
     SS.StrExpr   := CloneExpr(TStringSubscriptExpr(AExpr).StrExpr);
     SS.IndexExpr := CloneExpr(TStringSubscriptExpr(AExpr).IndexExpr);
     Result := SS;
   end
   else if AExpr is TArrayLiteralExpr then
   begin
-    AL := TArrayLiteralExpr.Create;
+    AL := TArrayLiteralExpr.Create();
     for I := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
       AL.Elements.Add(CloneExpr(TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[I])));
     Result := AL;
   end
   else if AExpr is TIdentExpr then
   begin
-    IE := TIdentExpr.Create;
+    IE := TIdentExpr.Create();
     IE.Name := TIdentExpr(AExpr).Name;
     { Note: leave IsConstant/IsVarParam/IsImplicitSelf/etc. nil/false —
       semantic analyser must re-resolve in the new instance's scope. }
@@ -1692,7 +1692,7 @@ begin
   end
   else if AExpr is TFieldAccessExpr then
   begin
-    FA := TFieldAccessExpr.Create;
+    FA := TFieldAccessExpr.Create();
     FA.RecordName    := TFieldAccessExpr(AExpr).RecordName;
     FA.FieldName     := TFieldAccessExpr(AExpr).FieldName;
     FA.Base          := CloneExpr(TFieldAccessExpr(AExpr).Base);
@@ -1701,21 +1701,21 @@ begin
   end
   else if AExpr is TIsExpr then
   begin
-    IsE := TIsExpr.Create;
+    IsE := TIsExpr.Create();
     IsE.Obj      := CloneExpr(TIsExpr(AExpr).Obj);
     IsE.TypeName := TIsExpr(AExpr).TypeName;
     Result := IsE;
   end
   else if AExpr is TAsExpr then
   begin
-    AsE := TAsExpr.Create;
+    AsE := TAsExpr.Create();
     AsE.Obj      := CloneExpr(TAsExpr(AExpr).Obj);
     AsE.TypeName := TAsExpr(AExpr).TypeName;
     Result := AsE;
   end
   else if AExpr is TSupportsExpr then
   begin
-    SuE := TSupportsExpr.Create;
+    SuE := TSupportsExpr.Create();
     SuE.Obj          := CloneExpr(TSupportsExpr(AExpr).Obj);
     SuE.IntfTypeName := TSupportsExpr(AExpr).IntfTypeName;
     SuE.OutVarName   := TSupportsExpr(AExpr).OutVarName;
@@ -1723,7 +1723,7 @@ begin
   end
   else if AExpr is TBinaryExpr then
   begin
-    BE := TBinaryExpr.Create;
+    BE := TBinaryExpr.Create();
     BE.Op    := TBinaryExpr(AExpr).Op;
     BE.Left  := CloneExpr(TBinaryExpr(AExpr).Left);
     BE.Right := CloneExpr(TBinaryExpr(AExpr).Right);
@@ -1731,13 +1731,13 @@ begin
   end
   else if AExpr is TNotExpr then
   begin
-    NE := TNotExpr.Create;
+    NE := TNotExpr.Create();
     NE.Expr := CloneExpr(TNotExpr(AExpr).Expr);
     Result := NE;
   end
   else if AExpr is TFuncCallExpr then
   begin
-    FCE := TFuncCallExpr.Create;
+    FCE := TFuncCallExpr.Create();
     FCE.Name := TFuncCallExpr(AExpr).Name;
     for I := 0 to TFuncCallExpr(AExpr).Args.Count - 1 do
       FCE.Args.Add(CloneExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Items[I])));
@@ -1745,19 +1745,19 @@ begin
   end
   else if AExpr is TDerefExpr then
   begin
-    DE := TDerefExpr.Create;
+    DE := TDerefExpr.Create();
     DE.Expr := CloneExpr(TDerefExpr(AExpr).Expr);
     Result := DE;
   end
   else if AExpr is TAddrOfExpr then
   begin
-    AoE := TAddrOfExpr.Create;
+    AoE := TAddrOfExpr.Create();
     AoE.Expr := CloneExpr(TAddrOfExpr(AExpr).Expr);
     Result := AoE;
   end
   else if AExpr is TMethodCallExpr then
   begin
-    MCE := TMethodCallExpr.Create;
+    MCE := TMethodCallExpr.Create();
     MCE.ObjectName := TMethodCallExpr(AExpr).ObjectName;
     MCE.Name       := TMethodCallExpr(AExpr).Name;
     MCE.ObjExpr    := CloneExpr(TMethodCallExpr(AExpr).ObjExpr);
@@ -1778,7 +1778,7 @@ var
 begin
   if ASrc = nil then
   begin Result := nil; Exit; end;
-  Result := TCompoundStmt.Create;
+  Result := TCompoundStmt.Create();
   CopyStmtPos(Result, ASrc);
   for I := 0 to ASrc.Stmts.Count - 1 do
     Result.Stmts.Add(CloneStmt(TASTStmt(ASrc.Stmts.Items[I])));
@@ -1786,7 +1786,7 @@ end;
 
 function CloneExceptHandler(ASrc: TExceptHandlerClause): TExceptHandlerClause;
 begin
-  Result := TExceptHandlerClause.Create;
+  Result := TExceptHandlerClause.Create();
   Result.VarName  := ASrc.VarName;
   Result.TypeName := ASrc.TypeName;
   Result.Body     := CloneCompound(ASrc.Body);
@@ -1796,7 +1796,7 @@ function CloneCaseBranch(ASrc: TCaseBranch): TCaseBranch;
 var
   I: Integer;
 begin
-  Result := TCaseBranch.Create;
+  Result := TCaseBranch.Create();
   for I := 0 to ASrc.Values.Count - 1 do
     Result.Values.Add(CloneExpr(TASTExpr(ASrc.Values.Items[I])));
   Result.Stmt := CloneStmt(ASrc.Stmt);
@@ -1829,14 +1829,14 @@ begin
 
   if AStmt is TAssignment then
   begin
-    AS_ := TAssignment.Create;
+    AS_ := TAssignment.Create();
     AS_.Name := TAssignment(AStmt).Name;
     AS_.Expr := CloneExpr(TAssignment(AStmt).Expr);
     Result := AS_;
   end
   else if AStmt is TIfStmt then
   begin
-    IF_ := TIfStmt.Create;
+    IF_ := TIfStmt.Create();
     IF_.Condition := CloneExpr(TIfStmt(AStmt).Condition);
     IF_.ThenStmt  := CloneStmt(TIfStmt(AStmt).ThenStmt);
     IF_.ElseStmt  := CloneStmt(TIfStmt(AStmt).ElseStmt);
@@ -1844,28 +1844,28 @@ begin
   end
   else if AStmt is TCompoundStmt then
   begin
-    CS_ := TCompoundStmt.Create;
+    CS_ := TCompoundStmt.Create();
     for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
       CS_.Stmts.Add(CloneStmt(TASTStmt(TCompoundStmt(AStmt).Stmts.Items[I])));
     Result := CS_;
   end
   else if AStmt is TWhileStmt then
   begin
-    WS_ := TWhileStmt.Create;
+    WS_ := TWhileStmt.Create();
     WS_.Condition := CloneExpr(TWhileStmt(AStmt).Condition);
     WS_.Body      := CloneStmt(TWhileStmt(AStmt).Body);
     Result := WS_;
   end
   else if AStmt is TRepeatStmt then
   begin
-    RS_ := TRepeatStmt.Create;
+    RS_ := TRepeatStmt.Create();
     RS_.Body      := CloneCompound(TRepeatStmt(AStmt).Body);
     RS_.Condition := CloneExpr(TRepeatStmt(AStmt).Condition);
     Result := RS_;
   end
   else if AStmt is TForStmt then
   begin
-    FS_ := TForStmt.Create;
+    FS_ := TForStmt.Create();
     FS_.VarName   := TForStmt(AStmt).VarName;
     FS_.StartExpr := CloneExpr(TForStmt(AStmt).StartExpr);
     FS_.EndExpr   := CloneExpr(TForStmt(AStmt).EndExpr);
@@ -1875,7 +1875,7 @@ begin
   end
   else if AStmt is TForInStmt then
   begin
-    FIS_ := TForInStmt.Create;
+    FIS_ := TForInStmt.Create();
     FIS_.VarName  := TForInStmt(AStmt).VarName;
     FIS_.CollExpr := CloneExpr(TForInStmt(AStmt).CollExpr);
     FIS_.Body     := CloneStmt(TForInStmt(AStmt).Body);
@@ -1883,14 +1883,14 @@ begin
   end
   else if AStmt is TTryFinallyStmt then
   begin
-    TFS_ := TTryFinallyStmt.Create;
+    TFS_ := TTryFinallyStmt.Create();
     TFS_.TryBody     := CloneCompound(TTryFinallyStmt(AStmt).TryBody);
     TFS_.FinallyBody := CloneCompound(TTryFinallyStmt(AStmt).FinallyBody);
     Result := TFS_;
   end
   else if AStmt is TTryExceptStmt then
   begin
-    TES_ := TTryExceptStmt.Create;
+    TES_ := TTryExceptStmt.Create();
     TES_.TryBody := CloneCompound(TTryExceptStmt(AStmt).TryBody);
     for I := 0 to TTryExceptStmt(AStmt).Handlers.Count - 1 do
       TES_.Handlers.Add(
@@ -1902,23 +1902,23 @@ begin
   end
   else if AStmt is TRaiseStmt then
   begin
-    RaS_ := TRaiseStmt.Create;
+    RaS_ := TRaiseStmt.Create();
     RaS_.Expr := CloneExpr(TRaiseStmt(AStmt).Expr);
     Result := RaS_;
   end
   else if AStmt is TExitStmt then
   begin
-    ExS_       := TExitStmt.Create;
+    ExS_       := TExitStmt.Create();
     ExS_.Value := CloneExpr(TExitStmt(AStmt).Value);
     Result     := ExS_;
   end
   else if AStmt is TBreakStmt then
-    Result := TBreakStmt.Create
+    Result := TBreakStmt.Create()
   else if AStmt is TContinueStmt then
-    Result := TContinueStmt.Create
+    Result := TContinueStmt.Create()
   else if AStmt is TCaseStmt then
   begin
-    CSS_ := TCaseStmt.Create;
+    CSS_ := TCaseStmt.Create();
     CSS_.Selector := CloneExpr(TCaseStmt(AStmt).Selector);
     for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
       CSS_.Branches.Add(
@@ -1928,7 +1928,7 @@ begin
   end
   else if AStmt is TFieldAssignment then
   begin
-    FAS_ := TFieldAssignment.Create;
+    FAS_ := TFieldAssignment.Create();
     FAS_.RecordName    := TFieldAssignment(AStmt).RecordName;
     FAS_.FieldName     := TFieldAssignment(AStmt).FieldName;
     FAS_.Expr          := CloneExpr(TFieldAssignment(AStmt).Expr);
@@ -1938,7 +1938,7 @@ begin
   end
   else if AStmt is TStaticSubscriptAssign then
   begin
-    SSA_ := TStaticSubscriptAssign.Create;
+    SSA_ := TStaticSubscriptAssign.Create();
     SSA_.ArrayName := TStaticSubscriptAssign(AStmt).ArrayName;
     SSA_.IndexExpr := CloneExpr(TStaticSubscriptAssign(AStmt).IndexExpr);
     SSA_.ValueExpr := CloneExpr(TStaticSubscriptAssign(AStmt).ValueExpr);
@@ -1946,14 +1946,14 @@ begin
   end
   else if AStmt is TPointerWriteStmt then
   begin
-    PWS_ := TPointerWriteStmt.Create;
+    PWS_ := TPointerWriteStmt.Create();
     PWS_.PtrExpr := CloneExpr(TPointerWriteStmt(AStmt).PtrExpr);
     PWS_.ValExpr := CloneExpr(TPointerWriteStmt(AStmt).ValExpr);
     Result := PWS_;
   end
   else if AStmt is TProcCall then
   begin
-    PC_ := TProcCall.Create;
+    PC_ := TProcCall.Create();
     PC_.Name := TProcCall(AStmt).Name;
     for I := 0 to TProcCall(AStmt).Args.Count - 1 do
       PC_.Args.Add(CloneExpr(TASTExpr(TProcCall(AStmt).Args.Items[I])));
@@ -1961,7 +1961,7 @@ begin
   end
   else if AStmt is TMethodCallStmt then
   begin
-    MCS_ := TMethodCallStmt.Create;
+    MCS_ := TMethodCallStmt.Create();
     MCS_.ObjectName := TMethodCallStmt(AStmt).ObjectName;
     MCS_.Name       := TMethodCallStmt(AStmt).Name;
     MCS_.ObjExpr    := CloneExpr(TMethodCallStmt(AStmt).ObjExpr);
@@ -1971,7 +1971,7 @@ begin
   end
   else if AStmt is TInheritedCallStmt then
   begin
-    ICS_ := TInheritedCallStmt.Create;
+    ICS_ := TInheritedCallStmt.Create();
     ICS_.Name := TInheritedCallStmt(AStmt).Name;
     for I := 0 to TInheritedCallStmt(AStmt).Args.Count - 1 do
       ICS_.Args.Add(CloneExpr(TASTExpr(TInheritedCallStmt(AStmt).Args.Items[I])));
@@ -1988,7 +1988,7 @@ function CloneVarDecl(ASrc: TVarDecl): TVarDecl;
 var
   I: Integer;
 begin
-  Result := TVarDecl.Create;
+  Result := TVarDecl.Create();
   Result.Line     := ASrc.Line;
   Result.Col      := ASrc.Col;
   Result.TypeName := ASrc.TypeName;
@@ -2002,7 +2002,7 @@ function CloneFieldDecl(ASrc: TFieldDecl): TFieldDecl;
 var
   I: Integer;
 begin
-  Result := TFieldDecl.Create;
+  Result := TFieldDecl.Create();
   Result.Line     := ASrc.Line;
   Result.Col      := ASrc.Col;
   Result.TypeName := ASrc.TypeName;
@@ -2014,7 +2014,7 @@ end;
 
 function ClonePropertyDecl(ASrc: TPropertyDecl): TPropertyDecl;
 begin
-  Result := TPropertyDecl.Create;
+  Result := TPropertyDecl.Create();
   Result.Name           := ASrc.Name;
   Result.TypeName       := ASrc.TypeName;
   Result.ReadName       := ASrc.ReadName;
@@ -2025,7 +2025,7 @@ end;
 
 function CloneTypeDecl(ASrc: TTypeDecl): TTypeDecl;
 begin
-  Result := TTypeDecl.Create;
+  Result := TTypeDecl.Create();
   Result.Line := ASrc.Line;
   Result.Col  := ASrc.Col;
   Result.Name := ASrc.Name;
@@ -2036,7 +2036,7 @@ function CloneConstDecl(ASrc: TConstDecl): TConstDecl;
 var
   I: Integer;
 begin
-  Result := TConstDecl.Create;
+  Result := TConstDecl.Create();
   Result.Line     := ASrc.Line;
   Result.Col      := ASrc.Col;
   Result.Name     := ASrc.Name;
@@ -2047,7 +2047,7 @@ begin
   Result.IsFloat  := ASrc.IsFloat;
   if ASrc.ConstParts <> nil then
   begin
-    Result.ConstParts := TStringList.Create;
+    Result.ConstParts := TStringList.Create();
     for I := 0 to ASrc.ConstParts.Count - 1 do
       Result.ConstParts.AddObject(
         ASrc.ConstParts.Strings[I], ASrc.ConstParts.Objects[I]);
@@ -2060,13 +2060,13 @@ begin
   Result.ArrayHighBound      := ASrc.ArrayHighBound;
   if ASrc.ArrayElements <> nil then
   begin
-    Result.ArrayElements := TStringList.Create;
+    Result.ArrayElements := TStringList.Create();
     for I := 0 to ASrc.ArrayElements.Count - 1 do
       Result.ArrayElements.Add(ASrc.ArrayElements.Strings[I]);
   end;
   if ASrc.IntExprTokens <> nil then
   begin
-    Result.IntExprTokens := TStringList.Create;
+    Result.IntExprTokens := TStringList.Create();
     for I := 0 to ASrc.IntExprTokens.Count - 1 do
       Result.IntExprTokens.AddObject(
         ASrc.IntExprTokens.Strings[I], ASrc.IntExprTokens.Objects[I]);
@@ -2075,7 +2075,7 @@ end;
 
 function CloneMethodParam(ASrc: TMethodParam): TMethodParam;
 begin
-  Result := TMethodParam.Create;
+  Result := TMethodParam.Create();
   Result.Line         := ASrc.Line;
   Result.Col          := ASrc.Col;
   Result.ParamName    := ASrc.ParamName;
@@ -2091,7 +2091,7 @@ function CloneMethodDecl(ASrc: TMethodDecl): TMethodDecl;
 var
   I: Integer;
 begin
-  Result := TMethodDecl.Create;
+  Result := TMethodDecl.Create();
   Result.Line           := ASrc.Line;
   Result.Col            := ASrc.Col;
   Result.Name           := ASrc.Name;
@@ -2110,19 +2110,19 @@ begin
     Result.Params.Add(CloneMethodParam(TMethodParam(ASrc.Params.Items[I])));
   if ASrc.TypeParams <> nil then
   begin
-    Result.TypeParams := TStringList.Create;
+    Result.TypeParams := TStringList.Create();
     for I := 0 to ASrc.TypeParams.Count - 1 do
       Result.TypeParams.Add(ASrc.TypeParams.Strings[I]);
   end;
   if ASrc.TypeParamConstraints <> nil then
   begin
-    Result.TypeParamConstraints := TStringList.Create;
+    Result.TypeParamConstraints := TStringList.Create();
     for I := 0 to ASrc.TypeParamConstraints.Count - 1 do
       Result.TypeParamConstraints.Add(ASrc.TypeParamConstraints.Strings[I]);
   end;
   if ASrc.OwnerTypeParams <> nil then
   begin
-    Result.OwnerTypeParams := TStringList.Create;
+    Result.OwnerTypeParams := TStringList.Create();
     for I := 0 to ASrc.OwnerTypeParams.Count - 1 do
       Result.OwnerTypeParams.Add(ASrc.OwnerTypeParams.Strings[I]);
   end;
@@ -2150,19 +2150,19 @@ begin
   begin Result := nil; Exit; end;
   if ASrc is TTypeAliasDef then
   begin
-    TA := TTypeAliasDef.Create;
+    TA := TTypeAliasDef.Create();
     TA.TypeName := TTypeAliasDef(ASrc).TypeName;
     Result := TA;
   end
   else if ASrc is TSetTypeDef then
   begin
-    ST := TSetTypeDef.Create;
+    ST := TSetTypeDef.Create();
     ST.BaseTypeName := TSetTypeDef(ASrc).BaseTypeName;
     Result := ST;
   end
   else if ASrc is TEnumTypeDef then
   begin
-    ET := TEnumTypeDef.Create;
+    ET := TEnumTypeDef.Create();
     for I := 0 to TEnumTypeDef(ASrc).Members.Count - 1 do
       ET.Members.AddObject(
         TEnumTypeDef(ASrc).Members.Strings[I],
@@ -2171,7 +2171,7 @@ begin
   end
   else if ASrc is TRecordTypeDef then
   begin
-    RT := TRecordTypeDef.Create;
+    RT := TRecordTypeDef.Create();
     RT.IsPacked := TRecordTypeDef(ASrc).IsPacked;
     for I := 0 to TRecordTypeDef(ASrc).Fields.Count - 1 do
       RT.Fields.Add(CloneFieldDecl(TFieldDecl(TRecordTypeDef(ASrc).Fields.Items[I])));
@@ -2212,7 +2212,7 @@ var
   I: Integer;
 begin
   if ASrc = nil then begin Result := nil; Exit; end;
-  Result := TClassTypeDef.Create;
+  Result := TClassTypeDef.Create();
   Result.ParentName := ASrc.ParentName;
   for I := 0 to ASrc.ImplementsNames.Count - 1 do
     Result.ImplementsNames.Add(ASrc.ImplementsNames.Strings[I]);
@@ -2233,7 +2233,7 @@ var
   I: Integer;
 begin
   if ASrc = nil then begin Result := nil; Exit; end;
-  Result := TGenericTypeDef.Create;
+  Result := TGenericTypeDef.Create();
   for I := 0 to ASrc.ParamNames.Count - 1 do
   begin
     Result.ParamNames.Add(ASrc.ParamNames.Strings[I]);
@@ -2243,7 +2243,7 @@ begin
       Result.ParamConstraints.Add('');
   end;
   { Replace the autoctor's blank ClassDef with a real clone. }
-  Result.ClassDef.Free;
+  Result.ClassDef.Free();
   Result.ClassDef := CloneClassTypeDef(ASrc.ClassDef);
 end;
 
@@ -2252,7 +2252,7 @@ var
   I: Integer;
 begin
   if ASrc = nil then begin Result := nil; Exit; end;
-  Result := TInterfaceTypeDef.Create;
+  Result := TInterfaceTypeDef.Create();
   Result.ParentName := ASrc.ParentName;
   for I := 0 to ASrc.Methods.Count - 1 do
     Result.Methods.Add(CloneMethodDecl(TMethodDecl(ASrc.Methods.Items[I])));
@@ -2263,7 +2263,7 @@ var
   I: Integer;
 begin
   if ASrc = nil then begin Result := nil; Exit; end;
-  Result := TGenericInterfaceDef.Create;
+  Result := TGenericInterfaceDef.Create();
   for I := 0 to ASrc.ParamNames.Count - 1 do
   begin
     Result.ParamNames.Add(ASrc.ParamNames.Strings[I]);
@@ -2272,7 +2272,7 @@ begin
     else
       Result.ParamConstraints.Add('');
   end;
-  Result.IntfDef.Free;
+  Result.IntfDef.Free();
   Result.IntfDef := CloneInterfaceTypeDef(ASrc.IntfDef);
 end;
 
@@ -2281,7 +2281,7 @@ var
   I: Integer;
 begin
   if ASrc = nil then begin Result := nil; Exit; end;
-  Result := TProceduralTypeDef.Create;
+  Result := TProceduralTypeDef.Create();
   Result.ReturnTypeName := ASrc.ReturnTypeName;
   Result.IsFunction     := ASrc.IsFunction;
   Result.IsMethodPtr    := ASrc.IsMethodPtr;
@@ -2295,7 +2295,7 @@ var
 begin
   if ABlock = nil then
   begin Result := nil; Exit; end;
-  Result := TBlock.Create;
+  Result := TBlock.Create();
   Result.Line := ABlock.Line;
   Result.Col  := ABlock.Col;
   for I := 0 to ABlock.TypeDecls.Count - 1 do

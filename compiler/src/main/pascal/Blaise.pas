@@ -108,7 +108,7 @@ begin
   OPDFEnabled := False;
   OutDir      := '';
   OutName     := '';
-  SearchPaths := TStringList.Create;
+  SearchPaths := TStringList.Create();
 
   I := 1;
   while I <= ParamCount do
@@ -137,7 +137,7 @@ begin
       { other linking flags — ignored }
     else if (Arg = '--help') or (Arg = '-h') then
     begin
-      PrintUsage;
+      PrintUsage();
       Halt(0);
     end
     else if (Length(Arg) > 0) and (StrAt(Arg, 0) <> Ord('-')) then
@@ -154,7 +154,7 @@ begin
   if SourceFile = '' then
   begin
     WriteLn(StdErr, 'Error: no source file specified');
-    SearchPaths.Free;
+    SearchPaths.Free();
     Exit;
   end;
 
@@ -220,7 +220,7 @@ begin
   EmitIfaceDir   := '';
   Incremental    := False;
   UnitCacheDir   := '';
-  SearchPaths    := TStringList.Create;
+  SearchPaths    := TStringList.Create();
 
   I := 1;
   while I <= ParamCount do
@@ -286,7 +286,7 @@ begin
       else
       begin
         WriteLn(StdErr, 'Error: --backend must be ''qbe'' or ''native''');
-        SearchPaths.Free;
+        SearchPaths.Free();
         Exit;
       end;
     end
@@ -296,20 +296,20 @@ begin
       if not ParseTargetName(ParamStr(I), Target) then
       begin
         WriteLn(StdErr, 'Error: unknown --target ''', ParamStr(I), '''');
-        SearchPaths.Free;
+        SearchPaths.Free();
         Exit;
       end;
       GTarget := Target;
     end
     else if (Arg = '--help') or (Arg = '-h') then
     begin
-      PrintUsage;
+      PrintUsage();
       Halt(0);
     end
     else
     begin
       WriteLn(StdErr, 'Unknown flag: ', Arg);
-      SearchPaths.Free;
+      SearchPaths.Free();
       Exit;
     end;
     Inc(I);
@@ -318,13 +318,13 @@ begin
   if SourceFile = '' then
   begin
     WriteLn(StdErr, 'Error: --source is required');
-    SearchPaths.Free;
+    SearchPaths.Free();
     Exit;
   end;
   if (not EmitIR) and (not EmitAsm) and (not DumpAST) and (OutputFile = '') then
   begin
     WriteLn(StdErr, 'Error: --output is required (or use --emit-ir / --emit-asm / --dump-ast)');
-    SearchPaths.Free;
+    SearchPaths.Free();
     Exit;
   end;
 
@@ -333,7 +333,7 @@ end;
 
 function ReadProcessChunk(AProc: TProcess): string;
 begin
-  Result := AProc.ReadOutput
+  Result := AProc.ReadOutput()
 end;
 
 function RunProcess(const AExe: string; AArgs: TStringList;
@@ -348,16 +348,16 @@ begin
     Proc.Executable := AExe;
     for I := 0 to AArgs.Count - 1 do
       Proc.Parameters.Add(AArgs.Strings[I]);
-    Proc.Execute;
+    Proc.Execute();
     AOutput := '';
     repeat
       Chunk := ReadProcessChunk(Proc);
       AOutput := AOutput + Chunk;
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode;
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -389,21 +389,21 @@ var
 begin
   Result := '';
   AsmFile := ChangeFileExt(AIRFile, '.s');
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     Args.Add('-o');
     Args.Add(AsmFile);
     Args.Add(AIRFile);
     ExitCode := RunProcess('qbe', Args, Msg);
   finally
-    Args.Free;
+    Args.Free();
   end;
   if ExitCode <> 0 then
   begin
     Exit('qbe error (exit ' + IntToStr(ExitCode) + '): ' + Msg);
   end;
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     Args.Add('-c');
     Args.Add('-o');
@@ -411,7 +411,7 @@ begin
     Args.Add(AsmFile);
     ExitCode := RunProcess('cc', Args, Msg);
   finally
-    Args.Free;
+    Args.Free();
   end;
   if ExitCode <> 0 then
   begin
@@ -459,14 +459,14 @@ begin
   AsmFile := ChangeFileExt(AIRFile, '.s');
   RTLPath := FindRTL;
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     Args.Add('-o');
     Args.Add(AsmFile);
     Args.Add(AIRFile);
     ExitCode := RunProcess('qbe', Args, Msg);
   finally
-    Args.Free;
+    Args.Free();
   end;
   if ExitCode <> 0 then
   begin
@@ -475,7 +475,7 @@ begin
     Halt(1);
   end;
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     Args.Add('-o');
     Args.Add(AOutputFile);
@@ -496,7 +496,7 @@ begin
     Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
     ExitCode := RunProcess('cc', Args, Msg);
   finally
-    Args.Free;
+    Args.Free();
   end;
 
   if ExitCode <> 0 then
@@ -523,7 +523,7 @@ var
 begin
   TC := ResolveToolchain(ATarget);
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     Args.Add('-o');
     Args.Add(AOutputFile);
@@ -538,7 +538,7 @@ begin
     Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
     ExitCode := RunProcess(TC.Linker.Path, Args, Msg);
   finally
-    Args.Free;
+    Args.Free();
   end;
 
   if ExitCode <> 0 then
@@ -570,23 +570,23 @@ var
 begin
   Self.Error := '';
   try
-    WCG := TCodeGenQBE.Create;
+    WCG := TCodeGenQBE.Create();
     try
       WCG.SetSymbolTable(Self.SymTable);
       WCG.SetExportAll(True);
       WCG.AppendUnit(Self.WorkUnit);
-      WIR := WCG.GetOutput;
+      WIR := WCG.GetOutput();
     finally
-      WCG.Free;
+      WCG.Free();
     end;
 
     WIRFile := Self.OPath + '.ssa.tmp';
-    WSource := TStringList.Create;
+    WSource := TStringList.Create();
     try
       WSource.Text := WIR;
       WSource.SaveToFile(WIRFile);
     finally
-      WSource.Free;
+      WSource.Free();
     end;
 
     WBifFile := Self.OPath + '.bif.tmp';
@@ -626,7 +626,7 @@ var
                                 in which case Prog stays nil and the
                                 pipeline runs in unit-only mode. }
   IsUnitMode: Boolean;        { mirrors TopUnit's non-nil status but
-                                survives past TopUnit.Free in the finally
+                                survives past TopUnit.Free() in the finally
                                 block, so the post-codegen output dispatch
                                 can pick CompileUnitToObject. }
   TopIfacePath: string;       { Temp .bif file produced for the top
@@ -681,7 +681,7 @@ begin
   begin
     if not ParseFPCArgs(SourceFile, OutputFile, SearchPaths, OPDFEnabled) then
     begin
-      PrintUsage;
+      PrintUsage();
       Halt(1);
     end;
     EmitIR  := False;
@@ -694,18 +694,18 @@ begin
                      UseNative, Target, SearchPaths, SkipDepCodegen, EmitIfaceDir,
                      Incremental, UnitCacheDir) then
     begin
-      PrintUsage;
+      PrintUsage();
       Halt(1);
     end;
   end;
 
-  ConfigPaths := TStringList.Create;
+  ConfigPaths := TStringList.Create();
   try
     LoadConfigPaths(ConfigPaths);
     for I := ConfigPaths.Count - 1 downto 0 do
       SearchPaths.Insert(0, ConfigPaths.Strings[I]);
   finally
-    ConfigPaths.Free;
+    ConfigPaths.Free();
   end;
 
   if (UnitCacheDir <> '') and (SearchPaths.IndexOf(UnitCacheDir) < 0) then
@@ -717,7 +717,7 @@ begin
     Halt(1);
   end;
 
-  Source := TStringList.Create;
+  Source := TStringList.Create();
   try
     Source.LoadFromFile(SourceFile);
   except
@@ -732,7 +732,7 @@ begin
   Parser     := nil;
   Prog       := nil;
   TopIfacePath := '';
-  PrebuiltObjPaths := TStringList.Create;
+  PrebuiltObjPaths := TStringList.Create();
   Semantic   := nil;
   { CG (ICodeGen) is zero-initialised by default; no explicit nil-assignment
     (stage-1 mis-compiles interface-global nil stores — see EmitAssign note). }
@@ -745,9 +745,9 @@ begin
       Parser := TParser.Create(Lexer);
       IsUnitMode := Parser.IsUnitTopLevel;
       if IsUnitMode then
-        TopUnit := Parser.ParseUnit
+        TopUnit := Parser.ParseUnit()
       else
-        Prog := Parser.Parse;
+        Prog := Parser.Parse();
     except
       on E: Exception do
       begin
@@ -757,7 +757,7 @@ begin
     end;
 
     try
-      Semantic := TSemanticAnalyser.Create;
+      Semantic := TSemanticAnalyser.Create();
       if (SearchPaths <> nil) then
       begin
         if IsUnitMode and (TopUnit.UsedUnits.Count > 0) then
@@ -907,10 +907,10 @@ begin
           PrebuiltObjPaths.Add(UnitOPath);
         end;
         for I := 0 to Workers.Count - 1 do
-          TCompileWorker(Workers.Items[I]).Start;
+          TCompileWorker(Workers.Items[I]).Start();
         for I := 0 to Workers.Count - 1 do
         begin
-          TCompileWorker(Workers.Items[I]).WaitFor;
+          TCompileWorker(Workers.Items[I]).WaitFor();
           if TCompileWorker(Workers.Items[I]).Error <> '' then
           begin
             WriteLn(StdErr, TCompileWorker(Workers.Items[I]).Error);
@@ -918,7 +918,7 @@ begin
           end;
         end;
       finally
-        Workers.Free;
+        Workers.Free();
       end;
       SkipDepCodegen := True;
     end;
@@ -931,12 +931,12 @@ begin
         Otherwise --backend native selects TCodeGenNative for the configured target. }
       if (UseNative or EmitAsm) and not EmitIR then
       begin
-        NativeCG := TCodeGenNative.Create;
+        NativeCG := TCodeGenNative.Create();
         NativeCG.SetTarget(Target);
         CG := NativeCG;
       end
       else
-        CG := TCodeGenQBE.Create;
+        CG := TCodeGenQBE.Create();
       CG.SetDebugMode(DebugMode);
       if IsUnitMode then
       begin
@@ -957,7 +957,7 @@ begin
       end
       else
         CG.Generate(Prog);
-      IR := CG.GetOutput;
+      IR := CG.GetOutput();
       { CG (ICodeGen) is released by ARC at program scope exit.  We avoid an
         explicit `CG := nil` here: the stage-1 release binary mis-compiles an
         explicit nil-assignment to an interface-typed global (emits a bare
@@ -972,7 +972,7 @@ begin
         try
           OE.EmitToFile(OPDFAsmFile);
         finally
-          OE.Free;
+          OE.Free();
         end;
       end;
     except
@@ -983,7 +983,7 @@ begin
       end;
     end;
   finally
-    UnitIfaces.Free;  { must free before Units — TUnitInterface entries
+    UnitIfaces.Free();  { must free before Units — TUnitInterface entries
                        hold cloned AST that points at nothing in Units,
                        but the destructor order is still cleaner first }
     { Capture the prebuilt object paths off the loader before
@@ -992,15 +992,15 @@ begin
     if Loader <> nil then
       for I := 0 to Loader.PrebuiltObjectPaths.Count - 1 do
         PrebuiltObjPaths.Add(Loader.PrebuiltObjectPaths.Strings[I]);
-    Units.Free;
-    Loader.Free;
-    SearchPaths.Free;
+    Units.Free();
+    Loader.Free();
+    SearchPaths.Free();
     { CG is ICodeGen (ARC-managed) — released via assignment/scope, not Free. }
-    Semantic.Free;
-    Prog.Free;
-    Parser.Free;
-    Lexer.Free;
-    Source.Free;
+    Semantic.Free();
+    Prog.Free();
+    Parser.Free();
+    Lexer.Free();
+    Source.Free();
   end;
 
   { --emit-ir / --emit-asm: write output to stdout and fall through to normal
@@ -1070,7 +1070,7 @@ begin
       else
         CompileToNative(IRFile, OutputFile, OPDFAsmFile);
     end;
-    PrebuiltObjPaths.Free;
+    PrebuiltObjPaths.Free();
     DeleteFile(IRFile);
     if OPDFAsmFile <> '' then
       DeleteFile(OPDFAsmFile);

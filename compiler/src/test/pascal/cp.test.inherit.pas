@@ -92,9 +92,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -102,11 +102,11 @@ function TInheritTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -115,15 +115,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -132,7 +132,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -155,7 +155,7 @@ const
           end;
         var N: TNode;
         begin
-          N := TNode.Create;
+          N := TNode.Create();
           N.Next := nil
         end.
         ''';
@@ -170,7 +170,7 @@ const
           end;
         var N: TNode;
         begin
-          N := TNode.Create;
+          N := TNode.Create();
           N.Value := 1;
           N.Next := nil
         end.
@@ -188,7 +188,7 @@ const
           end;
         var D: TDog;
         begin
-          D := TDog.Create;
+          D := TDog.Create();
           D.Age := 3;
           D.Legs := 4
         end.
@@ -210,7 +210,7 @@ const
           end;
         var C: TChild;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           C.SetX(10);
           C.Y := 20
         end.
@@ -225,9 +225,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('nil');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('nil token', Ord(tkNil), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TInheritTests.TestParse_Nil_IsTNilLiteral;
@@ -241,12 +241,12 @@ begin
     AssertTrue('stmt is TFieldAssignment', Prog.Block.Stmts[2] is TFieldAssignment);
     Assign := TFieldAssignment(Prog.Block.Stmts[2]);
     AssertTrue('rhs is TNilLiteral', Assign.Expr is TNilLiteral);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TInheritTests.TestSemantic_Nil_AssignToClassVar_OK;
 begin
-  AnalyseSrc(SrcSelfRef).Free;
+  AnalyseSrc(SrcSelfRef).Free();
 end;
 
 procedure TInheritTests.TestSemantic_Nil_AssignToIntVar_RaisesError;
@@ -273,13 +273,13 @@ begin
         var F: TFoo;
         var N: Integer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           if F = nil then
             N := 0
           else
             N := 1
         end.
-        ''').Free;
+        ''').Free();
 end;
 
 procedure TInheritTests.TestCodegen_Nil_StoresZero;
@@ -304,7 +304,7 @@ begin
         var F: TFoo;
         var N: Integer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           if F = nil then
             N := 0
         end.
@@ -321,13 +321,13 @@ begin
     '  TFoo = class'           + LineEnding +
     '    procedure DoIt;'      + LineEnding +
     '  end;'                   + LineEnding +
-    'procedure TFoo.DoIt;'     + LineEnding +
+    'procedure TFoo.DoIt();'     + LineEnding +
     'begin'                    + LineEnding +
     'end;'                     + LineEnding +
     'var F: TFoo;'             + LineEnding +
     'begin'                    + LineEnding +
-    '  F := TFoo.Create;'      + LineEnding +
-    '  F.DoIt'                 + LineEnding +
+    '  F := TFoo.Create();'      + LineEnding +
+    '  F.DoIt()'                 + LineEnding +
     'end.');
   AssertTrue('_CheckNil emitted before method call', Pos('_CheckNil', IR) > 0);
 end;
@@ -338,7 +338,7 @@ end;
 
 procedure TInheritTests.TestSemantic_SelfRef_DoesNotRaiseError;
 begin
-  AnalyseSrc(SrcSelfRef).Free;
+  AnalyseSrc(SrcSelfRef).Free();
 end;
 
 procedure TInheritTests.TestSemantic_SelfRef_FieldTypeIsClass;
@@ -357,7 +357,7 @@ begin
     AssertNotNull('Next field resolved', FD.ResolvedType);
     AssertEquals('Next field is tyClass',
       Ord(tyClass), Ord(FD.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TInheritTests.TestCodegen_SelfRef_Create_AllocatesCorrectSize;
@@ -378,13 +378,13 @@ end;
 procedure TInheritTests.TestSemantic_Inherit_ParentFieldVisible;
 begin
   { D.Age := 3 should resolve — Age is inherited from TAnimal }
-  AnalyseSrc(SrcInherit).Free;
+  AnalyseSrc(SrcInherit).Free();
 end;
 
 procedure TInheritTests.TestSemantic_Inherit_ChildFieldVisible;
 begin
   { D.Legs := 4 should resolve — Legs is TDog's own field }
-  AnalyseSrc(SrcInherit).Free;
+  AnalyseSrc(SrcInherit).Free();
 end;
 
 procedure TInheritTests.TestSemantic_Inherit_TotalSizeIncludesParent;
@@ -401,7 +401,7 @@ begin
     AssertNotNull('TDog symbol', Sym);
     RT := TRecordTypeDesc(Sym.TypeDesc);
     AssertEquals('TDog total size = 16', 16, RT.TotalSize);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TInheritTests.TestCodegen_Inherit_Create_AllocatesTotalSize;
@@ -439,7 +439,7 @@ end;
 procedure TInheritTests.TestSemantic_Inherit_MethodCallOnChild_Resolves;
 begin
   { C.SetX(10) should resolve even though SetX is defined on TBase }
-  AnalyseSrc(SrcInheritMethod).Free;
+  AnalyseSrc(SrcInheritMethod).Free();
 end;
 
 procedure TInheritTests.TestSemantic_Inherit_UnknownMethod_RaisesError;
@@ -456,7 +456,7 @@ begin
           end;
         var C: TChild;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           C.NoSuchMethod
         end.
         ''');
@@ -501,7 +501,7 @@ const
         end;
         var C: TChild;
         begin
-          C := TChild.Create
+          C := TChild.Create()
         end.
         ''';
 
@@ -526,7 +526,7 @@ const
         end;
         var C: TChild;
         begin
-          C := TChild.Create
+          C := TChild.Create()
         end.
         ''';
 
@@ -535,9 +535,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('inherited');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('inherited token kind', Ord(tkInherited), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TInheritTests.TestParse_Inherited_NoArgs_CreatesNode;
@@ -551,23 +551,23 @@ begin
     { TChild.Init is the second standalone proc (ProcDecls[1]) }
     AssertTrue('at least 2 ProcDecls', Prog.Block.ProcDecls.Count >= 2);
     MDecl := TMethodDecl(Prog.Block.ProcDecls[1]);
-    AssertNotNull('TChild.Init found', MDecl);
+    AssertNotNull('TChild.Init() found', MDecl);
     AssertTrue('body has at least one stmt', MDecl.Body.Stmts.Count >= 1);
     Stmt := TASTStmt(MDecl.Body.Stmts[0]);
     AssertTrue('first stmt is TInheritedCallStmt', Stmt is TInheritedCallStmt);
     AssertEquals('method name is Init',
       'Init', TInheritedCallStmt(Stmt).Name);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TInheritTests.TestSemantic_Inherited_NoArgs_OK;
 begin
-  AnalyseSrc(SrcInheritedNoArgs).Free;
+  AnalyseSrc(SrcInheritedNoArgs).Free();
 end;
 
 procedure TInheritTests.TestSemantic_Inherited_WithArgs_OK;
 begin
-  AnalyseSrc(SrcInheritedWithArgs).Free;
+  AnalyseSrc(SrcInheritedWithArgs).Free();
 end;
 
 procedure TInheritTests.TestCodegen_Inherited_NoArgs_CallsParentMethod;
@@ -617,7 +617,7 @@ var Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcInheritsFromPointer);
   AssertNotNull('program parsed and analysed', Prog);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TInheritTests.TestSemantic_InheritsFrom_OnClassInstance_OK;
@@ -625,7 +625,7 @@ var Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcInheritsFromClassInstance);
   AssertNotNull('program parsed and analysed', Prog);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TInheritTests.TestSemantic_InheritsFrom_ReturnsBoolean;
@@ -637,7 +637,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls.Items[2]);  { B: Boolean }
     AssertEquals('B is Boolean', 'Boolean', VD.ResolvedType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

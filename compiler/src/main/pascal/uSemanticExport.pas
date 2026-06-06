@@ -161,7 +161,7 @@ function BuildTypeEntry(ASrc:         TTypeDecl;
 var
   GenDef:   TGenericTypeDef;
 begin
-  Result := TTypeEntry.Create;
+  Result := TTypeEntry.Create();
   Result.Name := ASrc.Name;
   Result.Def  := CloneTypeDef(ASrc.Def);
   Result.IsClass   := ASrc.Def is TClassTypeDef;
@@ -183,7 +183,7 @@ function BuildConstEntry(ASrc:        TConstDecl;
                          ADeps: TObjectList)
                          : TConstEntry;
 begin
-  Result := TConstEntry.Create;
+  Result := TConstEntry.Create();
   Result.Decl    := CloneConstDecl(ASrc);
   Result.TypeRef := ResolveTypeRef(ASrc.TypeName, AIface, ADeps);
 end;
@@ -218,7 +218,7 @@ var
   PSrc:   TMethodParam;
   PCopy:  TMethodParam;
 begin
-  Result := TRoutineSig.Create;
+  Result := TRoutineSig.Create();
   Result.Name         := ASrc.Name;
   Result.IsFunction   := ASrc.ReturnTypeName <> '';
   Result.IsInline     := ASrc.IsInline or ASrc.IsInlineCandidate;
@@ -298,7 +298,7 @@ begin
         ImplDef := FindImplClassCompletion(AUnit, Decl.Name);
         if ImplDef <> nil then
         begin
-          Entry := TTypeEntry.Create;
+          Entry := TTypeEntry.Create();
           Entry.Name    := Decl.Name;
           Entry.Def     := CloneClassTypeDef(ImplDef);
           Entry.IsClass := True;
@@ -327,7 +327,7 @@ begin
     Decl := TVarDecl(AUnit.IntfBlock.Decls.Items[I]);
     for J := 0 to Decl.Names.Count - 1 do
     begin
-      Entry := TVarEntry.Create;
+      Entry := TVarEntry.Create();
       Entry.Name        := Decl.Names.Strings[J];
       Entry.TypeRef     := ResolveTypeRef(Decl.TypeName, AIface, ADeps);
       Entry.IsThreadVar := Decl.IsThreadVar;
@@ -386,7 +386,7 @@ begin
     if ImplDecl = nil then Continue;
     if ImplDecl.Body = nil then Continue;
 
-    Body := TInlineBody.Create;
+    Body := TInlineBody.Create();
     Body.RoutineName := Decl.Name;
     Body.Block       := CloneBlock(ImplDecl.Body);
     AIface.AddInlineBody(Body);
@@ -418,7 +418,7 @@ begin
     if ImplDecl = nil then Continue;
     if ImplDecl.Body = nil then Continue;
 
-    GBody := TGenericBody.Create;
+    GBody := TGenericBody.Create();
     GBody.Name       := Decl.Name;
     GBody.IsType     := False;
     GBody.RoutineSig := BuildRoutineSig(Decl, AIface, nil);
@@ -445,7 +445,7 @@ begin
     if not (TDecl.Def is TGenericTypeDef) then Continue;
 
     GenDef := TGenericTypeDef(TDecl.Def);
-    GBody := TGenericBody.Create;
+    GBody := TGenericBody.Create();
     GBody.Name    := TDecl.Name;
     GBody.IsType  := True;
     GBody.TypeDef := CloneTypeDef(TDecl.Def);

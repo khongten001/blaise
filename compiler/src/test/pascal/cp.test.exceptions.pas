@@ -151,9 +151,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -161,11 +161,11 @@ function TExceptionTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -174,15 +174,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -191,7 +191,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -275,7 +275,7 @@ const
           end;
         var E: TError;
         begin
-          E := TError.Create;
+          E := TError.Create();
           raise E
         end.
         ''';
@@ -302,9 +302,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('try');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('try token', Ord(tkTry), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TExceptionTests.TestLexer_Finally_Keyword;
@@ -312,9 +312,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('finally');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('finally token', Ord(tkFinally), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TExceptionTests.TestLexer_Except_Keyword;
@@ -322,9 +322,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('except');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('except token', Ord(tkExcept), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TExceptionTests.TestLexer_Raise_Keyword;
@@ -332,9 +332,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('raise');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('raise token', Ord(tkRaise), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -348,7 +348,7 @@ begin
   try
     AssertTrue('stmt is TTryFinallyStmt',
       Prog.Block.Stmts[1] is TTryFinallyStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryFinally_TryBodyStmtCount;
@@ -358,7 +358,7 @@ begin
   try
     TS := TTryFinallyStmt(Prog.Block.Stmts[1]);
     AssertEquals('try body has 1 stmt', 1, TS.TryBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryFinally_FinallyBodyStmtCount;
@@ -368,7 +368,7 @@ begin
   try
     TS := TTryFinallyStmt(Prog.Block.Stmts[1]);
     AssertEquals('finally body has 1 stmt', 1, TS.FinallyBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryFinally_MultipleStmtsInTryBody;
@@ -378,7 +378,7 @@ begin
   try
     TS := TTryFinallyStmt(Prog.Block.Stmts[0]);
     AssertEquals('multi try body has 2 stmts', 2, TS.TryBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryFinally_MultipleStmtsInFinallyBody;
@@ -388,7 +388,7 @@ begin
   try
     TS := TTryFinallyStmt(Prog.Block.Stmts[0]);
     AssertEquals('multi finally body has 2 stmts', 2, TS.FinallyBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -402,7 +402,7 @@ begin
   try
     AssertTrue('stmt is TTryExceptStmt',
       Prog.Block.Stmts[1] is TTryExceptStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryExcept_TryBodyStmtCount;
@@ -412,7 +412,7 @@ begin
   try
     TS := TTryExceptStmt(Prog.Block.Stmts[1]);
     AssertEquals('try body has 1 stmt', 1, TS.TryBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TryExcept_ExceptBodyStmtCount;
@@ -422,7 +422,7 @@ begin
   try
     TS := TTryExceptStmt(Prog.Block.Stmts[1]);
     AssertEquals('except body has 1 stmt', 1, TS.ExceptBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -435,7 +435,7 @@ begin
   Prog := ParseSrc(SrcRaise);
   try
     AssertTrue('stmt is TRaiseStmt', Prog.Block.Stmts[1] is TRaiseStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_Raise_HasExpr;
@@ -445,7 +445,7 @@ begin
   try
     RS := TRaiseStmt(Prog.Block.Stmts[1]);
     AssertNotNull('raise has non-nil expression', RS.Expr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_Raise_Bare_HasNilExpr;
@@ -458,7 +458,7 @@ begin
       TS.ExceptBody.Stmts[0] is TRaiseStmt);
     RS := TRaiseStmt(TS.ExceptBody.Stmts[0]);
     AssertNull('bare raise has nil expression', RS.Expr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -467,17 +467,17 @@ end;
 
 procedure TExceptionTests.TestSemantic_TryFinally_OK;
 begin
-  AnalyseSrc(SrcTryFinally).Free;
+  AnalyseSrc(SrcTryFinally).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_TryExcept_OK;
 begin
-  AnalyseSrc(SrcTryExcept).Free;
+  AnalyseSrc(SrcTryExcept).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_Raise_ClassExpr_OK;
 begin
-  AnalyseSrc(SrcRaise).Free;
+  AnalyseSrc(SrcRaise).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_Raise_NonClass_RaisesError;
@@ -495,7 +495,7 @@ end;
 
 procedure TExceptionTests.TestSemantic_Raise_Bare_OK;
 begin
-  AnalyseSrc(SrcBareRaise).Free;
+  AnalyseSrc(SrcBareRaise).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_ExceptionSubclass_CreateAndMessage_OK;
@@ -519,7 +519,7 @@ begin
           E := ECompileError.Create('compile error');
           raise E
         end.
-        ''').Free;
+        ''').Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -861,7 +861,7 @@ begin
   try
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     AssertEquals('one handler', 1, TES.Handlers.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_HandlerTypeName;
@@ -872,7 +872,7 @@ begin
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     H := TExceptHandlerClause(TES.Handlers[0]);
     AssertEquals('handler type EFoo', 'EFoo', H.TypeName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_HandlerVarName;
@@ -883,7 +883,7 @@ begin
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     H := TExceptHandlerClause(TES.Handlers[0]);
     AssertEquals('handler var E', 'E', H.VarName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_HandlerBodyStmtCount;
@@ -894,7 +894,7 @@ begin
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     H := TExceptHandlerClause(TES.Handlers[0]);
     AssertEquals('handler body 1 stmt', 1, H.Body.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_TwoHandlers;
@@ -904,7 +904,7 @@ begin
   try
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     AssertEquals('two handlers', 2, TES.Handlers.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_WithElseBody;
@@ -915,7 +915,7 @@ begin
     TES := TTryExceptStmt(Prog.Block.Stmts[0]);
     AssertNotNull('else body present', TES.ElseBody);
     AssertEquals('else body 1 stmt', 1, TES.ElseBody.Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TExceptionTests.TestParse_TypedExcept_NoVarBinding;
@@ -927,7 +927,7 @@ begin
     H := TExceptHandlerClause(TES.Handlers[0]);
     AssertEquals('no-var handler: empty VarName', '', H.VarName);
     AssertEquals('no-var handler: TypeName is EFoo', 'EFoo', H.TypeName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -936,12 +936,12 @@ end;
 
 procedure TExceptionTests.TestSemantic_TypedExcept_SingleHandler_OK;
 begin
-  AnalyseSrc(SrcTypedExceptSingle).Free;
+  AnalyseSrc(SrcTypedExceptSingle).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_TypedExcept_TwoHandlers_OK;
 begin
-  AnalyseSrc(SrcTypedExceptTwo).Free;
+  AnalyseSrc(SrcTypedExceptTwo).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_TypedExcept_NonClassType_RaisesError;
@@ -963,7 +963,7 @@ end;
 
 procedure TExceptionTests.TestSemantic_TypedExcept_WithElse_OK;
 begin
-  AnalyseSrc(SrcTypedExceptWithElse).Free;
+  AnalyseSrc(SrcTypedExceptWithElse).Free();
 end;
 
 procedure TExceptionTests.TestSemantic_TypedExcept_HandlerVarUsableInBody;
@@ -981,7 +981,7 @@ begin
               X := 0
           end
         end.
-        ''').Free;
+        ''').Free();
 end;
 
 { ------------------------------------------------------------------ }

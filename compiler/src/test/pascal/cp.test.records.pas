@@ -94,10 +94,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -106,11 +106,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -121,15 +121,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -139,7 +139,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ; { expected }
@@ -157,10 +157,10 @@ var
 begin
   L := TLexer.Create('type');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('type token', Ord(tkType), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -171,10 +171,10 @@ var
 begin
   L := TLexer.Create('record');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('record token', Ord(tkRecord), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -198,7 +198,7 @@ begin
   try
     AssertEquals('1 type decl', 1, Prog.Block.TypeDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -221,7 +221,7 @@ begin
     AssertEquals('Type name', 'TPoint', TD.Name);
     AssertTrue('Is TRecordTypeDef', TD.Def is TRecordTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -247,7 +247,7 @@ begin
     AssertEquals('Field name', 'X', Fld.Names.Strings[0]);
     AssertEquals('Field type', 'Integer', Fld.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -272,7 +272,7 @@ begin
     AssertEquals('First field', 'X', TFieldDecl(Rec.Fields.Items[0]).Names.Strings[0]);
     AssertEquals('Second field', 'Y', TFieldDecl(Rec.Fields.Items[1]).Names.Strings[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -299,7 +299,7 @@ begin
     AssertEquals('First',  'X', Fld.Names.Strings[0]);
     AssertEquals('Second', 'Y', Fld.Names.Strings[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -324,7 +324,7 @@ begin
     AssertEquals('Var name', 'P', Decl.Names.Strings[0]);
     AssertEquals('Var type', 'TPoint', Decl.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -354,7 +354,7 @@ begin
     AssertEquals('Field name', 'X',   Stmt.FieldName);
     AssertTrue('Expr is TIntLiteral', Stmt.Expr is TIntLiteral);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -381,7 +381,7 @@ begin
     AssertEquals('Record', 'Pt', TFieldAccessExpr(Bin.Left).RecordName);
     AssertEquals('Field',  'X',  TFieldAccessExpr(Bin.Left).FieldName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -409,7 +409,7 @@ begin
       Ord(tyRecord),
       Ord(Prog.SymbolTable.FindType('TPoint').Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -436,7 +436,7 @@ begin
     AssertEquals('Y type',
       Ord(tyInteger), Ord(TFieldInfo(RT.Fields.Items[1]).TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -459,7 +459,7 @@ begin
       Ord(tyRecord),
       Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -477,7 +477,7 @@ begin
           Pt.X := 42
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TRecordTests.TestSemantic_FieldAssign_TypeMismatch_RaisesError;
@@ -518,7 +518,7 @@ begin
     AssertEquals('Field access type',
       Ord(tyInteger), Ord(Access.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -711,7 +711,7 @@ begin
     AssertEquals('record of four Byte fields totals 4 bytes',
       4, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -740,7 +740,7 @@ begin
     AssertEquals('Integer after Byte aligns to offset 4', 4, F.Offset);
     AssertEquals('record total size is 8 (1 byte + 3 pad + 4)', 8, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -771,7 +771,7 @@ begin
     AssertEquals('C at 2', 2, RT.FindField('C').Offset);
     AssertEquals('D at 3', 3, RT.FindField('D').Offset);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -839,7 +839,7 @@ begin
     AssertEquals('record of three Single fields totals 12 bytes (4-byte align)',
       12, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

@@ -161,7 +161,7 @@ const
           end;
         var B: TBox;
         begin
-          B := TBox.Create;
+          B := TBox.Create();
           B.Value := 42;
           WriteLn(B.Value)
         end.
@@ -181,7 +181,7 @@ const
           end;
         var B: TBox;
         begin
-          B := TBox.Create;
+          B := TBox.Create();
           WriteLn(B.Count)
         end.
         ''';
@@ -217,7 +217,7 @@ const
           end;
         var L: TList; V: Integer;
         begin
-          L := TList.Create;
+          L := TList.Create();
           V := L.Items[3];
           WriteLn(V)
         end.
@@ -241,7 +241,7 @@ const
           end;
         var L: TList;
         begin
-          L := TList.Create;
+          L := TList.Create();
           L.Items[2] := 42
         end.
         ''';
@@ -258,10 +258,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -270,11 +270,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -284,13 +284,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -300,7 +300,7 @@ var
   SA:   TSemanticAnalyser;
 begin
   Prog := ParseSrc(ASrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Prog);
@@ -309,8 +309,8 @@ begin
       on E: ESemanticError do { expected };
     end;
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -334,7 +334,7 @@ begin
     AssertEquals('read name', 'FCount', PD.ReadName);
     AssertEquals('write name empty', '', PD.WriteName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -352,7 +352,7 @@ begin
     AssertEquals('read name', 'FValue', PD.ReadName);
     AssertEquals('write name', 'FValue', PD.WriteName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -371,7 +371,7 @@ begin
     AssertEquals('read name', 'GetCount', PD.ReadName);
     AssertEquals('write name empty', '', PD.WriteName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -388,7 +388,7 @@ begin
     AssertEquals('read name', 'GetValue', PD.ReadName);
     AssertEquals('write name', 'SetValue', PD.WriteName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -404,7 +404,7 @@ begin
     AssertEquals('two methods', 2, CD.Methods.Count);
     AssertEquals('one property', 1, CD.Properties.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -414,7 +414,7 @@ end;
 
 procedure TPropertyTests.TestSemantic_Property_FieldBacked_OK;
 begin
-  AnalyseSrc(SrcFieldBackedReadWrite).Free;
+  AnalyseSrc(SrcFieldBackedReadWrite).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_Property_FieldBacked_TypeResolved;
@@ -433,7 +433,7 @@ begin
     AssertEquals('read field is FValue', 'FValue', PI.ReadField);
     AssertEquals('write field is FValue', 'FValue', PI.WriteField);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -447,14 +447,14 @@ begin
           property Count: Integer read FCount;
         end;
         var B: TBox;
-        begin B := TBox.Create; B.Count := 5 end.
+        begin B := TBox.Create(); B.Count := 5 end.
         '''
   );
 end;
 
 procedure TPropertyTests.TestSemantic_Property_ReadWrite_OK;
 begin
-  AnalyseSrc(SrcFieldBackedUsage).Free;
+  AnalyseSrc(SrcFieldBackedUsage).Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -463,7 +463,7 @@ end;
 
 procedure TPropertyTests.TestSemantic_Property_MethodBacked_OK;
 begin
-  AnalyseSrc(SrcMethodBackedReadUsage).Free;
+  AnalyseSrc(SrcMethodBackedReadUsage).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_Property_MethodBacked_TypeResolved;
@@ -481,7 +481,7 @@ begin
     AssertEquals('read field empty', '', PI.ReadField);
     AssertEquals('read method is GetCount', 'GetCount', PI.ReadMethod);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -542,18 +542,18 @@ begin
     AssertEquals('read name', 'Get', PD.ReadName);
     AssertEquals('write name', 'Put', PD.WriteName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TPropertyTests.TestSemantic_IndexedProperty_Read_OK;
 begin
-  AnalyseSrc(SrcIndexedPropReadUsage).Free;
+  AnalyseSrc(SrcIndexedPropReadUsage).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_IndexedProperty_Write_OK;
 begin
-  AnalyseSrc(SrcIndexedPropWriteUsage).Free;
+  AnalyseSrc(SrcIndexedPropWriteUsage).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_IndexedProperty_MissingIndex_RaisesError;
@@ -567,7 +567,7 @@ begin
           property Items[Index: Integer]: Integer read Get;
         end;
         var L: TList; V: Integer;
-        begin L := TList.Create; V := L.Items; WriteLn(V) end.
+        begin L := TList.Create(); V := L.Items; WriteLn(V) end.
         '''
   );
 end;
@@ -607,8 +607,8 @@ const
           O: TOuter;
           I, V: Integer;
         begin
-          O := TOuter.Create;
-          O.FInner := TItems.Create;
+          O := TOuter.Create();
+          O.FInner := TItems.Create();
           I := 7;
           V := O.Inner.Strings[I];
           WriteLn(V)
@@ -645,12 +645,12 @@ begin
           D: TDerived;
           N: Integer;
         begin
-          D := TDerived.Create;
+          D := TDerived.Create();
           N := D.Count;
           WriteLn(N)
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_InheritedProperty_ViaSelf_OK;
@@ -673,7 +673,7 @@ begin
         begin
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TPropertyTests.TestSemantic_InheritedProperty_BareIdent_InSubclassMethod_OK;
@@ -696,7 +696,7 @@ begin
         begin
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 initialization

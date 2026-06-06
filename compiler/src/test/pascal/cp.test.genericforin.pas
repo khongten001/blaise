@@ -107,14 +107,14 @@ const
             FItem: T;
             function GetEnumerator: TGenEnum<T>;
             begin
-              Result := TGenEnum<T>.Create
+              Result := TGenEnum<T>.Create()
             end;
           end;
         var
           C: TColl<Integer>;
           X: Integer;
         begin
-          C := TColl<Integer>.Create;
+          C := TColl<Integer>.Create();
           for X in C do
             WriteLn(X)
         end.
@@ -146,7 +146,7 @@ const
             FCount: Integer;
             function GetEnumerator: TListEnumerator<T>;
             begin
-              Result := TListEnumerator<T>.Create
+              Result := TListEnumerator<T>.Create()
             end;
           end;
         begin end.
@@ -176,14 +176,14 @@ const
             FCount: Integer;
             function GetEnumerator: TListEnumerator<T>;
             begin
-              Result := TListEnumerator<T>.Create
+              Result := TListEnumerator<T>.Create()
             end;
           end;
         var
           L: TMyList<Integer>;
           X: Integer;
         begin
-          L := TMyList<Integer>.Create;
+          L := TMyList<Integer>.Create();
           for X in L do
             WriteLn(X)
         end.
@@ -201,10 +201,10 @@ begin
   Lex := TLexer.Create(ASrc);
   Par := TParser.Create(Lex);
   try
-    Result := Par.Parse;
+    Result := Par.Parse();
   finally
-    Par.Free;
-    Lex.Free;
+    Par.Free();
+    Lex.Free();
   end;
 end;
 
@@ -213,11 +213,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -227,13 +227,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -243,7 +243,7 @@ var
   SA:   TSemanticAnalyser;
 begin
   Prog := ParseSrc(ASrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Prog);
@@ -252,8 +252,8 @@ begin
       on E: ESemanticError do { expected };
     end;
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -276,7 +276,7 @@ begin
     { TGenEnum is generic, not a concrete type; FindType should return nil. }
     AssertNull('TGenEnum is not a concrete type', RT);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -296,7 +296,7 @@ begin
     AssertEquals('Current property type is tyInteger',
       Ord(tyInteger), Ord(Prop.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -316,7 +316,7 @@ begin
     AssertEquals('Name is TListEnumerator', 'TListEnumerator', TD.Name);
     AssertTrue('Def is TGenericTypeDef', TD.Def is TGenericTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -342,7 +342,7 @@ begin
     end;
     AssertTrue('GetEnumerator method declared on TMyList', Found);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -354,7 +354,7 @@ begin
     not raise an error (GetEnumerator return type TListEnumerator<Integer>
     must instantiate transitively). }
   Prog := AnalyseSrc(SrcForInGenericList);
-  Prog.Free;  { no exception = pass }
+  Prog.Free();  { no exception = pass }
 end;
 
 procedure TGenericForInTests.TestSemantic_TListEnumerator_Integer_HasCurrentProperty;
@@ -372,7 +372,7 @@ begin
     AssertEquals('Current type is tyInteger',
       Ord(tyInteger), Ord(Prop.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -385,7 +385,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcForInGenericList);
-  Prog.Free;  { no exception = semantic check passed }
+  Prog.Free();  { no exception = semantic check passed }
 end;
 
 procedure TGenericForInTests.TestCodegen_ForIn_GenericList_CallsGetEnumerator;

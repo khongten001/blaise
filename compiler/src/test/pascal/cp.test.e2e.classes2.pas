@@ -109,9 +109,9 @@ const
           C: TCounter;
           D: TDoubler;
         begin
-          C := TCounter.Create;
-          D := TDoubler.Create;
-          C.Inc; C.Inc; C.Inc;
+          C := TCounter.Create();
+          D := TDoubler.Create();
+          C.Inc(); C.Inc(); C.Inc();
           N := D.Double(C.Value);
           WriteLn(N)
         end.
@@ -124,10 +124,10 @@ const
       TBar = class(TFoo) end;
     var F: TFoo; B: TBar;
     begin
-      F := TFoo.Create;
-      WriteLn(F.ToString);
-      B := TBar.Create;
-      WriteLn(B.ToString)
+      F := TFoo.Create();
+      WriteLn(F.ToString());
+      B := TBar.Create();
+      WriteLn(B.ToString())
     end.
     ''';
 
@@ -146,10 +146,10 @@ const
       begin Result := 'bar!' end;
     var F: TFoo; B: TFoo;
     begin
-      F := TFoo.Create;
-      WriteLn(F.ToString);
-      B := TBar.Create;
-      WriteLn(B.ToString)
+      F := TFoo.Create();
+      WriteLn(F.ToString());
+      B := TBar.Create();
+      WriteLn(B.ToString())
     end.
     ''';
 
@@ -164,10 +164,10 @@ const
       begin Result := 'foo override' end;
     var F: TFoo; B: TFoo;
     begin
-      F := TFoo.Create;
-      WriteLn(F.ToString);
-      B := TBar.Create;
-      WriteLn(B.ToString)
+      F := TFoo.Create();
+      WriteLn(F.ToString());
+      B := TBar.Create();
+      WriteLn(B.ToString())
     end.
     ''';
 
@@ -177,12 +177,12 @@ const
         type TBase = class end;
         var B: TBase;
         begin
-          B := TBase.Create;
+          B := TBase.Create();
           if B.InheritsFrom(TBase) then
             WriteLn('yes')
           else
             WriteLn('no');
-          B.Free;
+          B.Free();
         end.
         ''';
 
@@ -193,12 +193,12 @@ const
              TChild = class(TBase) end;
         var C: TChild;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           if C.InheritsFrom(TBase) then
             WriteLn('yes')
           else
             WriteLn('no');
-          C.Free;
+          C.Free();
         end.
         ''';
 
@@ -210,12 +210,12 @@ const
              TGrandChild = class(TChild) end;
         var G: TGrandChild;
         begin
-          G := TGrandChild.Create;
+          G := TGrandChild.Create();
           if G.InheritsFrom(TBase) then
             WriteLn('yes')
           else
             WriteLn('no');
-          G.Free;
+          G.Free();
         end.
         ''';
 
@@ -226,12 +226,12 @@ const
              TUnrelated = class end;
         var B: TBase;
         begin
-          B := TBase.Create;
+          B := TBase.Create();
           if B.InheritsFrom(TUnrelated) then
             WriteLn('yes')
           else
             WriteLn('no');
-          B.Free;
+          B.Free();
         end.
         ''';
 
@@ -242,12 +242,12 @@ const
              TChild = class(TBase) end;
         var B: TBase;
         begin
-          B := TBase.Create;
+          B := TBase.Create();
           if B.InheritsFrom(TChild) then
             WriteLn('yes')
           else
             WriteLn('no');
-          B.Free;
+          B.Free();
         end.
         ''';
 
@@ -259,13 +259,13 @@ const
         var C: TChild;
             CT: Pointer;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           CT := C.ClassType;
           if CT.InheritsFrom(TBase) then
             WriteLn('yes')
           else
             WriteLn('no');
-          C.Free;
+          C.Free();
         end.
         ''';
 
@@ -276,9 +276,9 @@ const
       TDog = class(TAnimal) end;
     var D: TAnimal;
     begin
-      D := TDog.Create;
+      D := TDog.Create();
       if D is TDog then WriteLn('yes');
-      D.Free
+      D.Free()
     end.
     ''';
 
@@ -290,9 +290,9 @@ const
       TCat = class(TAnimal) end;
     var D: TAnimal;
     begin
-      D := TDog.Create;
+      D := TDog.Create();
       if D is TCat then WriteLn('yes') else WriteLn('no');
-      D.Free
+      D.Free()
     end.
     ''';
 
@@ -312,9 +312,9 @@ const
     begin Result := 'child' end;
     var B: TBase;
     begin
-      B := TChild.Create;
+      B := TChild.Create();
       WriteLn((B as TChild).Name);
-      B.Free
+      B.Free()
     end.
     ''';
 
@@ -338,9 +338,9 @@ const
     end;
     var C: TChild;
     begin
-      C := TChild.Create;
+      C := TChild.Create();
       WriteLn(C.Val);
-      C.Free
+      C.Free()
     end.
     ''';
 
@@ -368,11 +368,11 @@ const
       D: TDer;
       N: Integer;
     begin
-      D := TDer.Create;
+      D := TDer.Create();
       N := 5;
       D.Bump(N);
       WriteLn(N);
-      D.Free
+      D.Free()
     end.
     ''';
 
@@ -392,10 +392,10 @@ const
     begin Result := FSide * FSide end;
     var S: TShape;
     begin
-      S := TSquare.Create;
+      S := TSquare.Create();
       TSquare(S).FSide := 4;
       WriteLn(S.Area);
-      S.Free
+      S.Free()
     end.
     ''';
 
@@ -416,9 +416,9 @@ const
     function TC.Lvl: Integer; begin Result := 3 end;
     var A: TA;
     begin
-      A := TC.Create;
+      A := TC.Create();
       WriteLn(A.Lvl);
-      A.Free
+      A.Free()
     end.
     ''';
 
@@ -436,10 +436,10 @@ const
     var G: IGreeter;
         H: THello;
     begin
-      H := THello.Create;
+      H := THello.Create();
       G := H;
-      G.Greet;
-      H.Free
+      G.Greet();
+      H.Free()
     end.
     ''';
 
@@ -461,8 +461,8 @@ const
     begin WriteLn('spoke') end;
     var G: ISpeaker;
     begin
-      G := TSpeaker.Create;
-      G.Speak;
+      G := TSpeaker.Create();
+      G.Speak();
       G := nil;
       WriteLn('after nil')
     end.
@@ -483,13 +483,13 @@ const
       Obj: TObject;
       P: IPrinter;
     begin
-      Obj := TPrinter.Create;
+      Obj := TPrinter.Create();
       if Obj is IPrinter then
       begin
         P := Obj as IPrinter;
-        P.Print
+        P.Print()
       end;
-      Obj.Free
+      Obj.Free()
     end.
     ''';
 
@@ -513,15 +513,15 @@ const
     function THello.Greet: Integer;
     begin Result := 42 end;
     function TUser.Use(G: IGreeter): Integer;
-    begin Result := G.Greet + 1 end;
+    begin Result := G.Greet() + 1 end;
     var
       H: THello;
       I: IGreeter;
       U: TUser;
     begin
-      H := THello.Create;
+      H := THello.Create();
       I := H;
-      U := TUser.Create;
+      U := TUser.Create();
       WriteLn(U.Use(I))
     end.
     ''';
@@ -560,7 +560,7 @@ const
     var
       im: Tmi;
     begin
-      im := Tmi.Create(Toutput.Create);
+      im := Tmi.Create(Toutput.Create());
       im.use;
     end.
     ''';
@@ -578,12 +578,12 @@ const
     begin WriteLn('hello') end;
     var Obj: TObject;
     begin
-      Obj := THello.Create;
+      Obj := THello.Create();
       if Supports(Obj, IGreeter) then
         WriteLn('yes')
       else
         WriteLn('no');
-      Obj.Free
+      Obj.Free()
     end.
     ''';
 
@@ -601,12 +601,12 @@ const
     var Obj: TObject;
         G: IGreeter;
     begin
-      Obj := THello.Create;
+      Obj := THello.Create();
       if Supports(Obj, IGreeter, G) then
-        G.Greet
+        G.Greet()
       else
         WriteLn('no');
-      Obj.Free
+      Obj.Free()
     end.
     ''';
 
@@ -634,9 +634,9 @@ const
           Foo: TFoo;
         begin
           gValue := 42;
-          Foo := TFoo.Create;
-          WriteLn(Foo.GetValue);
-          Foo.Free
+          Foo := TFoo.Create();
+          WriteLn(Foo.GetValue());
+          Foo.Free()
         end.
         ''';
 
@@ -655,11 +655,11 @@ const
           end;
         var N: TNode;
         begin
-          N := TNode.Create;
+          N := TNode.Create();
           Fill(N.Value, N.IsBig);
           WriteLn(N.Value);
           WriteLn(N.IsBig);
-          N.Free
+          N.Free()
         end.
         ''';
 
@@ -690,9 +690,9 @@ const
         end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
-          WriteLn(F.Run);
-          F.Free
+          F := TFoo.Create();
+          WriteLn(F.Run());
+          F.Free()
         end.
         ''';
 
@@ -721,9 +721,9 @@ const
         begin Result := Tag end;
         var C: TChild;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           WriteLn(C.Echo);
-          C.Free
+          C.Free()
         end.
         ''';
 
@@ -753,9 +753,9 @@ const
         end;
         var C: TChild;
         begin
-          C := TChild.Create;
+          C := TChild.Create();
           WriteLn(C.FromInh);
-          C.Free
+          C.Free()
         end.
         ''';
 
@@ -780,9 +780,9 @@ const
         end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
-          WriteLn(F.Run);
-          F.Free
+          F := TFoo.Create();
+          WriteLn(F.Run());
+          F.Free()
         end.
         ''';
 
@@ -804,7 +804,7 @@ const
         begin
           F := TFoo.Create(42);
           WriteLn(F.FA);
-          F.Free
+          F.Free()
         end.
         ''';
 
@@ -813,13 +813,13 @@ var Lst: TStringList;
 begin
   Result := False;
   if not FileExists(APath) then Exit;
-  Lst := TStringList.Create;
+  Lst := TStringList.Create();
   try
     Lst.LoadFromFile(APath);
     ASrc := Lst.Text;
     Result := True;
   finally
-    Lst.Free;
+    Lst.Free();
   end;
 end;
 

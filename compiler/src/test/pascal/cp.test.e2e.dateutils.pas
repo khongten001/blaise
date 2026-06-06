@@ -85,7 +85,7 @@ const
     var D: TDate;
     begin
       D := MakeDate(2025, 5, 15);
-      WriteLn(D.ToString)
+      WriteLn(D.ToString())
     end.
     ''';
 
@@ -96,7 +96,7 @@ const
     var T: TTime;
     begin
       T := MakeTime(14, 30, 45);
-      WriteLn(T.ToString)
+      WriteLn(T.ToString())
     end.
     ''';
 
@@ -120,7 +120,7 @@ const
       D  := MakeDate(2025, 5, 15);
       T  := MakeTime(14, 30, 45);
       DT := MakeDateTime(D, T);
-      WriteLn(DT.ToString)
+      WriteLn(DT.ToString())
     end.
     ''';
 
@@ -133,9 +133,9 @@ const
       OA := MakeOffset(5, 30);
       OB := MakeOffset(-8, 0);
       OC := MakeOffset(0, 0);
-      WriteLn(OA.ToString);
-      WriteLn(OB.ToString);
-      WriteLn(OC.ToString)
+      WriteLn(OA.ToString());
+      WriteLn(OB.ToString());
+      WriteLn(OC.ToString())
     end.
     ''';
 
@@ -161,7 +161,7 @@ const
       D  := MakeDate(2025, 5, 15);
       T  := MakeTime(14, 30, 45);
       I  := MakeInstantUtc(D, T);
-      DT := I.ToUtcDateTime;
+      DT := I.ToUtcDateTime();
       WriteLn(DT.Date.Year);
       WriteLn(DT.Date.Month);
       WriteLn(DT.Date.Day);
@@ -194,7 +194,7 @@ const
       T  := MakeTime(0, 0, 0);
       I  := MakeInstantUtc(D, T);
       I2 := I.AddDuration(MakeDurationSeconds(3600));
-      DT := I2.ToUtcDateTime;
+      DT := I2.ToUtcDateTime();
       WriteLn(DT.Time.Hour);
       WriteLn(DT.Time.Minute);
       WriteLn(DT.Time.Second)
@@ -211,7 +211,7 @@ const
       T  := MakeTime(1, 0, 0);
       I  := MakeInstantUtc(D, T);
       I2 := I.SubtractDuration(MakeDurationSeconds(3600));
-      DT := I2.ToUtcDateTime;
+      DT := I2.ToUtcDateTime();
       WriteLn(DT.Time.Hour);
       WriteLn(DT.Date.Day)
     end.
@@ -265,7 +265,7 @@ const
     var I: TInstant; O: TTimeZoneOffset;
     begin
       I := MakeInstantUtc(MakeDate(2025, 5, 15), MakeTime(14, 30, 45));
-      WriteLn(I.ToString);
+      WriteLn(I.ToString());
       O := MakeOffset(5, 30);
       WriteLn(I.ToStringOffset(O))
     end.
@@ -305,10 +305,10 @@ const
     program P;
     uses DateUtils;
     begin
-      WriteLn(MakeDurationSeconds(3661).ToString);
-      WriteLn(MakeDurationSeconds(86400).ToString);
-      WriteLn(MakeDurationSeconds(0).ToString);
-      WriteLn(MakeDurationSeconds(59).ToString)
+      WriteLn(MakeDurationSeconds(3661).ToString());
+      WriteLn(MakeDurationSeconds(86400).ToString());
+      WriteLn(MakeDurationSeconds(0).ToString());
+      WriteLn(MakeDurationSeconds(59).ToString())
     end.
     ''';
 
@@ -352,7 +352,7 @@ const
       WriteLn(D.Year);
       WriteLn(D.Month);
       WriteLn(D.Day);
-      WriteLn(D.ToString)
+      WriteLn(D.ToString())
     end.
     ''';
 
@@ -366,7 +366,7 @@ const
       WriteLn(T.Hour);
       WriteLn(T.Minute);
       WriteLn(T.Second);
-      WriteLn(T.ToString)
+      WriteLn(T.ToString())
     end.
     ''';
 
@@ -383,7 +383,7 @@ const
       WriteLn(DT.Time.Hour);
       WriteLn(DT.Time.Minute);
       WriteLn(DT.Time.Second);
-      WriteLn(DT.ToString)
+      WriteLn(DT.ToString())
     end.
     ''';
 
@@ -394,14 +394,14 @@ const
     var I: TInstant; DT: TDateTime;
     begin
       I  := ParseInstant('2025-05-15T14:30:45Z');
-      DT := I.ToUtcDateTime;
+      DT := I.ToUtcDateTime();
       WriteLn(DT.Date.Year);
       WriteLn(DT.Date.Month);
       WriteLn(DT.Date.Day);
       WriteLn(DT.Time.Hour);
       WriteLn(DT.Time.Minute);
       WriteLn(DT.Time.Second);
-      WriteLn(I.ToString)
+      WriteLn(I.ToString())
     end.
     ''';
 
@@ -426,7 +426,7 @@ const
     begin
       D := ParseDuration('PT3H25M10S');
       WriteLn(D.TotalSeconds);
-      WriteLn(D.ToString);
+      WriteLn(D.ToString());
       D := ParseDuration('PT0S');
       WriteLn(D.TotalSeconds)
     end.
@@ -494,10 +494,10 @@ const
     var D: TDate;
     begin
       D := DateAddDays(MakeDate(2025, 1, 30), 5);
-      WriteLn(D.ToString);
+      WriteLn(D.ToString());
       { Cross year boundary }
       D := DateAddDays(MakeDate(2024, 12, 31), 1);
-      WriteLn(D.ToString)
+      WriteLn(D.ToString())
     end.
     ''';
 
@@ -509,13 +509,13 @@ const
     begin
       { Jan 31 + 1 month = Feb 28 (2025 is not a leap year) }
       D := DateAddMonths(MakeDate(2025, 1, 31), 1);
-      WriteLn(D.ToString);
+      WriteLn(D.ToString());
       { Jan 31 + 1 month = Feb 29 (2024 is a leap year) }
       D := DateAddMonths(MakeDate(2024, 1, 31), 1);
-      WriteLn(D.ToString);
+      WriteLn(D.ToString());
       { Cross year boundary: Nov + 3 months }
       D := DateAddMonths(MakeDate(2025, 11, 15), 3);
-      WriteLn(D.ToString)
+      WriteLn(D.ToString())
     end.
     ''';
 
@@ -526,10 +526,10 @@ const
     var D: TDate;
     begin
       D := DateAddYears(MakeDate(2025, 5, 15), 3);
-      WriteLn(D.ToString);
+      WriteLn(D.ToString());
       { Feb 29 leap year + 1 year → Feb 28 }
       D := DateAddYears(MakeDate(2024, 2, 29), 1);
-      WriteLn(D.ToString)
+      WriteLn(D.ToString())
     end.
     ''';
 
@@ -569,7 +569,7 @@ const
       T  := MakeTime(19, 30, 45);
       O  := MakeOffset(5, 30);
       I  := MakeInstantLocal(D, T, O);
-      DT := I.ToUtcDateTime;
+      DT := I.ToUtcDateTime();
       WriteLn(DT.Time.Hour);
       WriteLn(DT.Time.Minute);
       WriteLn(DT.Time.Second)
@@ -654,14 +654,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcMakeOffsetToString, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('+05:30', '+05:30', Lines.Strings[0]);
     AssertEquals('-08:00', '-08:00', Lines.Strings[1]);
     AssertEquals('Z for UTC', 'Z',   Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -674,14 +674,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcMakeOffsetUTC, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('TotalSeconds=0', '0', Lines.Strings[0]);
     AssertEquals('Hours=0',        '0', Lines.Strings[1]);
     AssertEquals('Minutes=0',      '0', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -694,7 +694,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantUtcRoundTrip, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Year=2025',   '2025', Lines.Strings[0]);
@@ -704,7 +704,7 @@ begin
     AssertEquals('Minute=30',   '30',   Lines.Strings[4]);
     AssertEquals('Second=45',   '45',   Lines.Strings[5]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -717,13 +717,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantToUnixSeconds, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('ToUnixSeconds=1', '1',    Lines.Strings[0]);
     AssertEquals('ToUnixMillis=1000', '1000', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -736,14 +736,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantAddDuration, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Hour=1 after +3600s', '1', Lines.Strings[0]);
     AssertEquals('Min=0',               '0', Lines.Strings[1]);
     AssertEquals('Sec=0',               '0', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -756,13 +756,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantSubtractDuration, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Hour=0 after -3600s',   '0', Lines.Strings[0]);
     AssertEquals('Day=1 (no day change)', '1', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -786,14 +786,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantIsAfterIsBefore, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A.IsBefore(B)=true',  'True',  Lines.Strings[0]);
     AssertEquals('A.IsAfter(B)=false',  'False', Lines.Strings[1]);
     AssertEquals('B.IsAfter(A)=true',   'True',  Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -806,13 +806,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantEquals, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A.Equals(B)=true',  'True',  Lines.Strings[0]);
     AssertEquals('A.Equals(C)=false', 'False', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -825,13 +825,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantToStringOffset, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('UTC string',    '2025-05-15T14:30:45Z',       Lines.Strings[0]);
     AssertEquals('+05:30 string', '2025-05-15T20:00:45+05:30',  Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -844,14 +844,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInstantToLocalDateTime, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     { 14:00 UTC + 05:30 = 19:30 local }
     AssertEquals('Hour=19',   '19', Lines.Strings[0]);
     AssertEquals('Minute=30', '30', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -864,7 +864,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDurationTotalAccessors, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('TotalSeconds=9010',       '9010',    Lines.Strings[0]);
@@ -872,7 +872,7 @@ begin
     AssertEquals('TotalMinutes=150',         '150',     Lines.Strings[2]);
     AssertEquals('TotalHours=2',             '2',       Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -885,7 +885,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDurationToString, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('3661s = PT1H1M1S',    'PT1H1M1S',  Lines.Strings[0]);
@@ -893,7 +893,7 @@ begin
     AssertEquals('0s = PT0S',           'PT0S',      Lines.Strings[2]);
     AssertEquals('59s = PT59S',         'PT59S',     Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -906,14 +906,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDurationNegative, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('IsNegative=true',       'True',  Lines.Strings[0]);
     AssertEquals('Abs.IsNegative=false',  'False', Lines.Strings[1]);
     AssertEquals('Abs.TotalSeconds=120',  '120', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -926,14 +926,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDurationAddSubtract, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Add=150s',      '150',  Lines.Strings[0]);
     AssertEquals('Subtract=50s',  '50',   Lines.Strings[1]);
     AssertEquals('Negate=-100s',  '-100', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -946,7 +946,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseDate, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Year=2025',         '2025',       Lines.Strings[0]);
@@ -954,7 +954,7 @@ begin
     AssertEquals('Day=15',            '15',         Lines.Strings[2]);
     AssertEquals('ToString round-trip','2025-05-15', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -967,7 +967,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseTime, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Hour=14',            '14',      Lines.Strings[0]);
@@ -975,7 +975,7 @@ begin
     AssertEquals('Second=45',          '45',      Lines.Strings[2]);
     AssertEquals('ToString round-trip','14:30:45', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -988,7 +988,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseDateTime, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Year=2025',   '2025',               Lines.Strings[0]);
@@ -999,7 +999,7 @@ begin
     AssertEquals('Second=45',   '45',                 Lines.Strings[5]);
     AssertEquals('ToString',    '2025-05-15T14:30:45', Lines.Strings[6]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1012,7 +1012,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseInstantUTC, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Year=2025',   '2025',                  Lines.Strings[0]);
@@ -1023,7 +1023,7 @@ begin
     AssertEquals('Second=45',   '45',                    Lines.Strings[5]);
     AssertEquals('ToString',    '2025-05-15T14:30:45Z',  Lines.Strings[6]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1047,7 +1047,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseDuration, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     { 3*3600 + 25*60 + 10 = 10800 + 1500 + 10 = 12310 }
@@ -1055,7 +1055,7 @@ begin
     AssertEquals('PT3H25M10S round-trip',    'PT3H25M10S', Lines.Strings[1]);
     AssertEquals('PT0S seconds=0',           '0',          Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1068,14 +1068,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcParseOffset, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('+05:30 = 19800s',  '19800',  Lines.Strings[0]);
     AssertEquals('-08:00 = -28800s', '-28800', Lines.Strings[1]);
     AssertEquals('Z = 0s',           '0',      Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1088,7 +1088,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcIsLeapYear, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('2000 is leap',  'True',  Lines.Strings[0]);
@@ -1096,7 +1096,7 @@ begin
     AssertEquals('2024 is leap',  'True',  Lines.Strings[2]);
     AssertEquals('2025 not leap', 'False', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1109,7 +1109,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDaysInMonth, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Feb 2024 leap=29',  '29', Lines.Strings[0]);
@@ -1117,7 +1117,7 @@ begin
     AssertEquals('Jan=31',            '31', Lines.Strings[2]);
     AssertEquals('Apr=30',            '30', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1130,14 +1130,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDayOfWeek, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('2025-05-15 Thursday=4 (free fn)', '4', Lines.Strings[0]);
     AssertEquals('2025-05-15 Thursday=4 (method)',  '4', Lines.Strings[1]);
     AssertEquals('2025-05-19 Monday=1',             '1', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1150,13 +1150,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDateAddDays, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Jan 30 +5 days = Feb 4', '2025-02-04', Lines.Strings[0]);
     AssertEquals('Dec 31 +1 day = Jan 1',  '2025-01-01', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1169,14 +1169,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDateAddMonthsClamp, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Jan31+1m(2025)=Feb28', '2025-02-28', Lines.Strings[0]);
     AssertEquals('Jan31+1m(2024)=Feb29', '2024-02-29', Lines.Strings[1]);
     AssertEquals('Nov15+3m=Feb15',       '2026-02-15', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1189,13 +1189,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDateAddYears, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('2025-05-15 +3y = 2028-05-15', '2028-05-15', Lines.Strings[0]);
     AssertEquals('2024-02-29 +1y = 2025-02-28', '2025-02-28', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1208,13 +1208,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDateDiffDays, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('B-A = 10 days',  '10',  Lines.Strings[0]);
     AssertEquals('A-B = -10 days', '-10', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1227,13 +1227,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcSystemOffset, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('>= -50400s', 'True', Lines.Strings[0]);
     AssertEquals('<= +50400s', 'True', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -1246,7 +1246,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcMakeInstantLocal, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     { 19:30:45 local +05:30 → 14:00:45 UTC }
@@ -1254,7 +1254,7 @@ begin
     AssertEquals('UTC Minute=0',  '0',  Lines.Strings[1]);
     AssertEquals('UTC Second=45', '45', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 

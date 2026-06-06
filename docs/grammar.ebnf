@@ -719,7 +719,7 @@ FieldAssignment
     ;
 
 MethodCall
-    = IDENT DOT IDENT [ LPAREN [ ArgList ] RPAREN ]
+    = IDENT DOT IDENT LPAREN [ ArgList ] RPAREN
     ;
 
 (* Semantic disambiguation of  IDENT DOT IDENT  in Stmt:
@@ -736,7 +736,7 @@ Assignment
     ;
 
 ProcCall
-    = IDENT [ LPAREN [ ArgList ] RPAREN ]
+    = IDENT LPAREN [ ArgList ] RPAREN
     ;
 
 ArgList
@@ -776,9 +776,11 @@ Factor
     | NOT Factor                                       (* Boolean or bitwise NOT *)
     | "Supports" LPAREN Expr COMMA IDENT [ COMMA IDENT ] RPAREN  (* compiler intrinsic *)
     | IDENT DOT IDENT [ LBRACKET Expr RBRACKET ]      (* indexed property read *)
-               [ LPAREN [ ArgList ] RPAREN ]           (* field/constructor/method *)
+               LPAREN [ ArgList ] RPAREN               (* constructor/method call *)
+    | IDENT DOT IDENT                                  (* field read *)
     | IDENT LESS TypeArgList GREATER LPAREN [ ArgList ] RPAREN   (* generic func call *)
-    | IDENT [ LPAREN [ ArgList ] RPAREN ]             (* variable, func call, type cast *)
+    | IDENT LPAREN [ ArgList ] RPAREN                  (* func call, type cast *)
+    | IDENT                                            (* variable read *)
     | LPAREN Expr RPAREN
     ;
 

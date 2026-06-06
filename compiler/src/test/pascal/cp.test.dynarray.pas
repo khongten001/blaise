@@ -70,15 +70,15 @@ var L: TLexer; P: TParser;
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  try Result := P.Parse; finally P.Free; L.Free; end;
+  try Result := P.Parse(); finally P.Free(); L.Free(); end;
 end;
 
 function TDynArrayTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
-  try A.Analyse(Result); finally A.Free; end;
+  A := TSemanticAnalyser.Create();
+  try A.Analyse(Result); finally A.Free(); end;
 end;
 
 function TDynArrayTests.GenIR(const ASrc: string): string;
@@ -86,9 +86,9 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
-    try CG.Generate(Prog); Result := CG.GetOutput; finally CG.Free; end;
-  finally Prog.Free; end;
+    CG := TCodeGenQBE.Create();
+    try CG.Generate(Prog); Result := CG.GetOutput(); finally CG.Free(); end;
+  finally Prog.Free(); end;
 end;
 
 function TDynArrayTests.CountOccurrences(
@@ -121,7 +121,7 @@ begin
       ''');
   try
     AssertEquals('one type decl', 1, Prog.Block.TypeDecls.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestParse_DynArray_InlineVarDecl_AcceptsDecl;
@@ -136,7 +136,7 @@ begin
       ''');
   try
     AssertEquals('one var decl', 1, Prog.Block.Decls.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestParse_DynArray_Combined_TypeAndVar;
@@ -154,7 +154,7 @@ begin
   try
     AssertEquals('one type decl', 1, Prog.Block.TypeDecls.Count);
     AssertEquals('one var decl', 1, Prog.Block.Decls.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestParse_DynArray_TypeName_EncodesCorrectly;
@@ -172,7 +172,7 @@ begin
     AD := TTypeAliasDef(TD.Def);
     AssertEquals('type name encoded as array of Integer',
       'array of Integer', AD.TypeName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -193,7 +193,7 @@ begin
     Sym := Prog.SymbolTable.Lookup('TIntArr');
     AssertTrue('TIntArr symbol found', Sym <> nil);
     AssertEquals('kind is tyDynArray', Ord(tyDynArray), Ord(Sym.TypeDesc.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestSemantic_DynArray_ElementType_Integer;
@@ -210,7 +210,7 @@ begin
     Sym := Prog.SymbolTable.Lookup('TIntArr');
     DAT := TDynArrayTypeDesc(Sym.TypeDesc);
     AssertEquals('element type is Integer', 'Integer', DAT.ElementType.Name);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestSemantic_DynArray_ElementType_String;
@@ -227,7 +227,7 @@ begin
     Sym := Prog.SymbolTable.Lookup('TStrArr');
     DAT := TDynArrayTypeDesc(Sym.TypeDesc);
     AssertEquals('element type is string', 'string', DAT.ElementType.Name);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TDynArrayTests.TestSemantic_DynArray_Var_ResolvesToDynArray;
@@ -244,7 +244,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertEquals('var resolved to tyDynArray',
       Ord(tyDynArray), Ord(VD.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -371,7 +371,7 @@ begin
       end.
       ''');
   AssertNotNil('program parsed and analysed without error', Prog);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TDynArrayTests.TestSemantic_DynArray_Low_Accepted;
@@ -388,7 +388,7 @@ begin
       end.
       ''');
   AssertNotNil('program parsed and analysed without error', Prog);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TDynArrayTests.TestCodegen_DynArray_High_CallsRTL;

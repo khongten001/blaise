@@ -82,13 +82,13 @@ begin
   CfgFile := FindConfigFile;
   if CfgFile = '' then
     Exit;
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.LoadFromFile(CfgFile);
     BaseDir := ExtractFilePath(CfgFile);
     ParseConfigLines(Lines, BaseDir, APaths);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 

@@ -211,7 +211,7 @@ const
     '  TFoo = class(IFoo)'                     + LineEnding +
     '    procedure DoIt;'                      + LineEnding +
     '  end;'                                   + LineEnding +
-    'procedure TFoo.DoIt;'                     + LineEnding +
+    'procedure TFoo.DoIt();'                     + LineEnding +
     'begin'                                    + LineEnding +
     'end;'                                     + LineEnding +
     'begin'                                    + LineEnding +
@@ -234,7 +234,7 @@ const
           T: TFoo;
           R: Boolean;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           R := T is IFoo
         end.
         ''';
@@ -256,7 +256,7 @@ const
           T: TFoo;
           F: IFoo;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           F := T as IFoo
         end.
         ''';
@@ -278,9 +278,9 @@ const
           F: IFoo;
           T: TFoo;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           F := T;
-          F.DoIt
+          F.DoIt()
         end.
         ''';
 
@@ -299,12 +299,12 @@ const
         end;
         procedure UseIntf(X: IFoo);
         begin
-          X.DoIt;
+          X.DoIt();
         end;
         var
           T: TFoo;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           UseIntf(T as IFoo)
         end.
         ''';
@@ -324,13 +324,13 @@ const
         end;
         procedure UseIntf(X: IFoo);
         begin
-          X.DoIt;
+          X.DoIt();
         end;
         var
           F: IFoo;
           T: TFoo;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           F := T as IFoo;
           UseIntf(F)
         end.
@@ -358,16 +358,16 @@ const
         end;
         procedure TUser.UseIntf(X: IFoo);
         begin
-          X.DoIt;
+          X.DoIt();
         end;
         var
           F: IFoo;
           T: TFoo;
           U: TUser;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           F := T as IFoo;
-          U := TUser.Create;
+          U := TUser.Create();
           U.UseIntf(F)
         end.
         ''';
@@ -422,10 +422,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -434,11 +434,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -448,13 +448,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -464,7 +464,7 @@ var
   SA:   TSemanticAnalyser;
 begin
   Prog := ParseSrc(ASrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Prog);
@@ -474,8 +474,8 @@ begin
         { expected };
     end;
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -495,7 +495,7 @@ begin
     AssertEquals('name is IFoo', 'IFoo', TD.Name);
     AssertTrue('def is TInterfaceTypeDef', TD.Def is TInterfaceTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -511,7 +511,7 @@ begin
     AssertEquals('first method DoIt',   'DoIt',   TMethodDecl(ITD.Methods[0]).Name);
     AssertEquals('second method GetVal','GetVal',  TMethodDecl(ITD.Methods[1]).Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -525,7 +525,7 @@ begin
     Child := TInterfaceTypeDef(TTypeDecl(Prog.Block.TypeDecls[1]).Def);
     AssertEquals('parent is IBase', 'IBase', Child.ParentName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -541,7 +541,7 @@ begin
     AssertEquals('one implements name', 1, CD.ImplementsNames.Count);
     AssertEquals('implements IFoo', 'IFoo', CD.ImplementsNames[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -558,7 +558,7 @@ begin
     AssertEquals('first is IFoo', 'IFoo', CD.ImplementsNames[0]);
     AssertEquals('second is IBar', 'IBar', CD.ImplementsNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -577,7 +577,7 @@ begin
     AssertNotNull('IFoo symbol exists', Sym);
     AssertEquals('IFoo is skType', Ord(skType), Ord(Sym.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -592,7 +592,7 @@ begin
     AssertNotNull('IFoo type exists', TD);
     AssertEquals('kind is tyInterface', Ord(tyInterface), Ord(TD.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -607,7 +607,7 @@ begin
     AssertTrue('has DoIt',   ITD.HasMethod('DoIt'));
     AssertTrue('has GetVal', ITD.HasMethod('GetVal'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -620,7 +620,7 @@ begin
     { No exception = success }
     AssertNotNull('prog not nil', Prog);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -633,7 +633,7 @@ procedure TInterfaceTests.TestSemantic_ClassWithInterfaceAsFirstParent_OK;
 begin
   { TFoo = class(IFoo) should succeed: IFoo is moved to ImplementsNames and
     TObject is implicitly added as the class parent. }
-  AnalyseSrc(SrcClassInterfaceOnlyParent).Free;
+  AnalyseSrc(SrcClassInterfaceOnlyParent).Free();
 end;
 
 procedure TInterfaceTests.TestSemantic_ClassWithInterfaceAsFirstParent_InheritsFromTObject;
@@ -649,7 +649,7 @@ begin
       so the vptr slot is present and field offsets start at offset 8. }
     AssertTrue('TFoo has a vtable (vptr from TObject)', RT.HasVTable);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -711,7 +711,7 @@ end;
 
 procedure TInterfaceTests.TestSemantic_IsExpr_Interface_OK;
 begin
-  AnalyseSrc(SrcIsExprInterface).Free;
+  AnalyseSrc(SrcIsExprInterface).Free();
 end;
 
 procedure TInterfaceTests.TestSemantic_IsExpr_Interface_ResultIsBoolean;
@@ -726,13 +726,13 @@ begin
     AssertNotNull('resolved type', IE.ResolvedType);
     AssertEquals('result is Boolean', Ord(tyBoolean), Ord(IE.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TInterfaceTests.TestSemantic_AsExpr_Interface_OK;
 begin
-  AnalyseSrc(SrcAsExprInterface).Free;
+  AnalyseSrc(SrcAsExprInterface).Free();
 end;
 
 procedure TInterfaceTests.TestSemantic_AsExpr_Interface_ResultType;
@@ -748,7 +748,7 @@ begin
     AssertEquals('result kind is tyInterface', Ord(tyInterface), Ord(AE.ResolvedType.Kind));
     AssertEquals('result type name is IFoo', 'IFoo', AE.ResolvedType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -767,7 +767,7 @@ begin
     AssertNotNull('IInterface symbol exists', Sym);
     AssertEquals('IInterface is skType', Ord(skType), Ord(Sym.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -782,7 +782,7 @@ begin
     AssertNotNull('IInterface type exists', TD);
     AssertEquals('kind is tyInterface', Ord(tyInterface), Ord(TD.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -855,7 +855,7 @@ const
           T:    TFoo;
           F, G: IFoo;
         begin
-          T := TFoo.Create;
+          T := TFoo.Create();
           F := T;
           G := F
         end.
@@ -930,13 +930,13 @@ const
     '  TFoo = class(TObject, IFoo)'                           + #10 +
     '    procedure DoIt;'                                     + #10 +
     '  end;'                                                  + #10 +
-    'procedure TFoo.DoIt; begin end;'                         + #10 +
+    'procedure TFoo.DoIt(); begin end;'                         + #10 +
     'var Obj: TObject;'                                       + #10 +
     '    B: Boolean;'                                         + #10 +
     'begin'                                                   + #10 +
-    '  Obj := TFoo.Create;'                                   + #10 +
+    '  Obj := TFoo.Create();'                                   + #10 +
     '  B := Supports(Obj, IFoo);'                             + #10 +
-    '  Obj.Free'                                              + #10 +
+    '  Obj.Free()'                                              + #10 +
     'end.';
 
   SrcSupportsThreeArg =
@@ -948,14 +948,14 @@ const
     '  TFoo = class(TObject, IFoo)'                           + #10 +
     '    procedure DoIt;'                                     + #10 +
     '  end;'                                                  + #10 +
-    'procedure TFoo.DoIt; begin end;'                         + #10 +
+    'procedure TFoo.DoIt(); begin end;'                         + #10 +
     'var Obj: TObject;'                                       + #10 +
     '    F: IFoo;'                                            + #10 +
     '    B: Boolean;'                                         + #10 +
     'begin'                                                   + #10 +
-    '  Obj := TFoo.Create;'                                   + #10 +
+    '  Obj := TFoo.Create();'                                   + #10 +
     '  B := Supports(Obj, IFoo, F);'                          + #10 +
-    '  Obj.Free'                                              + #10 +
+    '  Obj.Free()'                                              + #10 +
     'end.';
 
   SrcSupportsNonIntf =
@@ -966,9 +966,9 @@ const
     'var Obj: TObject;'                                       + #10 +
     '    B: Boolean;'                                         + #10 +
     'begin'                                                   + #10 +
-    '  Obj := TFoo.Create;'                                   + #10 +
+    '  Obj := TFoo.Create();'                                   + #10 +
     '  B := Supports(Obj, TFoo);'                             + #10 +
-    '  Obj.Free'                                              + #10 +
+    '  Obj.Free()'                                              + #10 +
     'end.';
 
 procedure TInterfaceTests.TestParse_Supports_TwoArg_ProducesSupportsExpr;
@@ -985,7 +985,7 @@ begin
     AssertEquals('interface name', 'IFoo', SE.IntfTypeName);
     AssertEquals('no out-var', '', SE.OutVarName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1002,7 +1002,7 @@ begin
     AssertEquals('interface name', 'IFoo', SE.IntfTypeName);
     AssertEquals('out-var name', 'F', SE.OutVarName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1020,7 +1020,7 @@ begin
     AssertTrue('ResolvedIntfType set', SE.ResolvedIntfType <> nil);
     AssertEquals('intf type is IFoo', 'IFoo', SE.ResolvedIntfType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1036,7 +1036,7 @@ begin
     AssertTrue('ResolvedType set', SE.ResolvedType <> nil);
     AssertEquals('result is Boolean', 'Boolean', SE.ResolvedType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1127,7 +1127,7 @@ end;
 procedure TInterfaceTests.TestSemantic_InterfaceField_ShadowsGlobal_OK;
 begin
   { Must not raise ESemanticError }
-  AnalyseSrc(SrcInterfaceFieldShadowsGlobal).Free;
+  AnalyseSrc(SrcInterfaceFieldShadowsGlobal).Free();
 end;
 
 initialization

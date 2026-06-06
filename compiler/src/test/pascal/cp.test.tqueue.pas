@@ -93,7 +93,7 @@ const
           Dest: ^T;
         begin
           if Self.FCount = Self.FCapacity then
-            Self.Grow;
+            Self.Grow();
           Dest        := Self.FData + Self.FTail * SizeOf(T);
           Dest^       := Value;
           Self.FTail  := (Self.FTail + 1) mod Self.FCapacity;
@@ -139,7 +139,7 @@ const
     '''
         var Q: TQueue<Integer>;
         begin
-          Q := TQueue<Integer>.Create
+          Q := TQueue<Integer>.Create()
         end.
         ''';
 
@@ -150,7 +150,7 @@ const
     '''
         var Q: TQueue<Integer>;
         begin
-          Q := TQueue<Integer>.Create;
+          Q := TQueue<Integer>.Create();
           Q.Enqueue(1);
           Q.Enqueue(2);
           Q.Enqueue(3)
@@ -166,9 +166,9 @@ const
           Q: TQueue<Integer>;
           V: Integer;
         begin
-          Q := TQueue<Integer>.Create;
+          Q := TQueue<Integer>.Create();
           Q.Enqueue(10);
-          V := Q.Dequeue
+          V := Q.Dequeue()
         end.
         ''';
 
@@ -181,9 +181,9 @@ const
           Q: TQueue<Integer>;
           V: Integer;
         begin
-          Q := TQueue<Integer>.Create;
+          Q := TQueue<Integer>.Create();
           Q.Enqueue(99);
-          V := Q.Peek
+          V := Q.Peek()
         end.
         ''';
 
@@ -195,14 +195,14 @@ var
 begin
   Lex    := TLexer.Create(ASrc);
   Par    := TParser.Create(Lex);
-  Result := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Result := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -212,13 +212,13 @@ var
   CG:   TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -227,7 +227,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcCreate);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTQueueTests.TestSemantic_TQueue_Enqueue_Compiles;
@@ -235,7 +235,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcEnqueue);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTQueueTests.TestSemantic_TQueue_Dequeue_Compiles;
@@ -243,7 +243,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcDequeue);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTQueueTests.TestSemantic_TQueue_Peek_Compiles;
@@ -251,7 +251,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcPeek);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTQueueTests.TestCodegen_TQueue_TypeInfoEmitted;

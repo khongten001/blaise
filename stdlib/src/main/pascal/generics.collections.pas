@@ -175,7 +175,7 @@ var
   Dest: ^T;
 begin
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   Dest        := Self.FData + Self.FCount * SizeOf(T);
   Dest^       := Value;
   Self.FCount := Self.FCount + 1
@@ -292,7 +292,7 @@ var
   Dest: ^T;
 begin
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   Dest        := Self.FData + Self.FCount * SizeOf(T);
   Dest^       := Value;
   Self.FCount := Self.FCount + 1
@@ -368,7 +368,7 @@ var
   Dest: ^T;
 begin
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   Dest        := Self.FData + Self.FTail * SizeOf(T);
   Dest^       := Value;
   Self.FTail  := (Self.FTail + 1) mod Self.FCapacity;
@@ -455,7 +455,7 @@ begin
   if Self.IndexOf(Value) >= 0 then
     Exit;
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   Dest        := Self.FData + Self.FCount * SizeOf(T);
   Dest^       := Value;
   Self.FCount := Self.FCount + 1
@@ -557,7 +557,7 @@ begin
   begin
     { Insert new entry }
     if Self.FCount = Self.FCapacity then
-      Self.Grow;
+      Self.Grow();
     KPtr  := Self.FKeys   + Self.FCount * SizeOf(K);
     VPtr  := Self.FValues + Self.FCount * SizeOf(V);
     KPtr^ := Key;
@@ -685,7 +685,7 @@ begin
   else
   begin
     if Self.FCount = Self.FCapacity then
-      Self.Grow;
+      Self.Grow();
     KPtr  := Self.FKeys   + Self.FCount * SizeOf(K);
     VPtr  := Self.FValues + Self.FCount * SizeOf(V);
     KPtr^ := Key;

@@ -174,16 +174,16 @@ begin
     Proc.Executable := AExe;
     for I := 0 to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Execute;
+    Proc.Execute();
     AStdout := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       AStdout := AStdout + Chunk
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode
   finally
-    Proc.Free
+    Proc.Free()
   end
 end;
 
@@ -196,16 +196,16 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := AExe;
-    Proc.Execute;
+    Proc.Execute();
     AStdout := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       AStdout := AStdout + Chunk
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode
   finally
-    Proc.Free
+    Proc.Free()
   end
 end;
 
@@ -241,27 +241,27 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     if ABackend = beNative then
     begin
-      NCG := TCodeGenNative.Create;
+      NCG := TCodeGenNative.Create();
       NCG.SetTarget(HostTarget);
       CG  := NCG;            { ARC-managed; released at scope exit }
       CG.Generate(Prog);
-      Emitted := CG.GetOutput
+      Emitted := CG.GetOutput()
     end
     else
     begin
-      QCG := TCodeGenQBE.Create;
+      QCG := TCodeGenQBE.Create();
       QCG.Generate(Prog);
-      Emitted := QCG.GetOutput
+      Emitted := QCG.GetOutput()
     end
   finally
-    QCG.Free;               { nil for the native path — Free(nil) is a no-op }
+    QCG.Free();               { nil for the native path — Free(nil) is a no-op }
     { CG (ICodeGen) freed by ARC; do not Free. }
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
   if ABackend = beNative then
@@ -347,14 +347,14 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
-    CG       := TCodeGenQBE.Create;
+    CG       := TCodeGenQBE.Create();
     CG.Generate(Prog);
-    IR       := CG.GetOutput
+    IR       := CG.GetOutput()
   finally
-    CG.Free; Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+    CG.Free(); Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
   WriteFile(IRFile, IR);
@@ -391,14 +391,14 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
-    CG       := TCodeGenQBE.Create;
+    CG       := TCodeGenQBE.Create();
     CG.Generate(Prog);
-    IR       := CG.GetOutput
+    IR       := CG.GetOutput()
   finally
-    CG.Free; Semantic.Free; Prog.Free; Parser.Free; Lexer.Free
+    CG.Free(); Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
   WriteFile(IRFile, IR);
@@ -459,9 +459,9 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -469,17 +469,17 @@ begin
     for I := 0 to Units.Count - 1 do
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     CG.SetDebugMode(ADebugMode);
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
     CG.AppendProgram(Prog);
-    IR := CG.GetOutput
+    IR := CG.GetOutput()
   finally
-    CG.Free; Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free
+    CG.Free(); Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
   WriteFile(IRFile, IR);
@@ -522,9 +522,9 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FScratch);            { the written user unit }
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
@@ -533,16 +533,16 @@ begin
     for I := 0 to Units.Count - 1 do
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
     CG.AppendProgram(Prog);
-    IR := CG.GetOutput
+    IR := CG.GetOutput()
   finally
-    CG.Free; Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free
+    CG.Free(); Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
   WriteFile(IRFile, IR);

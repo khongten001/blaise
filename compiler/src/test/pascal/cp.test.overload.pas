@@ -106,10 +106,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -118,11 +118,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -133,15 +133,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -151,7 +151,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -282,7 +282,7 @@ const
           begin WriteLn(S) end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.Show(42);
           F.Show('hi')
         end.
@@ -379,7 +379,7 @@ const
         var F: TFoo;
         begin
           F := TFoo.Create(42);
-          F.Free
+          F.Free()
         end.
         ''';
 
@@ -412,7 +412,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[1]);
     AssertTrue('second proc has IsOverload=True', MD.IsOverload);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -424,7 +424,7 @@ begin
   try
     AssertEquals('both proc decls survive', 2, Prog.Block.ProcDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -481,7 +481,7 @@ begin
   try
     AssertEquals('both proc decls survive', 2, Prog.Block.ProcDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -539,7 +539,7 @@ begin
     CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
     AssertEquals('TFoo has two Show methods', 2, CD.Methods.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -611,7 +611,7 @@ begin
     constructor call site used FindMethodDecl, which picked the 2-arg
     overload (indexed first) and then failed to fill parameter B. }
   Prog := AnalyseSrc(SrcCtorOverload);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TOverloadTests.TestCodegen_ConstructorOverload_PicksCorrectArity;

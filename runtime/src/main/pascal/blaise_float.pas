@@ -270,7 +270,7 @@ procedure EnsurePow10;
 begin
   if Pow10CacheReady = 0 then
   begin
-    InitPow10Cache;
+    InitPow10Cache();
     Pow10CacheReady := 1;
   end;
 end;
@@ -308,7 +308,7 @@ var
   K, Idx, N, Pos: Integer;
   D, Z: Int64;
 begin
-  EnsurePow10;
+  EnsurePow10();
 
   Bits := DoubleBits(V);
   Negative := (Bits shr 63) <> 0;

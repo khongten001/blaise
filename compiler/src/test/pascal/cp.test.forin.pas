@@ -131,9 +131,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -141,11 +141,11 @@ function TForInTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -154,15 +154,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -171,7 +171,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -222,7 +222,7 @@ begin
     AssertTrue('stmt is TForInStmt',
       Prog.Block.Stmts[0] is TForInStmt);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -234,7 +234,7 @@ begin
     FS := TForInStmt(Prog.Block.Stmts[0]);
     AssertEquals('loop var is X', 'X', FS.VarName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -248,7 +248,7 @@ begin
     AssertEquals('collection name is Col', 'Col',
       TIdentExpr(FS.CollExpr).Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -258,7 +258,7 @@ end;
 
 procedure TForInTests.TestSemantic_ForIn_Valid_OK;
 begin
-  AnalyseSrc(SrcForIn).Free;
+  AnalyseSrc(SrcForIn).Free();
 end;
 
 procedure TForInTests.TestSemantic_ForIn_NoGetEnumerator_RaisesError;
@@ -452,7 +452,7 @@ const
 
 procedure TForInTests.TestSemantic_ArrayForIn_Valid_OK;
 begin
-  AnalyseSrc(SrcArrayForIn).Free;
+  AnalyseSrc(SrcArrayForIn).Free();
 end;
 
 procedure TForInTests.TestSemantic_ArrayForIn_VarTypeMismatch_RaisesError;
@@ -472,7 +472,7 @@ end;
 
 procedure TForInTests.TestSemantic_ArrayForIn_NonZeroBased_OK;
 begin
-  AnalyseSrc(SrcArrayForInNonZero).Free;
+  AnalyseSrc(SrcArrayForInNonZero).Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -539,7 +539,7 @@ const
 
 procedure TForInTests.TestSemantic_DynArrayForIn_Valid_OK;
 begin
-  AnalyseSrc(SrcDynArrayForIn).Free;
+  AnalyseSrc(SrcDynArrayForIn).Free();
 end;
 
 procedure TForInTests.TestSemantic_DynArrayForIn_VarTypeMismatch_RaisesError;
@@ -631,13 +631,13 @@ const
 
 procedure TForInTests.TestSemantic_StringForIn_ByteVar_OK;
 begin
-  AnalyseSrc(SrcStringForIn).Free;
+  AnalyseSrc(SrcStringForIn).Free();
 end;
 
 procedure TForInTests.TestSemantic_StringForIn_IntVar_OK;
 begin
   { Integer is ordinal — accepted }
-  AnalyseSrc(SrcStringForInIntVar).Free;
+  AnalyseSrc(SrcStringForInIntVar).Free();
 end;
 
 procedure TForInTests.TestSemantic_StringForIn_NonOrdinalVar_RaisesError;
@@ -723,7 +723,7 @@ const
 
 procedure TForInTests.TestSemantic_SetForIn_Valid_OK;
 begin
-  AnalyseSrc(SrcSetForIn).Free;
+  AnalyseSrc(SrcSetForIn).Free();
 end;
 
 procedure TForInTests.TestSemantic_SetForIn_VarTypeMismatch_RaisesError;

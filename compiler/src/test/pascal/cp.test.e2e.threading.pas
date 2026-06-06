@@ -63,8 +63,8 @@ const
     var T: TMyThread;
     begin
       T := TMyThread.Create(True);
-      T.Start;
-      T.WaitFor;
+      T.Start();
+      T.WaitFor();
       WriteLn('main')
     end.
     ''';
@@ -89,8 +89,8 @@ const
     var T: TSlowThread;
     begin
       T := TSlowThread.Create(True);
-      T.Start;
-      T.WaitFor;
+      T.Start();
+      T.WaitFor();
       WriteLn('after-wait')
     end.
     ''';
@@ -124,9 +124,9 @@ const
     var T: TLoopThread;
     begin
       T := TLoopThread.Create(True);
-      T.Start;
-      T.Terminate;
-      T.WaitFor;
+      T.Start();
+      T.Terminate();
+      T.WaitFor();
       WriteLn('ok')
     end.
     ''';
@@ -147,8 +147,8 @@ const
     begin
       T := TQuickThread.Create(True);
       WriteLn(T.FFinished);
-      T.Start;
-      T.WaitFor;
+      T.Start();
+      T.WaitFor();
       WriteLn(T.FFinished)
     end.
     ''';
@@ -176,12 +176,12 @@ const
       A.FNum := 1;
       B.FNum := 2;
       C.FNum := 3;
-      A.Start;
-      B.Start;
-      C.Start;
-      A.WaitFor;
-      B.WaitFor;
-      C.WaitFor;
+      A.Start();
+      B.Start();
+      C.Start();
+      A.WaitFor();
+      B.WaitFor();
+      C.WaitFor();
       WriteLn(A.FNum + B.FNum + C.FNum)
     end.
     ''';
@@ -214,17 +214,17 @@ const
       S: TShared;
       A, B: TIncThread;
     begin
-      S := TShared.Create;
+      S := TShared.Create();
       S.Counter := 0;
-      S.CS := TCriticalSection.Create;
+      S.CS := TCriticalSection.Create();
       A := TIncThread.Create(True);
       B := TIncThread.Create(True);
       A.Shared := S;
       B.Shared := S;
-      A.Start;
-      B.Start;
-      A.WaitFor;
-      B.WaitFor;
+      A.Start();
+      B.Start();
+      A.WaitFor();
+      B.WaitFor();
       WriteLn(S.Counter)
     end.
     ''';
@@ -245,8 +245,8 @@ const
     var T: TMyThread;
     begin
       T := TMyThread.Create(True);
-      T.Start;
-      T.WaitFor;
+      T.Start();
+      T.WaitFor();
       WriteLn('clean')
     end.
     ''';
@@ -400,10 +400,10 @@ const
       B := TAllocThread.Create(True);
       A.FOk := 0;
       B.FOk := 0;
-      A.Start;
-      B.Start;
-      A.WaitFor;
-      B.WaitFor;
+      A.Start();
+      B.Start();
+      A.WaitFor();
+      B.WaitFor();
       WriteLn(A.FOk + B.FOk)
     end.
     ''';
@@ -451,7 +451,7 @@ const
       S: TSharedData;
       A, B, C: TArcThread;
     begin
-      S := TSharedData.Create;
+      S := TSharedData.Create();
       S.Value := 42;
       A := TArcThread.Create(True);
       B := TArcThread.Create(True);
@@ -459,12 +459,12 @@ const
       A.Shared := S;
       B.Shared := S;
       C.Shared := S;
-      A.Start;
-      B.Start;
-      C.Start;
-      A.WaitFor;
-      B.WaitFor;
-      C.WaitFor;
+      A.Start();
+      B.Start();
+      C.Start();
+      A.WaitFor();
+      B.WaitFor();
+      C.WaitFor();
       WriteLn('ok')
     end.
     ''';

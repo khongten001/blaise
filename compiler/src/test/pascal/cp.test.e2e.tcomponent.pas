@@ -43,7 +43,7 @@ const
       C := TComponent.Create(nil);
       WriteLn(C.Owner = nil);
       WriteLn(C.ComponentCount);
-      C.Free
+      C.Free()
     end.
     ''';
 
@@ -56,7 +56,7 @@ const
       C := TComponent.Create(nil);
       C.Name := 'MyComp';
       WriteLn(C.Name);
-      C.Free
+      C.Free()
     end.
     ''';
 
@@ -69,7 +69,7 @@ const
       Parent := TComponent.Create(nil);
       Child  := TComponent.Create(Parent);
       WriteLn(Child.Owner = Parent);
-      Parent.Free
+      Parent.Free()
     end.
     ''';
 
@@ -84,7 +84,7 @@ const
       C2 := TComponent.Create(Parent);
       C3 := TComponent.Create(Parent);
       WriteLn(Parent.ComponentCount);
-      Parent.Free
+      Parent.Free()
     end.
     ''';
 
@@ -101,7 +101,7 @@ const
       C2.Name := 'second';
       WriteLn(Parent.Components[0].Name);
       WriteLn(Parent.Components[1].Name);
-      Parent.Free
+      Parent.Free()
     end.
     ''';
 
@@ -115,7 +115,7 @@ const
       C1 := TComponent.Create(Parent);
       C2 := TComponent.Create(Parent);
       WriteLn(Parent.ComponentCount);
-      Parent.Free;
+      Parent.Free();
       { If we reach here without crash, children were freed cleanly }
       WriteLn('ok')
     end.
@@ -144,13 +144,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcCreateNilOwner, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Owner=nil is true',     'True', Lines.Strings[0]);
     AssertEquals('ComponentCount=0',      '0', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -196,13 +196,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcComponentsArray, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Components[0].Name=first',  'first',  Lines.Strings[0]);
     AssertEquals('Components[1].Name=second', 'second', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -215,13 +215,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcOwnerFreesChildren, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('ComponentCount=2 before Free', '2',  Lines.Strings[0]);
     AssertEquals('ok after Free',                'ok', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 

@@ -663,7 +663,7 @@ begin
     tyInt64, tyUInt64, tyString:   Result := 8;
     tyRecord:            Result := TRecordTypeDesc(Self).MaxAlign;
     tySet: if TSetTypeDesc(Self).BitCount <= 32 then Result := 4 else Result := 8;
-    tyStaticArray: Result := TStaticArrayTypeDesc(Self).ElementType.AllocAlign;
+    tyStaticArray: Result := TStaticArrayTypeDesc(Self).ElementType.AllocAlign();
   else
     Result := 8;
   end;
@@ -679,24 +679,24 @@ begin
   Kind        := AKind;
   Name        := AName;
   FFields     := TObjectList.Create(True);
-  FKeys       := TStringList.Create;
+  FKeys       := TStringList.Create();
   FKeys.Sorted        := True;
   FKeys.CaseSensitive := False;
   FKeys.Duplicates    := dupIgnore;
   FVTable     := nil;  { allocated on first use }
   FImplements := TObjectList.Create(False);  { not owned }
   FProperties := TObjectList.Create(True);   { owned TPropertyInfo }
-  FClassAttributes := TStringList.Create;
+  FClassAttributes := TStringList.Create();
 end;
 
 destructor TRecordTypeDesc.Destroy;
 begin
-  FClassAttributes.Free;
-  FProperties.Free;
-  FImplements.Free;
-  FKeys.Free;
-  FFields.Free;
-  FVTable.Free;
+  FClassAttributes.Free();
+  FProperties.Free();
+  FImplements.Free();
+  FKeys.Free();
+  FFields.Free();
+  FVTable.Free();
   inherited Destroy;
 end;
 
@@ -708,7 +708,7 @@ end;
   loads through the field pointer. }
 function TRecordTypeDesc.FieldAlign(AType: TTypeDesc): Integer;
 begin
-  Result := AType.AllocAlign;
+  Result := AType.AllocAlign();
   if not FIsPacked then Exit;
   case AType.Kind of
     tyString, tyClass, tyInterface, tyDynArray: { keep natural alignment } ;
@@ -749,7 +749,7 @@ begin
   A      := FieldAlign(AType);
   if (A > 1) and (Offset mod A <> 0) then
     Offset := Offset + (A - Offset mod A);
-  Info          := TFieldInfo.Create;
+  Info          := TFieldInfo.Create();
   Info.Name     := AName;
   Info.TypeDesc := AType;
   Info.Offset   := Offset;
@@ -799,7 +799,7 @@ begin
     if FIsPacked then
       A := FieldAlign(FT)        { ARC fields keep natural align; PODs become 1 }
     else
-      A := FT.AllocAlign;
+      A := FT.AllocAlign();
     if A > Result then
       Result := A;
   end;
@@ -849,7 +849,7 @@ var
 begin
   if FVTable = nil then
     FVTable := TObjectList.Create(True);
-  E            := TVTableEntry.Create;
+  E            := TVTableEntry.Create();
   E.Slot       := FVTable.Count;
   E.MethName := AMethodName;
   E.ImplName   := AImplName;
@@ -889,7 +889,7 @@ begin
   for I := 0 to AParent.VTableCount - 1 do
   begin
     Src      := AParent.VTableEntryAt(I);
-    Dst      := TVTableEntry.Create;
+    Dst      := TVTableEntry.Create();
     Dst.Slot       := Src.Slot;
     Dst.MethName   := Src.MethName;
     Dst.ImplName   := Src.ImplName;
@@ -967,18 +967,18 @@ begin
   inherited Create;
   Kind         := tyInterface;
   Name         := AName;
-  FMethods     := TStringList.Create;
+  FMethods     := TStringList.Create();
   FMethods.CaseSensitive := False;
-  FReturnTypes := TStringList.Create;
-  FParamIsVar  := TStringList.Create;
+  FReturnTypes := TStringList.Create();
+  FParamIsVar  := TStringList.Create();
   FParent      := nil;
 end;
 
 destructor TInterfaceTypeDesc.Destroy;
 begin
-  FParamIsVar.Free;
-  FReturnTypes.Free;
-  FMethods.Free;
+  FParamIsVar.Free();
+  FReturnTypes.Free();
+  FMethods.Free();
   inherited Destroy;
 end;
 
@@ -1079,7 +1079,7 @@ begin
   inherited Create;
   FParent  := AParent;
   FSymbols := TObjectList.Create(True);
-  FKeys    := TStringList.Create;
+  FKeys    := TStringList.Create();
   FKeys.Sorted        := True;
   FKeys.CaseSensitive := False;
   FKeys.Duplicates    := dupIgnore;  { we check manually before inserting }
@@ -1167,12 +1167,12 @@ begin
   inherited Create;
   Kind    := tyEnum;
   Name    := AName;
-  Members := TStringList.Create;
+  Members := TStringList.Create();
 end;
 
 destructor TEnumTypeDesc.Destroy;
 begin
-  Members.Free;
+  Members.Free();
   inherited Destroy;
 end;
 
@@ -1199,7 +1199,7 @@ end;
 
 destructor TProceduralTypeDesc.Destroy;
 begin
-  Params.Free;
+  Params.Free();
   inherited Destroy;
 end;
 
@@ -1242,23 +1242,23 @@ begin
   inherited Create;
   FScopeStack := TObjectList.Create(True);
   FAllTypes   := TObjectList.Create(True);
-  FGenerics   := TStringList.Create;
+  FGenerics   := TStringList.Create();
   FGenerics.CaseSensitive := True;
   { Owns (retains) registered generic templates so FGenerics' references stay
     valid even after the originating AST is torn down. }
   FGenericTemplates := TObjectList.Create(True);
-  FGenericRoutines := TStringList.Create;
+  FGenericRoutines := TStringList.Create();
   FGenericRoutines.CaseSensitive := False;
   FImportedDecls   := TObjectList.Create(True);
   { Global scope — parent = nil }
   FScopeStack.Add(TScope.Create(nil));
-  RegisterBuiltins;
+  RegisterBuiltins();
 end;
 
 destructor TSymbolTable.Destroy;
 begin
-  FImportedDecls.Free;
-  FGenericRoutines.Free;
+  FImportedDecls.Free();
+  FGenericRoutines.Free();
   { FGenerics, FGenericTemplates, FScopeStack, FAllTypes are owned class fields — released by
     ARC field cleanup. }
   inherited Destroy;
@@ -1266,7 +1266,7 @@ end;
 
 function TSymbolTable.NewType(AKind: TTypeKind; const AName: string): TTypeDesc;
 begin
-  Result      := TTypeDesc.Create;
+  Result      := TTypeDesc.Create();
   Result.Kind := AKind;
   Result.Name := AName;
   FAllTypes.Add(Result);
@@ -1292,7 +1292,7 @@ end;
 
 function TSymbolTable.NewPointerType(const AName: string; ABase: TTypeDesc): TPointerTypeDesc;
 begin
-  Result          := TPointerTypeDesc.Create;
+  Result          := TPointerTypeDesc.Create();
   Result.Kind     := tyPointer;
   Result.Name     := AName;
   Result.BaseType := ABase;
@@ -1301,7 +1301,7 @@ end;
 
 function TSymbolTable.NewMetaClassType(const AName: string; ABase: TTypeDesc): TMetaClassTypeDesc;
 begin
-  Result           := TMetaClassTypeDesc.Create;
+  Result           := TMetaClassTypeDesc.Create();
   Result.Kind      := tyMetaClass;
   Result.Name      := AName;
   Result.BaseClass := ABase;
@@ -1316,7 +1316,7 @@ end;
 
 function TSymbolTable.NewSetType(const AName: string; ABase: TEnumTypeDesc): TSetTypeDesc;
 begin
-  Result          := TSetTypeDesc.Create;
+  Result          := TSetTypeDesc.Create();
   Result.Kind     := tySet;
   Result.Name     := AName;
   Result.BaseType := ABase;
@@ -1332,7 +1332,7 @@ end;
 
 function TSymbolTable.NewOpenArrayType(AElementType: TTypeDesc): TOpenArrayTypeDesc;
 begin
-  Result             := TOpenArrayTypeDesc.Create;
+  Result             := TOpenArrayTypeDesc.Create();
   Result.Kind        := tyOpenArray;
   Result.Name        := 'array of ' + AElementType.Name;
   Result.ElementType := AElementType;
@@ -1342,7 +1342,7 @@ end;
 function TSymbolTable.NewStaticArrayType(AElementType: TTypeDesc;
   ALow, AHigh: Integer): TStaticArrayTypeDesc;
 begin
-  Result             := TStaticArrayTypeDesc.Create;
+  Result             := TStaticArrayTypeDesc.Create();
   Result.Kind        := tyStaticArray;
   Result.Name        := Format('array[%d..%d] of %s', [ALow, AHigh, AElementType.Name]);
   Result.ElementType := AElementType;
@@ -1353,7 +1353,7 @@ end;
 
 function TSymbolTable.NewDynArrayType(AElementType: TTypeDesc): TDynArrayTypeDesc;
 begin
-  Result             := TDynArrayTypeDesc.Create;
+  Result             := TDynArrayTypeDesc.Create();
   Result.Kind        := tyDynArray;
   Result.Name        := 'array of ' + AElementType.Name;
   Result.ElementType := AElementType;

@@ -43,22 +43,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -81,16 +81,16 @@ begin
     'begin' + #10 +
     'end.');
   P  := TParser.Create(L);
-  Pr := P.Parse;
+  Pr := P.Parse();
   try
     AssertEquals(1, Pr.Block.Decls.Count);
     D := TVarDecl(Pr.Block.Decls.Items[0]);
     AssertEquals('X', D.Names.Strings[0]);
     AssertTrue(D.IsThreadVar);
   finally
-    Pr.Free;
-    P.Free;
-    L.Free;
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -109,18 +109,18 @@ begin
     'begin' + #10 +
     'end.');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     D := TVarDecl(Pr.Block.Decls.Items[0]);
     AssertTrue(D.IsGlobal);
     AssertTrue(D.IsThreadVar);
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 

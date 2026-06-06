@@ -95,7 +95,7 @@ const
         var A: TAnimal;
             R: Boolean;
         begin
-          A := TAnimal.Create;
+          A := TAnimal.Create();
           R := A is TAnimal
         end.
         ''';
@@ -114,7 +114,7 @@ const
             D: TDog;
             R: Boolean;
         begin
-          D := TDog.Create;
+          D := TDog.Create();
           A := D;
           R := A is TDog
         end.
@@ -133,7 +133,7 @@ const
         var A: TAnimal;
             D: TDog;
         begin
-          A := TDog.Create;
+          A := TDog.Create();
           D := A as TDog
         end.
         ''';
@@ -148,9 +148,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -158,11 +158,11 @@ function TTypeTestTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -171,15 +171,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -188,7 +188,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -204,9 +204,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('is');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('is token', Ord(tkIs), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TTypeTestTests.TestLexer_As_Keyword;
@@ -214,9 +214,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('as');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('as token', Ord(tkAs), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -230,7 +230,7 @@ begin
   try
     Stmt := TAssignment(Prog.Block.Stmts[1]);
     AssertTrue('is expr node kind', Stmt.Expr is TIsExpr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TTypeTestTests.TestParse_IsExpr_TypeName;
@@ -240,7 +240,7 @@ begin
   try
     IE := TIsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
     AssertEquals('is type name', 'TAnimal', IE.TypeName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -254,7 +254,7 @@ begin
   try
     Stmt := TAssignment(Prog.Block.Stmts[1]);
     AssertTrue('as expr node kind', Stmt.Expr is TAsExpr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TTypeTestTests.TestParse_AsExpr_TypeName;
@@ -264,7 +264,7 @@ begin
   try
     AE := TAsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
     AssertEquals('as type name', 'TDog', AE.TypeName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -273,7 +273,7 @@ end;
 
 procedure TTypeTestTests.TestSemantic_IsExpr_ClassInstance_OK;
 begin
-  AnalyseSrc(SrcBase).Free;
+  AnalyseSrc(SrcBase).Free();
 end;
 
 procedure TTypeTestTests.TestSemantic_IsExpr_ResultIsBoolean;
@@ -284,7 +284,7 @@ begin
     IE := TIsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
     AssertNotNull('is-expr resolved type', IE.ResolvedType);
     AssertEquals('is-expr result is Boolean', Ord(tyBoolean), Ord(IE.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TTypeTestTests.TestSemantic_IsExpr_NonClass_RaisesError;
@@ -302,7 +302,7 @@ end;
 
 procedure TTypeTestTests.TestSemantic_AsExpr_ClassInstance_OK;
 begin
-  AnalyseSrc(SrcAsExpr).Free;
+  AnalyseSrc(SrcAsExpr).Free();
 end;
 
 procedure TTypeTestTests.TestSemantic_AsExpr_ResultType_IsTargetClass;
@@ -313,7 +313,7 @@ begin
     AE := TAsExpr(TAssignment(Prog.Block.Stmts[1]).Expr);
     AssertNotNull('as-expr resolved type', AE.ResolvedType);
     AssertEquals('as-expr result is target class', 'TDog', AE.ResolvedType.Name);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TTypeTestTests.TestSemantic_AsExpr_NonClass_RaisesError;
@@ -417,7 +417,7 @@ const
           TFoo = class end;
         var F: TFoo; CT: Pointer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           CT := F.ClassType
         end.
         ''';
@@ -426,7 +426,7 @@ procedure TTypeTestTests.TestSemantic_ClassType_OK;
 var P: TProgram;
 begin
   P := AnalyseSrc(SrcClassType);
-  P.Free;
+  P.Free();
 end;
 
 procedure TTypeTestTests.TestSemantic_ClassType_ResolvesToPointer;
@@ -444,7 +444,7 @@ begin
     AssertEquals('resolved type kind = tyPointer',
       Ord(tyPointer), Ord(Access.ResolvedType.Kind));
   finally
-    P.Free;
+    P.Free();
   end;
 end;
 
@@ -458,7 +458,7 @@ begin
         program P; var C: TClass;
         begin C := nil end.
         ''');
-  P.Free;
+  P.Free();
 end;
 
 procedure TTypeTestTests.TestCodegen_ClassType_LoadsTypeInfo;

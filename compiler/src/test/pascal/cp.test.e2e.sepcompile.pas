@@ -77,16 +77,16 @@ begin
     Proc.Executable := BlaisePath;
     for I := 0 to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Execute;
+    Proc.Execute();
     AStdout := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       AStdout := AStdout + Chunk
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode
   finally
-    Proc.Free
+    Proc.Free()
   end
 end;
 
@@ -99,16 +99,16 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := AExe;
-    Proc.Execute;
+    Proc.Execute();
     AStdout := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       AStdout := AStdout + Chunk
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode
   finally
-    Proc.Free
+    Proc.Free()
   end
 end;
 
@@ -216,7 +216,7 @@ const
     begin
       B := TBox<Integer>.Create(42);
       WriteLn('Box = ', B.Get);
-      B.Free
+      B.Free()
     end.
     ''';
 var

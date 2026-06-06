@@ -53,7 +53,7 @@ const
         procedure Push(Value: Integer);
         var Dest: ^Integer;
         begin
-          if Self.FCount = Self.FCapacity then Self.Grow;
+          if Self.FCount = Self.FCapacity then Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(Integer);
           Dest^       := Value;
           Self.FCount := Self.FCount + 1
@@ -80,13 +80,13 @@ const
     '''
     var S: TStack;
     begin
-      S := TStack.Create;
+      S := TStack.Create();
       S.Push(1);
       S.Push(2);
       S.Push(3);
-      WriteLn(S.Pop);
-      WriteLn(S.Pop);
-      WriteLn(S.Pop)
+      WriteLn(S.Pop());
+      WriteLn(S.Pop());
+      WriteLn(S.Pop())
     end.
     ''';
 
@@ -95,10 +95,10 @@ const
     '''
     var S: TStack;
     begin
-      S := TStack.Create;
+      S := TStack.Create();
       S.Push(42);
-      WriteLn(S.Peek);
-      WriteLn(S.Peek);
+      WriteLn(S.Peek());
+      WriteLn(S.Peek());
       WriteLn(S.Count)
     end.
     ''';
@@ -108,13 +108,13 @@ const
     '''
     var S: TStack;
     begin
-      S := TStack.Create;
+      S := TStack.Create();
       WriteLn(S.Count);
       S.Push(10);
       WriteLn(S.Count);
       S.Push(20);
       WriteLn(S.Count);
-      S.Pop;
+      S.Pop();
       WriteLn(S.Count)
     end.
     ''';
@@ -124,12 +124,12 @@ const
     '''
     var S: TStack; I: Integer;
     begin
-      S := TStack.Create;
+      S := TStack.Create();
       I := 1;
       while I <= 8 do begin S.Push(I); I := I + 1 end;
       WriteLn(S.Count);
-      WriteLn(S.Pop);
-      WriteLn(S.Pop)
+      WriteLn(S.Pop());
+      WriteLn(S.Pop())
     end.
     ''';
 

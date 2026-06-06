@@ -65,12 +65,12 @@ const
     begin
       Buf[0] := 72;  Buf[1] := 101; Buf[2] := 108;
       Buf[3] := 108; Buf[4] := 111;
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         M.Write(@Buf[0], 5);
-        WriteLn(M.ToString);
+        WriteLn(M.ToString());
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -90,7 +90,7 @@ const
         WriteLn(Buf[1]);
         WriteLn(Buf[2]);
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -112,8 +112,8 @@ const
       try
         Fout.Write(@Buf[0], 5);
       finally
-        Fout.Close;
-        Fout.Free
+        Fout.Close();
+        Fout.Free()
       end;
       for I := 0 to 15 do Buf[I] := 0;
       Fin := TFileInputStream.Create('/tmp/blaise_streams_e2e.txt');
@@ -122,8 +122,8 @@ const
         WriteLn(N);
         for I := 0 to N - 1 do WriteLn(Buf[I]);
       finally
-        Fin.Close;
-        Fin.Free
+        Fin.Close();
+        Fin.Free()
       end
     end.
     ''';
@@ -141,13 +141,13 @@ const
         Buf:  array[0..3] of Byte;
     begin
       Buf[0] := 49; Buf[1] := 50; Buf[2] := 51; Buf[3] := 52;
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         Base := M;
         Base.Write(@Buf[0], 4);
-        WriteLn(M.ToString);
+        WriteLn(M.ToString());
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -174,8 +174,8 @@ const
       try
         Bout.Write(@Buf[0], 10);
       finally
-        Bout.Close;
-        Bout.Free
+        Bout.Close();
+        Bout.Free()
       end;
       for I := 0 to 31 do Buf[I] := 0;
       Fin := TFileInputStream.Create('/tmp/blaise_buf_e2e.txt');
@@ -185,8 +185,8 @@ const
         WriteLn(N);
         for I := 0 to N - 1 do WriteLn(Buf[I])
       finally
-        Bin.Close;
-        Bin.Free
+        Bin.Close();
+        Bin.Free()
       end
     end.
     ''';
@@ -211,8 +211,8 @@ const
         Bout.Write(@Buf[0], 5)
         { intentionally no explicit Flush — Close must drain the buffer }
       finally
-        Bout.Close;
-        Bout.Free
+        Bout.Close();
+        Bout.Free()
       end;
       for I := 0 to 7 do Buf[I] := 0;
       Fin := TFileInputStream.Create('/tmp/blaise_flush_e2e.bin');
@@ -221,8 +221,8 @@ const
         WriteLn(N);
         for I := 0 to N - 1 do WriteLn(Buf[I])
       finally
-        Fin.Close;
-        Fin.Free
+        Fin.Close();
+        Fin.Free()
       end
     end.
     ''';
@@ -237,7 +237,7 @@ const
       try
         Fin := TFileInputStream.Create('/tmp/blaise_does_not_exist_x42.bin');
         WriteLn('unreachable');
-        Fin.Free
+        Fin.Free()
       except
         on E: EStreamError do
           WriteLn('caught')
@@ -271,8 +271,8 @@ const
         W.WriteLine('beta');
         W.WriteLine('gamma')
       finally
-        W.Close;
-        W.Free
+        W.Close();
+        W.Free()
       end;
       Count := 0;
       Fin := TFileInputStream.Create('/tmp/blaise_text_e2e.txt');
@@ -286,8 +286,8 @@ const
           Count := Count + 1
         end
       finally
-        R.Close;
-        R.Free
+        R.Close();
+        R.Free()
       end;
       WriteLn(Count)
     end.
@@ -312,7 +312,7 @@ const
           WriteLn('[', L, ']')
         end
       finally
-        R.Free
+        R.Free()
       end
     end.
     ''';
@@ -332,7 +332,7 @@ const
         WriteLn(S);
         WriteLn(Length(S))
       finally
-        R.Free
+        R.Free()
       end
     end.
     ''';
@@ -348,7 +348,7 @@ const
         Dst: array[0..31] of Byte;
         I, N: Integer;
     begin
-      B := TBuffer.Create;
+      B := TBuffer.Create();
       try
         for I := 0 to 9 do Buf[I] := 65 + I;
         B.Write(@Buf[0], 10);
@@ -358,7 +358,7 @@ const
         for I := 0 to N - 1 do WriteLn(Dst[I]);
         WriteLn(B.Size)
       finally
-        B.Free
+        B.Free()
       end
     end.
     ''';
@@ -373,8 +373,8 @@ const
         Got: array[0..31] of Byte;
         I, N: Integer;
     begin
-      Src := TBuffer.Create;
-      Dst := TBuffer.Create;
+      Src := TBuffer.Create();
+      Dst := TBuffer.Create();
       try
         for I := 0 to 9 do Buf[I] := 65 + I;
         Src.Write(@Buf[0], 10);
@@ -386,8 +386,8 @@ const
         N := Src.Read(@Got[0], 32);
         for I := 0 to N - 1 do WriteLn(Got[I])
       finally
-        Src.Free;
-        Dst.Free
+        Src.Free();
+        Dst.Free()
       end
     end.
     ''';
@@ -401,7 +401,7 @@ const
         Buf: array[0..15] of Byte;
         I: Integer;
     begin
-      B := TBuffer.Create;
+      B := TBuffer.Create();
       try
         for I := 0 to 9 do Buf[I] := 65 + I;
         B.Write(@Buf[0], 10);
@@ -411,7 +411,7 @@ const
         WriteLn(B.IndexOf(99));
         WriteLn(B.Size)
       finally
-        B.Free
+        B.Free()
       end
     end.
     ''';
@@ -428,13 +428,13 @@ const
         Buf: array[0..3] of Byte;
     begin
       Buf[0] := 49; Buf[1] := 50; Buf[2] := 51; Buf[3] := 52;
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         if Supports(M, IOutputStream, Os) then
           Os.Write(@Buf[0], 4);
-        WriteLn(M.ToString)
+        WriteLn(M.ToString())
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -455,13 +455,13 @@ const
     var M:  TMemoryOutputStream;
         Os: IOutputStream;
     begin
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         if Supports(M, IOutputStream, Os) then
           WriteFour(Os);
-        WriteLn(M.ToString)
+        WriteLn(M.ToString())
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -477,12 +477,12 @@ const
     end;
     var M: TMemoryOutputStream;
     begin
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         WriteFour(M as IOutputStream);
-        WriteLn(M.ToString)
+        WriteLn(M.ToString())
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';
@@ -498,14 +498,14 @@ const
         N:   Int64;
     begin
       Src := TMemoryInputStream.Create('hello, world!');
-      Dst := TMemoryOutputStream.Create;
+      Dst := TMemoryOutputStream.Create();
       try
         N := CopyStream(Src, Dst);
         WriteLn(N);
-        WriteLn(Dst.ToString)
+        WriteLn(Dst.ToString())
       finally
-        Src.Free;
-        Dst.Free
+        Src.Free();
+        Dst.Free()
       end
     end.
     ''';
@@ -530,8 +530,8 @@ const
         for I := 0 to 9 do Buf[I] := 65 + I;
         Wri.Write(@Buf[0], 10);
       finally
-        Wri.Close;
-        Wri.Free
+        Wri.Close();
+        Wri.Free()
       end;
       Src := TFileInputStream.Create('/tmp/blaise_copy_src_e2e.txt');
       Dst := TFileOutputStream.Create('/tmp/blaise_copy_dst_e2e.txt');
@@ -539,15 +539,15 @@ const
         N := CopyStream(Src, Dst);
         WriteLn(N)
       finally
-        Src.Close; Src.Free;
-        Dst.Close; Dst.Free
+        Src.Close(); Src.Free();
+        Dst.Close(); Dst.Free()
       end;
       Vrf := TFileInputStream.Create('/tmp/blaise_copy_dst_e2e.txt');
       R   := TStreamReader.Create(Vrf);
       try
         WriteLn(R.ReadAll)
       finally
-        R.Free
+        R.Free()
       end
     end.
     ''';
@@ -562,7 +562,7 @@ const
         Buf: array[0..7] of Byte;
     begin
       Buf[0] := 1; Buf[1] := 2; Buf[2] := 3;
-      M := TMemoryOutputStream.Create;
+      M := TMemoryOutputStream.Create();
       try
         M.Write(@Buf[0], 3);
         if Supports(M, ISeekable, Sk) then
@@ -570,7 +570,7 @@ const
         else
           WriteLn('no');
       finally
-        M.Free
+        M.Free()
       end
     end.
     ''';

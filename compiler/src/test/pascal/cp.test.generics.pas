@@ -198,7 +198,7 @@ const
           end;
         var B: TBox<Integer>;
         begin
-          B := TBox<Integer>.Create;
+          B := TBox<Integer>.Create();
           B.SetValue(42);
           WriteLn(B.GetValue())
         end.
@@ -244,10 +244,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -256,11 +256,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -270,13 +270,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -289,16 +289,16 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.ParseUnit;
+    Result := P.ParseUnit();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     SA.AnalyseUnit(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -309,15 +309,15 @@ var
 begin
   U := AnalyseUnit(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.GenerateUnit(U);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -340,35 +340,35 @@ begin
   UL := TLexer.Create(AUnitSrc);
   UP := TParser.Create(UL);
   try
-    U := UP.ParseUnit;
+    U := UP.ParseUnit();
   finally
-    UP.Free;
-    UL.Free;
+    UP.Free();
+    UL.Free();
   end;
 
   PL := TLexer.Create(AProgSrc);
   PP := TParser.Create(PL);
   try
-    Prog := PP.Parse;
+    Prog := PP.Parse();
   finally
-    PP.Free;
-    PL.Free;
+    PP.Free();
+    PL.Free();
   end;
 
-  SA := TSemanticAnalyser.Create;
-  CG := TCodeGenQBE.Create;
+  SA := TSemanticAnalyser.Create();
+  CG := TCodeGenQBE.Create();
   try
     SA.AnalyseUnitForExport(U);
     SA.Analyse(Prog);
     CG.SetSymbolTable(Prog.SymbolTable);
     CG.AppendUnit(U);
     CG.AppendProgram(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    CG.Free();
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -378,7 +378,7 @@ var
   SA:   TSemanticAnalyser;
 begin
   Prog := ParseSrc(ASrc);
-  SA   := TSemanticAnalyser.Create;
+  SA   := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Prog);
@@ -387,8 +387,8 @@ begin
       on E: ESemanticError do { expected };
     end;
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -408,7 +408,7 @@ begin
     AssertEquals('name is TBox', 'TBox', TD.Name);
     AssertTrue('def is TGenericTypeDef', TD.Def is TGenericTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -423,7 +423,7 @@ begin
     AssertEquals('one param', 1, GD.ParamNames.Count);
     AssertEquals('param name is T', 'T', GD.ParamNames[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -439,7 +439,7 @@ begin
     AssertEquals('first param K', 'K', GD.ParamNames[0]);
     AssertEquals('second param V', 'V', GD.ParamNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -456,7 +456,7 @@ begin
     FD := TFieldDecl(GD.ClassDef.Fields[0]);
     AssertEquals('field type is T', 'T', FD.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -472,7 +472,7 @@ begin
     MD := TMethodDecl(GD.ClassDef.Methods[0]);  { GetValue }
     AssertEquals('return type is T', 'T', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -490,7 +490,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('param type is T', 'T', Par.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -509,7 +509,7 @@ begin
     VD := TVarDecl(Prog.Block.Decls[0]);
     AssertEquals('var type is TBox<Integer>', 'TBox<Integer>', VD.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -524,7 +524,7 @@ begin
     AssertEquals('var type is TPair<string,Integer>',
       'TPair<string,Integer>', VD.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -532,19 +532,19 @@ procedure TGenericsTests.TestParse_Generic_ConstructorCallParsed;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := ParseSrc(SrcGenericUsage);
   try
-    { Stmt[0] = B := TBox<Integer>.Create }
+    { Stmt[0] = B := TBox<Integer>.Create() }
     AssertTrue('stmt 0 is assignment', Prog.Block.Stmts[0] is TAssignment);
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    AssertTrue('rhs is TFieldAccessExpr', Assign.Expr is TFieldAccessExpr);
-    Expr := TFieldAccessExpr(Assign.Expr);
-    AssertEquals('record name is TBox<Integer>', 'TBox<Integer>', Expr.RecordName);
-    AssertEquals('field is Create', 'Create', Expr.FieldName);
+    AssertTrue('rhs is TMethodCallExpr', Assign.Expr is TMethodCallExpr);
+    MC := TMethodCallExpr(Assign.Expr);
+    AssertEquals('object name is TBox<Integer>', 'TBox<Integer>', MC.ObjectName);
+    AssertEquals('method is Create', 'Create', MC.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -561,7 +561,7 @@ begin
     AssertNotNull('TBox template registered',
       Prog.SymbolTable.FindGeneric('TBox'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -574,7 +574,7 @@ begin
     AssertNull('TBox not a concrete type',
       Prog.SymbolTable.FindType('TBox'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -587,7 +587,7 @@ begin
     AssertNotNull('TBox<Integer> instantiated',
       Prog.SymbolTable.FindType('TBox<Integer>'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -604,7 +604,7 @@ begin
     AssertNotNull('FValue field exists', FI);
     AssertEquals('FValue type is tyInteger', Ord(tyInteger), Ord(FI.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -622,7 +622,7 @@ begin
     AssertNotNull('FValue field exists', FI);
     AssertTrue('FValue type is string', FI.TypeDesc.IsString);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -644,7 +644,7 @@ begin
     AssertTrue('FKey is string', FKey.TypeDesc.IsString);
     AssertEquals('FVal is tyInteger', Ord(tyInteger), Ord(FVal.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -706,7 +706,7 @@ begin
     AssertEquals('resolved type name', 'TBox<Integer>',
       TVarDecl(U.IntfBlock.Decls.Items[0]).ResolvedType.Name);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -722,7 +722,7 @@ begin
     AssertEquals('resolved type name', 'TBox<string>',
       TVarDecl(U.ImplBlock.Decls.Items[0]).ResolvedType.Name);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -886,7 +886,7 @@ begin
     AssertNotNull('TBox<string> instantiated',
       Prog.SymbolTable.FindType('TBox<string>'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -942,7 +942,7 @@ begin
     AssertEquals('FData<string>  base type',
       '^string',  FS.TypeDesc.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1003,7 +1003,7 @@ const
           end;
         var B: TBox<Integer>;
         begin
-          B := TBox<>.Create;
+          B := TBox<>.Create();
           B.SetValue(42);
           WriteLn(B.GetValue())
         end.
@@ -1019,7 +1019,7 @@ const
           end;
         var P: TPair<string, Integer>;
         begin
-          P := TPair<>.Create
+          P := TPair<>.Create()
         end.
         ''';
 
@@ -1027,18 +1027,18 @@ procedure TGenericsTests.TestParse_Diamond_SingleArg_Producessentinel;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := ParseSrc(SrcDiamondSingleArg);
   try
     AssertTrue('stmt 0 is assignment', Prog.Block.Stmts[0] is TAssignment);
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    AssertTrue('rhs is TFieldAccessExpr', Assign.Expr is TFieldAccessExpr);
-    Expr := TFieldAccessExpr(Assign.Expr);
-    AssertEquals('diamond produces TBox<> sentinel', 'TBox<>', Expr.RecordName);
-    AssertEquals('field is Create', 'Create', Expr.FieldName);
+    AssertTrue('rhs is TMethodCallExpr', Assign.Expr is TMethodCallExpr);
+    MC := TMethodCallExpr(Assign.Expr);
+    AssertEquals('diamond produces TBox<> sentinel', 'TBox<>', MC.ObjectName);
+    AssertEquals('method is Create', 'Create', MC.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1046,17 +1046,17 @@ procedure TGenericsTests.TestParse_Diamond_TwoArgs_ProducesSentinel;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := ParseSrc(SrcDiamondTwoArgs);
   try
     AssertTrue('stmt 0 is assignment', Prog.Block.Stmts[0] is TAssignment);
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    AssertTrue('rhs is TFieldAccessExpr', Assign.Expr is TFieldAccessExpr);
-    Expr := TFieldAccessExpr(Assign.Expr);
-    AssertEquals('diamond produces TPair<> sentinel', 'TPair<>', Expr.RecordName);
+    AssertTrue('rhs is TMethodCallExpr', Assign.Expr is TMethodCallExpr);
+    MC := TMethodCallExpr(Assign.Expr);
+    AssertEquals('diamond produces TPair<> sentinel', 'TPair<>', MC.ObjectName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1064,17 +1064,17 @@ procedure TGenericsTests.TestSemantic_Diamond_SingleArg_InfersType;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := AnalyseSrc(SrcDiamondSingleArg);
   try
     AssertTrue('stmt 0 is assignment', Prog.Block.Stmts[0] is TAssignment);
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    Expr := TFieldAccessExpr(Assign.Expr);
-    AssertEquals('diamond resolved to TBox<Integer>', 'TBox<Integer>', Expr.RecordName);
-    AssertTrue('marked constructor', Expr.IsConstructorCall);
+    MC := TMethodCallExpr(Assign.Expr);
+    AssertEquals('diamond resolved to TBox<Integer>', 'TBox<Integer>', MC.ObjectName);
+    AssertTrue('marked constructor', MC.IsConstructorCall);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1082,18 +1082,18 @@ procedure TGenericsTests.TestSemantic_Diamond_TwoArgs_InfersType;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := AnalyseSrc(SrcDiamondTwoArgs);
   try
     AssertTrue('stmt 0 is assignment', Prog.Block.Stmts[0] is TAssignment);
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    Expr := TFieldAccessExpr(Assign.Expr);
+    MC := TMethodCallExpr(Assign.Expr);
     AssertEquals('diamond resolved to TPair<string,Integer> (no space after comma)',
-      'TPair<string,Integer>', Expr.RecordName);
-    AssertTrue('marked constructor', Expr.IsConstructorCall);
+      'TPair<string,Integer>', MC.ObjectName);
+    AssertTrue('marked constructor', MC.IsConstructorCall);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1121,7 +1121,7 @@ begin
           end;
         var P: TPair<string, Integer>;
         begin
-          P := TPair<string, Integer>.Create
+          P := TPair<string, Integer>.Create()
         end.
         ''';
   IRExplicit := GenIR(SrcExplicit);

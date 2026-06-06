@@ -95,7 +95,7 @@ const
           if Self.IndexOf(Value) >= 0 then
             Exit;
           if Self.FCount = Self.FCapacity then
-            Self.Grow;
+            Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(T);
           Dest^       := Value;
           Self.FCount := Self.FCount + 1
@@ -144,7 +144,7 @@ const
     '''
         var S: TSet<Integer>;
         begin
-          S := TSet<Integer>.Create
+          S := TSet<Integer>.Create()
         end.
         ''';
 
@@ -155,7 +155,7 @@ const
     '''
         var S: TSet<Integer>;
         begin
-          S := TSet<Integer>.Create;
+          S := TSet<Integer>.Create();
           S.Include(1);
           S.Include(2);
           S.Include(1)
@@ -169,7 +169,7 @@ const
     '''
         var S: TSet<Integer>;
         begin
-          S := TSet<Integer>.Create;
+          S := TSet<Integer>.Create();
           S.Include(5);
           S.Exclude(5)
         end.
@@ -184,7 +184,7 @@ const
           S: TSet<Integer>;
           B: Boolean;
         begin
-          S := TSet<Integer>.Create;
+          S := TSet<Integer>.Create();
           S.Include(42);
           B := S.Contains(42)
         end.
@@ -198,14 +198,14 @@ var
 begin
   Lex    := TLexer.Create(ASrc);
   Par    := TParser.Create(Lex);
-  Result := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Result := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -215,13 +215,13 @@ var
   CG:   TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -230,7 +230,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcCreate);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTSetTests.TestSemantic_TSet_Include_Compiles;
@@ -238,7 +238,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcInclude);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTSetTests.TestSemantic_TSet_Exclude_Compiles;
@@ -246,7 +246,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcExclude);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTSetTests.TestSemantic_TSet_Contains_Compiles;
@@ -254,7 +254,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcContains);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTSetTests.TestCodegen_TSet_TypeInfoEmitted;

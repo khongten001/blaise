@@ -46,15 +46,15 @@ var L: TLexer; P: TParser;
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  try Result := P.Parse; finally P.Free; L.Free; end;
+  try Result := P.Parse(); finally P.Free(); L.Free(); end;
 end;
 
 function TGenericConstraintTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
-  try A.Analyse(Result); finally A.Free; end;
+  A := TSemanticAnalyser.Create();
+  try A.Analyse(Result); finally A.Free(); end;
 end;
 
 procedure TGenericConstraintTests.AnalyseExpectError(const ASrc: string);
@@ -62,7 +62,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -88,7 +88,7 @@ begin
     AssertEquals(1, GD.ParamNames.Count);
     AssertEquals('T', GD.ParamNames[0]);
     AssertEquals('class', GD.ParamConstraints[0]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestParse_GenericType_RecordConstraint;
@@ -107,7 +107,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[0]);
     GD := TGenericTypeDef(TD.Def);
     AssertEquals('record', GD.ParamConstraints[0]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestParse_GenericType_NamedConstraint;
@@ -127,7 +127,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[1]);
     GD := TGenericTypeDef(TD.Def);
     AssertEquals('TAnimal', GD.ParamConstraints[0]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestParse_GenericType_TwoParamsWithMixedConstraints;
@@ -148,7 +148,7 @@ begin
     AssertEquals(2, GD.ParamNames.Count);
     AssertEquals('', GD.ParamConstraints[0]);  { K unconstrained }
     AssertEquals('class', GD.ParamConstraints[1]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestParse_GenericFunc_ClassConstraint;
@@ -165,7 +165,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertNotNull(MD.TypeParams);
     AssertEquals('class', MD.TypeParamConstraints[0]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestParse_GenericFunc_NamedConstraint;
@@ -182,7 +182,7 @@ begin
   try
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('TAnimal', MD.TypeParamConstraints[0]);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestSemantic_GenericFunc_ClassConstraint_Violation;
@@ -211,12 +211,12 @@ begin
         begin Result := A end;
         var A: TAnimal;
         begin
-          A := TAnimal.Create;
+          A := TAnimal.Create();
           A := Id<TAnimal>(A);
-          A.Free
+          A.Free()
         end.
         ''');
-  try AssertNotNull(Prog); finally Prog.Free; end;
+  try AssertNotNull(Prog); finally Prog.Free(); end;
 end;
 
 procedure TGenericConstraintTests.TestSemantic_GenericType_ClassConstraint_Violation;
@@ -246,9 +246,9 @@ begin
         begin Result := 0 end;
         var C: TCat; N: Integer;
         begin
-          C := TCat.Create;
+          C := TCat.Create();
           N := Use<TCat>(C);
-          C.Free
+          C.Free()
         end.
         ''');
 end;
@@ -267,12 +267,12 @@ begin
         begin Result := 0 end;
         var P: TPuppy; N: Integer;
         begin
-          P := TPuppy.Create;
+          P := TPuppy.Create();
           N := Use<TPuppy>(P);
-          P.Free
+          P.Free()
         end.
         ''');
-  try AssertNotNull(Prog); finally Prog.Free; end;
+  try AssertNotNull(Prog); finally Prog.Free(); end;
 end;
 
 initialization

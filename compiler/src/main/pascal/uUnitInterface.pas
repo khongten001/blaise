@@ -295,7 +295,7 @@ end;
 
 destructor TRoutineSig.Destroy;
 begin
-  Params.Free;
+  Params.Free();
   inherited Destroy;
 end;
 
@@ -303,7 +303,7 @@ end;
 
 destructor TConstEntry.Destroy;
 begin
-  Decl.Free;
+  Decl.Free();
   inherited Destroy;
 end;
 
@@ -312,19 +312,19 @@ end;
 constructor TTypeEntry.Create;
 begin
   inherited Create;
-  Implements   := TStringList.Create;
+  Implements   := TStringList.Create();
   Methods      := TObjectList.Create(True);
   VTableLayout := TObjectList.Create(False);  { non-owning }
-  Attributes   := TStringList.Create;
+  Attributes   := TStringList.Create();
 end;
 
 destructor TTypeEntry.Destroy;
 begin
-  Attributes.Free;
-  VTableLayout.Free;        { non-owning — just refs into Methods }
-  Methods.Free;
-  Implements.Free;
-  Def.Free;
+  Attributes.Free();
+  VTableLayout.Free();        { non-owning — just refs into Methods }
+  Methods.Free();
+  Implements.Free();
+  Def.Free();
   inherited Destroy;
 end;
 
@@ -332,7 +332,7 @@ end;
 
 destructor TInlineBody.Destroy;
 begin
-  Block.Free;
+  Block.Free();
   inherited Destroy;
 end;
 
@@ -341,18 +341,18 @@ end;
 constructor TGenericBody.Create;
 begin
   inherited Create;
-  TypeParams  := TStringList.Create;
-  Constraints := TStringList.Create;
+  TypeParams  := TStringList.Create();
+  Constraints := TStringList.Create();
 end;
 
 destructor TGenericBody.Destroy;
 begin
-  MethodDecl.Free;
-  Body.Free;
-  RoutineSig.Free;
-  TypeDef.Free;
-  Constraints.Free;
-  TypeParams.Free;
+  MethodDecl.Free();
+  Body.Free();
+  RoutineSig.Free();
+  TypeDef.Free();
+  Constraints.Free();
+  TypeParams.Free();
   inherited Destroy;
 end;
 
@@ -361,7 +361,7 @@ end;
 { Build a sorted TStringList with the requested case sensitivity. }
 function MakeIndex(ACaseSensitive: Boolean): TStringList;
 begin
-  Result := TStringList.Create;
+  Result := TStringList.Create();
   Result.CaseSensitive := ACaseSensitive;
   Result.Sorted        := True;
 end;
@@ -371,7 +371,7 @@ constructor TUnitInterface.Create(const AName: string;
 begin
   inherited Create;
   Name      := AName;
-  UsedUnits := TStringList.Create;
+  UsedUnits := TStringList.Create();
 
   Types         := TObjectList.Create(True);
   Consts        := TObjectList.Create(True);
@@ -389,20 +389,20 @@ end;
 
 destructor TUnitInterface.Destroy;
 begin
-  FGenericIndex.Free;
-  FInlineIndex.Free;
-  FRoutineIndex.Free;
-  FConstIndex.Free;
-  FTypeIndex.Free;
+  FGenericIndex.Free();
+  FInlineIndex.Free();
+  FRoutineIndex.Free();
+  FConstIndex.Free();
+  FTypeIndex.Free();
 
-  GenericBodies.Free;
-  InlineBodies.Free;
-  Routines.Free;
-  Vars.Free;
-  Consts.Free;
-  Types.Free;
+  GenericBodies.Free();
+  InlineBodies.Free();
+  Routines.Free();
+  Vars.Free();
+  Consts.Free();
+  Types.Free();
 
-  UsedUnits.Free;
+  UsedUnits.Free();
   inherited Destroy;
 end;
 

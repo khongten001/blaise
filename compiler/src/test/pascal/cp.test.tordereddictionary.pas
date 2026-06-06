@@ -115,7 +115,7 @@ const
           else
           begin
             if Self.FCount = Self.FCapacity then
-              Self.Grow;
+              Self.Grow();
             KPtr  := Self.FKeys   + Self.FCount * SizeOf(K);
             VPtr  := Self.FValues + Self.FCount * SizeOf(V);
             KPtr^ := Key;
@@ -200,7 +200,7 @@ const
     '''
         var D: TOrderedDictionary<Integer, Integer>;
         begin
-          D := TOrderedDictionary<Integer, Integer>.Create
+          D := TOrderedDictionary<Integer, Integer>.Create()
         end.
         ''';
 
@@ -213,7 +213,7 @@ const
           D:  TOrderedDictionary<Integer, Integer>;
           OK: Boolean;
         begin
-          D := TOrderedDictionary<Integer, Integer>.Create;
+          D := TOrderedDictionary<Integer, Integer>.Create();
           D.Add(1, 100);
           D.Add(2, 200);
           OK := D.ContainsKey(1)
@@ -230,7 +230,7 @@ const
           V:  Integer;
           OK: Boolean;
         begin
-          D := TOrderedDictionary<Integer, Integer>.Create;
+          D := TOrderedDictionary<Integer, Integer>.Create();
           D.Add(42, 99);
           OK := D.TryGetValue(42, V)
         end.
@@ -245,7 +245,7 @@ const
           D:  TOrderedDictionary<Integer, Integer>;
           OK: Boolean;
         begin
-          D := TOrderedDictionary<Integer, Integer>.Create;
+          D := TOrderedDictionary<Integer, Integer>.Create();
           D.Add(7, 70);
           D.Remove(7);
           OK := D.ContainsKey(7)
@@ -262,7 +262,7 @@ const
           K: Integer;
           V: Integer;
         begin
-          D := TOrderedDictionary<Integer, Integer>.Create;
+          D := TOrderedDictionary<Integer, Integer>.Create();
           D.Add(5, 50);
           K := D.Keys[0];
           V := D.Values[0]
@@ -277,14 +277,14 @@ var
 begin
   Lex    := TLexer.Create(ASrc);
   Par    := TParser.Create(Lex);
-  Result := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Result := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -294,13 +294,13 @@ var
   CG:   TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -309,7 +309,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcCreate);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTOrderedDictionaryTests.TestSemantic_OrdDict_Add_ContainsKey_Compiles;
@@ -317,7 +317,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcAddGet);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTOrderedDictionaryTests.TestSemantic_OrdDict_TryGetValue_Compiles;
@@ -325,7 +325,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTryGet);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTOrderedDictionaryTests.TestSemantic_OrdDict_Remove_Compiles;
@@ -333,7 +333,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcRemove);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTOrderedDictionaryTests.TestSemantic_OrdDict_IndexedAccess_Compiles;
@@ -341,7 +341,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIndexed);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTOrderedDictionaryTests.TestCodegen_OrdDict_TypeInfoEmitted;

@@ -71,9 +71,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -81,11 +81,11 @@ function TProcTypesOfObjectTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -94,15 +94,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -144,12 +144,12 @@ begin
     Proc.Executable := AExe;
     for I := Low(AArgs) to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Execute;
-    repeat Chunk := Proc.ReadOutput; until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.Execute();
+    repeat Chunk := Proc.ReadOutput(); until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode;
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -179,12 +179,12 @@ begin
   BinFile := IncludeTrailingPathDelimiter(Scratch) + 'case.bin';
 
   IR := GenIR(ASrc);
-  Lst := TStringList.Create;
+  Lst := TStringList.Create();
   try
     Lst.Text := IR;
     Lst.SaveToFile(IRFile);
   finally
-    Lst.Free;
+    Lst.Free();
   end;
 
   if RunCmdOFO(QBE, ['-o', AsmFile, IRFile]) <> 0 then
@@ -202,16 +202,16 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := BinFile;
-    Proc.Execute;
+    Proc.Execute();
     Result := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       Result := Result + Chunk;
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Trim(Result);
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -238,7 +238,7 @@ begin
     Def := TProceduralTypeDef(TD.Def);
     AssertTrue('IsMethodPtr is True for "of object" type', Def.IsMethodPtr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -297,7 +297,7 @@ begin
     AssertEquals('TMethod kind is tyRecord',  Ord(tyRecord), Ord(VD.ResolvedType.Kind));
     AssertEquals('TMethod name',              'TMethod',     VD.ResolvedType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -321,7 +321,7 @@ begin
     AssertEquals('Code at offset 0', 0, RT.FindField('Code').Offset);
     AssertEquals('Data at offset 8', 8, RT.FindField('Data').Offset);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -344,7 +344,7 @@ begin
     AssertTrue('IsMethodPtr propagated to type descriptor',
       ProcDesc.IsMethodPtr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -444,12 +444,12 @@ const
         begin WriteLn('hi') end;
         var F: TFoo; M: TMethod; G: TGreet;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           M.Code := MethodAddress(F, 'SayHi');
           M.Data := F;
           G := TGreet(M);
           G;
-          F.Free
+          F.Free()
         end.
         ''';
 begin
@@ -475,12 +475,12 @@ const
         end;
         var F: TFoo; M: TMethod; G: TShow;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           M.Code := MethodAddress(F, 'Show');
           M.Data := F;
           G := TShow(M);
           G('hello', 42);
-          F.Free
+          F.Free()
         end.
         ''';
 begin
@@ -504,13 +504,13 @@ const
         begin WriteLn(IntToStr(Value)) end;
         var C: TCounter; M: TMethod; G: TPrintMethod;
         begin
-          C := TCounter.Create;
+          C := TCounter.Create();
           C.Value := 99;
           M.Code := MethodAddress(C, 'Print');
           M.Data := C;
           G := TPrintMethod(M);
           G;
-          C.Free
+          C.Free()
         end.
         ''';
 begin
@@ -537,7 +537,7 @@ begin
     AssertEquals('IsMethodPtr ByteSize is 16', 16, TD.ByteSize);
     AssertEquals('IsMethodPtr RawSize is 16',  16, TD.RawSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -560,7 +560,7 @@ begin
     AssertEquals('bare procedural ByteSize stays 8', 8, TD.ByteSize);
     AssertEquals('bare procedural RawSize stays 8',  8, TD.RawSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -615,7 +615,7 @@ begin
     AssertEquals('record holding a method-ptr field totals 16 bytes',
       16, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -641,8 +641,8 @@ const
           M: TMethod;
           G: TGreet;
         begin
-          F := TFoo.Create;
-          H := THolder.Create;
+          F := TFoo.Create();
+          H := THolder.Create();
           M.Code := MethodAddress(F, 'SayHi');
           M.Data := F;
           H.Handler := TGreet(M);
@@ -650,8 +650,8 @@ const
             path (which must return the field address, not a single loadl). }
           G := H.Handler;
           G;
-          H.Free;
-          F.Free
+          H.Free();
+          F.Free()
         end.
         ''';
 begin
@@ -671,9 +671,9 @@ const
           end;
         var H: THolder;
         begin
-          H := THolder.Create;
+          H := THolder.Create();
           H.Handler;
-          H.Free
+          H.Free()
         end.
         ''';
 var IR: string;
@@ -704,13 +704,13 @@ const
         begin WriteLn('field-direct') end;
         var F: TFoo; M: TMethod;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           M.Code := MethodAddress(F, 'SayHi');
           M.Data := F;
           F.Handler := TGreet(M);
           F.Handler;
           F.Handler();
-          F.Free
+          F.Free()
         end.
         ''';
 begin

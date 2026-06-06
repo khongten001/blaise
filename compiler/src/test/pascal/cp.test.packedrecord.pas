@@ -69,16 +69,16 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -89,15 +89,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -108,10 +108,10 @@ var
 begin
   L := TLexer.Create('packed');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('packed maps to tkPacked', Ord(tkPacked), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -138,7 +138,7 @@ begin
     RD := TRecordTypeDef(TD.Def);
     AssertTrue('IsPacked = True', RD.IsPacked);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -158,7 +158,7 @@ begin
     RD := TRecordTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
     AssertFalse('IsPacked = False on plain record', RD.IsPacked);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -179,7 +179,7 @@ begin
     RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
     AssertTrue('IsPacked propagated to TRecordTypeDesc', RT.IsPacked);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -207,7 +207,7 @@ begin
     AssertEquals('A offset', 0, FldA.Offset);
     AssertEquals('B offset (no align padding)', 1, FldB.Offset);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -231,7 +231,7 @@ begin
     RT := TRecordTypeDesc(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType);
     AssertEquals('TotalSize = 1 + 4 = 5 (no tail pad)', 5, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -258,7 +258,7 @@ begin
                  RT.FindField('B').Offset);
     AssertEquals('TotalSize = 9 (no tail pad)', 9, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -285,7 +285,7 @@ begin
     AssertEquals('A at 0',      0, RT.FindField('A').Offset);
     AssertEquals('S aligned to 8', 8, RT.FindField('S').Offset);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -307,14 +307,14 @@ begin
   P := TParser.Create(L);
   try
     try
-      Prog := P.Parse;
-      Prog.Free;
+      Prog := P.Parse();
+      Prog.Free();
     except
       on EParseError do Raised := True;
     end;
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
   AssertTrue('packed class rejected', Raised);
 end;
@@ -337,14 +337,14 @@ begin
   P := TParser.Create(L);
   try
     try
-      Prog := P.Parse;
-      Prog.Free;
+      Prog := P.Parse();
+      Prog.Free();
     except
       on EParseError do Raised := True;
     end;
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
   AssertTrue('packed array rejected', Raised);
 end;

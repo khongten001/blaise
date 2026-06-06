@@ -62,9 +62,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -72,11 +72,11 @@ function TPublishedRTTITests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -85,15 +85,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -139,12 +139,12 @@ begin
     Proc.Executable := AExe;
     for I := Low(AArgs) to High(AArgs) do
       Proc.Parameters.Add(AArgs[I]);
-    Proc.Execute;
-    repeat Chunk := Proc.ReadOutput; until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.Execute();
+    repeat Chunk := Proc.ReadOutput(); until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
     Result := Proc.ExitCode;
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -174,12 +174,12 @@ begin
   BinFile := IncludeTrailingPathDelimiter(Scratch) + 'case.bin';
 
   IR := GenIR(ASrc);
-  Lst := TStringList.Create;
+  Lst := TStringList.Create();
   try
     Lst.Text := IR;
     Lst.SaveToFile(IRFile);
   finally
-    Lst.Free;
+    Lst.Free();
   end;
 
   if RunCmd(QBE, ['-o', AsmFile, IRFile]) <> 0 then
@@ -198,16 +198,16 @@ begin
   Proc := TProcess.Create(nil);
   try
     Proc.Executable := BinFile;
-    Proc.Execute;
+    Proc.Execute();
     Result := '';
     repeat
-      Chunk := Proc.ReadOutput;
+      Chunk := Proc.ReadOutput();
       Result := Result + Chunk;
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
+    Proc.WaitOnExit();
     Result := Trim(Result);
   finally
-    Proc.Free;
+    Proc.Free();
   end;
 end;
 
@@ -243,7 +243,7 @@ begin
     AssertTrue('Bar is published', TMethodDecl(CD.Methods.Items[0]).IsPublished);
     AssertTrue('Baz is published', TMethodDecl(CD.Methods.Items[1]).IsPublished);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -270,7 +270,7 @@ begin
     AssertFalse('Bar is not published',
       TMethodDecl(CD.Methods.Items[0]).IsPublished);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -301,7 +301,7 @@ begin
     AssertFalse('InPlain not published',
       TMethodDecl(CD.Methods.Items[1]).IsPublished);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -428,9 +428,9 @@ const
         procedure TFoo.Bar; begin end;
         var F: TFoo; P: Pointer;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           P := MethodAddress(F, 'Bar');
-          F.Free
+          F.Free()
         end.
         ''';
 var IR: string;
@@ -457,12 +457,12 @@ const
         procedure TFoo.Bar; begin end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           if MethodAddress(F, 'Bar') = nil then
             WriteLn('nil')
           else
             WriteLn('found');
-          F.Free
+          F.Free()
         end.
         ''';
 begin
@@ -483,12 +483,12 @@ const
         procedure TFoo.Bar; begin end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           if MethodAddress(F, 'NoSuch') = nil then
             WriteLn('nil')
           else
             WriteLn('found');
-          F.Free
+          F.Free()
         end.
         ''';
 begin
@@ -514,7 +514,7 @@ const
         procedure TDerived.FromDerived; begin end;
         var D: TDerived;
         begin
-          D := TDerived.Create;
+          D := TDerived.Create();
           if MethodAddress(D, 'FromBase') = nil then
             WriteLn('base nil')
           else
@@ -523,7 +523,7 @@ const
             WriteLn('derived nil')
           else
             WriteLn('derived found');
-          D.Free
+          D.Free()
         end.
         ''';
 begin
@@ -546,12 +546,12 @@ const
         procedure TFoo.Baz; begin end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           if MethodAddress(F, 'Bar') = MethodAddress(F, 'Baz') then
             WriteLn('same')
           else
             WriteLn('different');
-          F.Free
+          F.Free()
         end.
         ''';
 begin

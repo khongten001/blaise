@@ -102,7 +102,7 @@ var
   Dest: ^Pointer;
 begin
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   _ClassAddRef(AObject);
   Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
   Dest^       := AObject;

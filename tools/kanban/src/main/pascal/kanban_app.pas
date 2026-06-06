@@ -137,7 +137,7 @@ begin
 
     Board := TBoard.Create(FilePath);
     try
-      Board.Load;
+      Board.Load();
       Task := Board.AddTask(AddTitle, StatusVal);
       if Length(PriorityVal) > 0 then
         Task.Priority := PriorityVal;
@@ -156,24 +156,24 @@ begin
       if Length(DetailText) > 0 then
         Board.SaveDetail(Task.Id, DetailText);
 
-      Board.Save;
+      Board.Save();
       WriteLn('Added task #', Task.Id, ': ', AddTitle)
     finally
-      Board.Free
+      Board.Free()
     end
   end
   else
   begin
-    Term := TTerminal.Create;
+    Term := TTerminal.Create();
     Board := TBoard.Create(FilePath);
     UI := TKanbanUI.Create(Term, Board);
     try
-      Board.Load;
-      UI.Run
+      Board.Load();
+      UI.Run()
     finally
-      UI.Free;
-      Board.Free;
-      Term.Free
+      UI.Free();
+      Board.Free();
+      Term.Free()
     end
   end
 end.

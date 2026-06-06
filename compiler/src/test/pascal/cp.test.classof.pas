@@ -60,9 +60,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -70,11 +70,11 @@ function TClassOfTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -83,15 +83,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -100,7 +100,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -127,7 +127,7 @@ begin
   try
     AssertEquals('two type decls', 2, Prog.Block.TypeDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -147,7 +147,7 @@ begin
   try
     AssertEquals('one var decl', 1, Prog.Block.Decls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -169,7 +169,7 @@ begin
   try
     AssertEquals('two type decls', 2, Prog.Block.TypeDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -197,7 +197,7 @@ begin
     AssertEquals('var type kind is tyMetaClass',
       Ord(tyMetaClass), Ord(VD.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -223,7 +223,7 @@ begin
     AssertNotNull('metaclass has BaseClass', MC.BaseClass);
     AssertEquals('BaseClass is TBase', 'TBase', MC.BaseClass.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -246,7 +246,7 @@ begin
   try
     AssertEquals('one stmt', 1, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -269,7 +269,7 @@ begin
   try
     AssertEquals('one stmt', 1, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -323,7 +323,7 @@ begin
   try
     AssertEquals('one stmt', 1, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -346,7 +346,7 @@ begin
   try
     AssertEquals('one stmt', 1, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

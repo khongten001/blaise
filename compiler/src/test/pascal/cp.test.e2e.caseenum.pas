@@ -115,14 +115,14 @@ var Output: string; RCode: Integer; Lines: TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcEnumOrdinal, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('cRed=0',   '0', Lines.Strings[0]);
     AssertEquals('cGreen=1', '1', Lines.Strings[1]);
     AssertEquals('cBlue=2',  '2', Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -185,14 +185,14 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcExplicitOrdinals, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Idle=10',    '10', Lines.Strings[0]);
     AssertEquals('Running=20', '20', Lines.Strings[1]);
     AssertEquals('Done=30',    '30', Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -204,14 +204,14 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcAutoContinue, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A=100', '100', Lines.Strings[0]);
     AssertEquals('B=101', '101', Lines.Strings[1]);
     AssertEquals('C=102', '102', Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 

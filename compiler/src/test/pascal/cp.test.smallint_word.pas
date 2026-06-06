@@ -69,16 +69,16 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -89,15 +89,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -118,7 +118,7 @@ begin
     AssertTrue('resolves',           T <> nil);
     AssertEquals('Kind = tySmallInt', Ord(tySmallInt), Ord(T.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -139,7 +139,7 @@ begin
     AssertTrue('resolves',       T <> nil);
     AssertEquals('Kind = tyWord', Ord(tyWord), Ord(T.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -160,7 +160,7 @@ begin
       TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType,
       TVarDecl(Prog.Block.Decls.Items[1]).ResolvedType);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -181,7 +181,7 @@ begin
       TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType,
       TVarDecl(Prog.Block.Decls.Items[1]).ResolvedType);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -238,7 +238,7 @@ begin
     AssertEquals('D at 6', 6, RT.FindField('D').Offset);
     AssertEquals('total 8', 8, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -268,7 +268,7 @@ begin
     AssertEquals('Val at 4', 4, RT.FindField('Val').Offset);
     AssertEquals('total 8',  8, RT.TotalSize);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -384,10 +384,10 @@ const
     end;
     var F: TFoo;
     begin
-      F := TFoo.Create;
-      F.SetAll;
-      F.Show;
-      F.Free
+      F := TFoo.Create();
+      F.SetAll();
+      F.Show();
+      F.Free()
     end.
     ''';
 
@@ -412,10 +412,10 @@ const
     end;
     var F: TFoo;
     begin
-      F := TFoo.Create;
-      F.SetAll;
-      F.Show;
-      F.Free
+      F := TFoo.Create();
+      F.SetAll();
+      F.Show();
+      F.Free()
     end.
     ''';
 

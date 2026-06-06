@@ -375,16 +375,16 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  CG   := TCodeGenQBE.Create;
+  SA.Free();
+  CG   := TCodeGenQBE.Create();
   CG.Generate(Prog);
-  Result := CG.GetOutput;
-  CG.Free;
-  Prog.Free;
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
 end;
 
 procedure TSetTests.SemanticOK(const ASrc: string);
@@ -396,14 +396,14 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -416,25 +416,25 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError but none was raised');
   except
     on ESE: ESemanticError do
     begin
-      Prog.Free;
+      Prog.Free();
     end;
     on EEx: Exception do
     begin
-      Prog.Free;
+      Prog.Free();
       raise;
     end;
   end;
-  SA.Free;
+  SA.Free();
 end;
 
 procedure TSetTests.ParseOK(const ASrc: string);
@@ -446,10 +446,10 @@ begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
   try
-    Prog := Par.Parse;
-    Prog.Free;
+    Prog := Par.Parse();
+    Prog.Free();
   finally
-    Par.Free; Lex.Free;
+    Par.Free(); Lex.Free();
   end;
 end;
 
@@ -530,16 +530,16 @@ var
 begin
   Lex  := TLexer.Create(SrcSetInOperator);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   { B := dNorth in S — second stmt in main block }
   Assign := TAssignment(Prog.Block.Stmts[1]);
   AssertEquals('in operator resolves to Boolean',
     Ord(tyBoolean), Ord(Assign.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TSetTests.TestSemantic_Set_Include_OK;

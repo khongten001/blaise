@@ -129,7 +129,7 @@ const
           else
           begin
             if Self.FCount = Self.FCapacity then
-              Self.Grow;
+              Self.Grow();
             KPtr  := Self.FKeys   + Self.FCount * SizeOf(K);
             VPtr  := Self.FValues + Self.FCount * SizeOf(V);
             KPtr^ := Key;
@@ -191,7 +191,7 @@ const
     '''
         var D: TDictionary<Integer, Integer>;
         begin
-          D := TDictionary<Integer, Integer>.Create
+          D := TDictionary<Integer, Integer>.Create()
         end.
         ''';
 
@@ -204,7 +204,7 @@ const
           D:  TDictionary<Integer, Integer>;
           OK: Boolean;
         begin
-          D := TDictionary<Integer, Integer>.Create;
+          D := TDictionary<Integer, Integer>.Create();
           D.Add(1, 100);
           D.Add(2, 200);
           OK := D.ContainsKey(1)
@@ -221,7 +221,7 @@ const
           V:  Integer;
           OK: Boolean;
         begin
-          D := TDictionary<Integer, Integer>.Create;
+          D := TDictionary<Integer, Integer>.Create();
           D.Add(42, 99);
           OK := D.TryGetValue(42, V)
         end.
@@ -236,7 +236,7 @@ const
           D:  TDictionary<Integer, Integer>;
           OK: Boolean;
         begin
-          D := TDictionary<Integer, Integer>.Create;
+          D := TDictionary<Integer, Integer>.Create();
           D.Add(7, 70);
           D.Remove(7);
           OK := D.ContainsKey(7)
@@ -255,10 +255,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -267,11 +267,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -281,13 +281,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -309,7 +309,7 @@ begin
     AssertEquals('First param K', 'K', GD.ParamNames[0]);
     AssertEquals('Second param V', 'V', GD.ParamNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -323,7 +323,7 @@ begin
     GD := TGenericTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
     AssertEquals('Six methods in class', 6, GD.ClassDef.Methods.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -341,7 +341,7 @@ begin
     AssertTrue('Grow OwnerTypeParams set', MDecl.OwnerTypeParams <> nil);
     AssertEquals('Two owner type params', 2, MDecl.OwnerTypeParams.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -354,7 +354,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcCreate);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTDictionaryTests.TestSemantic_Add_ContainsKey_Compiles;
@@ -362,7 +362,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcAddGet);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTDictionaryTests.TestSemantic_TryGetValue_Compiles;
@@ -370,7 +370,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTryGet);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTDictionaryTests.TestSemantic_Remove_Compiles;
@@ -378,7 +378,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcRemove);
-  Prog.Free;
+  Prog.Free();
 end;
 
 { ------------------------------------------------------------------ }

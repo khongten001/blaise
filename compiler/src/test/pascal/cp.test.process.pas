@@ -175,17 +175,17 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  CG   := TCodeGenQBE.Create;
+  SA.Free();
+  CG   := TCodeGenQBE.Create();
   CG.Generate(Prog);
-  Result := CG.GetOutput;
-  CG.Free;
-  Prog.Free;
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
 end;
 
 procedure TProcessBuiltinTests.SemanticOK(const ASrc: string);
@@ -197,13 +197,13 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  Prog.Free;
+  SA.Free();
+  Prog.Free();
   AssertTrue('Semantic analysis succeeded', True);
 end;
 
@@ -221,16 +221,16 @@ var
 begin
   Lex  := TLexer.Create(SrcProcessCreate);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('ProcessCreate returns Pointer',
     Ord(tyPointer), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TProcessBuiltinTests.TestSemantic_ProcessRunning_ReturnsBoolean;
@@ -243,16 +243,16 @@ var
 begin
   Lex  := TLexer.Create(SrcProcessRunning);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[1]);
   AssertEquals('ProcessRunning returns Boolean',
     Ord(tyBoolean), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TProcessBuiltinTests.TestSemantic_ProcessReadOutput_ReturnsString;
@@ -265,16 +265,16 @@ var
 begin
   Lex  := TLexer.Create(SrcProcessReadOutput);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[1]);
   AssertEquals('ProcessReadOutput returns string',
     Ord(tyString), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TProcessBuiltinTests.TestSemantic_ProcessExitCode_ReturnsInteger;
@@ -287,16 +287,16 @@ var
 begin
   Lex  := TLexer.Create(SrcProcessExitCode);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[1]);
   AssertEquals('ProcessExitCode returns Integer',
     Ord(tyInteger), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TProcessBuiltinTests.TestSemantic_ProcessSetExe_OK;

@@ -78,7 +78,7 @@ begin
     if Length(Result) > 0 then
       FIn.Read(PChar(Result), Length(Result));
   finally
-    FIn.Free;
+    FIn.Free();
   end;
 end;
 
@@ -126,8 +126,8 @@ begin
       if Length(Data) > 0 then
         FOut.Write(PChar(Data), Length(Data));
     finally
-      FOut.Close;
-      FOut.Free;
+      FOut.Close();
+      FOut.Free();
     end;
     Result := TmpPath;
   except

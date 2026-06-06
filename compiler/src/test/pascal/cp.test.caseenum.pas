@@ -197,16 +197,16 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  CG   := TCodeGenQBE.Create;
+  SA.Free();
+  CG   := TCodeGenQBE.Create();
   CG.Generate(Prog);
-  Result := CG.GetOutput;
-  CG.Free;
-  Prog.Free;
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
 end;
 
 procedure TCaseEnumTests.SemanticOK(const ASrc: string);
@@ -218,14 +218,14 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -238,10 +238,10 @@ begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
   try
-    Prog := Par.Parse;
-    Prog.Free;
+    Prog := Par.Parse();
+    Prog.Free();
   finally
-    Par.Free; Lex.Free;
+    Par.Free(); Lex.Free();
   end;
 end;
 
@@ -329,16 +329,16 @@ var
 begin
   Lex  := TLexer.Create(SrcEnumAssign);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   { D := dSouth — the RHS should have tyEnum resolved type }
   Assign := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('dSouth resolves to enum type',
     Ord(tyEnum), Ord(Assign.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TCaseEnumTests.TestSemantic_Enum_VariableAssignment_OK;
@@ -445,14 +445,14 @@ begin
         end.
         ''');
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free; Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Assign := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('Running ordinal is 20', 20, TIdentExpr(Assign.Expr).ConstValue);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TCaseEnumTests.TestCodegen_Enum_ExplicitOrdinal_EmitsCorrectCopy;

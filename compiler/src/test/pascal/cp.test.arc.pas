@@ -104,22 +104,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -354,11 +354,11 @@ const
         begin end;
         procedure DoSomething(const MyIntf: IThing);
         begin
-          MyIntf.Emit
+          MyIntf.Emit()
         end;
         var T: TThing; F: IThing;
         begin
-          T := TThing.Create;
+          T := TThing.Create();
           F := T;
           DoSomething(F)
         end.
@@ -378,11 +378,11 @@ const
         begin end;
         procedure DoSomething(MyIntf: IThing);
         begin
-          MyIntf.Emit
+          MyIntf.Emit()
         end;
         var T: TThing; F: IThing;
         begin
-          T := TThing.Create;
+          T := TThing.Create();
           F := T;
           DoSomething(F)
         end.
@@ -402,11 +402,11 @@ const
         begin end;
         procedure DoSomething(var MyIntf: IThing);
         begin
-          MyIntf.Emit
+          MyIntf.Emit()
         end;
         var T: TThing; F: IThing;
         begin
-          T := TThing.Create;
+          T := TThing.Create();
           F := T;
           DoSomething(F)
         end.
@@ -554,16 +554,16 @@ var
 begin
   L  := TLexer.Create(SrcConcat);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     AssertTrue('semantic analysis completed without error', True);
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -594,7 +594,7 @@ const
         end;
         var B: TBuf;
         begin
-          B := TBuf.Create
+          B := TBuf.Create()
         end.
         ''';
 
@@ -607,7 +607,7 @@ const
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''';
 
@@ -625,7 +625,7 @@ const
         end;
         var B: TBox<Integer>;
         begin
-          B := TBox<Integer>.Create
+          B := TBox<Integer>.Create()
         end.
         ''';
 
@@ -675,7 +675,7 @@ begin
         procedure DoIt;
         var f: TFoo;
         begin
-          f := TFoo.Create
+          f := TFoo.Create()
         end;
         begin
           DoIt
@@ -712,8 +712,8 @@ begin
         procedure DoIt;
         var f: TFoo;
         begin
-          f := TFoo.Create;
-          f := TFoo.Create
+          f := TFoo.Create();
+          f := TFoo.Create()
         end;
         begin
           DoIt
@@ -746,8 +746,8 @@ begin
         begin
           c := True;
           if c then
-            f := TFoo.Create;
-          f := TFoo.Create
+            f := TFoo.Create();
+          f := TFoo.Create()
         end;
         begin
           DoIt

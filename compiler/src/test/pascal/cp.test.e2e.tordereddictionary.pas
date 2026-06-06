@@ -75,7 +75,7 @@ const
           end
           else
           begin
-            if Self.FCount = Self.FCapacity then Self.Grow;
+            if Self.FCount = Self.FCapacity then Self.Grow();
             KPtr  := Self.FKeys   + Self.FCount * SizeOf(Integer);
             VPtr  := Self.FValues + Self.FCount * SizeOf(Integer);
             KPtr^ := Key; VPtr^ := Value;
@@ -131,7 +131,7 @@ const
     '''
     var D: TOrdDict; I: Integer;
     begin
-      D := TOrdDict.Create;
+      D := TOrdDict.Create();
       D.Add(10, 100); D.Add(20, 200); D.Add(30, 300);
       I := 0;
       while I < D.Count do begin WriteLn(D.GetKey(I)); I := I + 1 end
@@ -143,7 +143,7 @@ const
     '''
     var D: TOrdDict; V: Integer; OK: Boolean;
     begin
-      D := TOrdDict.Create;
+      D := TOrdDict.Create();
       D.Add(42, 99);
       OK := D.TryGetValue(42, V);
       WriteLn(OK);
@@ -158,7 +158,7 @@ const
     '''
     var D: TOrdDict; I: Integer;
     begin
-      D := TOrdDict.Create;
+      D := TOrdDict.Create();
       D.Add(1, 10); D.Add(2, 20); D.Add(3, 30);
       D.Remove(2);
       WriteLn(D.Count);
@@ -172,7 +172,7 @@ const
     '''
     var D: TOrdDict; I: Integer;
     begin
-      D := TOrdDict.Create;
+      D := TOrdDict.Create();
       D.Add(5, 50); D.Add(6, 60);
       D.Add(5, 99);
       WriteLn(D.Count);

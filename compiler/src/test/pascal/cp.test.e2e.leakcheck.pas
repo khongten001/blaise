@@ -55,7 +55,7 @@ const
     var
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       B.Value := 99;
       WriteLn(B.Value)
     end.
@@ -77,7 +77,7 @@ const
     procedure DoIt;
     begin
       try
-        raise EFoo.Create
+        raise EFoo.Create()
       except
         on E: EFoo do
           WriteLn('caught')
@@ -121,7 +121,7 @@ const
     var
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       B.Value := 7;
       _ClassAddRef(Pointer(B));
       { Artificial extra addref: rc=2.  Scope-exit releases B (rc=1),
@@ -145,8 +145,8 @@ const
       A: TAlpha;
       B: TBeta;
     begin
-      A := TAlpha.Create;
-      B := TBeta.Create;
+      A := TAlpha.Create();
+      B := TBeta.Create();
       _ClassAddRef(Pointer(A));
       _ClassAddRef(Pointer(B));
       { Artificial extra addref on each: scope-exit releases both
@@ -166,8 +166,8 @@ const
     var
       X, Y: TNode;
     begin
-      X := TNode.Create;
-      Y := TNode.Create;
+      X := TNode.Create();
+      Y := TNode.Create();
       X.Other := Y;
       Y.Other := X;
       { X and Y each hold refcount >= 2 due to the cycle; when the local

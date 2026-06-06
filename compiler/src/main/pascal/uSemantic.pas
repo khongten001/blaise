@@ -365,31 +365,31 @@ end;
 constructor TSemanticAnalyser.Create;
 begin
   inherited Create;
-  FTable                := TSymbolTable.Create;
-  FMethodIndex          := TStringList.Create;
+  FTable                := TSymbolTable.Create();
+  FMethodIndex          := TStringList.Create();
   FMethodIndex.CaseSensitive := False;
-  FProcIndex            := TStringList.Create;
+  FProcIndex            := TStringList.Create();
   FProcIndex.CaseSensitive := False;
-  FGenericFuncTemplates := TStringList.Create;
+  FGenericFuncTemplates := TStringList.Create();
   FGenericFuncTemplates.CaseSensitive := False;
-  FCurrentUsesChain     := TStringList.Create;
+  FCurrentUsesChain     := TStringList.Create();
   FCurrentUsesChain.CaseSensitive := False;
-  FUnitIfaces           := TStringList.Create;
+  FUnitIfaces           := TStringList.Create();
   FUnitIfaces.CaseSensitive := False;
-  FUnitSymbols          := TStringList.Create;
+  FUnitSymbols          := TStringList.Create();
   FUnitSymbols.CaseSensitive := False;
   FLoopDepth            := 0;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
-  FUnitSymbols.Free;
-  FUnitIfaces.Free;
-  FCurrentUsesChain.Free;
-  FGenericFuncTemplates.Free;
-  FProcIndex.Free;
-  FMethodIndex.Free;
-  FTable.Free;
+  FUnitSymbols.Free();
+  FUnitIfaces.Free();
+  FCurrentUsesChain.Free();
+  FGenericFuncTemplates.Free();
+  FProcIndex.Free();
+  FMethodIndex.Free();
+  FTable.Free();
   inherited Destroy;
 end;
 
@@ -733,7 +733,7 @@ procedure TSemanticAnalyser.BuildUsesChain(AUsedUnits: TStringList);
 var
   I: Integer;
 begin
-  FCurrentUsesChain.Clear;
+  FCurrentUsesChain.Clear();
   { Implicit `System` is always the first entry in every unit's
     effective uses chain (Pascal "Uses System(hidden), Classes;"
     rule).  User code never has to write it; it sits at the bottom
@@ -788,7 +788,7 @@ var
 begin
   FCurrentUnitName := AUnit.Name;
   FCurrentUnit := AUnit;
-  FTable.PushScope;
+  FTable.PushScope();
   try
     { Resolve interface type and constant declarations. }
     AnalyseConstDecls(AUnit.IntfBlock);
@@ -822,7 +822,7 @@ begin
         Sym.IsThreadVar := TVarDecl(AUnit.IntfBlock.Decls.Items[I]).IsThreadVar;
         if not FTable.Define(Sym) then
         begin
-          Sym.Free;
+          Sym.Free();
           SemanticError(Format('Duplicate identifier ''%s''',
             [TVarDecl(AUnit.IntfBlock.Decls.Items[I]).Names.Strings[J]]),
             TVarDecl(AUnit.IntfBlock.Decls.Items[I]).Line,
@@ -875,7 +875,7 @@ begin
       Sym.Decl       := MDecl;
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate identifier ''%s''', [MDecl.Name]),
           MDecl.Line, MDecl.Col);
       end;
@@ -909,7 +909,7 @@ begin
         Sym.IsThreadVar := TVarDecl(AUnit.ImplBlock.Decls.Items[I]).IsThreadVar;
         if not FTable.Define(Sym) then
         begin
-          Sym.Free;
+          Sym.Free();
           SemanticError(Format('Duplicate identifier ''%s''',
             [TVarDecl(AUnit.ImplBlock.Decls.Items[I]).Names.Strings[J]]),
             TVarDecl(AUnit.ImplBlock.Decls.Items[I]).Line,
@@ -1015,7 +1015,7 @@ begin
         Sym.Decl       := ImplDecl;
         if not FTable.Define(Sym) then
         begin
-          Sym.Free;
+          Sym.Free();
           SemanticError(Format('Duplicate identifier ''%s''', [ImplDecl.Name]),
             ImplDecl.Line, ImplDecl.Col);
         end;
@@ -1065,7 +1065,7 @@ begin
       for I := 0 to AUnit.FinalStmts.Count - 1 do
         AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
   finally
-    FTable.PopScope;
+    FTable.PopScope();
   end;
   AUnit.SymbolTable := FTable;
   FTable := nil;
@@ -1129,7 +1129,7 @@ begin
       Sym.IsThreadVar := VDecl.IsThreadVar;
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate identifier ''%s''',
           [VDecl.Names.Strings[J]]), VDecl.Line, VDecl.Col);
       end;
@@ -1182,7 +1182,7 @@ begin
     Sym.Decl       := MDecl;
     if not FTable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       SemanticError(Format('Duplicate identifier ''%s''', [MDecl.Name]),
         MDecl.Line, MDecl.Col);
     end;
@@ -1197,7 +1197,7 @@ begin
     Push a scope so impl-only standalone symbols don't leak globally.
     Class method bodies are analysed inside this scope so they can call
     impl-only helpers (e.g. TStringList.SetText -> SplitIntoList). }
-  FTable.PushScope;
+  FTable.PushScope();
   try
     { Register impl-section global variables — marked IsGlobal so codegen
       emits them as data-segment slots rather than stack allocations. }
@@ -1219,7 +1219,7 @@ begin
         Sym.IsThreadVar := VDecl.IsThreadVar;
         if not FTable.Define(Sym) then
         begin
-          Sym.Free;
+          Sym.Free();
           SemanticError(Format('Duplicate identifier ''%s''', [VDecl.Names.Strings[J]]), VDecl.Line, VDecl.Col);
         end;
       end;
@@ -1319,7 +1319,7 @@ begin
         Sym.Decl       := ImplDecl;
         if not FTable.Define(Sym) then
         begin
-          Sym.Free;
+          Sym.Free();
           SemanticError(Format('Duplicate identifier ''%s''', [ImplDecl.Name]),
             ImplDecl.Line, ImplDecl.Col);
         end;
@@ -1366,7 +1366,7 @@ begin
       for I := 0 to AUnit.FinalStmts.Count - 1 do
         AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
   finally
-    FTable.PopScope;
+    FTable.PopScope();
   end;
   FCurrentUnit := nil;
   FTable.DefineOwningUnit := '';
@@ -1655,7 +1655,7 @@ begin
   BrClose  := Length(ATypeName);
   BasePart := StrHead(ATypeName, BrOpen);
   ArgsPart := StrCopyFrom(ATypeName, BrOpen + 1, BrClose - BrOpen - 2);
-  ArgList  := TStringList.Create;
+  ArgList  := TStringList.Create();
   try
     while ArgsPart <> '' do
     begin
@@ -1686,7 +1686,7 @@ begin
         OutArgs := OutArgs + ',' + Arg;
     end;
   finally
-    ArgList.Free;
+    ArgList.Free();
   end;
   Result := BasePart + '<' + OutArgs + '>';
 end;
@@ -1854,7 +1854,7 @@ begin
     BrClose  := Length(Result);  { closing '>' is always the last char }
     BasePart := StrHead(Result, BrOpen);
     ArgsPart := StrCopyFrom(Result, BrOpen + 1, BrClose - BrOpen - 2);
-    ArgList  := TStringList.Create;
+    ArgList  := TStringList.Create();
     try
       while ArgsPart <> '' do
       begin
@@ -1880,7 +1880,7 @@ begin
           OutArgs := OutArgs + ',' + Arg;
       end;
     finally
-      ArgList.Free;
+      ArgList.Free();
     end;
     Result := BasePart + '<' + OutArgs + '>';
   end;
@@ -1926,7 +1926,7 @@ begin
   BaseName := StrHead(ATypeName, BracPos);
   ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     while ArgsStr <> '' do
     begin
@@ -1963,7 +1963,7 @@ begin
     FTable.DefineGlobal(Sym);
 
     { Build substituted clone of the class definition }
-    ClonedCD            := TClassTypeDef.Create;
+    ClonedCD            := TClassTypeDef.Create();
     ClonedCD.ParentName := SubstTypeParam(Templ.ClassDef.ParentName, Templ.ParamNames, Args);
     { If the substituted parent name looks like a generic interface (contains '<'),
       try to resolve it. If it resolves to an interface, move it to ImplementsNames
@@ -1985,7 +1985,7 @@ begin
     for I := 0 to Templ.ClassDef.Fields.Count - 1 do
     begin
       FDecl    := TFieldDecl(Templ.ClassDef.Fields.Items[I]);
-      NewFDecl := TFieldDecl.Create;
+      NewFDecl := TFieldDecl.Create();
       for J := 0 to FDecl.Names.Count - 1 do
         NewFDecl.Names.Add(FDecl.Names.Strings[J]);
       NewFDecl.TypeName := SubstTypeParam(FDecl.TypeName, Templ.ParamNames, Args);
@@ -2000,7 +2000,7 @@ begin
     for I := 0 to Templ.ClassDef.Methods.Count - 1 do
     begin
       MDecl            := TMethodDecl(Templ.ClassDef.Methods.Items[I]);
-      NewMDecl         := TMethodDecl.Create;
+      NewMDecl         := TMethodDecl.Create();
       NewMDecl.Name          := MDecl.Name;
       NewMDecl.OwnerTypeName := ATypeName;
       NewMDecl.IsVirtual     := MDecl.IsVirtual;
@@ -2019,7 +2019,7 @@ begin
       for J := 0 to MDecl.Params.Count - 1 do
       begin
         Par    := TMethodParam(MDecl.Params.Items[J]);
-        NewPar := TMethodParam.Create;
+        NewPar := TMethodParam.Create();
         NewPar.ParamName  := Par.ParamName;
         NewPar.IsVarParam := Par.IsVarParam;
         NewPar.TypeName   := SubstTypeParam(Par.TypeName, Templ.ParamNames, Args);
@@ -2036,7 +2036,7 @@ begin
     for I := 0 to Templ.ClassDef.Properties.Count - 1 do
     begin
       PDecl    := TPropertyDecl(Templ.ClassDef.Properties.Items[I]);
-      NewPDecl := TPropertyDecl.Create;
+      NewPDecl := TPropertyDecl.Create();
       NewPDecl.Name           := PDecl.Name;
       NewPDecl.TypeName       := SubstTypeParam(PDecl.TypeName, Templ.ParamNames, Args);
       NewPDecl.ReadName       := PDecl.ReadName;
@@ -2170,7 +2170,7 @@ begin
           Format('Unknown type ''%s'' for property ''%s'' in ''%s''',
             [NewPDecl.TypeName, NewPDecl.Name, ATypeName]),
           0, 0);
-      PropInfo := TPropertyInfo.Create;
+      PropInfo := TPropertyInfo.Create();
       PropInfo.Name := NewPDecl.Name;
       PropInfo.TypeDesc := PropType;
       if NewPDecl.ReadName <> '' then
@@ -2196,7 +2196,7 @@ begin
     { Analyse method bodies with concrete types in scope.
       Push type-param bindings (T=Integer etc.) so that SizeOf(T) and
       local var declarations like 'var P: ^T' resolve to concrete types. }
-    FTable.PushScope;
+    FTable.PushScope();
     try
       for K := 0 to Templ.ParamNames.Count - 1 do
       begin
@@ -2214,7 +2214,7 @@ begin
           AnalyseMethodDecl(NewMDecl, RT);
       end;
     finally
-      FTable.PopScope;
+      FTable.PopScope();
     end;
 
     { Wire up implements: for each interface name in the cloned definition,
@@ -2228,7 +2228,7 @@ begin
         RT.AddImplements(IntfDesc);
     end;
 
-    GI          := TGenericInstance.Create;
+    GI          := TGenericInstance.Create();
     GI.TypeName := ATypeName;
     GI.ClassDef := ClonedCD;
     GI.TypeDesc := RT;
@@ -2239,7 +2239,7 @@ begin
 
     Result := RT;
   finally
-    Args.Free;
+    Args.Free();
   end;
 end;
 
@@ -2274,7 +2274,7 @@ begin
   BaseName := StrHead(ATypeName, BracPos);
   ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     while ArgsStr <> '' do
     begin
@@ -2306,13 +2306,13 @@ begin
     Sym := TSymbol.Create(ATypeName, skType, RT);
     FTable.DefineGlobal(Sym);
 
-    ClonedRD := TRecordTypeDef.Create;
+    ClonedRD := TRecordTypeDef.Create();
     ClonedRD.IsPacked := Templ.RecordDef.IsPacked;
 
     for I := 0 to Templ.RecordDef.Fields.Count - 1 do
     begin
       FDecl    := TFieldDecl(Templ.RecordDef.Fields.Items[I]);
-      NewFDecl := TFieldDecl.Create;
+      NewFDecl := TFieldDecl.Create();
       for J := 0 to FDecl.Names.Count - 1 do
         NewFDecl.Names.Add(FDecl.Names.Strings[J]);
       NewFDecl.TypeName := SubstTypeParam(FDecl.TypeName, Templ.ParamNames, Args);
@@ -2322,7 +2322,7 @@ begin
     for I := 0 to Templ.RecordDef.Methods.Count - 1 do
     begin
       MDecl            := TMethodDecl(Templ.RecordDef.Methods.Items[I]);
-      NewMDecl         := TMethodDecl.Create;
+      NewMDecl         := TMethodDecl.Create();
       NewMDecl.Name          := MDecl.Name;
       NewMDecl.OwnerTypeName := ATypeName;
       NewMDecl.IsRecordMethod := True;
@@ -2340,7 +2340,7 @@ begin
       for J := 0 to MDecl.Params.Count - 1 do
       begin
         Par    := TMethodParam(MDecl.Params.Items[J]);
-        NewPar := TMethodParam.Create;
+        NewPar := TMethodParam.Create();
         NewPar.ParamName  := Par.ParamName;
         NewPar.IsVarParam := Par.IsVarParam;
         NewPar.TypeName   := SubstTypeParam(Par.TypeName, Templ.ParamNames, Args);
@@ -2402,7 +2402,7 @@ begin
       end;
     end;
 
-    FTable.PushScope;
+    FTable.PushScope();
     try
       for K := 0 to Templ.ParamNames.Count - 1 do
       begin
@@ -2420,10 +2420,10 @@ begin
           AnalyseMethodDecl(NewMDecl, RT);
       end;
     finally
-      FTable.PopScope;
+      FTable.PopScope();
     end;
 
-    GRI           := TGenericRecordInstance.Create;
+    GRI           := TGenericRecordInstance.Create();
     GRI.TypeName  := ATypeName;
     GRI.RecordDef := ClonedRD;
     GRI.TypeDesc  := RT;
@@ -2434,7 +2434,7 @@ begin
 
     Result := RT;
   finally
-    Args.Free;
+    Args.Free();
   end;
 end;
 
@@ -2461,7 +2461,7 @@ begin
   BaseName := StrHead(ATypeName, BracPos);
   ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     while ArgsStr <> '' do
     begin
@@ -2524,7 +2524,7 @@ begin
     end;
 
     { Register the instantiation for codegen }
-    GII          := TGenericInterfaceInstance.Create;
+    GII          := TGenericInterfaceInstance.Create();
     GII.InstName := MangledName;
     GII.IntfDef  := nil;
     GII.TypeDesc := Result;
@@ -2533,7 +2533,7 @@ begin
     else
       FProg.GenericIntfInstances.Add(GII);
   finally
-    Args.Free;
+    Args.Free();
   end;
 end;
 
@@ -2575,7 +2575,7 @@ begin
     Templ := TMethodDecl(FTable.FindGenericRoutine(BaseName));
   if Templ = nil then Exit;  { not a known generic function template }
 
-  Args := TStringList.Create;
+  Args := TStringList.Create();
   try
     while Length(ArgsStr) > 0 do
     begin
@@ -2606,7 +2606,7 @@ begin
           Templ.TypeParamConstraints.Strings[I],
           Format('generic function ''%s''', [AInstName]));
 
-    NewMDecl         := TMethodDecl.Create;
+    NewMDecl         := TMethodDecl.Create();
     NewMDecl.Name    := AInstName;
     { Deep-clone the template body so each instance has its own analysed
       AST.  Sharing would leave Resolved* annotations from the last
@@ -2641,7 +2641,7 @@ begin
     for I := 0 to Templ.Params.Count - 1 do
     begin
       OldPar           := TMethodParam(Templ.Params.Items[I]);
-      NewPar           := TMethodParam.Create;
+      NewPar           := TMethodParam.Create();
       NewPar.ParamName  := OldPar.ParamName;
       NewPar.IsVarParam := OldPar.IsVarParam;
       ParTypeName       := OldPar.TypeName;
@@ -2669,7 +2669,7 @@ begin
     FTable.DefineGlobal(Sym);
 
     { Store for codegen }
-    GFI            := TGenericFuncInstance.Create;
+    GFI            := TGenericFuncInstance.Create();
     GFI.InstName   := AInstName;
     GFI.MethodDecl := NewMDecl;
     if FCurrentUnit <> nil then
@@ -2679,7 +2679,7 @@ begin
 
     Result := NewMDecl;
   finally
-    Args.Free;
+    Args.Free();
   end;
 end;
 
@@ -2698,7 +2698,7 @@ begin
   { Register standalone proc/func signatures before class method bodies so that
     methods can call free functions declared in the same block. }
   AnalyseStandaloneDecls(ABlock);
-  FTable.PushScope;
+  FTable.PushScope();
   Inc(FScopeDepth);
   try
     { Register var declarations before method bodies so that class methods can
@@ -2714,7 +2714,7 @@ begin
     MarkInlineCandidates(ABlock);
   finally
     Dec(FScopeDepth);
-    FTable.PopScope;
+    FTable.PopScope();
   end;
 end;
 
@@ -2862,7 +2862,7 @@ begin
   Sym            := TSymbol.Create(ACD.Name, skConstant, SetDesc);
   Sym.ConstValue := Mask;
   if not FTable.Define(Sym) then
-    Sym.Free;   { duplicate — cross-unit shadowing tolerated, like scalar consts }
+    Sym.Free();   { duplicate — cross-unit shadowing tolerated, like scalar consts }
 end;
 
 procedure TSemanticAnalyser.AnalyseConstDecls(ABlock: TBlock);
@@ -2929,7 +2929,7 @@ begin
     Sym.ConstString  := CD.StrVal;
     if not FTable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       { Only error for same-block duplicates.  Cross-unit const shadowing
         (e.g. a unit redefining a system.pas constant) is silently accepted,
         matching FPC behaviour and preserving the existing test coverage. }
@@ -3022,11 +3022,11 @@ begin
     Sym := TSymbol.Create(CD.Name, skConstant, ArrTD);
     Sym.IsGlobal := True;
     Sym.ConstArrayQbe := CD.ResolvedQbeName;
-    Sym.ConstArray := TStringList.Create;
+    Sym.ConstArray := TStringList.Create();
     for J := 0 to CD.ArrayElements.Count - 1 do
       Sym.ConstArray.Add(CD.ArrayElements[J]);
     if not FTable.Define(Sym) then
-      Sym.Free;
+      Sym.Free();
   end;
 end;
 
@@ -3115,7 +3115,7 @@ begin
       Sym      := TSymbol.Create(TD.Name, skType, IntfDesc);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
       end;
       Continue;
@@ -3132,12 +3132,12 @@ begin
         MSym            := TSymbol.Create(MName, skConstant, EnumDesc);
         MSym.ConstValue := EnumDef.OrdinalAt(K);
         if not FTable.Define(MSym) then
-          MSym.Free;
+          MSym.Free();
       end;
       Sym := TSymbol.Create(TD.Name, skType, EnumDesc);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
       end;
       Continue;
@@ -3156,7 +3156,7 @@ begin
       Sym := TSymbol.Create(TD.Name, skType, SetDesc);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
       end;
       Continue;
@@ -3169,7 +3169,7 @@ begin
                             FTable.NewProceduralType(TD.Name));
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
       end;
       Continue;
@@ -3230,7 +3230,7 @@ begin
       Sym := TSymbol.Create(TD.Name, skType, AliasDesc);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
       end;
       Continue;
@@ -3244,7 +3244,7 @@ begin
     Sym := TSymbol.Create(TD.Name, skType, RT);
     if not FTable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
     end;
   end;
@@ -3621,7 +3621,7 @@ begin
             Format('Unknown type ''%s'' for property ''%s''',
               [PropDecl.TypeName, PropDecl.Name]),
             PropDecl.Line, PropDecl.Col);
-        PropInfo := TPropertyInfo.Create;
+        PropInfo := TPropertyInfo.Create();
         PropInfo.Name := PropDecl.Name;
         PropInfo.TypeDesc := PropType;
         if PropDecl.ReadName <> '' then
@@ -3687,18 +3687,18 @@ begin
           end;
           Sym := TSymbol.Create(CD.Name, skConstant, ArrTD);
           Sym.IsGlobal := True;
-          Sym.ConstArray := TStringList.Create;
+          Sym.ConstArray := TStringList.Create();
           for K := 0 to CD.ArrayElements.Count - 1 do
             Sym.ConstArray.Add(CD.ArrayElements[K]);
           if not FTable.Define(Sym) then
-            Sym.Free;
+            Sym.Free();
           Sym := TSymbol.Create(TD.Name + '.' + CD.Name, skConstant, ArrTD);
           Sym.IsGlobal := True;
-          Sym.ConstArray := TStringList.Create;
+          Sym.ConstArray := TStringList.Create();
           for K := 0 to CD.ArrayElements.Count - 1 do
             Sym.ConstArray.Add(CD.ArrayElements[K]);
           if not FTable.Define(Sym) then
-            Sym.Free;
+            Sym.Free();
         end
         else
         begin
@@ -3711,13 +3711,13 @@ begin
           Sym.ConstValue  := CD.IntVal;
           Sym.ConstString := CD.StrVal;
           if not FTable.Define(Sym) then
-            Sym.Free;
+            Sym.Free();
           { Qualified name — usable as TFoo.MaxItems from anywhere }
           Sym := TSymbol.Create(TD.Name + '.' + CD.Name, skConstant, ParType);
           Sym.ConstValue  := CD.IntVal;
           Sym.ConstString := CD.StrVal;
           if not FTable.Define(Sym) then
-            Sym.Free;
+            Sym.Free();
         end;
       end;
 
@@ -3839,7 +3839,7 @@ var
 begin
   SavedClass    := FCurrentClass;
   FCurrentClass := AClassType;
-  FTable.PushScope;
+  FTable.PushScope();
   Inc(FScopeDepth);
   try
     { Record methods receive the record by pointer (like a var param); class
@@ -3872,7 +3872,7 @@ begin
         Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(
           Format('Duplicate parameter name ''%s''', [Par.ParamName]),
           AMethod.Line, AMethod.Col);
@@ -3891,7 +3891,7 @@ begin
       AnalyseBlock(AMethod.Body);
   finally
     Dec(FScopeDepth);
-    FTable.PopScope;
+    FTable.PopScope();
     FCurrentClass := SavedClass;
   end;
 end;
@@ -4082,7 +4082,7 @@ begin
         ALine, ACol);
     Result := Best;
   finally
-    ArityMatch.Free;
+    ArityMatch.Free();
   end;
 end;
 
@@ -4168,7 +4168,7 @@ begin
 
     if not FTable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       SemanticError(
         Format('Duplicate identifier ''%s''', [ADecl.Name]),
         ADecl.Line, ADecl.Col);
@@ -4186,7 +4186,7 @@ begin
   ADecl.EnclosingDecl := FCurrentEnclosingDecl;
   SavedEncl := FCurrentEnclosingDecl;
   FCurrentEnclosingDecl := ADecl;
-  FTable.PushScope;
+  FTable.PushScope();
   Inc(FScopeDepth);
   try
     { Define Result for functions }
@@ -4206,7 +4206,7 @@ begin
         Sym := TSymbol.Create(Par.ParamName, skParameter, Par.ResolvedType);
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(
           Format('Duplicate parameter name ''%s''', [Par.ParamName]),
           ADecl.Line, ADecl.Col);
@@ -4223,7 +4223,7 @@ begin
     end;
   finally
     Dec(FScopeDepth);
-    FTable.PopScope;
+    FTable.PopScope();
     FCurrentEnclosingDecl := SavedEncl;
   end;
 end;
@@ -4263,7 +4263,7 @@ var
 begin
   if ADecl.Body = nil then Exit;
 
-  OuterVars := TStringList.Create;
+  OuterVars := TStringList.Create();
   TodoExprs := TObjectList.Create(False);
   TodoStmts := TObjectList.Create(False);
   try
@@ -4305,7 +4305,7 @@ begin
                 (ADecl.CapturedVars.IndexOf(VName) < 0)) then
             begin
               if ADecl.CapturedVars = nil then
-                ADecl.CapturedVars := TStringList.Create;
+                ADecl.CapturedVars := TStringList.Create();
               ADecl.CapturedVars.Add(VName);
             end;
           end;
@@ -4366,7 +4366,7 @@ begin
               (ADecl.CapturedVars.IndexOf(VName) < 0)) then
           begin
             if ADecl.CapturedVars = nil then
-              ADecl.CapturedVars := TStringList.Create;
+              ADecl.CapturedVars := TStringList.Create();
             ADecl.CapturedVars.Add(VName);
           end;
         end
@@ -4390,9 +4390,9 @@ begin
       end;
     end;
   finally
-    OuterVars.Free;
-    TodoExprs.Free;
-    TodoStmts.Free;
+    OuterVars.Free();
+    TodoExprs.Free();
+    TodoStmts.Free();
   end;
 end;
 
@@ -4691,7 +4691,7 @@ begin
       Sym.IsThreadVar := Decl.IsThreadVar;
       if not FTable.Define(Sym) then
       begin
-        Sym.Free;
+        Sym.Free();
         SemanticError(
           Format('Duplicate identifier ''%s''', [VarName]),
           Decl.Line, Decl.Col);
@@ -4824,7 +4824,7 @@ begin
       Inc(FForInCounter);
       if FCurrentLocalBlock <> nil then
       begin
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.IdxVarName);
         SynthDecl.TypeName    := 'Integer';
         SynthDecl.ResolvedType := FTable.TypeInteger;
@@ -4915,7 +4915,7 @@ begin
       Inc(FForInCounter);
       if FCurrentLocalBlock <> nil then
       begin
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.EnumVarName);
         SynthDecl.TypeName    := EnumRT.Name;
         SynthDecl.ResolvedType := EnumType;
@@ -4948,7 +4948,7 @@ begin
       Inc(FForInCounter);
       if FCurrentLocalBlock <> nil then
       begin
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.IdxVarName);
         SynthDecl.TypeName    := 'Integer';
         SynthDecl.ResolvedType := FTable.TypeInteger;
@@ -4988,14 +4988,14 @@ begin
       Inc(FForInCounter);
       if FCurrentLocalBlock <> nil then
       begin
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.SetMaskVarName);
         SynthDecl.TypeName    := 'Integer';
         SynthDecl.ResolvedType := FTable.TypeInteger;
         SynthDecl.IsGlobal    := False;
         FCurrentLocalBlock.Decls.Add(SynthDecl);
 
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.IdxVarName);
         SynthDecl.TypeName    := 'Integer';
         SynthDecl.ResolvedType := FTable.TypeInteger;
@@ -5029,7 +5029,7 @@ begin
       Inc(FForInCounter);
       if FCurrentLocalBlock <> nil then
       begin
-        SynthDecl := TVarDecl.Create;
+        SynthDecl := TVarDecl.Create();
         SynthDecl.Names.Add(ForInS.IdxVarName);
         SynthDecl.TypeName    := 'Integer';
         SynthDecl.ResolvedType := FTable.TypeInteger;
@@ -5094,7 +5094,7 @@ begin
         SemanticError(
           '''Exit(Value)'' is only valid inside a function',
           AStmt.Line, AStmt.Col);
-      ExitAssign      := TAssignment.Create;
+      ExitAssign      := TAssignment.Create();
       ExitAssign.Line := AStmt.Line;
       ExitAssign.Col  := AStmt.Col;
       ExitAssign.Name := 'Result';
@@ -5161,21 +5161,21 @@ begin
           { Inject a synthetic local so EmitVarAllocs allocates a stack slot. }
           if FCurrentLocalBlock <> nil then
           begin
-            SynthDecl := TVarDecl.Create;
+            SynthDecl := TVarDecl.Create();
             SynthDecl.Names.Add(H.VarName);
             SynthDecl.TypeName    := H.TypeName;
             SynthDecl.ResolvedType := CondType;
             SynthDecl.IsGlobal    := False;
             FCurrentLocalBlock.Decls.Add(SynthDecl);
           end;
-          FTable.PushScope;
+          FTable.PushScope();
           try
             VarSym := TSymbol.Create(H.VarName, skVariable, CondType);
             if not FTable.Define(VarSym) then
-              VarSym.Free;
+              VarSym.Free();
             AnalyseCompoundBody(H.Body);
           finally
-            FTable.PopScope;
+            FTable.PopScope();
           end;
         end
         else
@@ -5400,22 +5400,30 @@ end;
   the diamond operator: TFoo<> infers all type arguments from the LHS. }
 procedure ResolveDiamond(AExpr: TASTExpr; ALhsType: TTypeDesc);
 var
-  FA: TFieldAccessExpr;
+  TypeName: string;
   BaseName: string;
   BrPos: Integer;
 begin
-  if not (AExpr is TFieldAccessExpr) then Exit;
-  FA := TFieldAccessExpr(AExpr);
-  if (Length(FA.RecordName) < 3) or
-     (StrCopyTail(FA.RecordName, Length(FA.RecordName) - 2) <> '<>') then Exit;
   if ALhsType = nil then Exit;
-  { LHS must be a concrete generic instantiation whose name contains '<' }
-  BaseName := StrHead(FA.RecordName, Length(FA.RecordName) - 2);
+  if AExpr is TFieldAccessExpr then
+    TypeName := TFieldAccessExpr(AExpr).RecordName
+  else if AExpr is TMethodCallExpr then
+    TypeName := TMethodCallExpr(AExpr).ObjectName
+  else
+    Exit;
+  if (Length(TypeName) < 3) or
+     (StrCopyTail(TypeName, Length(TypeName) - 2) <> '<>') then Exit;
+  BaseName := StrHead(TypeName, Length(TypeName) - 2);
   BrPos := StrPos('<', ALhsType.Name);
   if (ALhsType.Kind = tyClass) and
      (BrPos >= 0) and
      SameText(StrHead(ALhsType.Name, BrPos), BaseName) then
-    FA.RecordName := ALhsType.Name;
+  begin
+    if AExpr is TFieldAccessExpr then
+      TFieldAccessExpr(AExpr).RecordName := ALhsType.Name
+    else
+      TMethodCallExpr(AExpr).ObjectName := ALhsType.Name;
+  end;
 end;
 
 procedure TSemanticAnalyser.AnalyseAssignment(AAssign: TAssignment);
@@ -5874,7 +5882,7 @@ begin
   if ASrc = nil then Exit;
   if ASrc is TIntLiteral then
   begin
-    ILit       := TIntLiteral.Create;
+    ILit       := TIntLiteral.Create();
     ILit.Value := TIntLiteral(ASrc).Value;
     ILit.Line  := ASrc.Line;
     ILit.Col   := ASrc.Col;
@@ -5883,7 +5891,7 @@ begin
   end
   else if ASrc is TFloatLiteral then
   begin
-    FLit       := TFloatLiteral.Create;
+    FLit       := TFloatLiteral.Create();
     FLit.Value := TFloatLiteral(ASrc).Value;
     FLit.Line  := ASrc.Line;
     FLit.Col   := ASrc.Col;
@@ -5892,7 +5900,7 @@ begin
   end
   else if ASrc is TStringLiteral then
   begin
-    SLit       := TStringLiteral.Create;
+    SLit       := TStringLiteral.Create();
     SLit.Value := TStringLiteral(ASrc).Value;
     SLit.IsCharCoerce := TStringLiteral(ASrc).IsCharCoerce;
     SLit.CharOrdValue := TStringLiteral(ASrc).CharOrdValue;
@@ -5903,7 +5911,7 @@ begin
   end
   else if ASrc is TNilLiteral then
   begin
-    Result      := TNilLiteral.Create;
+    Result      := TNilLiteral.Create();
     Result.Line := ASrc.Line;
     Result.Col  := ASrc.Col;
     Result.ResolvedType := ASrc.ResolvedType;
@@ -5911,7 +5919,7 @@ begin
   else if ASrc is TIdentExpr then
   begin
     SrcId  := TIdentExpr(ASrc);
-    Ident  := TIdentExpr.Create;
+    Ident  := TIdentExpr.Create();
     Ident.Name        := SrcId.Name;
     Ident.IsConstant  := SrcId.IsConstant;
     Ident.ConstValue  := SrcId.ConstValue;
@@ -6216,7 +6224,7 @@ begin
         ALine, ACol);
     Result := Best;
   finally
-    ArityMatch.Free;
+    ArityMatch.Free();
   end;
 end;
 
@@ -7429,9 +7437,9 @@ begin
       Exit;
     end;
 
-    if not (ObjType.Kind in [tyClass, tyInterface]) then
+    if not (ObjType.Kind in [tyClass, tyInterface, tyRecord]) then
       SemanticError(
-        Format('Receiver of ''.%s'' must be a class or interface', [AExpr.Name]),
+        Format('Receiver of ''.%s'' must be a class, interface, or record', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
     if ObjType.Kind = tyInterface then
     begin
@@ -7455,8 +7463,11 @@ begin
     { Analyse args first so overload resolution can score by type. }
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
-    { Built-in TObject.ToString: virtual dispatch via vtable slot 1. }
-    if SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) then
+    { Built-in TObject.ToString: virtual dispatch via vtable slot 1.
+      Only applies to class receivers — record methods named ToString are
+      resolved normally and dispatched statically. }
+    if SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) and
+       (ObjType.Kind = tyClass) then
     begin
       AExpr.ResolvedClassType := RT;
       AExpr.ResolvedMethod    := nil;
@@ -7504,7 +7515,7 @@ begin
       ObjSym  := nil;
       begin
         { Attempt field lookup and rewrite AExpr.ObjExpr to read Self.Field }
-        AExpr.ObjExpr := TIdentExpr.Create;
+        AExpr.ObjExpr := TIdentExpr.Create();
         TIdentExpr(AExpr.ObjExpr).Name := AExpr.ObjectName;
         TIdentExpr(AExpr.ObjExpr).Line := AExpr.Line;
         TIdentExpr(AExpr.ObjExpr).Col  := AExpr.Col;
@@ -7636,7 +7647,10 @@ begin
     AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
     AExpr.IsBuiltinInheritsFrom := True;
     AExpr.IsGlobal  := ObjSym.IsGlobal;
-    AExpr.IsVarParam := (ObjSym.Kind = skVarParameter);
+    AExpr.IsVarParam :=
+      (ObjSym.Kind = skVarParameter) or
+      ((ObjSym.Kind = skParameter) and (ObjSym.TypeDesc <> nil) and
+       (ObjSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -7661,7 +7675,10 @@ begin
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
     AExpr.ResolvedMethod    := nil;  { nil = interface dispatch }
     AExpr.IsGlobal          := ObjSym.IsGlobal;
-    AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
+    AExpr.IsVarParam        :=
+      (ObjSym.Kind = skVarParameter) or
+      ((ObjSym.Kind = skParameter) and (ObjSym.TypeDesc <> nil) and
+       (ObjSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
     { Look up return type from interface method descriptor }
     Result := FindTypeOrInstantiate(
       IntfDesc.MethodReturnTypeName(IntfDesc.MethodIndex(AExpr.Name)));
@@ -7675,13 +7692,17 @@ begin
   MDecl := FindMethodDecl(RT.Name, AExpr.Name);
   { Built-in TObject.ToString: virtual dispatch yielding string.
     Every class inherits this from TObject (vtable slot 1). }
-  if (MDecl = nil) and SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) then
+  if (MDecl = nil) and SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) and
+     (ObjSym.TypeDesc.Kind = tyClass) then
   begin
     AExpr.ResolvedClassType := RT;
     AExpr.ResolvedMethod    := nil;
     AExpr.IsBuiltinToString := True;
     AExpr.IsGlobal          := ObjSym.IsGlobal;
-    AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
+    AExpr.IsVarParam        :=
+      (ObjSym.Kind = skVarParameter) or
+      ((ObjSym.Kind = skParameter) and (ObjSym.TypeDesc <> nil) and
+       (ObjSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -7714,7 +7735,10 @@ begin
   AExpr.ResolvedClassType := RT;
   AExpr.ResolvedMethod    := MDecl;
   AExpr.IsGlobal          := ObjSym.IsGlobal;
-  AExpr.IsVarParam        := (ObjSym.Kind = skVarParameter);
+  AExpr.IsVarParam        :=
+    (ObjSym.Kind = skVarParameter) or
+    ((ObjSym.Kind = skParameter) and (ObjSym.TypeDesc <> nil) and
+     (ObjSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
   Result := MDecl.ResolvedReturnType;
 end;
 
@@ -7978,7 +8002,8 @@ begin
       end;
       { Built-in TObject.ToString: virtual dispatch yielding string.
         Every class inherits this via vtable slot 1. }
-      if SameText(AAccess.FieldName, 'ToString') then
+      if SameText(AAccess.FieldName, 'ToString') and
+         (BaseType.Kind = tyClass) then
       begin
         AAccess.IsMethodCall      := True;
         AAccess.IsBuiltinToString := True;
@@ -8297,7 +8322,8 @@ begin
       Exit;
     end;
     { Built-in TObject.ToString: virtual dispatch yielding string. }
-    if SameText(AAccess.FieldName, 'ToString') then
+    if SameText(AAccess.FieldName, 'ToString') and
+       (RecSym.TypeDesc.Kind = tyClass) then
     begin
       AAccess.IsMethodCall      := True;
       AAccess.IsBuiltinToString := True;
@@ -8779,7 +8805,7 @@ begin
       for K := 0 to MD.Params.Count - 1 do
       begin
         MParam := TMethodParam(MD.Params.Items[K]);
-        ProcParam := TProcParamInfo.Create;
+        ProcParam := TProcParamInfo.Create();
         ProcParam.Name         := MParam.ParamName;
         ProcParam.TypeDesc     := MParam.ResolvedType;
         ProcParam.IsVarParam   := MParam.IsVarParam;
@@ -8839,7 +8865,7 @@ begin
         for K := 0 to MD.Params.Count - 1 do
         begin
           MParam := TMethodParam(MD.Params.Items[K]);
-          ProcParam := TProcParamInfo.Create;
+          ProcParam := TProcParamInfo.Create();
           ProcParam.Name         := MParam.ParamName;
           ProcParam.TypeDesc     := MParam.ResolvedType;
           ProcParam.IsVarParam   := MParam.IsVarParam;
@@ -8892,7 +8918,7 @@ begin
         'Unknown parameter type ''%s'' in procedural type ''%s''',
         [MParam.TypeName, ATD.Name]), ATD.Line, ATD.Col);
     MParam.ResolvedType := TSym.TypeDesc;
-    ProcParam := TProcParamInfo.Create;
+    ProcParam := TProcParamInfo.Create();
     ProcParam.Name         := MParam.ParamName;
     ProcParam.TypeDesc     := TSym.TypeDesc;
     ProcParam.IsVarParam   := MParam.IsVarParam;

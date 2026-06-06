@@ -42,14 +42,14 @@ const
 
 procedure TTextBlockTests.SetLexer(const ASource: string);
 begin
-  FLexer.Free;
+  FLexer.Free();
   FLexer := nil;
   FLexer := TLexer.Create(ASource);
 end;
 
 procedure TTextBlockTests.TearDown;
 begin
-  FLexer.Free;
+  FLexer.Free();
   FLexer := nil;
 end;
 
@@ -60,7 +60,7 @@ begin
   SetLexer(TQ + #10 +
            'hello' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'hello' + #10, tok.Value);
 end;
@@ -73,7 +73,7 @@ begin
            '  line one' + #10 +
            '  line two' + #10 +
            '  ' + TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'line one' + #10 + 'line two' + #10, tok.Value);
 end;
@@ -85,7 +85,7 @@ begin
   SetLexer(TQ + #10 +
            'it' + #39 + 's here' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'it' + #39 + 's here' + #10, tok.Value);
 end;
@@ -96,7 +96,7 @@ var
 begin
   SetLexer(TQ + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', '', tok.Value);
 end;
@@ -108,7 +108,7 @@ begin
   SetLexer(TQ + #10 +
            'only line' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'only line' + #10, tok.Value);
 end;
@@ -120,7 +120,7 @@ begin
   SetLexer(TQ + #10 +
            '  indented' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', '  indented' + #10, tok.Value);
 end;
@@ -134,7 +134,7 @@ begin
            '      X := 1;' + #10 +
            '    end.' + #10 +
            '    ' + TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'begin' + #10 + '  X := 1;' + #10 + 'end.' + #10, tok.Value);
 end;
@@ -147,7 +147,7 @@ begin
     quote character.  The tokeniser must NOT treat the leading ''' as a
     text block opener when the fourth character is also a quote. }
   SetLexer(#39#39#39#39);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', #39, tok.Value);
 end;
@@ -159,10 +159,10 @@ begin
   SetLexer(TQ + #10 +
            'content' + #10 +
            TQ + ';');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'content' + #10, tok.Value);
-  tok2 := FLexer.Next;
+  tok2 := FLexer.Next();
   AssertEquals('Semi', Ord(tkSemicolon), Ord(tok2.Kind));
 end;
 
@@ -173,7 +173,7 @@ begin
   SetLexer(TQ + #10 +
            #9 + 'tabbed' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', #9 + 'tabbed' + #10, tok.Value);
 end;
@@ -187,7 +187,7 @@ begin
            '' + #10 +
            'line three' + #10 +
            TQ);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'line one' + #10 + #10 + 'line three' + #10, tok.Value);
 end;

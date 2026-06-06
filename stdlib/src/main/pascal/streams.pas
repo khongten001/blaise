@@ -743,7 +743,7 @@ end;
 procedure TBufferedInputStream.Destroy;
 begin
   if not Self.FClosed then
-    Self.Close;
+    Self.Close();
   if Self.FBuf <> nil then
   begin
     free(Self.FBuf);
@@ -796,7 +796,7 @@ begin
   if Self.FClosed then Exit;
   Self.FClosed := True;
   if Self.FOwnsInner and (Self.FInner <> nil) then
-    Self.FInner.Close
+    Self.FInner.Close()
 end;
 
 { ------------------------------------------------------------------ }
@@ -834,7 +834,7 @@ begin
   if not Self.FClosed then
   begin
     try
-      Self.Close
+      Self.Close()
     except
       on E: Exception do
         Self.FClosed := True  { absorb — finaliser cannot propagate }
@@ -892,16 +892,16 @@ begin
     Self.FInner.Write(Self.FBuf, Self.FBufFill);
     Self.FBufFill := 0
   end;
-  Self.FInner.Flush
+  Self.FInner.Flush()
 end;
 
 procedure TBufferedOutputStream.Close;
 begin
   if Self.FClosed then Exit;
-  Self.Flush;
+  Self.Flush();
   Self.FClosed := True;
   if Self.FOwnsInner and (Self.FInner <> nil) then
-    Self.FInner.Close
+    Self.FInner.Close()
 end;
 
 { ------------------------------------------------------------------ }
@@ -926,7 +926,7 @@ end;
 procedure TStreamReader.Destroy;
 begin
   if not Self.FClosed then
-    Self.Close
+    Self.Close()
 end;
 
 function TStreamReader.Read(Buf: Pointer; Count: Integer): Integer;
@@ -973,7 +973,7 @@ begin
   if Self.FClosed then Exit;
   Self.FClosed := True;
   if Self.FOwnsInner and (Self.FInner <> nil) then
-    Self.FInner.Close
+    Self.FInner.Close()
 end;
 
 function TStreamReader.ReadLine: string;
@@ -1091,7 +1091,7 @@ begin
   if not Self.FClosed then
   begin
     try
-      Self.Close
+      Self.Close()
     except
       on E: Exception do
         Self.FClosed := True
@@ -1112,7 +1112,7 @@ end;
 procedure TStreamWriter.Flush;
 begin
   if Self.FClosed then Exit;
-  Self.FInner.Flush
+  Self.FInner.Flush()
 end;
 
 procedure TStreamWriter.Close;
@@ -1120,7 +1120,7 @@ begin
   if Self.FClosed then Exit;
   Self.FClosed := True;
   if Self.FOwnsInner and (Self.FInner <> nil) then
-    Self.FInner.Close
+    Self.FInner.Close()
 end;
 
 procedure TStreamWriter.WriteString(const S: string);
@@ -1175,7 +1175,7 @@ begin
     Result.FLimit := 0;
     Exit
   end;
-  Result := TBufferSegment.Create;
+  Result := TBufferSegment.Create();
   Result.FData := malloc(kSegmentSize);
   Result.FPos := 0;
   Result.FLimit := 0;

@@ -155,10 +155,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -167,11 +167,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -181,13 +181,13 @@ var
   CG:   TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -207,7 +207,7 @@ begin
     AssertEquals('name is TMyVal', 'TMyVal', TD.Name);
     AssertTrue('def is TGenericRecordDef', TD.Def is TGenericRecordDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -222,7 +222,7 @@ begin
     AssertEquals('one param', 1, GRD.ParamNames.Count);
     AssertEquals('param name is T', 'T', GRD.ParamNames[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -238,7 +238,7 @@ begin
     AssertEquals('first is K', 'K', GRD.ParamNames[0]);
     AssertEquals('second is V', 'V', GRD.ParamNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -255,7 +255,7 @@ begin
     FD := TFieldDecl(GRD.RecordDef.Fields[0]);
     AssertEquals('field type is T', 'T', FD.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -272,7 +272,7 @@ begin
     MD := TMethodDecl(GRD.RecordDef.Methods[0]);
     AssertEquals('return type is T', 'T', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -289,7 +289,7 @@ begin
     AssertTrue('template registered',
       Prog.SymbolTable.FindGeneric('TMyVal') is TGenericRecordDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -302,7 +302,7 @@ begin
     AssertNotNull('type exists',
       Prog.SymbolTable.FindType('TMyVal<Integer>'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -320,7 +320,7 @@ begin
     AssertNotNull('Value field exists', FI);
     AssertEquals('field is tyInteger', Ord(tyInteger), Ord(FI.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -338,7 +338,7 @@ begin
     AssertNotNull('Value field exists', FI);
     AssertTrue('field is string', FI.TypeDesc.IsString);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -361,7 +361,7 @@ begin
     AssertTrue('Key is string', FI0.TypeDesc.IsString);
     AssertEquals('Val is tyInteger', Ord(tyInteger), Ord(FI1.TypeDesc.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -376,7 +376,7 @@ begin
     AssertNotNull('type exists', TD);
     AssertTrue('kind is tyRecord', TD.Kind = tyRecord);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

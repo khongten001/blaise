@@ -68,7 +68,7 @@ end;
 procedure TRunnerFiltersTests.TestAppend_Single;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   AppendSuiteFilter(L, 'TFoo');
   AssertEquals('count', 1, L.Count);
   AssertEquals('value', 'TFoo', L.Strings[0]);
@@ -77,7 +77,7 @@ end;
 procedure TRunnerFiltersTests.TestAppend_CommaSeparated;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   AppendSuiteFilter(L, 'TA,TB.m,TC');
   AssertEquals('count',  3, L.Count);
   AssertEquals('first',  'TA',   L.Strings[0]);
@@ -88,7 +88,7 @@ end;
 procedure TRunnerFiltersTests.TestAppend_TrimsSpaces;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   AppendSuiteFilter(L, '  TA , TB.m ');
   AssertEquals('count',  2, L.Count);
   AssertEquals('first',  'TA',   L.Strings[0]);
@@ -98,7 +98,7 @@ end;
 procedure TRunnerFiltersTests.TestAppend_SkipsEmptyEntries;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   AppendSuiteFilter(L, ',TA,,TB,');
   AssertEquals('count',  2, L.Count);
   AssertEquals('first',  'TA', L.Strings[0]);
@@ -108,7 +108,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_EmptyFiltersAcceptAll;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   AssertTrue('empty list matches arbitrary test',
     MatchesFilters(L, 'TFoo', 'TestBar'));
   AssertTrue('nil filter list matches arbitrary test',
@@ -118,7 +118,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_ClassFilterMatchesAnyMethod;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   L.Add('TFoo');
   AssertTrue('first method',  MatchesFilters(L, 'TFoo', 'TestA'));
   AssertTrue('second method', MatchesFilters(L, 'TFoo', 'TestB'));
@@ -127,7 +127,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_ClassFilterRejectsOtherClass;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   L.Add('TFoo');
   AssertFalse('other class', MatchesFilters(L, 'TBar', 'TestA'));
 end;
@@ -135,7 +135,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_MethodFilterIsExact;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   L.Add('TFoo.TestBar');
   AssertTrue('exact match', MatchesFilters(L, 'TFoo', 'TestBar'));
 end;
@@ -143,7 +143,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_MethodFilterRejectsOtherMethod;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   L.Add('TFoo.TestBar');
   AssertFalse('different method same class',
     MatchesFilters(L, 'TFoo', 'TestQux'));
@@ -152,7 +152,7 @@ end;
 procedure TRunnerFiltersTests.TestMatches_MultipleFiltersAreUnion;
 var L: TStringList;
 begin
-  L := TStringList.Create;
+  L := TStringList.Create();
   L.Add('TFoo.TestA');
   L.Add('TBar');
   AssertTrue('first filter hits',

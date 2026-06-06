@@ -75,7 +75,7 @@ const
           Dest: ^T;
         begin
           if Self.FCount = Self.FCapacity then
-            Self.Grow;
+            Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(T);
           Dest^       := Value;
           Self.FCount := Self.FCount + 1
@@ -115,7 +115,7 @@ const
     '''
         var S: TStack<Integer>;
         begin
-          S := TStack<Integer>.Create
+          S := TStack<Integer>.Create()
         end.
         ''';
 
@@ -126,7 +126,7 @@ const
     '''
         var S: TStack<Integer>;
         begin
-          S := TStack<Integer>.Create;
+          S := TStack<Integer>.Create();
           S.Push(10);
           S.Push(20)
         end.
@@ -141,9 +141,9 @@ const
           S: TStack<Integer>;
           V: Integer;
         begin
-          S := TStack<Integer>.Create;
+          S := TStack<Integer>.Create();
           S.Push(42);
-          V := S.Pop
+          V := S.Pop()
         end.
         ''';
 
@@ -156,9 +156,9 @@ const
           S: TStack<Integer>;
           V: Integer;
         begin
-          S := TStack<Integer>.Create;
+          S := TStack<Integer>.Create();
           S.Push(7);
-          V := S.Peek
+          V := S.Peek()
         end.
         ''';
 
@@ -170,14 +170,14 @@ var
 begin
   Lex    := TLexer.Create(ASrc);
   Par    := TParser.Create(Lex);
-  Result := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Result := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -187,13 +187,13 @@ var
   CG:   TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -202,7 +202,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcCreate);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTStackTests.TestSemantic_TStack_Push_Compiles;
@@ -210,7 +210,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcPush);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTStackTests.TestSemantic_TStack_Pop_Compiles;
@@ -218,7 +218,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcPop);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTStackTests.TestSemantic_TStack_Peek_Compiles;
@@ -226,7 +226,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcPeek);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTStackTests.TestCodegen_TStack_TypeInfoEmitted;

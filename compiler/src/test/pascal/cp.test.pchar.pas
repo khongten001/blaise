@@ -48,15 +48,15 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -65,15 +65,15 @@ var P: TProgram; CG: TCodeGenQBE;
 begin
   P := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(P);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    P.Free;
+    P.Free();
   end;
 end;
 
@@ -117,7 +117,7 @@ begin
     AssertNotNull('assign expr resolved', Assign.Expr.ResolvedType);
     AssertEquals('PChar(s) resolves to tyPChar',
       Ord(tyPChar), Ord(Assign.Expr.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TPCharTests.TestSemantic_PChar_VarKind;
@@ -130,7 +130,7 @@ begin
     AssertNotNull('ResolvedType set', Decl.ResolvedType);
     AssertEquals('var p: PChar resolves to tyPChar',
       Ord(tyPChar), Ord(Decl.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TPCharTests.TestSemantic_String_CastFromPChar;
@@ -143,7 +143,7 @@ begin
     AssertNotNull('assign expr resolved', Assign.Expr.ResolvedType);
     AssertEquals('string(p) resolves to tyString',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }

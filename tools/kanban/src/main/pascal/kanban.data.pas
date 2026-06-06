@@ -79,8 +79,8 @@ end;
 
 destructor TBoard.Destroy;
 begin
-  FDeletedIds.Free;
-  FTasks.Free;
+  FDeletedIds.Free();
+  FTasks.Free();
   inherited Destroy
 end;
 
@@ -105,7 +105,7 @@ begin
   if PipePos < 0 then
   begin
     TaskId := StrToInt(Trim(S));
-    Task := TTask.Create;
+    Task := TTask.Create();
     Task.FId := TaskId;
     Task.FTitle := '(untitled)';
     Task.FStatus := CurrentStatus;
@@ -123,7 +123,7 @@ begin
   PipePos := Pos('|', S);
   if PipePos < 0 then
   begin
-    Task := TTask.Create;
+    Task := TTask.Create();
     Task.FId := TaskId;
     Task.FTitle := Trim(S);
     Task.FStatus := CurrentStatus;
@@ -135,7 +135,7 @@ begin
     Exit
   end;
 
-  Task := TTask.Create;
+  Task := TTask.Create();
   Task.FId := TaskId;
   Task.FTitle := Trim(Copy(S, 0, PipePos));
   Task.FStatus := CurrentStatus;
@@ -196,7 +196,7 @@ var
 begin
   if not FileExists(FFilePath) then Exit;
 
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.LoadFromFile(FFilePath);
     CurrentStatus := tsTodo;
@@ -220,7 +220,7 @@ begin
       I := I + 1
     end
   finally
-    Lines.Free
+    Lines.Free()
   end;
   FLastMtime := FileAge(FFilePath)
 end;
@@ -232,8 +232,8 @@ var
   Task: TTask;
 begin
   if Self.HasExternalChanges then
-    Self.MergeFromDisk;
-  Lines := TStringList.Create;
+    Self.MergeFromDisk();
+  Lines := TStringList.Create();
   try
     Lines.Add('#next-id: ' + IntToStr(FNextId));
     Lines.Add('');
@@ -271,7 +271,7 @@ begin
 
     Lines.SaveToFile(FFilePath)
   finally
-    Lines.Free
+    Lines.Free()
   end;
   FLastMtime := FileAge(FFilePath)
 end;
@@ -282,12 +282,12 @@ var
   UtcDT: TDateTime;
 begin
   Now := InstantNow;
-  UtcDT := Now.ToUtcDateTime;
-  Result := TTask.Create;
+  UtcDT := Now.ToUtcDateTime();
+  Result := TTask.Create();
   Result.FId := FNextId;
   Result.FTitle := ATitle;
   Result.FStatus := AStatus;
-  Result.FCreated := UtcDT.ToString;
+  Result.FCreated := UtcDT.ToString();
   Result.FPriority := '';
   FNextId := FNextId + 1;
   FTasks.Add(Result)
@@ -324,7 +324,7 @@ begin
       if FileExists(DetailPath) then
         DeleteFile(DetailPath);
       FTasks.Delete(I);
-      Holder := TIntHolder.Create;
+      Holder := TIntHolder.Create();
       Holder.FValue := AId;
       FDeletedIds.Add(Holder);
       Exit
@@ -446,7 +446,7 @@ begin
   Merged := 0;
   DiskBoard := TBoard.Create(FFilePath);
   try
-    DiskBoard.Load;
+    DiskBoard.Load();
 
     MaxId := FNextId;
     if DiskBoard.FNextId > MaxId then
@@ -464,7 +464,7 @@ begin
       MemTask := Self.FindById(DiskTask.FId);
       if MemTask = nil then
       begin
-        NewTask := TTask.Create;
+        NewTask := TTask.Create();
         NewTask.FId := DiskTask.FId;
         NewTask.FTitle := DiskTask.FTitle;
         NewTask.FStatus := DiskTask.FStatus;
@@ -477,7 +477,7 @@ begin
       begin
         MemTask.FId := MaxId;
         MaxId := MaxId + 1;
-        NewTask := TTask.Create;
+        NewTask := TTask.Create();
         NewTask.FId := DiskTask.FId;
         NewTask.FTitle := DiskTask.FTitle;
         NewTask.FStatus := DiskTask.FStatus;
@@ -490,7 +490,7 @@ begin
     end;
     FNextId := MaxId
   finally
-    DiskBoard.Free
+    DiskBoard.Free()
   end;
   FLastMtime := FileAge(FFilePath);
   Result := Merged
@@ -507,7 +507,7 @@ begin
   UtcDT := ParseDateTime(AUtcStr);
   Inst := MakeInstantUtc(UtcDT.Date, UtcDT.Time);
   LocalDT := Inst.ToLocalDateTime(SystemOffset);
-  Result := LocalDT.Date.ToString
+  Result := LocalDT.Date.ToString()
 end;
 
 end.

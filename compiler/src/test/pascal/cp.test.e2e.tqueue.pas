@@ -66,7 +66,7 @@ const
         procedure Enqueue(Value: Integer);
         var Dest: ^Integer;
         begin
-          if Self.FCount = Self.FCapacity then Self.Grow;
+          if Self.FCount = Self.FCapacity then Self.Grow();
           Dest        := Self.FData + Self.FTail * SizeOf(Integer);
           Dest^       := Value;
           Self.FTail  := (Self.FTail + 1) mod Self.FCapacity;
@@ -95,13 +95,13 @@ const
     '''
     var Q: TQueue;
     begin
-      Q := TQueue.Create;
+      Q := TQueue.Create();
       Q.Enqueue(10);
       Q.Enqueue(20);
       Q.Enqueue(30);
-      WriteLn(Q.Dequeue);
-      WriteLn(Q.Dequeue);
-      WriteLn(Q.Dequeue)
+      WriteLn(Q.Dequeue());
+      WriteLn(Q.Dequeue());
+      WriteLn(Q.Dequeue())
     end.
     ''';
 
@@ -110,10 +110,10 @@ const
     '''
     var Q: TQueue;
     begin
-      Q := TQueue.Create;
+      Q := TQueue.Create();
       Q.Enqueue(7);
-      WriteLn(Q.Peek);
-      WriteLn(Q.Peek);
+      WriteLn(Q.Peek());
+      WriteLn(Q.Peek());
       WriteLn(Q.Count)
     end.
     ''';
@@ -123,12 +123,12 @@ const
     '''
     var Q: TQueue;
     begin
-      Q := TQueue.Create;
+      Q := TQueue.Create();
       WriteLn(Q.Count);
       Q.Enqueue(1);
       Q.Enqueue(2);
       WriteLn(Q.Count);
-      Q.Dequeue;
+      Q.Dequeue();
       WriteLn(Q.Count)
     end.
     ''';
@@ -138,12 +138,12 @@ const
     '''
     var Q: TQueue; I: Integer;
     begin
-      Q := TQueue.Create;
+      Q := TQueue.Create();
       I := 1;
       while I <= 8 do begin Q.Enqueue(I); I := I + 1 end;
       WriteLn(Q.Count);
-      WriteLn(Q.Dequeue);
-      WriteLn(Q.Dequeue)
+      WriteLn(Q.Dequeue());
+      WriteLn(Q.Dequeue())
     end.
     ''';
 

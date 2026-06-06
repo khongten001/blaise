@@ -331,7 +331,7 @@ begin
     the line and must be preserved (standard TStringList semantics).  Trimming
     here previously stripped indentation, which silently corrupted any
     whitespace-significant text round-tripped through Text. }
-  AList.Clear;
+  AList.Clear();
   Start := 0;
   I     := 0;
   while I < Length(S) do
@@ -464,7 +464,7 @@ begin
   else
   begin
     if Self.FCount = Self.FCapacity then
-      Self.Grow;
+      Self.Grow();
     StrP        := Self.FStrings + Self.FCount * SizeOf(string);
     ObjP        := Self.FObjects + Self.FCount * SizeOf(Pointer);
     StrP^       := S;
@@ -606,7 +606,7 @@ var
   OPtr: ^Pointer;
 begin
   if Self.FCount = Self.FCapacity then
-    Self.Grow;
+    Self.Grow();
   { Shift elements right from FCount-1 down to AIndex }
   I := Self.FCount;
   while I > AIndex do
@@ -648,7 +648,7 @@ var
   I:   Integer;
   Ptr: ^string;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     I := 0;
     while I < Self.FCount do
@@ -657,15 +657,15 @@ begin
       SB.AppendLine(Ptr^);
       I := I + 1
     end;
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free
+    SB.Free()
   end
 end;
 
 procedure TStringList.SetText(AText: string);
 begin
-  Self.Clear;
+  Self.Clear();
   SplitIntoList(AText, Ord(#10), Self)
 end;
 
@@ -810,7 +810,7 @@ var
   J:    Integer;
   Ch:   Integer;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     I := 0;
     while I < Self.FCount do
@@ -853,9 +853,9 @@ begin
         SB.Append(Item);
       I := I + 1
     end;
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free
+    SB.Free()
   end
 end;
 
@@ -867,7 +867,7 @@ var
   InQ:  Boolean;
   Ch:   Integer;
 begin
-  Self.Clear;
+  Self.Clear();
   N    := Length(S);
   I    := 0;
   Item := '';
@@ -974,7 +974,7 @@ var
 begin
   T := TThread(Arg);
   try
-    T.Execute
+    T.Execute()
   finally
     T.FFinished := True
   end
@@ -986,13 +986,13 @@ begin
   Self.FFinished := False;
   Self.FTerminated := False;
   if not ACreateSuspended then
-    Self.Start
+    Self.Start()
 end;
 
 procedure TThread.Destroy;
 begin
   if (Self.FHandle <> 0) and (not Self.FFinished) then
-    Self.WaitFor
+    Self.WaitFor()
 end;
 
 procedure TThread.Execute;

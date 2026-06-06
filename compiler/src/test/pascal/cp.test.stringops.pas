@@ -136,22 +136,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -169,15 +169,15 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -190,8 +190,8 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     try
       A.Analyse(Pr);
@@ -200,10 +200,10 @@ begin
       on E: ESemanticError do ;
     end;
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -322,8 +322,8 @@ var
 begin
   L  := TLexer.Create(SrcLength);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
@@ -331,10 +331,10 @@ begin
     AssertEquals('Length returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -364,18 +364,18 @@ var
 begin
   L  := TLexer.Create(SrcPos);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('Pos returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -405,18 +405,18 @@ var
 begin
   L  := TLexer.Create(SrcCopy);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('Copy returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -446,18 +446,18 @@ var
 begin
   L  := TLexer.Create(SrcUpperCase);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('UpperCase returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -499,18 +499,18 @@ var
 begin
   L  := TLexer.Create(SrcSameText);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('SameText returns Boolean',
       Ord(tyBoolean), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -540,18 +540,18 @@ var
 begin
   L  := TLexer.Create(SrcIntToStr);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('IntToStr returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -577,18 +577,18 @@ var
 begin
   L  := TLexer.Create(SrcStrToInt);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[0]);
     AssertEquals('StrToInt returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -664,18 +664,18 @@ var
 begin
   L  := TLexer.Create(SrcFormatOneInt);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     Assign := TAssignment(Pr.Block.Stmts[1]);
     AssertEquals('Format returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 

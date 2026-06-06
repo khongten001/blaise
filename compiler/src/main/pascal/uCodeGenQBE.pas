@@ -480,33 +480,33 @@ end;
 constructor TCodeGenQBE.Create;
 begin
   inherited Create;
-  FOutput          := TIRBuffer.Create;
-  FStrLits         := TStringList.Create;
+  FOutput          := TIRBuffer.Create();
+  FStrLits         := TStringList.Create();
   FStrLits.CaseSensitive := True;
-  FBreakLabels     := TStringList.Create;
-  FContinueLabels  := TStringList.Create;
+  FBreakLabels     := TStringList.Create();
+  FContinueLabels  := TStringList.Create();
   FFinallyStack    := TObjectList.Create(False);  { not owned — AST owns the blocks }
-  FThreadVarNames  := TStringList.Create;
+  FThreadVarNames  := TStringList.Create();
   FThreadVarNames.CaseSensitive := True;
-  FUnitInitNames   := TStringList.Create;
-  FPromotedLocals  := TStringList.Create;
+  FUnitInitNames   := TStringList.Create();
+  FPromotedLocals  := TStringList.Create();
   FPromotedLocals.CaseSensitive := True;
-  FPromotedTypes   := TStringList.Create;
-  FArcSlotWritten  := TStringList.Create;
+  FPromotedTypes   := TStringList.Create();
+  FArcSlotWritten  := TStringList.Create();
   FArcSlotWritten.CaseSensitive := True;
-  FFFIRecordTypes  := TStringList.Create;
+  FFFIRecordTypes  := TStringList.Create();
   FFFIRecordTypes.CaseSensitive := True;
   FFFIRecordTypes.Sorted := True;
   FFFIRecordTypes.Duplicates := dupIgnore;
-  FFFIRecordEmitted := TStringList.Create;
+  FFFIRecordEmitted := TStringList.Create();
   FFFIRecordEmitted.CaseSensitive := True;
   FFFIRecordEmitted.Sorted := True;
   FFFIRecordEmitted.Duplicates := dupIgnore;
-  FInlineParamNames   := TStringList.Create;
-  FInlineParamTemps   := TStringList.Create;
-  FInlineResultTemps  := TStringList.Create;
-  FInlineEndLabels    := TStringList.Create;
-  FInlineResultQTypes := TStringList.Create;
+  FInlineParamNames   := TStringList.Create();
+  FInlineParamTemps   := TStringList.Create();
+  FInlineResultTemps  := TStringList.Create();
+  FInlineEndLabels    := TStringList.Create();
+  FInlineResultQTypes := TStringList.Create();
   FInlineDepth        := 0;
   FTempCount       := 0;
   FStrLitsEmitted  := 0;
@@ -515,24 +515,24 @@ end;
 
 destructor TCodeGenQBE.Destroy;
 begin
-  FBreakLabels.Free;
-  FContinueLabels.Free;
-  FFinallyStack.Free;
-  FThreadVarNames.Free;
-  FUnitInitNames.Free;
-  FPromotedLocals.Free;
-  FPromotedTypes.Free;
-  FArcSlotWritten.Free;
-  FFFIRecordTypes.Free;
-  FFFIRecordEmitted.Free;
-  FCapturedVars.Free;
-  FInlineParamNames.Free;
-  FInlineParamTemps.Free;
-  FInlineResultTemps.Free;
-  FInlineEndLabels.Free;
-  FInlineResultQTypes.Free;
-  FOutput.Free;
-  FStrLits.Free;
+  FBreakLabels.Free();
+  FContinueLabels.Free();
+  FFinallyStack.Free();
+  FThreadVarNames.Free();
+  FUnitInitNames.Free();
+  FPromotedLocals.Free();
+  FPromotedTypes.Free();
+  FArcSlotWritten.Free();
+  FFFIRecordTypes.Free();
+  FFFIRecordEmitted.Free();
+  FCapturedVars.Free();
+  FInlineParamNames.Free();
+  FInlineParamTemps.Free();
+  FInlineResultTemps.Free();
+  FInlineEndLabels.Free();
+  FInlineResultQTypes.Free();
+  FOutput.Free();
+  FStrLits.Free();
   inherited Destroy;
 end;
 
@@ -730,7 +730,7 @@ end;
 
 procedure TCodeGenQBE.EmitDataSection;
 begin
-  EmitPendingStrLits;
+  EmitPendingStrLits();
   EmitLine('');
 end;
 
@@ -913,16 +913,16 @@ begin
     end;
     if AllOk then
       EmitLine(Format('type :_ffi_%s = align %d { %s }',
-        [R.Name, R.AllocAlign, Frag]))
+        [R.Name, R.AllocAlign(), Frag]))
     else
       { Opaque-byte fallback: SysV will classify as INTEGER regardless of
         actual field types.  Acceptable for records with non-scalar fields
         — those are unlikely to round-trip through a stable C ABI anyway. }
       EmitLine(Format('type :_ffi_%s = align %d { %d }',
-        [R.Name, R.AllocAlign, R.TotalSize]));
+        [R.Name, R.AllocAlign(), R.TotalSize]));
     FFFIRecordEmitted.Add(R.Name);
   end;
-  FFFIRecordTypes.Clear;
+  FFFIRecordTypes.Clear();
 end;
 
 function TCodeGenQBE.CountTryStmts(AStmt: TASTStmt): Integer;
@@ -1028,7 +1028,7 @@ begin
     Total := Total + CountTryStmts(TASTStmt(ABlock.Stmts.Items[I]));
   FExcFrameNext := 0;
   FExcDepth := 0;
-  FFinallyStack.Clear;  { defensive: each function starts with no active finallys }
+  FFinallyStack.Clear();  { defensive: each function starts with no active finallys }
   for I := 0 to Total - 1 do
     EmitLine(Format('  %%_exc_frame_%d =l alloc16 512', [I]));
 end;
@@ -1150,8 +1150,8 @@ begin
   if FInlineDepth = 0 then Exit;
   Names := FInlineParamNames.Strings[FInlineDepth - 1];
   Temps := FInlineParamTemps.Strings[FInlineDepth - 1];
-  NL := TStringList.Create;
-  TL := TStringList.Create;
+  NL := TStringList.Create();
+  TL := TStringList.Create();
   try
     NL.CommaText := Names;
     TL.CommaText := Temps;
@@ -1162,8 +1162,8 @@ begin
       Result := True;
     end;
   finally
-    NL.Free;
-    TL.Free;
+    NL.Free();
+    TL.Free();
   end;
 end;
 
@@ -1242,8 +1242,8 @@ begin
   { Evaluate arguments to fresh caller-side temps.  We rely on the
     analyser to have rejected by-ref/open-array/aggregate params, so
     every argument is a simple value expression. }
-  ParamNames := TStringList.Create;
-  ArgTemps   := TStringList.Create;
+  ParamNames := TStringList.Create();
+  ArgTemps   := TStringList.Create();
   try
     for I := 0 to Callee.Params.Count - 1 do
     begin
@@ -1303,8 +1303,8 @@ begin
     ParamCsv := ParamNames.CommaText;
     TempCsv  := ArgTemps.CommaText;
   finally
-    ParamNames.Free;
-    ArgTemps.Free;
+    ParamNames.Free();
+    ArgTemps.Free();
   end;
 
   PushInlineFrame(ParamCsv, TempCsv, ResultTemp, EndLabel, ResultQType);
@@ -1315,7 +1315,7 @@ begin
     for I := 0 to Callee.Body.Stmts.Count - 1 do
       EmitStmt(TASTStmt(Callee.Body.Stmts.Items[I]));
   finally
-    PopInlineFrame;
+    PopInlineFrame();
   end;
 
   EmitLine(Format('  jmp @%s', [EndLabel]));
@@ -1649,7 +1649,7 @@ function TCodeGenQBE.CollectAddressTaken(ABlock: TBlock): TStringList;
 var
   I: Integer;
 begin
-  Result := TStringList.Create;
+  Result := TStringList.Create();
   Result.CaseSensitive := True;
   Result.Duplicates    := dupIgnore;
   Result.Sorted        := True;
@@ -1678,11 +1678,11 @@ begin
     Also skip promotion entirely when the block contains try/except or
     try/finally — promoted SSA temps live in registers and don't survive
     the setjmp/longjmp used by the exception frame. }
-  FPromotedLocals.Clear;
-  FPromotedTypes.Clear;
+  FPromotedLocals.Clear();
+  FPromotedTypes.Clear();
   { Reset nil-slot tracking: every class/string slot starts zero because
     EmitVarAllocs below emits `storel 0, ...` for them. }
-  FArcSlotWritten.Clear;
+  FArcSlotWritten.Clear();
   if not BlockHasTry(ABlock) then
   begin
     AddrTaken := CollectAddressTaken(ABlock);
@@ -1720,7 +1720,7 @@ begin
         end;
       end;
     finally
-      AddrTaken.Free;
+      AddrTaken.Free();
     end;
   end;
 
@@ -1844,7 +1844,7 @@ begin
           begin
             SAT      := TStaticArrayTypeDesc(Decl.ResolvedType);
             ArrSize  := SAT.ByteSize;
-            ArrAlign := SAT.AllocAlign;
+            ArrAlign := SAT.AllocAlign();
             if ArrAlign >= 8 then
               EmitLine(Format('  %%_var_%s =l alloc8 %d', [VarName, ArrSize]))
             else
@@ -1990,7 +1990,7 @@ begin
     for J := 0 to CD.ArrayElements.Count - 1 do
       if FStrLits.IndexOf(CD.ArrayElements[J]) < 0 then
         FStrLits.Add(CD.ArrayElements[J]);
-    EmitPendingStrLits;
+    EmitPendingStrLits();
   end;
   Parts := '';
   for J := 0 to CD.ArrayElements.Count - 1 do
@@ -4508,19 +4508,18 @@ begin
   begin
     MCallExpr := TMethodCallExpr(AExpr);
     MDecl := TMethodDecl(MCallExpr.ResolvedMethod);
-    if MDecl.IsRecordMethod and MCallExpr.IsVarParam then
+    if MCallExpr.ObjExpr <> nil then
+      SelfTemp := EmitExpr(MCallExpr.ObjExpr)
+    else if MDecl.IsRecordMethod and MCallExpr.IsVarParam then
     begin
-      { Record var-param receiver — slot holds the address; load it. }
       SelfTemp := AllocTemp;
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
     end
     else if MDecl.IsRecordMethod then
-      { Regular record variable: VarRef IS the record address — pass directly. }
       SelfTemp := VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)
     else
     begin
-      { Class variable: load the heap pointer from the variable slot. }
       SelfTemp := AllocTemp;
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
@@ -5223,7 +5222,7 @@ begin
   EndLbl   := AllocLabel('case_end');
   ElseLbl  := AllocLabel('case_else');
 
-  BranchLabels := TStringList.Create;
+  BranchLabels := TStringList.Create();
   try
     for I := 0 to AStmt.Branches.Count - 1 do
       BranchLabels.Add(AllocLabel('case_br'));
@@ -5270,7 +5269,7 @@ begin
 
     EmitLine('@' + EndLbl);
   finally
-    BranchLabels.Free;
+    BranchLabels.Free();
   end;
 end;
 
@@ -6647,7 +6646,7 @@ begin
         ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
         Exit;
       finally
-        ArgTemps.Free;
+        ArgTemps.Free();
       end;
     end;
     ArgLine := '';
@@ -8396,7 +8395,7 @@ begin
           ReleaseConstStringArgs(FC.Args, ArgTemps, MDecl.Params);
           Exit(MaybeNormalizeExtReturn(T, MDecl));
         finally
-          ArgTemps.Free;
+          ArgTemps.Free();
         end;
       end;
       if MDecl.IsExternal and (MDecl.ExternalName <> '') then
@@ -9627,7 +9626,7 @@ begin
     if TIdentExpr(AExpr).IsImplicitSelfMethod then
     begin
       { Bare zero-arg method call on Self — emit direct call }
-      NoArgCall := TFuncCallExpr.Create;
+      NoArgCall := TFuncCallExpr.Create();
       try
         NoArgCall.Name                 := TIdentExpr(AExpr).Name;
         NoArgCall.ResolvedType         := AExpr.ResolvedType;
@@ -9635,7 +9634,7 @@ begin
         NoArgCall.IsImplicitSelfMethod := True;
         Result := EmitExpr(NoArgCall);
       finally
-        NoArgCall.Free;
+        NoArgCall.Free();
       end;
       Exit;
     end
@@ -9644,14 +9643,14 @@ begin
       { Bare identifier resolving to a zero-arg function (no parens in source).
         Synthesise a temporary TFuncCallExpr so existing builtin dispatch
         handles it without duplicating logic. }
-      NoArgCall := TFuncCallExpr.Create;
+      NoArgCall := TFuncCallExpr.Create();
       try
         NoArgCall.Name         := TIdentExpr(AExpr).Name;
         NoArgCall.ResolvedType := AExpr.ResolvedType;
         NoArgCall.ResolvedDecl := TIdentExpr(AExpr).NoArgFuncDecl;
         Result := EmitExpr(NoArgCall);
       finally
-        NoArgCall.Free;
+        NoArgCall.Free();
       end;
       Exit;
     end
@@ -10628,15 +10627,15 @@ var
   Body:        TIRBuffer;
   SavedOutput: TIRBuffer;
 begin
-  FOutput.Clear;
-  FStrLits.Clear;
+  FOutput.Clear();
+  FStrLits.Clear();
   FStrLitsEmitted := 0;
   FTempCount  := 0;
   FLabelCount := 0;
 
   CollectThreadVarNames(AProg.Block);
 
-  Body := TIRBuffer.Create;
+  Body := TIRBuffer.Create();
   try
     SavedOutput := FOutput;
     FOutput := Body;
@@ -10645,9 +10644,9 @@ begin
       EmitMethodDefs(AProg);
       EmitStandaloneDefs(AProg);
       FExitLabel := 'main_exit';
-      EmitMainHeader;
+      EmitMainHeader();
       EmitBlock(AProg.Block);
-      EmitMainFooter;
+      EmitMainFooter();
       FExitLabel := '';
     finally
       FOutput := SavedOutput;
@@ -10656,17 +10655,17 @@ begin
     EmitLine('# Generated by Blaise Compiler');
     EmitLine('# Source: ' + AProg.Name);
     EmitLine('');
-    EmitDataSection;
+    EmitDataSection();
     EmitGlobalVarData(AProg.Block);
     EmitGlobalConstData(AProg.Block);
     EmitLocalArrayConstsInProgram(AProg);
     EmitInterfaceDefs(AProg);
     EmitTypeInfoDefs(AProg);
     EmitVTableDefs(AProg);
-    EmitFFIRecordTypeDecls;
+    EmitFFIRecordTypeDecls();
     FOutput.AppendBuffer(Body);
   finally
-    Body.Free;
+    Body.Free();
   end;
 end;
 
@@ -10685,8 +10684,8 @@ var
   VLine:     string;
   E:         TVTableEntry;
 begin
-  FOutput.Clear;
-  FStrLits.Clear;
+  FOutput.Clear();
+  FStrLits.Clear();
   FStrLitsEmitted := 0;
   FTempCount  := 0;
   FLabelCount := 0;
@@ -10694,13 +10693,13 @@ begin
   CollectThreadVarNames(AUnit.IntfBlock);
   CollectThreadVarNames(AUnit.ImplBlock);
 
-  IntfNames := TStringList.Create;
+  IntfNames := TStringList.Create();
   try
     IntfNames.CaseSensitive := False;
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
       IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
-    Body := TIRBuffer.Create;
+    Body := TIRBuffer.Create();
     try
       SavedOut := FOutput;
       FOutput  := Body;
@@ -10742,7 +10741,7 @@ begin
       EmitLine('# Generated by Blaise Compiler');
       EmitLine('# Unit: ' + AUnit.Name);
       EmitLine('');
-      EmitDataSection;
+      EmitDataSection();
       EmitGlobalVarData(AUnit.IntfBlock);
       EmitGlobalVarData(AUnit.ImplBlock);
       EmitGlobalConstData(AUnit.IntfBlock);
@@ -10770,13 +10769,13 @@ begin
         end;
         EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT);
       end;
-      EmitFFIRecordTypeDecls;
+      EmitFFIRecordTypeDecls();
       FOutput.AppendBuffer(Body);
     finally
-      Body.Free;
+      Body.Free();
     end;
   finally
-    IntfNames.Free;
+    IntfNames.Free();
   end;
 end;
 
@@ -10837,13 +10836,13 @@ begin
   CollectThreadVarNames(AUnit.IntfBlock);
   CollectThreadVarNames(AUnit.ImplBlock);
 
-  IntfNames := TStringList.Create;
+  IntfNames := TStringList.Create();
   try
     IntfNames.CaseSensitive := False;
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
       IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
 
-    Body := TIRBuffer.Create;
+    Body := TIRBuffer.Create();
     try
       SavedOut := FOutput;
       FOutput  := Body;
@@ -10957,7 +10956,7 @@ begin
 
       EmitLine('# Unit: ' + AUnit.Name);
       EmitLine('');
-      EmitPendingStrLits;
+      EmitPendingStrLits();
 
       { Per-class data sections: typeinfo, vtables, interface tables.
         All require FSymTable to look up resolved TRecordTypeDesc. }
@@ -11241,7 +11240,7 @@ begin
       EmitGlobalConstData(AUnit.ImplBlock);
       EmitLocalArrayConstsInUnit(AUnit);
 
-      EmitFFIRecordTypeDecls;
+      EmitFFIRecordTypeDecls();
       FOutput.AppendBuffer(Body);
 
       { Initialization section: emit as export function $<Unit>_init() }
@@ -11257,7 +11256,7 @@ begin
           EmitStmt(TASTStmt(AUnit.InitStmts.Items[I]));
         EmitLine('  ret 0');
         EmitLine('}');
-        EmitPendingStrLits;
+        EmitPendingStrLits();
       end;
 
       { Finalization section: emit as export function $<Unit>_fini() }
@@ -11272,13 +11271,13 @@ begin
           EmitStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
         EmitLine('  ret 0');
         EmitLine('}');
-        EmitPendingStrLits;
+        EmitPendingStrLits();
       end;
     finally
-      Body.Free;
+      Body.Free();
     end;
   finally
-    IntfNames.Free;
+    IntfNames.Free();
   end;
 end;
 
@@ -11293,7 +11292,7 @@ begin
 
   CollectThreadVarNames(AProg.Block);
 
-  Body := TIRBuffer.Create;
+  Body := TIRBuffer.Create();
   try
     SavedOutput := FOutput;
     FOutput := Body;
@@ -11302,9 +11301,9 @@ begin
       EmitMethodDefs(AProg);
       EmitStandaloneDefs(AProg);
       FExitLabel := 'main_exit';
-      EmitMainHeader;
+      EmitMainHeader();
       EmitBlock(AProg.Block);
-      EmitMainFooter;
+      EmitMainFooter();
       FExitLabel := '';
     finally
       FOutput := SavedOutput;
@@ -11313,17 +11312,17 @@ begin
     EmitLine('# Generated by Blaise Compiler');
     EmitLine('# Source: ' + AProg.Name);
     EmitLine('');
-    EmitDataSection;  { emits remaining string literals + $__fmt_* (once) }
+    EmitDataSection();  { emits remaining string literals + $__fmt_* (once) }
     EmitGlobalVarData(AProg.Block);
     EmitGlobalConstData(AProg.Block);
     EmitLocalArrayConstsInProgram(AProg);
     EmitInterfaceDefs(AProg);
     EmitTypeInfoDefs(AProg);
     EmitVTableDefs(AProg);
-    EmitFFIRecordTypeDecls;
+    EmitFFIRecordTypeDecls();
     FOutput.AppendBuffer(Body);
   finally
-    Body.Free;
+    Body.Free();
   end;
 end;
 

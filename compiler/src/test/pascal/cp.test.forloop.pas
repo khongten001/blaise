@@ -79,9 +79,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -89,11 +89,11 @@ function TForTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -102,15 +102,15 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -119,7 +119,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -179,9 +179,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('for');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('for token', Ord(tkFor), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TForTests.TestLexer_To_Keyword;
@@ -189,9 +189,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('to');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('to token', Ord(tkTo), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 procedure TForTests.TestLexer_Downto_Keyword;
@@ -199,9 +199,9 @@ var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('downto');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('downto token', Ord(tkDownto), Ord(T.Kind));
-  finally L.Free; end;
+  finally L.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -215,7 +215,7 @@ begin
   try
     { second stmt (index 1): for I := 1 to 5 do ... }
     AssertTrue('stmt is TForStmt', Prog.Block.Stmts[1] is TForStmt);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_VarName;
@@ -225,7 +225,7 @@ begin
   try
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertEquals('loop var is I', 'I', FS.VarName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_IsUpward;
@@ -235,7 +235,7 @@ begin
   try
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertFalse('to loop: IsDownTo is False', FS.IsDownTo);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_Downto_IsDownward;
@@ -245,7 +245,7 @@ begin
   try
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertTrue('downto loop: IsDownTo is True', FS.IsDownTo);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_StartIsIntLiteral;
@@ -256,7 +256,7 @@ begin
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertTrue('start is TIntLiteral', FS.StartExpr is TIntLiteral);
     AssertEquals('start value = 1', 1, TIntLiteral(FS.StartExpr).Value);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_EndIsIntLiteral;
@@ -267,7 +267,7 @@ begin
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertTrue('end is TIntLiteral', FS.EndExpr is TIntLiteral);
     AssertEquals('end value = 5', 5, TIntLiteral(FS.EndExpr).Value);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_BodyIsAssignment;
@@ -277,7 +277,7 @@ begin
   try
     FS := TForStmt(Prog.Block.Stmts[1]);
     AssertTrue('body is TAssignment', FS.Body is TAssignment);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TForTests.TestParse_For_CompoundBody;
@@ -289,7 +289,7 @@ begin
     AssertTrue('body is TCompoundStmt', FS.Body is TCompoundStmt);
     AssertEquals('compound body has 2 stmts', 2,
       TCompoundStmt(FS.Body).Stmts.Count);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -298,12 +298,12 @@ end;
 
 procedure TForTests.TestSemantic_For_Upward_OK;
 begin
-  AnalyseSrc(SrcForUpward).Free;
+  AnalyseSrc(SrcForUpward).Free();
 end;
 
 procedure TForTests.TestSemantic_For_Downto_OK;
 begin
-  AnalyseSrc(SrcForDownto).Free;
+  AnalyseSrc(SrcForDownto).Free();
 end;
 
 procedure TForTests.TestSemantic_For_NonOrdinalVar_RaisesError;

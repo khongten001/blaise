@@ -38,15 +38,15 @@ var L: TLexer; P: TParser;
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  try Result := P.Parse; finally P.Free; L.Free; end;
+  try Result := P.Parse(); finally P.Free(); L.Free(); end;
 end;
 
 function TChainedFieldTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
-  try A.Analyse(Result); finally A.Free; end;
+  A := TSemanticAnalyser.Create();
+  try A.Analyse(Result); finally A.Free(); end;
 end;
 
 function TChainedFieldTests.GenIR(const ASrc: string): string;
@@ -54,9 +54,9 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
-    try CG.Generate(Prog); Result := CG.GetOutput; finally CG.Free; end;
-  finally Prog.Free; end;
+    CG := TCodeGenQBE.Create();
+    try CG.Generate(Prog); Result := CG.GetOutput(); finally CG.Free(); end;
+  finally Prog.Free(); end;
 end;
 
 const
@@ -101,10 +101,10 @@ const
           end;
         var B: TBox; N: Integer; T: TThing;
         begin
-          B.Thing := TThing.Create;
+          B.Thing := TThing.Create();
           N := B.Thing.Inner;
           T := B.Thing;
-          T.Free
+          T.Free()
         end.
         ''';
 
@@ -121,7 +121,7 @@ begin
     AssertTrue('base is field access', Fld.Base is TFieldAccessExpr);
     AssertEquals('inner field name', 'Inner',
       TFieldAccessExpr(Fld.Base).FieldName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TChainedFieldTests.TestParse_ThreeDots_HasNestedBases;
@@ -138,7 +138,7 @@ begin
       TFieldAccessExpr(Fld.Base).Base is TFieldAccessExpr);
     AssertEquals('base field', 'B',
       TFieldAccessExpr(TFieldAccessExpr(Fld.Base).Base).FieldName);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TChainedFieldTests.TestSemantic_RecordChain_ResolvesToInnerType;
@@ -149,14 +149,14 @@ begin
     Assn := TAssignment(Prog.Block.Stmts[0]);
     AssertEquals('chain type is Integer',
       Ord(tyInteger), Ord(Assn.Expr.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TChainedFieldTests.TestSemantic_ClassFieldThenRecordField_Resolves;
 var Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcClassFieldOfRecord);
-  try AssertNotNull(Prog); finally Prog.Free; end;
+  try AssertNotNull(Prog); finally Prog.Free(); end;
 end;
 
 procedure TChainedFieldTests.TestCodegen_RecordChain_EmitsLoadw;

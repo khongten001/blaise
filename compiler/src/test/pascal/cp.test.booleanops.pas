@@ -51,15 +51,15 @@ var L: TLexer; P: TParser;
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  try Result := P.Parse; finally P.Free; L.Free; end;
+  try Result := P.Parse(); finally P.Free(); L.Free(); end;
 end;
 
 function TBooleanOpsTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
-  try A.Analyse(Result); finally A.Free; end;
+  A := TSemanticAnalyser.Create();
+  try A.Analyse(Result); finally A.Free(); end;
 end;
 
 function TBooleanOpsTests.GenIR(const ASrc: string): string;
@@ -67,9 +67,9 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
-    try CG.Generate(Prog); Result := CG.GetOutput; finally CG.Free; end;
-  finally Prog.Free; end;
+    CG := TCodeGenQBE.Create();
+    try CG.Generate(Prog); Result := CG.GetOutput(); finally CG.Free(); end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.AnalyseExpectError(const ASrc: string);
@@ -77,7 +77,7 @@ var Prog: TProgram;
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -121,21 +121,21 @@ procedure TBooleanOpsTests.TestLexer_And_Keyword;
 var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('and');
-  try T := L.Next; AssertEquals(Ord(tkAnd), Ord(T.Kind)); finally L.Free; end;
+  try T := L.Next(); AssertEquals(Ord(tkAnd), Ord(T.Kind)); finally L.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestLexer_Or_Keyword;
 var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('or');
-  try T := L.Next; AssertEquals(Ord(tkOr), Ord(T.Kind)); finally L.Free; end;
+  try T := L.Next(); AssertEquals(Ord(tkOr), Ord(T.Kind)); finally L.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestLexer_Not_Keyword;
 var L: TLexer; T: TToken;
 begin
   L := TLexer.Create('not');
-  try T := L.Next; AssertEquals(Ord(tkNot), Ord(T.Kind)); finally L.Free; end;
+  try T := L.Next(); AssertEquals(Ord(tkNot), Ord(T.Kind)); finally L.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestParse_And_IsBinaryExpr;
@@ -146,7 +146,7 @@ begin
     Assn := TAssignment(Prog.Block.Stmts[2]);
     AssertTrue('and is binary expr', Assn.Expr is TBinaryExpr);
     AssertEquals('and op', Ord(boAnd), Ord(TBinaryExpr(Assn.Expr).Op));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestParse_Or_IsBinaryExpr;
@@ -157,7 +157,7 @@ begin
     Assn := TAssignment(Prog.Block.Stmts[2]);
     AssertTrue(Assn.Expr is TBinaryExpr);
     AssertEquals(Ord(boOr), Ord(TBinaryExpr(Assn.Expr).Op));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestParse_Not_IsNotExpr;
@@ -167,7 +167,7 @@ begin
   try
     Assn := TAssignment(Prog.Block.Stmts[1]);
     AssertTrue('not is TNotExpr', Assn.Expr is TNotExpr);
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestSemantic_And_TypeIsBoolean;
@@ -177,7 +177,7 @@ begin
   try
     Assn := TAssignment(Prog.Block.Stmts[2]);
     AssertEquals(Ord(tyBoolean), Ord(Assn.Expr.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestSemantic_Or_TypeIsBoolean;
@@ -187,7 +187,7 @@ begin
   try
     Assn := TAssignment(Prog.Block.Stmts[2]);
     AssertEquals(Ord(tyBoolean), Ord(Assn.Expr.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestSemantic_Not_TypeIsBoolean;
@@ -197,7 +197,7 @@ begin
   try
     Assn := TAssignment(Prog.Block.Stmts[1]);
     AssertEquals(Ord(tyBoolean), Ord(Assn.Expr.ResolvedType.Kind));
-  finally Prog.Free; end;
+  finally Prog.Free(); end;
 end;
 
 procedure TBooleanOpsTests.TestSemantic_And_IntOperand_RaisesError;

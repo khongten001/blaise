@@ -29,35 +29,10 @@ prioritise them.
 
 == Language
 
-=== Require `()` on all zero-argument function calls
+=== Require `()` on all zero-argument function/procedure/method calls
 
-*What.* Require explicit parentheses on every function call, even those
-with no arguments.  A bare identifier `Foo` would unambiguously refer to
-a field or variable; `Foo()` would always be a call.
-
-*Why it matters.* The current ambiguity between a zero-argument call and a
-variable/field reference is resolved today by `TIdentExpr.IsNoArgFuncCall`,
-a flag that requires lookahead in the parser and special-casing throughout
-semantic analysis and ARC codegen.  Eliminating the ambiguity simplifies all
-three phases and aligns Blaise with modern languages (Swift, Rust, Go,
-Kotlin) that require `()` on every call.
-
-*Interaction with the `Result` variable.* Blaise already uses the bare
-function name to refer to the implicit `Result` variable inside a function
-body — writing `MyFunc := 42` is equivalent to `Result := 42`.  This
-convention is retained: inside the body of `MyFunc`, the bare name
-`MyFunc` continues to refer to `Result`, not to a recursive call.  A
-recursive call must use `Self.MyFunc()` (method) or `MyFunc()` (procedure/
-function), consistent with the existing house style documented in CLAUDE.md.
-
-*Migration impact.* Existing Blaise code that calls zero-argument functions
-without parentheses — e.g. `Count`, `IsEmpty` used as expressions — would
-need mechanical updating.  A migration-analyser pass can detect and
-auto-fix the pattern.
-
-*Effort.* Medium — parser change is small; the larger work is updating the
-test suite, standard library, and any user code, plus landing the
-migration-analyser auto-fix pass first.
+*Status:* Implemented.  See `docs/language-rationale.adoc` §_Mandatory
+parentheses on zero-argument calls_ for the design rationale.
 
 === Procedural types
 

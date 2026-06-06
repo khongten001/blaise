@@ -273,11 +273,11 @@ begin
   if not GLTEnabled then Exit;
   if GLTCount = 0 then Exit;
   WriteStr('Blaise leak report:', 19);
-  WriteNL;
+  WriteNL();
   WriteStr('  ', 2);
   WriteInt(GLTCount);
   WriteStr(' object(s) not released:', 24);
-  WriteNL;
+  WriteNL();
   for I := 0 to LT_BUCKETS - 1 do
   begin
     Slot := Pointer(GLTTable + I * LT_BUCKET_SZ);
@@ -305,7 +305,7 @@ begin
       WriteStr(' (rc=', 5);
       WriteSignedInt(RC);
       WriteStr(')', 1);
-      WriteNL;
+      WriteNL();
     end;
   end;
 end;

@@ -59,10 +59,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -76,22 +76,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -139,7 +139,7 @@ begin
     AssertTrue('Def should be a TProceduralTypeDef',
       TD.Def is TProceduralTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -165,7 +165,7 @@ begin
     AssertEquals('ReturnTypeName should be Integer', 'Integer', Def.ReturnTypeName);
     AssertEquals('Should have 0 params', 0, Def.Params.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -189,7 +189,7 @@ begin
     Def := TProceduralTypeDef(TD.Def);
     AssertEquals('Should have 2 params', 2, Def.Params.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -216,7 +216,7 @@ begin
     AssertEquals('First param name', 'A', P1.ParamName);
     AssertEquals('First param type', 'Integer', P1.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -244,7 +244,7 @@ begin
     AssertTrue('IsConstParam should be True', P1.IsConstParam);
     AssertFalse('IsVarParam should be False', P1.IsVarParam);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -268,7 +268,7 @@ begin
     AssertTrue('Def should be a TProceduralTypeDef',
       TD.Def is TProceduralTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -293,7 +293,7 @@ begin
     AssertEquals('IsFunction should be False', False, Def.IsFunction);
     AssertEquals('ReturnTypeName should be empty', '', Def.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -320,7 +320,7 @@ begin
     AssertTrue('IsVarParam should be True', P1.IsVarParam);
     AssertFalse('IsConstParam should be False', P1.IsConstParam);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

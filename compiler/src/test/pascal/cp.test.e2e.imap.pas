@@ -85,7 +85,7 @@ const
           if Idx >= 0 then begin
             VPtr := Self.FValues + Idx * SizeOf(Integer); VPtr^ := Value
           end else begin
-            if Self.FCount = Self.FCapacity then Self.Grow;
+            if Self.FCount = Self.FCapacity then Self.Grow();
             KPtr := Self.FKeys   + Self.FCount * SizeOf(Integer);
             VPtr := Self.FValues + Self.FCount * SizeOf(Integer);
             KPtr^ := Key; VPtr^ := Value;
@@ -161,7 +161,7 @@ const
           if Idx >= 0 then begin
             VPtr := Self.FValues + Idx * SizeOf(Integer); VPtr^ := Value
           end else begin
-            if Self.FCount = Self.FCapacity then Self.Grow;
+            if Self.FCount = Self.FCapacity then Self.Grow();
             KPtr := Self.FKeys   + Self.FCount * SizeOf(Integer);
             VPtr := Self.FValues + Self.FCount * SizeOf(Integer);
             KPtr^ := Key; VPtr^ := Value;
@@ -211,7 +211,7 @@ const
     '''
     var M: IMap;
     begin
-      M := TDict.Create;
+      M := TDict.Create();
       M.Add(10, 100);
       M.Add(20, 200);
       WriteLn(M.ContainsKey(10));
@@ -230,7 +230,7 @@ const
     '''
     var M: IMap; V: Integer; OK: Boolean;
     begin
-      M := TDict.Create;
+      M := TDict.Create();
       M.Add(42, 99);
       OK := M.TryGetValue(42, V);
       WriteLn(OK);
@@ -250,7 +250,7 @@ const
     '''
     var M: IMap;
     begin
-      M := TDict.Create;
+      M := TDict.Create();
       M.Add(1, 10); M.Add(2, 20); M.Add(3, 30);
       M.Remove(2);
       WriteLn(M.GetCount);
@@ -269,7 +269,7 @@ const
     '''
     var M: IMap;
     begin
-      M := TOrdDict.Create;
+      M := TOrdDict.Create();
       M.Add(10, 100);
       M.Add(20, 200);
       WriteLn(M.ContainsKey(10));
@@ -288,7 +288,7 @@ const
     '''
     var M: IMap; V: Integer; OK: Boolean;
     begin
-      M := TOrdDict.Create;
+      M := TOrdDict.Create();
       M.Add(42, 99);
       OK := M.TryGetValue(42, V);
       WriteLn(OK);
@@ -309,11 +309,11 @@ const
     '''
     var M: IMap; Flag: Boolean;
     begin
-      M := TDict.Create;
+      M := TDict.Create();
       M.Add(5, 50);
       Flag := M.ContainsKey(5);
       WriteLn(Flag);
-      M := TOrdDict.Create;
+      M := TOrdDict.Create();
       M.Add(5, 50);
       Flag := M.ContainsKey(5);
       WriteLn(Flag)
@@ -433,7 +433,7 @@ const
     implementation
     constructor TStore.Create;
     begin
-      FMap := TDictionary<string, Integer>.Create;
+      FMap := TDictionary<string, Integer>.Create();
       FMap.Add('answer', 42);
     end;
     function TStore.Get(const AKey: string): Integer;
@@ -448,7 +448,7 @@ const
     uses genmapunit;
     var S: TStore;
     begin
-      S := TStore.Create;
+      S := TStore.Create();
       WriteLn(S.Get('answer'))
     end.
     ''';

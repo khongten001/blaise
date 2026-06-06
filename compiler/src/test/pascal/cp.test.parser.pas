@@ -69,10 +69,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -89,7 +89,7 @@ begin
     AssertEquals('No decls', 0, Prog.Block.Decls.Count);
     AssertEquals('No stmts', 0, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -101,7 +101,7 @@ begin
   try
     AssertEquals('Name', 'MyApp', Prog.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -114,7 +114,7 @@ begin
     AssertEquals('Uses count', 1, Prog.UsedUnits.Count);
     AssertEquals('Unit name', 'System', Prog.UsedUnits.Strings[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -128,7 +128,7 @@ begin
     AssertEquals('First', 'System', Prog.UsedUnits.Strings[0]);
     AssertEquals('Second', 'SysUtils', Prog.UsedUnits.Strings[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -142,7 +142,7 @@ begin
     AssertEquals('Dotted unit name', 'Generics.Collections', Prog.UsedUnits.Strings[0]);
     AssertEquals('Plain unit name', 'SysUtils', Prog.UsedUnits.Strings[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -161,7 +161,7 @@ begin
     AssertEquals('Name', 'x', Decl.Names.Strings[0]);
     AssertEquals('Type', 'Integer', Decl.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -178,7 +178,7 @@ begin
     AssertEquals('Second type', 'string',
       TVarDecl(Prog.Block.Decls.Items[1]).TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -195,7 +195,7 @@ begin
     AssertEquals('First', 'x', Decl.Names.Strings[0]);
     AssertEquals('Second', 'y', Decl.Names.Strings[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -209,7 +209,7 @@ begin
   try
     AssertEquals('No stmts', 0, Prog.Block.Stmts.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -230,7 +230,7 @@ begin
     Lit := TIntLiteral(Assign.Expr);
     AssertEquals('Value', 42, Lit.Value);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -247,7 +247,7 @@ begin
     AssertEquals('Value', 'hello',
       TStringLiteral(Assign.Expr).Value);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -264,7 +264,7 @@ begin
     AssertEquals('Name', 'WriteLn', Call.Name);
     AssertEquals('0 args', 0, Call.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -279,7 +279,7 @@ begin
     AssertEquals('Name', 'WriteLn', Call.Name);
     AssertEquals('0 args', 0, Call.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -297,7 +297,7 @@ begin
     AssertEquals('Value', 'Hello',
       TStringLiteral(Call.Args.Items[0]).Value);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -313,7 +313,7 @@ begin
     AssertTrue('Arg is TIntLiteral', Call.Args.Items[0] is TIntLiteral);
     AssertEquals('Value', 99, TIntLiteral(Call.Args.Items[0]).Value);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -332,7 +332,7 @@ begin
     AssertEquals('Left', 1, TIntLiteral(Bin.Left).Value);
     AssertEquals('Right', 2, TIntLiteral(Bin.Right).Value);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -347,7 +347,7 @@ begin
     Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Op', Ord(boSub), Ord(Bin.Op));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -362,7 +362,7 @@ begin
     Bin := TBinaryExpr(TAssignment(Prog.Block.Stmts.Items[0]).Expr);
     AssertEquals('Op', Ord(boMul), Ord(Bin.Op));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -382,7 +382,7 @@ begin
     Inner := TBinaryExpr(Outer.Right);
     AssertEquals('Inner op is Mul', Ord(boMul), Ord(Inner.Op));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -402,7 +402,7 @@ begin
     Inner := TBinaryExpr(Outer.Left);
     AssertEquals('Inner op is Add', Ord(boAdd), Ord(Inner.Op));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -420,7 +420,7 @@ begin
     AssertTrue('Left is TIdentExpr', Bin.Left is TIdentExpr);
     AssertEquals('Ident name', 'x', TIdentExpr(Bin.Left).Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -443,7 +443,7 @@ begin
     AssertEquals('field name', 'X', Fld.FieldName);
     AssertTrue('base is method call', Fld.Base is TMethodCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -462,7 +462,7 @@ begin
     AssertEquals('field name', 'Kind', Fld.FieldName);
     AssertTrue('base is subscript', Fld.Base is TStringSubscriptExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -485,7 +485,7 @@ begin
     AssertEquals('middle method', 'GetC', MC.Name);
     AssertTrue('middle base is method call', MC.ObjExpr is TMethodCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -503,14 +503,14 @@ begin
     Sub := TStringSubscriptExpr(Stmt.Expr);
     AssertTrue('base is func call', Sub.StrExpr is TFuncCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TParserTests.TestError_MissingProgramKeyword;
 begin
   try
-    ParseSource('begin end.').Free;
+    ParseSource('begin end.').Free();
     Fail('Expected EParseError');
   except
     on E: EParseError do ; { expected }
@@ -520,7 +520,7 @@ end;
 procedure TParserTests.TestError_MissingDot;
 begin
   try
-    ParseSource('program P; begin end').Free;
+    ParseSource('program P; begin end').Free();
     Fail('Expected EParseError');
   except
     on E: EParseError do ; { expected }

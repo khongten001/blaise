@@ -120,7 +120,7 @@ const
       end
     end;
     begin
-      Run;
+      Run();
       WriteLn('after')
     end.
     ''';
@@ -164,7 +164,7 @@ const
       end
     end;
     begin
-      Run;
+      Run();
       WriteLn('after')
     end.
     ''';
@@ -202,12 +202,12 @@ const
     begin Result := 1 end;
     var N: TNode; T: Integer;
     begin
-      N := TMarkedNode.Create;
+      N := TMarkedNode.Create();
       try
         T := N.GetTag();
         WriteLn(T)
       finally
-        N.Free
+        N.Free()
       end
     end.
     ''';
@@ -231,7 +231,7 @@ const
         begin
           X := 0;
           try
-            raise EFoo.Create
+            raise EFoo.Create()
           except
             on E: EFoo do X := 42;
             on E: Exception do X := 1
@@ -247,7 +247,7 @@ const
         begin
           X := 0;
           try
-            raise EBar.Create
+            raise EBar.Create()
           except
             on E: EFoo do X := 7
           end;
@@ -262,7 +262,7 @@ const
         begin
           X := 0;
           try
-            raise EFoo.Create
+            raise EFoo.Create()
           except
             on E: EBar do X := 9
             else X := 5
@@ -279,7 +279,7 @@ const
           X := 0;
           try
             try
-              raise EFoo.Create
+              raise EFoo.Create()
             except
               on E: EFoo do
               begin
@@ -302,7 +302,7 @@ const
           X := 0;
           try
             try
-              raise EFoo.Create
+              raise EFoo.Create()
             except
               on E: EBar do X := 9
             end
@@ -322,7 +322,7 @@ const
           try
             try
               S := S + 'A,';
-              raise EFoo.Create
+              raise EFoo.Create()
             finally
               S := S + 'F,'
             end

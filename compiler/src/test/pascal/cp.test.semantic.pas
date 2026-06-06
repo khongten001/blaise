@@ -72,16 +72,16 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -91,7 +91,7 @@ var
 begin
   try
     Prog := Analyse(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ; { expected }
@@ -113,7 +113,7 @@ begin
     Decl := TVarDecl(Prog.Block.Decls.Items[0]);
     AssertNotNull('ResolvedType set', Decl.ResolvedType);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -127,7 +127,7 @@ begin
       Ord(tyInteger),
       Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -141,7 +141,7 @@ begin
       Ord(tyString),
       Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -156,7 +156,7 @@ begin
     AssertNotNull('ResolvedType', Decl.ResolvedType);
     AssertEquals('Integer', Ord(tyInteger), Ord(Decl.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -199,7 +199,7 @@ begin
     AssertEquals('Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -215,7 +215,7 @@ begin
     AssertEquals('string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -232,7 +232,7 @@ begin
     AssertEquals('x is Integer',
       Ord(tyInteger), Ord(Bin.Left.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -254,7 +254,7 @@ begin
     AssertEquals('Add result is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -276,7 +276,7 @@ begin
     AssertEquals('Sub is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -292,7 +292,7 @@ begin
     AssertEquals('Mul is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -308,7 +308,7 @@ begin
     AssertEquals('Div is Integer',
       Ord(tyInteger), Ord(Bin.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -318,13 +318,13 @@ end;
 
 procedure TSemanticTests.TestAssign_IntToInt_OK;
 begin
-  Analyse('program P; var n: Integer; begin n := 5 end.').Free;
+  Analyse('program P; var n: Integer; begin n := 5 end.').Free();
 end;
 
 procedure TSemanticTests.TestAssign_StringToString_OK;
 begin
   Analyse(
-    'program P; var s: string; begin s := ''hi'' end.').Free;
+    'program P; var s: string; begin s := ''hi'' end.').Free();
 end;
 
 procedure TSemanticTests.TestAssign_IntToString_RaisesError;
@@ -351,17 +351,17 @@ end;
 
 procedure TSemanticTests.TestProcCall_WriteLn_NoArgs_OK;
 begin
-  Analyse('program P; begin WriteLn end.').Free;
+  Analyse('program P; begin WriteLn end.').Free();
 end;
 
 procedure TSemanticTests.TestProcCall_WriteLn_StringArg_OK;
 begin
-  Analyse('program P; begin WriteLn(''Hello'') end.').Free;
+  Analyse('program P; begin WriteLn(''Hello'') end.').Free();
 end;
 
 procedure TSemanticTests.TestProcCall_WriteLn_IntArg_OK;
 begin
-  Analyse('program P; begin WriteLn(99) end.').Free;
+  Analyse('program P; begin WriteLn(99) end.').Free();
 end;
 
 procedure TSemanticTests.TestProcCall_UndeclaredProc_RaisesError;
@@ -382,7 +382,7 @@ begin
           WriteLn('Hello!');
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TSemanticTests.TestProgram_ArithmeticAndPrint_OK;
@@ -396,7 +396,7 @@ begin
           WriteLn(n);
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 initialization

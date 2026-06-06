@@ -254,11 +254,11 @@ const
       Obj: TFoo;
       M: TProc;
     begin
-      Obj := TFoo.Create;
+      Obj := TFoo.Create();
       Obj.FVal := 55;
       M := @Obj.Print;
       M;
-      Obj.Free
+      Obj.Free()
     end.
     ''';
 
@@ -524,7 +524,7 @@ const
       R := TRange.Create(3, 5);
       for N in R do
         WriteLn(N);
-      R.Free;
+      R.Free();
     end.
     ''';
 
@@ -830,7 +830,7 @@ const
       end;
     var B: TBox<Integer>;
     begin
-      B := TBox<>.Create;
+      B := TBox<>.Create();
       B.SetValue(99);
       WriteLn(B.GetValue())
     end.
@@ -862,7 +862,7 @@ const
       end;
     var P: TPair<Integer, Integer>;
     begin
-      P := TPair<>.Create;
+      P := TPair<>.Create();
       P.SetKey(3);
       P.SetVal(7);
       WriteLn(P.GetKey());

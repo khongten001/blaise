@@ -75,10 +75,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -90,10 +90,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.ParseUnit;
+    Result := P.ParseUnit();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -107,22 +107,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -151,7 +151,7 @@ begin
     Decl := TMethodDecl(Prog.Block.ProcDecls.Items[0]);
     AssertTrue('IsExternal should be True', Decl.IsExternal);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -173,7 +173,7 @@ begin
     AssertEquals('ExternalName should be empty when no name given',
       '', Decl.ExternalName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -195,7 +195,7 @@ begin
     AssertTrue('IsExternal should be True', Decl.IsExternal);
     AssertEquals('ExternalName should be c_foo', 'c_foo', Decl.ExternalName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -217,7 +217,7 @@ begin
     Decl := TMethodDecl(Prog.Block.ProcDecls.Items[0]);
     AssertTrue('IsExternal should be True', Decl.IsExternal);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -238,7 +238,7 @@ begin
     Decl := TMethodDecl(Prog.Block.ProcDecls.Items[0]);
     AssertEquals('ExternalName should be c_bar', 'c_bar', Decl.ExternalName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -264,7 +264,7 @@ begin
     AssertTrue('Bar should be external',
       TMethodDecl(U.IntfBlock.ProcDecls.Items[1]).IsExternal);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -284,13 +284,13 @@ begin
         end.
         '''
   );
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
     AssertNotNull('Program should analyse without error', Prog.SymbolTable);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -309,13 +309,13 @@ begin
         end.
         '''
   );
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
     AssertNotNull('Program should analyse without error', Prog.SymbolTable);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 

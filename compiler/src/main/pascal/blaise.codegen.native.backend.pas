@@ -69,12 +69,12 @@ begin
   inherited Create;
   FTarget   := ATarget;
   FSymTable := nil;
-  FAsm      := TStringBuilder.Create;
+  FAsm      := TStringBuilder.Create();
 end;
 
 destructor TNativeBackend.Destroy;
 begin
-  FAsm.Free;
+  FAsm.Free();
   inherited Destroy;
 end;
 
@@ -95,9 +95,9 @@ end;
 
 function TNativeBackend.GenerateProgram(AProg: TProgram): string;
 begin
-  FAsm.Clear;
+  FAsm.Clear();
   Self.EmitProgram(AProg);
-  Result := FAsm.ToString;
+  Result := FAsm.ToString();
 end;
 
 end.

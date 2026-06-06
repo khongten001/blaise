@@ -73,8 +73,8 @@ const
       A, B: TOuter;
       I:    TInner;
     begin
-      A       := TOuter.Create;
-      I       := TInner.Create;
+      A       := TOuter.Create();
+      I       := TInner.Create();
       I.V     := 42;
       A.Child := I;
       B       := A;
@@ -100,10 +100,10 @@ const
       T: TThing;
       F: IThing;
     begin
-      T        := TThing.Create;
+      T        := TThing.Create();
       T.FValue := 17;
       F        := T;
-      F.Emit
+      F.Emit()
     end.
     ''';
 
@@ -117,8 +117,8 @@ const
     var
       A, B: TNode;
     begin
-      A := TNode.Create;
-      B := TNode.Create;
+      A := TNode.Create();
+      B := TNode.Create();
       A.Value := 1;
       B.Value := 2;
       A.Other := B;
@@ -147,8 +147,8 @@ const
     end;
     var B: TBuf;
     begin
-      B := TBuf.Create;
-      B.Init;
+      B := TBuf.Create();
+      B.Init();
       WriteLn('ok')
     end.
     ''';
@@ -177,7 +177,7 @@ const
     procedure TList.Add(V: Integer);
     var Dest: ^Integer;
     begin
-      if Self.FCount = Self.FCapacity then Self.Grow;
+      if Self.FCount = Self.FCapacity then Self.Grow();
       Dest  := Self.FData + Self.FCount * SizeOf(Integer);
       Dest^ := V;
       Self.FCount := Self.FCount + 1
@@ -195,7 +195,7 @@ const
     end;
     var L: TList;
     begin
-      L := TList.Create;
+      L := TList.Create();
       L.Add(10);
       L.Add(20);
       L.Add(30);
@@ -319,11 +319,11 @@ const
       B: TBox<Boolean>;
       C: TBox<Integer>;
     begin
-      A := TBox<Integer>.Create;
+      A := TBox<Integer>.Create();
       A.Value := 10;
-      B := TBox<Boolean>.Create;
+      B := TBox<Boolean>.Create();
       B.Value := True;
-      C := TBox<Integer>.Create;
+      C := TBox<Integer>.Create();
       C.Value := 30;
       WriteLn(A.Value);
       if B.Value then WriteLn(1) else WriteLn(0);
@@ -363,7 +363,7 @@ const
     var
       T: TThing;
     begin
-      T := TThing.Create;
+      T := TThing.Create();
       T.FValue := 55;
       F := T;
       DoSomething(F)
@@ -507,11 +507,11 @@ const
     end;
     begin
       Freed := 0;
-      L := TObjectList.Create;
-      L.Add(TThing.Create);
+      L := TObjectList.Create(True);
+      L.Add(TThing.Create());
       Borrow;
       WriteLn(Freed);
-      L.Free;
+      L.Free();
       WriteLn(Freed)
     end.
     ''';
@@ -522,7 +522,7 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcPtrRvalueClassLocal, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  AssertEquals('counter after Borrow then after L.Free',
+  AssertEquals('counter after Borrow then after L.Free()',
     '0' + LE + '1' + LE, Output);
 end;
 
@@ -540,7 +540,7 @@ const
     end;
     var O: TThing;
     begin
-      O := TThing.Create;
+      O := TThing.Create();
       O := nil;
       WriteLn('done')
     end.

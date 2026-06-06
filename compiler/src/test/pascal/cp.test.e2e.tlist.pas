@@ -40,13 +40,13 @@ const
     var
       L: TList<String>;
     begin
-      L := TList<String>.Create;
+      L := TList<String>.Create();
       L.Add('hello');
       L.Add('world');
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -56,14 +56,14 @@ const
     var
       L: TList<Integer>;
     begin
-      L := TList<Integer>.Create;
+      L := TList<Integer>.Create();
       L.Add(10);
       L.Add(20);
       L.Add(30);
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(2));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -73,7 +73,7 @@ const
     var
       L: TList<Integer>;
     begin
-      L := TList<Integer>.Create;
+      L := TList<Integer>.Create();
       L.Add(10);
       L.Add(20);
       L.Add(30);
@@ -81,7 +81,7 @@ const
       WriteLn(L.IndexOf(20));
       WriteLn(L.IndexOf(30));
       WriteLn(L.IndexOf(99));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -91,12 +91,12 @@ const
     var
       L: TList<String>;
     begin
-      L := TList<String>.Create;
+      L := TList<String>.Create();
       L.Add('alpha');
       L.Add('beta');
       WriteLn(L.IndexOf('beta'));
       WriteLn(L.IndexOf('gamma'));
-      L.Free
+      L.Free()
     end.
     ''';
 

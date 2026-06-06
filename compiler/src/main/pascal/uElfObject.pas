@@ -318,7 +318,7 @@ begin
 
     Result := True;
   finally
-    FS.Free;
+    FS.Free();
   end;
 end;
 
@@ -449,7 +449,7 @@ begin
         Offset := Int64(ReadU32(ShtBuf, I * EntrySize + 16, AInfo.LittleEndian)) and $FFFFFFFF;
         Size   := Int64(ReadU32(ShtBuf, I * EntrySize + 20, AInfo.LittleEndian)) and $FFFFFFFF;
       end;
-      Sec := TElfSection.Create;
+      Sec := TElfSection.Create();
       Sec.NameOff := NameOff;
       Sec.SType   := SType;
       Sec.Offset  := Offset;
@@ -460,7 +460,7 @@ begin
     end;
     Result := Sects;
   finally
-    FS.Free;
+    FS.Free();
   end;
 end;
 
@@ -595,7 +595,7 @@ begin
     if FIn.Read(PChar(OldFile), Length(OldFile)) <> Length(OldFile) then
       raise EElfObject.Create(APath + ': short read on original file');
   finally
-    FIn.Free;
+    FIn.Free();
   end;
 
   EntrySize := Info.ShEntSize;
@@ -694,10 +694,10 @@ begin
     if NewShOff > NewDataOff + Length(AData) then
       FOut.Write(PChar(Pad), Integer(NewShOff - (NewDataOff + Length(AData))));
     FOut.Write(PChar(ShtBuf), Length(ShtBuf));
-    FOut.Flush;
+    FOut.Flush();
   finally
-    FOut.Close;
-    FOut.Free;
+    FOut.Close();
+    FOut.Free();
   end;
 
   { Atomic-ish rename. }
@@ -737,7 +737,7 @@ begin
     if FIn.Read(PChar(AData), Integer(Sec.Size)) <> Integer(Sec.Size) then
       raise EElfObject.Create(APath + ': short read on section ' + ASectionName);
   finally
-    FIn.Free;
+    FIn.Free();
   end;
   Result := True;
 end;

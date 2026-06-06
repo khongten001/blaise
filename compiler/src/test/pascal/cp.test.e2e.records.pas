@@ -213,10 +213,10 @@ const
       C: TCounter;
     begin
       C.Value := 0;
-      C.Inc;
-      C.Inc;
-      C.Inc;
-      WriteLn(C.GetValue)
+      C.Inc();
+      C.Inc();
+      C.Inc();
+      WriteLn(C.GetValue())
     end.
     ''';
 
@@ -237,16 +237,16 @@ const
     end;
     procedure TApp.Run;
     begin
-      FC.Inc;
-      FC.Inc;
-      FC.Inc;
+      FC.Inc();
+      FC.Inc();
+      FC.Inc();
       WriteLn(FC.Value)
     end;
     var
       A: TApp;
     begin
-      A := TApp.Create;
-      A.Run
+      A := TApp.Create();
+      A.Run()
     end.
     ''';
 
@@ -297,8 +297,8 @@ const
     var
       A: TApp;
     begin
-      A := TApp.Create;
-      A.Run
+      A := TApp.Create();
+      A.Run()
     end.
     ''';
 
@@ -344,8 +344,8 @@ const
       DT.Date.Day := 5;
       DT.Hour := 14;
       D := DT.Date;
-      WriteLn(D.ToString);
-      WriteLn(DT.Date.ToString)
+      WriteLn(D.ToString());
+      WriteLn(DT.Date.ToString())
     end.
     ''';
 

@@ -176,17 +176,17 @@ function TTerminal.ReadKey: Integer;
 var
   B1, B2, B3: Integer;
 begin
-  B1 := Self.ReadByte;
+  B1 := Self.ReadByte();
   if B1 = KEY_NONE then Exit(KEY_NONE);
 
   if B1 <> 27 then Exit(B1);
 
-  B2 := Self.ReadByte;
+  B2 := Self.ReadByte();
   if B2 = KEY_NONE then Exit(KEY_ESCAPE);
 
   if B2 = 91 then
   begin
-    B3 := Self.ReadByte;
+    B3 := Self.ReadByte();
     if B3 = 65 then Exit(KEY_UP);
     if B3 = 66 then Exit(KEY_DOWN);
     if B3 = 67 then Exit(KEY_RIGHT);
@@ -276,9 +276,9 @@ begin
   begin
     TitleStr := ' ' + Title + ' ';
     Self.MoveTo(Row, Col + 2);
-    Self.SetBold;
+    Self.SetBold();
     Self.BufWrite(TitleStr);
-    Self.ResetAttr;
+    Self.ResetAttr();
     Self.SetFg(Color)
   end;
 
@@ -301,7 +301,7 @@ begin
     I := I + 1
   end;
   Self.BufWrite(Chr(226) + Chr(149) + Chr(175));
-  Self.ResetAttr
+  Self.ResetAttr()
 end;
 
 procedure TTerminal.DrawHLine(Row, Col, Width: Integer);

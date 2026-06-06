@@ -116,7 +116,7 @@ var
   C:  TConstEntry;
   SB: TStringBuilder;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     SB.AppendLine('CONST ' + IntToStr(AIface.Consts.Count));
     for I := 0 to AIface.Consts.Count - 1 do
@@ -130,9 +130,9 @@ begin
         EncodeFlags(C.Decl.IsString, C.Decl.IsFloat));
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
+    SB.Free();
   end;
 end;
 
@@ -142,7 +142,7 @@ var
   V:  TVarEntry;
   SB: TStringBuilder;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     SB.AppendLine('VAR ' + IntToStr(AIface.Vars.Count));
     for I := 0 to AIface.Vars.Count - 1 do
@@ -154,9 +154,9 @@ begin
         EncodeBool(V.IsThreadVar));
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
+    SB.Free();
   end;
 end;
 
@@ -489,7 +489,7 @@ var
   Eligible: TObjectList;
 begin
   Eligible := TObjectList.Create(False);
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     for I := 0 to AIface.Types.Count - 1 do
     begin
@@ -540,10 +540,10 @@ begin
                WriteGenericInterfacePayload(E));
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
-    Eligible.Free;
+    SB.Free();
+    Eligible.Free();
   end;
 end;
 
@@ -570,7 +570,7 @@ var
   SB:     TStringBuilder;
   Line:   string;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     SB.AppendLine('ROUT ' + IntToStr(AIface.Routines.Count));
     for I := 0 to AIface.Routines.Count - 1 do
@@ -593,9 +593,9 @@ begin
       SB.AppendLine(Line);
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
+    SB.Free();
   end;
 end;
 
@@ -603,7 +603,7 @@ function WriteMeta(AIface: TUnitInterface): string;
 var
   SB: TStringBuilder;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     SB.AppendLine('META');
     SB.AppendLine(EncodeLpstr(AIface.SourceFile) +
@@ -612,9 +612,9 @@ begin
            EncodeInt64(AIface.SourceModTime) +
            EncodeStringList(AIface.UsedUnits));
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
+    SB.Free();
   end;
 end;
 
@@ -878,7 +878,7 @@ var
   Eligible: TObjectList;
 begin
   Eligible := TObjectList.Create(False);
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     for I := 0 to AIface.GenericBodies.Count - 1 do
     begin
@@ -896,10 +896,10 @@ begin
         EncodeBlock(G.MethodDecl.Body));
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
-    Eligible.Free;
+    SB.Free();
+    Eligible.Free();
   end;
 end;
 
@@ -909,7 +909,7 @@ var
   B:  TInlineBody;
   SB: TStringBuilder;
 begin
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   try
     SB.AppendLine('INLINE ' + IntToStr(AIface.InlineBodies.Count));
     for I := 0 to AIface.InlineBodies.Count - 1 do
@@ -918,9 +918,9 @@ begin
       SB.AppendLine(EncodeLpstr(B.RoutineName) + EncodeBlock(B.Block));
     end;
     SB.AppendLine('END');
-    Result := SB.ToString;
+    Result := SB.ToString();
   finally
-    SB.Free;
+    SB.Free();
   end;
 end;
 
@@ -1112,8 +1112,8 @@ begin
     ReadFlagsAt(AText, APos, IsString, IsFloat);
     DecodeQualRef(RefStr, RefUnit, RefType);
 
-    Entry := TConstEntry.Create;
-    Entry.Decl := TConstDecl.Create;
+    Entry := TConstEntry.Create();
+    Entry.Decl := TConstDecl.Create();
     Entry.Decl.Name     := Name;
     Entry.Decl.IntVal   := IntVal;
     Entry.Decl.StrVal   := StrVal;
@@ -1141,7 +1141,7 @@ begin
   Count := ReadDecimalAt(AText, APos);
   for I := 1 to Count do
   begin
-    Entry := TVarEntry.Create;
+    Entry := TVarEntry.Create();
     Entry.Name := ReadLpstrAt(AText, APos);
     RefStr     := ReadLpstrAt(AText, APos);
     DecodeQualRef(RefStr, RefUnit, RefType);
@@ -1183,7 +1183,7 @@ var
   NameP: string;
   OrdP:  Integer;
 begin
-  Pairs := TStringList.Create;
+  Pairs := TStringList.Create();
   try
     SplitMembers(ASrc, Pairs);
     for I := 0 to Pairs.Count - 1 do
@@ -1204,7 +1204,7 @@ begin
       end;
     end;
   finally
-    Pairs.Free;
+    Pairs.Free();
   end;
 end;
 
@@ -1235,7 +1235,7 @@ function ReadExceptHandler(const AText: string; var APos: Integer):
 var
   Body: TASTStmt;
 begin
-  Result := TExceptHandlerClause.Create;
+  Result := TExceptHandlerClause.Create();
   Result.VarName  := ReadLpstrAt(AText, APos);
   Result.TypeName := ReadLpstrAt(AText, APos);
   Body := ReadStmt(AText, APos);
@@ -1245,14 +1245,14 @@ begin
   begin
     { Body always encoded via EncodeStmt of a TCompoundStmt — should
       never see anything else.  Defensive: wrap. }
-    Result.Body := TCompoundStmt.Create;
+    Result.Body := TCompoundStmt.Create();
     if Body <> nil then Result.Body.Stmts.Add(Body);
   end;
 end;
 
 function ReadCaseBranch(const AText: string; var APos: Integer): TCaseBranch;
 begin
-  Result := TCaseBranch.Create;
+  Result := TCaseBranch.Create();
   ReadExprList(AText, APos, Result.Values);
   Result.Stmt := ReadStmt(AText, APos);
 end;
@@ -1282,33 +1282,33 @@ begin
 
   if Kind = 'int' then
   begin
-    IL := TIntLiteral.Create;
+    IL := TIntLiteral.Create();
     IL.Value := StrToInt64(ReadLpstrAt(AText, APos));
     Result := IL;
   end
   else if Kind = 'float' then
   begin
-    FL := TFloatLiteral.Create;
+    FL := TFloatLiteral.Create();
     FL.Value := ReadLpstrAt(AText, APos);
     Result := FL;
   end
   else if Kind = 'str' then
   begin
-    SL := TStringLiteral.Create;
+    SL := TStringLiteral.Create();
     SL.Value := ReadLpstrAt(AText, APos);
     Result := SL;
   end
   else if Kind = 'nillit' then
-    Result := TNilLiteral.Create
+    Result := TNilLiteral.Create()
   else if Kind = 'id' then
   begin
-    IE := TIdentExpr.Create;
+    IE := TIdentExpr.Create();
     IE.Name := ReadLpstrAt(AText, APos);
     Result := IE;
   end
   else if Kind = 'bin' then
   begin
-    BE := TBinaryExpr.Create;
+    BE := TBinaryExpr.Create();
     BE.Op    := TBinaryOp(StrToInt(ReadLpstrAt(AText, APos)));
     BE.Left  := ReadExpr(AText, APos);
     BE.Right := ReadExpr(AText, APos);
@@ -1316,20 +1316,20 @@ begin
   end
   else if Kind = 'not' then
   begin
-    NE := TNotExpr.Create;
+    NE := TNotExpr.Create();
     NE.Expr := ReadExpr(AText, APos);
     Result := NE;
   end
   else if Kind = 'call' then
   begin
-    FCE := TFuncCallExpr.Create;
+    FCE := TFuncCallExpr.Create();
     FCE.Name := ReadLpstrAt(AText, APos);
     ReadExprList(AText, APos, FCE.Args);
     Result := FCE;
   end
   else if Kind = 'mcall' then
   begin
-    MCE := TMethodCallExpr.Create;
+    MCE := TMethodCallExpr.Create();
     MCE.ObjectName := ReadLpstrAt(AText, APos);
     MCE.Name       := ReadLpstrAt(AText, APos);
     MCE.ObjExpr    := ReadExpr(AText, APos);
@@ -1338,7 +1338,7 @@ begin
   end
   else if Kind = 'field' then
   begin
-    FA := TFieldAccessExpr.Create;
+    FA := TFieldAccessExpr.Create();
     FA.RecordName    := ReadLpstrAt(AText, APos);
     FA.FieldName     := ReadLpstrAt(AText, APos);
     FA.Base          := ReadExpr(AText, APos);
@@ -1347,46 +1347,46 @@ begin
   end
   else if Kind = 'deref' then
   begin
-    DE := TDerefExpr.Create;
+    DE := TDerefExpr.Create();
     DE.Expr := ReadExpr(AText, APos);
     Result := DE;
   end
   else if Kind = 'addr' then
   begin
-    AoE := TAddrOfExpr.Create;
+    AoE := TAddrOfExpr.Create();
     AoE.Expr := ReadExpr(AText, APos);
     Result := AoE;
   end
   else if Kind = 'ssub' then
   begin
-    SS := TStringSubscriptExpr.Create;
+    SS := TStringSubscriptExpr.Create();
     SS.StrExpr   := ReadExpr(AText, APos);
     SS.IndexExpr := ReadExpr(AText, APos);
     Result := SS;
   end
   else if Kind = 'alit' then
   begin
-    AL := TArrayLiteralExpr.Create;
+    AL := TArrayLiteralExpr.Create();
     ReadExprList(AText, APos, AL.Elements);
     Result := AL;
   end
   else if Kind = 'isop' then
   begin
-    IsE := TIsExpr.Create;
+    IsE := TIsExpr.Create();
     IsE.Obj      := ReadExpr(AText, APos);
     IsE.TypeName := ReadLpstrAt(AText, APos);
     Result := IsE;
   end
   else if Kind = 'asop' then
   begin
-    AsE := TAsExpr.Create;
+    AsE := TAsExpr.Create();
     AsE.Obj      := ReadExpr(AText, APos);
     AsE.TypeName := ReadLpstrAt(AText, APos);
     Result := AsE;
   end
   else if Kind = 'supp' then
   begin
-    SuE := TSupportsExpr.Create;
+    SuE := TSupportsExpr.Create();
     SuE.Obj          := ReadExpr(AText, APos);
     SuE.IntfTypeName := ReadLpstrAt(AText, APos);
     SuE.OutVarName   := ReadLpstrAt(AText, APos);
@@ -1425,20 +1425,20 @@ begin
 
   if Kind = 'asn' then
   begin
-    ASn := TAssignment.Create;
+    ASn := TAssignment.Create();
     ASn.Name := ReadLpstrAt(AText, APos);
     ASn.Expr := ReadExpr(AText, APos);
     Result := ASn;
   end
   else if Kind = 'comp' then
   begin
-    CSn := TCompoundStmt.Create;
+    CSn := TCompoundStmt.Create();
     ReadStmtList(AText, APos, CSn.Stmts);
     Result := CSn;
   end
   else if Kind = 'if' then
   begin
-    IFn := TIfStmt.Create;
+    IFn := TIfStmt.Create();
     IFn.Condition := ReadExpr(AText, APos);
     IFn.ThenStmt  := ReadStmt(AText, APos);
     IFn.ElseStmt  := ReadStmt(AText, APos);
@@ -1446,20 +1446,20 @@ begin
   end
   else if Kind = 'while' then
   begin
-    WSn := TWhileStmt.Create;
+    WSn := TWhileStmt.Create();
     WSn.Condition := ReadExpr(AText, APos);
     WSn.Body      := ReadStmt(AText, APos);
     Result := WSn;
   end
   else if Kind = 'rep' then
   begin
-    RSn := TRepeatStmt.Create;
+    RSn := TRepeatStmt.Create();
     Body := ReadStmt(AText, APos);
     if Body is TCompoundStmt then
       RSn.Body := TCompoundStmt(Body)
     else
     begin
-      RSn.Body := TCompoundStmt.Create;
+      RSn.Body := TCompoundStmt.Create();
       if Body <> nil then RSn.Body.Stmts.Add(Body);
     end;
     RSn.Condition := ReadExpr(AText, APos);
@@ -1467,7 +1467,7 @@ begin
   end
   else if Kind = 'for' then
   begin
-    FSn := TForStmt.Create;
+    FSn := TForStmt.Create();
     FSn.VarName   := ReadLpstrAt(AText, APos);
     FSn.StartExpr := ReadExpr(AText, APos);
     FSn.EndExpr   := ReadExpr(AText, APos);
@@ -1477,7 +1477,7 @@ begin
   end
   else if Kind = 'forin' then
   begin
-    FISn := TForInStmt.Create;
+    FISn := TForInStmt.Create();
     FISn.VarName  := ReadLpstrAt(AText, APos);
     FISn.CollExpr := ReadExpr(AText, APos);
     FISn.Body     := ReadStmt(AText, APos);
@@ -1485,21 +1485,21 @@ begin
   end
   else if Kind = 'tryfin' then
   begin
-    TFSn := TTryFinallyStmt.Create;
+    TFSn := TTryFinallyStmt.Create();
     Body := ReadStmt(AText, APos);
     if Body is TCompoundStmt then TFSn.TryBody := TCompoundStmt(Body)
-                              else TFSn.TryBody := TCompoundStmt.Create;
+                              else TFSn.TryBody := TCompoundStmt.Create();
     Body := ReadStmt(AText, APos);
     if Body is TCompoundStmt then TFSn.FinallyBody := TCompoundStmt(Body)
-                              else TFSn.FinallyBody := TCompoundStmt.Create;
+                              else TFSn.FinallyBody := TCompoundStmt.Create();
     Result := TFSn;
   end
   else if Kind = 'tryex' then
   begin
-    TESn := TTryExceptStmt.Create;
+    TESn := TTryExceptStmt.Create();
     Body := ReadStmt(AText, APos);
     if Body is TCompoundStmt then TESn.TryBody := TCompoundStmt(Body)
-                              else TESn.TryBody := TCompoundStmt.Create;
+                              else TESn.TryBody := TCompoundStmt.Create();
     C := StrToInt(ReadLpstrAt(AText, APos));
     for I := 1 to C do
       TESn.Handlers.Add(ReadExceptHandler(AText, APos));
@@ -1513,16 +1513,16 @@ begin
   end
   else if Kind = 'raise' then
   begin
-    RaSn := TRaiseStmt.Create;
+    RaSn := TRaiseStmt.Create();
     RaSn.Expr := ReadExpr(AText, APos);
     Result := RaSn;
   end
-  else if Kind = 'exit' then Result := TExitStmt.Create
-  else if Kind = 'brk'  then Result := TBreakStmt.Create
-  else if Kind = 'cont' then Result := TContinueStmt.Create
+  else if Kind = 'exit' then Result := TExitStmt.Create()
+  else if Kind = 'brk'  then Result := TBreakStmt.Create()
+  else if Kind = 'cont' then Result := TContinueStmt.Create()
   else if Kind = 'case' then
   begin
-    CSSn := TCaseStmt.Create;
+    CSSn := TCaseStmt.Create();
     CSSn.Selector := ReadExpr(AText, APos);
     C := StrToInt(ReadLpstrAt(AText, APos));
     for I := 1 to C do
@@ -1532,7 +1532,7 @@ begin
   end
   else if Kind = 'fasn' then
   begin
-    FASn := TFieldAssignment.Create;
+    FASn := TFieldAssignment.Create();
     FASn.RecordName    := ReadLpstrAt(AText, APos);
     FASn.FieldName     := ReadLpstrAt(AText, APos);
     FASn.Expr          := ReadExpr(AText, APos);
@@ -1542,7 +1542,7 @@ begin
   end
   else if Kind = 'ssasn' then
   begin
-    SSAn := TStaticSubscriptAssign.Create;
+    SSAn := TStaticSubscriptAssign.Create();
     SSAn.ArrayName := ReadLpstrAt(AText, APos);
     SSAn.IndexExpr := ReadExpr(AText, APos);
     SSAn.ValueExpr := ReadExpr(AText, APos);
@@ -1550,21 +1550,21 @@ begin
   end
   else if Kind = 'pw' then
   begin
-    PWSn := TPointerWriteStmt.Create;
+    PWSn := TPointerWriteStmt.Create();
     PWSn.PtrExpr := ReadExpr(AText, APos);
     PWSn.ValExpr := ReadExpr(AText, APos);
     Result := PWSn;
   end
   else if Kind = 'pcall' then
   begin
-    PCn := TProcCall.Create;
+    PCn := TProcCall.Create();
     PCn.Name := ReadLpstrAt(AText, APos);
     ReadExprList(AText, APos, PCn.Args);
     Result := PCn;
   end
   else if Kind = 'mcs' then
   begin
-    MCSn := TMethodCallStmt.Create;
+    MCSn := TMethodCallStmt.Create();
     MCSn.ObjectName := ReadLpstrAt(AText, APos);
     MCSn.Name       := ReadLpstrAt(AText, APos);
     MCSn.ObjExpr    := ReadExpr(AText, APos);
@@ -1573,7 +1573,7 @@ begin
   end
   else if Kind = 'inh' then
   begin
-    ICSn := TInheritedCallStmt.Create;
+    ICSn := TInheritedCallStmt.Create();
     ICSn.Name := ReadLpstrAt(AText, APos);
     ReadExprList(AText, APos, ICSn.Args);
     Result := ICSn;
@@ -1591,7 +1591,7 @@ begin
   if Kind = 'nil' then begin Result := nil; Exit; end;
   if Kind <> 'block' then
     raise EIfaceFormatError.Create('ReadBlock: expected ''block'' got ''' + Kind + '''');
-  Result := TBlock.Create;
+  Result := TBlock.Create();
   ReadStmtList(AText, APos, Result.Stmts);
 end;
 
@@ -1632,7 +1632,7 @@ begin
     FldName := ReadLpstrAt(AText, APos);
     FldType := ReadLpstrAt(AText, APos);
     IsWeak  := DecodeBool(AText, APos);
-    F := TFieldDecl.Create;
+    F := TFieldDecl.Create();
     F.Names.Add(FldName);
     F.TypeName := FldType;
     F.IsWeak   := IsWeak;
@@ -1651,7 +1651,7 @@ var
   Param:    TMethodParam;
   FlagsStr: string;
 begin
-  Result := TRoutineSig.Create;
+  Result := TRoutineSig.Create();
   Result.Name        := ReadLpstrAt(AText, APos);
   Result.IsFunction  := DecodeBool(AText, APos);
   RefStr             := ReadLpstrAt(AText, APos);
@@ -1664,7 +1664,7 @@ begin
   Pc := DecodeCount(AText, APos);
   for J := 1 to Pc do
   begin
-    Param := TMethodParam.Create;
+    Param := TMethodParam.Create();
     Param.ParamName := ReadLpstrAt(AText, APos);
     Param.TypeName  := ReadLpstrAt(AText, APos);
     FlagsStr := ReadLpstrAt(AText, APos);
@@ -1687,7 +1687,7 @@ procedure ReadRecordPayload(const AText: string; var APos: Integer;
 var
   Def: TRecordTypeDef;
 begin
-  Def := TRecordTypeDef.Create;
+  Def := TRecordTypeDef.Create();
   Def.IsPacked := DecodeBool(AText, APos);
   ReadFieldList(AText, APos, Def.Fields);
   AEntry.Def := Def;
@@ -1701,7 +1701,7 @@ var
   RefUnit: string;
   RefType: string;
 begin
-  Def := TClassTypeDef.Create;
+  Def := TClassTypeDef.Create();
   RefStr := ReadLpstrAt(AText, APos);
   DecodeQualRef(RefStr, RefUnit, RefType);
   AEntry.ParentClass  := MakeQualRef(RefUnit, RefType);
@@ -1723,7 +1723,7 @@ var
   Param:     TMethodParam;
   FlagsStr:  string;
 begin
-  Result := TMethodDecl.Create;
+  Result := TMethodDecl.Create();
   Result.Name           := ReadLpstrAt(AText, APos);
   HasReturn             := DecodeBool(AText, APos);
   Result.ReturnTypeName := ReadLpstrAt(AText, APos);
@@ -1733,7 +1733,7 @@ begin
   Pc := DecodeCount(AText, APos);
   for J := 1 to Pc do
   begin
-    Param := TMethodParam.Create;
+    Param := TMethodParam.Create();
     Param.ParamName := ReadLpstrAt(AText, APos);
     Param.TypeName  := ReadLpstrAt(AText, APos);
     FlagsStr := ReadLpstrAt(AText, APos);
@@ -1760,7 +1760,7 @@ begin
   C := DecodeCount(AText, APos);
   for I := 1 to C do
   begin
-    P := TPropertyDecl.Create;
+    P := TPropertyDecl.Create();
     P.Name           := ReadLpstrAt(AText, APos);
     P.TypeName       := ReadLpstrAt(AText, APos);
     P.ReadName       := ReadLpstrAt(AText, APos);
@@ -1780,7 +1780,7 @@ begin
   Count := ReadDecimalAt(AText, APos);
   for I := 1 to Count do
   begin
-    B := TInlineBody.Create;
+    B := TInlineBody.Create();
     B.RoutineName := ReadLpstrAt(AText, APos);
     B.Block       := ReadBlock(AText, APos);
     AIface.AddInlineBody(B);
@@ -1801,7 +1801,7 @@ begin
   for I := 1 to Count do
   begin
     Name := ReadLpstrAt(AText, APos);
-    G := TGenericBody.Create;
+    G := TGenericBody.Create();
     G.Name   := Name;
     G.IsType := False;
     ReadTypeParamList(AText, APos, G.TypeParams, G.Constraints);
@@ -1810,7 +1810,7 @@ begin
       method-decl payload omits them — they're encoded once at the
       GenericBody level).  Copy them across so a downstream
       instantiation sees a complete TMethodDecl template. }
-    MD.TypeParams := TStringList.Create;
+    MD.TypeParams := TStringList.Create();
     for J := 0 to G.TypeParams.Count - 1 do
       MD.TypeParams.Add(G.TypeParams.Strings[J]);
     MD.Body := ReadBlock(AText, APos);
@@ -1865,13 +1865,13 @@ var
   SrcPar:   TMethodParam;
   NewPar:   TMethodParam;
 begin
-  Def := TGenericTypeDef.Create;
+  Def := TGenericTypeDef.Create();
   ReadTypeParamList(AText, APos, Def.ParamNames, Def.ParamConstraints);
 
   { Inner ClassDef: the ctor already created an empty one — free
     it and rebuild from the wire. }
-  Def.ClassDef.Free;
-  ClassDef := TClassTypeDef.Create;
+  Def.ClassDef.Free();
+  ClassDef := TClassTypeDef.Create();
   Def.ClassDef := ClassDef;
 
   RefStr := ReadLpstrAt(AText, APos);
@@ -1890,7 +1890,7 @@ begin
   for J := 0 to AEntry.Methods.Count - 1 do
   begin
     Sig := TRoutineSig(AEntry.Methods.Items[J]);
-    MD := TMethodDecl.Create;
+    MD := TMethodDecl.Create();
     MD.Name           := Sig.Name;
     MD.OwnerTypeName  := AEntry.Name;
     MD.IsVirtual      := Sig.IsVirtual;
@@ -1899,7 +1899,7 @@ begin
     for K := 0 to Sig.Params.Count - 1 do
     begin
       SrcPar := TMethodParam(Sig.Params.Items[K]);
-      NewPar := TMethodParam.Create;
+      NewPar := TMethodParam.Create();
       NewPar.ParamName    := SrcPar.ParamName;
       NewPar.TypeName     := SrcPar.TypeName;
       NewPar.IsVarParam   := SrcPar.IsVarParam;
@@ -1922,10 +1922,10 @@ var
   Def:     TGenericInterfaceDef;
   IntfDef: TInterfaceTypeDef;
 begin
-  Def := TGenericInterfaceDef.Create;
+  Def := TGenericInterfaceDef.Create();
   ReadTypeParamList(AText, APos, Def.ParamNames, Def.ParamConstraints);
-  Def.IntfDef.Free;
-  IntfDef := TInterfaceTypeDef.Create;
+  Def.IntfDef.Free();
+  IntfDef := TInterfaceTypeDef.Create();
   Def.IntfDef := IntfDef;
   IntfDef.ParentName := ReadLpstrAt(AText, APos);
   ReadMethodDeclList(AText, APos, IntfDef.Methods);
@@ -1941,14 +1941,14 @@ var
   Param:    TMethodParam;
   FlagsStr: string;
 begin
-  Def := TProceduralTypeDef.Create;
+  Def := TProceduralTypeDef.Create();
   Def.IsFunction     := DecodeBool(AText, APos);
   Def.IsMethodPtr    := DecodeBool(AText, APos);
   Def.ReturnTypeName := ReadLpstrAt(AText, APos);
   Pc := DecodeCount(AText, APos);
   for J := 1 to Pc do
   begin
-    Param := TMethodParam.Create;
+    Param := TMethodParam.Create();
     Param.ParamName := ReadLpstrAt(AText, APos);
     Param.TypeName  := ReadLpstrAt(AText, APos);
     FlagsStr := ReadLpstrAt(AText, APos);
@@ -1963,7 +1963,7 @@ procedure ReadInterfacePayload(const AText: string; var APos: Integer;
 var
   Def: TInterfaceTypeDef;
 begin
-  Def := TInterfaceTypeDef.Create;
+  Def := TInterfaceTypeDef.Create();
   Def.ParentName := ReadLpstrAt(AText, APos);
   ReadMethodDeclList(AText, APos, Def.Methods);
   AEntry.Def := Def;
@@ -1987,27 +1987,27 @@ begin
   begin
     Kind  := ReadLpstrAt(AText, APos);
     Name  := ReadLpstrAt(AText, APos);
-    Entry := TTypeEntry.Create;
+    Entry := TTypeEntry.Create();
     Entry.Name := Name;
 
     if Kind = 'enum' then
     begin
       Payload := ReadLpstrAt(AText, APos);
-      EnumDef := TEnumTypeDef.Create;
+      EnumDef := TEnumTypeDef.Create();
       LoadEnumMembers(Payload, EnumDef);
       Entry.Def := EnumDef;
     end
     else if Kind = 'set' then
     begin
       Payload := ReadLpstrAt(AText, APos);
-      SetDef := TSetTypeDef.Create;
+      SetDef := TSetTypeDef.Create();
       SetDef.BaseTypeName := Payload;
       Entry.Def := SetDef;
     end
     else if Kind = 'alias' then
     begin
       Payload := ReadLpstrAt(AText, APos);
-      AliasDef := TTypeAliasDef.Create;
+      AliasDef := TTypeAliasDef.Create();
       AliasDef.TypeName := Payload;
       Entry.Def := AliasDef;
     end
@@ -2025,7 +2025,7 @@ begin
       ReadGenericInterfacePayload(AText, APos, Entry)
     else
     begin
-      Entry.Free;
+      Entry.Free();
       raise EIfaceFormatError.Create('TYPE block: unknown kind ''' + Kind + '''');
     end;
     AIface.AddType(Entry);
@@ -2060,7 +2060,7 @@ begin
   Count := ReadDecimalAt(AText, APos);
   for I := 1 to Count do
   begin
-    R := TRoutineSig.Create;
+    R := TRoutineSig.Create();
     R.Name        := ReadLpstrAt(AText, APos);
     IsFnStr       := ReadLpstrAt(AText, APos);
     R.IsFunction  := IsFnStr <> '0';
@@ -2070,7 +2070,7 @@ begin
     PCount := StrToInt(ReadLpstrAt(AText, APos));
     for J := 1 to PCount do
     begin
-      Param := TMethodParam.Create;
+      Param := TMethodParam.Create();
       Param.ParamName := ReadLpstrAt(AText, APos);
       Param.TypeName  := ReadLpstrAt(AText, APos);
       FlagsStr := ReadLpstrAt(AText, APos);
@@ -2113,7 +2113,7 @@ begin
           'unknown record tag ''%s'' at position %d', [Tag, Cur]));
     end;
   except
-    Result.Free;
+    Result.Free();
     raise;
   end;
 end;
@@ -2170,7 +2170,7 @@ begin
         if Length(Src) > 0 then
           FIn.Read(PChar(Src), Length(Src));
       finally
-        FIn.Free;
+        FIn.Free();
       end;
       AIface.SourceHash := ContentHashFnv1a64(Src);
     except
@@ -2185,8 +2185,8 @@ begin
     if Length(Bytes) > 0 then
       FOut.Write(PChar(Bytes), Length(Bytes));
   finally
-    FOut.Close;
-    FOut.Free;
+    FOut.Close();
+    FOut.Free();
   end;
 end;
 
@@ -2201,7 +2201,7 @@ begin
     if Length(Bytes) > 0 then
       FIn.Read(PChar(Bytes), Length(Bytes));
   finally
-    FIn.Free;
+    FIn.Free();
   end;
   Result := ReadUnitInterface(Bytes);
 end;

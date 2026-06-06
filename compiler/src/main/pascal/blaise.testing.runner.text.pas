@@ -325,7 +325,7 @@ var
   MsgName: string;
   MsgBody: string;
 begin
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := AOutput;
     InFail := False;
@@ -367,7 +367,7 @@ begin
       end;
     end;
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -400,7 +400,7 @@ var
   I:         Integer;
   HasFilter: Boolean;
 begin
-  Result := TTestResult.Create;
+  Result := TTestResult.Create();
   Result.Verbose := AVerbose;
   ProcCount := 0;
   HasFilter := (AFilters <> nil) and (AFilters.Count > 0);
@@ -417,7 +417,7 @@ begin
       Proc.Parameters.Add('--suite');
       Proc.Parameters.Add(CName);
       Proc.Parameters.Add('--verbose');
-      Proc.Execute;
+      Proc.Execute();
       Procs[ProcCount] := Proc;
       ProcCount := ProcCount + 1;
     end
@@ -441,11 +441,11 @@ begin
     Proc := Procs[I];
     Output := '';
     repeat
-      Chunk  := Proc.ReadOutput;
+      Chunk  := Proc.ReadOutput();
       Output := Output + Chunk;
     until (Chunk = '') and not Proc.Running;
-    Proc.WaitOnExit;
-    SubResult := TTestResult.Create;
+    Proc.WaitOnExit();
+    SubResult := TTestResult.Create();
     ParseSubprocessOutput(Output, SubResult);
     Result.MergeFrom(SubResult);
     if AVerbose then
@@ -504,7 +504,7 @@ var
   Filters: TStringList;
   Verbose: Boolean;
 begin
-  Filters := TStringList.Create;
+  Filters := TStringList.Create();
   ParseArgs(Filters, Verbose);
   R := RunFilteredTests(Filters, Verbose);
   PrintSummary(R);

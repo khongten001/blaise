@@ -125,14 +125,14 @@ implementation
 
 procedure TLexerTests.SetLexer(const ASource: string);
 begin
-  FLexer.Free;
+  FLexer.Free();
   FLexer := nil;
   FLexer := TLexer.Create(ASource);
 end;
 
 procedure TLexerTests.TearDown;
 begin
-  FLexer.Free;
+  FLexer.Free();
   FLexer := nil;
 end;
 
@@ -143,7 +143,7 @@ var
   tok: TToken;
 begin
   SetLexer('');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkEOF), Ord(tok.Kind));
 end;
 
@@ -152,7 +152,7 @@ var
   tok: TToken;
 begin
   SetLexer('   ' + #10 + '  ');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkEOF), Ord(tok.Kind));
 end;
 
@@ -163,7 +163,7 @@ var
   tok: TToken;
 begin
   SetLexer('// comment' + #10 + 'begin');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after //', Ord(tkBegin), Ord(tok.Kind));
 end;
 
@@ -172,7 +172,7 @@ var
   tok: TToken;
 begin
   SetLexer('{ comment } begin');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after {}', Ord(tkBegin), Ord(tok.Kind));
 end;
 
@@ -181,7 +181,7 @@ var
   tok: TToken;
 begin
   SetLexer('{ line one' + #10 + '  line two }' + #10 + 'end');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after multiline {}', Ord(tkEnd), Ord(tok.Kind));
 end;
 
@@ -193,7 +193,7 @@ begin
     High UTF-8 bytes inside a brace comment must not disturb the token stream. *)
   SetLexer('{ tolerance: ' + #$C2#$B1 + ' x, ' + #$E2#$89#$A4 + ' y, ' +
            #$F0#$9F#$98#$80 + ' z } begin');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after {} with UTF-8', Ord(tkBegin), Ord(tok.Kind));
 end;
 
@@ -203,7 +203,7 @@ var
 begin
   SetLexer('// note: ' + #$E2#$86#$92 + ' arrow, ' + #$F0#$9F#$98#$80 + ' emoji' +
            #10 + 'end');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after // with UTF-8', Ord(tkEnd), Ord(tok.Kind));
 end;
 
@@ -212,7 +212,7 @@ var
   tok: TToken;
 begin
   SetLexer('(* note ' + #$C2#$B1 + ' epsilon ' + #$E2#$89#$A4 + ' bound *) end');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after (* *) with UTF-8', Ord(tkEnd), Ord(tok.Kind));
 end;
 
@@ -224,7 +224,7 @@ begin
     token boundary, causing spurious identifiers after the comment closed.
     Verify the identifier following the comment lexes cleanly. }
   SetLexer('{ ' + #$C2#$B1 + ' }' + #10 + 'foo');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind after UTF-8 comment', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value after UTF-8 comment', 'foo', tok.Value);
 end;
@@ -236,7 +236,7 @@ var
   tok: TToken;
 begin
   SetLexer('program');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkProgram), Ord(tok.Kind));
   AssertEquals('Value', 'program', tok.Value);
 end;
@@ -246,7 +246,7 @@ var
   tok: TToken;
 begin
   SetLexer('uses');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkUses), Ord(tok.Kind));
 end;
 
@@ -255,7 +255,7 @@ var
   tok: TToken;
 begin
   SetLexer('var');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkVar), Ord(tok.Kind));
 end;
 
@@ -264,7 +264,7 @@ var
   tok: TToken;
 begin
   SetLexer('begin');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkBegin), Ord(tok.Kind));
 end;
 
@@ -273,7 +273,7 @@ var
   tok: TToken;
 begin
   SetLexer('end');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkEnd), Ord(tok.Kind));
 end;
 
@@ -282,15 +282,15 @@ var
   tok: TToken;
 begin
   SetLexer('BEGIN');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Uppercase BEGIN', Ord(tkBegin), Ord(tok.Kind));
 
   SetLexer('End');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Mixed End', Ord(tkEnd), Ord(tok.Kind));
 
   SetLexer('PROGRAM');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Uppercase PROGRAM', Ord(tkProgram), Ord(tok.Kind));
 end;
 
@@ -300,7 +300,7 @@ var
 begin
   { "beginning" starts with "begin" but is not a keyword }
   SetLexer('beginning');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value', 'beginning', tok.Value);
 end;
@@ -312,7 +312,7 @@ var
   tok: TToken;
 begin
   SetLexer('Hello');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value', 'Hello', tok.Value);
 end;
@@ -322,7 +322,7 @@ var
   tok: TToken;
 begin
   SetLexer('_myVar');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value', '_myVar', tok.Value);
 end;
@@ -332,7 +332,7 @@ var
   tok: TToken;
 begin
   SetLexer('item2');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value', 'item2', tok.Value);
 end;
@@ -344,7 +344,7 @@ var
   tok: TToken;
 begin
   SetLexer('7');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '7', tok.Value);
 end;
@@ -354,7 +354,7 @@ var
   tok: TToken;
 begin
   SetLexer('42');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '42', tok.Value);
 end;
@@ -366,7 +366,7 @@ var
   tok: TToken;
 begin
   SetLexer('''hello''');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'hello', tok.Value);
 end;
@@ -376,7 +376,7 @@ var
   tok: TToken;
 begin
   SetLexer('''''');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', '', tok.Value);
 end;
@@ -387,7 +387,7 @@ var
 begin
   { Pascal ''it''''s'' represents it's }
   SetLexer('''it''''s''');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStringLit), Ord(tok.Kind));
   AssertEquals('Value', 'it''s', tok.Value);
 end;
@@ -399,7 +399,7 @@ var
   tok: TToken;
 begin
   SetLexer('+');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkPlus), Ord(tok.Kind));
 end;
 
@@ -408,7 +408,7 @@ var
   tok: TToken;
 begin
   SetLexer('-');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkMinus), Ord(tok.Kind));
 end;
 
@@ -417,7 +417,7 @@ var
   tok: TToken;
 begin
   SetLexer('*');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkStar), Ord(tok.Kind));
 end;
 
@@ -426,7 +426,7 @@ var
   tok: TToken;
 begin
   SetLexer('/');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkSlash), Ord(tok.Kind));
 end;
 
@@ -435,7 +435,7 @@ var
   tok: TToken;
 begin
   SetLexer(':=');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkAssign), Ord(tok.Kind));
   AssertEquals('Value', ':=', tok.Value);
 end;
@@ -445,7 +445,7 @@ var
   tok: TToken;
 begin
   SetLexer(':');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkColon), Ord(tok.Kind));
 end;
 
@@ -454,7 +454,7 @@ var
   tok: TToken;
 begin
   SetLexer('(');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkLParen), Ord(tok.Kind));
 end;
 
@@ -463,7 +463,7 @@ var
   tok: TToken;
 begin
   SetLexer(')');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkRParen), Ord(tok.Kind));
 end;
 
@@ -472,7 +472,7 @@ var
   tok: TToken;
 begin
   SetLexer(',');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkComma), Ord(tok.Kind));
 end;
 
@@ -481,7 +481,7 @@ var
   tok: TToken;
 begin
   SetLexer(';');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkSemicolon), Ord(tok.Kind));
 end;
 
@@ -490,7 +490,7 @@ var
   tok: TToken;
 begin
   SetLexer('.');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkDot), Ord(tok.Kind));
 end;
 
@@ -501,9 +501,9 @@ var
   tok: TToken;
 begin
   SetLexer('begin' + #10 + 'end');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('begin line', 1, tok.Line);
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('end line', 2, tok.Line);
 end;
 
@@ -512,7 +512,7 @@ var
   tok: TToken;
 begin
   SetLexer('  begin');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('begin col', 3, tok.Col);
 end;
 
@@ -525,7 +525,7 @@ var
 begin
   SetLexer('x : Integer');
   for i := 0 to 3 do
-    t[i] := FLexer.Next;
+    t[i] := FLexer.Next();
   AssertEquals('x kind', Ord(tkIdent), Ord(t[0].Kind));
   AssertEquals('x value', 'x', t[0].Value);
   AssertEquals(': kind', Ord(tkColon), Ord(t[1].Kind));
@@ -541,7 +541,7 @@ var
 begin
   SetLexer('x := 42');
   for i := 0 to 3 do
-    t[i] := FLexer.Next;
+    t[i] := FLexer.Next();
   AssertEquals('x', Ord(tkIdent), Ord(t[0].Kind));
   AssertEquals(':=', Ord(tkAssign), Ord(t[1].Kind));
   AssertEquals('42 kind', Ord(tkIntLit), Ord(t[2].Kind));
@@ -556,7 +556,7 @@ var
 begin
   SetLexer('WriteLn(''hi'')');
   for i := 0 to 4 do
-    t[i] := FLexer.Next;
+    t[i] := FLexer.Next();
   AssertEquals('WriteLn kind', Ord(tkIdent), Ord(t[0].Kind));
   AssertEquals('( kind', Ord(tkLParen), Ord(t[1].Kind));
   AssertEquals('str kind', Ord(tkStringLit), Ord(t[2].Kind));
@@ -571,7 +571,7 @@ procedure TLexerTests.TestIntLit_Hex_Lowercase;
 var tok: TToken;
 begin
   SetLexer('$ff');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '$ff', tok.Value);
 end;
@@ -580,7 +580,7 @@ procedure TLexerTests.TestIntLit_Hex_Uppercase;
 var tok: TToken;
 begin
   SetLexer('$FF');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '$FF', tok.Value);
 end;
@@ -589,7 +589,7 @@ procedure TLexerTests.TestIntLit_Hex_WithUnderscore;
 var tok: TToken;
 begin
   SetLexer('$FF_EC');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '$FF_EC', tok.Value);
 end;
@@ -600,7 +600,7 @@ procedure TLexerTests.TestIntLit_Binary;
 var tok: TToken;
 begin
   SetLexer('%11111111');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '%11111111', tok.Value);
 end;
@@ -609,7 +609,7 @@ procedure TLexerTests.TestIntLit_Binary_WithUnderscore;
 var tok: TToken;
 begin
   SetLexer('%0010_0101');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '%0010_0101', tok.Value);
 end;
@@ -620,7 +620,7 @@ procedure TLexerTests.TestIntLit_Octal;
 var tok: TToken;
 begin
   SetLexer('&377');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '&377', tok.Value);
 end;
@@ -629,7 +629,7 @@ procedure TLexerTests.TestIntLit_Octal_WithUnderscore;
 var tok: TToken;
 begin
   SetLexer('&3_77');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '&3_77', tok.Value);
 end;
@@ -640,7 +640,7 @@ procedure TLexerTests.TestIntLit_Decimal_WithUnderscore;
 var tok: TToken;
 begin
   SetLexer('1_000');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '1_000', tok.Value);
 end;
@@ -649,7 +649,7 @@ procedure TLexerTests.TestIntLit_Decimal_MultipleUnderscores;
 var tok: TToken;
 begin
   SetLexer('1_234_567');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIntLit), Ord(tok.Kind));
   AssertEquals('Value', '1_234_567', tok.Value);
 end;
@@ -660,7 +660,7 @@ procedure TLexerTests.TestFloatLit_WithUnderscore;
 var tok: TToken;
 begin
   SetLexer('3.14_15');
-  tok := FLexer.Next;
+  tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkFloatLit), Ord(tok.Kind));
   AssertEquals('Value', '3.14_15', tok.Value);
 end;

@@ -124,7 +124,7 @@ const
         var
           L: TList<Integer>;
         begin
-          L := TList<Integer>.Create;
+          L := TList<Integer>.Create();
           L.Add(10);
           L.Add(20)
         end.
@@ -159,7 +159,7 @@ const
           L: TList<Integer>;
           V: Integer;
         begin
-          L := TList<Integer>.Create;
+          L := TList<Integer>.Create();
           L.Add(42);
           V := L.Get(0)
         end.
@@ -190,7 +190,7 @@ const
               Dest: ^T;
             begin
               if Self.FCount = Self.FCapacity then
-                Self.Grow;
+                Self.Grow();
               Dest := Self.FData + Self.FCount * SizeOf(T);
               Dest^ := Value;
               Self.FCount := Self.FCount + 1
@@ -208,7 +208,7 @@ const
           L: TList<Integer>;
           V: Integer;
         begin
-          L := TList<Integer>.Create;
+          L := TList<Integer>.Create();
           L.Add(10);
           L.Add(20);
           V := L.Get(0)
@@ -227,10 +227,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -239,11 +239,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -253,13 +253,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -284,7 +284,7 @@ begin
     AssertEquals('FData field name', 'FData', FD.Names[0]);
     AssertEquals('FData type is ^T', '^T', FD.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -302,7 +302,7 @@ begin
     AssertEquals('Name is SizeOf', 'SizeOf', Call.Name);
     AssertEquals('One argument', 1, Call.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -321,7 +321,7 @@ begin
     AssertEquals('SizeOf(Integer) resolves to Integer type',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -336,7 +336,7 @@ begin
     AssertEquals('SizeOf(Int64) resolves to Integer type',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -346,7 +346,7 @@ var
 begin
   { Should not raise — nil is compatible with ^Integer }
   Prog := AnalyseSrc(SrcNilToTypedPtr);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTListTests.TestSemantic_Pointer_AssignToTypedPointer;
@@ -355,7 +355,7 @@ var
 begin
   { Should not raise — Pointer (untyped) is compatible with ^Integer }
   Prog := AnalyseSrc(SrcPointerToTypedPtr);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TTListTests.TestSemantic_TList_Instantiation;
@@ -364,7 +364,7 @@ var
 begin
   { Full TList<T> source with ^T fields and SizeOf should analyse without errors }
   Prog := AnalyseSrc(SrcTListType);
-  Prog.Free;
+  Prog.Free();
 end;
 
 { ------------------------------------------------------------------ }

@@ -143,7 +143,7 @@ const
           C: IEqualityComparer<Integer>;
           OK: Boolean;
         begin
-          C  := TIntegerEqualityComparer.Create;
+          C  := TIntegerEqualityComparer.Create();
           OK := C.Equals(1, 1)
         end.
         ''';
@@ -160,10 +160,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -172,11 +172,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -186,13 +186,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -211,7 +211,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[0]);
     AssertTrue('Def is TGenericInterfaceDef', TD.Def is TGenericInterfaceDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -226,7 +226,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[0]);
     AssertTrue('Def is TGenericInterfaceDef', TD.Def is TGenericInterfaceDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -246,7 +246,7 @@ begin
       (CD.ParentName = 'IEqualityComparer<Integer>') or
       (CD.ImplementsNames.IndexOf('IEqualityComparer<Integer>') >= 0));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -259,7 +259,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTIntegerEqualityComparerDecl);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericDefaultsTests.TestSemantic_IComparer_Integer_Instantiates;
@@ -267,7 +267,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTIntegerComparerDecl);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericDefaultsTests.TestSemantic_TIntegerEqualityComparer_ImplementsOK;
@@ -275,7 +275,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTIntegerEqualityComparerDecl);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericDefaultsTests.TestSemantic_TIntegerComparer_ImplementsOK;
@@ -283,7 +283,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcTIntegerComparerDecl);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericDefaultsTests.TestSemantic_Var_IEqualityComparer_Integer_IsInterface;
@@ -297,7 +297,7 @@ begin
     AssertEquals('Variable type is tyInterface',
       Ord(tyInterface), Ord(VD.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

@@ -126,10 +126,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -138,11 +138,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -152,13 +152,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -177,7 +177,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertNotNull('TypeParams not nil', MD.TypeParams);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -192,7 +192,7 @@ begin
     AssertEquals('one type param', 1, MD.TypeParams.Count);
     AssertEquals('param name T', 'T', MD.TypeParams[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -209,7 +209,7 @@ begin
     AssertEquals('first param A', 'A', MD.TypeParams[0]);
     AssertEquals('second param B', 'B', MD.TypeParams[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -227,7 +227,7 @@ begin
     AssertEquals('param name Val', 'Val', Par.ParamName);
     AssertEquals('param type T', 'T', Par.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -241,7 +241,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('return type T', 'T', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -261,7 +261,7 @@ begin
     Assign := TAssignment(Prog.Block.Stmts[0]);
     AssertTrue('rhs is TFuncCallExpr', Assign.Expr is TFuncCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -277,7 +277,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertEquals('call name', 'Identity<Integer>', FCall.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -293,7 +293,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertEquals('one arg', 1, FCall.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -310,7 +310,7 @@ begin
   try
     AssertEquals('no instances', 0, Prog.GenericFuncInstances.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -322,7 +322,7 @@ begin
   try
     AssertEquals('one instance', 1, Prog.GenericFuncInstances.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -338,7 +338,7 @@ begin
     AssertEquals('return type is Integer', Ord(tyInteger),
       Ord(GFI.MethodDecl.ResolvedReturnType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -356,7 +356,7 @@ begin
     AssertNotNull('param type not nil', Par.ResolvedType);
     AssertEquals('param type is Integer', Ord(tyInteger), Ord(Par.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

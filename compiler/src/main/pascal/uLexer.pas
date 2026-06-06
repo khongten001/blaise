@@ -154,14 +154,14 @@ end;
 constructor TLexer.Create(const ASource: string; const AFilename: string = '');
 begin
   inherited Create;
-  FTok := TFpgPascalTokeniser.Create;
+  FTok := TFpgPascalTokeniser.Create();
   FTok.SetSource(ASource);
   FFilename := AFilename;
 end;
 
 destructor TLexer.Destroy;
 begin
-  FTok.Free;
+  FTok.Free();
   inherited Destroy;
 end;
 
@@ -403,7 +403,7 @@ begin
   depth := 1;
   while depth > 0 do
   begin
-    raw := FTok.NextToken;
+    raw := FTok.NextToken();
     if raw.Kind = fptkEOF then Break;
     if raw.Kind = fptkDirective then
     begin
@@ -431,7 +431,7 @@ begin
   depth := 1;
   while depth > 0 do
   begin
-    raw := FTok.NextToken;
+    raw := FTok.NextToken();
     if raw.Kind = fptkEOF then Break;
     if raw.Kind = fptkDirective then
     begin
@@ -452,7 +452,7 @@ var
 begin
   while True do
   begin
-    raw := FTok.NextToken;
+    raw := FTok.NextToken();
     if raw.Kind in [fptkWhitespace, fptkLineEnding, fptkComment] then
       Continue;
     if raw.Kind = fptkDirective then
@@ -462,7 +462,7 @@ begin
       if dname = 'IFDEF' then
       begin
         { Blaise defines no FPC-specific symbols — always skip the body }
-        SkipToElseOrEndif;
+        SkipToElseOrEndif();
       end
       else if dname = 'IFNDEF' then
       begin

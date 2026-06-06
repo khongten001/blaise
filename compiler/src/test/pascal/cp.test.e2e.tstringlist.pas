@@ -61,12 +61,12 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('alpha');
       L.Add('beta');
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -76,13 +76,13 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       WriteLn(L.Count);
       L.Add('x');
       WriteLn(L.Count);
       L.Add('y');
       WriteLn(L.Count);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -92,13 +92,13 @@ const
     uses Classes;
     var L: TStringList; I: Integer;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('first');
       L.Add('second');
       L.Add('third');
       I := L.IndexOf('second');
       WriteLn(I);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -108,11 +108,11 @@ const
     uses Classes;
     var L: TStringList; I: Integer;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('foo');
       I := L.IndexOf('bar');
       WriteLn(I);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -122,7 +122,7 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('a');
       L.Add('b');
       L.Add('c');
@@ -130,7 +130,7 @@ const
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -140,7 +140,7 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('first');
       L.Add('third');
       L.Insert(1, 'second');
@@ -148,7 +148,7 @@ const
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
       WriteLn(L.Get(2));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -158,15 +158,15 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('one');
       L.Add('two');
-      L.Clear;
+      L.Clear();
       WriteLn(L.Count);
       L.Add('new');
       WriteLn(L.Count);
       WriteLn(L.Get(0));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -176,11 +176,11 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('original');
       L.Strings[0] := 'replaced';
       WriteLn(L.Strings[0]);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -190,18 +190,18 @@ const
     uses Classes;
     var A, B: TStringList;
     begin
-      A := TStringList.Create;
+      A := TStringList.Create();
       A.Add('x');
       A.Add('y');
-      B := TStringList.Create;
+      B := TStringList.Create();
       B.Add('z');
       B.AddStrings(A);
       WriteLn(B.Count);
       WriteLn(B.Get(0));
       WriteLn(B.Get(1));
       WriteLn(B.Get(2));
-      A.Free;
-      B.Free
+      A.Free();
+      B.Free()
     end.
     ''';
 
@@ -211,12 +211,12 @@ const
     uses Classes;
     var L: TStringList; S: string;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('p');
       L.Add('q');
       L.Add('r');
       for S in L do WriteLn(S);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -226,7 +226,7 @@ const
     uses Classes;
     var L: TStringList; T: string;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('line1');
       L.Add('line2');
       T := L.Text;
@@ -234,7 +234,7 @@ const
       { Pos is 0-based in Blaise; >= 0 means found }
       WriteLn(Pos('line1', T) >= 0);
       WriteLn(Pos('line2', T) >= 0);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -244,7 +244,7 @@ const
     uses Classes;
     var L: TStringList; I: Integer; T: string;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       I := 0;
       while I < 500 do
       begin
@@ -260,7 +260,7 @@ const
       WriteLn(Pos('line_1' + #10, T) >= 0);
       WriteLn(Pos('line_250' + #10, T) >= 0);
       WriteLn(Pos('line_499' + #10, T) >= 0);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -270,12 +270,12 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Text := 'hello' + #10 + 'world';
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -291,7 +291,7 @@ const
     uses Classes;
     var L: TStringList; I: Integer;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Text := 'a' + #10 + '  indented' + #10 + 'trailing  ';
       WriteLn(L.Count);
       I := 0;
@@ -300,7 +300,7 @@ const
         WriteLn('[' + L.Get(I) + ']');
         I := I + 1
       end;
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -310,7 +310,7 @@ const
     uses Classes;
     var L: TStringList; I: Integer;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       I := 0;
       while I < 10 do
       begin
@@ -320,7 +320,7 @@ const
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(9));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -330,7 +330,7 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Sorted := True;
       L.Add('gamma');
       L.Add('alpha');
@@ -338,7 +338,7 @@ const
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
       WriteLn(L.Get(2));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -348,7 +348,7 @@ const
     uses Classes;
     var L: TStringList; Idx: Integer; Found: Boolean;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Sorted := True;
       L.Add('apple');
       L.Add('cherry');
@@ -358,7 +358,7 @@ const
       WriteLn(Idx);
       Found := L.Find('durian', Idx);
       WriteLn(Found);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -368,7 +368,7 @@ const
     uses Classes;
     var L: TStringList; I: Integer;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.CaseSensitive := False;
       L.Add('Hello');
       L.Add('World');
@@ -376,7 +376,7 @@ const
       WriteLn(I);
       I := L.IndexOf('WORLD');
       WriteLn(I);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -386,7 +386,7 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Sorted := True;
       L.Duplicates := dupIgnore;
       L.Add('x');
@@ -395,7 +395,7 @@ const
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -410,7 +410,7 @@ const
     end;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('banana');
       L.Add('apple');
       L.Add('cherry');
@@ -418,7 +418,7 @@ const
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
       WriteLn(L.Get(2));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -428,13 +428,13 @@ const
     uses Classes;
     var L: TStringList; S: string;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('alpha');
       L.Add('beta');
       L.Add('gamma');
       S := L.CommaText;
       WriteLn(S);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -444,13 +444,13 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.CommaText := 'one,two,three';
       WriteLn(L.Count);
       WriteLn(L.Get(0));
       WriteLn(L.Get(1));
       WriteLn(L.Get(2));
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -460,11 +460,11 @@ const
     uses Classes;
     var L: TStringList;
     begin
-      L := TStringList.Create;
+      L := TStringList.Create();
       L.Add('hello world');
       L.Add('foo');
       WriteLn(L.CommaText);
-      L.Free
+      L.Free()
     end.
     ''';
 
@@ -491,13 +491,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcAddGet, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Get(0)=alpha', 'alpha', Lines.Strings[0]);
     AssertEquals('Get(1)=beta',  'beta',  Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -510,14 +510,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcCount, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('count=0 initially', '0', Lines.Strings[0]);
     AssertEquals('count=1 after Add', '1', Lines.Strings[1]);
     AssertEquals('count=2 after Add', '2', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -552,14 +552,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDelete, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('count=2 after Delete',  '2', Lines.Strings[0]);
     AssertEquals('Get(0)=a after Delete', 'a', Lines.Strings[1]);
     AssertEquals('Get(1)=c after Delete', 'c', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -572,7 +572,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcInsert, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('count=3 after Insert', '3',      Lines.Strings[0]);
@@ -580,7 +580,7 @@ begin
     AssertEquals('Get(1)=second',        'second', Lines.Strings[2]);
     AssertEquals('Get(2)=third',         'third',  Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -593,14 +593,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcClear, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('count=0 after Clear',        '0',   Lines.Strings[0]);
     AssertEquals('count=1 after Add-on-clear', '1',   Lines.Strings[1]);
     AssertEquals('Get(0)=new after clear',     'new', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -624,7 +624,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcAddStrings, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('count=3 after AddStrings', '3', Lines.Strings[0]);
@@ -632,7 +632,7 @@ begin
     AssertEquals('B.Get(1)=x',               'x', Lines.Strings[2]);
     AssertEquals('B.Get(2)=y',               'y', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -645,14 +645,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcForIn, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('for-in yields p', 'p', Lines.Strings[0]);
     AssertEquals('for-in yields q', 'q', Lines.Strings[1]);
     AssertEquals('for-in yields r', 'r', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -665,14 +665,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextGet, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Count=2',             '2', Lines.Strings[0]);
     AssertEquals('Text contains line1', 'True', Lines.Strings[1]);
     AssertEquals('Text contains line2', 'True', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -686,7 +686,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextGetMany, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Count=500',            '500', Lines.Strings[0]);
@@ -696,7 +696,7 @@ begin
     AssertEquals('contains line_250', 'True', Lines.Strings[3]);
     AssertEquals('contains line_499', 'True', Lines.Strings[4]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -709,14 +709,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcTextSet, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Count=2 after Text set', '2',     Lines.Strings[0]);
     AssertEquals('Get(0)=hello',           'hello', Lines.Strings[1]);
     AssertEquals('Get(1)=world',           'world', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -745,14 +745,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcGrow, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Count=10 after 10 adds', '10',    Lines.Strings[0]);
     AssertEquals('Get(0)=item0',           'item0', Lines.Strings[1]);
     AssertEquals('Get(9)=item9',           'item9', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -765,14 +765,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcSortedOrder, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('sorted[0]=alpha', 'alpha', Lines.Strings[0]);
     AssertEquals('sorted[1]=beta',  'beta',  Lines.Strings[1]);
     AssertEquals('sorted[2]=gamma', 'gamma', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -785,14 +785,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcSortedFind, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Find(cherry)=True (true)',  'True', Lines.Strings[0]);
     AssertEquals('Find(cherry) idx',          '1',    Lines.Strings[1]);
     AssertEquals('Find(durian)=False (false)', 'False', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -805,13 +805,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcCaseInsensitive, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('IndexOf(hello case-insensitive)=0', '0', Lines.Strings[0]);
     AssertEquals('IndexOf(WORLD case-insensitive)=1', '1', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -824,14 +824,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDupIgnore, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('dupIgnore: count=2 (no dup)', '2', Lines.Strings[0]);
     AssertEquals('dupIgnore: Get(0)=x',         'x', Lines.Strings[1]);
     AssertEquals('dupIgnore: Get(1)=y',         'y', Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -844,14 +844,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcCustomSort, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('CustomSort desc [0]=cherry', 'cherry', Lines.Strings[0]);
     AssertEquals('CustomSort desc [1]=banana', 'banana', Lines.Strings[1]);
     AssertEquals('CustomSort desc [2]=apple',  'apple',  Lines.Strings[2]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -875,7 +875,7 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcCommaTextSet, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Count=3 after CommaText set', '3',     Lines.Strings[0]);
@@ -883,7 +883,7 @@ begin
     AssertEquals('Get(1)=two',                  'two',   Lines.Strings[2]);
     AssertEquals('Get(2)=three',                'three', Lines.Strings[3]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 

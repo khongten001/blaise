@@ -151,7 +151,7 @@ begin
               '.o iface has no source hash; recompiling from source');
       Exit;
     end;
-    Src := TStringList.Create;
+    Src := TStringList.Create();
     try
       try
         Src.LoadFromFile(SrcPath);
@@ -160,7 +160,7 @@ begin
         Cur := '';
       end;
     finally
-      Src.Free;
+      Src.Free();
     end;
     if Cur = '' then Exit;
     Result := SameText(Cur, AIface.SourceHash);
@@ -215,23 +215,23 @@ var
   L:  TLexer;
   P:  TParser;
 begin
-  SL := TStringList.Create;
+  SL := TStringList.Create();
   try
     SL.LoadFromFile(APath);
     L := TLexer.Create(SL.Text, APath);
     try
       P := TParser.Create(L);
       try
-        Result := P.ParseUnit;
+        Result := P.ParseUnit();
         Result.SourceFile := APath;
       finally
-        P.Free;
+        P.Free();
       end;
     finally
-      L.Free;
+      L.Free();
     end;
   finally
-    SL.Free;
+    SL.Free();
   end;
 end;
 
@@ -269,7 +269,7 @@ begin
             signal the iface is safe; mismatch → discard. }
       if not ValidateIface(Iface, AName) then
       begin
-        Iface.Free;
+        Iface.Free();
         Iface := nil;
       end;
     end;
@@ -311,7 +311,7 @@ begin
     FLoadedNames.Add(AName);
     U := nil;  { ownership transferred to FResult }
   finally
-    U.Free;  { no-op if U = nil (success path) or on error }
+    U.Free();  { no-op if U = nil (success path) or on error }
     FLoading.Delete(FLoading.IndexOf(AName));
   end;
 end;
@@ -320,21 +320,21 @@ constructor TUnitLoader.Create(const ASearchPaths: TStringList);
 begin
   inherited Create;
   FSearchPaths := ASearchPaths;
-  FLoading     := TStringList.Create;
+  FLoading     := TStringList.Create();
   FLoading.CaseSensitive := False;
-  FLoadedNames := TStringList.Create;
+  FLoadedNames := TStringList.Create();
   FLoadedNames.CaseSensitive := False;
   FPrebuiltIfaces      := TObjectList.Create(True);
-  FPrebuiltObjectPaths := TStringList.Create;
+  FPrebuiltObjectPaths := TStringList.Create();
   FPrebuiltObjectPaths.CaseSensitive := False;
 end;
 
 destructor TUnitLoader.Destroy;
 begin
-  FPrebuiltObjectPaths.Free;
-  FPrebuiltIfaces.Free;
-  FLoadedNames.Free;
-  FLoading.Free;
+  FPrebuiltObjectPaths.Free();
+  FPrebuiltIfaces.Free();
+  FLoadedNames.Free();
+  FLoading.Free();
   inherited Destroy;
 end;
 
@@ -349,7 +349,7 @@ begin
       LoadTransitive(AUnitNames.Strings[I]);
   except
     FResult := nil;
-    Result.Free;
+    Result.Free();
     raise;
   end;
   FResult := nil;

@@ -326,23 +326,23 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
-        Sem := TSemanticAnalyser.Create;
+        Sem := TSemanticAnalyser.Create();
         try
           Sem.AnalyseUnitForExport(U);
           Result := ExportUnitInterface(U, nil, Sem.GetSymbolTable);
         finally
-          Sem.Free;
+          Sem.Free();
         end;
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 
@@ -357,17 +357,17 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
         Result := ExportUnitInterface(U, ADeps);
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 
@@ -381,17 +381,17 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
         Result := ExportUnitInterface(U, nil);  { no deps yet }
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 
@@ -451,7 +451,7 @@ begin
                  TFieldDecl(TRecordTypeDef(Iface.FindType('TPoint').Def)
                               .Fields.Items[0]).Names.Count);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -478,7 +478,7 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
         SrcDef := TTypeDecl(U.IntfBlock.TypeDecls.Items[0]).Def;
         Iface  := ExportUnitInterface(U, nil);
@@ -487,16 +487,16 @@ begin
           AssertEquals('def is a clone, not a ref',
                        True, SrcDef <> IfaceDef);
         finally
-          Iface.Free;
+          Iface.Free();
         end;
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 procedure TSelfContainmentTests.TestGenericBody_IsDeepClone;
@@ -519,7 +519,7 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
         SrcDef := TTypeDecl(U.IntfBlock.TypeDecls.Items[0]).Def;
         Iface  := ExportUnitInterface(U, nil);
@@ -529,16 +529,16 @@ begin
           AssertEquals('TypeDef cloned, not aliased',
                        True, GBody.TypeDef <> SrcDef);
         finally
-          Iface.Free;
+          Iface.Free();
         end;
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 
@@ -563,7 +563,7 @@ begin
   try
     Parser := TParser.Create(Lex);
     try
-      U := Parser.ParseUnit;
+      U := Parser.ParseUnit();
       try
         SrcImpl := TMethodDecl(U.ImplBlock.ProcDecls.Items[0]);
         Iface   := ExportUnitInterface(U, nil);
@@ -573,16 +573,16 @@ begin
           AssertEquals('block cloned, not aliased',
                        True, Body.Block <> SrcImpl.Body);
         finally
-          Iface.Free;
+          Iface.Free();
         end;
       finally
-        U.Free;
+        U.Free();
       end;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
 end;
 
@@ -627,11 +627,11 @@ begin
       AssertEquals('return type name', 'TWidget', Sig.ReturnType.TypeName);
       AssertEquals('return type unit', 'DepU',    Sig.ReturnType.UnitName);
     finally
-      Main.Free;
+      Main.Free();
     end;
   finally
-    Deps.Free;
-    Dep.Free;
+    Deps.Free();
+    Dep.Free();
   end;
 end;
 
@@ -656,7 +656,7 @@ begin
     AssertEquals('is local ref',     True,    IsLocalRef(Sig.ReturnType));
     AssertEquals('unit name empty',  '',      Sig.ReturnType.UnitName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -680,7 +680,7 @@ begin
     AssertEquals('is builtin ref',   True,      IsBuiltinRef(Sig.ReturnType));
     AssertEquals('unit name builtin','$builtin',Sig.ReturnType.UnitName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -692,8 +692,8 @@ end;
 
 function MakeIntConst(const AName: string; AValue: Int64): TConstEntry;
 begin
-  Result := TConstEntry.Create;
-  Result.Decl := TConstDecl.Create;
+  Result := TConstEntry.Create();
+  Result.Decl := TConstDecl.Create();
   Result.Decl.Name   := AName;
   Result.Decl.IntVal := AValue;
   Result.TypeRef := MakeBuiltinRef('Integer');
@@ -701,8 +701,8 @@ end;
 
 function MakeStringConst(const AName, AValue: string): TConstEntry;
 begin
-  Result := TConstEntry.Create;
-  Result.Decl := TConstDecl.Create;
+  Result := TConstEntry.Create();
+  Result.Decl := TConstDecl.Create();
   Result.Decl.Name     := AName;
   Result.Decl.StrVal   := AValue;
   Result.Decl.IsString := True;
@@ -711,8 +711,8 @@ end;
 
 function MakeFloatConst(const AName, AText: string): TConstEntry;
 begin
-  Result := TConstEntry.Create;
-  Result.Decl := TConstDecl.Create;
+  Result := TConstEntry.Create();
+  Result.Decl := TConstDecl.Create();
   Result.Decl.Name    := AName;
   Result.Decl.StrVal  := AText;        { raw float text }
   Result.Decl.IsFloat := True;
@@ -735,7 +735,7 @@ begin
     AssertEquals('not float',  False, E.Decl.IsFloat);
     AssertEquals('type ref',  'Integer', E.TypeRef.TypeName);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -753,7 +753,7 @@ begin
     AssertEquals('value', 'hello world', E.Decl.StrVal);
     AssertEquals('is string', True, E.Decl.IsString);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -771,7 +771,7 @@ begin
     AssertEquals('raw text', '3.14159265', E.Decl.StrVal);
     AssertEquals('is float', True, E.Decl.IsFloat);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -786,14 +786,14 @@ begin
     Objects[i] <> nil → ident reference. }
   U := TUnitInterface.Create('TestUnit');
   try
-    Decl := TConstDecl.Create;
+    Decl := TConstDecl.Create();
     Decl.Name       := 'FullGreeting';
     Decl.IsString   := True;
-    Decl.ConstParts := TStringList.Create;
+    Decl.ConstParts := TStringList.Create();
     Decl.ConstParts.AddObject('Hello, ', nil);
     Decl.ConstParts.AddObject('Name',    TObject(Pointer(1)));
 
-    E := TConstEntry.Create;
+    E := TConstEntry.Create();
     E.Decl := Decl;
     E.TypeRef := MakeBuiltinRef('string');
     U.AddConst(E);
@@ -806,7 +806,7 @@ begin
     AssertEquals('part 1 text', 'Name',     E.Decl.ConstParts.Strings[1]);
     AssertEquals('part 1 is ident',   True,  E.Decl.ConstParts.Objects[1] <> nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -819,21 +819,21 @@ begin
   { const Primes: array[0..4] of Integer = (2, 3, 5, 7, 11); }
   U := TUnitInterface.Create('TestUnit');
   try
-    Decl := TConstDecl.Create;
+    Decl := TConstDecl.Create();
     Decl.Name                := 'Primes';
     Decl.IsArrayConst        := True;
     Decl.ArrayElemType       := 'Integer';
     Decl.ArrayIsRangeIndexed := True;
     Decl.ArrayLowBound       := 0;
     Decl.ArrayHighBound      := 4;
-    Decl.ArrayElements       := TStringList.Create;
+    Decl.ArrayElements       := TStringList.Create();
     Decl.ArrayElements.Add('2');
     Decl.ArrayElements.Add('3');
     Decl.ArrayElements.Add('5');
     Decl.ArrayElements.Add('7');
     Decl.ArrayElements.Add('11');
 
-    E := TConstEntry.Create;
+    E := TConstEntry.Create();
     E.Decl := Decl;
     U.AddConst(E);
 
@@ -848,7 +848,7 @@ begin
     AssertEquals('e0', '2',  E.Decl.ArrayElements.Strings[0]);
     AssertEquals('e4', '11', E.Decl.ArrayElements.Strings[4]);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -862,18 +862,18 @@ begin
     Index type is an enum, not a numeric range. }
   U := TUnitInterface.Create('TestUnit');
   try
-    Decl := TConstDecl.Create;
+    Decl := TConstDecl.Create();
     Decl.Name                := 'DayNames';
     Decl.IsArrayConst        := True;
     Decl.ArrayIndexType      := 'TDayOfWeek';
     Decl.ArrayElemType       := 'string';
     Decl.ArrayIsRangeIndexed := False;
-    Decl.ArrayElements       := TStringList.Create;
+    Decl.ArrayElements       := TStringList.Create();
     Decl.ArrayElements.Add('Mon');
     Decl.ArrayElements.Add('Tue');
     Decl.ArrayElements.Add('Wed');
 
-    E := TConstEntry.Create;
+    E := TConstEntry.Create();
     E.Decl := Decl;
     U.AddConst(E);
 
@@ -884,7 +884,7 @@ begin
     AssertEquals('count', 3, E.Decl.ArrayElements.Count);
     AssertEquals('e0', 'Mon', E.Decl.ArrayElements.Strings[0]);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -918,7 +918,7 @@ begin
     AssertEquals('ord 1', 1, Enum.OrdinalAt(1));
     AssertEquals('ord 2', 2, Enum.OrdinalAt(2));
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -943,7 +943,7 @@ begin
     AssertEquals('is set def',    True, E.Def is TSetTypeDef);
     AssertEquals('base enum',    'TFlag', TSetTypeDef(E.Def).BaseTypeName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -985,7 +985,7 @@ begin
     AssertEquals('f1 name', 'Y', F1.Names.Strings[0]);
     AssertEquals('f2 name', 'Z', F2.Names.Strings[0]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1028,7 +1028,7 @@ begin
     F := TFieldDecl(Rec.Fields.Items[1]);
     AssertEquals('f1 type name', 'Integer', F.TypeName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 { ----- TRecordClassLayoutTests (class subset, Phase 3) ---------- }
@@ -1065,11 +1065,11 @@ begin
       AssertEquals('parent name',   'TBase',  E.ParentClass.TypeName);
       AssertEquals('parent unit',   'DepU',   E.ParentClass.UnitName);
     finally
-      MainIface.Free;
+      MainIface.Free();
     end;
   finally
-    Deps.Free;
-    DepIface.Free;
+    Deps.Free();
+    DepIface.Free();
   end;
 end;
 
@@ -1096,7 +1096,7 @@ begin
     AssertEquals('impl[0]', 'IFirst',  E.Implements.Strings[0]);
     AssertEquals('impl[1]', 'ISecond', E.Implements.Strings[1]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1134,7 +1134,7 @@ begin
     AssertEquals('m1 is func',  True,      Count.IsFunction);
     AssertEquals('m1 return',   'Integer', Count.ReturnType.TypeName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1151,7 +1151,7 @@ const
     '    procedure Plain;'                              + #10 +
     '  end;'                                            + #10 +
     'implementation'                                    + #10 +
-    'function TWidget.ToString: string; begin Result := ''w''; end;' + #10 +
+    'function TWidget.ToString(): string; begin Result := ''w''; end;' + #10 +
     'procedure TWidget.Plain; begin end;'               + #10 +
     'end.'                                              + #10;
 var
@@ -1169,7 +1169,7 @@ begin
     AssertEquals('ToString virtual slot', True, ToString.VTableSlot >= 0);
     AssertEquals('Plain static',          -1,   Plain.VTableSlot);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1194,7 +1194,7 @@ begin
     AssertEquals('found',                  True, E <> nil);
     AssertEquals('instance size positive', True, E.InstanceSize > 0);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1219,7 +1219,7 @@ begin
     AssertEquals('attribute count', 1, E.Attributes.Count);
     AssertEquals('attribute name', 'Threaded', E.Attributes.Strings[0]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1249,7 +1249,7 @@ begin
     AssertEquals('body found', True, Body <> nil);
     AssertEquals('block non-nil', True, Body.Block <> nil);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1282,7 +1282,7 @@ begin
     AssertEquals('type-param count', 1, G.TypeParams.Count);
     AssertEquals('type-param[0]', 'T', G.TypeParams.Strings[0]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1310,7 +1310,7 @@ begin
     AssertEquals('type-param count', 1, G.TypeParams.Count);
     AssertEquals('type-param[0]', 'T', G.TypeParams.Strings[0]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1335,7 +1335,7 @@ begin
     AssertEquals('generic found', True, G <> nil);
     AssertEquals('constraint',    'class', G.Constraints.Strings[0]);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1360,7 +1360,7 @@ begin
     AssertEquals('public present', True, Iface.FindRoutine('Public1')  <> nil);
     AssertEquals('private hidden', True, Iface.FindRoutine('Private1') = nil);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1382,7 +1382,7 @@ begin
     AssertEquals('public present', True, Iface.FindType('TPublic')  <> nil);
     AssertEquals('private hidden', True, Iface.FindType('TPrivate') = nil);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1409,7 +1409,7 @@ begin
     AssertEquals('no inline body', True,
                  Iface.FindInlineBody('Compute') = nil);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1450,7 +1450,7 @@ begin
     AssertEquals('Pub  IsPublished',  True,  Pub.IsPublished);
     AssertEquals('Pub2 IsPublished',  False, Pub2.IsPublished);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1482,7 +1482,7 @@ begin
     AssertEquals('method count', 1, E.Methods.Count);
     AssertEquals('field count',  1, TClassTypeDef(E.Def).Fields.Count);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1513,7 +1513,7 @@ begin
     AssertEquals('var',   True,    P.IsVarParam);
     AssertEquals('not const', False, P.IsConstParam);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1541,7 +1541,7 @@ begin
     AssertEquals('const',     True,     P.IsConstParam);
     AssertEquals('not var',   False,    P.IsVarParam);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1572,7 +1572,7 @@ begin
     AssertEquals('var',       True,  P.IsVarParam);
     AssertEquals('not const', False, P.IsConstParam);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1603,7 +1603,7 @@ begin
     AssertEquals('func IsFunction',  True, Func.IsFunction);
     AssertEquals('func ret',         'Integer', Func.ReturnType.TypeName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1627,7 +1627,7 @@ begin
     AssertEquals('found',        True,    Sig <> nil);
     AssertEquals('calling conv', 'cdecl', Sig.CallingConv);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1650,7 +1650,7 @@ begin
     AssertEquals('is external',   True,   Sig.IsExternal);
     AssertEquals('external name', 'clock', Sig.ExternalName);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1671,7 +1671,7 @@ begin
     AssertEquals('second',   'Classes',  U.UsedUnits.Strings[1]);
     AssertEquals('third',    'Math',     U.UsedUnits.Strings[2]);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1694,7 +1694,7 @@ begin
     AssertEquals('Classes excluded',  -1,         Iface.UsedUnits.IndexOf('Classes'));
     AssertEquals('Math excluded',     -1,         Iface.UsedUnits.IndexOf('Math'));
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -1706,32 +1706,32 @@ end;
 
 function MakeTypeEntry(const AName: string): TTypeEntry;
 begin
-  Result := TTypeEntry.Create;
+  Result := TTypeEntry.Create();
   Result.Name := AName;
 end;
 
 function MakeConstEntry(const AName: string): TConstEntry;
 begin
-  Result := TConstEntry.Create;
-  Result.Decl := TConstDecl.Create;
+  Result := TConstEntry.Create();
+  Result.Decl := TConstDecl.Create();
   Result.Decl.Name := AName;
 end;
 
 function MakeRoutineSig(const AName: string): TRoutineSig;
 begin
-  Result := TRoutineSig.Create;
+  Result := TRoutineSig.Create();
   Result.Name := AName;
 end;
 
 function MakeGenericBody(const AName: string): TGenericBody;
 begin
-  Result := TGenericBody.Create;
+  Result := TGenericBody.Create();
   Result.Name := AName;
 end;
 
 function MakeInlineBody: TInlineBody;
 begin
-  Result := TInlineBody.Create;
+  Result := TInlineBody.Create();
   Result.RoutineName := 'SomeInline';
 end;
 
@@ -1754,7 +1754,7 @@ begin
     E := U.FindType('TFOO');
     AssertEquals('uppercase', True, E <> nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1776,7 +1776,7 @@ begin
     E := U.FindConst('maxvalue');
     AssertEquals('lowercase', True, E <> nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1798,7 +1798,7 @@ begin
     S := U.FindRoutine('DOSTUFF');
     AssertEquals('uppercase', True, S <> nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1820,7 +1820,7 @@ begin
     G := U.FindGeneric('TLIST');
     AssertEquals('uppercase', True, G <> nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1836,7 +1836,7 @@ begin
     AssertEquals('wrong case miss', True, U.FindType('tfoo') = nil);
     AssertEquals('upper case miss', True, U.FindType('TFOO') = nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1858,7 +1858,7 @@ begin
     AssertEquals('inline missing',   True, U.FindInlineBody('NotInline') = nil);
     AssertEquals('generic missing',  True, U.FindGeneric('TQueue') = nil);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1872,7 +1872,7 @@ begin
   try
     AssertEquals('name preserved', 'MyUnit', U.Name);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1885,7 +1885,7 @@ begin
     U.SourceFile := '/tmp/MyUnit.pas';
     AssertEquals('source file', '/tmp/MyUnit.pas', U.SourceFile);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1902,7 +1902,7 @@ begin
   try
     AssertEquals('hash empty in Phase 1', '', U.SourceHash);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1914,7 +1914,7 @@ begin
   try
     AssertEquals('compiler version empty in Phase 1', '', U.CompilerId);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -1925,7 +1925,7 @@ end;
 function FreshTableWithBuiltins: TSymbolTable;
 begin
   { TSymbolTable.Create already calls RegisterBuiltins. }
-  Result := TSymbolTable.Create;
+  Result := TSymbolTable.Create();
 end;
 
 procedure TImportRoundTripTests.TestImport_IntConst_DefinedWithValue;
@@ -1950,8 +1950,8 @@ begin
     AssertTrue('skConstant', Sym.Kind = skConstant);
     AssertEquals('value', 42, Sym.ConstValue);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -1977,8 +1977,8 @@ begin
     AssertTrue('skConstant', Sym.Kind = skConstant);
     AssertEquals('value', 'hello', Sym.ConstString);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2009,8 +2009,8 @@ begin
     AssertTrue('Green is skConstant', Sym.Kind = skConstant);
     AssertEquals('Green ordinal', 1, Sym.ConstValue);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2041,8 +2041,8 @@ begin
         TEnumTypeDesc(Tab.FindType('TColor')));
     AssertEquals('bit count', 3, TSetTypeDesc(TyDesc).BitCount);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2067,8 +2067,8 @@ begin
     AssertTrue('TMyInt defined', TyDesc <> nil);
     AssertTrue('Aliases to Integer', TyDesc = Tab.FindType('Integer'));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2097,8 +2097,8 @@ begin
     AssertTrue('param type Integer',
       TParamDesc(Sym.Params.Items[0]).TypeDesc = Tab.FindType('Integer'));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2126,8 +2126,8 @@ begin
     AssertTrue('returns Integer', Sym.TypeDesc = Tab.FindType('Integer'));
     AssertEquals('two params', 2, Sym.Params.Count);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2163,8 +2163,8 @@ begin
     AssertEquals('Y offset', 4, Fy.Offset);
     AssertTrue('X type Integer', Fx.TypeDesc = Tab.FindType('Integer'));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2194,8 +2194,8 @@ begin
     AssertEquals('parent name', 'TObject', Rec.Parent.Name);
     AssertTrue('inherits TObject vtable', Rec.HasVTable);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2225,8 +2225,8 @@ begin
       what AnalyseTypeDecls produces for a TObject-derived class. }
     AssertEquals('Counter offset', 8, Fi.Offset);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2264,8 +2264,8 @@ begin
     AssertEquals('A offset',  8,  Fa.Offset);  { after vptr }
     AssertEquals('B offset', 12,  Fb.Offset);  { after A }
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2278,7 +2278,7 @@ const
     '  procedure Speak; virtual;' + #10 +
     'end;' + #10+
     'implementation' + #10 +
-    'procedure TFoo.Speak; begin end;' + #10 +
+    'procedure TFoo.Speak(); begin end;' + #10 +
     'end.' + #10;
 var
   Iface: TUnitInterface;
@@ -2298,8 +2298,8 @@ begin
     Ent := RT.VTableEntryAt(Slot);
     AssertEquals('ImplName', '$U_TFoo_Speak', Ent.ImplName);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2312,8 +2312,8 @@ const
     '  TBase = class procedure Speak; virtual; end;' + #10 +
     '  TDerived = class(TBase) procedure Speak; override; end;' + #10 +
     'implementation' + #10 +
-    'procedure TBase.Speak; begin end;' + #10 +
-    'procedure TDerived.Speak; begin end;' + #10 +
+    'procedure TBase.Speak(); begin end;' + #10 +
+    'procedure TDerived.Speak(); begin end;' + #10 +
     'end.' + #10;
 var
   Iface: TUnitInterface;
@@ -2340,8 +2340,8 @@ begin
       '$U_TBase_Speak',
       Base.VTableEntryAt(BaseSlot).ImplName);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2371,8 +2371,8 @@ begin
     AssertTrue('has Hello',  ITD.HasMethod('Hello'));
     AssertTrue('has Quit',   ITD.HasMethod('Quit'));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2385,7 +2385,7 @@ const
     '  IGreeter = interface procedure Greet; end;' + #10 +
     '  TFoo = class(TObject, IGreeter) procedure Greet; end;' + #10 +
     'implementation' + #10 +
-    'procedure TFoo.Greet; begin end;' + #10 +
+    'procedure TFoo.Greet(); begin end;' + #10 +
     'end.' + #10;
 var
   Iface: TUnitInterface;
@@ -2402,8 +2402,8 @@ begin
     AssertEquals('impl is IGreeter', 'IGreeter',
       RT.ImplementsIntfAt(0).Name);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2434,8 +2434,8 @@ begin
     AssertEquals('one attribute',  1, RT.ClassAttributeCount);
     AssertEquals('MarkerAttribute', 'MarkerAttribute', RT.ClassAttributeAt(0));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2464,8 +2464,8 @@ begin
     AssertEquals('param name',
       'T', TGenericTypeDef(Templ).ParamNames.Strings[0]);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2495,8 +2495,8 @@ begin
     AssertEquals('one type param', 1,
       TGenericInterfaceDef(Templ).ParamNames.Count);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2529,8 +2529,8 @@ begin
     AssertEquals('one value param', 1, MD.Params.Count);
     AssertTrue('body cloned', MD.Body <> nil);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2550,10 +2550,10 @@ begin
     try
       Result := Parser.ParseProgram;
     finally
-      Parser.Free;
+      Parser.Free();
     end;
   finally
-    Lex.Free;
+    Lex.Free();
   end;
   ASem.Analyse(Result);
 end;
@@ -2576,7 +2576,7 @@ var
   Prog:  TProgram;
 begin
   Iface := ParseAnalyseAndExport(DEP_SRC);  { also frees DEP source TUnit }
-  Sem   := TSemanticAnalyser.Create;
+  Sem   := TSemanticAnalyser.Create();
   try
     ImportUnitInterface(Iface, Sem.GetSymbolTable);
     Prog := ParseAndAnalyseProgram(MAIN_SRC, Sem);
@@ -2586,11 +2586,11 @@ begin
       AssertTrue('K still visible after free',
                  Prog.SymbolTable.Lookup('K') <> nil);
     finally
-      Prog.Free;
+      Prog.Free();
     end;
   finally
-    Sem.Free;
-    Iface.Free;
+    Sem.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2612,7 +2612,7 @@ var
   Prog:  TProgram;
 begin
   Iface := ParseAnalyseAndExport(DEP_SRC);
-  Sem   := TSemanticAnalyser.Create;
+  Sem   := TSemanticAnalyser.Create();
   try
     ImportUnitInterface(Iface, Sem.GetSymbolTable);
     Prog := ParseAndAnalyseProgram(MAIN_SRC, Sem);
@@ -2621,11 +2621,11 @@ begin
       AssertTrue('TFoo still visible after free',
                  Prog.SymbolTable.FindType('TFoo') <> nil);
     finally
-      Prog.Free;
+      Prog.Free();
     end;
   finally
-    Sem.Free;
-    Iface.Free;
+    Sem.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2652,8 +2652,8 @@ begin
     AssertTrue('IsGlobal', Sym.IsGlobal);
     AssertTrue('type Integer', Sym.TypeDesc = Tab.FindType('Integer'));
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -2664,8 +2664,8 @@ var
   C: TConstEntry;
 begin
   Result := TUnitInterface.Create('TestU');
-  C := TConstEntry.Create;
-  C.Decl := TConstDecl.Create;
+  C := TConstEntry.Create();
+  C.Decl := TConstDecl.Create();
   C.Decl.Name   := 'MaxBuf';
   C.Decl.IntVal := 4096;
   C.TypeRef     := MakeBuiltinRef('Integer');
@@ -2684,7 +2684,7 @@ begin
     AssertTrue('starts with magic',
       Pos('BLAISE-IFACE 1', Buf) = 0);
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -2700,10 +2700,10 @@ begin
     try
       AssertEquals('unit name', 'MyUnit', Dst.Name);
     finally
-      Dst.Free;
+      Dst.Free();
     end;
   finally
-    Src.Free;
+    Src.Free();
   end;
 end;
 
@@ -2724,10 +2724,10 @@ begin
       AssertEquals('type ref unit', '$builtin', C.TypeRef.UnitName);
       AssertEquals('type ref name', 'Integer',  C.TypeRef.TypeName);
     finally
-      Dst.Free;
+      Dst.Free();
     end;
   finally
-    Src.Free;
+    Src.Free();
   end;
 end;
 
@@ -2740,8 +2740,8 @@ var
   Buf:      string;
 begin
   Src := TUnitInterface.Create('U');
-  C := TConstEntry.Create;
-  C.Decl := TConstDecl.Create;
+  C := TConstEntry.Create();
+  C.Decl := TConstDecl.Create();
   C.Decl.Name     := 'Weird';
   C.Decl.StrVal   := WEIRD;
   C.Decl.IsString := True;
@@ -2756,10 +2756,10 @@ begin
       AssertEquals('exact bytes', WEIRD, C.Decl.StrVal);
       AssertTrue('IsString', C.Decl.IsString);
     finally
-      Dst.Free;
+      Dst.Free();
     end;
   finally
-    Src.Free;
+    Src.Free();
   end;
 end;
 
@@ -2776,10 +2776,10 @@ begin
       AssertEquals('name', 'Empty', Dst.Name);
       AssertEquals('zero consts', 0, Dst.Consts.Count);
     finally
-      Dst.Free;
+      Dst.Free();
     end;
   finally
-    Src.Free;
+    Src.Free();
   end;
 end;
 
@@ -2826,10 +2826,10 @@ begin
       AssertEquals('Add param 0 name', 'A',
         TMethodParam(Sig.Params.Items[0]).ParamName);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -2852,10 +2852,10 @@ begin
       AssertEquals('K value',
         Int64(7), Round.FindConst('K').Decl.IntVal);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -2892,10 +2892,10 @@ begin
       AssertEquals('Y name', 'Y', F1.Names.Strings[0]);
       AssertEquals('X type', 'Integer', F0.TypeName);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -2909,7 +2909,7 @@ const
     '  procedure Speak; virtual;' + #10 +
     'end;' + #10 +
     'implementation' + #10 +
-    'procedure TFoo.Speak; begin end;' + #10 +
+    'procedure TFoo.Speak(); begin end;' + #10 +
     'end.' + #10;
 var
   Iface, Round: TUnitInterface;
@@ -2943,10 +2943,10 @@ begin
       AssertEquals('ResolvedQbeName', 'U_TFoo_Speak', M.ResolvedQbeName);
       AssertTrue('VTableSlot assigned', M.VTableSlot >= 0);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -2978,10 +2978,10 @@ begin
       AssertEquals('2 methods', 2,
         TInterfaceTypeDef(E.Def).Methods.Count);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -3013,10 +3013,10 @@ begin
       AssertEquals('param name', 'N',
         TMethodParam(Def.Params.Items[0]).ParamName);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -3042,10 +3042,10 @@ begin
       AssertEquals('first used',   'SysUtils', Round.UsedUnits.Strings[0]);
       AssertEquals('second used',  'Classes',  Round.UsedUnits.Strings[1]);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Src.Free;
+    Src.Free();
   end;
 end;
 
@@ -3077,10 +3077,10 @@ begin
       AssertTrue('inner ClassDef present', Def.ClassDef <> nil);
       AssertEquals('1 field on template', 1, Def.ClassDef.Fields.Count);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -3112,10 +3112,10 @@ begin
       AssertTrue('inner IntfDef present', Def.IntfDef <> nil);
       AssertEquals('1 method on template', 1, Def.IntfDef.Methods.Count);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -3135,7 +3135,7 @@ begin
   try
     Buf := WriteUnitInterface(Src);
   finally
-    Src.Free;
+    Src.Free();
   end;
   AIface := ReadUnitInterface(Buf);
   ATab   := FreshTableWithBuiltins;
@@ -3160,8 +3160,8 @@ begin
     AssertTrue('K defined', Sym <> nil);
     AssertEquals('K value', Int64(99), Sym.ConstValue);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3187,8 +3187,8 @@ begin
     Sym := Tab.Lookup('Green');
     AssertEquals('Green ordinal', 1, Sym.ConstValue);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3202,7 +3202,7 @@ const
     '  procedure Speak; virtual;' + #10 +
     'end;' + #10 +
     'implementation' + #10 +
-    'procedure TFoo.Speak; begin end;' + #10 +
+    'procedure TFoo.Speak(); begin end;' + #10 +
     'end.' + #10;
 var
   Tab:   TSymbolTable;
@@ -3220,8 +3220,8 @@ begin
     AssertEquals('Speak ImplName',
       '$U_TFoo_Speak', RT.VTableEntryAt(Slot).ImplName);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3245,8 +3245,8 @@ begin
     AssertEquals('one type param', 1,
       TGenericTypeDef(Templ).ParamNames.Count);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3276,8 +3276,8 @@ begin
     AssertEquals('one type param', 1,
       TMethodDecl(Templ).TypeParams.Count);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3320,8 +3320,8 @@ begin
     AssertTrue('rhs is ident V', Asn.Expr is TIdentExpr);
     AssertEquals('rhs name V', 'V', TIdentExpr(Asn.Expr).Name);
   finally
-    Tab.Free;
-    Iface.Free;
+    Tab.Free();
+    Iface.Free();
   end;
 end;
 
@@ -3350,10 +3350,10 @@ begin
       AssertTrue('block carried', IB.Block <> nil);
       AssertTrue('has at least one stmt', IB.Block.Stmts.Count >= 1);
     finally
-      Round.Free;
+      Round.Free();
     end;
   finally
-    Iface.Free;
+    Iface.Free();
   end;
 end;
 
@@ -3363,7 +3363,7 @@ var
 begin
   Caught := False;
   try
-    ReadUnitInterface('BLAISE-IFACE 99' + #10 + '0:' + #10 + 'CONST 0' + #10 + 'END' + #10).Free;
+    ReadUnitInterface('BLAISE-IFACE 99' + #10 + '0:' + #10 + 'CONST 0' + #10 + 'END' + #10).Free();
   except
     on E: EIfaceFormatError do Caught := True;
   end;

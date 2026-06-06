@@ -49,22 +49,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr)
   finally
-    A.Free
+    A.Free()
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput
+    Result := CG.GetOutput()
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free()
   end
 end;
 

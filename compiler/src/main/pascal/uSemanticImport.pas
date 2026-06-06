@@ -155,11 +155,11 @@ begin
     MSym  := TSymbol.Create(MName, skConstant, EnumDesc);
     MSym.ConstValue := EnumDef.OrdinalAt(K);
     MSym.OwningUnit := AUnitName;
-    if not ATable.Define(MSym) then MSym.Free;
+    if not ATable.Define(MSym) then MSym.Free();
   end;
   Sym := TSymbol.Create(AEntry.Name, skType, EnumDesc);
   Sym.OwningUnit := AUnitName;
-  if not ATable.Define(Sym) then Sym.Free;
+  if not ATable.Define(Sym) then Sym.Free();
 end;
 
 procedure RegisterSet(AEntry: TTypeEntry; ATable: TSymbolTable;
@@ -180,7 +180,7 @@ begin
   SetDesc := ATable.NewSetType(AEntry.Name, TEnumTypeDesc(BaseSym.TypeDesc));
   Sym := TSymbol.Create(AEntry.Name, skType, SetDesc);
   Sym.OwningUnit := AUnitName;
-  if not ATable.Define(Sym) then Sym.Free;
+  if not ATable.Define(Sym) then Sym.Free();
 end;
 
 { Resolve a class parent reference into the symbol table.  Returns nil
@@ -264,7 +264,7 @@ begin
     Sym.OwningUnit := AUnitName;
     if not ATable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       Exit;
     end;
   end;
@@ -321,7 +321,7 @@ begin
     Sym.OwningUnit := AUnitName;
     if not ATable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       Exit;
     end;
   end;
@@ -410,7 +410,7 @@ begin
   for I := 0 to ClassDef.Properties.Count - 1 do
   begin
     PropDecl := TPropertyDecl(ClassDef.Properties.Items[I]);
-    PropInfo := TPropertyInfo.Create;
+    PropInfo := TPropertyInfo.Create();
     PropInfo.Name := PropDecl.Name;
     FldSym := ATable.Lookup(PropDecl.TypeName);
     if (FldSym <> nil) and (FldSym.Kind = skType) then
@@ -486,7 +486,7 @@ begin
     Sym.OwningUnit := AUnitName;
     if not ATable.Define(Sym) then
     begin
-      Sym.Free;
+      Sym.Free();
       Exit;
     end;
   end;
@@ -530,7 +530,7 @@ begin
     TSym   := ATable.Lookup(MParam.TypeName);
     if (TSym <> nil) and (TSym.Kind = skType) then
     begin
-      ParamInfo := TProcParamInfo.Create;
+      ParamInfo := TProcParamInfo.Create();
       ParamInfo.Name         := MParam.ParamName;
       ParamInfo.TypeDesc     := TSym.TypeDesc;
       ParamInfo.IsVarParam   := MParam.IsVarParam;
@@ -546,7 +546,7 @@ begin
   end;
   Sym := TSymbol.Create(AEntry.Name, skType, ProcDesc);
   Sym.OwningUnit := AUnitName;
-  if not ATable.Define(Sym) then Sym.Free;
+  if not ATable.Define(Sym) then Sym.Free();
 end;
 
 procedure RegisterAlias(AEntry: TTypeEntry; ATable: TSymbolTable;
@@ -573,7 +573,7 @@ begin
   end;
   Sym := TSymbol.Create(AEntry.Name, skType, AliasDesc);
   Sym.OwningUnit := AUnitName;
-  if not ATable.Define(Sym) then Sym.Free;
+  if not ATable.Define(Sym) then Sym.Free();
 end;
 
 procedure RegisterTypes(AIface: TUnitInterface; ATable: TSymbolTable;
@@ -595,19 +595,19 @@ begin
     begin
       Sym := TSymbol.Create(Entry.Name, skType, ATable.NewClassType(Entry.Name));
       Sym.OwningUnit := AIface.Name;
-      if not ATable.Define(Sym) then Sym.Free;
+      if not ATable.Define(Sym) then Sym.Free();
     end
     else if Entry.Def is TRecordTypeDef then
     begin
       Sym := TSymbol.Create(Entry.Name, skType, ATable.NewRecordType(Entry.Name));
       Sym.OwningUnit := AIface.Name;
-      if not ATable.Define(Sym) then Sym.Free;
+      if not ATable.Define(Sym) then Sym.Free();
     end
     else if Entry.Def is TInterfaceTypeDef then
     begin
       Sym := TSymbol.Create(Entry.Name, skType, ATable.NewInterfaceType(Entry.Name));
       Sym.OwningUnit := AIface.Name;
-      if not ATable.Define(Sym) then Sym.Free;
+      if not ATable.Define(Sym) then Sym.Free();
     end;
   end;
 
@@ -676,7 +676,7 @@ begin
     Sym.ConstString := Entry.Decl.StrVal;
     Sym.OwningUnit  := AIface.Name;
     if not ATable.Define(Sym) then
-      Sym.Free;  { duplicate — silently skip }
+      Sym.Free();  { duplicate — silently skip }
   end;
 end;
 
@@ -702,7 +702,7 @@ begin
     Sym.IsThreadVar := Entry.IsThreadVar;
     Sym.OwningUnit  := AIface.Name;
     if not ATable.Define(Sym) then
-      Sym.Free;
+      Sym.Free();
   end;
 end;
 
@@ -715,7 +715,7 @@ function BuildParamDesc(AParam: TMethodParam; ATable: TSymbolTable): TParamDesc;
 var
   Sym: TSymbol;
 begin
-  Result := TParamDesc.Create;
+  Result := TParamDesc.Create();
   Result.Name     := AParam.ParamName;
   Result.IsConst  := AParam.IsConstParam;
   Result.IsVar    := AParam.IsVarParam;
@@ -743,7 +743,7 @@ var
   PSyn:  TMethodParam;
   Sym:   TSymbol;
 begin
-  Result := TMethodDecl.Create;
+  Result := TMethodDecl.Create();
   Result.Name           := ASig.Name;
   Result.OwningUnit     := AOwningUnit;
   Result.ReturnTypeName := ASig.ReturnType.TypeName;
@@ -753,7 +753,7 @@ begin
   for J := 0 to ASig.Params.Count - 1 do
   begin
     Param := TMethodParam(ASig.Params.Items[J]);
-    PSyn := TMethodParam.Create;
+    PSyn := TMethodParam.Create();
     PSyn.ParamName    := Param.ParamName;
     PSyn.TypeName     := Param.TypeName;
     PSyn.IsVarParam   := Param.IsVarParam;
@@ -810,7 +810,7 @@ begin
 
     Sym.OwningUnit := AIface.Name;
     if not ATable.Define(Sym) then
-      Sym.Free;
+      Sym.Free();
   end;
 end;
 

@@ -125,7 +125,7 @@ const
           if Idx >= 0 then begin
             VPtr := Self.FValues + Idx * SizeOf(V); VPtr^ := Value
           end else begin
-            if Self.FCount = Self.FCapacity then Self.Grow;
+            if Self.FCount = Self.FCapacity then Self.Grow();
             KPtr := Self.FKeys   + Self.FCount * SizeOf(K);
             VPtr := Self.FValues + Self.FCount * SizeOf(V);
             KPtr^ := Key; VPtr^ := Value;
@@ -219,7 +219,7 @@ const
           if Idx >= 0 then begin
             VPtr := Self.FValues + Idx * SizeOf(V); VPtr^ := Value
           end else begin
-            if Self.FCount = Self.FCapacity then Self.Grow;
+            if Self.FCount = Self.FCapacity then Self.Grow();
             KPtr := Self.FKeys   + Self.FCount * SizeOf(K);
             VPtr := Self.FValues + Self.FCount * SizeOf(V);
             KPtr^ := Key; VPtr^ := Value;
@@ -283,7 +283,7 @@ const
     '''
         var M: IMap<Integer, Integer>;
         begin
-          M := TDictionary<Integer, Integer>.Create
+          M := TDictionary<Integer, Integer>.Create()
         end.
         ''';
 
@@ -297,7 +297,7 @@ const
     '''
         var M: IMap<Integer, Integer>;
         begin
-          M := TOrderedDictionary<Integer, Integer>.Create
+          M := TOrderedDictionary<Integer, Integer>.Create()
         end.
         ''';
 
@@ -311,7 +311,7 @@ const
     '''
         var M: IMap<Integer, Integer>;
         begin
-          M := TDictionary<Integer, Integer>.Create;
+          M := TDictionary<Integer, Integer>.Create();
           M.Add(1, 100)
         end.
         ''';
@@ -326,7 +326,7 @@ const
     '''
         var M: IMap<Integer, Integer>; V: Integer; OK: Boolean;
         begin
-          M := TDictionary<Integer, Integer>.Create;
+          M := TDictionary<Integer, Integer>.Create();
           M.Add(42, 99);
           OK := M.TryGetValue(42, V)
         end.
@@ -342,7 +342,7 @@ const
     '''
         var M: IMap<Integer, Integer>; OK: Boolean;
         begin
-          M := TDictionary<Integer, Integer>.Create;
+          M := TDictionary<Integer, Integer>.Create();
           M.Add(7, 70);
           OK := M.ContainsKey(7)
         end.
@@ -358,7 +358,7 @@ const
     '''
         var M: IMap<Integer, Integer>;
         begin
-          M := TDictionary<Integer, Integer>.Create;
+          M := TDictionary<Integer, Integer>.Create();
           M.Add(3, 30);
           M.Remove(3)
         end.
@@ -378,8 +378,8 @@ const
           M1: IMap<Integer, Integer>;
           M2: IMap<Integer, Integer>;
         begin
-          M1 := TDictionary<Integer, Integer>.Create;
-          M2 := TOrderedDictionary<Integer, Integer>.Create;
+          M1 := TDictionary<Integer, Integer>.Create();
+          M2 := TOrderedDictionary<Integer, Integer>.Create();
           M1.Add(1, 10);
           M2.Add(2, 20)
         end.
@@ -397,10 +397,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -409,11 +409,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -423,13 +423,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -448,7 +448,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[0]);
     AssertTrue('IMap def is TGenericInterfaceDef', TD.Def is TGenericInterfaceDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -464,7 +464,7 @@ begin
     AssertEquals('First param is K', 'K', GID.ParamNames[0]);
     AssertEquals('Second param is V', 'V', GID.ParamNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -484,7 +484,7 @@ begin
         Found := True;
     AssertTrue('IMap has Add method', Found);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -504,7 +504,7 @@ begin
         Found := True;
     AssertTrue('IMap has TryGetValue method', Found);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -526,7 +526,7 @@ begin
         Found := True;
     AssertTrue('IMap has GetCount method (Count accessor)', Found);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -539,7 +539,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIMapVarDecl);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_InstantiatedType_IsInterface;
@@ -553,7 +553,7 @@ begin
     AssertEquals('IMap<Integer,Integer> resolves to tyInterface',
       Ord(tyInterface), Ord(VD.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -562,7 +562,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcDictImplementsIMap);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_TOrderedDictionary_ImplementsIMap_OK;
@@ -570,7 +570,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcOrdDictImplementsIMap);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_ReceivesTDictionary;
@@ -579,7 +579,7 @@ var
 begin
   { Assignment M := TDictionary<...>.Create must pass type-compat check }
   Prog := AnalyseSrc(SrcDictImplementsIMap);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_ReceivesTOrderedDictionary;
@@ -587,7 +587,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcOrdDictImplementsIMap);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_Add_CallableViaInterface;
@@ -595,7 +595,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIMapAddDispatch);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_TryGetValue_CallableViaInterface;
@@ -603,7 +603,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIMapTryGetDispatch);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_ContainsKey_CallableViaInterface;
@@ -611,7 +611,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIMapContainsKeyDispatch);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TIMapTests.TestSemantic_IMap_Remove_CallableViaInterface;
@@ -619,7 +619,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcIMapRemoveDispatch);
-  Prog.Free;
+  Prog.Free();
 end;
 
 { ------------------------------------------------------------------ }

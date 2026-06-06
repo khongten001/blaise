@@ -88,10 +88,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -100,11 +100,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -115,15 +115,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -133,7 +133,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -204,7 +204,7 @@ begin
   try
     AssertEquals('one proc decl', 1, Prog.Block.ProcDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -218,7 +218,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('proc name', 'PrintIt', MD.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -232,7 +232,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('one param', 1, MD.Params.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -248,7 +248,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('param name', 'X', Par.ParamName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -264,7 +264,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('param type', 'Integer', Par.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -280,7 +280,7 @@ begin
     AssertEquals('body has 1 stmt', 1, MD.Body.Stmts.Count);
     AssertTrue('stmt is TProcCall', MD.Body.Stmts[0] is TProcCall);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -292,7 +292,7 @@ begin
   try
     AssertEquals('one proc decl', 1, Prog.Block.ProcDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -306,7 +306,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('func name', 'Add', MD.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -320,7 +320,7 @@ begin
     MD := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('return type', 'Integer', MD.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -336,7 +336,7 @@ begin
     AssertTrue('stmt is TProcCall', Stmt is TProcCall);
     AssertEquals('proc name', 'PrintIt', TProcCall(Stmt).Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -352,7 +352,7 @@ begin
     Assign := TAssignment(Prog.Block.Stmts[0]);
     AssertTrue('rhs is TFuncCallExpr', Assign.Expr is TFuncCallExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -368,7 +368,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertEquals('func name', 'Add', FCall.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -384,7 +384,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertEquals('two args', 2, FCall.Args.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -394,12 +394,12 @@ end;
 
 procedure TProcFuncTests.TestSemantic_StandaloneProc_Resolves;
 begin
-  AnalyseSrc(SrcWithProc).Free;
+  AnalyseSrc(SrcWithProc).Free();
 end;
 
 procedure TProcFuncTests.TestSemantic_StandaloneFunc_Resolves;
 begin
-  AnalyseSrc(SrcWithFunc).Free;
+  AnalyseSrc(SrcWithFunc).Free();
 end;
 
 procedure TProcFuncTests.TestSemantic_ProcCall_WrongArgCount_RaisesError;
@@ -446,14 +446,14 @@ begin
     AssertEquals('return type is Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TProcFuncTests.TestSemantic_StandaloneFunc_ResultVar_Available;
 begin
   { Result := A + B inside the function body must not raise an error }
-  AnalyseSrc(SrcWithFunc).Free;
+  AnalyseSrc(SrcWithFunc).Free();
 end;
 
 procedure TProcFuncTests.TestSemantic_UnknownProc_RaisesError;
@@ -469,7 +469,7 @@ end;
 
 procedure TProcFuncTests.TestSemantic_Proc_CanCallOtherProc;
 begin
-  AnalyseSrc(SrcTwoProcs).Free;
+  AnalyseSrc(SrcTwoProcs).Free();
 end;
 
 { ------------------------------------------------------------------ }

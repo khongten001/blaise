@@ -1172,7 +1172,7 @@ begin
   GArgC := Argc;
   GArgV := TPCharArray(Argv);
   if GRtlPlatform = nil then
-    GRtlPlatform := TRtlPlatformPosix.Create;
+    GRtlPlatform := TRtlPlatformPosix.Create();
 end;
 
 function _ParamCount: Integer;
@@ -1438,6 +1438,6 @@ end;
 
 initialization
   if GRtlPlatform = nil then
-    GRtlPlatform := TRtlPlatformPosix.Create;
+    GRtlPlatform := TRtlPlatformPosix.Create();
 
 end.

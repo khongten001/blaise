@@ -142,9 +142,9 @@ begin
   try
     Lexer       := TLexer.Create(ASrc);
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -153,9 +153,9 @@ begin
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -176,9 +176,9 @@ begin
     try
       Lexer       := TLexer.Create(ASrc);
       Parser      := TParser.Create(Lexer);
-      Prog        := Parser.Parse;
-      Semantic    := TSemanticAnalyser.Create;
-      SearchPaths := TStringList.Create;
+      Prog        := Parser.Parse();
+      Semantic    := TSemanticAnalyser.Create();
+      SearchPaths := TStringList.Create();
       SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
       Loader := TUnitLoader.Create(SearchPaths);
@@ -191,9 +191,9 @@ begin
       on E: ESemanticError do ;
     end;
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -214,9 +214,9 @@ begin
   try
     Lexer       := TLexer.Create(ASrc);
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -224,16 +224,16 @@ begin
     for I := 0 to Units.Count - 1 do
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
     CG.AppendProgram(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free; Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    CG.Free(); Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -284,9 +284,9 @@ begin
     Lexer       := TLexer.Create(
       'program P; uses StrUtils; var S, Sub: string; B: Boolean; begin B := ContainsStr(S, Sub) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -299,9 +299,9 @@ begin
     AssertEquals('ContainsStr returns Boolean',
       Ord(tyBoolean), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -400,9 +400,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, T: string; begin T := LeftStr(S, 3) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -414,9 +414,9 @@ begin
     AssertEquals('LeftStr returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -451,9 +451,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, Sub: string; N: Integer; begin N := PosEx(Sub, S, 2) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -465,9 +465,9 @@ begin
     AssertEquals('PosEx returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -521,9 +521,9 @@ begin
     Lexer       := TLexer.Create(
       'program P; uses StrUtils; var S: string; I: Integer; var Arr: array[0..2] of string; begin Arr[0] := ''a''; Arr[1] := ''b''; Arr[2] := ''c''; I := IndexStr(S, Arr) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -535,9 +535,9 @@ begin
     AssertEquals('IndexStr returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -582,9 +582,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, T: string; begin T := ReplaceStr(S, ''x'', ''y'') end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -596,9 +596,9 @@ begin
     AssertEquals('ReplaceStr returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -653,9 +653,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, T: string; begin T := DupeString(S, 3) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -667,9 +667,9 @@ begin
     AssertEquals('DupeString returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -738,9 +738,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, T: string; begin T := PadLeft(S, 10) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -752,9 +752,9 @@ begin
     AssertEquals('PadLeft returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -789,9 +789,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S, Sub: string; N: Integer; begin N := CountOccurrences(Sub, S) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -803,9 +803,9 @@ begin
     AssertEquals('CountOccurrences returns Integer',
       Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -864,9 +864,9 @@ begin
   try
     Lexer       := TLexer.Create('program P; uses StrUtils; var S: string; B: Boolean; begin B := IsEmptyOrWhitespace(S) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -878,9 +878,9 @@ begin
     AssertEquals('IsEmptyOrWhitespace returns Boolean',
       Ord(tyBoolean), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -920,9 +920,9 @@ begin
     Lexer       := TLexer.Create(
       'program P; uses StrUtils; var T: string; var Parts: array[0..2] of string; begin Parts[0] := ''a''; Parts[1] := ''b''; Parts[2] := ''c''; T := JoinStr('','', Parts) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -934,9 +934,9 @@ begin
     AssertEquals('JoinStr returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -951,9 +951,9 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('hello');
-      SB.Free
+      SB.Free()
     end.
     ''');
 end;
@@ -974,11 +974,11 @@ begin
   Loader := nil; Units  := nil; SearchPaths := nil;
   try
     Lexer       := TLexer.Create(
-      'program P; uses StrUtils; var SB: TStringBuilder; S: string; begin SB := TStringBuilder.Create; SB.Append(''hi''); S := SB.ToString; SB.Free end.');
+      'program P; uses StrUtils; var SB: TStringBuilder; S: string; begin SB := TStringBuilder.Create(); SB.Append(''hi''); S := SB.ToString(); SB.Free() end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -990,9 +990,9 @@ begin
     AssertEquals('ToString returns string',
       Ord(tyString), Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1003,10 +1003,10 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('hello');
-      SB.Clear;
-      SB.Free
+      SB.Clear();
+      SB.Free()
     end.
     ''');
 end;
@@ -1018,10 +1018,10 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder; N: Integer;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('hi');
       N := SB.Length;
-      SB.Free
+      SB.Free()
     end.
     ''');
 end;

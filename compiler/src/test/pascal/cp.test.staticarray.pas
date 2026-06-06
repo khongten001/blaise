@@ -96,9 +96,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -106,11 +106,11 @@ function TStaticArrayTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -119,15 +119,15 @@ var P: TProgram; CG: TCodeGenQBE;
 begin
   P := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(P);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    P.Free;
+    P.Free();
   end;
 end;
 
@@ -216,7 +216,7 @@ begin
     MD   := TMethodDecl(P.Block.ProcDecls[0]);
     Decl := TVarDecl(MD.Body.Decls[0]);
     AssertEquals('type name encoded', 'array[0..7] of Byte', Decl.TypeName);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestParse_StaticArray_SubscriptAssign_Name;
@@ -229,7 +229,7 @@ begin
       MD.Body.Stmts[0] is TStaticSubscriptAssign);
     Stmt := TStaticSubscriptAssign(MD.Body.Stmts[0]);
     AssertEquals('array name', 'Buf', Stmt.ArrayName);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -246,7 +246,7 @@ begin
     AssertNotNull('ResolvedType set', Decl.ResolvedType);
     AssertEquals('kind is tyStaticArray',
       Ord(tyStaticArray), Ord(Decl.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_ElementType;
@@ -260,7 +260,7 @@ begin
     SAT := TStaticArrayTypeDesc(Decl.ResolvedType);
     AssertNotNull('ElementType set', SAT.ElementType);
     AssertEquals('element is tyByte', Ord(tyByte), Ord(SAT.ElementType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_Bounds;
@@ -273,7 +273,7 @@ begin
     SAT  := TStaticArrayTypeDesc(Decl.ResolvedType);
     AssertEquals('LowBound = 0', 0, SAT.LowBound);
     AssertEquals('HighBound = 7', 7, SAT.HighBound);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_ByteSize;
@@ -285,7 +285,7 @@ begin
     Decl := TVarDecl(MD.Body.Decls[0]);
     { 8 elements × 1 byte each = 8 bytes }
     AssertEquals('ByteSize = 8', 8, Decl.ResolvedType.ByteSize);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_IntArray;
@@ -297,7 +297,7 @@ begin
     Decl := TVarDecl(MD.Body.Decls[0]);
     { 4 elements × 4 bytes each = 16 bytes }
     AssertEquals('ByteSize = 16', 16, Decl.ResolvedType.ByteSize);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_NonZero_LowBound;
@@ -310,7 +310,7 @@ begin
     SAT  := TStaticArrayTypeDesc(Decl.ResolvedType);
     AssertEquals('LowBound = 5', 5, SAT.LowBound);
     AssertEquals('HighBound = 9', 9, SAT.HighBound);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -384,8 +384,8 @@ const
         type TC = class(TObject) end;
         var A: array[0..2] of TC;
         begin
-          A[0] := TC.Create;
-          A[0] := TC.Create
+          A[0] := TC.Create();
+          A[0] := TC.Create()
         end.
         ''';
 var IR: string;
@@ -427,8 +427,8 @@ const
         var A: array of TC;
         begin
           SetLength(A, 3);
-          A[0] := TC.Create;
-          A[0] := TC.Create
+          A[0] := TC.Create();
+          A[0] := TC.Create()
         end.
         ''';
 var IR: string;
@@ -451,7 +451,7 @@ begin
   P := AnalyseSrc(SrcLowHigh);
   try
     AssertNotNull('program analysed', P);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_StaticArray_High_ReturnsInteger;
@@ -461,7 +461,7 @@ begin
   P := AnalyseSrc(SrcLowHigh);
   try
     AssertNotNull('program analysed', P);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestCodegen_StaticArray_Low_EmitsLowBound;
@@ -492,7 +492,7 @@ begin
     MD     := TMethodDecl(P.Block.ProcDecls[0]);
     Assign := TAssignment(MD.Body.Stmts[0]);
     AssertTrue('expr is TAddrOfExpr', Assign.Expr is TAddrOfExpr);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_AddrOf_ReturnsPointerType;
@@ -505,7 +505,7 @@ begin
     AssertNotNull('expr resolved', Assign.Expr.ResolvedType);
     AssertEquals('@Buf[0] resolves to tyPointer',
       Ord(tyPointer), Ord(Assign.Expr.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_AddrOf_BaseTypeIsByte;
@@ -519,7 +519,7 @@ begin
     PT := TPointerTypeDesc(Assign.Expr.ResolvedType);
     AssertNotNull('BaseType set', PT.BaseType);
     AssertEquals('BaseType is tyByte', Ord(tyByte), Ord(PT.BaseType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestCodegen_AddrOf_NoLoad;
@@ -587,7 +587,7 @@ begin
   P := ParseSrc(SrcTypeAliasBasic);
   try
     AssertEquals('one type decl', 1, P.Block.TypeDecls.Count);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestParse_TypeAlias_ArrayName;
@@ -597,7 +597,7 @@ begin
   try
     TD := TTypeDecl(P.Block.TypeDecls.Items[0]);
     AssertEquals('type name', 'TByteArr', TD.Name);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_TypeAlias_KindIsStaticArray;
@@ -609,7 +609,7 @@ begin
     AssertTrue('symbol found', Sym <> nil);
     AssertEquals('kind is tyStaticArray',
       Ord(tyStaticArray), Ord(Sym.TypeDesc.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_TypeAlias_ElementType;
@@ -622,7 +622,7 @@ begin
     SAT := TStaticArrayTypeDesc(Sym.TypeDesc);
     AssertEquals('element kind is tyByte',
       Ord(tyByte), Ord(SAT.ElementType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_TypeAlias_Bounds;
@@ -634,7 +634,7 @@ begin
     SAT := TStaticArrayTypeDesc(Sym.TypeDesc);
     AssertEquals('low=0',  0, SAT.LowBound);
     AssertEquals('high=7', 7, SAT.HighBound);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_TypeAlias_VarUsesAlias;
@@ -648,7 +648,7 @@ begin
     AssertTrue('ResolvedType set', Decl.ResolvedType <> nil);
     AssertEquals('var W has tyStaticArray',
       Ord(tyStaticArray), Ord(Decl.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestSemantic_TypeAlias_NonZeroBase;
@@ -661,7 +661,7 @@ begin
     SAT := TStaticArrayTypeDesc(Sym.TypeDesc);
     AssertEquals('low=1',  1, SAT.LowBound);
     AssertEquals('high=5', 5, SAT.HighBound);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TStaticArrayTests.TestCodegen_TypeAlias_AllocEmitted;

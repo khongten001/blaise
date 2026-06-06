@@ -3403,3 +3403,47 @@ pattern and explains the removal.
   would be a separate API (`TThread.Detach` or a `TDetachedThread`
   subclass) with explicit opt-in semantics, not a boolean property on the
   base class.
+
+
+== Mandatory parentheses on zero-argument calls
+
+*Decision*: every function, procedure, method, and constructor call requires
+parentheses, even when there are no arguments.  `Obj.Free()`, `Create()`,
+`WriteLn()`, `Foo()` — never `Obj.Free`, `Create`, or `Foo` without `()`.
+
+The `@` (address-of) operator is the sole exception: `@Obj.Method` takes a
+method reference and does not invoke the method, so no `()` is written.
+
+In standard Object Pascal (Delphi and FPC), a bare identifier that resolves
+to a parameterless function or procedure is ambiguous: it can be either a
+call or a reference to the function's `Result` variable (inside the function
+body) or a method reference (with `@`).  The compiler resolves the ambiguity
+by context — statement position means call, expression position means call
+unless `@` is present — but this creates several problems:
+
+* *Readability*: `F := Foo;` — is `Foo` a variable, a constant, or a
+  function call?  The reader must consult the declaration to know.
+* *Compiler complexity*: the compiler must synthesise invisible call nodes
+  for zero-argument functions and track `IsNoArgFuncCall` / `NoArgFuncDecl`
+  flags through the AST to distinguish calls from variable reads.  This
+  introduces a class of latent bugs whenever a new AST consumer (codegen
+  backend, semantic pass) forgets to check the flag.
+* *Grep-ability*: searching for all call sites of `Foo` requires semantic
+  analysis; a textual search for `Foo(` misses the zero-arg calls.
+
+Requiring `()` eliminates all three problems.  The syntax is unambiguous at
+the lexical level: `Foo()` is always a call, `Foo` is always a read.  The
+compiler AST becomes simpler — `TMethodCallExpr` for calls with explicit
+parentheses, `TFieldAccessExpr` only for field/property reads.
+
+=== Alternatives considered
+
+* *Deprecation warning period* — rejected.  Blaise is in alpha; there is no
+  stable public API to preserve.  A deprecation cycle adds complexity for
+  no practical benefit when the migration is a mechanical find-and-replace.
+* *Optional parentheses (status quo)* — rejected.  The ambiguity is the
+  root cause of multiple latent codegen bugs discovered during this change:
+  `IsBuiltinToString` applied to record methods, `IsVarParam` not set for
+  record value parameters in `TMethodCallExpr`, and native backend missing
+  `leaq` for record receivers.  All were masked by the old
+  `TFieldAccessExpr.IsMethodCall` path.

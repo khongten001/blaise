@@ -38,15 +38,15 @@ var L: TLexer; P: TParser;
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  try Result := P.Parse; finally P.Free; L.Free; end;
+  try Result := P.Parse(); finally P.Free(); L.Free(); end;
 end;
 
 function TMultiWriteTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
-  try A.Analyse(Result); finally A.Free; end;
+  A := TSemanticAnalyser.Create();
+  try A.Analyse(Result); finally A.Free(); end;
 end;
 
 function TMultiWriteTests.GenIR(const ASrc: string): string;
@@ -54,9 +54,9 @@ var Prog: TProgram; CG: TCodeGenQBE;
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
-    try CG.Generate(Prog); Result := CG.GetOutput; finally CG.Free; end;
-  finally Prog.Free; end;
+    CG := TCodeGenQBE.Create();
+    try CG.Generate(Prog); Result := CG.GetOutput(); finally CG.Free(); end;
+  finally Prog.Free(); end;
 end;
 
 function TMultiWriteTests.CountOccurrences(

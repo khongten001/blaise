@@ -197,13 +197,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcOpenArrayHighLow, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Low=0',  '0', Lines.Strings[0]);
     AssertEquals('High=2', '2', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 
@@ -263,13 +263,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcStaticConstRead, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('First(B)=77',   '77', Lines.Strings[0]);
     AssertEquals('Length(B[0..2])=3', '3', Lines.Strings[1]);
   finally
-    Lines.Free
+    Lines.Free()
   end
 end;
 

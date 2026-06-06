@@ -128,10 +128,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -140,11 +140,11 @@ var
   A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -155,15 +155,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -173,7 +173,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ; { expected }
@@ -191,10 +191,10 @@ var
 begin
   L := TLexer.Create('class');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('class token', Ord(tkClass), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -221,7 +221,7 @@ begin
   try
     AssertEquals('1 type decl', 1, Prog.Block.TypeDecls.Count);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -236,7 +236,7 @@ begin
     AssertEquals('Type name', 'TFoo', TD.Name);
     AssertTrue('Is TClassTypeDef', TD.Def is TClassTypeDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -254,7 +254,7 @@ begin
     AssertEquals('Field name', 'X', Fld.Names[0]);
     AssertEquals('Field type', 'Integer', Fld.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -279,7 +279,7 @@ begin
     AssertEquals('First field', 'Name', TFieldDecl(CD.Fields[0]).Names[0]);
     AssertEquals('Second field', 'Age',  TFieldDecl(CD.Fields[1]).Names[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -304,7 +304,7 @@ begin
     CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[1]).Def);
     AssertEquals('Parent class', 'TAnimal', CD.ParentName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -328,7 +328,7 @@ begin
     AssertEquals('Var name', 'F', Decl.Names[0]);
     AssertEquals('Var type', 'TFoo', Decl.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -347,18 +347,17 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''');
   try
     Assign := TAssignment(Prog.Block.Stmts[0]);
     AssertEquals('Assigns to F', 'F', Assign.Name);
-    AssertTrue('Expr is TFieldAccessExpr', Assign.Expr is TFieldAccessExpr);
-    Expr := TFieldAccessExpr(Assign.Expr);
-    AssertEquals('Type name', 'TFoo',   Expr.RecordName);
-    AssertEquals('Method',    'Create', Expr.FieldName);
+    AssertTrue('Expr is TMethodCallExpr', Assign.Expr is TMethodCallExpr);
+    AssertEquals('Type name', 'TFoo',   TMethodCallExpr(Assign.Expr).ObjectName);
+    AssertEquals('Method',    'Create', TMethodCallExpr(Assign.Expr).Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -385,7 +384,7 @@ begin
     AssertEquals('Field name',  'X',  Stmt.FieldName);
     AssertTrue('Expr is TIntLiteral', Stmt.Expr is TIntLiteral);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -402,7 +401,7 @@ begin
     AssertNotNull('TFoo in symbol table',
       Prog.SymbolTable.FindType('TFoo'));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -416,7 +415,7 @@ begin
       Ord(tyClass),
       Ord(Prog.SymbolTable.FindType('TFoo').Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -439,7 +438,7 @@ begin
       Ord(tyClass),
       Ord(TVarDecl(Prog.Block.Decls[0]).ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -447,7 +446,7 @@ procedure TClassTests.TestSemantic_Constructor_TypeIsClass;
 var
   Prog:   TProgram;
   Assign: TAssignment;
-  Expr:   TFieldAccessExpr;
+  MC:     TMethodCallExpr;
 begin
   Prog := AnalyseSrc(
     '''
@@ -458,17 +457,17 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''');
   try
     Assign := TAssignment(Prog.Block.Stmts[0]);
-    Expr   := TFieldAccessExpr(Assign.Expr);
-    AssertTrue('IsConstructorCall', Expr.IsConstructorCall);
+    MC     := TMethodCallExpr(Assign.Expr);
+    AssertTrue('IsConstructorCall', MC.IsConstructorCall);
     AssertEquals('ResolvedType is tyClass',
-      Ord(tyClass), Ord(Expr.ResolvedType.Kind));
+      Ord(tyClass), Ord(MC.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -486,7 +485,7 @@ begin
           F.X := 42
         end.
         '''
-  ).Free;
+  ).Free();
 end;
 
 procedure TClassTests.TestSemantic_ClassFieldAssign_TypeMismatch_RaisesError;
@@ -528,7 +527,7 @@ begin
     AssertEquals('Field access type',
       Ord(tyInteger), Ord(Access.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -605,7 +604,7 @@ begin
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''');
   AssertTrue('calls _ClassAlloc', Pos('call $_ClassAlloc', IR) > 0);
@@ -674,7 +673,7 @@ const
         end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.SetX(42)
         end.
         ''';
@@ -691,7 +690,7 @@ begin
     MD := TMethodDecl(CD.Methods[0]);
     AssertNull('class method forward decl has no body', MD.Body);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -707,13 +706,13 @@ begin
     AssertEquals('owner type name', 'TFoo', MD.OwnerTypeName);
     AssertEquals('method name', 'SetX', MD.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
 procedure TClassTests.TestSemantic_SeparateImpl_OK;
 begin
-  AnalyseSrc(SrcSeparateImpl).Free;
+  AnalyseSrc(SrcSeparateImpl).Free();
 end;
 
 procedure TClassTests.TestSemantic_MethodBody_AccessesProgramGlobal;
@@ -733,7 +732,7 @@ begin
           Result := gValue
         end;
         begin end.
-        ''').Free;
+        ''').Free();
 end;
 
 procedure TClassTests.TestCodegen_MethodBody_ReadsProgramGlobal;
@@ -784,7 +783,7 @@ const
         end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
+          F := TFoo.Create();
           F.setx(42)
         end.
         ''';
@@ -813,14 +812,14 @@ const
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
-          F.Free
+          F := TFoo.Create();
+          F.Free()
         end.
         ''';
 
 procedure TClassTests.TestSemantic_Free_OK;
 begin
-  AnalyseSrc(SrcFree).Free;
+  AnalyseSrc(SrcFree).Free();
 end;
 
 procedure TClassTests.TestCodegen_Free_CallsClassRelease;
@@ -850,7 +849,7 @@ const
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''';
 
@@ -866,9 +865,9 @@ const
           end;
         var A, B: TOuter;
         begin
-          A := TOuter.Create;
-          B := TOuter.Create;
-          A.Child := TInner.Create;
+          A := TOuter.Create();
+          B := TOuter.Create();
+          A.Child := TInner.Create();
           B.Child := A.Child
         end.
         ''';
@@ -890,7 +889,7 @@ const
       type TFoo = class end;
       var F: TFoo;
       begin
-        F := TFoo.Create;
+        F := TFoo.Create();
         F := nil
       end.
       ''';
@@ -984,7 +983,7 @@ begin
         destructor TFoo.Destroy(why: Integer); begin end;
         destructor TFoo.Destroy; begin end;
         var f: TFoo;
-        begin f := TFoo.Create; f.Free end.
+        begin f := TFoo.Create(); f.Free() end.
         '''
   );
   AssertTrue('Overloaded no-arg Destroy emits the mangled symbol',
@@ -998,7 +997,7 @@ end;
 procedure TClassTests.TestCodegen_Constructor_NoArgs_StoresVTable;
 var IR: string;
 begin
-  { TFoo.Create (no args) — goes through TFieldAccessExpr.IsConstructorCall.
+  { TFoo.Create() (no args) — goes through TMethodCallExpr.IsConstructorCall.
     A class with a virtual method must get its vtable pointer stored at
     offset 0 immediately after _ClassAlloc. }
   IR := GenIR(
@@ -1011,7 +1010,7 @@ begin
         procedure TFoo.Done; begin end;
         var F: TFoo;
         begin
-          F := TFoo.Create
+          F := TFoo.Create()
         end.
         ''');
   AssertTrue('no-arg ctor stores vtable', Pos('storel $vtable_TFoo', IR) > 0);
@@ -1138,7 +1137,7 @@ begin
   try
     AssertTrue('program parsed and analysed without error', Prog <> nil);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1158,7 +1157,7 @@ begin
   try
     AssertTrue('pointer type alias parsed OK', Prog <> nil);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -1177,7 +1176,7 @@ begin
   try
     AssertTrue('metaclass alias parsed OK', Prog <> nil);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

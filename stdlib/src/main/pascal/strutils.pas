@@ -356,7 +356,7 @@ begin
   end;
   SP := PChar(S);
   OP := PChar(OldP);
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   I  := 0;
   while I <= SLen - OldLen do
   begin
@@ -393,8 +393,8 @@ begin
     SB.AppendByte(SP[I]);
     I := I + 1;
   end;
-  Result := SB.ToString;
-  SB.Free;
+  Result := SB.ToString();
+  SB.Free();
 end;
 
 function ReplaceStr(const S, OldPattern, NewPattern: string): string;
@@ -420,11 +420,11 @@ begin
   begin
     Exit('');
   end;
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   for I := 1 to Count do
     SB.Append(S);
-  Result := SB.ToString;
-  SB.Free;
+  Result := SB.ToString();
+  SB.Free();
 end;
 
 function ReverseString(const S: string): string;
@@ -500,12 +500,12 @@ begin
     Exit(S);
   end;
   PadCount := Width - Len;
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   for I := 1 to PadCount do
     SB.AppendByte(PadByte);
   SB.Append(S);
-  Result := SB.ToString;
-  SB.Free;
+  Result := SB.ToString();
+  SB.Free();
 end;
 
 function PadRight(const S: string; Width: Integer; PadByte: Byte): string;
@@ -519,12 +519,12 @@ begin
     Exit(S);
   end;
   PadCount := Width - Len;
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   SB.Append(S);
   for I := 1 to PadCount do
     SB.AppendByte(PadByte);
-  Result := SB.ToString;
-  SB.Free;
+  Result := SB.ToString();
+  SB.Free();
 end;
 
 function CountOccurrences(const Sub, S: string): Integer;
@@ -600,15 +600,15 @@ begin
   begin
     Exit('');
   end;
-  SB := TStringBuilder.Create;
+  SB := TStringBuilder.Create();
   for I := 0 to High(Parts) do
   begin
     SB.Append(Parts[I]);
     if I < High(Parts) then
       SB.Append(Sep);
   end;
-  Result := SB.ToString;
-  SB.Free;
+  Result := SB.ToString();
+  SB.Free();
 end;
 
 { ------------------------------------------------------------------ }

@@ -195,13 +195,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAnonReadWrite, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A[0]=10', '10', Lines.Strings[0]);
     AssertEquals('A[1]=20', '20', Lines.Strings[1]);
     AssertEquals('A[2]=30', '30', Lines.Strings[2]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_AnonymousDecl_NonZeroBase;
@@ -211,12 +211,12 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAnonNonZero, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A[5]=100', '100', Lines.Strings[0]);
     AssertEquals('A[7]=300', '300', Lines.Strings[1]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_AnonymousDecl_LowHighLength;
@@ -226,13 +226,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAnonLowHighLen, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Low=0',    '0', Lines.Strings[0]);
     AssertEquals('High=4',   '4', Lines.Strings[1]);
     AssertEquals('Length=5', '5', Lines.Strings[2]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 { ------------------------------------------------------------------ }
@@ -246,13 +246,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAliasBasic, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('A[0]=1', '1', Lines.Strings[0]);
     AssertEquals('A[1]=2', '2', Lines.Strings[1]);
     AssertEquals('A[2]=3', '3', Lines.Strings[2]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_TypeAlias_NonZeroBase;
@@ -262,12 +262,12 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAliasNonZero, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('S[3]=33', '33', Lines.Strings[0]);
     AssertEquals('S[5]=55', '55', Lines.Strings[1]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_TypeAlias_AsParam_Length;
@@ -286,12 +286,12 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAliasMultiVar, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('X[0]=10', '10', Lines.Strings[0]);
     AssertEquals('Y[1]=40', '40', Lines.Strings[1]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_TypeAlias_GlobalAndLocal;
@@ -301,12 +301,12 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(SrcAliasGlobalLocal, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('G[0]=7', '7', Lines.Strings[0]);
     AssertEquals('G[2]=9', '9', Lines.Strings[1]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_ConstArray_RangeIndexed_Strings;
@@ -330,14 +330,14 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Days[0]', 'Sun', Lines.Strings[0]);
     AssertEquals('Days[3]', 'Wed', Lines.Strings[1]);
     AssertEquals('Days[6]', 'Sat', Lines.Strings[2]);
     AssertEquals('Days[5]', 'Fri', Lines.Strings[3]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_ConstArray_RangeIndexed_Integers;
@@ -358,13 +358,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Primes[0]', '2', Lines.Strings[0]);
     AssertEquals('Primes[2]', '5', Lines.Strings[1]);
     AssertEquals('Primes[4]', '11', Lines.Strings[2]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_ClassConstArray_RangeIndexed;
@@ -380,12 +380,12 @@ const
       end;
     var T: TMyDays; I: Integer;
     begin
-      T := TMyDays.Create;
+      T := TMyDays.Create();
       WriteLn(T.Days[0]);
       WriteLn(T.Days[1]);
       I := 5;
       WriteLn(T.Days[I]);
-      T.Free
+      T.Free()
     end.
     ''';
 var Output: string; RCode: Integer;
@@ -394,13 +394,13 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Days[0]', 'Sun', Lines.Strings[0]);
     AssertEquals('Days[1]', 'Mon', Lines.Strings[1]);
     AssertEquals('Days[5]', 'Fri', Lines.Strings[2]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_ClassConstArray_EnumIndexed;
@@ -416,10 +416,10 @@ const
       end;
     var P2: TPalette;
     begin
-      P2 := TPalette.Create;
+      P2 := TPalette.Create();
       WriteLn(P2.Names[0]);
       WriteLn(P2.Names[2]);
-      P2.Free
+      P2.Free()
     end.
     ''';
 var Output: string; RCode: Integer;
@@ -428,12 +428,12 @@ begin
   if not ToolchainAvailable then begin Fail('<toolchain-missing>'); Exit end;
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('Names[0]', 'Red', Lines.Strings[0]);
     AssertEquals('Names[2]', 'Blue', Lines.Strings[1]);
-  finally Lines.Free end
+  finally Lines.Free() end
 end;
 
 procedure TE2EStaticArrayTests.TestRun_DynArray_High_ReturnsLengthMinusOne;

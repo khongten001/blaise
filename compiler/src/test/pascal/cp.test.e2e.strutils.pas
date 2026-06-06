@@ -810,12 +810,12 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('hello');
       SB.Append(' ');
       SB.Append('world');
-      WriteLn(SB.ToString);
-      SB.Free
+      WriteLn(SB.ToString());
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('hello world', 'hello world', Trim(Output));
@@ -830,12 +830,12 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder; S: string;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.AppendLine('line1');
       SB.AppendLine('line2');
-      S := SB.ToString;
+      S := SB.ToString();
       Write(S);
-      SB.Free
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('two lines', 'line1' + #10 + 'line2' + #10, Output);
@@ -850,12 +850,12 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('old content');
-      SB.Clear;
+      SB.Clear();
       SB.Append('new');
-      WriteLn(SB.ToString);
-      SB.Free
+      WriteLn(SB.ToString());
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('new', 'new', Trim(Output));
@@ -870,10 +870,10 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.Append('hello');
       WriteLn(SB.Length);
-      SB.Free
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('length 5', '5', Trim(Output));
@@ -888,12 +888,12 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       SB.AppendByte(65);  { A }
       SB.AppendByte(66);  { B }
       SB.AppendByte(67);  { C }
-      WriteLn(SB.ToString);
-      SB.Free
+      WriteLn(SB.ToString());
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('ABC', 'ABC', Trim(Output));
@@ -910,11 +910,11 @@ begin
     program P; uses StrUtils;
     var SB: TStringBuilder; I: Integer;
     begin
-      SB := TStringBuilder.Create;
+      SB := TStringBuilder.Create();
       for I := 1 to 1000 do
         SB.Append('x');
       WriteLn(SB.Length);
-      SB.Free
+      SB.Free()
     end.
     ''', Output, RCode));
   AssertEquals('1000 chars', '1000', Trim(Output));

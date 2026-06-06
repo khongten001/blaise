@@ -76,7 +76,7 @@ const
         end;
         var B: TBox<Integer>;
         begin
-          B := TBox<Integer>.Create
+          B := TBox<Integer>.Create()
         end.
         ''';
 
@@ -98,7 +98,7 @@ const
           end;
         var B: TBox<Integer>;
         begin
-          B := TBox<Integer>.Create
+          B := TBox<Integer>.Create()
         end.
         ''';
 
@@ -132,10 +132,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -144,11 +144,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -158,13 +158,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -183,7 +183,7 @@ begin
     MDecl := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('OwnerTypeName is TBox', 'TBox', MDecl.OwnerTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -199,7 +199,7 @@ begin
     AssertEquals('One type param', 1, MDecl.OwnerTypeParams.Count);
     AssertEquals('Param name is T', 'T', MDecl.OwnerTypeParams[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -213,7 +213,7 @@ begin
     MDecl := TMethodDecl(Prog.Block.ProcDecls[0]);
     AssertEquals('Method name is SetVal', 'SetVal', MDecl.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -232,7 +232,7 @@ begin
     AssertEquals('First param K', 'K', MDecl.OwnerTypeParams[0]);
     AssertEquals('Second param V', 'V', MDecl.OwnerTypeParams[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -245,7 +245,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(SrcForwardOnly);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericMethodImplTests.TestSemantic_TwoMethods_BothLinked;
@@ -257,11 +257,11 @@ var
 begin
   Prog := ParseSrc(SrcForwardOnly);
   try
-    SA := TSemanticAnalyser.Create;
+    SA := TSemanticAnalyser.Create();
     try
       SA.Analyse(Prog);
     finally
-      SA.Free;
+      SA.Free();
     end;
     { Locate the generic template's method bodies directly on the AST }
     GDef := TGenericTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
@@ -270,7 +270,7 @@ begin
     MDecl := TMethodDecl(GDef.ClassDef.Methods[1]);  { GetVal }
     AssertTrue('GetVal body linked', MDecl.Body <> nil);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

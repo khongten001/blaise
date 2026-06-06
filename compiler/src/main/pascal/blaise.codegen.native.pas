@@ -100,7 +100,7 @@ end;
 
 destructor TCodeGenNative.Destroy;
 begin
-  FBackend.Free;
+  FBackend.Free();
   inherited Destroy;
 end;
 
@@ -127,14 +127,14 @@ end;
 
 procedure TCodeGenNative.Generate(AProg: TProgram);
 begin
-  Self.EnsureBackend;
+  Self.EnsureBackend();
   FBackend.SetSymbolTable(FSymTable);
   FOutput := FBackend.GenerateProgram(AProg);
 end;
 
 procedure TCodeGenNative.GenerateUnit(AUnit: TUnit);
 begin
-  Self.EnsureBackend;
+  Self.EnsureBackend();
   raise ENativeCodeGenError.Create(
     'native backend: single-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');
@@ -142,7 +142,7 @@ end;
 
 procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
 begin
-  Self.EnsureBackend;
+  Self.EnsureBackend();
   raise ENativeCodeGenError.Create(
     'native backend: multi-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');
@@ -150,7 +150,7 @@ end;
 
 procedure TCodeGenNative.AppendProgram(AProg: TProgram);
 begin
-  Self.EnsureBackend;
+  Self.EnsureBackend();
   raise ENativeCodeGenError.Create(
     'native backend: multi-unit compilation not yet implemented (target ' +
     TargetName(FTarget) + ')');

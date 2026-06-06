@@ -372,15 +372,15 @@ constructor TX86_64Backend.Create(const ATarget: TTargetDesc);
 begin
   inherited Create(ATarget);
   FLabelCount          := 0;
-  FDataGlobals         := TOrderedDictionary<>.Create;
-  FThreadVarGlobals    := TDictionary<>.Create;
-  FClassNameEmitted    := TDictionary<>.Create;
-  FStrLits             := TStringList.Create;
-  FBreakLabels        := TStack<>.Create;
-  FContinueLabels     := TStack<>.Create;
-  FBreakExcDepths     := TStack<>.Create;
-  FContinueExcDepths  := TStack<>.Create;
-  FFinallyStack       := TList<TCompoundStmt>.Create;
+  FDataGlobals         := TOrderedDictionary<string, TTypeDesc>.Create();
+  FThreadVarGlobals    := TDictionary<string, Boolean>.Create();
+  FClassNameEmitted    := TDictionary<string, Boolean>.Create();
+  FStrLits             := TStringList.Create();
+  FBreakLabels        := TStack<string>.Create();
+  FContinueLabels     := TStack<string>.Create();
+  FBreakExcDepths     := TStack<Integer>.Create();
+  FContinueExcDepths  := TStack<Integer>.Create();
+  FFinallyStack       := TList<TCompoundStmt>.Create();
   FFrame          := nil;
   FFrameTypes     := nil;
   FFrameSize      := 0;
@@ -393,16 +393,16 @@ end;
 
 destructor TX86_64Backend.Destroy;
 begin
-  Self.ClearFrame;
-  FFinallyStack.Free;
-  FContinueExcDepths.Free;
-  FBreakExcDepths.Free;
-  FContinueLabels.Free;
-  FBreakLabels.Free;
-  FClassNameEmitted.Free;
-  FStrLits.Free;
-  FThreadVarGlobals.Free;
-  FDataGlobals.Free;
+  Self.ClearFrame();
+  FFinallyStack.Free();
+  FContinueExcDepths.Free();
+  FBreakExcDepths.Free();
+  FContinueLabels.Free();
+  FBreakLabels.Free();
+  FClassNameEmitted.Free();
+  FStrLits.Free();
+  FThreadVarGlobals.Free();
+  FDataGlobals.Free();
   inherited Destroy;
 end;
 
@@ -447,7 +447,7 @@ var
 begin
   if (FDataGlobals.Count = 0) and (FProgExcFrameCount = 0) then
   begin
-    Self.EmitStrLitSection;
+    Self.EmitStrLitSection();
     Exit;
   end;
   HasData := False;
@@ -575,7 +575,7 @@ begin
       Self.Emit(Format(#9'.skip %d', [Sz]));
     end;
   end;
-  Self.EmitStrLitSection;
+  Self.EmitStrLitSection();
 end;
 
 { ------------------------------------------------------------------ }
@@ -1733,9 +1733,9 @@ var
   P:    TMethodParam;
   VD:   TVarDecl;
 begin
-  Self.ClearFrame;
-  FFrame      := TDictionary<>.Create;
-  FFrameTypes := TDictionary<>.Create;
+  Self.ClearFrame();
+  FFrame      := TDictionary<string, Integer>.Create();
+  FFrameTypes := TDictionary<string, TTypeDesc>.Create();
   Offset   := 0;
   StackOff := 16;  { first stack arg: +16(%rbp) — above saved %rbp and ret addr }
   { For class methods, Self is the implicit first integer param (%rdi).
@@ -1867,19 +1867,19 @@ procedure TX86_64Backend.ClearFrame;
 begin
   if FFrame <> nil then
   begin
-    FFrame.Free;
+    FFrame.Free();
     FFrame := nil;
   end;
   if FFrameTypes <> nil then
   begin
-    FFrameTypes.Free;
+    FFrameTypes.Free();
     FFrameTypes := nil;
   end;
   FFrameSize    := 0;
   FSretFunc     := False;
   FExcDepth     := 0;
   FExcFrameNext := 0;
-  FFinallyStack.Clear;
+  FFinallyStack.Clear();
 end;
 
 { ------------------------------------------------------------------ }
@@ -3221,11 +3221,20 @@ begin
   { Load Self (the receiver) into %r10 to survive the pop loop. }
   if ACall.ObjectName <> '' then
   begin
-    { Named receiver: load the class pointer (always 8-byte movq). }
-    if Self.IsLocal(ACall.ObjectName) then
-      Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
+    if MD.IsRecordMethod then
+    begin
+      if Self.IsLocal(ACall.ObjectName) then
+        Self.Emit(Format(#9'leaq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%r10', [ACall.ObjectName]));
+    end
     else
-      Self.Emit(Format(#9'movq %s(%%rip), %%r10', [ACall.ObjectName]));
+    begin
+      if Self.IsLocal(ACall.ObjectName) then
+        Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%r10', [ACall.ObjectName]));
+    end;
   end
   else if ACall.ObjExpr <> nil then
   begin
@@ -3712,10 +3721,10 @@ begin
   FContinueLabels.Push(LNext);
   FContinueExcDepths.Push(FExcDepth);
   Self.EmitStmt(AFor.Body);
-  FContinueExcDepths.Pop;
-  FContinueLabels.Pop;
-  FBreakExcDepths.Pop;
-  FBreakLabels.Pop;
+  FContinueExcDepths.Pop();
+  FContinueLabels.Pop();
+  FBreakExcDepths.Pop();
+  FBreakLabels.Pop();
 
   Self.Emit(LNext + ':');
   Self.EmitLoadVar(VarOp, VarType);
@@ -3831,10 +3840,10 @@ begin
     Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
 
     Self.Emit(LNext + ':');
     Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
@@ -3899,10 +3908,10 @@ begin
     Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
 
     Self.Emit(LNext + ':');
     Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
@@ -3951,10 +3960,10 @@ begin
     Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
 
     Self.Emit(LNext + ':');
     Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
@@ -4011,10 +4020,10 @@ begin
     Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
 
     Self.Emit(LNext + ':');
     Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
@@ -4097,10 +4106,10 @@ begin
   Self.EmitForInAssignElem(AStmt);
 
   Self.EmitStmt(AStmt.Body);
-  FContinueExcDepths.Pop;
-  FContinueLabels.Pop;
-  FBreakExcDepths.Pop;
-  FBreakLabels.Pop;
+  FContinueExcDepths.Pop();
+  FContinueLabels.Pop();
+  FBreakExcDepths.Pop();
+  FBreakLabels.Pop();
 
   Self.Emit(#9'jmp ' + LCond);
   Self.Emit(LEnd + ':');
@@ -4120,7 +4129,7 @@ begin
   EndLbl  := Self.NewLabel('csend');
   ElseLbl := Self.NewLabel('cselse');
 
-  BranchLabels := TStringList.Create;
+  BranchLabels := TStringList.Create();
   for I := 0 to AStmt.Branches.Count - 1 do
     BranchLabels.Add(Self.NewLabel('csbr'));
 
@@ -4182,7 +4191,7 @@ begin
   Self.Emit(#9'jmp ' + EndLbl);
 
   Self.Emit(EndLbl + ':');
-  BranchLabels.Free;
+  BranchLabels.Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -5008,10 +5017,10 @@ begin
     FContinueLabels.Push(LCond);
     FContinueExcDepths.Push(FExcDepth);
     Self.EmitStmt(WhileS.Body);
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
     Self.Emit(#9'jmp ' + LCond);
     Self.Emit(LEnd + ':');
     Exit;
@@ -5030,10 +5039,10 @@ begin
     FContinueExcDepths.Push(FExcDepth);
     for I := 0 to RepS.Body.Stmts.Count - 1 do
       Self.EmitStmt(TASTStmt(RepS.Body.Stmts.Items[I]));
-    FContinueExcDepths.Pop;
-    FContinueLabels.Pop;
-    FBreakExcDepths.Pop;
-    FBreakLabels.Pop;
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
     Self.Emit(LCond + ':');
     Self.EmitCondBranch(RepS.Condition, LEnd, LBody);
     Self.Emit(LEnd + ':');
@@ -5044,8 +5053,8 @@ begin
   begin
     if FBreakLabels.Count = 0 then
       raise ENativeCodeGenError.Create('break outside loop');
-    Self.EmitExcUnwind(FBreakExcDepths.Peek);
-    Self.Emit(#9'jmp ' + FBreakLabels.Peek);
+    Self.EmitExcUnwind(FBreakExcDepths.Peek());
+    Self.Emit(#9'jmp ' + FBreakLabels.Peek());
     Exit;
   end;
 
@@ -5053,8 +5062,8 @@ begin
   begin
     if FContinueLabels.Count = 0 then
       raise ENativeCodeGenError.Create('continue outside loop');
-    Self.EmitExcUnwind(FContinueExcDepths.Peek);
-    Self.Emit(#9'jmp ' + FContinueLabels.Peek);
+    Self.EmitExcUnwind(FContinueExcDepths.Peek());
+    Self.Emit(#9'jmp ' + FContinueLabels.Peek());
     Exit;
   end;
 
@@ -6143,7 +6152,7 @@ begin
   Self.Emit('.type ' + Sym + ', @function');
 
   FExitLabel := '';
-  Self.ClearFrame;
+  Self.ClearFrame();
 end;
 
 { Emit the program entry function.
@@ -6209,7 +6218,7 @@ begin
   { Reset exc-frame state before emitting the program body. }
   FExcDepth     := 0;
   FExcFrameNext := 0;
-  FFinallyStack.Clear;
+  FFinallyStack.Clear();
 
   Self.Emit('.text');
   Self.Emit('.globl main');
@@ -6234,7 +6243,7 @@ begin
   Self.Emit('.section .note.GNU-stack,"",@progbits');
 
   { Data section: all registered global integer/float/record slots. }
-  Self.EmitDataSection;
+  Self.EmitDataSection();
   { Class data section: typeinfo, vtables, field-cleanup functions. }
   Self.EmitClassSection(AProg);
   { Interface data: typeinfo tokens, itabs, impllists.  Emitted after the class

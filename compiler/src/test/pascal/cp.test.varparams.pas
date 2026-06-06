@@ -79,9 +79,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -89,11 +89,11 @@ function TVarParamTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -102,15 +102,15 @@ var P: TProgram; CG: TCodeGenQBE;
 begin
   P := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(P);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    P.Free;
+    P.Free();
   end;
 end;
 
@@ -119,7 +119,7 @@ var P: TProgram;
 begin
   try
     P := AnalyseSrc(ASrc);
-    P.Free;
+    P.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ;
@@ -188,7 +188,7 @@ begin
     MD  := TMethodDecl(P.Block.ProcDecls[0]);  { SetVal }
     Par := TMethodParam(MD.Params[0]);         { var X }
     AssertTrue('X is var param', Par.IsVarParam);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TVarParamTests.TestParse_VarParam_MultiInGroup;
@@ -199,7 +199,7 @@ begin
     MD := TMethodDecl(P.Block.ProcDecls[0]);  { Swap }
     AssertTrue('A is var param', TMethodParam(MD.Params[0]).IsVarParam);
     AssertTrue('B is var param', TMethodParam(MD.Params[1]).IsVarParam);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TVarParamTests.TestParse_VarParam_Mixed_VarAndValue;
@@ -210,7 +210,7 @@ begin
     MD := TMethodDecl(P.Block.ProcDecls[0]);  { P(var A; B) }
     AssertTrue('A is var param',    TMethodParam(MD.Params[0]).IsVarParam);
     AssertFalse('B is value param', TMethodParam(MD.Params[1]).IsVarParam);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TVarParamTests.TestParse_VarParam_ValueParam_IsNotVar;
@@ -226,7 +226,7 @@ begin
   try
     MD := TMethodDecl(P.Block.ProcDecls[0]);
     AssertFalse('X is not var param', TMethodParam(MD.Params[0]).IsVarParam);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -235,7 +235,7 @@ end;
 
 procedure TVarParamTests.TestSemantic_VarParam_OK;
 begin
-  AnalyseSrc(SrcVarSet).Free;
+  AnalyseSrc(SrcVarSet).Free();
 end;
 
 procedure TVarParamTests.TestSemantic_VarParam_NonVariable_RaisesError;
@@ -345,10 +345,10 @@ const
         begin H.SetVal(N) end;
         var H: THelper; V: Integer;
         begin
-          H := THelper.Create;
+          H := THelper.Create();
           V := 0;
           Wrapper(H, V);
-          H.Free
+          H.Free()
         end.
         ''';
 var IR: string;
@@ -382,7 +382,7 @@ begin
           Bump(R.Count)
         end.
         ''');
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TVarParamTests.TestSemantic_VarParam_DerefField_OK;
@@ -405,7 +405,7 @@ begin
           Bump(P^.Count)
         end.
         ''');
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TVarParamTests.TestCodegen_VarParam_ClassFieldLeaf_LoadsObjectPointer;
@@ -422,7 +422,7 @@ const
           end;
         var N: TNode;
         begin
-          N := TNode.Create;
+          N := TNode.Create();
           Fill(N.Value)
         end.
         ''';

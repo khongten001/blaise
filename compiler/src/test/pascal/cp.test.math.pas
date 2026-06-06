@@ -202,9 +202,9 @@ begin
   try
     Lexer       := TLexer.Create(ASrc);
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -213,9 +213,9 @@ begin
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -231,11 +231,11 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -251,15 +251,15 @@ begin
     try
       Lexer    := TLexer.Create(ASrc);
       Parser   := TParser.Create(Lexer);
-      Prog     := Parser.Parse;
-      Semantic := TSemanticAnalyser.Create;
+      Prog     := Parser.Parse();
+      Semantic := TSemanticAnalyser.Create();
       Semantic.Analyse(Prog);
       Fail('Expected ESemanticError but none was raised');
     except
       on E: ESemanticError do ;
     end;
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -281,9 +281,9 @@ begin
   try
     Lexer       := TLexer.Create(ASrc);
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -291,16 +291,16 @@ begin
     for I := 0 to Units.Count - 1 do
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
     CG.AppendProgram(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free; Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    CG.Free(); Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -317,14 +317,14 @@ begin
   try
     Lexer    := TLexer.Create(ASrc);
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
-    CG       := TCodeGenQBE.Create;
+    CG       := TCodeGenQBE.Create();
     CG.Generate(Prog);
-    Result   := CG.GetOutput;
+    Result   := CG.GetOutput();
   finally
-    CG.Free; Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    CG.Free(); Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -361,14 +361,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X, R: Double; begin R := Sqrt(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -399,14 +399,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; R: Integer; begin R := Ceil(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -428,14 +428,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; R: Integer; begin R := Floor(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -457,14 +457,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; R: Integer; begin R := Round(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -486,14 +486,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; R: Integer; begin R := Trunc(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -524,14 +524,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X, R: Double; begin R := Ln(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -569,14 +569,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var B, E, R: Double; begin R := Power(B, E) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -626,14 +626,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X, R: Double; begin R := Sin(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -649,14 +649,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X, R: Single; begin R := Sin(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Single', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -702,14 +702,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X, R: Single; begin R := Sinh(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Single', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -735,14 +735,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; B: Boolean; begin B := IsNaN(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Boolean', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -764,14 +764,14 @@ begin
   try
     Lexer    := TLexer.Create('program P; var X: Double; B: Boolean; begin B := IsInfinite(X) end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Boolean', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1036,9 +1036,9 @@ begin
     Lexer := TLexer.Create(
       'program P; uses Math; var A, B, R: Integer; begin R := Min(A, B) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -1050,9 +1050,9 @@ begin
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1074,9 +1074,9 @@ begin
     Lexer := TLexer.Create(
       'program P; uses Math; var A, B, R: Double; begin R := Max(A, B) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -1088,9 +1088,9 @@ begin
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1136,9 +1136,9 @@ begin
     Lexer := TLexer.Create(
       'program P; uses Math; var X: Double; R: Integer; begin R := Sign(X) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -1150,9 +1150,9 @@ begin
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1212,9 +1212,9 @@ begin
     Lexer := TLexer.Create(
       'program P; uses Math; var V, Lo, Hi: Integer; B: Boolean; begin B := InRange(V, Lo, Hi) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -1226,9 +1226,9 @@ begin
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Boolean', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1274,9 +1274,9 @@ begin
     Lexer := TLexer.Create(
       'program P; uses Math; var V, Lo, Hi, R: Integer; begin R := EnsureRange(V, Lo, Hi) end.');
     Parser      := TParser.Create(Lexer);
-    Prog        := Parser.Parse;
-    Semantic    := TSemanticAnalyser.Create;
-    SearchPaths := TStringList.Create;
+    Prog        := Parser.Parse();
+    Semantic    := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
     SearchPaths.Add(FRTLUnitPath);
     SearchPaths.Add(FStdlibUnitPath);
     Loader := TUnitLoader.Create(SearchPaths);
@@ -1288,9 +1288,9 @@ begin
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('return type', 'Integer', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free;
-    Units.Free; Loader.Free; SearchPaths.Free;
-    Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 
@@ -1441,14 +1441,14 @@ begin
     Lexer    := TLexer.Create(
       'program P; var X, Y: Integer; R: Double; begin R := Y / X end.');
     Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse;
-    Semantic := TSemanticAnalyser.Create;
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
     Semantic.Analyse(Prog);
     Assign := TAssignment(Prog.Block.Stmts.Items[0]);
     AssertNotNil('resolved type', Assign.Expr.ResolvedType);
     AssertEquals('Y / X type', 'Double', Assign.Expr.ResolvedType.Name);
   finally
-    Semantic.Free; Prog.Free; Parser.Free; Lexer.Free;
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free();
   end;
 end;
 

@@ -110,7 +110,7 @@ const
         var
           C: IEqualityComparer<Integer>;
         begin
-          C := TIntegerComparer.Create
+          C := TIntegerComparer.Create()
         end.
         ''';
 
@@ -136,7 +136,7 @@ const
           C: IEqualityComparer<Integer>;
           OK: Boolean;
         begin
-          C  := TIntegerComparer.Create;
+          C  := TIntegerComparer.Create();
           OK := C.Equals(1, 1)
         end.
         ''';
@@ -153,10 +153,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -165,11 +165,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -179,13 +179,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -204,7 +204,7 @@ begin
     TD := TTypeDecl(Prog.Block.TypeDecls[0]);
     AssertTrue('Def is TGenericInterfaceDef', TD.Def is TGenericInterfaceDef);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -221,7 +221,7 @@ begin
     AssertEquals('One type param', 1, GID.ParamNames.Count);
     AssertEquals('Param name is T', 'T', GID.ParamNames[0]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -239,7 +239,7 @@ begin
     AssertEquals('First param', 'TIn',  GID.ParamNames[0]);
     AssertEquals('Second param', 'TOut', GID.ParamNames[1]);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -263,7 +263,7 @@ begin
     AssertEquals('First param type is T', 'T', Par.TypeName);
     AssertEquals('Return type is Integer', 'Integer', MDecl.ReturnTypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -284,7 +284,7 @@ begin
       (CD.ParentName = 'IEqualityComparer<Integer>') or
       (CD.ImplementsNames.IndexOf('IEqualityComparer<Integer>') >= 0));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -298,7 +298,7 @@ var
 begin
   { 'var C: IEqualityComparer<Integer>' should trigger instantiation }
   Prog := AnalyseSrc(SrcEqualityComparer);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericIntfTests.TestSemantic_GenericIntf_InstantiatedType_IsInterface;
@@ -312,7 +312,7 @@ begin
     AssertEquals('Variable type is tyInterface',
       Ord(tyInterface), Ord(VD.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -322,7 +322,7 @@ var
 begin
   { Should not raise — TIntegerComparer correctly implements IEqualityComparer<Integer> }
   Prog := AnalyseSrc(SrcClassImplementsGenericIntf);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TGenericIntfTests.TestSemantic_GenericIntf_MethodParamsSubstituted;
@@ -339,7 +339,7 @@ begin
     AssertEquals('First method is Equals',     'Equals',      IntfDesc.MethodName(0));
     AssertEquals('Second method is GetHashCode', 'GetHashCode', IntfDesc.MethodName(1));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

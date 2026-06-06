@@ -34,7 +34,7 @@ end;
 
 procedure Line(const S: string);
 begin
-  Indent;
+  Indent();
   WriteLn(S);
 end;
 
@@ -150,11 +150,11 @@ begin
       Flags := Flags + ' Global';
     if TIdentExpr(AExpr).IsConstant then
       Flags := Flags + ' Const';
-    Indent;
+    Indent();
     Write('Ident(' + TIdentExpr(AExpr).Name + ')');
     DumpFlags(AExpr);
     Write(Flags);
-    WriteLn;
+    WriteLn();
     Exit;
   end;
 
@@ -179,14 +179,14 @@ begin
       Flags := Flags + ' ArrayAccess';
     if TFieldAccessExpr(AExpr).FieldInfo <> nil then
       Flags := Flags + ' field=' + FieldStr(TFieldAccessExpr(AExpr).FieldInfo);
-    Indent;
+    Indent();
     Write('FieldAccess(');
     if TFieldAccessExpr(AExpr).RecordName <> '' then
       Write(TFieldAccessExpr(AExpr).RecordName + '.');
     Write(TFieldAccessExpr(AExpr).FieldName + ')');
     DumpFlags(AExpr);
     Write(Flags);
-    WriteLn;
+    WriteLn();
     if TFieldAccessExpr(AExpr).Base <> nil then
     begin
       Inc(IndentLevel);
@@ -201,10 +201,10 @@ begin
 
   if AExpr is TBinaryExpr then
   begin
-    Indent;
+    Indent();
     Write('BinaryExpr(' + BinaryOpName(TBinaryExpr(AExpr).Op) + ')');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TBinaryExpr(AExpr).Left);
     DumpExpr(TBinaryExpr(AExpr).Right);
@@ -214,10 +214,10 @@ begin
 
   if AExpr is TNotExpr then
   begin
-    Indent;
+    Indent();
     Write('Not');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TNotExpr(AExpr).Expr);
     Dec(IndentLevel);
@@ -226,10 +226,10 @@ begin
 
   if AExpr is TStringSubscriptExpr then
   begin
-    Indent;
+    Indent();
     Write('Subscript');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TStringSubscriptExpr(AExpr).StrExpr);
     DumpExpr(TStringSubscriptExpr(AExpr).IndexExpr);
@@ -239,10 +239,10 @@ begin
 
   if AExpr is TArrayLiteralExpr then
   begin
-    Indent;
+    Indent();
     Write('ArrayLiteral');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     for I := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
       DumpExpr(TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[I]));
@@ -261,14 +261,14 @@ begin
       Flags := Flags + ' VarParam';
     if TMethodCallExpr(AExpr).ResolvedClassType <> nil then
       Flags := Flags + ' class=' + TypeStr(TMethodCallExpr(AExpr).ResolvedClassType);
-    Indent;
+    Indent();
     Write('MethodCallExpr(');
     if TMethodCallExpr(AExpr).ObjectName <> '' then
       Write(TMethodCallExpr(AExpr).ObjectName + '.');
     Write(TMethodCallExpr(AExpr).Name + ')');
     DumpFlags(AExpr);
     Write(Flags);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     if TMethodCallExpr(AExpr).ObjExpr <> nil then
     begin
@@ -285,10 +285,10 @@ begin
 
   if AExpr is TFuncCallExpr then
   begin
-    Indent;
+    Indent();
     Write('FuncCall(' + TFuncCallExpr(AExpr).Name + ')');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     for I := 0 to TFuncCallExpr(AExpr).Args.Count - 1 do
       DumpExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Items[I]));
@@ -298,10 +298,10 @@ begin
 
   if AExpr is TDerefExpr then
   begin
-    Indent;
+    Indent();
     Write('Deref');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TDerefExpr(AExpr).Expr);
     Dec(IndentLevel);
@@ -310,10 +310,10 @@ begin
 
   if AExpr is TAddrOfExpr then
   begin
-    Indent;
+    Indent();
     Write('AddrOf');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TAddrOfExpr(AExpr).Expr);
     Dec(IndentLevel);
@@ -322,10 +322,10 @@ begin
 
   if AExpr is TIsExpr then
   begin
-    Indent;
+    Indent();
     Write('Is(' + TIsExpr(AExpr).TypeName + ')');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TIsExpr(AExpr).Obj);
     Dec(IndentLevel);
@@ -334,10 +334,10 @@ begin
 
   if AExpr is TAsExpr then
   begin
-    Indent;
+    Indent();
     Write('As(' + TAsExpr(AExpr).TypeName + ')');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TAsExpr(AExpr).Obj);
     Dec(IndentLevel);
@@ -346,10 +346,10 @@ begin
 
   if AExpr is TIndirectFuncCallExpr then
   begin
-    Indent;
+    Indent();
     Write('IndirectCall');
     DumpFlags(AExpr);
-    WriteLn;
+    WriteLn();
     Inc(IndentLevel);
     DumpExpr(TIndirectFuncCallExpr(AExpr).CalleeExpr);
     for I := 0 to TIndirectFuncCallExpr(AExpr).Args.Count - 1 do
@@ -358,10 +358,10 @@ begin
     Exit;
   end;
 
-  Indent;
+  Indent();
   Write(AExpr.ClassName);
   DumpFlags(AExpr);
-  WriteLn;
+  WriteLn();
 end;
 
 procedure DumpStmt(AStmt: TASTStmt);
@@ -538,12 +538,12 @@ begin
       Flags := Flags + ' method=' + TMethodDecl(TMethodCallStmt(AStmt).ResolvedMethod).Name;
     Line('MethodCallStmt(');
     Inc(IndentLevel);
-    Indent;
+    Indent();
     if TMethodCallStmt(AStmt).ObjectName <> '' then
       Write(TMethodCallStmt(AStmt).ObjectName + '.');
     Write(TMethodCallStmt(AStmt).Name + ')');
     Write(Flags);
-    WriteLn;
+    WriteLn();
     for I := 0 to TMethodCallStmt(AStmt).Args.Count - 1 do
       DumpExpr(TASTExpr(TMethodCallStmt(AStmt).Args.Items[I]));
     Dec(IndentLevel);
@@ -733,11 +733,11 @@ begin
       if TMethodParam(ADecl.Params.Items[I]).IsConstParam then Flags := Flags + 'const ';
       if TMethodParam(ADecl.Params.Items[I]).IsOutParam then Flags := Flags + 'out ';
       if TMethodParam(ADecl.Params.Items[I]).IsOpenArray then Flags := Flags + 'open-array ';
-      Indent;
+      Indent();
       Write(Flags + TMethodParam(ADecl.Params.Items[I]).ParamName + ': ' + TMethodParam(ADecl.Params.Items[I]).TypeName);
       if TMethodParam(ADecl.Params.Items[I]).ResolvedType <> nil then
         Write(' -> ' + TypeStr(TMethodParam(ADecl.Params.Items[I]).ResolvedType));
-      WriteLn;
+      WriteLn();
     end;
     Dec(IndentLevel);
   end;
@@ -768,7 +768,7 @@ begin
     Inc(IndentLevel);
     for I := 0 to ABlock.ConstDecls.Count - 1 do
     begin
-      Indent;
+      Indent();
       Write(TConstDecl(ABlock.ConstDecls.Items[I]).Name);
       if TConstDecl(ABlock.ConstDecls.Items[I]).TypeName <> '' then
         Write(': ' + TConstDecl(ABlock.ConstDecls.Items[I]).TypeName);
@@ -778,7 +778,7 @@ begin
         Write(' = ' + TConstDecl(ABlock.ConstDecls.Items[I]).StrVal)
       else
         Write(' = ' + IntToStr(TConstDecl(ABlock.ConstDecls.Items[I]).IntVal));
-      WriteLn;
+      WriteLn();
     end;
     Dec(IndentLevel);
   end;
@@ -788,11 +788,11 @@ begin
     Inc(IndentLevel);
     for I := 0 to ABlock.Decls.Count - 1 do
     begin
-      Indent;
+      Indent();
       Write(TVarDecl(ABlock.Decls.Items[I]).Names.Strings[0] + ': ' + TVarDecl(ABlock.Decls.Items[I]).TypeName);
       if TVarDecl(ABlock.Decls.Items[I]).ResolvedType <> nil then
         Write(' -> ' + TypeStr(TVarDecl(ABlock.Decls.Items[I]).ResolvedType));
-      WriteLn;
+      WriteLn();
     end;
     Dec(IndentLevel);
   end;

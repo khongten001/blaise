@@ -145,10 +145,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -157,11 +157,11 @@ var
   SA: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  SA     := TSemanticAnalyser.Create;
+  SA     := TSemanticAnalyser.Create();
   try
     SA.Analyse(Result);
   finally
-    SA.Free;
+    SA.Free();
   end;
 end;
 
@@ -171,13 +171,13 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(ASrc);
-  CG   := TCodeGenQBE.Create;
+  CG   := TCodeGenQBE.Create();
   try
     CG.Generate(Prog);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Prog.Free;
+    CG.Free();
+    Prog.Free();
   end;
 end;
 
@@ -195,7 +195,7 @@ begin
     Decl := TVarDecl(Prog.Block.Decls[0]);
     AssertEquals('^Integer', Decl.TypeName);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -211,7 +211,7 @@ begin
     Assign := TAssignment(Prog.Block.Stmts[1]);
     AssertTrue('Deref should be TDerefExpr', Assign.Expr is TDerefExpr);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -226,7 +226,7 @@ begin
     AssertTrue('Ptr write should be TPointerWriteStmt',
       Prog.Block.Stmts[0] is TPointerWriteStmt);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -245,7 +245,7 @@ begin
     AssertEquals('Untyped pointer kind', Ord(tyPointer),
       Ord(Decl.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -260,7 +260,7 @@ begin
     AssertEquals('Typed pointer kind', Ord(tyPointer),
       Ord(Decl.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -277,7 +277,7 @@ begin
     AssertNotNull('Typed pointer should have BaseType', PtrDesc.BaseType);
     AssertEquals('BaseType should be Integer', 'Integer', PtrDesc.BaseType.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -292,7 +292,7 @@ begin
     AssertEquals('GetMem result type', Ord(tyPointer),
       Ord(Assign.Expr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -302,7 +302,7 @@ var
 begin
   { Should not raise }
   Prog := AnalyseSrc(SrcFreeMem);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TPointerTests.TestSemantic_Deref_ResolvedType;
@@ -318,7 +318,7 @@ begin
     AssertEquals('Deref result type', Ord(tyInteger),
       Ord(DerefExpr.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -333,7 +333,7 @@ begin
     AssertNotNull('PointerWrite BaseTy should be set', PtrWrite.BaseTy);
     AssertEquals('BaseTy should be Integer', 'Integer', PtrWrite.BaseTy.Name);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -407,7 +407,7 @@ begin
     AssertEquals('cast resolves to tyPointer',
       Ord(tyPointer), Ord(Cast.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -424,7 +424,7 @@ begin
     AssertEquals('cast resolves to tyUInt64',
       Ord(tyUInt64), Ord(Cast.ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 

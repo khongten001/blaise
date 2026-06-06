@@ -507,7 +507,7 @@ begin
   M.Code := Code;
   M.Data := Self;
   Run    := TRunMethod(M);
-  Run;
+  Run();
 end;
 
 procedure TTestCase.Run(AResult: TTestResult);
@@ -517,15 +517,15 @@ begin
   AResult.StartTest(Self.FClassName, Self.FName);
   Outcome := 'OK';
   try
-    Self.SetUp;
+    Self.SetUp();
     try
       try
-        Self.RunTest;
+        Self.RunTest();
       except
         on EAF: EAssertionFailed do
         begin
           Outcome := 'FAIL';
-          AResult.AddFailure(Self.FName, EAF.ToString);
+          AResult.AddFailure(Self.FName, EAF.ToString());
         end;
         on EIT: EIgnoredTest do
         begin
@@ -544,7 +544,7 @@ begin
         end;
       end;
     finally
-      Self.TearDown;
+      Self.TearDown();
     end;
   finally
     AResult.EndTest(Outcome);
@@ -562,8 +562,8 @@ begin
   Self.FNumberOfFailures := 0;
   Self.FNumberOfErrors   := 0;
   Self.FNumberOfIgnored  := 0;
-  Self.FFailureList      := TStringList.Create;
-  Self.FErrorList        := TStringList.Create;
+  Self.FFailureList      := TStringList.Create();
+  Self.FErrorList        := TStringList.Create();
   Self.FVerbose          := False;
   Self.FCurrentClassName := '';
   Self.FCurrentTestName  := '';
@@ -571,8 +571,8 @@ end;
 
 destructor TTestResult.Destroy;
 begin
-  Self.FFailureList.Free;
-  Self.FErrorList.Free;
+  Self.FFailureList.Free();
+  Self.FErrorList.Free();
   inherited Destroy;
 end;
 
@@ -664,7 +664,7 @@ end;
 procedure RegisterTest(ATestClass: TTestCaseClass);
 begin
   if GRegistry = nil then
-    GRegistry := TStringList.Create;
+    GRegistry := TStringList.Create();
   { Store the metaclass typeinfo pointer in Objects[]; the name slot
     is reserved for a descriptive label the runner can print. }
   GRegistry.AddObject('', Pointer(ATestClass));

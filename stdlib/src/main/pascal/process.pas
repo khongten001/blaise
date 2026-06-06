@@ -57,13 +57,13 @@ implementation
 constructor TProcess.Create(AOwner: TObject);
 begin
   Self.FHandle := ProcessCreate;
-  Self.FParameters := TStringList.Create
+  Self.FParameters := TStringList.Create()
 end;
 
 procedure TProcess.Destroy;
 begin
   ProcessFree(Self.FHandle);
-  Self.FParameters.Destroy
+  Self.FParameters.Destroy()
 end;
 
 function TProcess.GetRunning: Boolean;

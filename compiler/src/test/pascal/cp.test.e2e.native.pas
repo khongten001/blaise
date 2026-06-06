@@ -727,7 +727,7 @@ const
       M:  TMethod;
       P:  TAddProc;
     begin
-      C      := TCounter.Create;
+      C      := TCounter.Create();
       M.Code := MethodAddress(C, 'Add');
       M.Data := C;
       P      := TAddProc(M);
@@ -1676,7 +1676,7 @@ const
       end
     end;
     begin
-      Run;
+      Run();
       WriteLn('after')
     end.
     ''';
@@ -1719,7 +1719,7 @@ const
         begin
           X := 0;
           try
-            raise EFoo.Create
+            raise EFoo.Create()
           except
             on E: EFoo do X := 42;
             on E: Exception do X := 1
@@ -1735,7 +1735,7 @@ const
         begin
           X := 0;
           try
-            raise EBar.Create
+            raise EBar.Create()
           except
             on E: EFoo do X := 7
           end;
@@ -1751,7 +1751,7 @@ const
           X := 0;
           try
             try
-              raise EFoo.Create
+              raise EFoo.Create()
             except
               on E: EFoo do begin X := 1; raise end
             end
@@ -1769,7 +1769,7 @@ const
         begin
           X := 0;
           try
-            raise EFoo.Create
+            raise EFoo.Create()
           except
             on E: EBar do X := 9
             else X := 5
@@ -1793,7 +1793,7 @@ const
       end
     end;
     begin
-      Run;
+      Run();
       WriteLn('after')
     end.
     ''';
@@ -2008,9 +2008,9 @@ const
       G: IGreeter;
       T: TGreeter;
     begin
-      T := TGreeter.Create;
+      T := TGreeter.Create();
       G := T;
-      WriteLn(G.Greet)
+      WriteLn(G.Greet())
     end.
     ''';
 
@@ -2030,7 +2030,7 @@ const
       S: IShape;
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       S := B;
       WriteLn(S.Area(3))
     end.
@@ -2052,7 +2052,7 @@ const
       S: IShape;
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       S := B;
       S.Describe
     end.
@@ -2074,7 +2074,7 @@ const
       S, S2: IShape;
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       S := B;
       S2 := S;
       WriteLn(S2.Area)
@@ -2104,7 +2104,7 @@ const
       C: IColor;
       B: TBox;
     begin
-      B := TBox.Create;
+      B := TBox.Create();
       S := B;
       C := B as IColor;
       WriteLn(S.Area);
@@ -2128,9 +2128,9 @@ const
       G: IGreeter;
       T: TGreeter;
     begin
-      T := TGreeter.Create;
+      T := TGreeter.Create();
       G := T;
-      WriteLn(G.Greet);
+      WriteLn(G.Greet());
       G := nil;
       WriteLn(13)
     end.
@@ -2167,7 +2167,7 @@ const
     var
       im: Tmi;
     begin
-      im := Tmi.Create(Toutput.Create);
+      im := Tmi.Create(Toutput.Create());
       im.use;
     end.
     ''';
@@ -2189,12 +2189,12 @@ const
     procedure TDoc.Print;
     begin WriteLn('doc') end;
     procedure UsePrinter(P: IPrinter);
-    begin P.Print end;
+    begin P.Print() end;
     var
       D: TDoc;
       I: IPrinter;
     begin
-      D := TDoc.Create;
+      D := TDoc.Create();
       I := D;
       UsePrinter(I)
     end.
@@ -2216,15 +2216,15 @@ const
     procedure TDoc.Print;
     begin WriteLn('method') end;
     procedure TRunner.Run(P: IPrinter);
-    begin P.Print end;
+    begin P.Print() end;
     var
       D: TDoc;
       I: IPrinter;
       R: TRunner;
     begin
-      D := TDoc.Create;
+      D := TDoc.Create();
       I := D;
-      R := TRunner.Create;
+      R := TRunner.Create();
       R.Run(I)
     end.
     ''';
@@ -2249,13 +2249,13 @@ const
     constructor THolder.Create(P: IPrinter);
     begin FP := P end;
     procedure THolder.Use;
-    begin FP.Print end;
+    begin FP.Print() end;
     var
       D: TDoc;
       I: IPrinter;
       H: THolder;
     begin
-      D := TDoc.Create;
+      D := TDoc.Create();
       I := D;
       H := THolder.Create(I);
       H.Use
@@ -2281,7 +2281,7 @@ const
     procedure TDoc.Print;
     begin WriteLn('inherited') end;
     procedure TBase.Use(P: IPrinter);
-    begin P.Print end;
+    begin P.Print() end;
     procedure TChild.Use(P: IPrinter);
     begin inherited Use(P) end;
     var
@@ -2289,9 +2289,9 @@ const
       I: IPrinter;
       C: TChild;
     begin
-      D := TDoc.Create;
+      D := TDoc.Create();
       I := D;
-      C := TChild.Create;
+      C := TChild.Create();
       C.Use(I)
     end.
     ''';
@@ -2309,9 +2309,9 @@ const
     procedure TDoc.Print;
     begin WriteLn('class-expr') end;
     procedure UsePrinter(P: IPrinter);
-    begin P.Print end;
+    begin P.Print() end;
     begin
-      UsePrinter(TDoc.Create)
+      UsePrinter(TDoc.Create())
     end.
     ''';
 
@@ -2335,7 +2335,7 @@ const
     end;
     var D: TDer;
     begin
-      D := TDer.Create;
+      D := TDer.Create();
       D.Hello
     end.
     ''';
@@ -2360,7 +2360,7 @@ const
     end;
     var D: TDer;
     begin
-      D := TDer.Create;
+      D := TDer.Create();
       WriteLn(D.Calc(10))
     end.
     ''';
@@ -2379,7 +2379,7 @@ const
       F: TFoo;
       N: Integer;
     begin
-      F := TFoo.Create;
+      F := TFoo.Create();
       N := 5;
       F.Bump(N);
       WriteLn(N)
@@ -2399,7 +2399,7 @@ const
       S: TSwapper;
       X, Y: Integer;
     begin
-      S := TSwapper.Create;
+      S := TSwapper.Create();
       X := 3; Y := 7;
       S.Swap(X, Y);
       WriteLn(X);
@@ -2444,8 +2444,8 @@ const
       Pa: TParent;
       C: TChild;
     begin
-      Pa := TParent.Create;
-      C := TChild.Create;
+      Pa := TParent.Create();
+      C := TChild.Create();
       C.X := 42;
       Pa.Child := C;
       C := Pa.Child;
@@ -2461,7 +2461,7 @@ const
       end;
     var H: THolder;
     begin
-      H := THolder.Create;
+      H := THolder.Create();
       H.S := 'hello';
       WriteLn(H.S)
     end.
@@ -2480,7 +2480,7 @@ const
     end;
     var O: TThing;
     begin
-      O := TThing.Create;
+      O := TThing.Create();
       O := nil;
       WriteLn('done')
     end.
@@ -2512,7 +2512,7 @@ const
     end;
     var Obj: TObj;
     begin
-      Obj := TObj.Create;
+      Obj := TObj.Create();
       Obj.X := 7;
       PrintX(Obj);
       WriteLn(Obj.X)
@@ -2597,7 +2597,7 @@ const
       C: TCalc;
       F: TAddProc;
     begin
-      C := TCalc.Create;
+      C := TCalc.Create();
       F := @C.Add;
       F(3, 4)
     end.
@@ -2637,7 +2637,7 @@ const
       H: THolder<Integer>;
     begin
       H.Value := 42;
-      WriteLn(H.GetValue)
+      WriteLn(H.GetValue())
     end.
     ''';
 
@@ -2658,7 +2658,7 @@ const
     var
       B: TBox<Integer>;
     begin
-      B := TBox<Integer>.Create;
+      B := TBox<Integer>.Create();
       B.SetVal(99);
       WriteLn(B.GetVal)
     end.
@@ -2696,10 +2696,10 @@ const
       V: IValue;
       B: TBox<Integer>;
     begin
-      B := TBox<Integer>.Create;
+      B := TBox<Integer>.Create();
       B.SetVal(55);
       V := B;
-      WriteLn(V.GetValue)
+      WriteLn(V.GetValue())
     end.
     ''';
 

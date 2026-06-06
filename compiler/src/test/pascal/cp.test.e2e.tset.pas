@@ -64,7 +64,7 @@ const
         var Dest: ^Integer;
         begin
           if Self.IndexOf(Value) >= 0 then Exit;
-          if Self.FCount = Self.FCapacity then Self.Grow;
+          if Self.FCount = Self.FCapacity then Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(Integer);
           Dest^       := Value;
           Self.FCount := Self.FCount + 1
@@ -97,7 +97,7 @@ const
     '''
     var S: TSet;
     begin
-      S := TSet.Create;
+      S := TSet.Create();
       S.Include(5); S.Include(5); S.Include(5);
       WriteLn(S.Count)
     end.
@@ -108,7 +108,7 @@ const
     '''
     var S: TSet;
     begin
-      S := TSet.Create;
+      S := TSet.Create();
       S.Include(1); S.Include(2); S.Include(3);
       S.Exclude(2);
       WriteLn(S.Count);
@@ -121,7 +121,7 @@ const
     '''
     var S: TSet;
     begin
-      S := TSet.Create;
+      S := TSet.Create();
       S.Include(42);
       WriteLn(S.Contains(42));
       WriteLn(S.Contains(99))
@@ -133,7 +133,7 @@ const
     '''
     var S: TSet;
     begin
-      S := TSet.Create;
+      S := TSet.Create();
       WriteLn(S.Count);
       S.Include(10); S.Include(20); S.Include(30);
       WriteLn(S.Count);

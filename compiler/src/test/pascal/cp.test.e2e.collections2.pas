@@ -56,7 +56,7 @@ const
         function Add(AObject: Pointer): Integer;
         var Dest: ^Pointer;
         begin
-          if Self.FCount = Self.FCapacity then Self.Grow;
+          if Self.FCount = Self.FCapacity then Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
           Dest^       := AObject;
           Self.FCount := Self.FCount + 1;
@@ -87,7 +87,7 @@ const
       L:  TObjectList;
       P1, P2: Pointer;
     begin
-      L  := TObjectList.Create;
+      L  := TObjectList.Create();
       P1 := GetMem(1);
       P2 := GetMem(1);
       L.Add(P1);
@@ -118,7 +118,7 @@ const
         function Add(AObject: Pointer): Integer;
         var Dest: ^Pointer;
         begin
-          if Self.FCount = Self.FCapacity then Self.Grow;
+          if Self.FCount = Self.FCapacity then Self.Grow();
           Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
           Dest^       := AObject;
           Self.FCount := Self.FCount + 1;
@@ -141,7 +141,7 @@ const
       end;
     var L: TObjectList;
     begin
-      L := TObjectList.Create;
+      L := TObjectList.Create();
       L.Add(GetMem(1));
       L.Add(GetMem(1));
       L.Add(GetMem(1));
@@ -167,7 +167,7 @@ const
             function Add(AObject: Pointer): Integer;
             var Dest: ^Pointer;
             begin
-              if Self.FCount = Self.FCapacity then Self.Grow;
+              if Self.FCount = Self.FCapacity then Self.Grow();
               Dest := Self.FData + Self.FCount * SizeOf(Pointer);
               Dest^ := AObject;
               Self.FCount := Self.FCount + 1;
@@ -209,7 +209,7 @@ const
             function Add(S: string): Integer;
             var StrP: ^string; ObjP: ^Pointer;
             begin
-              if Self.FCount = Self.FCapacity then Self.Grow;
+              if Self.FCount = Self.FCapacity then Self.Grow();
               StrP := Self.FStrings + Self.FCount * SizeOf(string);
               ObjP := Self.FObjects + Self.FCount * SizeOf(Pointer);
               StrP^ := S; ObjP^ := nil;
@@ -224,9 +224,9 @@ const
           end;
         var OL: TObjectList; SL: TStringList;
         begin
-          OL := TObjectList.Create;
+          OL := TObjectList.Create();
           OL.Add(nil); OL.Add(nil);
-          SL := TStringList.Create;
+          SL := TStringList.Create();
           SL.Add('hello'); SL.Add('world');
           WriteLn(OL.Count);
           WriteLn(SL.Get(0))
@@ -287,8 +287,8 @@ const
     implementation
     procedure THolder.Fill;
     begin
-      Self.Ints  := TDictionary<string, Integer>.Create;
-      Self.Bools := TDictionary<string, Boolean>.Create;
+      Self.Ints  := TDictionary<string, Integer>.Create();
+      Self.Bools := TDictionary<string, Boolean>.Create();
       Self.Ints.Add('a', 10);
       Self.Ints.Add('b', 20);
       Self.Bools.Add('x', True)
@@ -304,10 +304,10 @@ const
     uses twodicts;
     var h: THolder;
     begin
-      h := THolder.Create;
+      h := THolder.Create();
       h.Fill;
       WriteLn(h.Total);
-      h.Free
+      h.Free()
     end.
     ''';
 var Output: string; RCode: Integer;

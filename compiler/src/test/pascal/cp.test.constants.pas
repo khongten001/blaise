@@ -124,22 +124,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -151,10 +151,10 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.ParseUnit;
+    Result := P.ParseUnit();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -194,24 +194,24 @@ var
 begin
   L := TLexer.Create(UnitSrc);
   P := TParser.Create(L);
-  U := P.ParseUnit;
-  P.Free; L.Free;
+  U := P.ParseUnit();
+  P.Free(); L.Free();
 
   L := TLexer.Create(ProgSrc);
   P := TParser.Create(L);
-  Prog := P.Parse;
-  P.Free; L.Free;
+  Prog := P.Parse();
+  P.Free(); L.Free();
 
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     SA.AnalyseUnitForExport(U);
     { If dupIgnore is not in global scope, Analyse will raise ESemanticError }
     SA.Analyse(Prog);
     AssertNotNull('Program should analyse without error', Prog.SymbolTable);
   finally
-    SA.Free;
-    Prog.Free;
-    U.Free;
+    SA.Free();
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -297,7 +297,7 @@ begin
     AssertEquals('Third const value', 2,
       TConstDecl(U.IntfBlock.ConstDecls.Items[2]).IntVal);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -323,7 +323,7 @@ begin
     AssertEquals('Impl const value', 42,
       TConstDecl(U.ImplBlock.ConstDecls.Items[0]).IntVal);
   finally
-    U.Free;
+    U.Free();
   end;
 end;
 
@@ -348,14 +348,14 @@ var
   SA: TSemanticAnalyser;
 begin
   U  := ParseUnit(UnitSrc);
-  SA := TSemanticAnalyser.Create;
+  SA := TSemanticAnalyser.Create();
   try
     { AnalyseUnitForExport raises ESemanticError if Limit is not resolved }
     SA.AnalyseUnitForExport(U);
     AssertNotNull('Unit should analyse without error', U);
   finally
-    SA.Free;
-    U.Free;
+    SA.Free();
+    U.Free();
   end;
 end;
 
@@ -494,9 +494,9 @@ begin
         end;
         var f: TFoo;
         begin
-          f := TFoo.Create;
-          WriteLn(f.Bar);
-          f.Free
+          f := TFoo.Create();
+          WriteLn(f.Bar());
+          f.Free()
         end.
         '''
   );
@@ -624,15 +624,15 @@ var
 begin
   L  := TLexer.Create('program Test; const Pi: Double = 3.14; begin end.');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  SA := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  SA := TSemanticAnalyser.Create();
   try
     SA.Analyse(Pr);
     Sym := Pr.SymbolTable.Lookup('Pi');
     AssertNotNil('Pi symbol exists', Sym);
     AssertEquals('Pi is Double', 'Double', Sym.TypeDesc.Name);
   finally
-    SA.Free; Pr.Free; P.Free; L.Free;
+    SA.Free(); Pr.Free(); P.Free(); L.Free();
   end;
 end;
 
@@ -678,7 +678,7 @@ begin
     ''');
   AssertNotNull('unit parsed', U);
   AssertEquals('one const decl', 1, U.IntfBlock.ConstDecls.Count);
-  U.Free;
+  U.Free();
 end;
 
 procedure TConstTests.TestTypedConst_UsedInExpression;
@@ -716,7 +716,7 @@ begin
     ''');
   AssertNotNull('unit parsed', U);
   AssertEquals('one const decl', 1, U.IntfBlock.ConstDecls.Count);
-  U.Free;
+  U.Free();
 end;
 
 procedure TConstTests.TestArrayConst_IntElements_Parses;
@@ -733,7 +733,7 @@ begin
     ''');
   AssertNotNull('unit parsed', U);
   AssertEquals('one const decl', 1, U.IntfBlock.ConstDecls.Count);
-  U.Free;
+  U.Free();
 end;
 
 procedure TConstTests.TestArrayConst_StringElements_InIR;
@@ -804,8 +804,8 @@ begin
     begin end.
     ''');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  SA := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  SA := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Pr);
@@ -813,7 +813,7 @@ begin
       on E: ESemanticError do GotError := True;
     end;
   finally
-    SA.Free; Pr.Free; P.Free; L.Free;
+    SA.Free(); Pr.Free(); P.Free(); L.Free();
   end;
   AssertTrue('wrong count raises error', GotError);
 end;
@@ -850,7 +850,7 @@ begin
     ''');
   AssertNotNull('unit parsed', U);
   AssertEquals('one const decl', 1, U.IntfBlock.ConstDecls.Count);
-  U.Free;
+  U.Free();
 end;
 
 procedure TConstTests.TestArrayConst_RangeIndexed_InIR;
@@ -899,8 +899,8 @@ begin
     begin end.
     ''');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  SA := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  SA := TSemanticAnalyser.Create();
   try
     try
       SA.Analyse(Pr);
@@ -908,7 +908,7 @@ begin
       on E: ESemanticError do GotError := True;
     end;
   finally
-    SA.Free; Pr.Free; P.Free; L.Free;
+    SA.Free(); Pr.Free(); P.Free(); L.Free();
   end;
   AssertTrue('wrong count raises error', GotError);
 end;
@@ -943,9 +943,9 @@ begin
       end;
     var T: TMyClass;
     begin
-      T := TMyClass.Create;
+      T := TMyClass.Create();
       WriteLn(T.Items[1]);
-      T.Free
+      T.Free()
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
@@ -966,9 +966,9 @@ begin
       end;
     var P2: TPalette;
     begin
-      P2 := TPalette.Create;
+      P2 := TPalette.Create();
       WriteLn(P2.Names[0]);
-      P2.Free
+      P2.Free()
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');
@@ -1053,9 +1053,9 @@ begin
     end;
     var F: TFoo;
     begin
-      F := TFoo.Create;
+      F := TFoo.Create();
       WriteLn(F.Lookup(0));
-      F.Free
+      F.Free()
     end.
     ''');
   AssertTrue('IR non-empty', IR <> '');

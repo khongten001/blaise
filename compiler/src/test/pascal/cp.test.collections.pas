@@ -118,7 +118,7 @@ const
             function Add(AObject: Pointer): Integer;
             var Dest: ^Pointer;
             begin
-              if Self.FCount = Self.FCapacity then Self.Grow;
+              if Self.FCount = Self.FCapacity then Self.Grow();
               Dest        := Self.FData + Self.FCount * SizeOf(Pointer);
               Dest^       := AObject;
               Self.FCount := Self.FCount + 1;
@@ -139,7 +139,7 @@ const
     '''
         var L: TObjectList;
         begin
-          L := TObjectList.Create;
+          L := TObjectList.Create();
           L.Add(nil);
           L.Add(nil)
         end.
@@ -152,7 +152,7 @@ const
           L: TObjectList;
           P: Pointer;
         begin
-          L := TObjectList.Create;
+          L := TObjectList.Create();
           L.Add(nil);
           P := L.Get(0)
         end.
@@ -215,7 +215,7 @@ const
               StrP: ^string;
               ObjP: ^Pointer;
             begin
-              if Self.FCount = Self.FCapacity then Self.Grow;
+              if Self.FCount = Self.FCapacity then Self.Grow();
               StrP        := Self.FStrings + Self.FCount * SizeOf(string);
               ObjP        := Self.FObjects + Self.FCount * SizeOf(Pointer);
               StrP^       := S;
@@ -266,7 +266,7 @@ const
     '''
         var L: TStringList;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.Add('hello');
           L.Add('world')
         end.
@@ -280,7 +280,7 @@ const
           Idx: Integer;
           Found: Boolean;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.Add('alpha');
           L.Add('beta');
           Found := L.Find('alpha', Idx)
@@ -301,17 +301,17 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  CG   := TCodeGenQBE.Create;
+  SA.Free();
+  CG   := TCodeGenQBE.Create();
   CG.Generate(Prog);
-  Result := CG.GetOutput;
-  CG.Free;
-  Prog.Free;
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
 end;
 
 procedure TCollectionTests.SemanticOK(const ASrc: string);
@@ -323,15 +323,15 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -359,16 +359,16 @@ var
 begin
   Lex  := TLexer.Create(SrcCompareStr);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Assign := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('CompareStr returns Integer',
     Ord(tyInteger), Ord(Assign.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TCollectionTests.TestCodegen_CompareStr_CallsRTL;
@@ -438,7 +438,7 @@ var
   IR: string;
 begin
   IR := GenIR(SrcTObjectListUse);
-  AssertTrue('TObjectList.Grow emits _BlaiseReallocMem call',
+  AssertTrue('TObjectList.Grow() emits _BlaiseReallocMem call',
     Pos('call $_BlaiseReallocMem', IR) > 0);
 end;
 
@@ -475,7 +475,7 @@ var
   IR: string;
 begin
   IR := GenIR(SrcTStringListUse);
-  AssertTrue('TStringList.Grow emits memset for zero-init of new string slots',
+  AssertTrue('TStringList.Grow() emits memset for zero-init of new string slots',
     Pos('call $memset', IR) > 0);
 end;
 
@@ -534,7 +534,7 @@ const
             end;
             procedure SetText(AText: string);
             begin
-              Self.Clear
+              Self.Clear()
             end;
             procedure LoadFromFile(APath: string);
             begin
@@ -556,7 +556,7 @@ const
     '''
         var L: TStringList; S: string;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           S := L.Text
         end.
         ''';
@@ -566,7 +566,7 @@ const
     '''
         var L: TStringList;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.Text := 'hello'
         end.
         ''';
@@ -576,7 +576,7 @@ const
     '''
         var L: TStringList;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.LoadFromFile('/tmp/test.pas')
         end.
         ''';
@@ -586,7 +586,7 @@ const
     '''
         var L: TStringList;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.SaveToFile('/tmp/out.txt')
         end.
         ''';
@@ -596,7 +596,7 @@ const
     '''
         var L: TStringList; S: string;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           S := L.Strings[0]
         end.
         ''';
@@ -606,7 +606,7 @@ const
     '''
         var L: TStringList;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           L.Strings[0] := 'hello'
         end.
         ''';
@@ -616,7 +616,7 @@ const
     '''
         var L: TStringList; P: Pointer;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           P := L.Objects[0]
         end.
         ''';
@@ -626,7 +626,7 @@ const
     '''
         var L: TStringList; P: Pointer;
         begin
-          L := TStringList.Create;
+          L := TStringList.Create();
           P := nil;
           L.Objects[0] := P
         end.

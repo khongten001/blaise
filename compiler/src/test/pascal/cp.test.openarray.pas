@@ -99,9 +99,9 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free; L.Free;
+    P.Free(); L.Free();
   end;
 end;
 
@@ -109,11 +109,11 @@ function TOpenArrayTests.AnalyseSrc(const ASrc: string): TProgram;
 var A: TSemanticAnalyser;
 begin
   Result := ParseSrc(ASrc);
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -122,15 +122,15 @@ var P: TProgram; CG: TCodeGenQBE;
 begin
   P := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(P);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    P.Free;
+    P.Free();
   end;
 end;
 
@@ -238,7 +238,7 @@ begin
     MD  := TMethodDecl(P.Block.ProcDecls[0]);
     Par := TMethodParam(MD.Params[0]);
     AssertTrue('A is open array', Par.IsOpenArray);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_OpenArray_ElementTypeName;
@@ -249,7 +249,7 @@ begin
     MD  := TMethodDecl(P.Block.ProcDecls[0]);
     Par := TMethodParam(MD.Params[0]);
     AssertEquals('element type is string', 'string', Par.TypeName);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_OpenArray_IsConstParam;
@@ -260,7 +260,7 @@ begin
     MD  := TMethodDecl(P.Block.ProcDecls[0]);
     Par := TMethodParam(MD.Params[0]);
     AssertTrue('const modifier recorded', Par.IsConstParam);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_OpenArray_IntegerElement;
@@ -278,7 +278,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertTrue('A is open array', Par.IsOpenArray);
     AssertEquals('element type is Integer', 'Integer', Par.TypeName);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_OpenArray_ValueParam_IsNotOpenArray;
@@ -295,7 +295,7 @@ begin
     MD  := TMethodDecl(P.Block.ProcDecls[0]);
     Par := TMethodParam(MD.Params[0]);
     AssertFalse('plain param is not open array', Par.IsOpenArray);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -311,7 +311,7 @@ begin
     Par := TMethodParam(MD.Params[0]);
     AssertNotNull('ResolvedType set', Par.ResolvedType);
     AssertEquals('kind is tyOpenArray', Ord(tyOpenArray), Ord(Par.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestSemantic_OpenArray_ElementType;
@@ -325,7 +325,7 @@ begin
     OAT := TOpenArrayTypeDesc(Par.ResolvedType);
     AssertNotNull('ElementType set', OAT.ElementType);
     AssertEquals('element is tyString', Ord(tyString), Ord(OAT.ElementType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestSemantic_High_ReturnsInteger;
@@ -339,7 +339,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertNotNull('High resolved type set', FCall.ResolvedType);
     AssertEquals('High returns tyInteger', Ord(tyInteger), Ord(FCall.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestSemantic_Low_ReturnsInteger;
@@ -353,7 +353,7 @@ begin
     FCall  := TFuncCallExpr(Assign.Expr);
     AssertNotNull('Low resolved type set', FCall.ResolvedType);
     AssertEquals('Low returns tyInteger', Ord(tyInteger), Ord(FCall.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 { ------------------------------------------------------------------ }
@@ -424,7 +424,7 @@ begin
     Call := TProcCall(P.Block.Stmts[0]);
     Arg  := TASTExpr(Call.Args[0]);
     AssertTrue('arg is TArrayLiteralExpr', Arg is TArrayLiteralExpr);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_ArrayLiteral_ElementCount;
@@ -435,7 +435,7 @@ begin
     Call := TProcCall(P.Block.Stmts[0]);
     Lit  := TArrayLiteralExpr(TASTExpr(Call.Args[0]));
     AssertEquals('two elements', 2, Lit.Elements.Count);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestParse_ArrayLiteral_SingleElement;
@@ -446,7 +446,7 @@ begin
     Call := TProcCall(P.Block.Stmts[0]);
     Lit  := TArrayLiteralExpr(TASTExpr(Call.Args[0]));
     AssertEquals('one element', 1, Lit.Elements.Count);
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestSemantic_ArrayLiteral_ResolvesToOpenArray;
@@ -458,7 +458,7 @@ begin
     Arg  := TASTExpr(Call.Args[0]);
     AssertNotNull('ResolvedType set', Arg.ResolvedType);
     AssertEquals('kind is tyOpenArray', Ord(tyOpenArray), Ord(Arg.ResolvedType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestSemantic_ArrayLiteral_ElementType;
@@ -471,7 +471,7 @@ begin
     AssertTrue('is TOpenArrayTypeDesc', Arg.ResolvedType is TOpenArrayTypeDesc);
     OAT := TOpenArrayTypeDesc(Arg.ResolvedType);
     AssertEquals('element is tyString', Ord(tyString), Ord(OAT.ElementType.Kind));
-  finally P.Free; end;
+  finally P.Free(); end;
 end;
 
 procedure TOpenArrayTests.TestCodegen_ArrayLiteral_AllocsBuffer;
@@ -512,7 +512,7 @@ procedure TOpenArrayTests.TestSemantic_Length_OpenArray_Accepted;
 var P: TProgram;
 begin
   P := AnalyseSrc(SrcLengthOpenArray);
-  P.Free;
+  P.Free();
   AssertTrue('no error raised', True);
 end;
 
@@ -520,7 +520,7 @@ procedure TOpenArrayTests.TestSemantic_Length_StaticArray_Accepted;
 var P: TProgram;
 begin
   P := AnalyseSrc(SrcLengthStaticArray);
-  P.Free;
+  P.Free();
   AssertTrue('no error raised', True);
 end;
 
@@ -582,7 +582,7 @@ procedure TOpenArrayTests.TestSemantic_StaticArrayToOpenArray_Accepted;
 var P: TProgram;
 begin
   P := AnalyseSrc(SrcStaticToOpen);
-  P.Free;
+  P.Free();
   AssertTrue('static array passed to open-array param compiles', True);
 end;
 
@@ -590,7 +590,7 @@ procedure TOpenArrayTests.TestSemantic_StaticArrayToOpenArray_NonZeroBase_Accept
 var P: TProgram;
 begin
   P := AnalyseSrc(SrcStaticToOpenNonZero);
-  P.Free;
+  P.Free();
   AssertTrue('non-zero-base static array passed to open-array param compiles', True);
 end;
 

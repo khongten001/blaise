@@ -72,21 +72,21 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
     E := TOPDFEmitter.Create(Pr, 'test.pas');
     try
-      Result := E.GetOutput;
+      Result := E.GetOutput();
     finally
-      E.Free;
+      E.Free();
     end;
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 

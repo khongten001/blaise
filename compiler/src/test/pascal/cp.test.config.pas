@@ -37,14 +37,14 @@ procedure TConfigTests.TestParseEmpty_ReturnsNoPaths;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('no paths', 0, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -52,16 +52,16 @@ procedure TConfigTests.TestParseCommentOnly_ReturnsNoPaths;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('# this is a comment');
     Lines.Add('# another comment');
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('no paths', 0, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -69,16 +69,16 @@ procedure TConfigTests.TestParseSingleUnitPath;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('unit-path=/opt/blaise/runtime');
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('one path', 1, Paths.Count);
     AssertEquals('path value', '/opt/blaise/runtime', Paths.Strings[0]);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -86,8 +86,8 @@ procedure TConfigTests.TestParseMultipleUnitPaths;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('unit-path=/opt/blaise/runtime');
     Lines.Add('unit-path=/opt/blaise/stdlib');
@@ -96,8 +96,8 @@ begin
     AssertEquals('first', '/opt/blaise/runtime', Paths.Strings[0]);
     AssertEquals('second', '/opt/blaise/stdlib', Paths.Strings[1]);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -105,8 +105,8 @@ procedure TConfigTests.TestParseSkipsBlankLines;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('');
     Lines.Add('unit-path=/opt/blaise/runtime');
@@ -116,8 +116,8 @@ begin
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('two paths', 2, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -125,8 +125,8 @@ procedure TConfigTests.TestParseSkipsCommentLines;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('# header comment');
     Lines.Add('unit-path=/opt/blaise/runtime');
@@ -135,8 +135,8 @@ begin
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('two paths', 2, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -144,16 +144,16 @@ procedure TConfigTests.TestParseIgnoresLinesWithoutEquals;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('this line has no equals sign');
     Lines.Add('unit-path=/opt/blaise/runtime');
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('one path', 1, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -161,16 +161,16 @@ procedure TConfigTests.TestParseTrimsWhitespace;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('  unit-path = /opt/blaise/runtime  ');
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('one path', 1, Paths.Count);
     AssertEquals('trimmed', '/opt/blaise/runtime', Paths.Strings[0]);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -178,8 +178,8 @@ procedure TConfigTests.TestParseRelativePath_ResolvedAgainstBaseDir;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('unit-path=../../runtime/src/main/pascal');
     ParseConfigLines(Lines, '/data/devel/new-pascal-compiler/compiler/target/', Paths);
@@ -188,8 +188,8 @@ begin
       '/data/devel/new-pascal-compiler/compiler/target/../../runtime/src/main/pascal',
       Paths.Strings[0]);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -197,16 +197,16 @@ procedure TConfigTests.TestParseAbsolutePath_NotModified;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('unit-path=/absolute/path/to/units');
     ParseConfigLines(Lines, '/some/base/', Paths);
     AssertEquals('one path', 1, Paths.Count);
     AssertEquals('unchanged', '/absolute/path/to/units', Paths.Strings[0]);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 
@@ -214,16 +214,16 @@ procedure TConfigTests.TestParseUnknownKey_IgnoredSilently;
 var
   Lines, Paths: TStringList;
 begin
-  Lines := TStringList.Create;
-  Paths := TStringList.Create;
+  Lines := TStringList.Create();
+  Paths := TStringList.Create();
   try
     Lines.Add('unknown-key=some-value');
     Lines.Add('unit-path=/opt/blaise/runtime');
     ParseConfigLines(Lines, '/base', Paths);
     AssertEquals('one path only', 1, Paths.Count);
   finally
-    Lines.Free;
-    Paths.Free;
+    Lines.Free();
+    Paths.Free();
   end;
 end;
 

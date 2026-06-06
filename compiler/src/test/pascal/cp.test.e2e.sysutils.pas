@@ -283,20 +283,20 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   TmpFile := GetTempFileName('', 'blaise_fe_test');
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   Lines.Add('x');
   Lines.SaveToFile(TmpFile);
-  Lines.Free;
+  Lines.Free();
   try
     AssertTrue('compile+run',
       CompileAndRun(SrcFileExistsTest, Output, RCode, [TmpFile]));
-    Lines := TStringList.Create;
+    Lines := TStringList.Create();
     try
       Lines.Text := Trim(Output);
       AssertEquals('existing file = True', 'True', Lines.Strings[0]);
       AssertEquals('missing file = False', 'False', Lines.Strings[1]);
     finally
-      Lines.Free;
+      Lines.Free();
     end;
   finally
     if FileExists(TmpFile) then DeleteFile(TmpFile);
@@ -326,14 +326,14 @@ var Output: string; RCode: Integer; Lines: TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcChangeFileExtTest, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('test.pas->bak', 'test.bak', Lines.Strings[0]);
     AssertEquals('noext->o',      'noext.o',  Lines.Strings[1]);
     AssertEquals('a.b.c->empty',  'a.b',      Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -342,13 +342,13 @@ var Output: string; RCode: Integer; Lines: TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcExtractFileNameTest, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('/usr/bin/ls -> ls', 'ls', Lines.Strings[0]);
     AssertEquals('ls -> ls',          'ls', Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -357,13 +357,13 @@ var Output: string; RCode: Integer; Lines: TStringList;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcExtractFilePathTest, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('/usr/bin/ls -> /usr/bin/', '/usr/bin/', Lines.Strings[0]);
     AssertEquals('ls -> empty',              '[]',        Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -373,13 +373,13 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run',
     CompileAndRun(SrcIncludeTrailingPathDelimiterTest, Output, RCode));
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('/usr/bin -> /usr/bin/', '/usr/bin/', Lines.Strings[0]);
     AssertEquals('/usr/bin/ unchanged',   '/usr/bin/', Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -399,13 +399,13 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcDirectoryExists, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('/tmp exists = True',  'True',  Lines.Strings[0]);
     AssertEquals('missing dir = False', 'False', Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -434,13 +434,13 @@ begin
     AssertTrue('compile+run',
       CompileAndRun(SrcForceDirectories, Output, RCode, [Dir]));
     AssertEquals('exit code 0', 0, RCode);
-    Lines := TStringList.Create;
+    Lines := TStringList.Create();
     try
       Lines.Text := Trim(Output);
       AssertEquals('ForceDirectories returned True', 'True', Lines.Strings[0]);
       AssertEquals('DirectoryExists returned True',  'True', Lines.Strings[1]);
     finally
-      Lines.Free;
+      Lines.Free();
     end;
   finally
     RemoveDir(Dir);
@@ -577,14 +577,14 @@ begin
     AssertTrue('compile+run',
       CompileAndRun(SrcRenameFileWorks, Output, RCode, [OldFile, NewFile]));
     AssertEquals('exit code 0', 0, RCode);
-    Lines := TStringList.Create;
+    Lines := TStringList.Create();
     try
       Lines.Text := Trim(Output);
       AssertEquals('RenameFile returns True',  'True',  Lines.Strings[0]);
       AssertEquals('old name gone (False)',    'False', Lines.Strings[1]);
       AssertEquals('new name exists (True)',   'True',  Lines.Strings[2]);
     finally
-      Lines.Free;
+      Lines.Free();
     end;
   finally
     if FileExists(OldFile) then DeleteFile(OldFile);
@@ -610,13 +610,13 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcSetCurrentDir, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('SetCurrentDir /tmp returns True', 'True', Lines.Strings[0]);
     AssertEquals('GetCurrentDir non-empty',         'True', Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -629,14 +629,14 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcExtractFileExt, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('/foo/bar.txt -> .txt', '.txt', Lines.Strings[0]);
     AssertEquals('noext -> empty',       '',     Lines.Strings[1]);
     AssertEquals('/usr/bin/ls.sh -> .sh', '.sh', Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -649,13 +649,13 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcBoolToStr, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('BoolToStr(True)',  'True',  Lines.Strings[0]);
     AssertEquals('BoolToStr(False)', 'False', Lines.Strings[1]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -668,14 +668,14 @@ begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcPlatformConstants, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     Lines.Text := Trim(Output);
     AssertEquals('LineEnding = #10', 'True', Lines.Strings[0]);
     AssertEquals('DirectorySeparator = /', 'True', Lines.Strings[1]);
     AssertEquals('PathSeparator = :', 'True', Lines.Strings[2]);
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -697,20 +697,20 @@ var
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   TmpFile := GetTempFileName('', 'blaise_fileage_test');
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   Lines.Add('x');
   Lines.SaveToFile(TmpFile);
-  Lines.Free;
+  Lines.Free();
   try
     AssertTrue('compile+run',
       CompileAndRun(SrcFileAge, Output, RCode, [TmpFile]));
-    Lines := TStringList.Create;
+    Lines := TStringList.Create();
     try
       Lines.Text := Trim(Output);
       AssertEquals('existing file age > 0', 'True', Lines.Strings[0]);
       AssertEquals('missing file age = -1', '-1', Lines.Strings[1]);
     finally
-      Lines.Free;
+      Lines.Free();
     end;
   finally
     if FileExists(TmpFile) then DeleteFile(TmpFile);

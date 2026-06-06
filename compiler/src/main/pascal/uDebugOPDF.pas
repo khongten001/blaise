@@ -124,11 +124,11 @@ begin
   inherited Create;
   FProgram    := AProgram;
   FSourceFile := ASourceFile;
-  FOutput     := TStringList.Create;
-  FTypeNames  := TStringList.Create;
+  FOutput     := TStringList.Create();
+  FTypeNames  := TStringList.Create();
   FTypeNames.Sorted        := True;
   FTypeNames.CaseSensitive := True;
-  FEmitted    := TStringList.Create;
+  FEmitted    := TStringList.Create();
   FEmitted.Sorted        := True;
   FEmitted.CaseSensitive := True;
   FRecordCount        := 0;
@@ -139,9 +139,9 @@ end;
 
 destructor TOPDFEmitter.Destroy;
 begin
-  FEmitted.Free;
-  FTypeNames.Free;
-  FOutput.Free;
+  FEmitted.Free();
+  FTypeNames.Free();
+  FOutput.Free();
   inherited Destroy;
 end;
 
@@ -301,7 +301,7 @@ begin
     tySmallInt, tyWord, tyByte, tyBoolean:
       EmitPrimitive(AType);
     tyString:
-      EmitUtf8Str;
+      EmitUtf8Str();
     tyEnum:
       EmitEnum(TEnumTypeDesc(AType));
     tyRecord:
@@ -960,7 +960,7 @@ var
   TDesc: TTypeDesc;
   GI: TGenericInstance;
 begin
-  EmitUtf8Str;
+  EmitUtf8Str();
   if FProgram.SymbolTable <> nil then
   begin
     EmitPrimitive(FProgram.SymbolTable.TypeInteger);
@@ -1007,7 +1007,7 @@ var
   Labels: TStringList;
   NextLabel: string;
 begin
-  Labels := TStringList.Create;
+  Labels := TStringList.Create();
   try
     for I := 0 to FProgram.Block.ProcDecls.Count - 1 do
     begin
@@ -1055,7 +1055,7 @@ begin
       EmitFunctionScope_Main(ScopeID, DeclIdx);
     end;
   finally
-    Labels.Free;
+    Labels.Free();
   end;
 end;
 
@@ -1113,7 +1113,7 @@ var
   Lines: TStringList;
   I, LineNum, ColNum, RecSize: Integer;
 begin
-  Lines := TStringList.Create;
+  Lines := TStringList.Create();
   try
     for I := 0 to ABlock.Stmts.Count - 1 do
       CollectStmtLines(TASTStmt(ABlock.Stmts.Items[I]), Lines);
@@ -1132,7 +1132,7 @@ begin
       EmitStrField(FSourceFile);
     end;
   finally
-    Lines.Free;
+    Lines.Free();
   end;
 end;
 
@@ -1161,26 +1161,26 @@ procedure TOPDFEmitter.DoEmit;
 begin
   if FDone then Exit;
   FDone := True;
-  EmitSection;
-  EmitHeader;
-  EmitUnitDirectory;
-  EmitAllTypes;
-  EmitGlobalVars;
-  EmitConstants;
-  EmitFunctionScopes;
-  PatchTotalRecords;
-  PatchUnitDirRecordCount;
+  EmitSection();
+  EmitHeader();
+  EmitUnitDirectory();
+  EmitAllTypes();
+  EmitGlobalVars();
+  EmitConstants();
+  EmitFunctionScopes();
+  PatchTotalRecords();
+  PatchUnitDirRecordCount();
 end;
 
 procedure TOPDFEmitter.EmitToFile(const AFileName: string);
 begin
-  DoEmit;
+  DoEmit();
   FOutput.SaveToFile(AFileName);
 end;
 
 function TOPDFEmitter.GetOutput: string;
 begin
-  DoEmit;
+  DoEmit();
   Result := FOutput.Text;
 end;
 

@@ -118,7 +118,7 @@ const
           end;
         var P: TPoint;
         begin
-          P := TPoint.Create;
+          P := TPoint.Create();
           P.X := 5
         end.
         ''';
@@ -132,8 +132,8 @@ const
           end;
         var F: TFoo;
         begin
-          F := TFoo.Create;
-          F.Bar
+          F := TFoo.Create();
+          F.Bar()
         end.
         ''';
 
@@ -146,8 +146,8 @@ const
           end;
         var A: TAnimal;
         begin
-          A := TAnimal.Create;
-          A.Speak
+          A := TAnimal.Create();
+          A.Speak()
         end.
         ''';
 
@@ -158,9 +158,9 @@ var
 begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
-  Result := P.Parse;
-  P.Free;
-  L.Free;
+  Result := P.Parse();
+  P.Free();
+  L.Free();
 end;
 
 function TVTableTests.GenIR(const ASrc: string): string;
@@ -173,22 +173,22 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);
   finally
-    A.Free;
+    A.Free();
   end;
-  CG := TCodeGenQBE.Create;
+  CG := TCodeGenQBE.Create();
   try
     CG.Generate(Pr);
-    Result := CG.GetOutput;
+    Result := CG.GetOutput();
   finally
-    CG.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -206,15 +206,15 @@ var
 begin
   L  := TLexer.Create(ASrc);
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     A.Analyse(Pr);  { must not raise }
   finally
-    A.Free;
-    Pr.Free;
-    P.Free;
-    L.Free;
+    A.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
   end;
 end;
 
@@ -229,10 +229,10 @@ var
 begin
   L := TLexer.Create('virtual');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('virtual token', Ord(tkVirtual), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -243,10 +243,10 @@ var
 begin
   L := TLexer.Create('override');
   try
-    T := L.Next;
+    T := L.Next();
     AssertEquals('override token', Ord(tkOverride), Ord(T.Kind));
   finally
-    L.Free;
+    L.Free();
   end;
 end;
 
@@ -264,7 +264,7 @@ begin
   CDef  := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
   MDecl := TMethodDecl(CDef.Methods[0]);
   AssertTrue('method is virtual', MDecl.IsVirtual);
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TVTableTests.TestParse_OverrideMethod;
@@ -277,7 +277,7 @@ begin
   CDef  := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[1]).Def);
   MDecl := TMethodDecl(CDef.Methods[0]);
   AssertTrue('method is override', MDecl.IsOverride);
-  Prog.Free;
+  Prog.Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -299,7 +299,7 @@ begin
         var B: TBase;
         var D: TDerived;
         begin
-          D := TDerived.Create;
+          D := TDerived.Create();
           B := D
         end.
         ''';
@@ -317,19 +317,19 @@ var
 begin
   L    := TLexer.Create(SrcBase);
   P    := TParser.Create(L);
-  Prog := P.Parse;
-  A    := TSemanticAnalyser.Create;
+  Prog := P.Parse();
+  A    := TSemanticAnalyser.Create();
   try
     A.Analyse(Prog);
   finally
-    A.Free;
+    A.Free();
   end;
   CDef  := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
   MDecl := TMethodDecl(CDef.Methods[0]);
   AssertTrue('virtual method gets slot >= 0', MDecl.VTableSlot >= 0);
-  Prog.Free;
-  P.Free;
-  L.Free;
+  Prog.Free();
+  P.Free();
+  L.Free();
 end;
 
 procedure TVTableTests.TestSemantic_OverrideMethod_InheritsSlot;
@@ -345,21 +345,21 @@ var
 begin
   L    := TLexer.Create(SrcInherit);
   P    := TParser.Create(L);
-  Prog := P.Parse;
-  A    := TSemanticAnalyser.Create;
+  Prog := P.Parse();
+  A    := TSemanticAnalyser.Create();
   try
     A.Analyse(Prog);
   finally
-    A.Free;
+    A.Free();
   end;
   CBase  := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
   CDeriv := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls[1]).Def);
   MBase  := TMethodDecl(CBase.Methods[0]);
   MDeriv := TMethodDecl(CDeriv.Methods[0]);
   AssertEquals('override inherits same slot', MBase.VTableSlot, MDeriv.VTableSlot);
-  Prog.Free;
-  P.Free;
-  L.Free;
+  Prog.Free();
+  P.Free();
+  L.Free();
 end;
 
 { ------------------------------------------------------------------ }
@@ -502,14 +502,14 @@ begin
     begin end.
     ''');
   P    := TParser.Create(L);
-  Prog := P.Parse;
+  Prog := P.Parse();
   try
     TD := TTypeDecl(Prog.Block.TypeDecls.Items[0]);
     CD := TClassTypeDef(TD.Def);
     M  := TMethodDecl(CD.Methods.Items[0]);
     AssertTrue('IsAbstract set', M.IsAbstract);
   finally
-    Prog.Free; P.Free; L.Free;
+    Prog.Free(); P.Free(); L.Free();
   end;
 end;
 
@@ -532,14 +532,14 @@ begin
     begin end.
     ''');
   P    := TParser.Create(L);
-  Prog := P.Parse;
+  Prog := P.Parse();
   try
     TD := TTypeDecl(Prog.Block.TypeDecls.Items[0]);
     CD := TClassTypeDef(TD.Def);
     M  := TMethodDecl(CD.Methods.Items[0]);
     AssertTrue('IsVirtual set on abstract', M.IsVirtual);
   finally
-    Prog.Free; P.Free; L.Free;
+    Prog.Free(); P.Free(); L.Free();
   end;
 end;
 
@@ -561,12 +561,12 @@ begin
       end;
     var S: TShape;
     begin
-      S := TShape.Create
+      S := TShape.Create()
     end.
     ''');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     try
       A.Analyse(Pr);
@@ -574,7 +574,7 @@ begin
       on E: ESemanticError do GotError := True;
     end;
   finally
-    A.Free; Pr.Free; P.Free; L.Free;
+    A.Free(); Pr.Free(); P.Free(); L.Free();
   end;
   AssertTrue('abstract class cannot be instantiated', GotError);
 end;
@@ -606,7 +606,7 @@ begin
       end;
     var C: TCircle;
     begin
-      C := TCircle.Create
+      C := TCircle.Create()
     end.
     ''');
 end;
@@ -632,12 +632,12 @@ begin
       end;
     var C: TCircle;
     begin
-      C := TCircle.Create
+      C := TCircle.Create()
     end.
     ''');
   P  := TParser.Create(L);
-  Pr := P.Parse;
-  A  := TSemanticAnalyser.Create;
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
   try
     try
       A.Analyse(Pr);
@@ -645,7 +645,7 @@ begin
       on E: ESemanticError do GotError := True;
     end;
   finally
-    A.Free; Pr.Free; P.Free; L.Free;
+    A.Free(); Pr.Free(); P.Free(); L.Free();
   end;
   AssertTrue('missing override of abstract raises error', GotError);
 end;

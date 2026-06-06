@@ -73,16 +73,16 @@ begin
   L := TLexer.Create(ASrc);
   P := TParser.Create(L);
   try
-    Result := P.Parse;
+    Result := P.Parse();
   finally
-    P.Free;
-    L.Free;
+    P.Free();
+    L.Free();
   end;
-  A := TSemanticAnalyser.Create;
+  A := TSemanticAnalyser.Create();
   try
     A.Analyse(Result);
   finally
-    A.Free;
+    A.Free();
   end;
 end;
 
@@ -93,15 +93,15 @@ var
 begin
   Prog := AnalyseSrc(ASrc);
   try
-    CG := TCodeGenQBE.Create;
+    CG := TCodeGenQBE.Create();
     try
       CG.Generate(Prog);
-      Result := CG.GetOutput;
+      Result := CG.GetOutput();
     finally
-      CG.Free;
+      CG.Free();
     end;
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -111,7 +111,7 @@ var
 begin
   try
     Prog := AnalyseSrc(ASrc);
-    Prog.Free;
+    Prog.Free();
     Fail('Expected ESemanticError');
   except
     on E: ESemanticError do ; { expected }
@@ -138,7 +138,7 @@ begin
     AssertTrue('UInt64 resolves',     T <> nil);
     AssertEquals('Kind = tyUInt64', Ord(tyUInt64), Ord(T.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -160,7 +160,7 @@ begin
     AssertTrue('QWord resolves',      T <> nil);
     AssertEquals('Kind = tyUInt64', Ord(tyUInt64), Ord(T.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -182,7 +182,7 @@ begin
       TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType,
       TVarDecl(Prog.Block.Decls.Items[1]).ResolvedType);
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -232,7 +232,7 @@ begin
     AssertEquals('PtrUInt has Kind=tyUInt64', Ord(tyUInt64),
       Ord(TVarDecl(Prog.Block.Decls.Items[0]).ResolvedType.Kind));
   finally
-    Prog.Free;
+    Prog.Free();
   end;
 end;
 
@@ -265,7 +265,7 @@ var
   Prog: TProgram;
 begin
   Prog := AnalyseSrc(Src);
-  Prog.Free;
+  Prog.Free();
 end;
 
 { -------------- codegen -------------- }

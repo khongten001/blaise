@@ -109,19 +109,19 @@ procedure TKanbanUI.DrawBoard;
 var
   ColWidth, ContentH, I: Integer;
 begin
-  FTerm.QuerySize;
-  FTerm.BufClear;
-  FTerm.HideCursor;
-  FTerm.ClearScreen;
+  FTerm.QuerySize();
+  FTerm.BufClear();
+  FTerm.HideCursor();
+  FTerm.ClearScreen();
 
   FTerm.MoveTo(1, 1);
-  FTerm.SetBold;
+  FTerm.SetBold();
   FTerm.SetFg(COLOR_CYAN);
   FTerm.BufWrite(' KANBAN BOARD');
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
   FTerm.SetFg(COLOR_GREY);
   FTerm.BufWrite('  ' + FBoard.FilePath);
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
 
   ColWidth := (FTerm.Cols - 2) div 3;
   ContentH := FTerm.Rows - 4;
@@ -135,7 +135,7 @@ begin
   end;
 
   Self.DrawStatusBar;
-  FTerm.BufFlush
+  FTerm.BufFlush()
 end;
 
 procedure TKanbanUI.DrawColumn(ColIndex: Integer; Row, Col, Width, Height: Integer);
@@ -189,7 +189,7 @@ begin
     if IsActive then
       FTerm.BufWrite(DupeString(' ', MaxW - Length(Line) + 2));
 
-    FTerm.ResetAttr;
+    FTerm.ResetAttr();
 
     I := I + 1
   end;
@@ -199,7 +199,7 @@ begin
     FTerm.MoveTo(Row + 1, Col + 2);
     FTerm.SetFg(COLOR_GREY);
     FTerm.BufWrite('(empty)');
-    FTerm.ResetAttr
+    FTerm.ResetAttr()
   end
 end;
 
@@ -214,21 +214,21 @@ begin
   Pad := FTerm.Cols - Length(FStatusMsg) - 1;
   if Pad > 0 then
     FTerm.BufWrite(DupeString(' ', Pad));
-  FTerm.ResetAttr
+  FTerm.ResetAttr()
 end;
 
 procedure TKanbanUI.DrawInputBar;
 begin
   FTerm.MoveTo(FTerm.Rows, 1);
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
   FTerm.BufWrite(DupeString(' ', FTerm.Cols));
   FTerm.MoveTo(FTerm.Rows, 1);
-  FTerm.SetBold;
+  FTerm.SetBold();
   FTerm.BufWrite(FInputPrompt);
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
   FTerm.BufWrite(FInputBuf);
-  FTerm.ShowCursor;
-  FTerm.BufFlush
+  FTerm.ShowCursor();
+  FTerm.BufFlush()
 end;
 
 procedure TKanbanUI.DrawDetailView;
@@ -240,19 +240,19 @@ var
 begin
   if FDetailTask = nil then Exit;
 
-  FTerm.QuerySize;
-  FTerm.BufClear;
-  FTerm.HideCursor;
-  FTerm.ClearScreen;
+  FTerm.QuerySize();
+  FTerm.BufClear();
+  FTerm.HideCursor();
+  FTerm.ClearScreen();
 
   FTerm.MoveTo(1, 1);
-  FTerm.SetBold;
+  FTerm.SetBold();
   FTerm.SetFg(COLOR_CYAN);
   FTerm.BufWrite(' Task #' + IntToStr(FDetailTask.Id) + ': ');
-  FTerm.ResetAttr;
-  FTerm.SetBold;
+  FTerm.ResetAttr();
+  FTerm.SetBold();
   FTerm.BufWrite(FDetailTask.Title);
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
 
   FTerm.MoveTo(2, 1);
   FTerm.SetFg(COLOR_GREY);
@@ -261,7 +261,7 @@ begin
     FTerm.BufWrite('  Priority: ' + FDetailTask.Priority);
   if Length(FDetailTask.Created) > 0 then
     FTerm.BufWrite('  Created: ' + CreatedToLocalDate(FDetailTask.Created));
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
 
   FTerm.DrawHLine(3, 1, FTerm.Cols);
 
@@ -271,11 +271,11 @@ begin
     FTerm.MoveTo(5, 3);
     FTerm.SetFg(COLOR_GREY);
     FTerm.BufWrite('No details yet. Press ''e'' to edit with $EDITOR.');
-    FTerm.ResetAttr
+    FTerm.ResetAttr()
   end
   else
   begin
-    Lines := TStringList.Create;
+    Lines := TStringList.Create();
     try
       Lines.Text := Content;
       StartLine := FDetailScroll;
@@ -296,7 +296,7 @@ begin
         Y := Y + 1
       end
     finally
-      Lines.Free
+      Lines.Free()
     end
   end;
 
@@ -306,9 +306,9 @@ begin
   FTerm.BufWrite(Chr(27) + '[38;5;0m');
   FTerm.BufWrite(StatusBar);
   FTerm.BufWrite(DupeString(' ', FTerm.Cols - Length(StatusBar)));
-  FTerm.ResetAttr;
+  FTerm.ResetAttr();
 
-  FTerm.BufFlush
+  FTerm.BufFlush()
 end;
 
 procedure TKanbanUI.StartInput(const APrompt: string);
@@ -316,7 +316,7 @@ begin
   FViewMode := vmInput;
   FInputPrompt := APrompt;
   FInputBuf := '';
-  Self.DrawInputBar
+  Self.DrawInputBar()
 end;
 
 procedure TKanbanUI.FinishInput;
@@ -341,19 +341,19 @@ begin
 
   if (Key = 113) or (Key = 81) then
   begin
-    FTerm.ClearScreen;
-    FTerm.ShowCursor;
-    FTerm.BufFlush;
-    FTerm.DisableRawMode;
-    FBoard.MergeFromDisk;
-    FBoard.Save;
+    FTerm.ClearScreen();
+    FTerm.ShowCursor();
+    FTerm.BufFlush();
+    FTerm.DisableRawMode();
+    FBoard.MergeFromDisk();
+    FBoard.Save();
     Halt(0)
   end;
 
   if (Key = KEY_DOWN) or (Key = 106) then
   begin
     FActiveRow := FActiveRow + 1;
-    Self.ClampRow;
+    Self.ClampRow();
     FNeedsRedraw := True;
     Exit
   end;
@@ -369,7 +369,7 @@ begin
   if Key = KEY_TAB then
   begin
     FActiveCol := (FActiveCol + 1) mod 3;
-    Self.ClampRow;
+    Self.ClampRow();
     FNeedsRedraw := True;
     Exit
   end;
@@ -383,7 +383,7 @@ begin
       FActiveCol := FActiveCol - 1;
       if FActiveCol < 0 then FActiveCol := 2
     end;
-    Self.ClampRow;
+    Self.ClampRow();
     FNeedsRedraw := True;
     Exit
   end;
@@ -398,12 +398,12 @@ begin
   // 'd' — delete task
   if Key = 100 then
   begin
-    Task := Self.GetActiveTask;
+    Task := Self.GetActiveTask();
     if Task <> nil then
     begin
       FBoard.DeleteTask(Task.Id);
-      FBoard.Save;
-      Self.ClampRow;
+      FBoard.Save();
+      Self.ClampRow();
       FStatusMsg := 'Task deleted.';
       FNeedsRedraw := True
     end;
@@ -413,7 +413,7 @@ begin
   // Enter — open detail view
   if Key = KEY_ENTER then
   begin
-    Task := Self.GetActiveTask;
+    Task := Self.GetActiveTask();
     if Task <> nil then
     begin
       FDetailTask := Task;
@@ -427,7 +427,7 @@ begin
   // 'h' — move task left (toward Todo)
   if Key = 104 then
   begin
-    Task := Self.GetActiveTask;
+    Task := Self.GetActiveTask();
     if Task <> nil then
     begin
       if Task.Status = tsInProgress then
@@ -439,8 +439,8 @@ begin
       FBoard.MoveTask(Task.Id, NewStatus);
       FActiveCol := FActiveCol - 1;
       if FActiveCol < 0 then FActiveCol := 0;
-      Self.ClampRow;
-      FBoard.Save;
+      Self.ClampRow();
+      FBoard.Save();
       FStatusMsg := 'Moved: ' + Task.Title;
       FNeedsRedraw := True
     end;
@@ -450,7 +450,7 @@ begin
   // 'l' — move task right (toward Done)
   if Key = 108 then
   begin
-    Task := Self.GetActiveTask;
+    Task := Self.GetActiveTask();
     if Task <> nil then
     begin
       if Task.Status = tsTodo then
@@ -462,8 +462,8 @@ begin
       FBoard.MoveTask(Task.Id, NewStatus);
       FActiveCol := FActiveCol + 1;
       if FActiveCol > 2 then FActiveCol := 2;
-      Self.ClampRow;
-      FBoard.Save;
+      Self.ClampRow();
+      FBoard.Save();
       FStatusMsg := 'Moved: ' + Task.Title;
       FNeedsRedraw := True
     end;
@@ -473,7 +473,7 @@ begin
   // 'p' — cycle priority
   if Key = 112 then
   begin
-    Task := Self.GetActiveTask;
+    Task := Self.GetActiveTask();
     if Task <> nil then
     begin
       if Task.Priority = '' then
@@ -482,7 +482,7 @@ begin
         Task.Priority := 'low'
       else
         Task.Priority := '';
-      FBoard.Save;
+      FBoard.Save();
       FStatusMsg := 'Priority: ' + Task.Title;
       FNeedsRedraw := True
     end;
@@ -541,15 +541,15 @@ begin
     if Length(Editor) = 0 then
       Editor := 'nano';
 
-    FTerm.ClearScreen;
-    FTerm.ShowCursor;
-    FTerm.BufFlush;
-    FTerm.DisableRawMode;
+    FTerm.ClearScreen();
+    FTerm.ShowCursor();
+    FTerm.BufFlush();
+    FTerm.DisableRawMode();
 
     Cmd := Editor + ' ' + Path;
     ExitCode := Exec(Cmd);
 
-    FTerm.EnableRawMode;
+    FTerm.EnableRawMode();
     FNeedsRedraw := True;
     Exit
   end
@@ -572,7 +572,7 @@ begin
     if Length(FInputBuf) > 0 then
     begin
       Task := FBoard.AddTask(FInputBuf, Self.ColumnStatus(FActiveCol));
-      FBoard.Save;
+      FBoard.Save();
       FStatusMsg := 'Added: ' + FInputBuf
     end;
     Self.FinishInput;
@@ -583,14 +583,14 @@ begin
   begin
     if Length(FInputBuf) > 0 then
       FInputBuf := Copy(FInputBuf, 0, Length(FInputBuf) - 1);
-    Self.DrawInputBar;
+    Self.DrawInputBar();
     Exit
   end;
 
   if (Key >= 32) and (Key < 127) then
   begin
     FInputBuf := FInputBuf + Chr(Key);
-    Self.DrawInputBar;
+    Self.DrawInputBar();
     Exit
   end
 end;
@@ -599,14 +599,14 @@ procedure TKanbanUI.Run;
 var
   Key, Merged: Integer;
 begin
-  FTerm.EnableRawMode;
+  FTerm.EnableRawMode();
   try
     while True do
     begin
       if FNeedsRedraw then
       begin
         if FViewMode = vmBoard then
-          Self.DrawBoard
+          Self.DrawBoard()
         else if FViewMode = vmDetail then
           Self.DrawDetailView;
         FNeedsRedraw := False
@@ -622,11 +622,11 @@ begin
           FPollCounter := 0;
           if FBoard.HasExternalChanges then
           begin
-            Merged := FBoard.MergeFromDisk;
+            Merged := FBoard.MergeFromDisk();
             if Merged > 0 then
             begin
               FStatusMsg := 'Reloaded ' + IntToStr(Merged) + ' new task(s) from disk';
-              Self.ClampRow;
+              Self.ClampRow();
               FNeedsRedraw := True
             end
           end
@@ -643,10 +643,10 @@ begin
         Self.HandleInputKey(Key)
     end
   finally
-    FTerm.ClearScreen;
-    FTerm.ShowCursor;
-    FTerm.BufFlush;
-    FTerm.DisableRawMode
+    FTerm.ClearScreen();
+    FTerm.ShowCursor();
+    FTerm.BufFlush();
+    FTerm.DisableRawMode()
   end
 end;
 

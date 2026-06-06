@@ -432,7 +432,7 @@ end;
 
 function TDateTime.ToString: string;
 begin
-  Result := Self.Date.ToString + 'T' + Self.Time.ToString
+  Result := Self.Date.ToString() + 'T' + Self.Time.ToString()
 end;
 
 { ================================================================== }
@@ -530,15 +530,15 @@ var
 begin
   Shifted.Nanoseconds := Self.Nanoseconds +
                          Int64(Offset.TotalSeconds) * NS_PER_SEC;
-  Result := Shifted.ToUtcDateTime
+  Result := Shifted.ToUtcDateTime()
 end;
 
 function TInstant.ToString: string;
 var
   DT: TDateTime;
 begin
-  DT     := Self.ToUtcDateTime;
-  Result := DT.Date.ToString + 'T' + DT.Time.ToString + 'Z'
+  DT     := Self.ToUtcDateTime();
+  Result := DT.Date.ToString() + 'T' + DT.Time.ToString() + 'Z'
 end;
 
 function TInstant.ToStringOffset(Offset: TTimeZoneOffset): string;
@@ -546,7 +546,7 @@ var
   DT: TDateTime;
 begin
   DT     := Self.ToLocalDateTime(Offset);
-  Result := DT.Date.ToString + 'T' + DT.Time.ToString + Offset.ToString
+  Result := DT.Date.ToString() + 'T' + DT.Time.ToString() + Offset.ToString()
 end;
 
 function TInstant.Subtract(Other: TInstant): TDuration;

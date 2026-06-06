@@ -162,8 +162,8 @@ const
           A: TA;
           B: TB;
         begin
-          A := TA.Create;
-          B := TB.Create
+          A := TA.Create();
+          B := TB.Create()
         end.
         ''';
 
@@ -318,17 +318,17 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
-  CG   := TCodeGenQBE.Create;
+  SA.Free();
+  CG   := TCodeGenQBE.Create();
   CG.Generate(Prog);
-  Result := CG.GetOutput;
-  CG.Free;
-  Prog.Free;
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
 end;
 
 procedure TSelfHostingTests.SemanticOK(const ASrc: string);
@@ -340,15 +340,15 @@ var
 begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   try
     SA.Analyse(Prog);
   finally
-    SA.Free;
-    Prog.Free;
+    SA.Free();
+    Prog.Free();
   end;
 end;
 
@@ -361,11 +361,11 @@ begin
   Lex  := TLexer.Create(ASrc);
   Par  := TParser.Create(Lex);
   try
-    Prog := Par.Parse;
-    Prog.Free;
+    Prog := Par.Parse();
+    Prog.Free();
   finally
-    Par.Free;
-    Lex.Free;
+    Par.Free();
+    Lex.Free();
   end;
 end;
 
@@ -417,16 +417,16 @@ var
 begin
   Lex  := TLexer.Create(SrcParamCount);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('ParamCount returns Integer',
     Ord(tyInteger), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TSelfHostingTests.TestSemantic_ParamStr_ReturnsString;
@@ -476,16 +476,16 @@ var
 begin
   Lex  := TLexer.Create(SrcFileExists);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('FileExists returns Boolean',
     Ord(tyBoolean), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TSelfHostingTests.TestCodegen_ReadFile_CallsRTL;
@@ -522,16 +522,16 @@ var
 begin
   Lex  := TLexer.Create(SrcFileAge);
   Par  := TParser.Create(Lex);
-  Prog := Par.Parse;
-  Par.Free;
-  Lex.Free;
-  SA   := TSemanticAnalyser.Create;
+  Prog := Par.Parse();
+  Par.Free();
+  Lex.Free();
+  SA   := TSemanticAnalyser.Create();
   SA.Analyse(Prog);
-  SA.Free;
+  SA.Free();
   Ass := TAssignment(Prog.Block.Stmts[0]);
   AssertEquals('FileAge returns Int64',
     Ord(tyInt64), Ord(Ass.Expr.ResolvedType.Kind));
-  Prog.Free;
+  Prog.Free();
 end;
 
 procedure TSelfHostingTests.TestCodegen_FileAge_CallsRTL;
