@@ -3250,6 +3250,34 @@ begin
     Exit;
   end;
 
+  if (ACall.ResolvedMethod = nil) and SameText(ACall.Name, 'Free') then
+  begin
+    if ACall.IsImplicitSelf then
+    begin
+      Self.Emit(#9'movq ' + Self.VarOperand('Self') + ', %rax');
+      if ACall.ImplicitBaseInfo.Offset > 0 then
+        Self.Emit(Format(#9'leaq %d(%%rax), %%rax', [ACall.ImplicitBaseInfo.Offset]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq (%rax), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq $0, (%rax)');
+    end
+    else
+    begin
+      if Self.IsLocal(ACall.ObjectName) then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [ACall.ObjectName]));
+      Self.Emit(#9'callq _ClassRelease');
+      if Self.IsLocal(ACall.ObjectName) then
+        Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(ACall.ObjectName)]))
+      else
+        Self.Emit(Format(#9'movq $0, %s(%%rip)', [ACall.ObjectName]));
+    end;
+    Exit;
+  end;
+
   MD := TMethodDecl(ACall.ResolvedMethod);
   if MD = nil then
     raise ENativeCodeGenError.Create(
