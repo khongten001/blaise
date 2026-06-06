@@ -89,6 +89,7 @@ RECORD         = "record"         ;
 PACKED         = "packed"         ;
 CLASS          = "class"          ;
 VAR            = "var"            ;
+THREADVAR      = "threadvar"      ;
 OUT            = "out"            ;
 BEGIN          = "begin"          ;
 END            = "end"            ;
@@ -201,7 +202,7 @@ UnitName
 
 Block
     = [ TypeSection ]
-      { ConstSection | VarSection | StandaloneDecl }
+      { ConstSection | VarSection | ThreadVarSection | StandaloneDecl }
       BEGIN StmtList END
     ;
 
@@ -515,6 +516,15 @@ ConstExpr
 VarSection
     = VAR VarDecl { VarDecl }
     ;
+
+ThreadVarSection
+    = THREADVAR VarDecl { VarDecl }
+    ;
+
+(* ThreadVarSection declares thread-local storage variables.  Only allowed
+ * at program/unit scope (not inside procedures).  Each thread gets its own
+ * copy of the variable, zero-initialised on thread creation.  Syntactically
+ * identical to VarSection except for the keyword. *)
 
 VarDecl
     = IdentList COLON TypeName SEMICOLON

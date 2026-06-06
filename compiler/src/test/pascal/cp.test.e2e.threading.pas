@@ -30,6 +30,8 @@ type
     procedure TestRun_Thread_MultipleThreads;
     procedure TestRun_CriticalSection_MutexProtectsCounter;
     procedure TestRun_Thread_InheritedDestroy_CleanExit;
+    procedure TestRun_ThreadVar_MainThread_ReadWrite;
+    procedure TestRun_ThreadVar_MixedWithGlobalVar;
   end;
 
 implementation
@@ -312,6 +314,51 @@ begin
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcDestroyCleanExit, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout', 'ran' + LE + 'clean' + LE, Output)
+end;
+
+const
+  SrcThreadVarMain =
+    'program P;' + LE +
+    'threadvar' + LE +
+    '  Counter: Integer;' + LE +
+    'begin' + LE +
+    '  Counter := 42;' + LE +
+    '  WriteLn(Counter)' + LE +
+    'end.';
+
+procedure TE2EThreadingTests.TestRun_ThreadVar_MainThread_ReadWrite;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRun(SrcThreadVarMain, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('stdout', '42' + LE, Output)
+end;
+
+const
+  SrcThreadVarMixed =
+    'program P;' + LE +
+    'var' + LE +
+    '  G: Integer;' + LE +
+    'threadvar' + LE +
+    '  T: Integer;' + LE +
+    'begin' + LE +
+    '  G := 10;' + LE +
+    '  T := 20;' + LE +
+    '  WriteLn(G + T)' + LE +
+    'end.';
+
+procedure TE2EThreadingTests.TestRun_ThreadVar_MixedWithGlobalVar;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRun(SrcThreadVarMixed, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('stdout', '30' + LE, Output)
 end;
 
 initialization

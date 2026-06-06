@@ -37,6 +37,7 @@ type
     tkProcedure,
     tkFunction,
     tkVar,
+    tkThreadVar,
     tkBegin,
     tkEnd,
     tkIf,
@@ -169,6 +170,7 @@ begin
   if AUpper = 'PROGRAM' then Result := tkProgram
   else if AUpper = 'USES'    then Result := tkUses
   else if AUpper = 'VAR'     then Result := tkVar
+  else if AUpper = 'THREADVAR' then Result := tkThreadVar
   else if AUpper = 'BEGIN'   then Result := tkBegin
   else if AUpper = 'END'     then Result := tkEnd
   else if AUpper = 'TYPE'    then Result := tkType
@@ -597,6 +599,7 @@ begin
     tkProcedure:      Result := 'procedure';
     tkFunction:       Result := 'function';
     tkVar:            Result := 'var';
+    tkThreadVar:      Result := 'threadvar';
     tkBegin:          Result := 'begin';
     tkEnd:            Result := 'end';
     tkIf:             Result := 'if';

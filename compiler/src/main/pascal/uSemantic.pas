@@ -816,7 +816,8 @@ begin
         Sym := TSymbol.Create(
           TVarDecl(AUnit.IntfBlock.Decls.Items[I]).Names.Strings[J],
           skVariable, ParType);
-        Sym.IsGlobal := True;
+        Sym.IsGlobal    := True;
+        Sym.IsThreadVar := TVarDecl(AUnit.IntfBlock.Decls.Items[I]).IsThreadVar;
         if not FTable.Define(Sym) then
         begin
           Sym.Free;
@@ -902,7 +903,8 @@ begin
         Sym := TSymbol.Create(
           TVarDecl(AUnit.ImplBlock.Decls.Items[I]).Names.Strings[J],
           skVariable, ParType);
-        Sym.IsGlobal := True;
+        Sym.IsGlobal    := True;
+        Sym.IsThreadVar := TVarDecl(AUnit.ImplBlock.Decls.Items[I]).IsThreadVar;
         if not FTable.Define(Sym) then
         begin
           Sym.Free;
@@ -1121,7 +1123,8 @@ begin
     for J := 0 to VDecl.Names.Count - 1 do
     begin
       Sym := TSymbol.Create(VDecl.Names.Strings[J], skVariable, ParType);
-      Sym.IsGlobal := True;
+      Sym.IsGlobal    := True;
+      Sym.IsThreadVar := VDecl.IsThreadVar;
       if not FTable.Define(Sym) then
       begin
         Sym.Free;
@@ -1210,7 +1213,8 @@ begin
       for J := 0 to VDecl.Names.Count - 1 do
       begin
         Sym := TSymbol.Create(VDecl.Names.Strings[J], skVariable, ParType);
-        Sym.IsGlobal := True;
+        Sym.IsGlobal    := True;
+        Sym.IsThreadVar := VDecl.IsThreadVar;
         if not FTable.Define(Sym) then
         begin
           Sym.Free;
@@ -4670,9 +4674,13 @@ begin
           SemanticError(
             Format('Duplicate identifier ''%s''', [VarName]),
             Decl.Line, Decl.Col);
+      if Decl.IsThreadVar and not Decl.IsGlobal then
+        SemanticError('threadvar is only allowed at unit or program scope',
+          Decl.Line, Decl.Col);
       Sym := TSymbol.Create(VarName, skVariable, Typ);
-      Sym.IsWeak   := Decl.IsWeak;
-      Sym.IsGlobal := Decl.IsGlobal;
+      Sym.IsWeak      := Decl.IsWeak;
+      Sym.IsGlobal    := Decl.IsGlobal;
+      Sym.IsThreadVar := Decl.IsThreadVar;
       if not FTable.Define(Sym) then
       begin
         Sym.Free;
@@ -5443,6 +5451,7 @@ begin
   AAssign.ResolvedLhsType := VarSym.TypeDesc;
   AAssign.IsWeakLhs       := VarSym.IsWeak;
   AAssign.IsGlobal        := VarSym.IsGlobal;
+  AAssign.IsThreadVar     := VarSym.IsThreadVar;
 
   ResolveDiamond(AAssign.Expr, VarSym.TypeDesc);
 
@@ -7790,7 +7799,8 @@ begin
       (Sym.Kind = skVarParameter) or
       ((Sym.Kind = skParameter) and (Sym.TypeDesc <> nil) and
        (Sym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
-    TIdentExpr(AExpr).IsGlobal  := Sym.IsGlobal;
+    TIdentExpr(AExpr).IsGlobal    := Sym.IsGlobal;
+    TIdentExpr(AExpr).IsThreadVar := Sym.IsThreadVar;
     if Sym.Kind = skConstant then
     begin
       TIdentExpr(AExpr).IsConstant  := True;

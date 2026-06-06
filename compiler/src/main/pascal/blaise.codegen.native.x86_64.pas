@@ -39,6 +39,7 @@ type
       is the slot's static type so loads, stores, and the .data directive all
       pick the right width and signedness. }
     FDataGlobals: TOrderedDictionary<string, TTypeDesc>;
+    FThreadVarGlobals: TDictionary<string, Boolean>;
     { Class-name string blobs already emitted to avoid duplicate label errors.
       Keyed by mangled name. }
     FClassNameEmitted: TDictionary<string, Boolean>;
@@ -97,6 +98,8 @@ type
       registration's type wins).  The width and signedness drive both the
       .data directive and every load/store of the slot. }
     procedure AddGlobal(const AName: string; AType: TTypeDesc);
+    procedure MarkThreadVar(const AName: string);
+    function IsThreadVarGlobal(const AName: string): Boolean;
     { The static type of a frame-local slot, or nil if AName is not a local. }
     function LocalType(const AName: string): TTypeDesc;
     { The static type of a program global, or nil if AName is not registered. }
@@ -360,6 +363,7 @@ begin
   inherited Create(ATarget);
   FLabelCount          := 0;
   FDataGlobals         := TOrderedDictionary<>.Create;
+  FThreadVarGlobals    := TDictionary<>.Create;
   FClassNameEmitted    := TDictionary<>.Create;
   FStrLits             := TStringList.Create;
   FBreakLabels        := TStack<>.Create;
@@ -387,6 +391,7 @@ begin
   FBreakLabels.Free;
   FClassNameEmitted.Free;
   FStrLits.Free;
+  FThreadVarGlobals.Free;
   FDataGlobals.Free;
   inherited Destroy;
 end;
@@ -403,6 +408,19 @@ begin
     FDataGlobals.Add(AName, AType);
 end;
 
+procedure TX86_64Backend.MarkThreadVar(const AName: string);
+begin
+  if not FThreadVarGlobals.ContainsKey(AName) then
+    FThreadVarGlobals.Add(AName, True);
+end;
+
+function TX86_64Backend.IsThreadVarGlobal(const AName: string): Boolean;
+var
+  Dummy: Boolean;
+begin
+  Result := FThreadVarGlobals.TryGetValue(AName, Dummy);
+end;
+
 function TX86_64Backend.GlobalType(const AName: string): TTypeDesc;
 begin
   if not FDataGlobals.TryGetValue(AName, Result) then
@@ -414,16 +432,33 @@ var
   I, Sz:    Integer;
   Name:     string;
   Directive: string;
+  IsTls:    Boolean;
+  HasData, HasTbss: Boolean;
 begin
   if (FDataGlobals.Count = 0) and (FProgExcFrameCount = 0) then
   begin
     Self.EmitStrLitSection;
     Exit;
   end;
-  Self.Emit('.data');
+  HasData := False;
+  HasTbss := False;
   for I := 0 to FDataGlobals.Count - 1 do
   begin
-    Name := FDataGlobals.Keys[I];
+    if Self.IsThreadVarGlobal(FDataGlobals.Keys[I]) then
+      HasTbss := True
+    else
+      HasData := True;
+  end;
+  if FProgExcFrameCount > 0 then HasData := True;
+  { Two passes: first .data globals, then .tbss threadvars. }
+  for I := 0 to FDataGlobals.Count - 1 do
+  begin
+    Name  := FDataGlobals.Keys[I];
+    IsTls := Self.IsThreadVarGlobal(Name);
+    if IsTls then Continue;
+    if HasData and (I = 0) then
+      Self.Emit('.data');
+    HasData := False;
     { Method pointers (of-object): 16-byte Code+Data block, zero-initialised. }
     if (Self.GlobalType(Name) <> nil) and
        (Self.GlobalType(Name).Kind = tyProcedural) and
@@ -437,10 +472,6 @@ begin
       Self.Emit(#9'.quad 0');
       Continue;
     end;
-    { Interface globals: a fat pointer split into two separate labels,
-      Name_obj and Name_itab, each an 8-byte zero-initialised slot.  The two
-      labels match IntfObjOperand / IntfItabOperand and the QBE backend's
-      $Name_obj / $Name_itab convention. }
     if (Self.GlobalType(Name) <> nil) and
        (Self.GlobalType(Name).Kind = tyInterface) then
     begin
@@ -456,7 +487,6 @@ begin
       Self.Emit(#9'.quad 0');
       Continue;
     end;
-    { Records and static arrays: emit a zeroed block of RawSize bytes. }
     if (Self.GlobalType(Name) <> nil) and
        (Self.GlobalType(Name).Kind in [tyRecord, tyStaticArray]) then
     begin
@@ -468,7 +498,6 @@ begin
       Self.Emit(Format(#9'.skip %d', [Sz]));
       Continue;
     end;
-    { Float globals need float-specific zero initialisers. }
     if (Self.GlobalType(Name) <> nil) and
        (Self.GlobalType(Name).Kind = tyDouble) then
     begin
@@ -490,8 +519,6 @@ begin
       Continue;
     end;
     Sz := IntByteSize(Self.GlobalType(Name));
-    { Align each slot to its own size; pick a zero-initialiser directive of
-      matching width so the linker reserves the correct number of bytes. }
     case Sz of
       1: begin Directive := #9'.byte 0'; Self.Emit('.balign 1'); end;
       2: begin Directive := #9'.word 0'; Self.Emit('.balign 2'); end;
@@ -499,20 +526,33 @@ begin
     else
       begin Directive := #9'.long 0'; Self.Emit('.balign 4'); end;
     end;
-    { Hidden compiler-generated slots (.L-prefixed) stay file-local; named
-      program variables are exported like the QBE backend's globals. }
     if Copy(Name, 1, 2) <> '.L' then
       Self.Emit('.globl ' + Name);
     Self.Emit(Name + ':');
     Self.Emit(Directive);
   end;
-  { Exception frame slots for the program-main body.  Each is a 512-byte
-    zero-initialised block at 16-byte alignment.  File-local (no .globl). }
+  { Exception frame slots for the program-main body. }
   for I := 0 to FProgExcFrameCount - 1 do
   begin
     Self.Emit('.balign 16');
     Self.Emit('_exc_frame_' + IntToStr(I) + ':');
     Self.Emit(#9'.skip 512');
+  end;
+  { Threadvar globals: emit in .tbss (zero-initialised thread-local storage). }
+  if HasTbss then
+  begin
+    Self.Emit('.section .tbss,"awT",@nobits');
+    for I := 0 to FDataGlobals.Count - 1 do
+    begin
+      Name := FDataGlobals.Keys[I];
+      if not Self.IsThreadVarGlobal(Name) then Continue;
+      Sz := IntByteSize(Self.GlobalType(Name));
+      if Sz < 4 then Sz := 4;
+      Self.Emit(Format('.balign %d', [Sz]));
+      Self.Emit('.globl ' + Name);
+      Self.Emit(Name + ':');
+      Self.Emit(Format(#9'.skip %d', [Sz]));
+    end;
   end;
   Self.EmitStrLitSection;
 end;
@@ -1390,7 +1430,10 @@ begin
 
   { Register a global LHS so EmitDataSection emits its _obj/_itab labels. }
   if not Self.IsLocal(AAsgn.Name) then
+  begin
     Self.AddGlobal(AAsgn.Name, AAsgn.ResolvedLhsType);
+    if AAsgn.IsThreadVar then Self.MarkThreadVar(AAsgn.Name);
+  end;
   ObjOp  := Self.IntfObjOperand(AAsgn.Name, AAsgn.IsGlobal);
   ItabOp := Self.IntfItabOperand(AAsgn.Name, AAsgn.IsGlobal);
 
@@ -1558,13 +1601,13 @@ var
 begin
   if (FFrame <> nil) and FFrame.TryGetValue(AName, Off) then
   begin
-    { Negative offset: local/param slot below %rbp (-8, -16, ...).
-      Positive offset: stack-passed param above %rbp (+16, +24, ...). }
     if Off > 0 then
       Result := Format('%d(%%rbp)', [Off])
     else
       Result := Format('-%d(%%rbp)', [-Off])
   end
+  else if Self.IsThreadVarGlobal(AName) then
+    Result := '%fs:' + AName + '@tpoff'
   else
     Result := AName + '(%rip)';
 end;
@@ -3988,32 +4031,27 @@ begin
       else
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        Self.EmitStoreFloat(Asgn.Name + '(%rip)', Asgn.ResolvedLhsType);
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.EmitStoreFloat(Self.VarOperand(Asgn.Name), Asgn.ResolvedLhsType);
       end;
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyString) then
     begin
-      { String assignment: _StringAddRef(new); _StringRelease(old); store.
-        Same ARC pattern as class assignment. }
       Self.EmitExprToEax(Asgn.Expr);
       Self.Emit(#9'pushq %rax');
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _StringAddRef');
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Asgn.Name]));
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _StringRelease');
       Self.Emit(#9'popq %rax');
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]))
-      else
+      if not Self.IsLocal(Asgn.Name) then
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [Asgn.Name]));
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
       end;
+      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyInterface) then
@@ -4024,44 +4062,32 @@ begin
             (Asgn.ResolvedLhsType.Kind = tyClass) and
             (Asgn.Expr is TNilLiteral) then
     begin
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Asgn.Name]));
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]));
       Self.Emit(#9'callq _ClassRelease');
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Asgn.Name)]))
-      else
+      if not Self.IsLocal(Asgn.Name) then
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        Self.Emit(Format(#9'movq $0, %s(%%rip)', [Asgn.Name]));
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
       end;
+      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyClass) then
     begin
-      { Class assignment: new := eval(RHS); _ClassAddRef(new); old := load(LHS);
-        _ClassRelease(old); store(LHS) := new. }
-      Self.EmitExprToEax(Asgn.Expr);   { new instance -> %rax }
-      Self.Emit(#9'pushq %rax');         { save new }
+      Self.EmitExprToEax(Asgn.Expr);
+      Self.Emit(#9'pushq %rax');
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _ClassAddRef');
-      { Load the old value — always a pointer (8 bytes), use movq. }
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Asgn.Name]));
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _ClassRelease');
-      Self.Emit(#9'popq %rax');          { restore new }
-      { Store the new value. }
-      if Self.IsLocal(Asgn.Name) then
-        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]))
-      else
+      Self.Emit(#9'popq %rax');
+      if not Self.IsLocal(Asgn.Name) then
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [Asgn.Name]));
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
       end;
+      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind in [tyRecord, tyStaticArray]) then
@@ -4078,6 +4104,7 @@ begin
       else
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
         Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Asgn.Name]));
       end;
       Self.Emit(Format(#9'movq $%d, %%rdx', [Asgn.ResolvedLhsType.RawSize]));
@@ -4085,19 +4112,22 @@ begin
     end
     else
     begin
-      Self.EmitExprToEax(Asgn.Expr);   { value -> %rax (64-bit-extended) }
+      Self.EmitExprToEax(Asgn.Expr);
       if Asgn.IsVarParam then
       begin
         Self.Emit(Format(#9'movq %s, %%rcx',
           [Self.VarOperand(Asgn.Name)]));
         Self.EmitStoreVar('(%rcx)', Asgn.ResolvedLhsType);
       end
-      else if Self.IsLocal(Asgn.Name) then
-        Self.EmitStoreVar(Self.VarOperand(Asgn.Name), Self.LocalType(Asgn.Name))
       else
       begin
-        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        Self.EmitStoreVar(Asgn.Name + '(%rip)', Asgn.ResolvedLhsType);
+        if not Self.IsLocal(Asgn.Name) then
+        begin
+          Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+          if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        end;
+        Self.EmitStoreVar(Self.VarOperand(Asgn.Name),
+          Asgn.ResolvedLhsType);
       end;
     end;
     Exit;
@@ -5536,7 +5566,11 @@ begin
                                   tyProcedural, tyPointer, tyString, tyPChar,
                                   tyDynArray])) then
       for J := 0 to VD.Names.Count - 1 do
+      begin
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
+        if VD.IsThreadVar then
+          Self.MarkThreadVar(VD.Names.Strings[J]);
+      end;
   end;
 
   { Class method bodies before standalone procedures. }

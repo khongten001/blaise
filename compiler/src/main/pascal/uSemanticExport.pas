@@ -328,8 +328,9 @@ begin
     for J := 0 to Decl.Names.Count - 1 do
     begin
       Entry := TVarEntry.Create;
-      Entry.Name    := Decl.Names.Strings[J];
-      Entry.TypeRef := ResolveTypeRef(Decl.TypeName, AIface, ADeps);
+      Entry.Name        := Decl.Names.Strings[J];
+      Entry.TypeRef     := ResolveTypeRef(Decl.TypeName, AIface, ADeps);
+      Entry.IsThreadVar := Decl.IsThreadVar;
       AIface.AddVar(Entry);
     end;
   end;

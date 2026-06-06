@@ -150,7 +150,8 @@ begin
       V := TVarEntry(AIface.Vars.Items[I]);
       SB.AppendLine(
         EncodeLpstr(V.Name) +
-        EncodeQualRefParts(V.TypeRef.UnitName, V.TypeRef.TypeName));
+        EncodeQualRefParts(V.TypeRef.UnitName, V.TypeRef.TypeName) +
+        EncodeBool(V.IsThreadVar));
     end;
     SB.AppendLine('END');
     Result := SB.ToString;
@@ -1124,7 +1125,8 @@ begin
     Entry.Name := ReadLpstrAt(AText, APos);
     RefStr     := ReadLpstrAt(AText, APos);
     DecodeQualRef(RefStr, RefUnit, RefType);
-    Entry.TypeRef := MakeQualRef(RefUnit, RefType);
+    Entry.TypeRef    := MakeQualRef(RefUnit, RefType);
+    Entry.IsThreadVar := DecodeBool(AText, APos);
     AIface.AddVar(Entry);
   end;
   if ReadTag(AText, APos) <> 'END' then

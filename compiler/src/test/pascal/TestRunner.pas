@@ -120,6 +120,7 @@ uses
   cp.test.e2e.useschain,
   cp.test.unitinterface,
   cp.test.e2e.sepcompile,
+  cp.test.threadvar,
   cp.test.config;
 
 begin

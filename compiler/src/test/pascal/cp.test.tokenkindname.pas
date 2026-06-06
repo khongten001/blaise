@@ -119,7 +119,7 @@ implementation
   token kind is appended to the enum — the test below will fail and remind
   you to also update TokenKindName. }
 const
-  ExpectedMaxTokenKindOrd = 84; { tkAt }
+  ExpectedMaxTokenKindOrd = 85; { tkAt }
 
 procedure TTokenKindNameTests.TestMaxOrdinal_IstkAt;
 begin

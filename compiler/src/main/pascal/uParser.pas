@@ -85,7 +85,7 @@ type
     procedure ParseParamList(AParams: TObjectList);
     procedure ParseStandaloneDecl(ABlock: TBlock);
     procedure ParseVarBlock(ABlock: TBlock);
-    procedure ParseVarDecl(ABlock: TBlock);
+    procedure ParseVarDecl(ABlock: TBlock; AIsThreadVar: Boolean = False);
     procedure ParseStmtList(ABlock: TBlock);
     function  ParseStmt: TASTStmt;
     function  ParseIfStmt: TIfStmt;
@@ -369,13 +369,13 @@ begin
 
     { Accept any number of type/var/procedure/function sections in any order,
       as required when concatenating multiple Pascal units into one file. }
-    while Check(tkType) or Check(tkVar) or Check(tkProcedure) or
-          Check(tkFunction) or Check(tkConst) or
+    while Check(tkType) or Check(tkVar) or Check(tkThreadVar) or
+          Check(tkProcedure) or Check(tkFunction) or Check(tkConst) or
           Check(tkConstructor) or Check(tkDestructor) do
     begin
       if Check(tkType) then
         ParseTypeSection(Result)
-      else if Check(tkVar) then
+      else if Check(tkVar) or Check(tkThreadVar) then
         ParseVarBlock(Result)
       else if Check(tkConst) then
         ParseConstBlock(Result.ConstDecls)
@@ -1809,19 +1809,26 @@ end;
 { ------------------------------------------------------------------ }
 
 procedure TParser.ParseVarBlock(ABlock: TBlock);
+var
+  IsTV: Boolean;
 begin
-  Expect(tkVar);
+  IsTV := Check(tkThreadVar);
+  if IsTV then
+    Advance
+  else
+    Expect(tkVar);
   while Check(tkIdent) or Check(tkLBracket) do
-    ParseVarDecl(ABlock);
+    Self.ParseVarDecl(ABlock, IsTV);
 end;
 
-procedure TParser.ParseVarDecl(ABlock: TBlock);
+procedure TParser.ParseVarDecl(ABlock: TBlock; AIsThreadVar: Boolean);
 var
   Decl: TVarDecl;
 begin
   Decl := TVarDecl.Create;
   Decl.Line := FCurrent.Line;
   Decl.Col  := FCurrent.Col;
+  Decl.IsThreadVar := AIsThreadVar;
   try
     ParseAttributeList(Decl.Attributes);
     if not Check(tkIdent) then
@@ -3026,13 +3033,13 @@ begin
     Expect(tkIntf);
     if Check(tkUses) then
       ParseUsesList(Result.UsedUnits);
-    while Check(tkType) or Check(tkVar) or Check(tkConst) or
+    while Check(tkType) or Check(tkVar) or Check(tkThreadVar) or Check(tkConst) or
           Check(tkProcedure) or Check(tkFunction) or
           Check(tkConstructor) or Check(tkDestructor) do
     begin
       if Check(tkType) then
         ParseTypeSection(Result.IntfBlock)
-      else if Check(tkVar) then
+      else if Check(tkVar) or Check(tkThreadVar) then
         ParseVarBlock(Result.IntfBlock)
       else if Check(tkConst) then
         ParseConstBlock(Result.IntfBlock.ConstDecls)
@@ -3048,11 +3055,11 @@ begin
       ParseUsesList(Result.ImplUsedUnits);  { implementation-only deps — loaded but not re-exported }
     while Check(tkProcedure) or Check(tkFunction) or
           Check(tkConstructor) or Check(tkDestructor) or
-          Check(tkVar) or Check(tkConst) or Check(tkType) do
+          Check(tkVar) or Check(tkThreadVar) or Check(tkConst) or Check(tkType) do
     begin
       if Check(tkFunction) then
         Result.ImplBlock.ProcDecls.Add(ParseMethodDecl(True))
-      else if Check(tkVar) then
+      else if Check(tkVar) or Check(tkThreadVar) then
         ParseVarBlock(Result.ImplBlock)
       else if Check(tkConst) then
         ParseConstBlock(Result.ImplBlock.ConstDecls)

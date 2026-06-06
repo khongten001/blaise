@@ -83,6 +83,7 @@ type
                                        state's binary emits duplicate
                                        System defs and can't compile
                                        its own next iteration. }
+    FThreadVarNames:   TStringList;  { global names declared as threadvar }
     FUnitInitNames:    TStringList;  { unit names that have initialization sections }
     { mem2reg: parallel lists tracking which locals are promoted SSA temps.
       FPromotedLocals[i] = var name; FPromotedTypes[i] = QBE type ('w','l','d','s').
@@ -210,6 +211,7 @@ type
     function  PromotedType(const AName: string): string;
     function  CountTryStmts(AStmt: TASTStmt): Integer;
     procedure EmitExcFrameAllocs(ABlock: TBlock);
+    procedure CollectThreadVarNames(ABlock: TBlock);
     procedure EmitGlobalVarData(ABlock: TBlock);
     procedure EmitArrayConstData(CD: TConstDecl; const APrefix: string);
     procedure EmitClassConstData(AClassDef: TClassTypeDef; const AClassName: string);
@@ -484,6 +486,8 @@ begin
   FBreakLabels     := TStringList.Create;
   FContinueLabels  := TStringList.Create;
   FFinallyStack    := TObjectList.Create(False);  { not owned — AST owns the blocks }
+  FThreadVarNames  := TStringList.Create;
+  FThreadVarNames.CaseSensitive := True;
   FUnitInitNames   := TStringList.Create;
   FPromotedLocals  := TStringList.Create;
   FPromotedLocals.CaseSensitive := True;
@@ -514,6 +518,7 @@ begin
   FBreakLabels.Free;
   FContinueLabels.Free;
   FFinallyStack.Free;
+  FThreadVarNames.Free;
   FUnitInitNames.Free;
   FPromotedLocals.Free;
   FPromotedTypes.Free;
@@ -1874,15 +1879,27 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.CollectThreadVarNames(ABlock: TBlock);
+var
+  I, J: Integer;
+  Decl: TVarDecl;
+begin
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    Decl := TVarDecl(ABlock.Decls.Items[I]);
+    if Decl.IsThreadVar then
+      for J := 0 to Decl.Names.Count - 1 do
+        FThreadVarNames.Add(Decl.Names.Strings[J]);
+  end;
+end;
+
 procedure TCodeGenQBE.EmitGlobalVarData(ABlock: TBlock);
-{ Emit QBE data-section entries for program-level global variables.
-  These live at $Name (pointer-sized slots, zero-initialised) rather than
-  as per-function stack allocs.  Called once from Generate before the
-  function bodies are written. }
 var
   I, J:    Integer;
   Decl:    TVarDecl;
   VarName: string;
+  Pfx:     string;
   RT:      TRecordTypeDesc;
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
@@ -1890,56 +1907,61 @@ begin
     Decl := TVarDecl(ABlock.Decls.Items[I]);
     if not Decl.IsGlobal then Continue;
     if Decl.ResolvedType = nil then Continue;
+    if Decl.IsThreadVar then
+      Pfx := 'export thread data'
+    else
+      Pfx := 'export data';
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names.Strings[J];
+      if Decl.IsThreadVar then
+        FThreadVarNames.Add(VarName);
       case Decl.ResolvedType.Kind of
         tyInteger, tyUInt32, tyBoolean, tyByte, tyEnum:
-          EmitLine(Format('export data $%s = { w 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { w 0 }', [Pfx, VarName]));
         tySmallInt, tyWord:
-          EmitLine(Format('export data $%s = { h 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { h 0 }', [Pfx, VarName]));
         tySet:
           if TSetTypeDesc(Decl.ResolvedType).BitCount <= 32 then
-            EmitLine(Format('export data $%s = { w 0 }', [VarName]))
+            EmitLine(Format('%s $%s = { w 0 }', [Pfx, VarName]))
           else
-            EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+            EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
         tyInt64, tyUInt64:
-          EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
         tyString, tyClass, tyPointer, tyPChar, tyMetaClass:
-          EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
         tyProcedural:
           if TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr then
-            { Method-pointer global: 16-byte zero block (Code at +0, Data at +8). }
-            EmitLine(Format('export data $%s = { z 16 }', [VarName]))
+            EmitLine(Format('%s $%s = { z 16 }', [Pfx, VarName]))
           else
-            EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+            EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
         tyDouble:
-          EmitLine(Format('export data $%s = { d 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { d 0 }', [Pfx, VarName]));
         tySingle:
-          EmitLine(Format('export data $%s = { s 0 }', [VarName]));
+          EmitLine(Format('%s $%s = { s 0 }', [Pfx, VarName]));
         tyInterface:
           begin
-            EmitLine(Format('export data $%s_obj  = { l 0 }', [VarName]));
-            EmitLine(Format('export data $%s_itab = { l 0 }', [VarName]));
+            EmitLine(Format('%s $%s_obj  = { l 0 }', [Pfx, VarName]));
+            EmitLine(Format('%s $%s_itab = { l 0 }', [Pfx, VarName]));
           end;
         tyRecord:
           begin
             RT := TRecordTypeDesc(Decl.ResolvedType);
             if RT.TotalSize > 0 then
-              EmitLine(Format('export data $%s = { z %d }', [VarName, RT.TotalSize]))
+              EmitLine(Format('%s $%s = { z %d }', [Pfx, VarName, RT.TotalSize]))
             else
-              EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+              EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
           end;
         tyStaticArray:
           begin
             if TStaticArrayTypeDesc(Decl.ResolvedType).ByteSize > 0 then
-              EmitLine(Format('export data $%s = { z %d }',
-                [VarName, TStaticArrayTypeDesc(Decl.ResolvedType).ByteSize]))
+              EmitLine(Format('%s $%s = { z %d }',
+                [Pfx, VarName, TStaticArrayTypeDesc(Decl.ResolvedType).ByteSize]))
             else
-              EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+              EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
           end;
       else
-        EmitLine(Format('export data $%s = { l 0 }', [VarName]));
+        EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
       end;
     end;
   end;
@@ -4214,7 +4236,12 @@ end;
 function TCodeGenQBE.VarRef(const AName: string; AIsGlobal: Boolean): string;
 begin
   if AIsGlobal then
-    Result := '$' + AName
+  begin
+    if FThreadVarNames.IndexOf(AName) >= 0 then
+      Result := 'thread $' + AName
+    else
+      Result := '$' + AName;
+  end
   else
     Result := '%_var_' + AName;
 end;
@@ -10568,6 +10595,8 @@ begin
   FTempCount  := 0;
   FLabelCount := 0;
 
+  CollectThreadVarNames(AProg.Block);
+
   Body := TIRBuffer.Create;
   try
     SavedOutput := FOutput;
@@ -10622,6 +10651,9 @@ begin
   FStrLitsEmitted := 0;
   FTempCount  := 0;
   FLabelCount := 0;
+
+  CollectThreadVarNames(AUnit.IntfBlock);
+  CollectThreadVarNames(AUnit.ImplBlock);
 
   IntfNames := TStringList.Create;
   try
@@ -10762,6 +10794,9 @@ begin
     Counter resets are safe: QBE temps and block labels are function-scoped. }
   FTempCount  := 0;
   FLabelCount := 0;
+
+  CollectThreadVarNames(AUnit.IntfBlock);
+  CollectThreadVarNames(AUnit.ImplBlock);
 
   IntfNames := TStringList.Create;
   try
@@ -11216,6 +11251,8 @@ begin
   { No clears — accumulates after AppendUnit calls. }
   FTempCount  := 0;
   FLabelCount := 0;
+
+  CollectThreadVarNames(AProg.Block);
 
   Body := TIRBuffer.Create;
   try

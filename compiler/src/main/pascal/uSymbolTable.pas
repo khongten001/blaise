@@ -332,6 +332,8 @@ type
                                 of the strong addref/release pattern. }
     IsGlobal:   Boolean;      { true for program-level variables; codegen uses
                                 QBE data-section storage instead of stack alloc }
+    IsThreadVar: Boolean;     { true for threadvar declarations; codegen emits
+                                TLS storage instead of plain global data }
     IsOverload:   Boolean;    { true when declared with the 'overload' directive;
                                 same-named overload symbols form a NextOverload chain }
     [Unretained] NextOverload: TSymbol;    { not owned — link to next overload in the chain;

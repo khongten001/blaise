@@ -3295,3 +3295,35 @@ return `'True'` / `'False'` as a string value.
   `True` / `False` (title-case), and the output should match the language.
 * Keeping `1` / `0` and requiring explicit `BoolToStr` — rejected; the implicit
   integer rendering was a bug, not a feature.
+
+
+== `threadvar` — Thread-Local Storage
+
+*Decision:* Blaise supports the `threadvar` keyword for declaring thread-local
+storage variables.  Syntactically it mirrors `var` but places the variable in
+TLS rather than the global data section.  Each thread receives its own
+zero-initialised copy.
+
+*Scope restriction:* `threadvar` is only allowed at program or unit scope (not
+inside procedures or methods).  Attempting to use it at local scope produces a
+parse error.
+
+*QBE backend:* The QBE IR uses QBE's native `thread` linkage qualifier.  Data
+declarations emit `export thread data $Name = { ... }`, and all load/store
+references use `thread $Name`.  QBE generates correct local-exec TLS access
+patterns on Linux x86_64 (`%fs:Name@tpoff`).
+
+*Native backend:* The x86_64 native backend emits threadvars in
+`.section .tbss,"awT",@nobits` and accesses them via `%fs:Name@tpoff`
+(local-exec TLS model).
+
+*Unit interface serialisation:* The `IsThreadVar` flag is serialised through
+`.bif` files so that importing units correctly mark symbols as thread-local.
+
+*Alternatives considered:*
+
+* POSIX `pthread_key_t` / `pthread_getspecific` — more portable but slower
+  (function call per access vs. a single `%fs:` load).  The native TLS model
+  is the correct choice for a compiler targeting Linux x86_64.
+* Implicit TLS via runtime per-thread tables — rejected; the explicit keyword
+  makes the intent clear and matches established Pascal practice (Delphi, FPC).

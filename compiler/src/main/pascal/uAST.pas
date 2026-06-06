@@ -79,6 +79,7 @@ type
     IsNoArgFuncCall:   Boolean;  { set by uSemantic — bare ident that resolves to a 0-arg function }
     [Unretained] NoArgFuncDecl:     TObject;  { TMethodDecl — not owned; valid when IsNoArgFuncCall and user-defined }
     IsGlobal:          Boolean;  { set by uSemantic — this ident is a program-level global var }
+    IsThreadVar:       Boolean;  { set by uSemantic — threadvar (TLS) global }
     IsImplicitSelf:    Boolean;  { set by uSemantic — bare field name implicitly referencing Self }
     [Unretained] ImplicitFieldInfo: TObject;  { TFieldInfo — not owned; valid when IsImplicitSelf }
     IsImplicitSelfMethod: Boolean; { set by uSemantic — bare zero-arg method call on Self }
@@ -182,6 +183,7 @@ type
     Expr:            TASTExpr;   { owned }
     IsVarParam:      Boolean;    { set by uSemantic — True if target is a var parameter }
     IsGlobal:        Boolean;    { set by uSemantic — True if target is a program-level global }
+    IsThreadVar:     Boolean;    { set by uSemantic — True if target is a threadvar }
     [Unretained] ResolvedLhsType: TTypeDesc;  { set by uSemantic — type of the target variable }
     IsWeakLhs:       Boolean;    { set by uSemantic — True if the LHS symbol
                                    was declared [Weak]; codegen emits a
@@ -500,6 +502,7 @@ type
                                   Non-owning reference, no ARC and no weak
                                   registry.  See TFieldInfo.IsUnretained. }
     IsGlobal:     Boolean;      { set by uSemantic when this is a program-level global variable }
+    IsThreadVar:  Boolean;      { set by parser when declared in a threadvar section }
     constructor Create;
     destructor Destroy; override;
   end;

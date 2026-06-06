@@ -491,8 +491,9 @@ begin
         'Var %s.%s: type %s unresolved',
         [AIface.Name, Entry.Name, Entry.TypeRef.TypeName]);
     Sym := TSymbol.Create(Entry.Name, skVariable, TypeDesc);
-    Sym.IsGlobal := True;
-    Sym.OwningUnit := AIface.Name;
+    Sym.IsGlobal    := True;
+    Sym.IsThreadVar := Entry.IsThreadVar;
+    Sym.OwningUnit  := AIface.Name;
     if not ATable.Define(Sym) then
       Sym.Free;
   end;
