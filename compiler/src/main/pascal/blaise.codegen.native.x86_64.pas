@@ -3263,6 +3263,12 @@ begin
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'movq $0, (%rax)');
     end
+    else if ACall.ObjExpr <> nil then
+    begin
+      Self.EmitExprToEax(ACall.ObjExpr);
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+    end
     else
     begin
       if Self.IsLocal(ACall.ObjectName) then
@@ -4212,6 +4218,81 @@ begin
           Self.Emit(Format(#9'movq %%rax, %s(%%rip)',
             [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
       end;
+      Exit;
+    end;
+    { Inc(x) / Inc(x,n) / Dec(x) / Dec(x,n) — in-place add/sub. }
+    if (SameText(PC.Name, 'Inc') or SameText(PC.Name, 'Dec')) and
+       (PC.Args.Count >= 1) and (PC.Args.Count <= 2) then
+    begin
+      if TASTExpr(PC.Args.Items[0]) is TIdentExpr then
+      begin
+        FDynArgName := TIdentExpr(TASTExpr(PC.Args.Items[0])).Name;
+        if (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
+           (TASTExpr(PC.Args.Items[0]).ResolvedType.Kind in
+              [tyInt64, tyUInt64, tyClass, tyPointer]) then
+        begin
+          if PC.Args.Count >= 2 then
+          begin
+            Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+            Self.Emit(#9'movq %rax, %rcx');
+          end;
+          if Self.IsLocal(FDynArgName) then
+            Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FDynArgName)]))
+          else
+            Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FDynArgName]));
+          if PC.Args.Count >= 2 then
+          begin
+            if SameText(PC.Name, 'Inc') then
+              Self.Emit(#9'addq %rcx, %rax')
+            else
+              Self.Emit(#9'subq %rcx, %rax');
+          end
+          else
+          begin
+            if SameText(PC.Name, 'Inc') then
+              Self.Emit(#9'addq $1, %rax')
+            else
+              Self.Emit(#9'subq $1, %rax');
+          end;
+          if Self.IsLocal(FDynArgName) then
+            Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(FDynArgName)]))
+          else
+            Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [FDynArgName]));
+        end
+        else
+        begin
+          if PC.Args.Count >= 2 then
+          begin
+            Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+            Self.Emit(#9'movl %eax, %ecx');
+          end;
+          if Self.IsLocal(FDynArgName) then
+            Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(FDynArgName)]))
+          else
+            Self.Emit(Format(#9'movl %s(%%rip), %%eax', [FDynArgName]));
+          if PC.Args.Count >= 2 then
+          begin
+            if SameText(PC.Name, 'Inc') then
+              Self.Emit(#9'addl %ecx, %eax')
+            else
+              Self.Emit(#9'subl %ecx, %eax');
+          end
+          else
+          begin
+            if SameText(PC.Name, 'Inc') then
+              Self.Emit(#9'addl $1, %eax')
+            else
+              Self.Emit(#9'subl $1, %eax');
+          end;
+          if Self.IsLocal(FDynArgName) then
+            Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(FDynArgName)]))
+          else
+            Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [FDynArgName]));
+        end;
+      end
+      else
+        raise ENativeCodeGenError.Create(
+          'native backend: Inc/Dec only supports simple variable arguments');
       Exit;
     end;
     if PC.IsIndirectCall then
@@ -5309,6 +5390,10 @@ begin
         for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
           Self.Emit(Format(#9'movq $0, %s',
             [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
+      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyClass then
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          Self.Emit(Format(#9'movq $0, %s',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
       else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyInterface then
         for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
         begin
@@ -5371,6 +5456,14 @@ begin
           Self.Emit(Format(#9'movq %s, %%rdi',
             [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
           Self.Emit(#9'callq _StringRelease');
+        end
+      { Class locals: release the object reference. }
+      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyClass then
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+        begin
+          Self.Emit(Format(#9'movq %s, %%rdi',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          Self.Emit(#9'callq _ClassRelease');
         end
       { Interface locals: release the obj half of the fat pointer; the itab is
         static rodata and is not refcounted. }
