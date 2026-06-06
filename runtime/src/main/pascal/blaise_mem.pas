@@ -33,6 +33,15 @@
     (4 KB) for better cache hit rates.
 
   All returned pointers are 8-byte aligned.
+
+  Thread safety:
+    All allocator state (arenas, freelists, large-block cache) is
+    declared as threadvar, giving each thread its own independent
+    allocator instance with zero contention and no locks.  Spawned
+    threads start with nil arenas and empty freelists; their first
+    allocation creates a fresh arena via mmap.  Memory allocated on
+    one thread must not be freed on another (the freelist push would
+    go to the wrong thread's list).
 }
 
 unit blaise_mem;
@@ -105,7 +114,7 @@ const
   FLAG_LARGE = 1;
   FLAG_SMALL = 0;
 
-var
+threadvar
   FreeLists: array[0..7] of PFreeNode;
   ArenaHead: PArena;
   LargeFreeHead: PLargeFreeNode;
@@ -419,10 +428,5 @@ begin
   _libc_memcpy(Result, Ptr, Int64(CopySize));
   _BlaiseFreeMem(Ptr);
 end;
-
-initialization
-  ArenaHead := nil;
-  LargeFreeHead := nil;
-  LargeFreeCount := 0;
 
 end.

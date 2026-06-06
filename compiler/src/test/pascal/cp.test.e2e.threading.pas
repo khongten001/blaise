@@ -32,6 +32,7 @@ type
     procedure TestRun_Thread_InheritedDestroy_CleanExit;
     procedure TestRun_ThreadVar_MainThread_ReadWrite;
     procedure TestRun_ThreadVar_MixedWithGlobalVar;
+    procedure TestRun_PerThreadAllocator_IndependentAllocs;
   end;
 
 implementation
@@ -359,6 +360,60 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcThreadVarMixed, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout', '30' + LE, Output)
+end;
+
+const
+  SrcPerThreadAlloc =
+    '''
+    program P;
+    uses Classes;
+    type
+      TAllocThread = class(TThread)
+      private
+        FOk: Integer;
+      protected
+        procedure Execute; override;
+      end;
+    procedure TAllocThread.Execute;
+    var
+      P1, P2: Pointer;
+      I1, I2: ^Integer;
+    begin
+      P1 := GetMem(32);
+      P2 := GetMem(64);
+      I1 := P1;
+      I2 := P2;
+      I1^ := 111;
+      I2^ := 222;
+      if (I1^ = 111) and (I2^ = 222) then
+        Self.FOk := 1
+      else
+        Self.FOk := 0;
+      FreeMem(P2);
+      FreeMem(P1)
+    end;
+    var
+      A, B: TAllocThread;
+    begin
+      A := TAllocThread.Create(True);
+      B := TAllocThread.Create(True);
+      A.FOk := 0;
+      B.FOk := 0;
+      A.Start;
+      B.Start;
+      A.WaitFor;
+      B.WaitFor;
+      WriteLn(A.FOk + B.FOk)
+    end.
+    ''';
+
+procedure TE2EThreadingTests.TestRun_PerThreadAllocator_IndependentAllocs;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcPerThreadAlloc, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('stdout', '2' + LE, Output)
 end;
 
 initialization

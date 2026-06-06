@@ -28,6 +28,7 @@ type
     procedure TestCodegen_ThreadVarPointer_EmitsThreadData;
     procedure TestCodegen_RegularVar_NoThreadPrefix;
     procedure TestCodegen_MixedVarAndThreadVar;
+    procedure TestCodegen_ThreadVarStaticArray_EmitsCorrectSize;
   end;
 
 implementation
@@ -214,6 +215,21 @@ begin
   AssertTrue(Self.IRContains(IR, 'export data $A'));
   AssertFalse(Self.IRContains(IR, 'export thread data $A'));
   AssertTrue(Self.IRContains(IR, 'export thread data $B'));
+end;
+
+procedure TThreadVarTests.TestCodegen_ThreadVarStaticArray_EmitsCorrectSize;
+var
+  IR: string;
+begin
+  IR := Self.GenerateIR(
+    'program P;' + #10 +
+    'threadvar' + #10 +
+    '  Buckets: array[0..7] of Pointer;' + #10 +
+    'begin' + #10 +
+    '  Buckets[0] := nil' + #10 +
+    'end.');
+  AssertTrue(Self.IRContains(IR, 'export thread data $Buckets'));
+  AssertTrue(Self.IRContains(IR, 'z 64'));
 end;
 
 initialization

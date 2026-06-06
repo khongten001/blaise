@@ -545,9 +545,21 @@ begin
     begin
       Name := FDataGlobals.Keys[I];
       if not Self.IsThreadVarGlobal(Name) then Continue;
-      Sz := IntByteSize(Self.GlobalType(Name));
-      if Sz < 4 then Sz := 4;
-      Self.Emit(Format('.balign %d', [Sz]));
+      if (Self.GlobalType(Name) <> nil) and
+         (Self.GlobalType(Name).Kind in [tyRecord, tyStaticArray]) then
+        Sz := Self.GlobalType(Name).RawSize
+      else if (Self.GlobalType(Name) <> nil) and
+              (Self.GlobalType(Name).Kind = tyDouble) then
+        Sz := 8
+      else
+      begin
+        Sz := IntByteSize(Self.GlobalType(Name));
+        if Sz < 4 then Sz := 4;
+      end;
+      if Sz >= 8 then
+        Self.Emit('.balign 8')
+      else
+        Self.Emit(Format('.balign %d', [Sz]));
       Self.Emit('.globl ' + Name);
       Self.Emit(Name + ':');
       Self.Emit(Format(#9'.skip %d', [Sz]));
