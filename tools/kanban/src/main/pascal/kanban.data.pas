@@ -506,7 +506,7 @@ begin
     Exit('');
   UtcDT := ParseDateTime(AUtcStr);
   Inst := MakeInstantUtc(UtcDT.Date, UtcDT.Time);
-  LocalDT := Inst.ToLocalDateTime(SystemOffset);
+  LocalDT := Inst.ToLocalDateTime(SystemOffset());
   Result := LocalDT.Date.ToString()
 end;
 
