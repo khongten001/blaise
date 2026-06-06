@@ -120,14 +120,12 @@ const
       end;
     var
       B: TBox;
-      P: Pointer;
     begin
       B := TBox.Create;
       B.Value := 7;
-      P := Pointer(B);
-      B := nil;
-      { P holds the only reference but is an unmanaged Pointer — ARC never
-        releases it, so TBox leaks. }
+      _ClassAddRef(Pointer(B));
+      { Artificial extra addref: rc=2.  Scope-exit releases B (rc=1),
+        but the unbalanced addref keeps the object alive — leak. }
       WriteLn('done')
     end.
     ''';
@@ -146,14 +144,13 @@ const
     var
       A: TAlpha;
       B: TBeta;
-      PA, PB: Pointer;
     begin
       A := TAlpha.Create;
       B := TBeta.Create;
-      PA := Pointer(A);
-      PB := Pointer(B);
-      A := nil;
-      B := nil;
+      _ClassAddRef(Pointer(A));
+      _ClassAddRef(Pointer(B));
+      { Artificial extra addref on each: scope-exit releases both
+        (rc 2->1) but the unbalanced addref keeps them alive. }
       WriteLn('done')
     end.
     ''';

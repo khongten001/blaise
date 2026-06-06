@@ -117,10 +117,8 @@ type
     { Emit an immortal class-name string blob in the data section and return
       the label+12 expression that points to the character data. }
     function EmitClassNameString(const AClassName: string): string;
-    { Emit the body of one $_FieldCleanup_<T> function.  For classes with
-      no managed fields this is just a ret; with ARC string/class fields it
-      would call release helpers (deferred — today all user classes have only
-      integer fields). }
+    { Emit the body of one $_FieldCleanup_<T> function.  Calls the
+      destructor (if any), releases ARC-managed fields, then returns. }
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ART: TRecordTypeDesc);
     { Emit all class method definitions (OwnerTypeName <> ''). }
@@ -710,12 +708,68 @@ end;
 
 procedure TX86_64Backend.EmitFieldCleanupFn(const AMangledName: string;
                                             ART: TRecordTypeDesc);
+var
+  Walk: TRecordTypeDesc;
+  I:    Integer;
+  F:    TFieldInfo;
+  DestroyName: string;
 begin
   Self.Emit('.text');
   Self.Emit('.globl _FieldCleanup_' + AMangledName);
   Self.Emit('_FieldCleanup_' + AMangledName + ':');
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
+  Self.Emit(#9'pushq %rbx');
+  Self.Emit(#9'movq %rdi, %rbx');
+  if ART <> nil then
+  begin
+    Walk := ART;
+    while Walk <> nil do
+    begin
+      if Walk.HasDestroyMethod then
+      begin
+        if Walk.DestroyResolvedQbeName <> '' then
+          DestroyName := NativeMangle(Walk.DestroyResolvedQbeName)
+        else
+          DestroyName := NativeMangle(Walk.Name) + '_Destroy';
+        Self.Emit(#9'movq %rbx, %rdi');
+        Self.Emit(#9'callq ' + DestroyName);
+        Break;
+      end;
+      Walk := Walk.Parent;
+    end;
+    for I := 0 to ART.Fields.Count - 1 do
+    begin
+      F := TFieldInfo(ART.Fields.Items[I]);
+      if F.TypeDesc = nil then Continue;
+      if not (F.TypeDesc.IsString or (F.TypeDesc.Kind = tyClass)) then
+        Continue;
+      if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
+        Continue;
+      if F.IsWeak then
+      begin
+        if F.Offset > 0 then
+          Self.Emit(Format(#9'leaq %d(%%rbx), %%rdi', [F.Offset]))
+        else
+          Self.Emit(#9'movq %rbx, %rdi');
+        Self.Emit(#9'callq _WeakClear');
+        Continue;
+      end;
+      if F.Offset > 0 then
+        Self.Emit(Format(#9'movq %d(%%rbx), %%rdi', [F.Offset]))
+      else
+        Self.Emit(#9'movq (%rbx), %rdi');
+      if F.TypeDesc.IsString then
+        Self.Emit(#9'callq _StringRelease')
+      else
+        Self.Emit(#9'callq _ClassRelease');
+      if F.Offset > 0 then
+        Self.Emit(Format(#9'movq $0, %d(%%rbx)', [F.Offset]))
+      else
+        Self.Emit(#9'movq $0, (%rbx)');
+    end;
+  end;
+  Self.Emit(#9'popq %rbx');
   Self.Emit(#9'movq %rbp, %rsp');
   Self.Emit(#9'popq %rbp');
   Self.Emit(#9'ret');
@@ -2003,6 +2057,12 @@ var
   Unsigned: Boolean;
   AOE: TAddrOfExpr;
 begin
+  if AExpr is TNilLiteral then
+  begin
+    Self.Emit(#9'xorq %rax, %rax');
+    Exit;
+  end;
+
   if AExpr is TIntLiteral then
   begin
     { movabsq carries the full 64-bit immediate (32-bit movq sign-extends a
@@ -3925,6 +3985,23 @@ begin
             (Asgn.ResolvedLhsType.Kind = tyInterface) then
     begin
       Self.EmitInterfaceAssign(Asgn);
+    end
+    else if (Asgn.ResolvedLhsType <> nil) and
+            (Asgn.ResolvedLhsType.Kind = tyClass) and
+            (Asgn.Expr is TNilLiteral) then
+    begin
+      if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Asgn.Name]));
+      Self.Emit(#9'callq _ClassRelease');
+      if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Asgn.Name)]))
+      else
+      begin
+        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        Self.Emit(Format(#9'movq $0, %s(%%rip)', [Asgn.Name]));
+      end;
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyClass) then

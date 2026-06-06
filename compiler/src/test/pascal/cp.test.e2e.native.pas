@@ -173,6 +173,7 @@ type
     { ARC on class fields }
     procedure TestRun_Native_ArcClassField_StoreAndRead;
     procedure TestRun_Native_ArcStringField_StoreAndRead;
+    procedure TestRun_Native_ArcClassAssignNil_Destroys;
 
     { ARC value param retain/release }
     procedure TestRun_Native_ArcValueParam_String;
@@ -2466,6 +2467,25 @@ const
     end.
     ''';
 
+  SrcArcClassAssignNil = '''
+    program P;
+    type
+      TThing = class
+        destructor Destroy; override;
+      end;
+    destructor TThing.Destroy;
+    begin
+      WriteLn('destroyed');
+      inherited Destroy
+    end;
+    var O: TThing;
+    begin
+      O := TThing.Create;
+      O := nil;
+      WriteLn('done')
+    end.
+    ''';
+
   SrcArcValueParamString = '''
     program P;
     procedure PrintIt(S: string);
@@ -2844,6 +2864,12 @@ procedure TE2ENativeTests.TestRun_Native_ArcStringField_StoreAndRead;
 begin
   if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcArcStringField, 'hello' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ArcClassAssignNil_Destroys;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcArcClassAssignNil, 'destroyed' + LE + 'done' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_ArcValueParam_String;

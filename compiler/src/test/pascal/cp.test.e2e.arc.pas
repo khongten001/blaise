@@ -46,6 +46,7 @@ type
       dispatching the assignment ARC on the RHS (Pointer) type instead of the
       LHS (class) slot type. }
     procedure TestRun_PtrRvalueToClassLocal_PreservesLifetime;
+    procedure TestRun_ClassVarAssignNil_Destroys;
   end;
 
 implementation
@@ -523,6 +524,36 @@ begin
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('counter after Borrow then after L.Free',
     '0' + LE + '1' + LE, Output);
+end;
+
+const
+  SrcClassAssignNil = '''
+    program P;
+    type
+      TThing = class
+        destructor Destroy; override;
+      end;
+    destructor TThing.Destroy;
+    begin
+      WriteLn('destroyed');
+      inherited Destroy
+    end;
+    var O: TThing;
+    begin
+      O := TThing.Create;
+      O := nil;
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2EArcTests.TestRun_ClassVarAssignNil_Destroys;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcClassAssignNil, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('O := nil triggers destroy',
+    'destroyed' + LE + 'done' + LE, Output);
 end;
 
 initialization

@@ -81,6 +81,7 @@ type
     { ARC on class variables and fields                                    }
     { ------------------------------------------------------------------ }
     procedure TestCodegen_ClassVarAssign_InsertsAddRefRelease;
+    procedure TestCodegen_ClassVarAssignNil_EmitsRelease;
     procedure TestCodegen_ClassVarScopeExit_EmitsRelease;
     procedure TestCodegen_ClassFieldAssign_InsertsAddRefRelease;
     procedure TestCodegen_FieldCleanup_EmittedPerClass;
@@ -880,6 +881,30 @@ begin
     Pos('call $_ClassAddRef', IR) > 0);
   AssertTrue('release on old class LHS',
     Pos('call $_ClassRelease', IR) > 0);
+end;
+
+procedure TClassTests.TestCodegen_ClassVarAssignNil_EmitsRelease;
+const
+  Src = '''
+      program P;
+      type TFoo = class end;
+      var F: TFoo;
+      begin
+        F := TFoo.Create;
+        F := nil
+      end.
+      ''';
+var
+  IR: string;
+  P1, P2, P3: Integer;
+begin
+  IR := GenIR(Src);
+  P1 := Pos('call $_ClassRelease', IR);
+  AssertTrue('1st _ClassRelease (Create assignment)', P1 > 0);
+  P2 := Pos('call $_ClassRelease', Copy(IR, P1 + 20, MaxInt));
+  AssertTrue('2nd _ClassRelease (F := nil must release old value)', P2 > 0);
+  P3 := Pos('call $_ClassRelease', Copy(IR, P1 + 20 + P2 + 20, MaxInt));
+  AssertTrue('3rd _ClassRelease (scope-exit cleanup)', P3 > 0);
 end;
 
 procedure TClassTests.TestCodegen_ClassVarScopeExit_EmitsRelease;

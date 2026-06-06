@@ -3852,6 +3852,27 @@ begin
     else
       EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
   end
+  else if (AAssign.ResolvedLhsType <> nil) and
+          (AAssign.ResolvedLhsType.Kind = tyClass) and
+          (AAssign.Expr is TNilLiteral) then
+  begin
+    if AAssign.IsWeakLhs then
+      EmitLine(Format('  call $_WeakClear(l %s)',
+        [VarRef(AAssign.Name, AAssign.IsGlobal)]))
+    else
+    begin
+      OldTemp := AllocTemp;
+      if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
+        EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
+      else
+        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+      if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
+        EmitLine(Format('  %%_var_%s =l copy 0', [AAssign.Name]))
+      else
+        EmitLine(Format('  storel 0, %s', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    end;
+  end
   else if AAssign.IsWeakLhs and (AAssign.Expr.ResolvedType.Kind = tyClass) then
   begin
     { Weak class-typed assignment: bypass the strong refcount entirely.
