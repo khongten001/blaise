@@ -374,23 +374,15 @@ begin
   Result := '';
 end;
 
-{ Unit-as-top-level: qbe → .s → cc -c → .o.  Stops at the object
-  file so the caller can link multiple unit-objects + a program
-  object together.  No RTL, no -lm/-lpthread — those are link-time
-  concerns.
-
-  When ABifFile is non-empty, also embeds those bytes into the
-  resulting .o via uElfObject into a non-loaded ELF section.  Keeps
-  the on-disk .o + iface inseparable so the loader can read the
-  iface straight out of the .o without a parallel filename. }
-procedure CompileUnitToObject(const AIRFile, AOutputFile,
-                              ABifFile: string);
+function CompileUnitToObjectSafe(const AIRFile, AOutputFile,
+                                ABifFile: string): string;
 var
   AsmFile:  string;
   Msg:      string;
   ExitCode: Integer;
   Args:     TStringList;
 begin
+  Result := '';
   AsmFile := ChangeFileExt(AIRFile, '.s');
   Args := TStringList.Create;
   try
@@ -403,14 +395,12 @@ begin
   end;
   if ExitCode <> 0 then
   begin
-    WriteLn(StdErr, 'qbe error (exit ', ExitCode, '):');
-    Write(StdErr, Msg);
-    Halt(1);
+    Exit('qbe error (exit ' + IntToStr(ExitCode) + '): ' + Msg);
   end;
 
   Args := TStringList.Create;
   try
-    Args.Add('-c');           { compile only, no link }
+    Args.Add('-c');
     Args.Add('-o');
     Args.Add(AOutputFile);
     Args.Add(AsmFile);
@@ -420,16 +410,36 @@ begin
   end;
   if ExitCode <> 0 then
   begin
-    WriteLn(StdErr, 'cc -c error (exit ', ExitCode, '):');
-    Write(StdErr, Msg);
-    Halt(1);
+    Exit('cc -c error (exit ' + IntToStr(ExitCode) + '): ' + Msg);
   end;
 
   DeleteFile(AsmFile);
 
   if (ABifFile <> '') and FileExists(ABifFile) then
     if not EmbedBifInObject(AOutputFile, ABifFile, ofELF) then
-      Halt(1);
+      Exit('Failed to embed .bif in ' + AOutputFile);
+end;
+
+{ Unit-as-top-level: qbe -> .s -> cc -c -> .o.  Stops at the object
+  file so the caller can link multiple unit-objects + a program
+  object together.  No RTL, no -lm/-lpthread -- those are link-time
+  concerns.
+
+  When ABifFile is non-empty, also embeds those bytes into the
+  resulting .o via uElfObject into a non-loaded ELF section.  Keeps
+  the on-disk .o + iface inseparable so the loader can read the
+  iface straight out of the .o without a parallel filename. }
+procedure CompileUnitToObject(const AIRFile, AOutputFile,
+                              ABifFile: string);
+var
+  Err: string;
+begin
+  Err := CompileUnitToObjectSafe(AIRFile, AOutputFile, ABifFile);
+  if Err <> '' then
+  begin
+    WriteLn(StdErr, Err);
+    Halt(1);
+  end;
 end;
 
 procedure CompileToNative(const AIRFile, AOutputFile, AOPDFAsmFile: string;
@@ -534,6 +544,59 @@ begin
   end;
 end;
 
+type
+  TCompileWorker = class(TThread)
+    WorkUnit: TUnit;
+    Iface: TUnitInterface;
+    SymTable: TSymbolTable;
+    OPath: string;
+    Error: string;
+  protected
+    procedure Execute; override;
+  end;
+
+procedure TCompileWorker.Execute;
+var
+  WCG: TCodeGenQBE;
+  WIR: string;
+  WIRFile: string;
+  WBifFile: string;
+  WSource: TStringList;
+begin
+  Self.Error := '';
+  try
+    WCG := TCodeGenQBE.Create;
+    try
+      WCG.SetSymbolTable(Self.SymTable);
+      WCG.SetExportAll(True);
+      WCG.AppendUnit(Self.WorkUnit);
+      WIR := WCG.GetOutput;
+    finally
+      WCG.Free;
+    end;
+
+    WIRFile := Self.OPath + '.ssa.tmp';
+    WSource := TStringList.Create;
+    try
+      WSource.Text := WIR;
+      WSource.SaveToFile(WIRFile);
+    finally
+      WSource.Free;
+    end;
+
+    WBifFile := Self.OPath + '.bif.tmp';
+    WriteUnitInterfaceToFile(Self.Iface, WBifFile);
+
+    Self.Error := CompileUnitToObjectSafe(WIRFile, Self.OPath, WBifFile);
+
+    DeleteFile(WIRFile);
+    DeleteFile(WBifFile);
+  except
+    on E: Exception do
+      Self.Error := 'Worker exception: ' + Exception(E).Message;
+  end;
+end;
+
 var
   SourceFile, OutputFile: string;
   SearchPaths: TStringList;
@@ -594,6 +657,8 @@ var
   UnitOPath:   string;   { per-dep .o output path in --incremental mode }
   UnitBifPath: string;   { per-dep iface temp path }
   UnitIR:      string;   { per-dep IR text under --incremental }
+  Workers:  TObjectList; { TCompileWorker threads for parallel incremental }
+  Worker:   TCompileWorker;
 
 begin
   SearchPaths    := nil;
@@ -787,58 +852,54 @@ begin
       end;
     end;
 
-    { Phase 6c-H: incremental mode — compile each source-loaded dep
+    { Phase 6c-H: incremental mode -- compile each source-loaded dep
       to its own .o (with embedded iface) before the main codegen
       runs.  Sets SkipDepCodegen so the main IR doesn't redundantly
       inline dep bodies; the per-unit .o files feed the link step
       via PrebuiltObjPaths.  Side effect: filesystem gains an .o
       next to (or in --unit-cache) each dep's source.  Next compile
-      will auto-discover these and skip parsing the .pas. }
+      will auto-discover these and skip parsing the .pas.
+
+      Each unit is compiled in a separate worker thread for parallel
+      codegen + qbe + cc.  The symbol table is read-only at this point
+      (semantic analysis is complete), so concurrent reads are safe. }
     if Incremental and (Units <> nil) and (Units.Count > 0) then
     begin
-      for I := 0 to Units.Count - 1 do
-      begin
-        UnitOPath := UnitCacheDir;
-        if UnitOPath <> '' then
-          UnitOPath := IncludeTrailingPathDelimiter(UnitOPath) +
-                       LowerCase(TUnit(Units.Items[I]).Name) + '.o'
-        else if OutputFile <> '' then
-          UnitOPath := IncludeTrailingPathDelimiter(ExtractFilePath(OutputFile)) +
-                       LowerCase(TUnit(Units.Items[I]).Name) + '.o'
-        else
-          UnitOPath := LowerCase(TUnit(Units.Items[I]).Name) + '.o';
+      Workers := TObjectList.Create(True);
+      try
+        for I := 0 to Units.Count - 1 do
+        begin
+          UnitOPath := UnitCacheDir;
+          if UnitOPath <> '' then
+            UnitOPath := IncludeTrailingPathDelimiter(UnitOPath) +
+                         LowerCase(TUnit(Units.Items[I]).Name) + '.o'
+          else if OutputFile <> '' then
+            UnitOPath := IncludeTrailingPathDelimiter(ExtractFilePath(OutputFile)) +
+                         LowerCase(TUnit(Units.Items[I]).Name) + '.o'
+          else
+            UnitOPath := LowerCase(TUnit(Units.Items[I]).Name) + '.o';
 
-        { Per-unit codegen: fresh TCodeGenQBE, shared symbol table. }
-        UnitCG := TCodeGenQBE.Create;
-        try
-          UnitCG.SetSymbolTable(Prog.SymbolTable);
-          UnitCG.SetExportAll(True);
-          UnitCG.AppendUnit(TUnit(Units.Items[I]));
-          UnitIR := UnitCG.GetOutput;
-        finally
-          UnitCG.Free;
+          Worker := TCompileWorker.Create(True);
+          Worker.WorkUnit := TUnit(Units.Items[I]);
+          Worker.Iface := TUnitInterface(UnitIfaces.Items[I]);
+          Worker.SymTable := Prog.SymbolTable;
+          Worker.OPath := UnitOPath;
+          Workers.Add(Worker);
+          PrebuiltObjPaths.Add(UnitOPath);
         end;
-
-        IRFile := UnitOPath + '.ssa.tmp';
-        Source := TStringList.Create;
-        try
-          Source.Text := UnitIR;
-          Source.SaveToFile(IRFile);
-        finally
-          Source.Free;
-          Source := nil;
+        for I := 0 to Workers.Count - 1 do
+          TCompileWorker(Workers.Items[I]).Start;
+        for I := 0 to Workers.Count - 1 do
+        begin
+          TCompileWorker(Workers.Items[I]).WaitFor;
+          if TCompileWorker(Workers.Items[I]).Error <> '' then
+          begin
+            WriteLn(StdErr, TCompileWorker(Workers.Items[I]).Error);
+            Halt(1);
+          end;
         end;
-
-        UnitBifPath := UnitOPath + '.bif.tmp';
-        WriteUnitInterfaceToFile(
-          TUnitInterface(UnitIfaces.Items[I]), UnitBifPath);
-
-        CompileUnitToObject(IRFile, UnitOPath, UnitBifPath);
-
-        DeleteFile(IRFile);
-        DeleteFile(UnitBifPath);
-
-        PrebuiltObjPaths.Add(UnitOPath);
+      finally
+        Workers.Free;
       end;
       SkipDepCodegen := True;
     end;
