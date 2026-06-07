@@ -157,8 +157,8 @@ Blaise does not have a `Char` type. String subscript (`S[N]`) returns
   integer)* — rejected for now. A codepoint subscript on a UTF-8 string
   requires an O(N) walk to find the Nth codepoint, which is incompatible
   with the mental model that subscript is O(1). If codepoint-level access
-  is needed, an explicit `CodePointAt(S, N): Integer` function or a
-  `Runes(S)` iterator is the appropriate API. Neither is implemented yet.
+  is needed, use `CodePointAt(S, N)` from `StrUtils` or iterate with
+  `for CP: Integer in S do`.
 
 ==== Consequences for porting
 
@@ -206,9 +206,9 @@ workable in practice.
 
 ==== What is not supported
 
-Codepoint-level indexing is not supported via subscript syntax. It is
-deferred to a future `CodePointAt(S, N)` function or `Runes(S)` iterator.
-These will be O(N) in the codepoint index because UTF-8 is variable-width.
+Codepoint-level indexing is not supported via subscript syntax.  Use
+`CodePointAt(S, N)` from the `StrUtils` unit for O(N) codepoint-indexed
+access, or `for CP: Integer in S do` for sequential codepoint iteration.
 
 ==== Implementation note — string memory layout and pointer convention
 
@@ -327,25 +327,34 @@ computations, or passing the position to another function).
 
 ---
 
-=== `for B in S` — String Byte Iteration
+=== `for B in S` — String Iteration (Bytes and Codepoints)
 
 ==== Decision
 
-`for B in S do` iterates the raw UTF-8 bytes of string `S`.  The loop
-variable `B` must be an ordinal type (`Byte` or `Integer`); each
-iteration yields one byte via an unsigned byte load.  There is no `Char`
-type in Blaise — both `S[N]` and `for B in S do` expose bytes, not
-codepoints.
+The loop variable's declared type selects the iteration mode:
+
+* `Byte` — iterates raw UTF-8 bytes (one byte per iteration)
+* `Integer` — iterates Unicode codepoints (one codepoint per iteration,
+  advancing 1–4 bytes as needed)
+* Any other type — compile-time error
+
+There is no `Char` type in Blaise — both modes expose numeric values.
 
 ==== Rationale
 
 Since Blaise has no `Char` type (see <<_no_char_type>>), the natural
-element type for string iteration is `Byte` (or any ordinal wide enough
-to hold a byte value).  This is consistent with `S[N]` returning `Byte`,
-and with the design principle that the string API operates on UTF-8 bytes
-for systems and compiler code.
+element type for string iteration is `Byte` (raw bytes) or `Integer`
+(codepoints).  Byte iteration is consistent with `S[N]` returning `Byte`.
+Codepoint iteration provides the API users expect for Unicode text
+processing without requiring a separate function or iterator wrapper.
 
-The compiler desugars `for B in S do Body` as:
+The loop variable type acts as a discriminator: `Byte` signals intent to
+work with raw encoding units (systems code, protocol parsing), while
+`Integer` signals intent to work with Unicode characters (text processing).
+
+==== Byte iteration
+
+The compiler desugars `for B: Byte in S do Body` as:
 
 [source,pascal]
 ----
@@ -362,20 +371,43 @@ The synthetic `__idx` variable is injected into the enclosing function's
 local variable scope.  No heap allocation is required; iteration is a
 simple index-and-load loop.
 
-==== What is not supported
+==== Codepoint iteration
 
-Codepoint iteration — stepping over full UTF-8 encoded codepoints — is
-not supported via this syntax.  It is deferred to a future `Runes(S)`
-iterator that would yield `Integer` codepoint values.
+The compiler desugars `for CP: Integer in S do Body` as:
+
+[source,pascal]
+----
+__idx := 0;
+while __idx < Length(S) do
+begin
+  packed := _Utf8DecodeAt(PChar(S), __idx);
+  CP := packed and $FFFFFFFF;        { low 32 bits = codepoint value }
+  __adv := packed shr 32;            { high 32 bits = byte advance }
+  Body;
+  __idx := __idx + __adv;
+end;
+----
+
+`_Utf8DecodeAt` is a runtime helper that decodes one UTF-8 codepoint at
+a given byte offset.  It returns both the codepoint value and the byte
+count packed into a single `Int64` (byte count in upper 32 bits, codepoint
+in lower 32 bits).  This avoids a double call and keeps the loop to one
+function-call per iteration.
+
+Both synthetic variables (`__idx` and `__adv`) are injected into the
+local scope.
 
 ==== Alternatives rejected
 
 * *Loop variable typed as `Char`* — rejected.  Blaise has no `Char` type.
   See <<_no_char_type>> for the full rationale.
-* *Yielding codepoints rather than bytes* — rejected for now.  O(N)
-  codepoint decoding on every subscript would surprise developers working
-  with ASCII-range data, where byte and codepoint coincide.  The `Runes`
-  iterator is the future home for codepoint-level work.
+* *Separate `Runes(S)` iterator function* — rejected.  The type-based
+  dispatch is simpler to use and does not require importing a separate unit
+  or learning a new API.
+* *Allowing `Word`, `SmallInt`, or other ordinals for codepoint iteration*
+  — rejected.  Codepoints range from 0 to U+10FFFF (1,114,111), which
+  does not fit in 16-bit types.  Restricting to `Integer` avoids silent
+  truncation bugs.
 
 ---
 

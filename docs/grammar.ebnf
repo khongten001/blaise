@@ -675,9 +675,12 @@ ForStmt
  *   - Static array (array[L..H] of T):  IDENT must be compatible with T.
  *   - Class with GetEnumerator protocol: IDENT must be compatible with
  *     the Current property type of the enumerator.
- *   - String: IDENT must be an ordinal type (Byte or Integer); each
- *     iteration yields one raw UTF-8 byte.  There is no Char type in
- *     Blaise — string subscript and for-in both expose bytes.
+ *   - String: IDENT type selects iteration mode:
+ *       * Byte — iterates raw UTF-8 bytes (one byte per iteration).
+ *       * Integer — iterates Unicode codepoints (one codepoint per
+ *         iteration, advancing 1–4 bytes via _Utf8DecodeAt).
+ *       * Any other type — compile-time error.
+ *     There is no Char type in Blaise.
  *   - Set (set of TEnum): IDENT must be an ordinal type; each iteration
  *     yields one enum member whose bit is set, in ascending ordinal order.
  *     The set expression is evaluated once before iteration begins. *)
