@@ -798,7 +798,8 @@ end;
 
 procedure CheckVersion();
 var
-  ProjVer, CompId, Tail: string;
+  ProjVer, CompId, Tail, BaseVer: string;
+  DashPos: Integer;
 begin
   ProjVer := ReadProjectVersion();
   CompId := ReadCompilerId();
@@ -820,9 +821,15 @@ begin
   end;
   Tail := Copy(CompId, Length(COMPILER_ID_PREFIX),
                Length(CompId) - Length(COMPILER_ID_PREFIX));
-  if Pos(ProjVer, Tail) <> 0 then
+  { Strip -SNAPSHOT or -dev suffix from project version for comparison.
+    Convention: project.xml uses X.Y.Z-SNAPSHOT, COMPILER_ID uses X.Y.Z-dev+suffix. }
+  BaseVer := ProjVer;
+  DashPos := Pos('-', BaseVer);
+  if DashPos >= 0 then
+    BaseVer := Copy(BaseVer, 0, DashPos);
+  if Pos(BaseVer, Tail) <> 0 then
     Report('  [version] COMPILER_ID ' + CompId +
-           ' does not start with project version ' + ProjVer +
+           ' does not contain base version ' + BaseVer +
            ' (after ' + COMPILER_ID_PREFIX + ' prefix)');
 end;
 

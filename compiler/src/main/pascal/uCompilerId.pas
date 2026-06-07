@@ -24,7 +24,7 @@ unit uCompilerId;
 interface
 
 const
-  COMPILER_ID = 'blaise-0.9.0-dev+6c-N';
+  COMPILER_ID = 'blaise-0.11.0-dev+bif1';
 
 implementation
 

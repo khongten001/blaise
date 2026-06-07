@@ -689,6 +689,10 @@ begin
               EncodeLpstr(TMethodCallExpr(AE).Name) +
               EncodeExpr(TMethodCallExpr(AE).ObjExpr) +
               EncodeExprList(TMethodCallExpr(AE).Args)
+  else if AE is TIndirectFuncCallExpr then
+    Result := EncodeLpstr('icall') +
+              EncodeExpr(TIndirectFuncCallExpr(AE).CalleeExpr) +
+              EncodeExprList(TIndirectFuncCallExpr(AE).Args)
   else if AE is TFieldAccessExpr then
     Result := EncodeLpstr('field') +
               EncodeLpstr(TFieldAccessExpr(AE).RecordName) +
@@ -1267,6 +1271,7 @@ var
   BE:   TBinaryExpr;
   NE:   TNotExpr;
   FCE:  TFuncCallExpr;
+  ICE:  TIndirectFuncCallExpr;
   MCE:  TMethodCallExpr;
   FA:   TFieldAccessExpr;
   DE:   TDerefExpr;
@@ -1335,6 +1340,13 @@ begin
     MCE.ObjExpr    := ReadExpr(AText, APos);
     ReadExprList(AText, APos, MCE.Args);
     Result := MCE;
+  end
+  else if Kind = 'icall' then
+  begin
+    ICE := TIndirectFuncCallExpr.Create();
+    ICE.CalleeExpr := ReadExpr(AText, APos);
+    ReadExprList(AText, APos, ICE.Args);
+    Result := ICE;
   end
   else if Kind = 'field' then
   begin
