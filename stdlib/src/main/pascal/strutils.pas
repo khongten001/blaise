@@ -211,6 +211,12 @@ type
 implementation
 
 { ------------------------------------------------------------------ }
+{ External SIMD helpers (runtime assembly)                             }
+{ ------------------------------------------------------------------ }
+
+function _Utf8CountCodePoints(Data: Pointer; Len: Integer): Integer; external name '_Utf8CountCodePoints';
+
+{ ------------------------------------------------------------------ }
 { Internal helpers                                                     }
 { ------------------------------------------------------------------ }
 
@@ -771,24 +777,11 @@ begin
 end;
 
 function CodePointLength(const S: string): Integer;
-var
-  P: PChar;
-  Len, Idx: Integer;
 begin
-  Len := Length(S);
-  if Len = 0 then
-  begin
-    Result := 0;
-    Exit;
-  end;
-  P := PChar(S);
-  Result := 0;
-  Idx := 0;
-  while Idx < Len do
-  begin
-    Inc(Result);
-    Idx := Idx + CodePointSize(P[Idx]);
-  end;
+  if Length(S) = 0 then
+    Result := 0
+  else
+    Result := _Utf8CountCodePoints(PChar(S), Length(S));
 end;
 
 function CodePointByteIndex(const S: string; CPIndex: Integer): Integer;

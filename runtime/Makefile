@@ -28,7 +28,8 @@ BLAISE       = $(COMPILER_BIN)/blaise
 
 # Assembly sources — platform-specific, no C compiler needed.
 ASM_OBJS = $(OBJ_DIR)/blaise_setjmp_x86_64.o \
-           $(OBJ_DIR)/blaise_atomic_x86_64.o
+           $(OBJ_DIR)/blaise_atomic_x86_64.o \
+           $(OBJ_DIR)/blaise_utf8_x86_64.o
 
 # Pascal RTL units compiled via the Blaise compiler.
 PAS_OBJS = $(OBJ_DIR)/blaise_mem.o \
