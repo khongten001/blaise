@@ -28,6 +28,9 @@ uses
   uUnitInterfaceIO, uIfaceObject, uASTDump,
   uStrCompat, uConfig;
 
+type
+  TBackend = (bkQBE, bkNative);
+
 const
   Version = '0.11.0-dev';
   CompilerName = 'Blaise';
@@ -195,7 +198,7 @@ function ParseArgs(
   out DumpAST:        Boolean;
   out OPDFEnabled:    Boolean;
   out DebugMode:      Boolean;
-  out UseNative:      Boolean;
+  out Backend:        TBackend;
   out Target:         TTargetDesc;
   out SearchPaths:    TStringList;
   out SkipDepCodegen: Boolean;
@@ -214,7 +217,7 @@ begin
   DumpAST        := False;
   OPDFEnabled    := False;
   DebugMode      := False;
-  UseNative      := False;
+  Backend        := bkQBE;
   Target         := HostTarget();
   SkipDepCodegen := False;
   EmitIfaceDir   := '';
@@ -280,9 +283,9 @@ begin
     begin
       Inc(I);
       if ParamStr(I) = 'qbe' then
-        UseNative := False
+        Backend := bkQBE
       else if ParamStr(I) = 'native' then
-        UseNative := True
+        Backend := bkNative
       else
       begin
         WriteLn(StdErr, 'Error: --backend must be ''qbe'' or ''native''');
@@ -611,7 +614,7 @@ var
   DumpAST:     Boolean;
   OPDFEnabled: Boolean;
   DebugMode:   Boolean;
-  UseNative:   Boolean;
+  Backend:     TBackend;
   Target:      TTargetDesc;
   OPDFAsmFile: string;
   SkipDepCodegen: Boolean;
@@ -691,7 +694,7 @@ begin
   begin
     if not ParseArgs(SourceFile, OutputFile, EmitIR, EmitAsm, DumpAST,
                      OPDFEnabled, DebugMode,
-                     UseNative, Target, SearchPaths, SkipDepCodegen, EmitIfaceDir,
+                     Backend, Target, SearchPaths, SkipDepCodegen, EmitIfaceDir,
                      Incremental, UnitCacheDir) then
     begin
       PrintUsage();
@@ -929,7 +932,7 @@ begin
         on byte-identical QBE IR), so the native backend is engaged only for
         actual native output.  --emit-asm implies --backend native.
         Otherwise --backend native selects TCodeGenNative for the configured target. }
-      if (UseNative or EmitAsm) and not EmitIR then
+      if ((Backend = bkNative) or EmitAsm) and not EmitIR then
       begin
         NativeCG := TCodeGenNative.Create();
         NativeCG.SetTarget(Target);
@@ -1011,7 +1014,7 @@ begin
     Write(IR)
   else if EmitAsm then
     Write(IR)
-  else if UseNative then
+  else if Backend = bkNative then
   begin
     { Native backend: IR holds target assembly text.  Write it to a .s file
       and link via the same cc driver the QBE path uses. }
