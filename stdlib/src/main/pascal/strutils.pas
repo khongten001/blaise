@@ -128,6 +128,49 @@ function IsEmptyOrWhitespace(const S: string): Boolean;
 function JoinStr(const Sep: string; const Parts: array of string): string;
 
 { ------------------------------------------------------------------ }
+{ UTF-8 Codepoint operations                                           }
+{ ------------------------------------------------------------------ }
+
+{ Returns the byte width (1-4) of a UTF-8 sequence given its lead byte.
+  For ASCII bytes (0..127) the result is always 1.  For multi-byte
+  sequences the lead byte encodes the total length:
+    110xxxxx = 2, 1110xxxx = 3, 11110xxx = 4. }
+function CodePointSize(LeadByte: Byte): Integer;
+
+{ Returns the number of Unicode codepoints in S.  This is an O(n) scan
+  over the raw UTF-8 bytes — each non-continuation byte (a byte that
+  does NOT match the 10xxxxxx pattern) starts a new codepoint. }
+function CodePointLength(const S: string): Integer;
+
+{ Extracts Count codepoints starting at codepoint position Index (0-based).
+  Returns the corresponding UTF-8 substring.  Both Index and Count are in
+  codepoint units, not bytes.  Returns an empty string if Index is beyond
+  the end of the string. }
+function CodePointCopy(const S: string; Index, Count: Integer): string;
+
+{ Returns the Unicode codepoint value (0..U+10FFFF) at codepoint position
+  Index (0-based).  This is an O(n) operation because it must scan from
+  the beginning of the string to find the Nth codepoint.  Returns -1 if
+  Index is out of range. }
+function CodePointAt(const S: string; Index: Integer): Integer;
+
+{ Like Pos() but returns the result as a codepoint index rather than a
+  byte index.  Returns -1 if Sub is not found.  Internally calls Pos()
+  then counts codepoints up to the byte position. }
+function CodePointPos(const Sub, S: string): Integer;
+
+{ Converts a codepoint index to a byte index.  Walks the string counting
+  codepoints until CPIndex is reached, then returns the corresponding
+  byte offset.  Returns -1 if CPIndex is beyond the end of the string. }
+function CodePointByteIndex(const S: string; CPIndex: Integer): Integer;
+
+{ Decodes the UTF-8 codepoint starting at byte position ByteIndex and
+  returns its Unicode value (0..U+10FFFF).  This is an O(1) operation —
+  it reads 1 to 4 bytes starting at ByteIndex.  No bounds checking is
+  performed; the caller must ensure ByteIndex is within range. }
+function CodePointFromByteIndex(const S: string; ByteIndex: Integer): Integer;
+
+{ ------------------------------------------------------------------ }
 { TStringBuilder — efficient incremental string construction           }
 { ------------------------------------------------------------------ }
 
@@ -709,6 +752,160 @@ begin
     for I := 0 to Self.FLen - 1 do
       RP[I] := SP[I];
   end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ UTF-8 Codepoint operations                                           }
+{ ------------------------------------------------------------------ }
+
+function CodePointSize(LeadByte: Byte): Integer;
+begin
+  if LeadByte < 128 then
+    Result := 1
+  else if (LeadByte and $E0) = $C0 then
+    Result := 2
+  else if (LeadByte and $F0) = $E0 then
+    Result := 3
+  else
+    Result := 4;
+end;
+
+function CodePointLength(const S: string): Integer;
+var
+  P: PChar;
+  Len, Idx: Integer;
+begin
+  Len := Length(S);
+  if Len = 0 then
+  begin
+    Result := 0;
+    Exit;
+  end;
+  P := PChar(S);
+  Result := 0;
+  Idx := 0;
+  while Idx < Len do
+  begin
+    Inc(Result);
+    Idx := Idx + CodePointSize(P[Idx]);
+  end;
+end;
+
+function CodePointByteIndex(const S: string; CPIndex: Integer): Integer;
+var
+  P: PChar;
+  Len, Idx, Count: Integer;
+begin
+  Len := Length(S);
+  if CPIndex < 0 then
+  begin
+    Result := -1;
+    Exit;
+  end;
+  P := PChar(S);
+  Idx := 0;
+  Count := 0;
+  while (Idx < Len) and (Count < CPIndex) do
+  begin
+    Idx := Idx + CodePointSize(P[Idx]);
+    Inc(Count);
+  end;
+  if Count = CPIndex then
+    Result := Idx
+  else
+    Result := -1;
+end;
+
+function CodePointFromByteIndex(const S: string; ByteIndex: Integer): Integer;
+var
+  P: PChar;
+  B0, B1, B2, B3: Integer;
+begin
+  P := PChar(S);
+  B0 := P[ByteIndex];
+  if B0 < 128 then
+    Result := B0
+  else if (B0 and $E0) = $C0 then
+  begin
+    B1 := P[ByteIndex + 1] and $3F;
+    Result := ((B0 and $1F) shl 6) or B1;
+  end
+  else if (B0 and $F0) = $E0 then
+  begin
+    B1 := P[ByteIndex + 1] and $3F;
+    B2 := P[ByteIndex + 2] and $3F;
+    Result := ((B0 and $0F) shl 12) or (B1 shl 6) or B2;
+  end
+  else
+  begin
+    B1 := P[ByteIndex + 1] and $3F;
+    B2 := P[ByteIndex + 2] and $3F;
+    B3 := P[ByteIndex + 3] and $3F;
+    Result := ((B0 and $07) shl 18) or (B1 shl 12) or (B2 shl 6) or B3;
+  end;
+end;
+
+function CodePointAt(const S: string; Index: Integer): Integer;
+var
+  ByteIdx: Integer;
+begin
+  ByteIdx := CodePointByteIndex(S, Index);
+  if ByteIdx < 0 then
+    Result := -1
+  else
+    Result := CodePointFromByteIndex(S, ByteIdx);
+end;
+
+function CodePointCopy(const S: string; Index, Count: Integer): string;
+var
+  P: PChar;
+  Len, StartByte, EndByte, I: Integer;
+begin
+  Len := Length(S);
+  if (Len = 0) or (Count <= 0) then
+  begin
+    Result := '';
+    Exit;
+  end;
+  StartByte := CodePointByteIndex(S, Index);
+  if StartByte < 0 then
+  begin
+    Result := '';
+    Exit;
+  end;
+  P := PChar(S);
+  EndByte := StartByte;
+  I := 0;
+  while (EndByte < Len) and (I < Count) do
+  begin
+    EndByte := EndByte + CodePointSize(P[EndByte]);
+    Inc(I);
+  end;
+  Result := Copy(S, StartByte, EndByte - StartByte);
+end;
+
+function CodePointPos(const Sub, S: string): Integer;
+var
+  ByteIdx: Integer;
+  P: PChar;
+  Len, Idx, Count: Integer;
+begin
+  ByteIdx := Pos(Sub, S);
+  if ByteIdx < 0 then
+  begin
+    Result := -1;
+    Exit;
+  end;
+  P := PChar(S);
+  Len := Length(S);
+  Idx := 0;
+  Count := 0;
+  while Idx < ByteIdx do
+  begin
+    Idx := Idx + CodePointSize(P[Idx]);
+    Inc(Count);
+  end;
+  Result := Count;
 end;
 
 end.
