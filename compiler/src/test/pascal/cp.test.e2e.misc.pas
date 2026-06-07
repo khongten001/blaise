@@ -71,7 +71,9 @@ type
 
     { for..in }
     procedure TestRun_ForIn_String_ByteVar_PrintsBytes;
-    procedure TestRun_ForIn_String_IntegerVar_PrintsBytes;
+    procedure TestRun_ForIn_String_IntegerVar_PrintsCodePoints;
+    procedure TestRun_ForIn_String_IntegerVar_CodePoints_TwoByte;
+    procedure TestRun_ForIn_String_IntegerVar_CodePoints_ThreeByte;
     procedure TestRun_ForIn_Array_Integer_PrintsElements;
     procedure TestRun_ForIn_ClassEnumerator_PrintsElements;
     procedure TestRun_ForIn_Set_PrintsMembers;
@@ -540,6 +542,32 @@ const
     end.
     ''';
 
+  { 'Aâ' = A (65) + â (U+00E2, codepoint 226, 2 UTF-8 bytes) }
+  SrcForInStringCP2Byte = '''
+    program P;
+    var
+      S: string;
+      I: Integer;
+    begin
+      S := 'Aâ';
+      for I in S do
+        WriteLn(I)
+    end.
+    ''';
+
+  { '€X' = € (U+20AC, codepoint 8364, 3 UTF-8 bytes) + X (88) }
+  SrcForInStringCP3Byte = '''
+    program P;
+    var
+      S: string;
+      I: Integer;
+    begin
+      S := '€X';
+      for I in S do
+        WriteLn(I)
+    end.
+    ''';
+
   SrcForInArrayInteger = '''
     program P;
     var
@@ -882,10 +910,24 @@ begin
   AssertRunsOnBoth(SrcForInStringByte, '72' + LE + '105' + LE, 0);
 end;
 
-procedure TE2EMiscTests.TestRun_ForIn_String_IntegerVar_PrintsBytes;
+procedure TE2EMiscTests.TestRun_ForIn_String_IntegerVar_PrintsCodePoints;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcForInStringInteger, '72' + LE + '105' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_String_IntegerVar_CodePoints_TwoByte;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcForInStringCP2Byte,
+    '65' + LE + '226' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ForIn_String_IntegerVar_CodePoints_ThreeByte;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcForInStringCP3Byte,
+    '8364' + LE + '88' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ForIn_Array_Integer_PrintsElements;

@@ -254,6 +254,9 @@ type
     IsDynArrayIter:       Boolean;
     { String byte-iteration path (IsStringIter = True) }
     IsStringIter:         Boolean;
+    { String codepoint-iteration path (IsCodePointIter = True) }
+    IsCodePointIter:      Boolean;
+    AdvVarName:           string;    { synthetic slot for byte-advance count }
     { Set iteration path (IsSetIter = True) }
     IsSetIter:            Boolean;
     SetBitCount:          Integer;   { number of bits in the set (= enum member count) }

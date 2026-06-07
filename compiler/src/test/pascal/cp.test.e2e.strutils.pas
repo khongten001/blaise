@@ -105,6 +105,16 @@ type
     procedure TestRun_TStringBuilder_Length;
     procedure TestRun_TStringBuilder_AppendByte;
     procedure TestRun_TStringBuilder_SpeedVsConcat;
+
+    { UTF-8 Codepoint functions }
+    procedure TestRun_CodePointSize;
+    procedure TestRun_CodePointLength_ASCII;
+    procedure TestRun_CodePointLength_Mixed;
+    procedure TestRun_CodePointAt_MultibytePos;
+    procedure TestRun_CodePointCopy_Middle;
+    procedure TestRun_CodePointPos_Found;
+    procedure TestRun_CodePointFromByteIndex;
+    procedure TestRun_CodePointByteIndex_Roundtrip;
   end;
 
 implementation
@@ -918,6 +928,167 @@ begin
     end.
     ''', Output, RCode));
   AssertEquals('1000 chars', '1000', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ UTF-8 Codepoint functions                                            }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcCodePointSize = '''
+    program P;
+    uses StrUtils;
+    begin
+      WriteLn(CodePointSize(65));
+      WriteLn(CodePointSize(195));
+      WriteLn(CodePointSize(226));
+      WriteLn(CodePointSize(240))
+    end.
+    ''';
+
+  SrcCodePointLengthASCII = '''
+    program P;
+    uses StrUtils;
+    begin
+      WriteLn(CodePointLength('Hello'))
+    end.
+    ''';
+
+  { Chr(195)+Chr(162) = UTF-8 for 'â' (U+00E2) — so S = 'Pâques' (6 codepoints, 7 bytes) }
+  SrcCodePointLengthMixed = '''
+    program P;
+    uses StrUtils;
+    var S: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      WriteLn(CodePointLength(S))
+    end.
+    ''';
+
+  { S = 'Pâques': CP[0]=80 (P), CP[1]=226 (â), CP[2]=113 (q) }
+  SrcCodePointAtMultibyte = '''
+    program P;
+    uses StrUtils;
+    var S: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      WriteLn(CodePointAt(S, 0));
+      WriteLn(CodePointAt(S, 1));
+      WriteLn(CodePointAt(S, 2))
+    end.
+    ''';
+
+  { S = 'Pâques': CodePointCopy(S,1,1) extracts 'â' = 2 bytes (0xC3, 0xA2) }
+  SrcCodePointCopyMiddle = '''
+    program P;
+    uses StrUtils;
+    var S, R: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      R := CodePointCopy(S, 1, 1);
+      WriteLn(Length(R));
+      WriteLn(OrdAt(R, 0));
+      WriteLn(OrdAt(R, 1))
+    end.
+    ''';
+
+  { S = 'Pâques': 'ques' starts at codepoint index 2 }
+  SrcCodePointPosFound = '''
+    program P;
+    uses StrUtils;
+    var S: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      WriteLn(CodePointPos('ques', S))
+    end.
+    ''';
+
+  { S = 'Pâques': byte index 1 = start of 'â' (U+00E2 = codepoint 226) }
+  SrcCodePointFromByteIndex = '''
+    program P;
+    uses StrUtils;
+    var S: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      WriteLn(CodePointFromByteIndex(S, 1))
+    end.
+    ''';
+
+  { S = 'Pâques': CP[0] at byte 0, CP[1] at byte 1, CP[2] at byte 3 }
+  SrcCodePointByteIndexRoundtrip = '''
+    program P;
+    uses StrUtils;
+    var S: string;
+    begin
+      S := 'P' + Chr(195) + Chr(162) + 'ques';
+      WriteLn(CodePointByteIndex(S, 0));
+      WriteLn(CodePointByteIndex(S, 1));
+      WriteLn(CodePointByteIndex(S, 2))
+    end.
+    ''';
+
+procedure TE2EStrUtilsTests.TestRun_CodePointSize;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointSize, Output, RCode));
+  AssertEquals('sizes', '1' + Chr(10) + '2' + Chr(10) + '3' + Chr(10) + '4', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointLength_ASCII;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointLengthASCII, Output, RCode));
+  AssertEquals('length', '5', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointLength_Mixed;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointLengthMixed, Output, RCode));
+  AssertEquals('length', '6', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointAt_MultibytePos;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointAtMultibyte, Output, RCode));
+  AssertEquals('codepoints', '80' + Chr(10) + '226' + Chr(10) + '113', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointCopy_Middle;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointCopyMiddle, Output, RCode));
+  AssertEquals('copy bytes', '2' + Chr(10) + '195' + Chr(10) + '162', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointPos_Found;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointPosFound, Output, RCode));
+  AssertEquals('pos', '2', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointFromByteIndex;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointFromByteIndex, Output, RCode));
+  AssertEquals('codepoint', '226', Trim(Output));
+end;
+
+procedure TE2EStrUtilsTests.TestRun_CodePointByteIndex_Roundtrip;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcCodePointByteIndexRoundtrip, Output, RCode));
+  AssertEquals('byte indices', '0' + Chr(10) + '1' + Chr(10) + '3', Trim(Output));
 end;
 
 initialization

@@ -3988,6 +3988,57 @@ begin
     Exit;
   end;
 
+  if AStmt.IsCodePointIter then
+  begin
+    { ---- String codepoint-iteration ----
+      Calls _Utf8DecodeAt(strptr, byteIdx) which returns packed Int64:
+        low 32 bits = codepoint, high 32 bits = byte advance (1-4).
+      Advance is stored in a synthetic __adv_N slot to survive the body. }
+    IdxOp := Self.VarOperand(AStmt.IdxVarName);
+    LCond := Self.NewLabel('ficond');
+    LBody := Self.NewLabel('fibody');
+    LNext := Self.NewLabel('finext');
+    LEnd  := Self.NewLabel('fiend');
+
+    Self.Emit(Format(#9'movl $0, %s', [IdxOp]));
+
+    Self.Emit(LCond + ':');
+    Self.EmitExprToEax(AStmt.CollExpr);
+    Self.Emit(#9'movl -8(%rax), %ecx');
+    Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
+    Self.Emit(#9'cmpl %ecx, %eax');
+    Self.Emit(#9'jl ' + LBody);
+    Self.Emit(#9'jmp ' + LEnd);
+
+    Self.Emit(LBody + ':');
+    FBreakLabels.Push(LEnd);
+    FBreakExcDepths.Push(FExcDepth);
+    FContinueLabels.Push(LNext);
+    FContinueExcDepths.Push(FExcDepth);
+
+    Self.EmitExprToEax(AStmt.CollExpr);
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(Format(#9'movl %s, %%esi', [IdxOp]));
+    Self.Emit(#9'callq _Utf8DecodeAt');
+    Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(AStmt.VarName)]));
+    Self.Emit(#9'shrq $32, %rax');
+    Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(AStmt.AdvVarName)]));
+
+    Self.EmitStmt(AStmt.Body);
+    FContinueExcDepths.Pop();
+    FContinueLabels.Pop();
+    FBreakExcDepths.Pop();
+    FBreakLabels.Pop();
+
+    Self.Emit(LNext + ':');
+    Self.Emit(Format(#9'movl %s, %%eax', [IdxOp]));
+    Self.Emit(Format(#9'addl %s, %%eax', [Self.VarOperand(AStmt.AdvVarName)]));
+    Self.Emit(Format(#9'movl %%eax, %s', [IdxOp]));
+    Self.Emit(#9'jmp ' + LCond);
+    Self.Emit(LEnd + ':');
+    Exit;
+  end;
+
   if AStmt.IsStringIter then
   begin
     { ---- String byte-iteration ----

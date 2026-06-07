@@ -4935,7 +4935,7 @@ begin
     end
     else if CollType.Kind = tyString then
     begin
-      { ---- String byte-iteration path ---- }
+      { ---- String iteration path ---- }
       VarSym := FTable.Lookup(ForInS.VarName);
       if VarSym = nil then
         SemanticError(
@@ -4945,14 +4945,23 @@ begin
         SemanticError(
           Format('''%s'' is not a variable', [ForInS.VarName]),
           ForInS.Line, ForInS.Col);
-      if not VarSym.TypeDesc.IsOrdinal() then
+      if (VarSym.TypeDesc.Kind <> tyByte) and
+         (VarSym.TypeDesc.Kind <> tyInteger) then
         SemanticError(
-          Format('for-in over string: loop variable ''%s'' must be an ordinal type',
+          Format('for-in over string: loop variable ''%s'' must be Byte or Integer',
             [ForInS.VarName]),
           ForInS.Line, ForInS.Col);
-      ForInS.VarIsGlobal    := VarSym.IsGlobal;
-      ForInS.IsStringIter   := True;
-      ForInS.ResolvedVarType := FTable.TypeByte;
+      ForInS.VarIsGlobal := VarSym.IsGlobal;
+      if VarSym.TypeDesc.Kind = tyByte then
+      begin
+        ForInS.IsStringIter    := True;
+        ForInS.ResolvedVarType := FTable.TypeByte;
+      end
+      else
+      begin
+        ForInS.IsCodePointIter := True;
+        ForInS.ResolvedVarType := FTable.TypeInteger;
+      end;
 
       ForInS.IdxVarName := '__idx_' + IntToStr(FForInCounter);
       Inc(FForInCounter);
@@ -4964,6 +4973,19 @@ begin
         SynthDecl.ResolvedType := FTable.TypeInteger;
         SynthDecl.IsGlobal    := False;
         FCurrentLocalBlock.Decls.Add(SynthDecl);
+      end;
+      if ForInS.IsCodePointIter then
+      begin
+        ForInS.AdvVarName := '__adv_' + IntToStr(FForInCounter - 1);
+        if FCurrentLocalBlock <> nil then
+        begin
+          SynthDecl := TVarDecl.Create();
+          SynthDecl.Names.Add(ForInS.AdvVarName);
+          SynthDecl.TypeName    := 'Integer';
+          SynthDecl.ResolvedType := FTable.TypeInteger;
+          SynthDecl.IsGlobal    := False;
+          FCurrentLocalBlock.Decls.Add(SynthDecl);
+        end;
       end;
     end
     else if CollType.Kind = tySet then

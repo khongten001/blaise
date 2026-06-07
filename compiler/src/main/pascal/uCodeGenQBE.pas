@@ -2988,6 +2988,95 @@ begin
     Exit;
   end;
 
+  if AStmt.IsCodePointIter then
+  begin
+    { ---- String codepoint-iteration ----
+      Calls _Utf8DecodeAt(strptr, byteIdx) which returns a packed Int64:
+        low 21 bits = codepoint value, bits 32..33 = byte count (1-4).
+      Loop advances by the decoded byte count each iteration. }
+    IdxSlot := '%_var_' + AStmt.IdxVarName;
+    LblCond := AllocLabel('forin_cond');
+    LblBody := AllocLabel('forin_body');
+    LblEnd  := AllocLabel('forin_end');
+
+    if IsPromoted(AStmt.IdxVarName) then
+      EmitLine(Format('  %s =w copy 0', [IdxSlot]))
+    else
+      EmitLine(Format('  storew 0, %s', [IdxSlot]));
+    EmitLine(Format('  jmp @%s', [LblCond]));
+
+    EmitLine('@' + LblCond);
+    SelfT := EmitExpr(AStmt.CollExpr);
+    OldT  := AllocTemp();
+    OkT   := AllocTemp();
+    IdxW  := AllocTemp();
+    CmpT  := AllocTemp();
+    EmitLine(Format('  %s =l add %s, -8', [OldT, SelfT]));
+    EmitLine(Format('  %s =w loadw %s',   [OkT, OldT]));
+    if IsPromoted(AStmt.IdxVarName) then
+      EmitLine(Format('  %s =w copy %s',  [IdxW, IdxSlot]))
+    else
+      EmitLine(Format('  %s =w loadw %s', [IdxW, IdxSlot]));
+    EmitLine(Format('  %s =w csltw %s, %s', [CmpT, IdxW, OkT]));
+    EmitLine(Format('  jnz %s, @%s, @%s', [CmpT, LblBody, LblEnd]));
+
+    EmitLine('@' + LblBody);
+    FBreakLabels.AddObject(LblEnd, TObject(PtrUInt(FExcDepth)));
+    FContinueLabels.AddObject(LblCond, TObject(PtrUInt(FExcDepth)));
+    try
+      SelfT := EmitExpr(AStmt.CollExpr);
+      IdxW  := AllocTemp();
+      if IsPromoted(AStmt.IdxVarName) then
+        EmitLine(Format('  %s =w copy %s',  [IdxW, IdxSlot]))
+      else
+        EmitLine(Format('  %s =w loadw %s', [IdxW, IdxSlot]));
+      CurT := AllocTemp();
+      EmitLine(Format('  %s =l call $_Utf8DecodeAt(l %s, w %s)', [CurT, SelfT, IdxW]));
+      OkT := AllocTemp();
+      EmitLine(Format('  %s =w copy %s', [OkT, CurT]));
+      if not AStmt.VarIsGlobal and IsPromoted(AStmt.VarName) then
+        EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.VarName, OkT]))
+      else
+        EmitLine(Format('  storew %s, %s',
+          [OkT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+      OldT := AllocTemp();
+      EmitLine(Format('  %s =l shr %s, 32', [OldT, CurT]));
+      NxtW := AllocTemp();
+      EmitLine(Format('  %s =w copy %s', [NxtW, OldT]));
+      if IsPromoted(AStmt.AdvVarName) then
+        EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.AdvVarName, NxtW]))
+      else
+        EmitLine(Format('  storew %s, %s',
+          [NxtW, VarRef(AStmt.AdvVarName, False)]));
+
+      EmitStmt(AStmt.Body);
+    finally
+      FBreakLabels.Delete(FBreakLabels.Count - 1);
+      FContinueLabels.Delete(FContinueLabels.Count - 1);
+    end;
+
+    IdxW := AllocTemp();
+    NxtW := AllocTemp();
+    OkT  := AllocTemp();
+    if IsPromoted(AStmt.IdxVarName) then
+      EmitLine(Format('  %s =w copy %s', [IdxW, IdxSlot]))
+    else
+      EmitLine(Format('  %s =w loadw %s', [IdxW, IdxSlot]));
+    if IsPromoted(AStmt.AdvVarName) then
+      EmitLine(Format('  %s =w copy %%_var_%s', [OkT, AStmt.AdvVarName]))
+    else
+      EmitLine(Format('  %s =w loadw %s', [OkT, VarRef(AStmt.AdvVarName, False)]));
+    EmitLine(Format('  %s =w add %s, %s', [NxtW, IdxW, OkT]));
+    if IsPromoted(AStmt.IdxVarName) then
+      EmitLine(Format('  %s =w copy %s', [IdxSlot, NxtW]))
+    else
+      EmitLine(Format('  storew %s, %s', [NxtW, IdxSlot]));
+    EmitLine(Format('  jmp @%s', [LblCond]));
+
+    EmitLine('@' + LblEnd);
+    Exit;
+  end;
+
   if AStmt.IsStringIter then
   begin
     { ---- String byte-iteration ----

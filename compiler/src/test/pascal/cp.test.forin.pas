@@ -106,17 +106,25 @@ type
     { Semantic — string                                                    }
     { ------------------------------------------------------------------ }
     procedure TestSemantic_StringForIn_ByteVar_OK;
-    procedure TestSemantic_StringForIn_IntVar_OK;
+    procedure TestSemantic_StringForIn_IntVar_IsCodePointIter;
     procedure TestSemantic_StringForIn_NonOrdinalVar_RaisesError;
+    procedure TestSemantic_StringForIn_WordVar_RaisesError;
+    procedure TestSemantic_StringForIn_SmallIntVar_RaisesError;
 
     { ------------------------------------------------------------------ }
-    { Codegen — string                                                     }
+    { Codegen — string byte iteration                                      }
     { ------------------------------------------------------------------ }
     procedure TestCodegen_StringForIn_HasForInCondLabel;
     procedure TestCodegen_StringForIn_HasForInEndLabel;
     procedure TestCodegen_StringForIn_LoadsByteWithLoadub;
     procedure TestCodegen_StringForIn_JumpsBackToCond;
     procedure TestCodegen_StringForIn_UsesLengthFromHeader;
+
+    { ------------------------------------------------------------------ }
+    { Codegen — string codepoint iteration                                 }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_CodePointForIn_CallsUtf8DecodeAt;
+    procedure TestCodegen_CodePointForIn_HasForInCondLabel;
   end;
 
 implementation
@@ -634,9 +642,8 @@ begin
   AnalyseSrc(SrcStringForIn).Free();
 end;
 
-procedure TForInTests.TestSemantic_StringForIn_IntVar_OK;
+procedure TForInTests.TestSemantic_StringForIn_IntVar_IsCodePointIter;
 begin
-  { Integer is ordinal — accepted }
   AnalyseSrc(SrcStringForInIntVar).Free();
 end;
 
@@ -651,6 +658,36 @@ begin
         begin
           for P in S do
             P := P
+        end.
+        ''');
+end;
+
+procedure TForInTests.TestSemantic_StringForIn_WordVar_RaisesError;
+begin
+  AnalyseExpectError(
+    '''
+        program P;
+        var
+          S: string;
+          W: Word;
+        begin
+          for W in S do
+            W := 0
+        end.
+        ''');
+end;
+
+procedure TForInTests.TestSemantic_StringForIn_SmallIntVar_RaisesError;
+begin
+  AnalyseExpectError(
+    '''
+        program P;
+        var
+          S: string;
+          N: SmallInt;
+        begin
+          for N in S do
+            N := 0
         end.
         ''');
 end;
@@ -694,6 +731,24 @@ begin
   { Data-pointer convention: length is at data_ptr-8.
     Codegen emits 'add <ptr>, -8' to reach the length field. }
   AssertTrue('reads length at data_ptr-8', Pos(', -8', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Codegen tests — string codepoint iteration                           }
+{ ------------------------------------------------------------------ }
+
+procedure TForInTests.TestCodegen_CodePointForIn_CallsUtf8DecodeAt;
+var IR: string;
+begin
+  IR := GenIR(SrcStringForInIntVar);
+  AssertTrue('calls _Utf8DecodeAt', Pos('$_Utf8DecodeAt', IR) > 0);
+end;
+
+procedure TForInTests.TestCodegen_CodePointForIn_HasForInCondLabel;
+var IR: string;
+begin
+  IR := GenIR(SrcStringForInIntVar);
+  AssertTrue('forin_cond label present', Pos('forin_cond', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }
