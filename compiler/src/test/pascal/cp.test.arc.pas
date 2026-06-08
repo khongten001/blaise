@@ -90,6 +90,15 @@ type
     { Pointer-to-class coercion: assigning a Pointer-typed expression to a
       class-typed variable must emit _ClassAddRef (the LHS is ARC-managed). }
     procedure TestARC_PointerToClass_AssignEmitsAddRef;
+
+    { Return-value ownership transfer: a string/dyn-array function result
+      already owns +1, so assigning it to a variable must NOT emit a second
+      AddRef (that spurious retain leaks one buffer per call).  Assigning a
+      plain variable (borrowed) still retains. }
+    procedure TestARC_StringAssignFromCall_NoSpuriousAddRef;
+    procedure TestARC_StringAssignFromVar_StillAddRef;
+    procedure TestARC_DynArrayAssignFromCall_NoSpuriousAddRef;
+    procedure TestARC_DynArrayAssignFromVar_StillAddRef;
   end;
 
 implementation
@@ -799,6 +808,137 @@ begin
   FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
   AssertTrue('Pointer-to-class assign emits _ClassAddRef',
     Pos('call $_ClassAddRef', FnBody) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Return-value ownership transfer (string / dyn-array)                }
+{ ------------------------------------------------------------------ }
+
+const
+  { Caller does `r := Make()` where Make returns a string.  Make's Result
+    already owns +1, so the assignment must NOT AddRef again.  The callee
+    Make emits its own _StringAddRef calls, so the assertion scopes to the
+    caller (Run) function body. }
+  SrcStringAssignFromCall =
+    '''
+        program P;
+        function Make: string;
+        begin
+          Result := 'x'
+        end;
+        procedure Run;
+        var r: string;
+        begin
+          r := Make()
+        end;
+        begin
+          Run
+        end.
+        ''';
+
+  { Caller does `b := a` between two string variables.  `a` is borrowed, so
+    the assignment MUST AddRef. }
+  SrcStringAssignFromVar =
+    '''
+        program P;
+        procedure Run;
+        var a, b: string;
+        begin
+          a := 'x';
+          b := a
+        end;
+        begin
+          Run
+        end.
+        ''';
+
+  SrcDynArrayAssignFromCall =
+    '''
+        program P;
+        type TIntArr = array of Integer;
+        function Make: TIntArr;
+        var a: TIntArr;
+        begin
+          SetLength(a, 1);
+          Result := a
+        end;
+        procedure Run;
+        var r: TIntArr;
+        begin
+          r := Make()
+        end;
+        begin
+          Run
+        end.
+        ''';
+
+  SrcDynArrayAssignFromVar =
+    '''
+        program P;
+        type TIntArr = array of Integer;
+        procedure Run;
+        var a, b: TIntArr;
+        begin
+          SetLength(a, 1);
+          b := a
+        end;
+        begin
+          Run
+        end.
+        ''';
+
+function CallerBody(const AIR: string): string;
+var
+  P: Integer;
+begin
+  { Return the IR of the Run procedure (the caller), excluding the callee
+    Make whose own AddRef/Release calls would confuse the assertion. }
+  P := Pos('function $Run', AIR);
+  if P <= 0 then
+    P := Pos('$Run(', AIR);
+  if P <= 0 then
+    Exit(AIR);
+  Result := Copy(AIR, P, Length(AIR) - P + 1);
+end;
+
+procedure TARCTests.TestARC_StringAssignFromCall_NoSpuriousAddRef;
+var
+  Body: string;
+begin
+  Body := CallerBody(GenIR(SrcStringAssignFromCall));
+  AssertTrue('string call-result assignment does not AddRef the transient',
+    Pos('call $_StringAddRef', Body) <= 0);
+  AssertTrue('old slot is still released',
+    Pos('call $_StringRelease', Body) > 0);
+end;
+
+procedure TARCTests.TestARC_StringAssignFromVar_StillAddRef;
+var
+  Body: string;
+begin
+  Body := CallerBody(GenIR(SrcStringAssignFromVar));
+  AssertTrue('borrowed string variable assignment still AddRefs',
+    Pos('call $_StringAddRef', Body) > 0);
+end;
+
+procedure TARCTests.TestARC_DynArrayAssignFromCall_NoSpuriousAddRef;
+var
+  Body: string;
+begin
+  Body := CallerBody(GenIR(SrcDynArrayAssignFromCall));
+  AssertTrue('dyn-array call-result assignment does not AddRef the transient',
+    Pos('call $_DynArrayAddRef', Body) <= 0);
+  AssertTrue('old slot is still released',
+    Pos('call $_DynArrayRelease', Body) > 0);
+end;
+
+procedure TARCTests.TestARC_DynArrayAssignFromVar_StillAddRef;
+var
+  Body: string;
+begin
+  Body := CallerBody(GenIR(SrcDynArrayAssignFromVar));
+  AssertTrue('borrowed dyn-array variable assignment still AddRefs',
+    Pos('call $_DynArrayAddRef', Body) > 0);
 end;
 
 initialization

@@ -243,7 +243,8 @@ type
       at scope exit, so the caller's temporary would otherwise leak.
       AArgs and AArgTemps are parallel: AArgTemps.Strings[i] is the temp for
       AArgs.Items[i], or '' if that arg was not a value temp (e.g. var param). }
-    procedure EmitOwnedArgReleases(AArgs: TObjectList; AArgTemps: TStringList);
+    procedure EmitOwnedArgReleases(AArgs: TObjectList; AArgTemps: TStringList;
+      AParams: TObjectList);
     { Caller-side retain/release for a const-string param.  A const param skips
       the callee-side _StringAddRef/_StringRelease pair (see 5a5b5d4), so a
       fresh transient (rc=0 from _StringConcat or a function returning string)
@@ -3517,7 +3518,16 @@ begin
   Result := False;
   if AExpr = nil then Exit;
   if AExpr.ResolvedType = nil then Exit;
-  if AExpr.ResolvedType.Kind <> tyClass then Exit;
+  { Ownership transfer applies to every ARC-managed return value, not just
+    classes: a function/method returning a String or dynamic array leaves
+    its Result at refcount +1 (the callee AddRef'd on `Result := x` and did
+    not release Result at scope exit).  The caller's assignment site must
+    therefore NOT AddRef again — it consumes that transferred reference.
+    Without covering tyString/tyDynArray here the assignment branches below
+    emit a spurious _StringAddRef/_DynArrayAddRef on the call result, which
+    is never balanced and leaks one buffer per call. }
+  if not (AExpr.ResolvedType.Kind in [tyClass, tyDynArray])
+     and not AExpr.ResolvedType.IsString() then Exit;
   if AExpr is TIdentExpr then
   begin
     IE := TIdentExpr(AExpr);
@@ -3557,15 +3567,40 @@ begin
 end;
 
 procedure TCodeGenQBE.EmitOwnedArgReleases(AArgs: TObjectList;
-  AArgTemps: TStringList);
+  AArgTemps: TStringList; AParams: TObjectList);
 var
   I: Integer;
+  Arg: TASTExpr;
+  Par: TMethodParam;
 begin
   for I := 0 to AArgs.Count - 1 do
   begin
     if I >= AArgTemps.Count then Break;
     if AArgTemps.Strings[I] = '' then Continue;
-    if ExprOwnsRef(TASTExpr(AArgs.Items[I])) then
+    Arg := TASTExpr(AArgs.Items[I]);
+    if not ExprOwnsRef(Arg) then Continue;
+    Par := nil;
+    if (AParams <> nil) and (I < AParams.Count) then
+      Par := TMethodParam(AParams.Items[I]);
+    { The argument is a call result that already owns +1 and is passed by
+      value; release that transient after the call.  Dispatch on the actual
+      ARC kind — _ClassRelease/_StringRelease/_DynArrayRelease read the
+      refcount at different header offsets (16/12/8 bytes), so releasing a
+      String or dyn-array via _ClassRelease would corrupt the heap. }
+    if Arg.ResolvedType = nil then
+      EmitLine(Format('  call $_ClassRelease(l %s)', [AArgTemps.Strings[I]]))
+    else if Arg.ResolvedType.IsString() then
+    begin
+      { Const-string params already balance the transient via
+        EnsureConstStringRef (AddRef before) + ReleaseConstStringArgs
+        (Release after).  Emitting another release here would release the
+        same temporary twice and corrupt the heap, so skip it. }
+      if not ((Par <> nil) and Par.IsConstParam) then
+        EmitLine(Format('  call $_StringRelease(l %s)', [AArgTemps.Strings[I]]));
+    end
+    else if Arg.ResolvedType.Kind = tyDynArray then
+      EmitLine(Format('  call $_DynArrayRelease(l %s)', [AArgTemps.Strings[I]]))
+    else
       EmitLine(Format('  call $_ClassRelease(l %s)', [AArgTemps.Strings[I]]));
   end;
 end;
@@ -3729,7 +3764,8 @@ begin
       begin
         OldTemp := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjTemp]));
-        EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
+        if not ExprOwnsRef(AAssign.Expr) then
+          EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
         EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
       end
       else if ISFld.TypeDesc.Kind = tyClass then
@@ -3880,7 +3916,8 @@ begin
       OldTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
       ValTemp := EmitExpr(AAssign.Expr);
-      EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+      if not ExprOwnsRef(AAssign.Expr) then
+        EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
       EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
       EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
     end
@@ -3965,7 +4002,8 @@ begin
     else
       EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
     ValTemp := EmitExpr(AAssign.Expr);
-    EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
+    if not ExprOwnsRef(AAssign.Expr) then
+      EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
     EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
@@ -3984,7 +4022,8 @@ begin
     else
       EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
     ValTemp := EmitExpr(AAssign.Expr);
-    EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValTemp]));
+    if not ExprOwnsRef(AAssign.Expr) then
+      EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValTemp]));
     EmitLine(Format('  call $_DynArrayRelease(l %s)', [OldTemp]));
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
@@ -4975,18 +5014,31 @@ begin
       old field contents before overwriting, so neither reference leaks. }
     OldTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [OldTemp, Ptr]));
+    { When the RHS already owns +1 (a function/method/property-getter call
+      result), the field consumes that transferred reference and must NOT
+      AddRef again — otherwise the buffer/object leaks one reference per
+      store.  The old field contents are released unconditionally. }
     if IsStr then
     begin
-      EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
+      if not ExprOwnsRef(AAssign.Expr) then
+        EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
       EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
     end
     else if AAssign.FieldInfo.TypeDesc.Kind = tyDynArray then
     begin
-      EmitLine(Format('  call $_DynArrayAddRef(l %s)',  [ValTemp]));
+      if not ExprOwnsRef(AAssign.Expr) then
+        EmitLine(Format('  call $_DynArrayAddRef(l %s)',  [ValTemp]));
       EmitLine(Format('  call $_DynArrayRelease(l %s)', [OldTemp]));
     end
     else
     begin
+      { Class field keeps an unconditional retain.  ExprOwnsRef-guarding this
+        is unsafe: some method calls return a borrowed class reference without
+        an AddRef (ExprOwnsRef reports them as owning), so skipping the retain
+        would release a reference the field never acquired — a heap-corrupting
+        use-after-free that the self-hosting compiler hits in its own codegen.
+        The transient-leak this leaves for genuine +1 class returns assigned to
+        a field is the safe direction and matches long-standing behaviour. }
       EmitLine(Format('  call $_ClassAddRef(l %s)',   [ValTemp]));
       EmitLine(Format('  call $_ClassRelease(l %s)',  [OldTemp]));
     end;
@@ -5207,7 +5259,7 @@ begin
       EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
       EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
       EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
-      EmitOwnedArgReleases(ACall.Args, ArgTemps);
+      EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
       ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
       ArgTemps.Free();
       { Receiver was a +1-owned temporary (function/property return) used
@@ -5221,7 +5273,7 @@ begin
     else
       FuncName := '$' + MethodEmitName(MDecl, RT.Name, ACall.Name);
     EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
-    EmitOwnedArgReleases(ACall.Args, ArgTemps);
+    EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
     ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
     ArgTemps.Free();
     if ExprOwnsRef(ACall.ObjExpr) then
@@ -5410,7 +5462,7 @@ begin
         FuncName := '$' + MethodEmitName(MDecl, RT.Name, ACall.Name);
       EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
     end;
-    EmitOwnedArgReleases(ACall.Args, ArgTemps);
+    EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
     ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
   finally
     ArgTemps.Free();
@@ -6975,7 +7027,7 @@ begin
         EmitLine(Format('  call $%s(%s)', [QBEMangle(MDecl.ResolvedQbeName), ArgLine]))
       else
         EmitLine(Format('  call $%s(%s)', [QBEMangle(ACall.Name), ArgLine]));
-      EmitOwnedArgReleases(ACall.Args, ArgTemps);
+      EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
       ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
     finally
       ArgTemps.Free();
@@ -8709,7 +8761,7 @@ begin
         end;
         T := AllocTemp();
         EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
-        EmitOwnedArgReleases(FC.Args, ArgTemps);
+        EmitOwnedArgReleases(FC.Args, ArgTemps, MDecl.Params);
         ReleaseConstStringArgs(FC.Args, ArgTemps, MDecl.Params);
         Result := MaybeNormalizeExtReturn(T, MDecl);
       finally
@@ -8895,7 +8947,7 @@ begin
           else
             FuncName := '$' + MethodEmitName(MDecl, RT.Name, MCallExpr.Name);
           EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
-          EmitOwnedArgReleases(MCallExpr.Args, ArgTemps);
+          EmitOwnedArgReleases(MCallExpr.Args, ArgTemps, MDecl.Params);
           ReleaseConstStringArgs(MCallExpr.Args, ArgTemps, MDecl.Params);
         finally
           ArgTemps.Free();
@@ -9065,7 +9117,7 @@ begin
     end
     else
       EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FuncName, ArgLine]));
-    EmitOwnedArgReleases(MCallExpr.Args, ArgTemps);
+    EmitOwnedArgReleases(MCallExpr.Args, ArgTemps, MDecl.Params);
     ReleaseConstStringArgs(MCallExpr.Args, ArgTemps, MDecl.Params);
     ArgTemps.Free();
     { Receiver was a +1-owned temporary (function/property return) used as
