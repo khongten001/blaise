@@ -323,6 +323,11 @@ type
     { Release every ARC-managed field of a record at AAddr in-line (no copy).
       Used before overwriting a record slot to prevent reference leaks. }
     procedure EmitRecordReleaseFields(ARec: TRecordTypeDesc; const AAddr: string);
+    { Mirror of EmitRecordReleaseFields: AddRef every ARC-managed field of a
+      record at AAddr.  Used in the by-value record param prologue so the
+      callee owns retains on managed-field contents, balancing the matching
+      EmitRecordReleaseFields call on exit. }
+    procedure EmitRecordAddRefFields(ARec: TRecordTypeDesc; const AAddr: string);
     function  QbeTypeOf(AType: TTypeDesc): string;
     function  QbeParamTypeOf(AType: TTypeDesc): string;
     function  LoadInstrFor(AType: TTypeDesc): string;
@@ -4840,6 +4845,51 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitRecordAddRefFields(ARec: TRecordTypeDesc;
+  const AAddr: string);
+var
+  I:       Integer;
+  F:       TFieldInfo;
+  FldAddr: string;
+  ValT:    string;
+begin
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    if F.TypeDesc = nil then Continue;
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      if F.Offset > 0 then
+      begin
+        FldAddr := AllocTemp();
+        EmitLine(Format('  %s =l add %s, %d', [FldAddr, AAddr, F.Offset]));
+      end
+      else
+        FldAddr := AAddr;
+      EmitRecordAddRefFields(TRecordTypeDesc(F.TypeDesc), FldAddr);
+      Continue;
+    end;
+    if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
+            or (F.TypeDesc.Kind = tyDynArray)
+            or (F.TypeDesc.Kind = tyInterface)) then Continue;
+    if F.Offset > 0 then
+    begin
+      FldAddr := AllocTemp();
+      EmitLine(Format('  %s =l add %s, %d', [FldAddr, AAddr, F.Offset]));
+    end
+    else
+      FldAddr := AAddr;
+    ValT := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [ValT, FldAddr]));
+    if F.TypeDesc.IsString() then
+      EmitLine(Format('  call $_StringAddRef(l %s)', [ValT]))
+    else if F.TypeDesc.Kind = tyDynArray then
+      EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValT]))
+    else
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]));
+  end;
+end;
+
 procedure TCodeGenQBE.EmitFieldAssignment(AAssign: TFieldAssignment);
 var
   Ptr, PtrTemp, ValTemp, OldTemp, QType, StoreInstr, ExtTemp: string;
@@ -5829,6 +5879,16 @@ begin
       EmitLine(Format('  %s =l loadl %%_var_%s_obj',
         [ValTemp, Par.ParamName]));
       EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyRecord then
+    begin
+      { By-value record: QBE materialises the aggregate and %_var_X holds
+        its address.  Retain each managed leaf so subsequent
+        field-reassignment's release-old does not free the caller's shared
+        heap data; balanced by the release pass at method exit. }
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitRecordAddRefFields(TRecordTypeDesc(Par.ResolvedType), ValTemp);
     end;
   end;
 
@@ -5891,6 +5951,13 @@ begin
       ValTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %%_var_%s_obj', [ValTemp, Par.ParamName]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyRecord then
+    begin
+      { Release the retains taken at entry on each managed leaf. }
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitRecordReleaseFields(TRecordTypeDesc(Par.ResolvedType), ValTemp);
     end;
   end;
 
@@ -6711,6 +6778,14 @@ begin
       EmitLine(Format('  %s =l loadl %%_var_%s_obj',
         [ValTemp, Par.ParamName]));
       EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyRecord then
+    begin
+      { By-value record: QBE materialises the aggregate; %_var_X holds its
+        address.  Retain each managed leaf; balanced at function exit. }
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitRecordAddRefFields(TRecordTypeDesc(Par.ResolvedType), ValTemp);
     end;
   end;
 
@@ -6779,6 +6854,13 @@ begin
       ValTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %%_var_%s_obj', [ValTemp, Par.ParamName]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+    end
+    else if Par.ResolvedType.Kind = tyRecord then
+    begin
+      { Release the retains taken at entry on each managed leaf. }
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValTemp, Par.ParamName]));
+      EmitRecordReleaseFields(TRecordTypeDesc(Par.ResolvedType), ValTemp);
     end;
   end;
 

@@ -78,6 +78,13 @@ type
     { Single is a 4-byte IEEE-754 float — alignment 4, not 8.  A record
       of three back-to-back Single fields totals 12 bytes, not 24. }
     procedure TestSemantic_ThreeSingleRecord_TotalSizeIs12;
+
+    { ------------------------------------------------------------------ }
+    { By-value record param ARC — managed fields                          }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_RecordByValParam_StringField_AddRefRelease;
+    procedure TestCodegen_RecordByValParam_DynArrayField_AddRefRelease;
+    procedure TestCodegen_RecordByValParam_ConstParam_NoARC;
   end;
 
 implementation
@@ -841,6 +848,75 @@ begin
   finally
     Prog.Free();
   end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ By-value record param ARC                                           }
+{ ------------------------------------------------------------------ }
+
+{ When a record with a managed (string/dynarray/interface/class) field
+  is passed by value, the callee operates on QBE's materialised
+  aggregate.  The callee must AddRef each managed leaf on entry and
+  Release each on exit so that in-callee field reassignment's
+  release-old does not free the caller's shared heap data. }
+procedure TRecordTests.TestCodegen_RecordByValParam_StringField_AddRefRelease;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TR = record S: string; end;
+        procedure Mut(R: TR); begin R.S := 'x'; end;
+        var W: TR;
+        begin W.S := ''; Mut(W) end.
+        ''');
+  AssertTrue('addref on entry to Mut', Pos('_StringAddRef', IR) > 0);
+  AssertTrue('release on exit from Mut', Pos('_StringRelease', IR) > 0);
+end;
+
+procedure TRecordTests.TestCodegen_RecordByValParam_DynArrayField_AddRefRelease;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TIA = array of Integer;
+          TR  = record A: TIA; end;
+        procedure Mut(R: TR);
+        var Tmp: TIA;
+        begin SetLength(Tmp, 1); R.A := Tmp end;
+        var W: TR;
+        begin Mut(W) end.
+        ''');
+  AssertTrue('addref dynarray on entry to Mut',
+    Pos('_DynArrayAddRef', IR) > 0);
+  AssertTrue('release dynarray on exit from Mut',
+    Pos('_DynArrayRelease', IR) > 0);
+end;
+
+{ const params skip the ARC retain/release pair — the caller keeps the
+  object alive for the whole call.  A record by-const-value param with
+  no other managed locals must therefore emit no AddRef/Release at all. }
+procedure TRecordTests.TestCodegen_RecordByValParam_ConstParam_NoARC;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TR = record S: string; end;
+        procedure ReadOnly(const R: TR);
+        var L: Integer;
+        begin L := Length(R.S) end;
+        begin end.
+        ''');
+  { The only managed entity in the routine is R.S, and R is const, so
+    no _StringAddRef should appear anywhere in the emitted IR. }
+  AssertEquals('no AddRef anywhere for const record param',
+    -1, Pos('_StringAddRef', IR));
 end;
 
 initialization

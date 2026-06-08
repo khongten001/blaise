@@ -39,6 +39,7 @@ type
     procedure TestRun_Record_DynArrayField_ReturnByValue_NoLeak;
     procedure TestRun_Class_RecordField_NestedClass_FullCleanup;
     procedure TestRun_Record_InterfaceField_AssignCallAndCopy;
+    procedure TestRun_Record_ByValParam_StringField_HeapARC;
   end;
 
 implementation
@@ -412,6 +413,27 @@ const
     end.
     ''';
 
+  { Regression: a record with a managed (string) field passed by value
+    to a callee that REASSIGNS the field used to free the caller's
+    heap-allocated string and then return.  The caller's subsequent
+    read of the field was a use-after-free that often crashed on exit.
+    A literal-only test wouldn't trip the bug because string literals
+    have a sentinel refcount of -1 (Release is a no-op); we force a
+    real heap refcount via 'heap-' + 'allocated'. }
+  SrcRecordByValParam_StringField_HeapARC = '''
+    program P;
+    type TR = record S: string; end;
+    procedure Mutate(R: TR);
+    begin R.S := 'callee-replacement' end;
+    var W: TR;
+    begin
+      W.S := 'heap-' + 'allocated';
+      WriteLn('before: ', W.S);
+      Mutate(W);
+      WriteLn('after:  ', W.S)
+    end.
+    ''';
+
   SrcRecordDynArrayReturnByValueNoLeak = '''
     program P;
     type
@@ -665,6 +687,17 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('method dispatch through interface field + 16-byte field layout',
     '5' + LE + '50' + LE, Output);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_ByValParam_StringField_HeapARC;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcRecordByValParam_StringField_HeapARC, Output, RCode));
+  AssertEquals('exit code 0 (no use-after-free crash)', 0, RCode);
+  AssertEquals('caller string survives callee whole-string reassignment',
+    'before: heap-allocated' + LE + 'after:  heap-allocated' + LE, Output);
 end;
 
 initialization
