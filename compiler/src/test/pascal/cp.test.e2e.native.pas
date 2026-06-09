@@ -181,6 +181,8 @@ type
     procedure TestRun_Native_ArcInterfaceField_AssignAndDispatch;
     procedure TestRun_Native_IntfFieldDispatch;
     procedure TestRun_Native_IntfFieldReadIntoLocal;
+    procedure TestRun_Native_RetValSurvivesArcRelease;
+    procedure TestRun_Native_IntfArgToMethod;
     procedure TestRun_Native_ArcNestedRecordField_FullCleanup;
     procedure TestRun_Native_ArcStringReturnToField_NoDoubleRetain;
     procedure TestRun_Native_ArcImplicitSelfStringField_Reassign;
@@ -2589,6 +2591,62 @@ const
     end.
     ''';
 
+  { Value-returning function whose return value must survive the epilogue ARC
+    release pass.  A function returning Integer but taking an ARC (class) value
+    param releases that param on exit (_ClassRelease clobbers %rax); the Result
+    must be loaded into %rax AFTER that release, not before.  Previously the
+    native backend loaded Result first and returned garbage (e.g. 3 not 55). }
+  SrcRetValSurvivesArcRelease = '''
+    program P;
+    type
+      TGreeter = class
+        function Greet: Integer;
+      end;
+      TUser = class
+        function Use(O: TGreeter): Integer;
+      end;
+    function TGreeter.Greet: Integer; begin Result := 55 end;
+    function TUser.Use(O: TGreeter): Integer;
+    begin
+      Result := O.Greet()
+    end;
+    var T: TGreeter; U: TUser;
+    begin
+      T := TGreeter.Create();
+      U := TUser.Create();
+      WriteLn(U.Use(T))
+    end.
+    ''';
+
+  { Interface value argument passed to a method, dispatched inside the callee.
+    Exercises the fat-pointer arg ABI at a method call site AND the
+    return-value-survives-release fix (the callee releases the interface param). }
+  SrcIntfArgToMethod = '''
+    program P;
+    type
+      IGreeter = interface
+        function Greet: Integer;
+      end;
+      TGreeter = class(TObject, IGreeter)
+        function Greet: Integer;
+      end;
+      TUser = class
+        function Use(G: IGreeter): Integer;
+      end;
+    function TGreeter.Greet: Integer; begin Result := 55 end;
+    function TUser.Use(G: IGreeter): Integer;
+    begin
+      Result := G.Greet()
+    end;
+    var T: TGreeter; I: IGreeter; U: TUser;
+    begin
+      T := TGreeter.Create();
+      I := T;
+      U := TUser.Create();
+      WriteLn(U.Use(I))
+    end.
+    ''';
+
   { Dyn-array field inside a class: the field must be ARC-refcounted on store
     and released when the holder is destroyed (f74e5cc).  Observed by reading an
     element back after the field assignment — a dropped/garbled buffer would
@@ -3163,6 +3221,18 @@ procedure TE2ENativeTests.TestRun_Native_IntfFieldReadIntoLocal;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcIntfFieldReadIntoLocal, '40' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RetValSurvivesArcRelease;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcRetValSurvivesArcRelease, '55' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IntfArgToMethod;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(SrcIntfArgToMethod, '55' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_ArcNestedRecordField_FullCleanup;

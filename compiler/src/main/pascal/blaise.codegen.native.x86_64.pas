@@ -6802,16 +6802,13 @@ begin
   if ADecl.Body <> nil then
     for I := 0 to ADecl.Body.Stmts.Count - 1 do
       Self.EmitStmt(TASTStmt(ADecl.Body.Stmts.Items[I]));
-  { Epilogue: Exit lands here; load Result into %rax (int) or %xmm0 (float).
-    For sret functions the caller's buffer already holds the result — just ret. }
+  { Epilogue: Exit lands here.  The Result is loaded into %rax/%xmm0 only AFTER
+    the ARC release passes below — those call _ClassRelease/_StringRelease, which
+    clobber %rax (and may touch the XMM regs), so loading Result first would
+    return garbage from a value-returning function that also releases ARC
+    params/locals.  For sret functions the caller's buffer already holds the
+    result, so no load is needed. }
   Self.Emit(FExitLabel + ':');
-  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
-  begin
-    if IsFloatFamily(ADecl.ResolvedReturnType) then
-      Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
-    else
-      Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
-  end;
   { Release ARC-managed locals (not params, not Result).
     Result is returned to the caller who owns it. }
   if ADecl.Body <> nil then
@@ -6891,6 +6888,16 @@ begin
         [Self.IntfObjOperand(P.ParamName, False)]));
       Self.Emit(#9'callq _ClassRelease');
     end;
+  end;
+  { Now that every ARC release call is done (none can clobber the result), load
+    Result into %rax (int) or %xmm0 (float).  sret functions return via the
+    caller's buffer and need no load. }
+  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
+  begin
+    if IsFloatFamily(ADecl.ResolvedReturnType) then
+      Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
+    else
+      Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   end;
   Self.Emit(#9'movq %rbp, %rsp');
   Self.Emit(#9'popq %rbp');
