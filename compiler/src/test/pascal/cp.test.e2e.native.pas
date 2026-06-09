@@ -211,6 +211,13 @@ type
     procedure TestRun_Native_GenericClass_Method;
     procedure TestRun_Native_GenericFunc_Standalone;
     procedure TestRun_Native_GenericClass_Interface;
+
+    { Multi-unit whole-program native path (TX86_64Backend.EmitUnit/AppendProgram). }
+    procedure TestRun_Native_MultiUnit_PlainFunction;
+    procedure TestRun_Native_MultiUnit_StringFunction;
+    procedure TestRun_Native_MultiUnit_Class;
+    procedure TestRun_Native_MultiUnit_Interface;
+    procedure TestRun_Native_MultiUnit_GlobalsAndInit;
   end;
 
 implementation
@@ -3348,6 +3355,179 @@ procedure TE2ENativeTests.TestRun_Native_Record_NestedFieldAssign;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcNestedRecordFieldAssign, '2037' + LE + '2037' + LE, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Multi-unit whole-program native path.  Each test compiles a user unit
+  plus a program that uses it on BOTH backends and asserts the native
+  stdout/exit-code equal the QBE oracle's (differential testing). }
+{ ------------------------------------------------------------------ }
+
+procedure TE2ENativeTests.TestRun_Native_MultiUnit_PlainFunction;
+var
+  UnitSrc, ProgSrc, NOut, QOut: string;
+  NCode, QCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  UnitSrc :=
+    'unit mu_pf;' + LE +
+    'interface' + LE +
+    'function Doubled(X: Integer): Integer;' + LE +
+    'implementation' + LE +
+    'function Doubled(X: Integer): Integer;' + LE +
+    'begin Result := X * 2; end;' + LE +
+    'end.' + LE;
+  ProgSrc :=
+    'program P;' + LE +
+    'uses mu_pf;' + LE +
+    'begin WriteLn(Doubled(21)); end.' + LE;
+  AssertTrue('native compile+run',
+    CompileAndRunWithUnitNative('mu_pf', UnitSrc, ProgSrc, NOut, NCode));
+  AssertTrue('qbe compile+run',
+    CompileAndRunWithUnit('mu_pf', UnitSrc, ProgSrc, QOut, QCode));
+  AssertEquals('stdout parity', QOut, NOut);
+  AssertEquals('exit parity', QCode, NCode);
+  AssertEquals('value', '42' + LE, NOut);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MultiUnit_StringFunction;
+var
+  UnitSrc, ProgSrc, NOut, QOut: string;
+  NCode, QCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  UnitSrc :=
+    'unit mu_sf;' + LE +
+    'interface' + LE +
+    'function Greeting(const AName: string): string;' + LE +
+    'implementation' + LE +
+    'function Greeting(const AName: string): string;' + LE +
+    'begin Result := ''Hello, '' + AName + ''!''; end;' + LE +
+    'end.' + LE;
+  ProgSrc :=
+    'program P;' + LE +
+    'uses mu_sf;' + LE +
+    'begin WriteLn(Greeting(''World'')); end.' + LE;
+  AssertTrue('native compile+run',
+    CompileAndRunWithUnitNative('mu_sf', UnitSrc, ProgSrc, NOut, NCode));
+  AssertTrue('qbe compile+run',
+    CompileAndRunWithUnit('mu_sf', UnitSrc, ProgSrc, QOut, QCode));
+  AssertEquals('stdout parity', QOut, NOut);
+  AssertEquals('exit parity', QCode, NCode);
+  AssertEquals('value', 'Hello, World!' + LE, NOut);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MultiUnit_Class;
+var
+  UnitSrc, ProgSrc, NOut, QOut: string;
+  NCode, QCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  UnitSrc :=
+    'unit mu_cl;' + LE +
+    'interface' + LE +
+    'type' + LE +
+    '  TCounter = class' + LE +
+    '  private FValue: Integer;' + LE +
+    '  public' + LE +
+    '    constructor Create(AStart: Integer);' + LE +
+    '    procedure Bump;' + LE +
+    '    function Value: Integer;' + LE +
+    '    function Describe: string; virtual;' + LE +
+    '  end;' + LE +
+    'implementation' + LE +
+    'constructor TCounter.Create(AStart: Integer); begin FValue := AStart; end;' + LE +
+    'procedure TCounter.Bump; begin FValue := FValue + 1; end;' + LE +
+    'function TCounter.Value: Integer; begin Result := FValue; end;' + LE +
+    'function TCounter.Describe: string; begin Result := ''Counter''; end;' + LE +
+    'end.' + LE;
+  ProgSrc :=
+    'program P;' + LE +
+    'uses mu_cl;' + LE +
+    'var C: TCounter;' + LE +
+    'begin' + LE +
+    '  C := TCounter.Create(10);' + LE +
+    '  C.Bump(); C.Bump();' + LE +
+    '  WriteLn(C.Describe(), '' = '', C.Value());' + LE +
+    '  C.Free();' + LE +
+    'end.' + LE;
+  AssertTrue('native compile+run',
+    CompileAndRunWithUnitNative('mu_cl', UnitSrc, ProgSrc, NOut, NCode));
+  AssertTrue('qbe compile+run',
+    CompileAndRunWithUnit('mu_cl', UnitSrc, ProgSrc, QOut, QCode));
+  AssertEquals('stdout parity', QOut, NOut);
+  AssertEquals('exit parity', QCode, NCode);
+  AssertEquals('value', 'Counter = 12' + LE, NOut);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MultiUnit_Interface;
+var
+  UnitSrc, ProgSrc, NOut, QOut: string;
+  NCode, QCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  UnitSrc :=
+    'unit mu_if;' + LE +
+    'interface' + LE +
+    'type' + LE +
+    '  ISpeaker = interface' + LE +
+    '    function Speak: string;' + LE +
+    '  end;' + LE +
+    '  TDog = class(TObject, ISpeaker) public function Speak: string; end;' + LE +
+    '  TCat = class(TObject, ISpeaker) public function Speak: string; end;' + LE +
+    'implementation' + LE +
+    'function TDog.Speak: string; begin Result := ''Woof''; end;' + LE +
+    'function TCat.Speak: string; begin Result := ''Meow''; end;' + LE +
+    'end.' + LE;
+  ProgSrc :=
+    'program P;' + LE +
+    'uses mu_if;' + LE +
+    'var S: ISpeaker;' + LE +
+    'begin' + LE +
+    '  S := TDog.Create(); WriteLn(S.Speak());' + LE +
+    '  S := TCat.Create(); WriteLn(S.Speak());' + LE +
+    'end.' + LE;
+  AssertTrue('native compile+run',
+    CompileAndRunWithUnitNative('mu_if', UnitSrc, ProgSrc, NOut, NCode));
+  AssertTrue('qbe compile+run',
+    CompileAndRunWithUnit('mu_if', UnitSrc, ProgSrc, QOut, QCode));
+  AssertEquals('stdout parity', QOut, NOut);
+  AssertEquals('exit parity', QCode, NCode);
+  AssertEquals('value', 'Woof' + LE + 'Meow' + LE, NOut);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MultiUnit_GlobalsAndInit;
+var
+  UnitSrc, ProgSrc, NOut, QOut: string;
+  NCode, QCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  UnitSrc :=
+    'unit mu_gi;' + LE +
+    'interface' + LE +
+    'var GCounter: Integer; GLabel: string;' + LE +
+    'procedure Increment;' + LE +
+    'implementation' + LE +
+    'procedure Increment; begin GCounter := GCounter + 1; end;' + LE +
+    'initialization' + LE +
+    '  GCounter := 100;' + LE +
+    '  GLabel := ''configured'';' + LE +
+    'end.' + LE;
+  ProgSrc :=
+    'program P;' + LE +
+    'uses mu_gi;' + LE +
+    'begin' + LE +
+    '  WriteLn(GLabel, '' '', GCounter);' + LE +
+    '  Increment(); Increment();' + LE +
+    '  WriteLn(GCounter);' + LE +
+    'end.' + LE;
+  AssertTrue('native compile+run',
+    CompileAndRunWithUnitNative('mu_gi', UnitSrc, ProgSrc, NOut, NCode));
+  AssertTrue('qbe compile+run',
+    CompileAndRunWithUnit('mu_gi', UnitSrc, ProgSrc, QOut, QCode));
+  AssertEquals('stdout parity', QOut, NOut);
+  AssertEquals('exit parity', QCode, NCode);
+  AssertEquals('value', 'configured 100' + LE + '102' + LE, NOut);
 end;
 
 initialization

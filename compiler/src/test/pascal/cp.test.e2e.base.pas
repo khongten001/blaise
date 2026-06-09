@@ -97,6 +97,18 @@ type
     function  CompileAndRunWithUnit(const AUnitName, AUnitSrc, ASrc: string;
                                    out AStdout: string;
                                    out AExitCode: Integer): Boolean;
+    { Backend-parameterised multi-unit compile+run: lowers the unit(s) + program
+      via the QBE or native backend (whole-program model: AppendUnit per
+      dependency, then AppendProgram), then links and runs.  The native path
+      exercises TX86_64Backend.EmitUnit / AppendProgram. }
+    function  CompileAndRunWithUnitOn(ABackend: TBackend;
+                                   const AUnitName, AUnitSrc, ASrc: string;
+                                   out AStdout: string;
+                                   out AExitCode: Integer): Boolean;
+    { Native convenience over the multi-unit path. }
+    function  CompileAndRunWithUnitNative(const AUnitName, AUnitSrc, ASrc: string;
+                                   out AStdout: string;
+                                   out AExitCode: Integer): Boolean;
   end;
 
 implementation
@@ -494,16 +506,35 @@ end;
 function TE2ETestCase.CompileAndRunWithUnit(const AUnitName, AUnitSrc, ASrc: string;
                                             out AStdout: string;
                                             out AExitCode: Integer): Boolean;
+begin
+  Result := Self.CompileAndRunWithUnitOn(beQBE, AUnitName, AUnitSrc, ASrc,
+                                         AStdout, AExitCode)
+end;
+
+function TE2ETestCase.CompileAndRunWithUnitNative(const AUnitName, AUnitSrc, ASrc: string;
+                                            out AStdout: string;
+                                            out AExitCode: Integer): Boolean;
+begin
+  Result := Self.CompileAndRunWithUnitOn(beNative, AUnitName, AUnitSrc, ASrc,
+                                         AStdout, AExitCode)
+end;
+
+function TE2ETestCase.CompileAndRunWithUnitOn(ABackend: TBackend;
+                                            const AUnitName, AUnitSrc, ASrc: string;
+                                            out AStdout: string;
+                                            out AExitCode: Integer): Boolean;
 var
   Lexer:       TLexer;
   Parser:      TParser;
   Prog:        TProgram;
   Semantic:    TSemanticAnalyser;
-  CG:          TCodeGenQBE;
+  QCG:         TCodeGenQBE;
+  NCG:         TCodeGenNative;
+  CG:          ICodeGen;
   Loader:      TUnitLoader;
   Units:       TObjectList;
   SearchPaths: TStringList;
-  IR:          string;
+  Emitted:     string;       { QBE IR text, or native assembly text }
   IRFile, AsmFile, BinFile, ToolOut, UnitFile: string;
   Rc, I:       Integer;
 begin
@@ -517,7 +548,8 @@ begin
   { Write the user unit to the scratch dir so the unit loader resolves it. }
   WriteFile(UnitFile, AUnitSrc);
 
-  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil;
+  QCG := nil; CG := nil;
   Loader := nil; Units := nil; SearchPaths := nil;
   try
     Lexer    := TLexer.Create(ASrc);
@@ -533,21 +565,38 @@ begin
     for I := 0 to Units.Count - 1 do
       Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
     Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create();
+    if ABackend = beNative then
+    begin
+      NCG := TCodeGenNative.Create();
+      NCG.SetTarget(HostTarget());
+      CG  := NCG;            { ARC-managed; released at scope exit }
+    end
+    else
+    begin
+      QCG := TCodeGenQBE.Create();
+      CG  := QCG
+    end;
     CG.SetSymbolTable(Prog.SymbolTable);
     for I := 0 to Units.Count - 1 do
       CG.AppendUnit(TUnit(Units.Items[I]));
     CG.AppendProgram(Prog);
-    IR := CG.GetOutput()
+    Emitted := CG.GetOutput()
   finally
-    CG.Free(); Semantic.Free();
+    if ABackend <> beNative then QCG.Free();
+    { CG (ICodeGen) for native is freed by ARC; do not Free. }
+    Semantic.Free();
     Units.Free(); Loader.Free(); SearchPaths.Free();
     Prog.Free(); Parser.Free(); Lexer.Free()
   end;
 
-  WriteFile(IRFile, IR);
-  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
-  if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  if ABackend = beNative then
+    WriteFile(AsmFile, Emitted)
+  else
+  begin
+    WriteFile(IRFile, Emitted);
+    Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+    if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end
+  end;
   Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);

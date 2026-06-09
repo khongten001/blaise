@@ -91,6 +91,16 @@ type
     { Number of exc frame global slots to emit for the program main body.
       Zero when no try stmts appear in the top-level program statements. }
     FProgExcFrameCount: Integer;
+    { Whole-program multi-unit guard: the system-class (TObject /
+      TCustomAttribute) class-name strings, typeinfo, vtables and field-cleanup
+      stubs are emitted by the FIRST class section that runs (the first unit
+      that declares a class, or the program if none does).  Set True after the
+      first emission so subsequent units/program do not redefine those symbols. }
+    FSystemDefsEmitted: Boolean;
+    { Names of dependency units that declared an initialization section, in
+      AppendUnit order.  $main calls <Unit>_init for each, in order, after
+      _SetArgs — mirrors the QBE backend's EmitMainHeader loop. }
+    FUnitInitNames: TStringList;
 
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
     function NewLabel(const APrefix: string): string;
@@ -114,8 +124,11 @@ type
     procedure EmitGlobalReleases;
     { Emit all class-related data: class-name strings, published-method tables,
       typeinfo blocks, vtables, itab/impllist blocks.  Mirrors QBE backend's
-      EmitTypeInfoDefs + EmitVTableDefs.  Called from EmitProgram. }
-    procedure EmitClassSection(AProg: TProgram);
+      EmitTypeInfoDefs + EmitVTableDefs.  Called from EmitProgram (program type
+      decls) and EmitUnit (unit interface-block type decls). }
+    procedure EmitClassSection(ATypeDecls: TObjectList;
+                               AGenericInstances: TObjectList;
+                               ASymTable: TSymbolTable);
     { Escape a Pascal string for use inside an AS .ascii directive. }
     function AsmEscapeString(const AStr: string): string;
     { Emit a leaq __sN+12(%rip), %rax for the string literal AValue,
@@ -139,8 +152,11 @@ type
       scope-exit cleanup. }
     procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
                                       const ABaseReg: string);
-    { Emit all class method definitions (OwnerTypeName <> ''). }
-    procedure EmitClassMethods(AProg: TProgram);
+    { Emit all class/record method definitions for the given type decls plus
+      the supplied generic-instance lists. }
+    procedure EmitClassMethods(ATypeDecls: TObjectList;
+                               AGenericInstances: TObjectList;
+                               AGenericRecordInstances: TObjectList);
 
     { True when AName is a slot in the current function frame. }
     function IsLocal(const AName: string): Boolean;
@@ -170,7 +186,10 @@ type
                                 const AMethName: string; AArgs: TObjectList);
     { Emit typeinfo / itab / impllist blocks for interfaces and the classes
       that implement them.  Mirrors the QBE backend's EmitInterfaceDefs. }
-    procedure EmitInterfaceDefs(AProg: TProgram);
+    procedure EmitInterfaceDefs(ATypeDecls: TObjectList;
+                                AGenericInstances: TObjectList;
+                                AGenericIntfInstances: TObjectList;
+                                ASymTable: TSymbolTable);
     { Lower an assignment whose LHS is interface-typed.  Handles the four RHS
       forms: as-cast (T as IFoo via _GetItab), direct class->interface (static
       itab), interface->interface copy, and := nil.  Strong references only;
@@ -212,6 +231,7 @@ type
     procedure ClearFrame;
 
     procedure EmitProgram(AProg: TProgram); override;
+    procedure EmitUnit(AUnit: TUnit); override;
     { Emit a standalone procedure/function definition. }
     procedure EmitFunctionDef(ADecl: TMethodDecl);
     { Spill incoming arg register AIdx into a param slot at AType's width. }
@@ -392,12 +412,16 @@ begin
 end;
 
 
-{ The assembly symbol for a procedure/function: the semantic pass sets
-  ResolvedQbeName for overloaded/mangled names; otherwise use the source name
-  verbatim (matching the QBE backend's $name vs $ResolvedQbeName choice). }
+{ The assembly symbol for a procedure/function.  An `external name '...'`
+  binding names a foreign (C/asm) symbol that must be used verbatim — never
+  mangled or unit-prefixed (matching the QBE backend's ExternalName handling).
+  Otherwise the semantic pass sets ResolvedQbeName for overloaded/mangled names;
+  failing that use the source name. }
 function FuncSymbolFromDecl(ADecl: TMethodDecl): string;
 begin
-  if (ADecl <> nil) and (ADecl.ResolvedQbeName <> '') then
+  if (ADecl <> nil) and ADecl.IsExternal and (ADecl.ExternalName <> '') then
+    Result := ADecl.ExternalName
+  else if (ADecl <> nil) and (ADecl.ResolvedQbeName <> '') then
     Result := NativeMangle(ADecl.ResolvedQbeName)
   else if ADecl <> nil then
     Result := NativeMangle(ADecl.Name)
@@ -433,11 +457,14 @@ begin
   FExcDepth           := 0;
   FExcFrameNext       := 0;
   FProgExcFrameCount  := 0;
+  FSystemDefsEmitted  := False;
+  FUnitInitNames      := TStringList.Create();
 end;
 
 destructor TX86_64Backend.Destroy;
 begin
   Self.ClearFrame();
+  FUnitInitNames.Free();
   FFinallyStack.Free();
   FContinueExcDepths.Free();
   FBreakExcDepths.Free();
@@ -969,7 +996,9 @@ begin
   end;
 end;
 
-procedure TX86_64Backend.EmitClassSection(AProg: TProgram);
+procedure TX86_64Backend.EmitClassSection(ATypeDecls: TObjectList;
+                                          AGenericInstances: TObjectList;
+                                          ASymTable: TSymbolTable);
 var
   I, J, S:   Integer;
   TD:        TTypeDecl;
@@ -985,18 +1014,25 @@ var
   MethStr:   string;
   PubCount:  Integer;
   Line:      string;
+  EmitSys:   Boolean;
 begin
-  { Fixed RTL class-name strings and stubs for TObject and TCustomAttribute. }
+  { Fixed RTL class-name strings and stubs for TObject and TCustomAttribute.
+    Emitted exactly once across the whole program (the first class section that
+    runs); guarded so multiple units + the program do not redefine the symbols. }
+  EmitSys := not FSystemDefsEmitted;
   Self.Emit('.data');
-  Self.EmitClassNameString('TObject');
-  Self.EmitClassNameString('TCustomAttribute');
+  if EmitSys then
+  begin
+    Self.EmitClassNameString('TObject');
+    Self.EmitClassNameString('TCustomAttribute');
+  end;
 
   { User class data: name strings, method tables, typeinfo, vtables. }
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  for I := 0 to ATypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     CD := TClassTypeDef(TD.Def);
@@ -1036,40 +1072,44 @@ begin
   end;
 
   { Generic class instances — emit class-name string blobs. }
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     Self.EmitClassNameString(GI.TypeName);
   end;
 
-  { Typeinfo blocks — must come after all class-name strings are emitted. }
-  Self.Emit('.balign 8');
-  Self.Emit('typeinfo_TObject:');
-  Self.Emit(#9'.quad 0');          { parent = nil }
-  Self.Emit(#9'.quad 0');          { impllist = nil }
-  Self.Emit(#9'.quad __cn_TObject + 12');
-  Self.Emit(#9'.quad 0');          { methods = nil }
-  Self.Emit(#9'.quad 8');          { size = 8 (vptr only) }
-  Self.Emit(#9'.quad _FieldCleanup_TObject');
-  Self.Emit(#9'.quad vtable_TObject');
-  Self.Emit(#9'.quad 0');          { attrs = nil }
-
-  Self.Emit('.balign 8');
-  Self.Emit('typeinfo_TCustomAttribute:');
-  Self.Emit(#9'.quad typeinfo_TObject');
-  Self.Emit(#9'.quad 0');
-  Self.Emit(#9'.quad __cn_TCustomAttribute + 12');
-  Self.Emit(#9'.quad 0');
-  Self.Emit(#9'.quad 8');
-  Self.Emit(#9'.quad _FieldCleanup_TCustomAttribute');
-  Self.Emit(#9'.quad vtable_TCustomAttribute');
-  Self.Emit(#9'.quad 0');
-
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  { Typeinfo blocks — must come after all class-name strings are emitted.
+    System-class typeinfo is emitted once (EmitSys). }
+  if EmitSys then
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    Self.Emit('.balign 8');
+    Self.Emit('typeinfo_TObject:');
+    Self.Emit(#9'.quad 0');          { parent = nil }
+    Self.Emit(#9'.quad 0');          { impllist = nil }
+    Self.Emit(#9'.quad __cn_TObject + 12');
+    Self.Emit(#9'.quad 0');          { methods = nil }
+    Self.Emit(#9'.quad 8');          { size = 8 (vptr only) }
+    Self.Emit(#9'.quad _FieldCleanup_TObject');
+    Self.Emit(#9'.quad vtable_TObject');
+    Self.Emit(#9'.quad 0');          { attrs = nil }
+
+    Self.Emit('.balign 8');
+    Self.Emit('typeinfo_TCustomAttribute:');
+    Self.Emit(#9'.quad typeinfo_TObject');
+    Self.Emit(#9'.quad 0');
+    Self.Emit(#9'.quad __cn_TCustomAttribute + 12');
+    Self.Emit(#9'.quad 0');
+    Self.Emit(#9'.quad 8');
+    Self.Emit(#9'.quad _FieldCleanup_TCustomAttribute');
+    Self.Emit(#9'.quad vtable_TCustomAttribute');
+    Self.Emit(#9'.quad 0');
+  end;
+
+  for I := 0 to ATypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
 
@@ -1107,9 +1147,9 @@ begin
   end;
 
   { Typeinfo blocks for generic class instances. }
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
     MName := NativeMangle(GI.TypeName);
     if RT.Parent <> nil then
@@ -1133,46 +1173,52 @@ begin
     Self.Emit(#9'.quad 0');
   end;
 
-  { Field cleanup functions for the fixed RTL classes. }
-  Self.EmitFieldCleanupFn('TObject', nil);
-  Self.EmitFieldCleanupFn('TCustomAttribute', nil);
-  { Field cleanup for user classes. }
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  { Field cleanup functions for the fixed RTL classes (once). }
+  if EmitSys then
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    Self.EmitFieldCleanupFn('TObject', nil);
+    Self.EmitFieldCleanupFn('TCustomAttribute', nil);
+  end;
+  { Field cleanup for user classes. }
+  for I := 0 to ATypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     Self.EmitFieldCleanupFn(TD.Name, RT);
   end;
   { Field cleanup for generic class instances. }
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
     Self.EmitFieldCleanupFn(NativeMangle(GI.TypeName), RT);
   end;
 
   { Vtables — must be in .data (pointers to other data symbols). }
   Self.Emit('.data');
-  Self.Emit('.balign 8');
-  Self.Emit('vtable_TObject:');
-  Self.Emit(#9'.quad typeinfo_TObject');
-  Self.Emit(#9'.quad TObject_Destroy');
-  Self.Emit(#9'.quad TObject_ToString');
-
-  Self.Emit('.balign 8');
-  Self.Emit('vtable_TCustomAttribute:');
-  Self.Emit(#9'.quad typeinfo_TCustomAttribute');
-  Self.Emit(#9'.quad TObject_Destroy');
-  Self.Emit(#9'.quad TObject_ToString');
-
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  if EmitSys then
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    Self.Emit('.balign 8');
+    Self.Emit('vtable_TObject:');
+    Self.Emit(#9'.quad typeinfo_TObject');
+    Self.Emit(#9'.quad TObject_Destroy');
+    Self.Emit(#9'.quad TObject_ToString');
+
+    Self.Emit('.balign 8');
+    Self.Emit('vtable_TCustomAttribute:');
+    Self.Emit(#9'.quad typeinfo_TCustomAttribute');
+    Self.Emit(#9'.quad TObject_Destroy');
+    Self.Emit(#9'.quad TObject_ToString');
+  end;
+
+  for I := 0 to ATypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     if not RT.HasVTable() then Continue;
@@ -1200,9 +1246,9 @@ begin
   end;
 
   { Vtables for generic class instances. }
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
     if not RT.HasVTable() then Continue;
     MName := NativeMangle(GI.TypeName);
@@ -1225,6 +1271,9 @@ begin
       Self.Emit(Line);
     end;
   end;
+
+  if EmitSys then
+    FSystemDefsEmitted := True;
 end;
 
 { Lower an interface method call.  The receiver is an interface fat pointer
@@ -1407,7 +1456,10 @@ end;
 
   impllist is a NULL-terminated array of (typeinfo, itab) pairs, walked by the
   _GetItab runtime helper for `as`-casts. }
-procedure TX86_64Backend.EmitInterfaceDefs(AProg: TProgram);
+procedure TX86_64Backend.EmitInterfaceDefs(ATypeDecls: TObjectList;
+                                           AGenericInstances: TObjectList;
+                                           AGenericIntfInstances: TObjectList;
+                                           ASymTable: TSymbolTable);
 var
   I, J, K:    Integer;
   TD:         TTypeDecl;
@@ -1422,9 +1474,9 @@ var
   MDecl:      TMethodDecl;
 begin
   { Typeinfo blocks for every plain interface. }
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  for I := 0 to ATypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TInterfaceTypeDef) then Continue;
     Self.Emit('.balign 8');
     Self.Emit('.globl typeinfo_' + NativeMangle(TD.Name));
@@ -1433,9 +1485,9 @@ begin
   end;
 
   { Typeinfo blocks for generic interface instances. }
-  for I := 0 to AProg.GenericIntfInstances.Count - 1 do
+  for I := 0 to AGenericIntfInstances.Count - 1 do
   begin
-    GII := TGenericInterfaceInstance(AProg.GenericIntfInstances.Items[I]);
+    GII := TGenericInterfaceInstance(AGenericIntfInstances.Items[I]);
     Self.Emit('.balign 8');
     Self.Emit('.globl typeinfo_' + GII.InstName);
     Self.Emit('typeinfo_' + GII.InstName + ':');
@@ -1443,11 +1495,11 @@ begin
   end;
 
   { Itab and impllist blocks for each implementing class. }
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  for I := 0 to ATypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     ClassRT := TRecordTypeDesc(TDesc);
     if ClassRT.ImplementsCount() = 0 then Continue;
@@ -1466,7 +1518,13 @@ begin
         if Self.IsAbstractClassMethod(ClassRT, MethName) then
           MethRef := '_AbstractMethodError'
         else
-          MethRef := NativeMangle(TD.Name) + '_' + MethName;
+          { Resolve the actual emitted method symbol: a class method declared in
+            a dependency unit carries a unit-prefixed ResolvedQbeName, whereas a
+            program-level class method is named TypeName_MethodName.
+            MethodEmitNameNative picks the right one. }
+          MethRef := MethodEmitNameNative(
+                       FindMethodInClassDef(TClassTypeDef(TD.Def), MethName),
+                       TD.Name, MethName);
         Self.Emit(#9'.quad ' + MethRef);
       end;
     end;
@@ -1485,9 +1543,9 @@ begin
   end;
 
   { Itab and impllist for generic class instances that implement interfaces. }
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     ClassRT := TRecordTypeDesc(GI.TypeDesc);
     if ClassRT.ImplementsCount() = 0 then Continue;
     MName := NativeMangle(GI.TypeName);
@@ -1844,7 +1902,9 @@ begin
     Self.Emit(Format(#9'addq $%d, %s', [AFA.FieldInfo.Offset, ADstReg]));
 end;
 
-procedure TX86_64Backend.EmitClassMethods(AProg: TProgram);
+procedure TX86_64Backend.EmitClassMethods(ATypeDecls: TObjectList;
+                                          AGenericInstances: TObjectList;
+                                          AGenericRecordInstances: TObjectList);
 var
   I, J: Integer;
   TD:   TTypeDecl;
@@ -1854,9 +1914,9 @@ var
   GRI:  TGenericRecordInstance;
   Decl: TMethodDecl;
 begin
-  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+  for I := 0 to ATypeDecls.Count - 1 do
   begin
-    TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
+    TD := TTypeDecl(ATypeDecls.Items[I]);
     if TD.Def is TClassTypeDef then
     begin
       CD := TClassTypeDef(TD.Def);
@@ -1879,9 +1939,9 @@ begin
     end;
   end;
 
-  for I := 0 to AProg.GenericInstances.Count - 1 do
+  for I := 0 to AGenericInstances.Count - 1 do
   begin
-    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    GI := TGenericInstance(AGenericInstances.Items[I]);
     for J := 0 to GI.ClassDef.Methods.Count - 1 do
     begin
       Decl := TMethodDecl(GI.ClassDef.Methods.Items[J]);
@@ -1890,9 +1950,9 @@ begin
     end;
   end;
 
-  for I := 0 to AProg.GenericRecordInstances.Count - 1 do
+  for I := 0 to AGenericRecordInstances.Count - 1 do
   begin
-    GRI := TGenericRecordInstance(AProg.GenericRecordInstances.Items[I]);
+    GRI := TGenericRecordInstance(AGenericRecordInstances.Items[I]);
     for J := 0 to GRI.RecordDef.Methods.Count - 1 do
     begin
       Decl := TMethodDecl(GRI.RecordDef.Methods.Items[J]);
@@ -2656,6 +2716,25 @@ begin
       Self.Emit(#9'callq _StringTrim');
       Exit;
     end;
+    { GetMem(N) → _BlaiseGetMem(N) → pointer.  Size arg is Integer (32-bit). }
+    if SameText(FC.Name, 'GetMem') and (FC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'movl %eax, %edi');
+      Self.Emit(#9'callq _BlaiseGetMem');
+      Exit;
+    end;
+    { ReallocMem(P, N) → _BlaiseReallocMem(P, N) → pointer. }
+    if SameText(FC.Name, 'ReallocMem') and (FC.Args.Count = 2) then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+      Self.Emit(#9'movl %eax, %esi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _BlaiseReallocMem');
+      Exit;
+    end;
     if SameText(FC.Name, 'SameText') and (FC.Args.Count = 2) then
     begin
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
@@ -2952,6 +3031,21 @@ begin
     Self.Emit(#9'addq %rcx, %rax');   { %rax = element address }
     Self.EmitLoadVar('(%rax)',
       TStaticArrayTypeDesc(SAE.StrExpr.ResolvedType).ElementType);
+    Exit;
+  end;
+
+  { PChar element read: P[I] where P: PChar.  The pointer lives directly in
+    the variable slot; load one (zero-extended) byte at base + I. }
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyPChar) then
+  begin
+    SAE := TStringSubscriptExpr(AExpr);
+    Self.EmitExprToEax(SAE.StrExpr);
+    Self.Emit(#9'movq %rax, %rcx');
+    Self.EmitExprToEax(SAE.IndexExpr);
+    Self.Emit(#9'addq %rcx, %rax');
+    Self.Emit(#9'movzbl (%rax), %eax');
     Exit;
   end;
 
@@ -5319,6 +5413,14 @@ begin
       Self.EmitWrite(PC, False);
       Exit;
     end;
+    { FreeMem(P) → _BlaiseFreeMem(P).  Pointer arg in %rdi. }
+    if SameText(PC.Name, 'FreeMem') and (PC.Args.Count = 1) then
+    begin
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _BlaiseFreeMem');
+      Exit;
+    end;
     { Delete(S, Idx, Count): S := _StringDelete(S, Idx, Count) with ARC. }
     if SameText(PC.Name, 'Delete') and (PC.Args.Count = 3) then
     begin
@@ -5952,6 +6054,23 @@ begin
   if AStmt is TStaticSubscriptAssign then
   begin
     SSA := TStaticSubscriptAssign(AStmt);
+    if (SSA.ResolvedArrayType <> nil) and
+       (SSA.ResolvedArrayType.Kind = tyPChar) then
+    begin
+      { PChar subscript write: P[I] := byte — storeb at base + I.  The PChar
+        value lives directly in the variable slot (an 8-byte pointer). }
+      Self.EmitExprToEax(SSA.ValueExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(SSA.IndexExpr);
+      if Self.IsLocal(SSA.ArrayName) then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
+      Self.Emit(#9'addq %rax, %rcx');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movb %al, (%rcx)');
+      Exit;
+    end;
     if (SSA.ResolvedArrayType <> nil) and
        (SSA.ResolvedArrayType.Kind = tyDynArray) then
     begin
@@ -6943,7 +7062,8 @@ begin
   end;
 
   { Class method bodies before standalone procedures. }
-  Self.EmitClassMethods(AProg);
+  Self.EmitClassMethods(AProg.Block.TypeDecls, AProg.GenericInstances,
+                        AProg.GenericRecordInstances);
 
   { Standalone procedures/functions, then $main. }
   for I := 0 to AProg.Block.ProcDecls.Count - 1 do
@@ -6981,6 +7101,9 @@ begin
   Self.Emit(#9'movq %rsp, %rbp');
   { _SetArgs(argc, argv): args already in %edi/%rsi — pass through. }
   Self.Emit(#9'callq _SetArgs');
+  { Call initialization sections of imported units in order. }
+  for I := 0 to FUnitInitNames.Count - 1 do
+    Self.Emit(#9'callq ' + FUnitInitNames.Strings[I] + '_init');
   { Program body. }
   FExitLabel := Self.NewLabel('main_exit');
   for I := 0 to AProg.Block.Stmts.Count - 1 do
@@ -7002,11 +7125,124 @@ begin
   { Data section: all registered global integer/float/record slots. }
   Self.EmitDataSection();
   { Class data section: typeinfo, vtables, field-cleanup functions. }
-  Self.EmitClassSection(AProg);
+  Self.EmitClassSection(AProg.Block.TypeDecls, AProg.GenericInstances,
+                        AProg.SymbolTable);
   { Interface data: typeinfo tokens, itabs, impllists.  Emitted after the class
     section so the class-name strings and method symbols it references exist. }
   Self.Emit('.data');
-  Self.EmitInterfaceDefs(AProg);
+  Self.EmitInterfaceDefs(AProg.Block.TypeDecls, AProg.GenericInstances,
+                         AProg.GenericIntfInstances, AProg.SymbolTable);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Whole-program multi-unit: emit one dependency unit                   }
+{ ------------------------------------------------------------------ }
+
+procedure TX86_64Backend.EmitUnit(AUnit: TUnit);
+var
+  I, J:      Integer;
+  ImplDecl:  TMethodDecl;
+  VD:        TVarDecl;
+  UnitSym:   TSymbolTable;
+begin
+  { Register the unit's global variables (interface + implementation sections)
+    as data slots, mirroring EmitProgram's program-global registration. }
+  for I := 0 to AUnit.IntfBlock.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(AUnit.IntfBlock.Decls.Items[I]);
+    if IsIntFamily(VD.ResolvedType) or IsFloatFamily(VD.ResolvedType) or
+       ((VD.ResolvedType <> nil) and
+        (VD.ResolvedType.Kind in [tyRecord, tyStaticArray, tyClass,
+                                  tyProcedural, tyPointer, tyString, tyPChar,
+                                  tyDynArray, tyInterface])) then
+      for J := 0 to VD.Names.Count - 1 do
+      begin
+        Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
+        if VD.IsThreadVar then
+          Self.MarkThreadVar(VD.Names.Strings[J]);
+      end;
+  end;
+  for I := 0 to AUnit.ImplBlock.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(AUnit.ImplBlock.Decls.Items[I]);
+    if IsIntFamily(VD.ResolvedType) or IsFloatFamily(VD.ResolvedType) or
+       ((VD.ResolvedType <> nil) and
+        (VD.ResolvedType.Kind in [tyRecord, tyStaticArray, tyClass,
+                                  tyProcedural, tyPointer, tyString, tyPChar,
+                                  tyDynArray, tyInterface])) then
+      for J := 0 to VD.Names.Count - 1 do
+      begin
+        Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
+        if VD.IsThreadVar then
+          Self.MarkThreadVar(VD.Names.Strings[J]);
+      end;
+  end;
+
+  { Class / record method bodies declared in the interface block, plus any
+    generic class/record instances declared in this unit.  After
+    LinkClassMethodImpls the definition's TMethodDecl nodes hold the bodies. }
+  Self.EmitClassMethods(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
+                        AUnit.GenericRecordInstances);
+
+  { Standalone procedures/functions from the implementation block.  Skip class
+    method stubs (OwnerTypeName <> '': their bodies were transferred to the
+    class definition and emitted above), generic templates, forward decls, and
+    externals. }
+  for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
+  begin
+    ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
+    if ImplDecl.OwnerTypeName <> '' then Continue;
+    if ImplDecl.TypeParams <> nil then Continue;
+    if ImplDecl.Body = nil then Continue;
+    if ImplDecl.IsExternal then Continue;
+    Self.EmitFunctionDef(ImplDecl);
+  end;
+
+  { Concrete generic function instances declared in this unit. }
+  for I := 0 to AUnit.GenericFuncInstances.Count - 1 do
+    Self.EmitFunctionDef(
+      TGenericFuncInstance(AUnit.GenericFuncInstances.Items[I]).MethodDecl);
+
+  { Initialization section: emit as a function <Unit>_init that the program's
+    $main calls before the program body.  (Finalization is not yet wired into
+    the native main footer; emitted but only init is invoked.) }
+  if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
+  begin
+    FUnitInitNames.Add(NativeMangle(AUnit.Name));
+    Self.ClearFrame();
+    FExitLabel := '';
+    FExcDepth     := 0;
+    FExcFrameNext := 0;
+    FFinallyStack.Clear();
+    Self.Emit('.text');
+    Self.Emit('.globl ' + NativeMangle(AUnit.Name) + '_init');
+    Self.Emit(NativeMangle(AUnit.Name) + '_init:');
+    Self.Emit(#9'pushq %rbp');
+    Self.Emit(#9'movq %rsp, %rbp');
+    for I := 0 to AUnit.InitStmts.Count - 1 do
+      Self.EmitStmt(TASTStmt(AUnit.InitStmts.Items[I]));
+    Self.Emit(#9'movl $0, %eax');
+    Self.Emit(#9'leave');
+    Self.Emit(#9'ret');
+    Self.Emit('.type ' + NativeMangle(AUnit.Name) + '_init, @function');
+  end;
+
+  { Class data section: typeinfo, vtables, field-cleanup functions for the
+    unit's classes.  System defs (TObject/TCustomAttribute) emitted once. }
+  { In the whole-program multi-unit model the unit is analysed as part of the
+    program, so AUnit.SymbolTable is nil and its resolved types live in the
+    program's (global) symbol table — supplied via SetSymbolTable before
+    AppendUnit.  Prefer the unit's own table when it was analysed standalone. }
+  if AUnit.SymbolTable <> nil then
+    UnitSym := AUnit.SymbolTable
+  else
+    UnitSym := FSymTable;
+  Self.EmitClassSection(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
+                        UnitSym);
+  { Interface data: typeinfo tokens, itabs, impllists. }
+  Self.Emit('.data');
+  Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
+                         AUnit.GenericIntfInstances, UnitSym);
 end;
 
 end.

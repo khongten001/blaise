@@ -58,9 +58,19 @@ type
     { Emit the program entry function ($main): label, frame setup, the
       _SetArgs runtime call, then lower the program body, then return 0. }
     procedure EmitProgram(AProg: TProgram); virtual; abstract;
+    { Emit a dependency unit's bodies + data (no $main) into the shared buffer
+      for the whole-program multi-unit model. }
+    procedure EmitUnit(AUnit: TUnit); virtual; abstract;
   public
     constructor Create(const ATarget: TTargetDesc); virtual;
     destructor Destroy; override;
+
+    { Multi-unit (whole-program) codegen: AppendUnit per dependency, then
+      AppendProgram — neither clears the buffer, so units + program accumulate
+      into one assembly text retrieved via GetOutput. }
+    procedure AppendUnit(AUnit: TUnit);
+    procedure AppendProgram(AProg: TProgram);
+    function  GetOutput: string;
 
     procedure SetSymbolTable(ASymTable: TSymbolTable);
 
@@ -107,6 +117,23 @@ function TNativeBackend.GenerateProgram(AProg: TProgram): string;
 begin
   FAsm.Clear();
   Self.EmitProgram(AProg);
+  Result := FAsm.ToString();
+end;
+
+procedure TNativeBackend.AppendUnit(AUnit: TUnit);
+begin
+  { No clear — units and the program accumulate into one buffer. }
+  Self.EmitUnit(AUnit);
+end;
+
+procedure TNativeBackend.AppendProgram(AProg: TProgram);
+begin
+  { No clear — emit the program after the already-appended units. }
+  Self.EmitProgram(AProg);
+end;
+
+function TNativeBackend.GetOutput: string;
+begin
   Result := FAsm.ToString();
 end;
 

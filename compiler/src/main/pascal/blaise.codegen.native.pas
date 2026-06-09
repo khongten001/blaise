@@ -23,10 +23,10 @@ unit blaise.codegen.native;
                      printing, ABI).  Concrete subclasses live in
                      blaise.codegen.native.<arch> — TX86_64Backend first.
 
-  This unit is currently a SHELL (milestone M0b): the interface, target
-  selection, and backend factory are wired up, but code emission is not yet
-  implemented and raises ENativeCodeGenError so an attempted native compile
-  fails loudly with a clear message rather than producing nothing. }
+  Single-program compilation (Generate) and whole-program multi-unit
+  compilation (AppendUnit per dependency, then AppendProgram) are both
+  implemented for the x86-64 target.  Single-unit-in-isolation (GenerateUnit)
+  is not yet implemented and raises ENativeCodeGenError. }
 
 interface
 
@@ -151,17 +151,17 @@ end;
 procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
 begin
   Self.EnsureBackend();
-  raise ENativeCodeGenError.Create(
-    'native backend: multi-unit compilation not yet implemented (target ' +
-    TargetName(FTarget) + ')');
+  FBackend.SetSymbolTable(FSymTable);
+  FBackend.AppendUnit(AUnit);
+  FOutput := FBackend.GetOutput();
 end;
 
 procedure TCodeGenNative.AppendProgram(AProg: TProgram);
 begin
   Self.EnsureBackend();
-  raise ENativeCodeGenError.Create(
-    'native backend: multi-unit compilation not yet implemented (target ' +
-    TargetName(FTarget) + ')');
+  FBackend.SetSymbolTable(FSymTable);
+  FBackend.AppendProgram(AProg);
+  FOutput := FBackend.GetOutput();
 end;
 
 function TCodeGenNative.GetOutput: string;
