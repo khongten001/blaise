@@ -152,6 +152,8 @@ type
       scope-exit cleanup. }
     procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
                                       const ABaseReg: string);
+    procedure EmitRecordFieldRetains(ART: TRecordTypeDesc;
+                                     const ABaseReg: string);
     { Emit all class/record method definitions for the given type decls plus
       the supplied generic-instance lists. }
     procedure EmitClassMethods(ATypeDecls: TObjectList;
@@ -993,6 +995,48 @@ begin
       Self.Emit(Format(#9'movq $0, %d(%s)', [F.Offset, ABaseReg]))
     else
       Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
+  end;
+end;
+
+procedure TX86_64Backend.EmitRecordFieldRetains(ART: TRecordTypeDesc;
+  const ABaseReg: string);
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  if ART = nil then Exit;
+  for I := 0 to ART.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ART.Fields.Items[I]);
+    if F.TypeDesc = nil then Continue;
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      Self.Emit(#9'pushq %r14');
+      if F.Offset > 0 then
+        Self.Emit(Format(#9'leaq %d(%s), %%r14', [F.Offset, ABaseReg]))
+      else
+        Self.Emit(Format(#9'movq %s, %%r14', [ABaseReg]));
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(F.TypeDesc), '%r14');
+      Self.Emit(#9'popq %r14');
+      Continue;
+    end;
+    if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
+            or (F.TypeDesc.Kind = tyDynArray)
+            or (F.TypeDesc.Kind = tyInterface)) then
+      Continue;
+    if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
+      Continue;
+    if F.IsWeak then Continue;
+    if F.Offset > 0 then
+      Self.Emit(Format(#9'movq %d(%s), %%rdi', [F.Offset, ABaseReg]))
+    else
+      Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
+    if F.TypeDesc.IsString() then
+      Self.Emit(#9'callq _StringAddRef')
+    else if F.TypeDesc.Kind = tyDynArray then
+      Self.Emit(#9'callq _DynArrayAddRef')
+    else
+      Self.Emit(#9'callq _ClassAddRef');
   end;
 end;
 
@@ -2152,6 +2196,24 @@ begin
           itab word sits at StackOff+8 which IntfItabOperand computes from Off+8. }
         Inc(IntIdx2);
       end
+      else if (P.ResolvedType <> nil) and
+              (P.ResolvedType.Kind in [tyRecord, tyStaticArray]) and
+              not P.IsVarParam then
+      begin
+        if IntIdx2 < 6 then
+        begin
+          Self.AddSlot(P.ParamName, nil, Offset);
+          Self.AddSlot(P.ParamName + '_data', P.ResolvedType, Offset);
+        end
+        else
+        begin
+          FFrame.Add(P.ParamName, StackOff);
+          FFrameTypes.Add(P.ParamName, nil);
+          Inc(StackOff, 8);
+          Self.AddSlot(P.ParamName + '_data', P.ResolvedType, Offset);
+        end;
+        Inc(IntIdx2);
+      end
       else
       begin
         if IntIdx2 < 6 then
@@ -2522,7 +2584,9 @@ begin
     if (TIdentExpr(AExpr).ResolvedType <> nil) and
        (TIdentExpr(AExpr).ResolvedType.Kind in [tyRecord, tyStaticArray]) then
     begin
-      if Self.IsLocal(TIdentExpr(AExpr).Name) then
+      if FSretFunc and (TIdentExpr(AExpr).Name = 'Result') then
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
+      else if Self.IsLocal(TIdentExpr(AExpr).Name) then
         Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AExpr).Name]));
@@ -2836,6 +2900,17 @@ begin
     begin
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
       Self.EmitNarrowToType(FC.ResolvedType);
+      Exit;
+    end;
+    if (FC.ResolvedType <> nil) and (FC.ResolvedType.Kind = tyRecord) and
+       (TMethodDecl(FC.ResolvedDecl).ResolvedReturnType <> nil) and
+       (TMethodDecl(FC.ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
+    begin
+      MD := TMethodDecl(FC.ResolvedDecl);
+      Self.Emit(Format(#9'subq $%d, %%rsp',
+        [(TRecordTypeDesc(MD.ResolvedReturnType).TotalSize() + 15) and (-16)]));
+      Self.EmitSretCall(FuncSymbolOf(FC), MD, FC.Args, '(%rsp)');
+      Self.Emit(#9'leaq (%rsp), %rax');
       Exit;
     end;
     Self.EmitCall(FuncSymbolOf(FC), TMethodDecl(FC.ResolvedDecl), FC.Args);
@@ -6015,37 +6090,118 @@ begin
     end
     else if FA.IsVarParam then
     begin
-      { Var-param or record-Self: the slot holds a pointer to the record storage. }
       Self.Emit(#9'pushq %rax');
       if Self.IsLocal(FA.RecordName) then
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
-      Self.Emit(#9'popq %rax');
-      Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
-    end
-    else if Self.IsLocal(FA.RecordName) then
-    begin
-      { Local record: VarOperand gives the base address of the record block. }
-      if FA.FieldInfo.Offset = 0 then
-        Self.EmitStoreVar(Self.VarOperand(FA.RecordName), FA.FieldInfo.TypeDesc)
+      if FA.FieldInfo.TypeDesc.IsString() then
+      begin
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'pushq %rcx');
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+          Self.Emit(#9'popq %rcx');
+        end;
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else if FA.FieldInfo.TypeDesc.Kind = tyClass then
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else if FA.FieldInfo.TypeDesc.Kind = tyDynArray then
+      begin
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'pushq %rcx');
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _DynArrayAddRef');
+          Self.Emit(#9'popq %rcx');
+        end;
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _DynArrayRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
       else
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]));
-        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]),
-          FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
       end;
     end
     else
     begin
-      { Global record: name(%rip) is the base. }
-      if FA.FieldInfo.Offset = 0 then
-        Self.EmitStoreVar(FA.RecordName + '(%rip)', FA.FieldInfo.TypeDesc)
+      Self.Emit(#9'pushq %rax');
+      if Self.IsLocal(FA.RecordName) then
+        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
+      if FA.FieldInfo.TypeDesc.IsString() then
+      begin
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'pushq %rcx');
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+          Self.Emit(#9'popq %rcx');
+        end;
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else if FA.FieldInfo.TypeDesc.Kind = tyClass then
+      begin
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
+      else if FA.FieldInfo.TypeDesc.Kind = tyDynArray then
+      begin
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'pushq %rcx');
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _DynArrayAddRef');
+          Self.Emit(#9'popq %rcx');
+        end;
+        Self.Emit(Format(#9'movq %d(%%rcx), %%rdi', [FA.FieldInfo.Offset]));
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _DynArrayRelease');
+        Self.Emit(#9'popq %rcx');
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
+      end
       else
       begin
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
-        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]),
-          FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'popq %rax');
+        Self.EmitStoreVar(Format('%d(%%rcx)', [FA.FieldInfo.Offset]), FA.FieldInfo.TypeDesc);
       end;
     end;
     Exit;
@@ -6738,7 +6894,8 @@ begin
        ((P.ResolvedType = nil) or
         not (P.ResolvedType.Kind in [tyString, tyPChar, tyPointer,
                                      tyClass, tyInterface,
-                                     tyOpenArray, tyDynArray])) then
+                                     tyOpenArray, tyDynArray,
+                                     tyRecord, tyStaticArray])) then
       raise ENativeCodeGenError.Create(
         'native backend: unsupported parameter type (param ' + P.ParamName + ')');
   end;
@@ -6839,6 +6996,23 @@ begin
         Inc(IntIdx);
       end;
     end
+    else if (P.ResolvedType <> nil) and
+            (P.ResolvedType.Kind in [tyRecord, tyStaticArray]) then
+    begin
+      if IntIdx < 6 then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rsi', [SysVArgRegs64[IntIdx]]));
+        Self.Emit(Format(#9'leaq %s, %%rdi',
+          [Self.VarOperand(P.ParamName + '_data')]));
+        Self.Emit(Format(#9'movq $%d, %%rdx', [P.ResolvedType.RawSize()]));
+        Self.Emit(#9'callq memcpy');
+        Self.Emit(Format(#9'leaq %s, %%rax',
+          [Self.VarOperand(P.ParamName + '_data')]));
+        Self.Emit(Format(#9'movq %%rax, %s',
+          [Self.VarOperand(P.ParamName)]));
+        Inc(IntIdx);
+      end;
+    end
     else
     begin
       if IntIdx < 6 then
@@ -6914,6 +7088,13 @@ begin
       Self.Emit(Format(#9'movq %s, %%rdi',
         [Self.IntfObjOperand(P.ParamName, False)]));
       Self.Emit(#9'callq _ClassAddRef');
+    end
+    else if P.ResolvedType.Kind = tyRecord then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(P.ParamName)]));
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(P.ResolvedType), '%rbx');
+      Self.Emit(#9'popq %rbx');
     end;
   end;
   { Body.  FExitLabel directs Exit statements to the epilogue. }
@@ -7006,6 +7187,13 @@ begin
       Self.Emit(Format(#9'movq %s, %%rdi',
         [Self.IntfObjOperand(P.ParamName, False)]));
       Self.Emit(#9'callq _ClassRelease');
+    end
+    else if P.ResolvedType.Kind = tyRecord then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(P.ParamName)]));
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(P.ResolvedType), '%rbx');
+      Self.Emit(#9'popq %rbx');
     end;
   end;
   { Now that every ARC release call is done (none can clobber the result), load

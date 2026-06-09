@@ -218,6 +218,14 @@ type
     procedure TestRun_Native_MultiUnit_Class;
     procedure TestRun_Native_MultiUnit_Interface;
     procedure TestRun_Native_MultiUnit_GlobalsAndInit;
+
+    { By-value record params (memcpy + ARC on managed leaves). }
+    procedure TestRun_Native_RecordParam_ReadOnly;
+    procedure TestRun_Native_RecordParam_Mutate;
+    procedure TestRun_Native_RecordParam_ThreeStrings;
+    procedure TestRun_Native_RecordParam_IntOnly;
+    procedure TestRun_Native_RecordParam_InlineSretArg;
+    procedure TestRun_Native_RecordParam_ConstSkipsArc;
   end;
 
 implementation
@@ -3528,6 +3536,105 @@ begin
   AssertEquals('stdout parity', QOut, NOut);
   AssertEquals('exit parity', QCode, NCode);
   AssertEquals('value', 'configured 100' + LE + '102' + LE, NOut);
+end;
+
+{ --- By-value record param tests ------------------------------------------ }
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_ReadOnly;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TRec = record S: string; end;'
+    + 'procedure Show(R: TRec);'
+    + 'begin WriteLn(''in: '', R.S) end;'
+    + 'var W: TRec;'
+    + 'begin'
+    + '  W.S := ''heap-'' + ''allocated'';'
+    + '  Show(W);'
+    + '  WriteLn(''out: '', W.S)'
+    + 'end.',
+    'in: heap-allocated' + LE + 'out: heap-allocated' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_Mutate;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TR = record S: string; end;'
+    + 'procedure Mutate(R: TR); begin R.S := ''new'' end;'
+    + 'var W: TR;'
+    + 'begin'
+    + '  W.S := ''heap-'' + ''allocated'';'
+    + '  Mutate(W);'
+    + '  WriteLn(W.S)'
+    + 'end.',
+    'heap-allocated' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_ThreeStrings;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TR = record A: string; B: string; C: string; end;'
+    + 'procedure Mutate(R: TR); begin R.A := ''changed'' end;'
+    + 'var W: TR;'
+    + 'begin'
+    + '  W.A := ''heap-'' + ''one'';'
+    + '  W.B := ''heap-'' + ''two'';'
+    + '  W.C := ''heap-'' + ''three'';'
+    + '  Mutate(W);'
+    + '  WriteLn(W.A)'
+    + 'end.',
+    'heap-one' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_IntOnly;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TR = record A: Integer; B: Integer; end;'
+    + 'procedure Show(R: TR); begin WriteLn(R.A + R.B) end;'
+    + 'var W: TR;'
+    + 'begin W.A := 40; W.B := 2; Show(W) end.',
+    '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_InlineSretArg;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TInner = record N: string; end;'
+    + '     TOuter = record S: string; Inner: TInner; end;'
+    + 'function MakeOuter: TOuter;'
+    + 'begin Result.S := ''outer-'' + ''heap''; Result.Inner.N := ''inner-'' + ''heap'' end;'
+    + 'procedure Consume(R: TOuter);'
+    + 'begin WriteLn(R.S, ''|'', R.Inner.N) end;'
+    + 'begin'
+    + '  Consume(MakeOuter())'
+    + 'end.',
+    'outer-heap|inner-heap' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordParam_ConstSkipsArc;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TR = record S: string; end;'
+    + 'procedure Show(const R: TR);'
+    + 'begin WriteLn(R.S) end;'
+    + 'var W: TR;'
+    + 'begin'
+    + '  W.S := ''heap-'' + ''text'';'
+    + '  Show(W);'
+    + '  WriteLn(W.S)'
+    + 'end.',
+    'heap-text' + LE + 'heap-text' + LE, 0);
 end;
 
 initialization
