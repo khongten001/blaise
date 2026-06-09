@@ -3576,6 +3576,22 @@ begin
   end;
 end;
 
+{ True when the expression produces a fresh sret record temporary that
+  nothing else holds — i.e. a record-returning function/method call.  A
+  plain variable reference (record-typed TIdentExpr) is NOT a temp: its
+  storage belongs to the enclosing scope and must not be cleaned up here. }
+function IsRecordSretTempExpr(AExpr: TASTExpr): Boolean;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  if AExpr.ResolvedType = nil then Exit;
+  if AExpr.ResolvedType.Kind <> tyRecord then Exit;
+  if AExpr is TFuncCallExpr then
+    Result := TFuncCallExpr(AExpr).ResolvedDecl <> nil
+  else if AExpr is TMethodCallExpr then
+    Result := not TMethodCallExpr(AExpr).IsConstructorCall;
+end;
+
 procedure TCodeGenQBE.EmitOwnedArgReleases(AArgs: TObjectList;
   AArgTemps: TStringList; AParams: TObjectList);
 var
@@ -3588,6 +3604,18 @@ begin
     if I >= AArgTemps.Count then Break;
     if AArgTemps.Strings[I] = '' then Continue;
     Arg := TASTExpr(AArgs.Items[I]);
+    { Record-typed sret temporary from an inline call (DoSomething(GetRec())):
+      release each managed leaf of the temp buffer.  The buffer itself is
+      stack-allocated and dies with the caller's frame, but its string /
+      dynarray / class / interface fields hold heap refs that need balancing.
+      Reg-returned (POD) records have no managed leaves, so the helper is
+      a safe no-op in that case. }
+    if IsRecordSretTempExpr(Arg) then
+    begin
+      EmitRecordReleaseFields(TRecordTypeDesc(Arg.ResolvedType),
+        AArgTemps.Strings[I]);
+      Continue;
+    end;
     if not ExprOwnsRef(Arg) then Continue;
     Par := nil;
     if (AParams <> nil) and (I < AParams.Count) then

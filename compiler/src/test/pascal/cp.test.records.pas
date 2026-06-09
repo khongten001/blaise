@@ -11,7 +11,7 @@ unit cp.test.records;
 interface
 
 uses
-  blaise.testing,
+  blaise.testing, strutils,
   uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
 
 type
@@ -85,6 +85,9 @@ type
     procedure TestCodegen_RecordByValParam_StringField_AddRefRelease;
     procedure TestCodegen_RecordByValParam_DynArrayField_AddRefRelease;
     procedure TestCodegen_RecordByValParam_ConstParam_NoARC;
+    procedure TestCodegen_RecordByValArg_CallResultTemp_CleansFields;
+    procedure TestCodegen_RecordByValArg_VarRef_DoesNotClean;
+    procedure TestCodegen_RecordByValArg_NestedManagedField_Recurses;
   end;
 
 implementation
@@ -917,6 +920,93 @@ begin
     no _StringAddRef should appear anywhere in the emitted IR. }
   AssertEquals('no AddRef anywhere for const record param',
     -1, Pos('_StringAddRef', IR));
+end;
+
+{ Caller-side: DoSomething(GetRec()) — the sret temporary from GetRec is
+  consumed by DoSomething and not bound to a named variable.  The call
+  site must release each managed leaf of the temp buffer after the call,
+  otherwise the temp's heap string leaks every time the caller runs. }
+procedure TRecordTests.TestCodegen_RecordByValArg_CallResultTemp_CleansFields;
+var
+  IR, DriverBody: string;
+  StartIdx, EndIdx: Integer;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TR = record S: string; end;
+        function MakeIt: TR; begin Result.S := 'x' end;
+        procedure Consume(R: TR); begin end;
+        procedure Driver; begin Consume(MakeIt()) end;
+        begin Driver() end.
+        ''');
+  StartIdx := Pos('$Driver(', IR);
+  AssertTrue('Driver emitted', StartIdx > 0);
+  EndIdx := StartIdx;
+  while (EndIdx <= Length(IR)) and (IR[EndIdx] <> '}') do Inc(EndIdx);
+  DriverBody := Copy(IR, StartIdx, EndIdx - StartIdx);
+  AssertTrue('Driver releases temp''s string field after Consume() call',
+    Pos('_StringRelease', DriverBody) > 0);
+end;
+
+{ Caller-side, variable arg: DoSomething(W) where W is a named record
+  variable.  The variable's storage belongs to the enclosing scope (and
+  is cleaned up at scope exit), so the call site must NOT emit a
+  per-field Release after the call — doing so would corrupt W. }
+procedure TRecordTests.TestCodegen_RecordByValArg_VarRef_DoesNotClean;
+var
+  IR, DriverBody: string;
+  StartIdx, EndIdx: Integer;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TR = record S: string; end;
+        procedure Consume(R: TR); begin end;
+        procedure Driver;
+        var W: TR;
+        begin W.S := 'x'; Consume(W) end;
+        begin Driver() end.
+        ''');
+  StartIdx := Pos('$Driver(', IR);
+  AssertTrue('Driver emitted', StartIdx > 0);
+  EndIdx := StartIdx;
+  while (EndIdx <= Length(IR)) and (IR[EndIdx] <> '}') do Inc(EndIdx);
+  DriverBody := Copy(IR, StartIdx, EndIdx - StartIdx);
+  { Two pre-existing _StringReleases: (1) release-old in W.S := 'x' and
+    (2) W's scope-exit cleanup.  My call-site cleanup must NOT add a
+    third for the Consume(W) call site — W is a named variable, not a
+    temp.  Three Releases would indicate the call site corrupted W. }
+  AssertEquals('no extra _StringRelease at variable-arg call site',
+    2, CountOccurrences('_StringRelease', DriverBody));
+end;
+
+{ Nested-record-with-managed-leaf temporary: the helper recurses through
+  TInner so both the outer string and the inner string get released. }
+procedure TRecordTests.TestCodegen_RecordByValArg_NestedManagedField_Recurses;
+var
+  IR, DriverBody: string;
+  StartIdx, EndIdx: Integer;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TInner = record N: string; end;
+          TOuter = record S: string; Inner: TInner; end;
+        function MakeIt: TOuter;
+        begin Result.S := 'a'; Result.Inner.N := 'b' end;
+        procedure Consume(R: TOuter); begin end;
+        procedure Driver; begin Consume(MakeIt()) end;
+        begin Driver() end.
+        ''');
+  StartIdx := Pos('$Driver(', IR);
+  AssertTrue('Driver emitted', StartIdx > 0);
+  EndIdx := StartIdx;
+  while (EndIdx <= Length(IR)) and (IR[EndIdx] <> '}') do Inc(EndIdx);
+  DriverBody := Copy(IR, StartIdx, EndIdx - StartIdx);
+  AssertEquals('two _StringRelease — outer.S and inner.N — after Consume call',
+    2, CountOccurrences('_StringRelease', DriverBody));
 end;
 
 initialization

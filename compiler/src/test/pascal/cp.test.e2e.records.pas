@@ -40,6 +40,7 @@ type
     procedure TestRun_Class_RecordField_NestedClass_FullCleanup;
     procedure TestRun_Record_InterfaceField_AssignCallAndCopy;
     procedure TestRun_Record_ByValParam_StringField_HeapARC;
+    procedure TestRun_Record_ByValArg_InlineCallResult_NestedManaged_NoLeak;
   end;
 
 implementation
@@ -434,6 +435,38 @@ const
     end.
     ''';
 
+  { Caller-side cleanup of an inline call result used as a by-value
+    record arg: Consume(MakeOuter()) where TOuter has a string field
+    AND a nested TInner whose own field is a string.  Before the fix
+    the temporary's two heap strings leaked once per Driver call; over
+    many iterations the process either OOMs or the allocator's free
+    list ages noticeably.  Successful run prints both fields once and
+    exits 0; we drive the pattern in a tight loop so a leak would
+    show up under stress. }
+  SrcRecordByValArg_InlineNestedManaged = '''
+    program P;
+    type
+      TInner = record N: string; end;
+      TOuter = record S: string; Inner: TInner; end;
+    function MakeOuter: TOuter;
+    begin
+      Result.S := 'outer-' + 'heap';
+      Result.Inner.N := 'inner-' + 'heap'
+    end;
+    procedure Consume(R: TOuter);
+    begin
+      WriteLn(R.S, '|', R.Inner.N)
+    end;
+    procedure Driver;
+    begin
+      Consume(MakeOuter())
+    end;
+    var i: Integer;
+    begin
+      for i := 1 to 1000 do Driver()
+    end.
+    ''';
+
   SrcRecordDynArrayReturnByValueNoLeak = '''
     program P;
     type
@@ -698,6 +731,17 @@ begin
   AssertEquals('exit code 0 (no use-after-free crash)', 0, RCode);
   AssertEquals('caller string survives callee whole-string reassignment',
     'before: heap-allocated' + LE + 'after:  heap-allocated' + LE, Output);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_ByValArg_InlineCallResult_NestedManaged_NoLeak;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run',
+    CompileAndRun(SrcRecordByValArg_InlineNestedManaged, Output, RCode));
+  AssertEquals('exit code 0 over 1000 inline-temp iterations', 0, RCode);
+  AssertTrue('Driver printed nested strings',
+    Pos('outer-heap|inner-heap' + LE, Output) >= 0);
 end;
 
 initialization
