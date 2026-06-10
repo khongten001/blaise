@@ -322,6 +322,10 @@ type
       signedness — used after a call (whose ABI return is 32-bit) and to
       implement an explicit narrowing/widening type cast. }
     procedure EmitNarrowToType(AType: TTypeDesc);
+    { Inc(x)/Dec(x) with support for simple variables, implicit-Self fields,
+      var params, and field-access expressions. }
+    procedure EmitIncDec(ACall: TProcCall);
+    procedure EmitIncDecAddrOp(IsInc, IsWide, HasStep: Boolean);
     { Evaluate a boolean condition and branch: if true jump ATrueLabel, else
       fall through to AFalseLabel (a jmp is emitted to it). }
     procedure EmitCondBranch(AExpr: TASTExpr;
@@ -392,7 +396,8 @@ begin
     tyInteger, tyUInt32, tyEnum:                Result := 4;
     tyInt64, tyUInt64,
     tyProcedural, tyPointer, tyPChar, tyClass,
-    tyString, tyMetaClass, tyDynArray:          Result := 8;
+    tyString, tyMetaClass, tyDynArray,
+    tyInterface:                                Result := 8;
     tyDouble:                                   Result := 8;
     tySingle:                                   Result := 4;
     tySet:
@@ -2409,6 +2414,198 @@ begin
     else
       Self.Emit(#9'movslq %eax, %rax');
   end;
+end;
+
+{ Inc(x)/Dec(x) — general-purpose handler.
+  Emits load-from-address / add-or-sub / store-to-address, supporting:
+  - simple local/global TIdentExpr
+  - implicit-Self field TIdentExpr (bare FField inside a method)
+  - var-param TIdentExpr (dereference the pointer)
+  - TFieldAccessExpr (Rec.Field, Obj.Field)
+  - TDerefExpr (P^) }
+procedure TX86_64Backend.EmitIncDec(ACall: TProcCall);
+var
+  Arg0: TASTExpr;
+  IE: TIdentExpr;
+  FAE: TFieldAccessExpr;
+  IsInc, IsWide, HasStep: Boolean;
+  FI: TFieldInfo;
+begin
+  IsInc := SameText(ACall.Name, 'Inc');
+  Arg0 := TASTExpr(ACall.Args.Items[0]);
+  HasStep := ACall.Args.Count >= 2;
+  IsWide := (Arg0.ResolvedType <> nil) and
+            (Arg0.ResolvedType.Kind in [tyInt64, tyUInt64, tyClass, tyPointer]);
+
+  if Arg0 is TIdentExpr then
+  begin
+    IE := TIdentExpr(Arg0);
+    if HasStep then
+    begin
+      Self.EmitExprToEax(TASTExpr(ACall.Args.Items[1]));
+      if IsWide then Self.Emit(#9'movq %rax, %rcx')
+      else           Self.Emit(#9'movl %eax, %ecx');
+    end;
+    if IE.IsImplicitSelf and (IE.ImplicitFieldInfo <> nil) then
+    begin
+      FI := TFieldInfo(IE.ImplicitFieldInfo);
+      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('Self')]));
+      if FI.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rdx', [FI.Offset]));
+      Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
+    end
+    else if IE.ParamMode <> pmNone then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(IE.Name)]));
+      Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
+    end
+    else
+    begin
+      if IsWide then
+      begin
+        if Self.IsLocal(IE.Name) then
+          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(IE.Name)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [IE.Name]));
+      end
+      else
+      begin
+        if Self.IsLocal(IE.Name) then
+          Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(IE.Name)]))
+        else
+          Self.Emit(Format(#9'movl %s(%%rip), %%eax', [IE.Name]));
+      end;
+      if HasStep then
+      begin
+        if IsWide then
+        begin
+          if IsInc then Self.Emit(#9'addq %rcx, %rax')
+          else          Self.Emit(#9'subq %rcx, %rax');
+        end
+        else
+        begin
+          if IsInc then Self.Emit(#9'addl %ecx, %eax')
+          else          Self.Emit(#9'subl %ecx, %eax');
+        end;
+      end
+      else
+      begin
+        if IsWide then
+        begin
+          if IsInc then Self.Emit(#9'addq $1, %rax')
+          else          Self.Emit(#9'subq $1, %rax');
+        end
+        else
+        begin
+          if IsInc then Self.Emit(#9'addl $1, %eax')
+          else          Self.Emit(#9'subl $1, %eax');
+        end;
+      end;
+      if IsWide then
+      begin
+        if Self.IsLocal(IE.Name) then
+          Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(IE.Name)]))
+        else
+          Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [IE.Name]));
+      end
+      else
+      begin
+        if Self.IsLocal(IE.Name) then
+          Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(IE.Name)]))
+        else
+          Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [IE.Name]));
+      end;
+    end;
+  end
+  else if Arg0 is TFieldAccessExpr then
+  begin
+    FAE := TFieldAccessExpr(Arg0);
+    if FAE.IsImplicitSelf then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('Self')]));
+      if (FAE.ImplicitBaseInfo <> nil) and (FAE.ImplicitBaseInfo.Offset > 0) then
+        Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.ImplicitBaseInfo.Offset]));
+    end
+    else if FAE.IsVarParam then
+    begin
+      if Self.IsLocal(FAE.RecordName) then
+        Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FAE.RecordName]));
+    end
+    else
+    begin
+      if Self.IsLocal(FAE.RecordName) then
+        Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [FAE.RecordName]));
+    end;
+    if FAE.FieldInfo.Offset > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
+    Self.Emit(#9'pushq %rdx');
+    if HasStep then
+    begin
+      Self.EmitExprToEax(TASTExpr(ACall.Args.Items[1]));
+      if IsWide then Self.Emit(#9'movq %rax, %rcx')
+      else           Self.Emit(#9'movl %eax, %ecx');
+    end;
+    Self.Emit(#9'popq %rdx');
+    Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
+  end
+  else if Arg0 is TDerefExpr then
+  begin
+    Self.EmitExprToEax(TDerefExpr(Arg0).Expr);
+    Self.Emit(#9'pushq %rax');
+    if HasStep then
+    begin
+      Self.EmitExprToEax(TASTExpr(ACall.Args.Items[1]));
+      if IsWide then Self.Emit(#9'movq %rax, %rcx')
+      else           Self.Emit(#9'movl %eax, %ecx');
+    end;
+    Self.Emit(#9'popq %rdx');
+    Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
+  end
+  else
+    raise ENativeCodeGenError.Create(
+      'native backend: Inc/Dec on unsupported expression form');
+end;
+
+procedure TX86_64Backend.EmitIncDecAddrOp(IsInc, IsWide, HasStep: Boolean);
+begin
+  if IsWide then
+    Self.Emit(#9'movq (%rdx), %rax')
+  else
+    Self.Emit(#9'movl (%rdx), %eax');
+  if HasStep then
+  begin
+    if IsWide then
+    begin
+      if IsInc then Self.Emit(#9'addq %rcx, %rax')
+      else          Self.Emit(#9'subq %rcx, %rax');
+    end
+    else
+    begin
+      if IsInc then Self.Emit(#9'addl %ecx, %eax')
+      else          Self.Emit(#9'subl %ecx, %eax');
+    end;
+  end
+  else
+  begin
+    if IsWide then
+    begin
+      if IsInc then Self.Emit(#9'addq $1, %rax')
+      else          Self.Emit(#9'subq $1, %rax');
+    end
+    else
+    begin
+      if IsInc then Self.Emit(#9'addl $1, %eax')
+      else          Self.Emit(#9'subl $1, %eax');
+    end;
+  end;
+  if IsWide then
+    Self.Emit(#9'movq %rax, (%rdx)')
+  else
+    Self.Emit(#9'movl %eax, (%rdx)');
 end;
 
 { Load a float value from memory into %xmm0. }
@@ -6559,79 +6756,13 @@ begin
       end;
       Exit;
     end;
-    { Inc(x) / Inc(x,n) / Dec(x) / Dec(x,n) — in-place add/sub. }
+    { Inc(x) / Inc(x,n) / Dec(x) / Dec(x,n) — in-place add/sub.
+      Supports TIdentExpr (local, global, implicit-Self field, var param)
+      and TFieldAccessExpr (record/class field). }
     if (SameText(PC.Name, 'Inc') or SameText(PC.Name, 'Dec')) and
        (PC.Args.Count >= 1) and (PC.Args.Count <= 2) then
     begin
-      if TASTExpr(PC.Args.Items[0]) is TIdentExpr then
-      begin
-        FDynArgName := TIdentExpr(TASTExpr(PC.Args.Items[0])).Name;
-        if (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
-           (TASTExpr(PC.Args.Items[0]).ResolvedType.Kind in
-              [tyInt64, tyUInt64, tyClass, tyPointer]) then
-        begin
-          if PC.Args.Count >= 2 then
-          begin
-            Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-            Self.Emit(#9'movq %rax, %rcx');
-          end;
-          if Self.IsLocal(FDynArgName) then
-            Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FDynArgName)]))
-          else
-            Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FDynArgName]));
-          if PC.Args.Count >= 2 then
-          begin
-            if SameText(PC.Name, 'Inc') then
-              Self.Emit(#9'addq %rcx, %rax')
-            else
-              Self.Emit(#9'subq %rcx, %rax');
-          end
-          else
-          begin
-            if SameText(PC.Name, 'Inc') then
-              Self.Emit(#9'addq $1, %rax')
-            else
-              Self.Emit(#9'subq $1, %rax');
-          end;
-          if Self.IsLocal(FDynArgName) then
-            Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(FDynArgName)]))
-          else
-            Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [FDynArgName]));
-        end
-        else
-        begin
-          if PC.Args.Count >= 2 then
-          begin
-            Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-            Self.Emit(#9'movl %eax, %ecx');
-          end;
-          if Self.IsLocal(FDynArgName) then
-            Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(FDynArgName)]))
-          else
-            Self.Emit(Format(#9'movl %s(%%rip), %%eax', [FDynArgName]));
-          if PC.Args.Count >= 2 then
-          begin
-            if SameText(PC.Name, 'Inc') then
-              Self.Emit(#9'addl %ecx, %eax')
-            else
-              Self.Emit(#9'subl %ecx, %eax');
-          end
-          else
-          begin
-            if SameText(PC.Name, 'Inc') then
-              Self.Emit(#9'addl $1, %eax')
-            else
-              Self.Emit(#9'subl $1, %eax');
-          end;
-          if Self.IsLocal(FDynArgName) then
-            Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(FDynArgName)]))
-          else
-            Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [FDynArgName]));
-        end;
-      end
-      else
-        raise ENativeCodeGenError.Create(
-          'native backend: Inc/Dec only supports simple variable arguments');
+      Self.EmitIncDec(PC);
       Exit;
     end;
     { Include(S, elem): S := S or (1 shl ord(elem)) }

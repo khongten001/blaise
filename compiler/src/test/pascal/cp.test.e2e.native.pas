@@ -257,6 +257,13 @@ type
     { Typed-pointer float writes }
     procedure TestRun_Native_DoublePtrWrite;
     procedure TestRun_Native_SinglePtrWrite_NoAdjacentClobber;
+
+    { Inc/Dec on non-simple-variable arguments }
+    procedure TestRun_Native_IncDec_RecordField;
+    procedure TestRun_Native_IncDec_PtrDeref;
+
+    { Type-cast on pointer-sized types }
+    procedure TestRun_Native_TypeCast_PointerClass;
   end;
 
 implementation
@@ -4045,6 +4052,56 @@ begin
     + '  WriteLn(B)'
     + 'end.',
     '9.5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IncDec_RecordField;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TRec = record X: Integer; Y: Integer; end;'
+    + 'var R: TRec;'
+    + 'begin'
+    + '  R.X := 10;'
+    + '  R.Y := 100;'
+    + '  Inc(R.X);'
+    + '  Inc(R.Y, 5);'
+    + '  Dec(R.X, 3);'
+    + '  WriteLn(R.X);'
+    + '  WriteLn(R.Y)'
+    + 'end.',
+    '8' + LE + '105' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_IncDec_PtrDeref;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'var N: Integer;'
+    + 'var P: ^Integer;'
+    + 'begin'
+    + '  N := 20;'
+    + '  P := @N;'
+    + '  Inc(P^);'
+    + '  Inc(P^, 4);'
+    + '  WriteLn(N)'
+    + 'end.',
+    '25' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_TypeCast_PointerClass;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'var N: Integer; P: Pointer;'
+    + 'begin'
+    + '  N := 42;'
+    + '  P := Pointer(N);'
+    + '  WriteLn(Integer(P))'
+    + 'end.',
+    '42' + LE, 0);
 end;
 
 initialization
