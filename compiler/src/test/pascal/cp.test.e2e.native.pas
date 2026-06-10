@@ -313,6 +313,9 @@ type
 
     { M8b — named string constant used in assignment and as argument. }
     procedure TestRun_Native_StringConst;
+
+    { M8b — sret forwarding: outer function assigns Result from inner sret call. }
+    procedure TestRun_Native_SretForward;
   end;
 
 implementation
@@ -4630,6 +4633,26 @@ begin
     + '  WriteLn(''done'') '
     + 'end.',
     'hello' + LE + 'done' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_SretForward;
+begin
+  Self.AssertRunsOnBoth(
+    'program TestSretFwd; '
+    + 'type '
+    + '  TPair = record A: Integer; B: Integer; end; '
+    + 'function MakePair(X, Y: Integer): TPair; '
+    + 'begin Result.A := X; Result.B := Y; end; '
+    + 'function DoubledPair(X, Y: Integer): TPair; '
+    + 'begin Result := MakePair(X * 2, Y * 2); end; '
+    + 'var '
+    + '  P: TPair; '
+    + 'begin '
+    + '  P := DoubledPair(5, 7); '
+    + '  WriteLn(P.A); '
+    + '  WriteLn(P.B); '
+    + 'end.',
+    '10' + LE + '14' + LE, 0);
 end;
 
 initialization

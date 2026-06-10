@@ -296,10 +296,15 @@ type
                        AArgs: TObjectList);
     { Emit a call to a record-returning function using the sret convention:
       ASretAddr is the AT&T operand for the destination buffer (already allocated
-      by the caller), passed as the hidden first integer argument in %rdi. }
+      by the caller), passed as the hidden first integer argument in %rdi.
+      When ASretIsIndirect is True the operand holds a *pointer* to the buffer
+      (sret forwarding from an outer sret function) and must be loaded with movq
+      instead of leaq. }
     procedure EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
-                           AArgs: TObjectList; const ASretAddr: string);
-    procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string);
+                           AArgs: TObjectList; const ASretAddr: string;
+                           ASretIsIndirect: Boolean);
+    procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string;
+                                 ASretIsIndirect: Boolean);
     { Indirect call: load a bare function pointer from APtrOperand (an AT&T
       memory operand, e.g. "-8(%rbp)"), set up args as for EmitCall, then
       dispatch via callq *%r10.  AProcType supplies the param list for
@@ -4203,7 +4208,7 @@ begin
         Self.Emit(#9'callq ' + FuncSymbolOf(FC));
       end
       else
-        Self.EmitSretCall(FuncSymbolOf(FC), MD, FC.Args, '(%rsp)');
+        Self.EmitSretCall(FuncSymbolOf(FC), MD, FC.Args, '(%rsp)', False);
       Self.Emit(#9'leaq (%rsp), %rax');
       Exit;
     end;
@@ -6979,7 +6984,7 @@ begin
         if ISFld.Offset > 0 then
           Self.Emit(Format(#9'addq $%d, %%rbx', [ISFld.Offset]));
         Self.EmitRecordFieldReleases(TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
-        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr), '(%rbx)');
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr), '(%rbx)', False);
         Self.Emit(#9'popq %rbx');
       end
       else if (Asgn.ResolvedLhsType.Kind = tyRecord) and
@@ -6997,7 +7002,7 @@ begin
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
           TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
           TFuncCallExpr(Asgn.Expr).Args,
-          '(%rbx)');
+          '(%rbx)', False);
         Self.Emit(#9'popq %rbx');
       end
       else if (Asgn.ResolvedLhsType.Kind in [tyRecord, tyStaticArray]) then
@@ -7121,18 +7126,24 @@ begin
        (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
        (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
     begin
-      if Self.IsLocal(Asgn.Name) then
+      if FSretFunc and SameText(Asgn.Name, 'Result') then
         Self.EmitSretCall(
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
           TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
           TFuncCallExpr(Asgn.Expr).Args,
-          Self.VarOperand(Asgn.Name))
+          Self.VarOperand('Result'), True)
+      else if Self.IsLocal(Asgn.Name) then
+        Self.EmitSretCall(
+          FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
+          TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
+          TFuncCallExpr(Asgn.Expr).Args,
+          Self.VarOperand(Asgn.Name), False)
       else
         Self.EmitSretCall(
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
           TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
           TFuncCallExpr(Asgn.Expr).Args,
-          Asgn.Name + '(%rip)');
+          Asgn.Name + '(%rip)', False);
       Exit;
     end;
     { sret assignment: method call returning a record.
@@ -7144,12 +7155,15 @@ begin
        (TMethodDecl(TMethodCallExpr(Asgn.Expr).ResolvedMethod).ResolvedReturnType <> nil) and
        (TMethodDecl(TMethodCallExpr(Asgn.Expr).ResolvedMethod).ResolvedReturnType.Kind = tyRecord) then
     begin
-      if Self.IsLocal(Asgn.Name) then
+      if FSretFunc and SameText(Asgn.Name, 'Result') then
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
-          Self.VarOperand(Asgn.Name))
+          Self.VarOperand('Result'), True)
+      else if Self.IsLocal(Asgn.Name) then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), False)
       else
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
-          Asgn.Name + '(%rip)');
+          Asgn.Name + '(%rip)', False);
       Exit;
     end;
     if IsFloatFamily(Asgn.ResolvedLhsType) then
@@ -7954,7 +7968,7 @@ begin
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
       Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
-      Self.EmitMethodSretCall(TMethodCallExpr(FA.Expr), '(%rbx)');
+      Self.EmitMethodSretCall(TMethodCallExpr(FA.Expr), '(%rbx)', False);
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
@@ -8002,7 +8016,7 @@ begin
         FuncSymbolOf(TFuncCallExpr(FA.Expr)),
         TMethodDecl(TFuncCallExpr(FA.Expr).ResolvedDecl),
         TFuncCallExpr(FA.Expr).Args,
-        '(%rbx)');
+        '(%rbx)', False);
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
@@ -9051,7 +9065,8 @@ end;
     5. callq AFuncSym
   All args must be integer-family value params (≤5 since %rdi is taken by sret). }
 procedure TX86_64Backend.EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
-                                      AArgs: TObjectList; const ASretAddr: string);
+                                      AArgs: TObjectList; const ASretAddr: string;
+                                      ASretIsIndirect: Boolean);
 var
   I:        Integer;
   Arg:      TASTExpr;
@@ -9059,8 +9074,12 @@ var
   CleanUp:  Integer;
 begin
   { Save the destination address in %r10 (caller-saved scratch that survives
-    arg evaluation and the memset call). }
-  Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+    arg evaluation and the memset call).  When ASretIsIndirect the operand holds
+    a pointer to the buffer (sret forwarding) — load it with movq. }
+  if ASretIsIndirect then
+    Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+  else
+    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
   { Zero the destination buffer via memset(%r10, 0, size), mirroring the QBE
     backend.  ADecl.ResolvedReturnType.Kind = tyRecord here. }
   if (ADecl <> nil) and (ADecl.ResolvedReturnType <> nil) then
@@ -9070,8 +9089,10 @@ begin
     Self.Emit(Format(#9'movq $%d, %%rdx',
       [TRecordTypeDesc(ADecl.ResolvedReturnType).TotalSize()]));
     Self.Emit(#9'callq memset');
-    { Reload %r10 after the call (memset may have clobbered caller-saves). }
-    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
   end;
   if AArgs.Count <= 5 then
   begin
@@ -9083,7 +9104,10 @@ begin
     end;
     for I := AArgs.Count - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
-    Self.Emit(#9'movq %r10, %rdi');
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%rdi', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%rdi', [ASretAddr]));
     Self.Emit(#9'callq ' + AFuncSym);
   end
   else
@@ -9092,7 +9116,11 @@ begin
       explicit args = slots 1..Count).  Evaluate, load regs, leave overflow. }
     AllocSz := (((AArgs.Count + 1) * 8 + 15) and (-16));
     Self.Emit(Format(#9'subq $%d, %%rsp', [AllocSz]));
-    Self.Emit(Format(#9'movq %%r10, 0(%%rsp)', []));
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%rax', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%rax', [ASretAddr]));
+    Self.Emit(#9'movq %rax, 0(%rsp)');
     for I := 0 to AArgs.Count - 1 do
     begin
       Arg := TASTExpr(AArgs.Items[I]);
@@ -9116,7 +9144,8 @@ end;
   Register layout: %rdi = sret ptr, %rsi = Self, %rdx.. = user args.
   The destination buffer is at ASretAddr (AT&T operand, already allocated). }
 procedure TX86_64Backend.EmitMethodSretCall(ACall: TMethodCallExpr;
-                                            const ASretAddr: string);
+                                            const ASretAddr: string;
+                                            ASretIsIndirect: Boolean);
 var
   I:        Integer;
   MD:       TMethodDecl;
@@ -9131,7 +9160,10 @@ begin
       'native backend: method-sret call has no ResolvedMethod (' + ACall.Name + ')');
   Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
 
-  Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+  if ASretIsIndirect then
+    Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+  else
+    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
   if (MD.ResolvedReturnType <> nil) then
   begin
     Self.Emit(#9'movq %r10, %rdi');
@@ -9139,7 +9171,10 @@ begin
     Self.Emit(Format(#9'movq $%d, %%rdx',
       [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
     Self.Emit(#9'callq memset');
-    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
   end;
 
   if ACall.Args.Count <= 4 then
@@ -9184,7 +9219,10 @@ begin
 
     for I := ACall.Args.Count - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
-    Self.Emit(Format(#9'leaq %s, %%rdi', [ASretAddr]));
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%rdi', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%rdi', [ASretAddr]));
     if MD.VTableSlot >= 0 then
     begin
       Self.Emit(#9'pushq %rdi');
@@ -9588,6 +9626,16 @@ begin
             [Self.IntfObjOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
           Self.Emit(Format(#9'movq $0, %s',
             [Self.IntfItabOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
+        end
+      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyRecord then
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+        begin
+          Self.Emit(Format(#9'leaq %s, %%rdi',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          Self.Emit(#9'xorl %esi, %esi');
+          Self.Emit(Format(#9'movq $%d, %%rdx',
+            [TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize()]));
+          Self.Emit(#9'callq memset');
         end;
     end;
   { ARC: retain string/class/interface value params on entry — balances the
