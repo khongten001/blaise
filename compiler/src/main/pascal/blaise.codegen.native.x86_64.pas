@@ -2138,18 +2138,37 @@ begin
       a record/class field uses a contiguous fat pointer (obj / obj+8). }
     if AExpr is TIdentExpr then
     begin
-      Self.Emit(Format(#9'movq %s, %%rax',
-        [Self.IntfItabOperand(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
-      Self.Emit(#9'pushq %rax');             { itab }
-      Self.Emit(Format(#9'movq %s, %%rax',
-        [Self.IntfObjOperand(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
-      Self.Emit(#9'pushq %rax');             { obj; stack now (obj, itab) }
+      if TIdentExpr(AExpr).IsImplicitSelf and
+         (TIdentExpr(AExpr).ImplicitFieldInfo <> nil) then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+        if TFieldInfo(TIdentExpr(AExpr).ImplicitFieldInfo).Offset > 0 then
+          Self.Emit(Format(#9'addq $%d, %%rax',
+            [TFieldInfo(TIdentExpr(AExpr).ImplicitFieldInfo).Offset]));
+        Self.Emit(#9'movq 8(%rax), %rcx');
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'movq (%rax), %rcx');
+        Self.Emit(#9'pushq %rcx');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax',
+          [Self.IntfItabOperand(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+        Self.Emit(#9'pushq %rax');
+        Self.Emit(Format(#9'movq %s, %%rax',
+          [Self.IntfObjOperand(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+        Self.Emit(#9'pushq %rax');
+      end;
+    end
+    else if AExpr is TFieldAccessExpr then
+    begin
+      Self.EmitInterfaceFieldAddr(TFieldAccessExpr(AExpr), '%rax');
+      Self.Emit(#9'movq 8(%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');
+      Self.Emit(#9'movq (%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');
     end
     else
-      { An interface stored in another record/class field (a TFieldAccessExpr
-        source) would need its contiguous fat pointer read from memory.  That
-        receiver-shape resolution is only implemented in the QBE backend; the
-        native backend handles the common ident and class sources. }
       raise ENativeCodeGenError.Create(
         'native backend: unsupported interface source for interface-field store');
     Self.Emit(#9'movq (%rsp), %rdi');        { new obj }
