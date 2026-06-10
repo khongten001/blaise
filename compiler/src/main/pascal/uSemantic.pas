@@ -1917,6 +1917,7 @@ var
   IntfDesc:  TInterfaceTypeDesc;
   ParentSym: TSymbol;
   ParentRT:  TRecordTypeDesc;
+  FldInfo:   TFieldInfo;
 begin
   Result := nil;
 
@@ -2061,9 +2062,12 @@ begin
         RT.Parent := ParentRT;
         RT.CopyVTableFrom(ParentRT);
         for K := 0 to ParentRT.Fields.Count - 1 do
-          RT.AddField(
-            TFieldInfo(ParentRT.Fields.Items[K]).Name,
-            TFieldInfo(ParentRT.Fields.Items[K]).TypeDesc);
+        begin
+          FldInfo := TFieldInfo(ParentRT.Fields.Items[K]);
+          RT.AddField(FldInfo.Name, FldInfo.TypeDesc);
+          RT.FindField(FldInfo.Name).IsUnretained := FldInfo.IsUnretained;
+          RT.FindField(FldInfo.Name).IsWeak       := FldInfo.IsWeak;
+        end;
       end;
     end
     else if not SameText(ATypeName, 'TObject') then
@@ -3416,6 +3420,8 @@ begin
             begin
               FldInfo := TFieldInfo(ParentRT.Fields.Items[K]);
               RT.AddField(FldInfo.Name, FldInfo.TypeDesc);
+              RT.FindField(FldInfo.Name).IsUnretained := FldInfo.IsUnretained;
+              RT.FindField(FldInfo.Name).IsWeak       := FldInfo.IsWeak;
             end;
           end;
         end;

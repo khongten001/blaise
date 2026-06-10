@@ -78,6 +78,7 @@ type
     procedure TestCodegen_UnretainedField_NoWeakAssign;
     procedure TestCodegen_UnretainedField_CleanupDoesNotRelease;
     procedure TestCodegen_UnretainedField_ReleasesOwnedRHS;
+    procedure TestCodegen_UnretainedField_InheritedCleanupDoesNotRelease;
   end;
 
 implementation
@@ -647,6 +648,44 @@ begin
   if P1 > 0 then Body := Copy(Body, 0, P1);
   AssertTrue('unretained field release after store of owned RHS',
     Pos('_ClassRelease', Body) > 0);
+end;
+
+procedure TWeakRefTests.TestCodegen_UnretainedField_InheritedCleanupDoesNotRelease;
+var
+  IR, Cleanup: string;
+  P0, P1: Integer;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TTarget = class end;
+          TBase = class
+            [Unretained] FRef: TTarget;
+          end;
+          TChild = class(TBase)
+            FOwned: TTarget;
+          end;
+        var C: TChild;
+        begin
+          C := TChild.Create()
+        end.
+        ''');
+  P0 := Pos('function $_FieldCleanup_TChild', IR);
+  AssertTrue('_FieldCleanup_TChild present', P0 > 0);
+  Cleanup := Copy(IR, P0, 400);
+  P1 := Pos('}', Cleanup);
+  if P1 > 0 then Cleanup := Copy(Cleanup, 0, P1);
+  { FOwned is a regular class field and must be released. }
+  AssertTrue('owned field is released',
+    Pos('_ClassRelease', Cleanup) > 0);
+  { But there must be exactly ONE _ClassRelease — the inherited
+    [Unretained] FRef must NOT be released.  Two releases would mean
+    the unretained flag was lost during inheritance. }
+  P0 := Pos('_ClassRelease', Cleanup);
+  P1 := Pos('_ClassRelease', Copy(Cleanup, P0 + 13, Length(Cleanup)));
+  AssertTrue('inherited [Unretained] field must not be released (only one release)',
+    P1 < 0);
 end;
 
 initialization
