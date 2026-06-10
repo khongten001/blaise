@@ -347,6 +347,7 @@ type
     procedure TestRun_Native_RecReturn_Nested_RcInt2;
     procedure TestRun_Native_RecReturn_Method_RcInt1;
     procedure TestRun_Native_RecReturn_ManagedStaysSret;
+    procedure TestRun_Native_RecordSret_OutParam;
   end;
 
 implementation
@@ -5174,6 +5175,53 @@ begin
     end.
     ''',
     'hello' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecordSret_OutParam;
+begin
+  AssertRunsOnAll('''
+    program P;
+    type
+      TOS = (osLinux, osFreeBSD, osWindows);
+      TCPU = (cpuX86_64, cpuI386, cpuArm64);
+      TTarget = record
+        OS: TOS;
+        CPU: TCPU;
+      end;
+    procedure MakeTarget(AOS: TOS; ACPU: TCPU; out ATarget: TTarget);
+    begin
+      ATarget.OS := AOS;
+      ATarget.CPU := ACPU
+    end;
+    function HostTarget: TTarget;
+    begin
+      MakeTarget(osLinux, cpuX86_64, Result)
+    end;
+    function ParseArgs(out S1: string; out S2: string; out B1: Boolean;
+                       out B2: Boolean; out B3: Boolean;
+                       out Target: TTarget): Boolean;
+    begin
+      Result := True;
+      S1 := '';
+      S2 := '';
+      B1 := False;
+      B2 := False;
+      B3 := False;
+      Target := HostTarget()
+    end;
+    var
+      S1, S2: string;
+      B1, B2, B3: Boolean;
+      T: TTarget;
+    begin
+      ParseArgs(S1, S2, B1, B2, B3, T);
+      if (T.OS = osLinux) and (T.CPU = cpuX86_64) then
+        WriteLn('linux-x86_64')
+      else
+        WriteLn('unknown-unknown')
+    end.
+    ''',
+    'linux-x86_64' + LE, 0);
 end;
 
 initialization

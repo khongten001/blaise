@@ -338,7 +338,8 @@ type
       methods with Self in %rdi).  Only handles the return-capture part. }
     procedure EmitRecordRegReturnCapture(const ADestAddr: string;
                                          ARec: TRecordTypeDesc;
-                                         AClass: TRecReturnClass);
+                                         AClass: TRecReturnClass;
+                                         AIsIndirect: Boolean);
     { Emit a call to a function that returns an interface via sret.  The 16-byte
       buffer (obj+itab) is left on the stack; caller is responsible for loading
       the slots and cleaning up (addq $16, %rsp). }
@@ -3577,6 +3578,9 @@ begin
     begin
       if FSretFunc and (TIdentExpr(AExpr).Name = 'Result') then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
+      else if Self.IsLocal(TIdentExpr(AExpr).Name) and
+              (TIdentExpr(AExpr).ParamMode in [pmRecordValue, pmStaticArrayValue]) then
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
       else if Self.IsLocal(TIdentExpr(AExpr).Name) then
         Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
       else if TIdentExpr(AExpr).ConstArraySymbol <> '' then
@@ -7659,6 +7663,12 @@ begin
           TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
           TFuncCallExpr(Asgn.Expr).Args,
           Self.VarOperand('Result'), True)
+      else if Asgn.IsVarParam then
+        Self.EmitSretCall(
+          FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
+          TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
+          TFuncCallExpr(Asgn.Expr).Args,
+          Self.VarOperand(Asgn.Name), True)
       else if Self.IsLocal(Asgn.Name) then
         Self.EmitSretCall(
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
@@ -7685,6 +7695,9 @@ begin
       if FSretFunc and SameText(Asgn.Name, 'Result') then
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
           Self.VarOperand('Result'), True)
+      else if Asgn.IsVarParam then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), True)
       else if Self.IsLocal(Asgn.Name) then
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
           Self.VarOperand(Asgn.Name), False)
@@ -9853,15 +9866,20 @@ begin
 end;
 
 procedure TX86_64Backend.EmitRecordRegReturnCapture(const ADestAddr: string;
-  ARec: TRecordTypeDesc; AClass: TRecReturnClass);
+  ARec: TRecordTypeDesc; AClass: TRecReturnClass; AIsIndirect: Boolean);
 var
-  Sz: Integer;
+  Sz:      Integer;
+  LoadOp:  string;
 begin
   Sz := ARec.TotalSize();
+  if AIsIndirect then
+    LoadOp := 'movq'
+  else
+    LoadOp := 'leaq';
   case AClass of
     rcInt1:
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(Format(#9'%s %s, %%rcx', [LoadOp, ADestAddr]));
         case Sz of
           1: Self.Emit(#9'movb %al, (%rcx)');
           2: Self.Emit(#9'movw %ax, (%rcx)');
@@ -9871,32 +9889,43 @@ begin
       end;
     rcInt2:
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(Format(#9'%s %s, %%rcx', [LoadOp, ADestAddr]));
         Self.Emit(#9'movq %rax, (%rcx)');
         Self.Emit(#9'movq %rdx, 8(%rcx)');
       end;
     rcSSE1:
       begin
-        if Sz = 4 then
-          Self.Emit(Format(#9'movss %%xmm0, %s', [ADestAddr]))
+        if AIsIndirect then
+        begin
+          Self.Emit(Format(#9'movq %s, %%rcx', [ADestAddr]));
+          if Sz = 4 then
+            Self.Emit(#9'movss %xmm0, (%rcx)')
+          else
+            Self.Emit(#9'movsd %xmm0, (%rcx)');
+        end
         else
-          Self.Emit(Format(#9'movsd %%xmm0, %s', [ADestAddr]));
+        begin
+          if Sz = 4 then
+            Self.Emit(Format(#9'movss %%xmm0, %s', [ADestAddr]))
+          else
+            Self.Emit(Format(#9'movsd %%xmm0, %s', [ADestAddr]));
+        end;
       end;
     rcSSE2:
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(Format(#9'%s %s, %%rcx', [LoadOp, ADestAddr]));
         Self.Emit(#9'movsd %xmm0, (%rcx)');
         Self.Emit(#9'movsd %xmm1, 8(%rcx)');
       end;
     rcIntSSE:
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(Format(#9'%s %s, %%rcx', [LoadOp, ADestAddr]));
         Self.Emit(#9'movq %rax, (%rcx)');
         Self.Emit(#9'movsd %xmm0, 8(%rcx)');
       end;
     rcSSEInt:
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(Format(#9'%s %s, %%rcx', [LoadOp, ADestAddr]));
         Self.Emit(#9'movsd %xmm0, (%rcx)');
         Self.Emit(#9'movq %rax, 8(%rcx)');
       end;
@@ -9933,7 +9962,7 @@ begin
     Self.Emit(#9'callq memset');
     Self.EmitCall(AFuncSym, ADecl, AArgs);
     Self.EmitRecordRegReturnCapture(ASretAddr,
-      TRecordTypeDesc(ADecl.ResolvedReturnType), RC);
+      TRecordTypeDesc(ADecl.ResolvedReturnType), RC, ASretIsIndirect);
     Exit;
   end;
   { Save the destination address in %r10 (caller-saved scratch that survives
@@ -10091,7 +10120,7 @@ begin
     if FMethodArgExtraStack > 0 then
       Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
     Self.EmitRecordRegReturnCapture(ASretAddr,
-      TRecordTypeDesc(MD.ResolvedReturnType), RC);
+      TRecordTypeDesc(MD.ResolvedReturnType), RC, ASretIsIndirect);
     Exit;
   end;
 
