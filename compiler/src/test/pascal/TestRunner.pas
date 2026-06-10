@@ -68,6 +68,7 @@ uses
   cp.test.stringlistfind,
   cp.test.maphash,
   cp.test.constarg,
+  cp.test.defaultargs,
   cp.test.caseenum,
   cp.test.sets,
   cp.test.selfhosting,

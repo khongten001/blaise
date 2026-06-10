@@ -5406,6 +5406,7 @@ begin
         Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
         ACall.Line, ACall.Col);
     end;
+    AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedClassType := RT;
     ACall.ResolvedMethod    := MDecl;
     Exit;
@@ -5455,6 +5456,7 @@ begin
         SemanticError(
           Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
           ACall.Line, ACall.Col);
+      AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
       ACall.ResolvedClassType := RT;
       ACall.ResolvedMethod    := MDecl;
       Exit;
@@ -5542,6 +5544,7 @@ begin
       Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
       ACall.Line, ACall.Col);
 
+  AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
   ACall.ResolvedClassType := RT;
   ACall.ResolvedMethod    := MDecl;
   ACall.IsGlobal          := ObjSym.IsGlobal;
