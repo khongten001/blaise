@@ -293,6 +293,10 @@ type
 
     { String content equality via _StringEquals (not pointer cmp) }
     procedure TestRun_Native_StringEquality;
+
+    { var/out string params: assignment must write through indirection pointer }
+    procedure TestRun_Native_OutParam_String;
+    procedure TestRun_Native_VarParam_String;
   end;
 
 implementation
@@ -4371,6 +4375,34 @@ begin
     + '  if A <> ''world'' then WriteLn(''diff'') else WriteLn(''same'') '
     + 'end.',
     'eq' + LE + 'diff' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_OutParam_String;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'procedure Fill(out S: string); begin S := ''filled'' end; '
+    + 'var X: string; '
+    + 'begin '
+    + '  X := ''old''; '
+    + '  Fill(X); '
+    + '  WriteLn(X) '
+    + 'end.',
+    'filled' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_VarParam_String;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'procedure Append(var S: string); begin S := S + ''_tail'' end; '
+    + 'var X: string; '
+    + 'begin '
+    + '  X := ''head''; '
+    + '  Append(X); '
+    + '  WriteLn(X) '
+    + 'end.',
+    'head_tail' + LE, 0);
 end;
 
 initialization

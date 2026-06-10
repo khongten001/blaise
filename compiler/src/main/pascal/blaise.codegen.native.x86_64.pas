@@ -7010,33 +7010,37 @@ begin
     begin
       Self.EmitExprToEax(Asgn.Expr);
       Self.Emit(#9'pushq %rax');
-      { When the RHS already owns +1 (a function/method/property-getter call
-        result), this assignment consumes that transferred reference and must
-        NOT AddRef again — otherwise the buffer leaks one ref per assignment.
-        The old slot contents are released unconditionally. }
       if not NativeExprOwnsRef(Asgn.Expr) then
       begin
         Self.Emit(#9'movq %rax, %rdi');
         Self.Emit(#9'callq _StringAddRef');
       end;
-      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StringRelease');
-      Self.Emit(#9'popq %rax');
-      if not Self.IsLocal(Asgn.Name) then
+      if Asgn.IsVarParam then
       begin
-        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rax');
+        if not Self.IsLocal(Asgn.Name) then
+        begin
+          Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+          if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        end;
+        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
       end;
-      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyDynArray) then
     begin
-      { Dynamic-array variable assignment: same ARC shape as String.  The data
-        pointer carries a refcount in its header, so b := a must retain the new
-        buffer and release the old before overwriting the slot.  Skip the retain
-        when the RHS already owns +1 (a call result). }
       Self.EmitExprToEax(Asgn.Expr);
       Self.Emit(#9'pushq %rax');
       if not NativeExprOwnsRef(Asgn.Expr) then
@@ -7044,16 +7048,28 @@ begin
         Self.Emit(#9'movq %rax, %rdi');
         Self.Emit(#9'callq _DynArrayAddRef');
       end;
-      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _DynArrayRelease');
-      Self.Emit(#9'popq %rax');
-      if not Self.IsLocal(Asgn.Name) then
+      if Asgn.IsVarParam then
       begin
-        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _DynArrayRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _DynArrayRelease');
+        Self.Emit(#9'popq %rax');
+        if not Self.IsLocal(Asgn.Name) then
+        begin
+          Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+          if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        end;
+        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
       end;
-      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyInterface) then
@@ -7064,14 +7080,25 @@ begin
             (Asgn.ResolvedLhsType.Kind = tyClass) and
             (Asgn.Expr is TNilLiteral) then
     begin
-      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]));
-      Self.Emit(#9'callq _ClassRelease');
-      if not Self.IsLocal(Asgn.Name) then
+      if Asgn.IsVarParam then
       begin
-        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq $0, (%rcx)');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'callq _ClassRelease');
+        if not Self.IsLocal(Asgn.Name) then
+        begin
+          Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+          if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        end;
+        Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Asgn.Name)]));
       end;
-      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind = tyClass) then
@@ -7080,16 +7107,28 @@ begin
       Self.Emit(#9'pushq %rax');
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _ClassAddRef');
-      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ClassRelease');
-      Self.Emit(#9'popq %rax');
-      if not Self.IsLocal(Asgn.Name) then
+      if Asgn.IsVarParam then
       begin
-        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
-        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rax');
+        if not Self.IsLocal(Asgn.Name) then
+        begin
+          Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+          if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        end;
+        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
       end;
-      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(Asgn.Name)]));
     end
     else if (Asgn.ResolvedLhsType <> nil) and
             (Asgn.ResolvedLhsType.Kind in [tyRecord, tyStaticArray]) then
