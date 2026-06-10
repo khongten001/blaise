@@ -13,7 +13,7 @@ unit Math;
 // Provides numeric utilities for integer and floating-point types.
 //
 // The following are implemented as compiler builtins (in uSemantic.pas +
-// uCodeGenQBE.pas) and therefore do NOT appear in this unit's interface:
+// blaise.codegen.qbe.pas) and therefore do NOT appear in this unit's interface:
 //   Abs, Sqrt, Ceil, Floor, Round, Trunc, Ln, Log2, Log10, Power,
 //   Sin, Cos, Tan, ArcTan, ArcTan2, IsNaN, IsInfinite.
 //

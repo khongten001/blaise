@@ -23,7 +23,7 @@ interface
 
 uses
   blaise.testing, cp.test.e2e.base,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
 
 type
   TSmallIntWordTests = class(TTestCase)

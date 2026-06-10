@@ -54,7 +54,7 @@ dependencies.
 | blaise.testing
 | Parser, semantic analysis, and codegen logic.  Feed source strings through
   the compiler pipeline and assert on generated QBE IR substrings.
-| Tests import compiler internals (`uParser`, `uSemantic`, `uCodeGenQBE`) and
+| Tests import compiler internals (`uParser`, `uSemantic`, `blaise.codegen.qbe`) and
   run in-process.  Fast (~5 s for 1800+ tests).
 
 | Compiler E2E tests
@@ -93,7 +93,7 @@ module for the following reasons:
 
 Import dependencies::
 IR tests import compiler internals (`uLexer`, `uParser`, `uAST`,
-`uSymbolTable`, `uSemantic`, `uCodeGenQBE`, `uUnitLoader`).  Moving them
+`uSymbolTable`, `uSemantic`, `blaise.codegen.qbe`, `uUnitLoader`).  Moving them
 to `stdlib/` would create a circular build dependency: stdlib tests would
 depend on the compiler module, while the compiler module already depends on
 stdlib for its unit search path.

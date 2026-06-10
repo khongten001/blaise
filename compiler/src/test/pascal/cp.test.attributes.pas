@@ -20,7 +20,7 @@ interface
 
 uses
   Classes, SysUtils, Process, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
 
 function ProjectRootAttr: string;
 function RunCmdAttr(const AExe: string; const AArgs: array of string): Integer;

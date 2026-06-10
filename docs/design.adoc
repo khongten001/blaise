@@ -307,7 +307,7 @@ Supported flags:
   Units: `uParser.pas`, `uAST.pas`.
 
 . *QBE IR emitter* — traverse AST, emit QBE IR text. Link with `cc`.
-  Unit: `uCodeGenQBE.pas`.
+  Unit: `blaise.codegen.qbe.pas`.
 +
 *Phase 1 pre-work (before parser work begins):* Spend 2–3 weeks writing QBE IR
 snippets by hand targeting libc to build fluency. QBE variadic calls require
@@ -567,7 +567,7 @@ build, single combined QBE IR output, no `.ppu` cache.
 
 *Milestone:* `pasbuild test -m blaise-compiler` passes with the compiler compiling
 its own multi-unit source (uLexer, uParser, uAST, uSymbolTable, uSemantic,
-uCodeGenQBE, uUnitLoader) via `uses` resolution, producing an identical binary.
+blaise.codegen.qbe, uUnitLoader) via `uses` resolution, producing an identical binary.
 Hand source retired.
 
 === Phase 5 — OPDF Integration (previously Phase 4)

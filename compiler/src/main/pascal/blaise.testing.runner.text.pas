@@ -83,7 +83,7 @@ implementation
   per-class out-helpers.
 
   Typeinfo and methods-table layout are documented in
-  uCodeGenQBE.pas:EmitTypeInfoDefs.
+  blaise.codegen.qbe.pas:EmitTypeInfoDefs.
   ----------------------------------------------------------------------- }
 
 function PublishedMethodCount(ATestClass: TTestCaseClass): Integer;

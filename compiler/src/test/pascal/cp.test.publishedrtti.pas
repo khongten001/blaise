@@ -21,7 +21,7 @@ interface
 
 uses
   Classes, SysUtils, Process, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
 
 function ProjectRootRTTI: string;
 function RunCmd(const AExe: string; const AArgs: array of string): Integer;

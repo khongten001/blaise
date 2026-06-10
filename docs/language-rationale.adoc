@@ -3033,7 +3033,7 @@ which naturally has a float subexpression and therefore type-checks.
 `boDiv`.  `uSemantic.pas` (`AnalyseBinaryExpr`) gives `boSlash` a
 float result type unconditionally; `boDiv` retains the existing
 integer-promotion rules and now rejects float operands explicitly.
-`uCodeGenQBE.pas` lowers both `boSlash` and `boDiv` to QBE's `div`
+`blaise.codegen.qbe.pas` lowers both `boSlash` and `boDiv` to QBE's `div`
 instruction; the difference is whether the operands have already been
 promoted to a float type (`d`/`s`) on the float arithmetic path.
 

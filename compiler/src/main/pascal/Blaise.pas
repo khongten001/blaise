@@ -22,7 +22,7 @@ program Blaise;
 
 uses
   SysUtils, Classes, Process, contnrs,
-  uLexer, uParser, uAST, uSemantic, uCodeGen, uCodeGenQBE,
+  uLexer, uParser, uAST, uSemantic, blaise.codegen, blaise.codegen.qbe,
   blaise.codegen.target, blaise.codegen.native, uToolchain,
   uUnitLoader, uDebugOPDF, uUnitInterface, uSemanticExport, uSemanticImport,
   uUnitInterfaceIO, uIfaceObject, uASTDump,
@@ -966,7 +966,7 @@ begin
         explicit `CG := nil` here: the stage-1 release binary mis-compiles an
         explicit nil-assignment to an interface-typed global (emits a bare
         single-slot store against an undefined $CG symbol).  That codegen gap
-        is fixed in this tree (EmitAssign interface-nil case in uCodeGenQBE),
+        is fixed in this tree (EmitAssign interface-nil case in blaise.codegen.qbe),
         but stage-1 predates the fix, so the driver must not rely on it. }
 
       if OPDFEnabled then

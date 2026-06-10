@@ -31,7 +31,7 @@ unit blaise.codegen.native;
 interface
 
 uses
-  SysUtils, uAST, uSymbolTable, uCodeGen,
+  SysUtils, uAST, uSymbolTable, blaise.codegen,
   blaise.codegen.target, blaise.codegen.native.backend;
 
 type

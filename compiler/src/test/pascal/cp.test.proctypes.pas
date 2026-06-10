@@ -12,7 +12,7 @@ interface
 
 uses
   Classes, SysUtils, blaise.testing,
-  uLexer, uParser, uAST, uSemantic, uSymbolTable, uCodeGenQBE;
+  uLexer, uParser, uAST, uSemantic, uSymbolTable, blaise.codegen.qbe;
 
 type
   TProcTypesTests = class(TTestCase)

@@ -20,7 +20,7 @@ interface
 
 uses
   blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE,
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe,
   blaise.codegen.target;
 
 type

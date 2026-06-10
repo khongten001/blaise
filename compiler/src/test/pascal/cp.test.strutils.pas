@@ -20,7 +20,7 @@ interface
 
 uses
   SysUtils, Classes, contnrs, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE, uUnitLoader;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe, uUnitLoader;
 
 type
   TStrUtilsTests = class(TTestCase)

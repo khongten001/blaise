@@ -20,7 +20,7 @@ in three places*.
 . The semantic pass that consumes it (`uSemantic.pas`).
 . The `.bif` serialiser and deserialiser (`uUnitInterfaceIO.pas`).
 
-Codegen (`uCodeGenQBE.pas`) is a fourth
+Codegen (`blaise.codegen.qbe.pas`) is a fourth
 place, but only when the node carries runtime semantics. A
 type-system-only change (e.g. adding a marker attribute) may need no
 codegen work.
@@ -235,7 +235,7 @@ AnalyseWhenStmt(TWhenStmt(AStmt))`.
 
 === Step 4: Codegen (QBE Backend)
 
-In `uCodeGenQBE.pas`, add `EmitWhenStmt`. Each branch becomes a guard /
+In `blaise.codegen.qbe.pas`, add `EmitWhenStmt`. Each branch becomes a guard /
 body / next-branch label triple, modelled on `EmitIfStmt`'s expansion.
 
 [source,pascal]

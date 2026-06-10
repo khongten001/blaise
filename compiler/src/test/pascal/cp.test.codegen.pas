@@ -12,7 +12,7 @@ interface
 
 uses
   blaise.testing,
-  uLexer, uParser, uAST, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe;
 
 type
   TCodeGenTests = class(TTestCase)

@@ -6,11 +6,11 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit uCodeGen;
+unit blaise.codegen;
 
 { Backend-neutral code-generator contract.
 
-  Both the QBE backend (uCodeGenQBE.TCodeGenQBE) and the native backend
+  Both the QBE backend (blaise.codegen.qbe.TCodeGenQBE) and the native backend
   (blaise.codegen.native.TCodeGenNative) implement ICodeGen, so the
   driver in Blaise.pas runs one codegen sequence against the interface
   rather than branching per backend.

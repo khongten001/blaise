@@ -10,7 +10,7 @@ unit cp.test.math;
 
 { IR-level tests for Math unit functions and math compiler builtins.
 
-  Builtins (handled in uSemantic + uCodeGenQBE, no RTL unit needed):
+  Builtins (handled in uSemantic + blaise.codegen.qbe, no RTL unit needed):
     Abs, Sqrt, Ceil, Floor, Round, Trunc, Ln, Log2, Log10, Power,
     Sin, Cos, Tan, ArcTan, ArcTan2, IsNaN, IsInfinite.
 
@@ -21,7 +21,7 @@ interface
 
 uses
   SysUtils, Classes, contnrs, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE, uUnitLoader;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe, uUnitLoader;
 
 type
   TMathTests = class(TTestCase)

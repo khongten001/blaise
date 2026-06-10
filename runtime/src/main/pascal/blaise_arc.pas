@@ -692,7 +692,7 @@ end;
 { _ClassCreate: runtime equivalent of the inline EmitConstructorCall
   lowering the codegen produces for the static 'TFoo.Create' form.
   Reads totalsize, fieldcleanup pointer, and vtable pointer from the
-  expanded class typeinfo (see typeinfo layout in uCodeGenQBE.pas's
+  expanded class typeinfo (see typeinfo layout in blaise.codegen.qbe.pas's
   EmitTypeInfoDefs).  Allocates an instance, installs the vtable
   pointer at slot 0, and bumps the refcount once.
 

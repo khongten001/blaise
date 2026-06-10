@@ -18,8 +18,8 @@ interface
 
 uses
   classes, sysutils, process, contnrs, blaise.testing,
-  uLexer, uParser, uAST, uSemantic, uCodeGenQBE, uUnitLoader,
-  uCodeGen, blaise.codegen.target, blaise.codegen.native;
+  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe, uUnitLoader,
+  blaise.codegen, blaise.codegen.target, blaise.codegen.native;
 
 type
   { Code-generation backends an e2e test can run against.  The native backend

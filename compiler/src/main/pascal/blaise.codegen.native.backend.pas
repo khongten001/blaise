@@ -33,7 +33,7 @@ unit blaise.codegen.native.backend;
 interface
 
 uses
-  SysUtils, uAST, uSymbolTable, uCodeGen, strutils, blaise.codegen.target;
+  SysUtils, uAST, uSymbolTable, blaise.codegen, strutils, blaise.codegen.target;
 
 type
   ENativeCodeGenError = class(Exception);

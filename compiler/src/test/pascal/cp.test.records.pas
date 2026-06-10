@@ -12,7 +12,7 @@ interface
 
 uses
   blaise.testing, strutils,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
 
 type
   TRecordTests = class(TTestCase)

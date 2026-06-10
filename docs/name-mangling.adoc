@@ -134,7 +134,7 @@ Five categories accepted as "unmangled":
 The runtime is hand-written and has *hardcoded* references to specific
 symbol names that originate in these units. Concretely:
 
-`uCodeGenQBE.pas` emits calls and references like:
+`blaise.codegen.qbe.pas` emits calls and references like:
 
 * `$_StartUp` (program init, in `System` / `rtl.*`)
 * `$_SetArgs`
@@ -165,7 +165,7 @@ Two paths to fix this:
 . **Route everything through the symbol table** — every `$_Foo` in
   codegen becomes `RtlSym('_Foo')`, which consults a registry mapping
   logical names to mangled names. Cleaner long-term; mechanical refactor
-  of ~113 call sites in `uCodeGenQBE.pas`. Documented as a follow-up
+  of ~113 call sites in `blaise.codegen.qbe.pas`. Documented as a follow-up
   in `memory/project_unit_prefix_mangling.md`.
 
 
@@ -286,7 +286,7 @@ To add `mynew_rtl_unit` to the allowlist:
 ----
 if SameText(AUnitName, 'mynew_rtl_unit') then Exit;  { add this line }
 ----
-. In `uCodeGenQBE.pas`'s `ClassUnitPrefix`, mirror the same check.
+. In `blaise.codegen.qbe.pas`'s `ClassUnitPrefix`, mirror the same check.
 . Bump `COMPILER_ID` in `uCompilerId.pas` — the change affects which
   units emit prefixed symbols, so previously-built `.bif`s on disk
   become semantically incompatible.
@@ -320,7 +320,7 @@ prebuilt `.o`.
 === Property accessors
 
 Properties don't have their own symbols — they expand at call sites to
-calls into the read/write method. `uCodeGenQBE`'s property-access
+calls into the read/write method. `blaise.codegen.qbe`'s property-access
 emission inserts the prefix via `ClassUnitPrefix(FldAccess.PropOwnerType)`
 so `MyList.Strings[0]` compiles to a call like
 `$Classes_TStringList_GetStrings`.

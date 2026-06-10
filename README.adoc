@@ -133,7 +133,7 @@ project.xml                       Root aggregator (packaging=pom)
 ├── compiler/                     The compiler binary (packaging=application)
 │   ├── project.xml
 │   └── src/
-│       ├── main/pascal/          uLexer, uParser, uAST, uCodeGenQBE, blaise.codegen.native.*, ...
+│       ├── main/pascal/          uLexer, uParser, uAST, blaise.codegen.qbe, blaise.codegen.native.*, ...
 │       └── test/pascal/          Test suite (blaise.testing, compiled by Blaise)
 │
 ├── runtime/                      Always-linked runtime (packaging=library)

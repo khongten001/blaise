@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit uCodeGenQBE;
+unit blaise.codegen.qbe;
 
 { QBE IR emitter for Blaise.
   WriteLn/Write are built-ins emitted as calls to _SysWriteStr/_SysWriteInt/
@@ -16,7 +16,7 @@ unit uCodeGenQBE;
 interface
 
 uses
-  SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat, uCodeGen,
+  SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat, blaise.codegen,
   blaise.codegen.target;
 
 // Raw byte copy used by TIRBuffer — maps to libc memcpy.

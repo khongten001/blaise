@@ -24,7 +24,7 @@ interface
 
 uses
   Classes, SysUtils, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, uCodeGenQBE;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
 
 type
   TStreamsTests = class(TTestCase)
