@@ -248,6 +248,10 @@ type
     { Gap #5 — nested (local) procedures }
     procedure TestRun_Native_NestedProc_ReadCapture;
     procedure TestRun_Native_NestedProc_WriteCapture;
+
+    { Trig / math builtins with Single dispatch }
+    procedure TestRun_Native_Builtin_SinCos;
+    procedure TestRun_Native_Builtin_SqrtDouble;
   end;
 
 implementation
@@ -3958,6 +3962,34 @@ begin
     + '  Outer()'
     + 'end.',
     '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Builtin_SinCos;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'var R: Integer;'
+    + 'begin'
+    + '  R := Round(Sin(0.0));'
+    + '  WriteLn(IntToStr(R));'
+    + '  R := Round(Cos(0.0));'
+    + '  WriteLn(IntToStr(R))'
+    + 'end.',
+    '0' + LE + '1' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_Builtin_SqrtDouble;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'var R: Integer;'
+    + 'begin'
+    + '  R := Round(Sqrt(4.0));'
+    + '  WriteLn(IntToStr(R))'
+    + 'end.',
+    '2' + LE, 0);
 end;
 
 initialization
