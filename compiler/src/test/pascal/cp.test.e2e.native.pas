@@ -319,6 +319,8 @@ type
     procedure TestRun_Native_SretForward;
     { M8b — for-loop with recursive call in body (end-bound must be frame-local). }
     procedure TestRun_Native_ForLoop_RecursiveBody;
+    { M8b — open-array literal as method argument. }
+    procedure TestRun_Native_MethodCall_OpenArray;
   end;
 
 implementation
@@ -4695,6 +4697,23 @@ begin
     + '  Walk(3); '
     + 'end.',
     'leaf' + LE + 'leaf' + LE + 'leaf' + LE + 'leaf' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MethodCall_OpenArray;
+begin
+  Self.AssertRunsOnBoth(
+    'program TestOpenArray; '
+    + 'function Sum(const A: array of Integer): Integer; '
+    + 'var I: Integer; '
+    + 'begin '
+    + '  Result := 0; '
+    + '  for I := 0 to High(A) do '
+    + '    Result := Result + A[I]; '
+    + 'end; '
+    + 'begin '
+    + '  WriteLn(Sum([10, 20, 30])); '
+    + 'end.',
+    '60' + LE, 0);
 end;
 
 initialization

@@ -96,6 +96,7 @@ type
     FExcFrameNext: Integer;
     FFinallyStack: TList<TCompoundStmt>;
     FForEndNext: Integer;
+    FMethodArgExtraStack: Integer;
     { Number of exc frame global slots to emit for the program main body.
       Zero when no try stmts appear in the top-level program statements. }
     FProgExcFrameCount: Integer;
@@ -2977,6 +2978,7 @@ begin
     if FC.IsImplicitSelfMethod and (FC.ResolvedDecl <> nil) then
     begin
       MD := TMethodDecl(FC.ResolvedDecl);
+      FMethodArgExtraStack := 0;
       for I := 0 to FC.Args.Count - 1 do
         Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
           TASTExpr(FC.Args.Items[I]));
@@ -2985,6 +2987,8 @@ begin
         Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolOf(FC));
+      if FMethodArgExtraStack > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
       Exit;
     end;
     { User function call whose return type is float. }
@@ -4209,6 +4213,7 @@ begin
           [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
         Self.Emit(#9'callq memset');
         Self.Emit(#9'leaq (%rsp), %r10');
+        FMethodArgExtraStack := 0;
         for I := 0 to FC.Args.Count - 1 do
           Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
             TASTExpr(FC.Args.Items[I]));
@@ -4218,6 +4223,8 @@ begin
         Self.Emit(#9'movq %r11, %rsi');
         Self.Emit(#9'movq %r10, %rdi');
         Self.Emit(#9'callq ' + FuncSymbolOf(FC));
+        if FMethodArgExtraStack > 0 then
+          Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
       end
       else
         Self.EmitSretCall(FuncSymbolOf(FC), MD, FC.Args, '(%rsp)', False);
@@ -4227,6 +4234,7 @@ begin
     if FC.IsImplicitSelfMethod then
     begin
       MD := TMethodDecl(FC.ResolvedDecl);
+      FMethodArgExtraStack := 0;
       for I := 0 to FC.Args.Count - 1 do
         Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
           TASTExpr(FC.Args.Items[I]));
@@ -4235,6 +4243,8 @@ begin
         Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolOf(FC));
+      if FMethodArgExtraStack > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
       if FC.ResolvedType <> nil then
         Self.EmitNarrowToType(FC.ResolvedType);
       Exit;
@@ -5282,6 +5292,7 @@ begin
       begin
         Self.Emit(#9'pushq %rbx');
         Self.Emit(#9'movq %rax, %rbx');
+        FMethodArgExtraStack := 0;
         for I := 0 to ACall.Args.Count - 1 do
           Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
             TASTExpr(ACall.Args.Items[I]));
@@ -5289,6 +5300,8 @@ begin
           Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
         Self.Emit(#9'movq %rbx, %rdi');
         Self.Emit(#9'callq ' + Sym);
+        if FMethodArgExtraStack > 0 then
+          Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
         Self.Emit(#9'movq %rbx, %rax');
         Self.Emit(#9'popq %rbx');
       end
@@ -5347,6 +5360,7 @@ begin
 
   if TotalSlots <= 6 then
   begin
+    FMethodArgExtraStack := 0;
     for I := 0 to ACall.Args.Count - 1 do
     begin
       Arg := TASTExpr(ACall.Args.Items[I]);
@@ -5396,6 +5410,8 @@ begin
     end
     else
       Self.Emit(#9'callq ' + Sym);
+    if FMethodArgExtraStack > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
   end
   else
   begin
@@ -5570,6 +5586,44 @@ begin
       raise ENativeCodeGenError.Create(
         'native backend: unsupported interface argument expression');
   end
+  else if (APar <> nil) and APar.IsOpenArray then
+  begin
+    if AArg is TArrayLiteralExpr then
+    begin
+      FMethodArgExtraStack := FMethodArgExtraStack +
+        Self.EmitOpenArrayLiteral(TArrayLiteralExpr(AArg));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(Format(#9'pushq $%d',
+        [TArrayLiteralExpr(AArg).Elements.Count - 1]));
+    end
+    else if (AArg is TIdentExpr) and
+            (TIdentExpr(AArg).ResolvedType <> nil) and
+            (TIdentExpr(AArg).ResolvedType.Kind = tyStaticArray) then
+    begin
+      if Self.IsLocal(TIdentExpr(AArg).Name) then
+        Self.Emit(Format(#9'leaq %s, %%rax',
+          [Self.VarOperand(TIdentExpr(AArg).Name)]))
+      else if TIdentExpr(AArg).ConstArraySymbol <> '' then
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [NativeMangle(TIdentExpr(AArg).ConstArraySymbol)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [TIdentExpr(AArg).Name]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(Format(#9'pushq $%d',
+        [TStaticArrayTypeDesc(TIdentExpr(AArg).ResolvedType).HighBound -
+         TStaticArrayTypeDesc(TIdentExpr(AArg).ResolvedType).LowBound]));
+    end
+    else
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand(TIdentExpr(AArg).Name)]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand(TIdentExpr(AArg).Name + '_high')]));
+      Self.Emit(#9'pushq %rax');
+    end;
+  end
   else
   begin
     Self.EmitExprToEax(AArg);
@@ -5678,6 +5732,7 @@ begin
   if TotalSlots <= 6 then
   begin
     { ≤6 total slots: push/pop strategy (Self in %rdi, args in %rsi..%r9). }
+    FMethodArgExtraStack := 0;
     for I := 0 to ACall.Args.Count - 1 do
     begin
       Arg := TASTExpr(ACall.Args.Items[I]);
@@ -5812,6 +5867,8 @@ begin
 
   if TotalSlots > 6 then
     Self.Emit(Format(#9'addq $%d, %%rsp', [CleanUp]));
+  if (TotalSlots <= 6) and (FMethodArgExtraStack > 0) then
+    Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
 end;
 
 procedure TX86_64Backend.EmitInheritedCall(ACall: TInheritedCallStmt);
@@ -5827,6 +5884,7 @@ begin
   Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
 
   { Evaluate args left-to-right and push them. }
+  FMethodArgExtraStack := 0;
   for I := 0 to ACall.Args.Count - 1 do
   begin
     Par := TMethodParam(MD.Params.Items[I]);
@@ -5841,6 +5899,8 @@ begin
     Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq ' + Sym);
+  if FMethodArgExtraStack > 0 then
+    Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
 
   { A value-returning parent stores its result into the current Result slot,
     so `Result := ...` is unnecessary for `inherited F;` to set Result. }
@@ -7778,6 +7838,7 @@ begin
     if PC.IsImplicitSelfMethod and (PC.ResolvedDecl <> nil) then
     begin
       MD := TMethodDecl(PC.ResolvedDecl);
+      FMethodArgExtraStack := 0;
       for I := 0 to PC.Args.Count - 1 do
         Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
           TASTExpr(PC.Args.Items[I]));
@@ -7786,6 +7847,8 @@ begin
         Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolFromDecl(MD));
+      if FMethodArgExtraStack > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
       Exit;
     end;
     { User procedure call (result, if any, ignored in statement position). }
@@ -9278,6 +9341,7 @@ begin
 
   if ACall.Args.Count <= 4 then
   begin
+    FMethodArgExtraStack := 0;
     for I := 0 to ACall.Args.Count - 1 do
     begin
       Arg := TASTExpr(ACall.Args.Items[I]);
@@ -9332,6 +9396,8 @@ begin
     end
     else
       Self.Emit(#9'callq ' + Sym);
+    if FMethodArgExtraStack > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
   end
   else
   begin
