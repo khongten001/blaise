@@ -16,7 +16,8 @@ unit uCodeGenQBE;
 interface
 
 uses
-  SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat, uCodeGen;
+  SysUtils, StrUtils, Classes, uAST, uSymbolTable, uStrCompat, uCodeGen,
+  blaise.codegen.target;
 
 // Raw byte copy used by TIRBuffer — maps to libc memcpy.
 // Blaise links blaise_rtl.a which already pulls in libc.
@@ -43,6 +44,17 @@ type
     function  Text: string;
     property  Len: Integer read FLen;
   end;
+
+  TRecReturnClass = (
+    rcSret,
+    rcInt1,
+    rcInt2,
+    rcSSE1,
+    rcSSE2,
+    rcIntSSE,
+    rcSSEInt,
+    rcWin64Agg
+  );
 
   TCodeGenQBE = class(TObject, ICodeGen)
   private
@@ -313,6 +325,21 @@ type
       the result there instead of returning it.  Handles TFuncCallExpr,
       TMethodCallExpr, and TFieldAccessExpr.IsMethodCall. }
     procedure EmitRecordCallSret(AExpr: TASTExpr; const ASretAddr: string);
+    procedure EmitRecordReturnCallSite(const AFuncName, AVisibleArgs: string;
+                                       ARetType: TRecordTypeDesc;
+                                       const ADestAddr: string);
+    function  ClassifyRecordReturn(ARec: TRecordTypeDesc): TRecReturnClass;
+    function  IsRecordManagedClean(ARec: TRecordTypeDesc): Boolean;
+    function  IsRecordAllIntegerLeaves(ARec: TRecordTypeDesc): Boolean;
+    function  IsRecordAllFloatLeaves(ARec: TRecordTypeDesc): Boolean;
+    function  IsRecordAllIntOrFloatLeaves(ARec: TRecordTypeDesc): Boolean;
+    function  EightbyteIsSSE(ARec: TRecordTypeDesc;
+                             AStartByte: Integer): Boolean;
+    procedure EmitRecordReturnSignature(var ASig: string;
+                                        ARetRec: TRecordTypeDesc);
+    procedure EmitRecordReturnPrologue(ARetRec: TRecordTypeDesc);
+    procedure EmitRecordReturnEpilogue(ARetRec: TRecordTypeDesc);
+    function  EmitRecordReturnDeclType(ARetRec: TRecordTypeDesc): string;
     { Emit a field-by-field ARC-aware copy from ASrcAddr to ADestAddr for a
       record described by ARec.  String fields use AddRef/Release; class fields
       use ClassAddRef/ClassRelease; other fields are copied with a plain store. }
@@ -358,6 +385,7 @@ type
       records, static arrays, etc.).  An '' result tells the type-decl
       emitter to fall back to the opaque size form. }
     function  QbeAggFieldType(AType: TTypeDesc): string;
+    function  FlattenRecordToAggLetters(ARec: TRecordTypeDesc): string;
     { Registers ARec for FFI-aggregate type emission and returns the QBE
       type reference ':_ffi_<Name>' to splice into a call or declare. }
     function  FFIRecordTypeRef(ARec: TRecordTypeDesc): string;
@@ -904,36 +932,42 @@ begin
   Result := ':_ffi_' + ARec.Name;
 end;
 
+function TCodeGenQBE.FlattenRecordToAggLetters(ARec: TRecordTypeDesc): string;
+var
+  I:   Integer;
+  F:   TFieldInfo;
+  Sub: string;
+begin
+  Result := '';
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    if F.TypeDesc.Kind = tyRecord then
+      Sub := Self.FlattenRecordToAggLetters(TRecordTypeDesc(F.TypeDesc))
+    else
+      Sub := QbeAggFieldType(F.TypeDesc);
+    if Sub = '' then Exit('');
+    if Result <> '' then Result := Result + ', ';
+    Result := Result + Sub;
+  end;
+end;
+
 procedure TCodeGenQBE.EmitFFIRecordTypeDecls;
 var
-  I, J:   Integer;
-  R:      TRecordTypeDesc;
-  F:      TFieldInfo;
-  Letter: string;
-  Frag:   string;
-  AllOk:  Boolean;
+  I:    Integer;
+  R:    TRecordTypeDesc;
+  Frag: string;
 begin
   for I := 0 to FFFIRecordTypes.Count - 1 do
   begin
     R := TRecordTypeDesc(FFFIRecordTypes.Objects[I]);
     if FFFIRecordEmitted.IndexOf(R.Name) >= 0 then Continue;
-    Frag  := '';
-    AllOk := True;
-    for J := 0 to R.Fields.Count - 1 do
-    begin
-      F := TFieldInfo(R.Fields.Items[J]);
-      Letter := QbeAggFieldType(F.TypeDesc);
-      if Letter = '' then begin AllOk := False; Break; end;
-      if Frag <> '' then Frag := Frag + ', ';
-      Frag := Frag + Letter;
-    end;
-    if AllOk then
+    Frag := FlattenRecordToAggLetters(R);
+    if Frag <> '' then
       EmitLine(Format('type :_ffi_%s = align %d { %s }',
         [R.Name, R.AllocAlign(), Frag]))
     else
-      { Opaque-byte fallback: SysV will classify as INTEGER regardless of
-        actual field types.  Acceptable for records with non-scalar fields
-        — those are unlikely to round-trip through a stable C ABI anyway. }
       EmitLine(Format('type :_ffi_%s = align %d { %d }',
         [R.Name, R.AllocAlign(), R.TotalSize()]));
     FFFIRecordEmitted.Add(R.Name);
@@ -4749,6 +4783,335 @@ begin
   end;
 end;
 
+function TCodeGenQBE.IsRecordManagedClean(ARec: TRecordTypeDesc): Boolean;
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  Result := False;
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    case F.TypeDesc.Kind of
+      tyString, tyClass, tyInterface, tyDynArray:
+        Exit;
+      tyRecord:
+        if not Self.IsRecordManagedClean(TRecordTypeDesc(F.TypeDesc)) then Exit;
+    end;
+  end;
+  Result := True;
+end;
+
+function TCodeGenQBE.IsRecordAllIntegerLeaves(ARec: TRecordTypeDesc): Boolean;
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  Result := False;
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    case F.TypeDesc.Kind of
+      tyInteger, tyInt64, tyUInt32, tyUInt64,
+      tySmallInt, tyWord, tyByte, tyBoolean,
+      tyEnum, tyPointer, tyProcedural, tyMetaClass:
+        ;
+      tyRecord:
+        if not Self.IsRecordAllIntegerLeaves(TRecordTypeDesc(F.TypeDesc)) then Exit;
+    else
+      Exit;
+    end;
+  end;
+  Result := True;
+end;
+
+function TCodeGenQBE.IsRecordAllFloatLeaves(ARec: TRecordTypeDesc): Boolean;
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  Result := False;
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    case F.TypeDesc.Kind of
+      tyDouble, tySingle: ;
+      tyRecord:
+        if not Self.IsRecordAllFloatLeaves(TRecordTypeDesc(F.TypeDesc)) then Exit;
+    else
+      Exit;
+    end;
+  end;
+  Result := True;
+end;
+
+function TCodeGenQBE.IsRecordAllIntOrFloatLeaves(ARec: TRecordTypeDesc): Boolean;
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  Result := False;
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    case F.TypeDesc.Kind of
+      tyInteger, tyInt64, tyUInt32, tyUInt64,
+      tySmallInt, tyWord, tyByte, tyBoolean,
+      tyEnum, tyPointer, tyProcedural, tyMetaClass,
+      tyDouble, tySingle: ;
+      tyRecord:
+        if not Self.IsRecordAllIntOrFloatLeaves(TRecordTypeDesc(F.TypeDesc)) then Exit;
+    else
+      Exit;
+    end;
+  end;
+  Result := True;
+end;
+
+function TCodeGenQBE.EightbyteIsSSE(ARec: TRecordTypeDesc;
+  AStartByte: Integer): Boolean;
+var
+  I, Off: Integer;
+  F:      TFieldInfo;
+begin
+  Result := False;
+  if ARec = nil then Exit;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F   := TFieldInfo(ARec.Fields.Items[I]);
+    Off := F.Offset;
+    if (Off < AStartByte) or (Off >= AStartByte + 8) then Continue;
+    case F.TypeDesc.Kind of
+      tyDouble, tySingle:
+        Exit(True);
+      tyRecord:
+        if Self.EightbyteIsSSE(TRecordTypeDesc(F.TypeDesc),
+                          AStartByte - Off) then Exit(True);
+    end;
+  end;
+end;
+
+function TCodeGenQBE.ClassifyRecordReturn(ARec: TRecordTypeDesc): TRecReturnClass;
+var
+  Sz:               Integer;
+  Eb0SSE, Eb1SSE:   Boolean;
+begin
+  Result := rcSret;
+  if (ARec = nil) or (ARec.Kind <> tyRecord) then Exit;
+  if ARec.Fields.Count = 0 then Exit;
+  if not Self.IsRecordManagedClean(ARec) then Exit;
+  Sz := ARec.TotalSize();
+
+  if GTarget.OS = osWindows then
+  begin
+    if Self.IsRecordAllIntOrFloatLeaves(ARec) then
+      Result := rcWin64Agg;
+    Exit;
+  end;
+
+  if Self.IsRecordAllIntegerLeaves(ARec) then
+  begin
+    case Sz of
+      1, 2, 4, 8:                       Result := rcInt1;
+      9, 10, 11, 12, 13, 14, 15, 16:    Result := rcInt2;
+    end;
+    Exit;
+  end;
+
+  if Self.IsRecordAllFloatLeaves(ARec) then
+  begin
+    case Sz of
+      4, 8:                            Result := rcSSE1;
+      9, 10, 11, 12, 13, 14, 15, 16:   Result := rcSSE2;
+    end;
+    Exit;
+  end;
+
+  if not Self.IsRecordAllIntOrFloatLeaves(ARec) then Exit;
+  case Sz of
+    9, 10, 11, 12, 13, 14, 15, 16:
+      begin
+        Eb0SSE := Self.EightbyteIsSSE(ARec, 0);
+        Eb1SSE := Self.EightbyteIsSSE(ARec, 8);
+        if      (not Eb0SSE) and Eb1SSE then Result := rcIntSSE
+        else if Eb0SSE and (not Eb1SSE) then Result := rcSSEInt;
+      end;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitRecordReturnSignature(var ASig: string;
+  ARetRec: TRecordTypeDesc);
+begin
+  case Self.ClassifyRecordReturn(ARetRec) of
+    rcSret:
+      begin
+        if ASig <> '' then
+          ASig := 'l %_par__sret, ' + ASig
+        else
+          ASig := 'l %_par__sret';
+      end;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitRecordReturnPrologue(ARetRec: TRecordTypeDesc);
+begin
+  case Self.ClassifyRecordReturn(ARetRec) of
+    rcSret:
+      EmitLine('  %_var_Result =l copy %_par__sret');
+    rcInt1, rcInt2, rcSSE1, rcSSE2, rcIntSSE, rcSSEInt, rcWin64Agg:
+      begin
+        if ARetRec.MaxAlign() >= 8 then
+          EmitLine(Format('  %%_var_Result =l alloc8 %d', [ARetRec.TotalSize()]))
+        else
+          EmitLine(Format('  %%_var_Result =l alloc4 %d', [ARetRec.TotalSize()]));
+        if ARetRec.TotalSize() > 0 then
+          EmitLine(Format('  call $memset(l %%_var_Result, w 0, l %d)',
+            [ARetRec.TotalSize()]));
+      end;
+  end;
+end;
+
+function RecInt1LoadInstr(ASize: Integer): string;
+begin
+  case ASize of
+    1: Result := 'loadub';
+    2: Result := 'loaduh';
+    4: Result := 'loaduw';
+    8: Result := 'loadl';
+  else
+    Result := '';
+  end;
+end;
+
+function RecInt1StoreInstr(ASize: Integer): string;
+begin
+  case ASize of
+    1: Result := 'storeb';
+    2: Result := 'storeh';
+    4: Result := 'storew';
+    8: Result := 'storel';
+  else
+    Result := '';
+  end;
+end;
+
+function RecInt1RetType(ASize: Integer): string;
+begin
+  if ASize = 8 then Result := 'l' else Result := 'w';
+end;
+
+procedure TCodeGenQBE.EmitRecordReturnEpilogue(ARetRec: TRecordTypeDesc);
+var
+  RetT, RetTy, LoadOp: string;
+  Sz: Integer;
+begin
+  case Self.ClassifyRecordReturn(ARetRec) of
+    rcSret:
+      EmitLine('  ret');
+    rcInt1:
+      begin
+        Sz     := ARetRec.TotalSize();
+        RetTy  := RecInt1RetType(Sz);
+        LoadOp := RecInt1LoadInstr(Sz);
+        RetT   := AllocTemp();
+        EmitLine(Format('  %s =%s %s %%_var_Result',
+          [RetT, RetTy, LoadOp]));
+        EmitLine(Format('  ret %s', [RetT]));
+      end;
+    rcInt2:
+      EmitLine('  ret %_var_Result');
+    rcSSE1:
+      begin
+        RetT := AllocTemp();
+        if ARetRec.TotalSize() = 4 then
+        begin
+          EmitLine(Format('  %s =s loads %%_var_Result', [RetT]));
+          EmitLine(Format('  ret %s', [RetT]));
+        end
+        else
+        begin
+          EmitLine(Format('  %s =d loadd %%_var_Result', [RetT]));
+          EmitLine(Format('  ret %s', [RetT]));
+        end;
+      end;
+    rcSSE2:
+      EmitLine('  ret %_var_Result');
+    rcIntSSE, rcSSEInt:
+      EmitLine('  ret %_var_Result');
+    rcWin64Agg:
+      EmitLine('  ret %_var_Result');
+  end;
+end;
+
+function TCodeGenQBE.EmitRecordReturnDeclType(ARetRec: TRecordTypeDesc): string;
+begin
+  Result := '';
+  case Self.ClassifyRecordReturn(ARetRec) of
+    rcInt1:                                Result := RecInt1RetType(ARetRec.TotalSize());
+    rcInt2, rcSSE2, rcIntSSE, rcSSEInt:    Result := FFIRecordTypeRef(ARetRec);
+    rcSSE1:
+      if ARetRec.TotalSize() = 4 then Result := 's' else Result := 'd';
+    rcWin64Agg:                            Result := FFIRecordTypeRef(ARetRec);
+  end;
+end;
+
+procedure TCodeGenQBE.EmitRecordReturnCallSite(
+  const AFuncName, AVisibleArgs: string; ARetType: TRecordTypeDesc;
+  const ADestAddr: string);
+var
+  ArgLine, RetT, AggRef: string;
+  Sz: Integer;
+begin
+  case Self.ClassifyRecordReturn(ARetType) of
+    rcSret:
+      begin
+        if AVisibleArgs <> '' then
+          ArgLine := Format('l %s, %s', [ADestAddr, AVisibleArgs])
+        else
+          ArgLine := Format('l %s', [ADestAddr]);
+        EmitLine(Format('  call %s(%s)', [AFuncName, ArgLine]));
+      end;
+    rcInt1:
+      begin
+        Sz   := ARetType.TotalSize();
+        RetT := AllocTemp();
+        EmitLine(Format('  %s =%s call %s(%s)',
+          [RetT, RecInt1RetType(Sz), AFuncName, AVisibleArgs]));
+        EmitLine(Format('  %s %s, %s',
+          [RecInt1StoreInstr(Sz), RetT, ADestAddr]));
+      end;
+    rcInt2, rcSSE2, rcIntSSE, rcSSEInt, rcWin64Agg:
+      begin
+        AggRef := FFIRecordTypeRef(ARetType);
+        RetT   := AllocTemp();
+        EmitLine(Format('  %s =%s call %s(%s)',
+          [RetT, AggRef, AFuncName, AVisibleArgs]));
+        EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+          [ADestAddr, RetT, ARetType.TotalSize()]));
+      end;
+    rcSSE1:
+      begin
+        RetT := AllocTemp();
+        if ARetType.TotalSize() = 4 then
+        begin
+          EmitLine(Format('  %s =s call %s(%s)',
+            [RetT, AFuncName, AVisibleArgs]));
+          EmitLine(Format('  stores %s, %s', [RetT, ADestAddr]));
+        end
+        else
+        begin
+          EmitLine(Format('  %s =d call %s(%s)',
+            [RetT, AFuncName, AVisibleArgs]));
+          EmitLine(Format('  stored %s, %s', [RetT, ADestAddr]));
+        end;
+      end;
+  end;
+end;
+
 procedure TCodeGenQBE.EmitRecordCallSret(AExpr: TASTExpr;
   const ASretAddr: string);
 var
@@ -4756,24 +5119,26 @@ var
   MCallExpr: TMethodCallExpr;
   FldAccess: TFieldAccessExpr;
   MDecl:     TMethodDecl;
-  ArgLine:   string;
+  VisArgs:   string;
   ArgTemp:   string;
   SelfTemp:  string;
   Par:       TMethodParam;
   I:         Integer;
   FuncName:  string;
   Ptr:       string;
+  RetType:   TRecordTypeDesc;
 begin
   if AExpr is TFuncCallExpr then
   begin
     FCallExpr := TFuncCallExpr(AExpr);
     MDecl := TMethodDecl(FCallExpr.ResolvedDecl);
+    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
     if FCallExpr.IsImplicitSelfMethod then
     begin
       SelfTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %%_var_Self', [SelfTemp]));
       FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, FCallExpr.Name);
-      ArgLine  := Format('l %s, l %s', [ASretAddr, SelfTemp]);
+      VisArgs  := Format('l %s', [SelfTemp]);
     end
     else
     begin
@@ -4781,31 +5146,41 @@ begin
         FuncName := '$' + QBEMangle(MDecl.ResolvedQbeName)
       else
         FuncName := '$' + QBEMangle(FCallExpr.Name);
-      ArgLine  := Format('l %s', [ASretAddr]);
+      VisArgs  := '';
     end;
     for I := 0 to FCallExpr.Args.Count - 1 do
     begin
       Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
-        ArgLine := ArgLine + Format(', l %s',
-          [EmitLValueAddr(TASTExpr(FCallExpr.Args.Items[I]))])
+      begin
+        if VisArgs <> '' then VisArgs := VisArgs + ', ';
+        VisArgs := VisArgs + Format('l %s',
+          [EmitLValueAddr(TASTExpr(FCallExpr.Args.Items[I]))]);
+      end
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
-        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]))
+      begin
+        if VisArgs = '' then
+          VisArgs := Copy(InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I])), 2, MaxInt)
+        else
+          VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]));
+      end
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(FCallExpr.Args.Items[I]));
         ArgTemp := CoerceArg(ArgTemp, TASTExpr(FCallExpr.Args.Items[I]),
           QbeTypeOf(Par.ResolvedType));
-        ArgLine := ArgLine + Format(', %s %s',
+        if VisArgs <> '' then VisArgs := VisArgs + ', ';
+        VisArgs := VisArgs + Format('%s %s',
           [QbeParamTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
-    EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+    EmitRecordReturnCallSite(FuncName, VisArgs, RetType, ASretAddr);
   end
   else if AExpr is TMethodCallExpr then
   begin
     MCallExpr := TMethodCallExpr(AExpr);
     MDecl := TMethodDecl(MCallExpr.ResolvedMethod);
+    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
     if MCallExpr.ObjExpr <> nil then
       SelfTemp := EmitExpr(MCallExpr.ObjExpr)
     else if MDecl.IsRecordMethod and MCallExpr.IsVarParam then
@@ -4823,33 +5198,33 @@ begin
         [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
     end;
     FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, MCallExpr.Name);
-    ArgLine  := Format('l %s, l %s', [ASretAddr, SelfTemp]);
+    VisArgs  := Format('l %s', [SelfTemp]);
     for I := 0 to MCallExpr.Args.Count - 1 do
     begin
       Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
-        ArgLine := ArgLine + Format(', l %s',
+        VisArgs := VisArgs + Format(', l %s',
           [EmitLValueAddr(TASTExpr(MCallExpr.Args.Items[I]))])
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
-        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]))
+        VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]))
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
         ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]),
           QbeTypeOf(Par.ResolvedType));
-        ArgLine := ArgLine + Format(', %s %s',
+        VisArgs := VisArgs + Format(', %s %s',
           [QbeParamTypeOf(Par.ResolvedType), ArgTemp]);
       end;
     end;
-    EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+    EmitRecordReturnCallSite(FuncName, VisArgs, RetType, ASretAddr);
   end
   else if AExpr is TFieldAccessExpr then
   begin
     FldAccess := TFieldAccessExpr(AExpr);
     MDecl := TMethodDecl(FldAccess.ResolvedMethod);
+    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
     if FldAccess.IsImplicitSelf then
     begin
-      { FLexer.Next from inside a TParser method: load Self, add offset, load class ptr }
       SelfTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %%_var_Self', [SelfTemp]));
       if FldAccess.ImplicitBaseInfo.Offset > 0 then
@@ -4868,27 +5243,21 @@ begin
     end
     else if MDecl.IsRecordMethod and FldAccess.IsVarParam then
     begin
-      { Record var-param receiver (Self inside a record method, or a record
-        passed via var): the slot holds the address — load it. }
       SelfTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
     end
     else if MDecl.IsRecordMethod then
-    begin
-      { Regular record variable: VarRef IS the record address — pass directly. }
-      SelfTemp := VarRef(FldAccess.RecordName, FldAccess.IsGlobal);
-    end
+      SelfTemp := VarRef(FldAccess.RecordName, FldAccess.IsGlobal)
     else
     begin
-      { Class variable: load the heap pointer from the variable slot. }
       SelfTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
     end;
     FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, FldAccess.FieldName);
-    ArgLine  := Format('l %s, l %s', [ASretAddr, SelfTemp]);
-    EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+    VisArgs  := Format('l %s', [SelfTemp]);
+    EmitRecordReturnCallSite(FuncName, VisArgs, RetType, ASretAddr);
   end;
 end;
 
@@ -5897,6 +6266,7 @@ var
   FuncName:      string;
   IsFunc:        Boolean;
   RetQType:      string;
+  RetDeclType:   string;
   RetTemp:       string;
   SavedExitLbl:  string;
   ValTemp:       string;
@@ -5907,13 +6277,12 @@ begin
     FuncName := '$' + QBEMangle(ATypeName + '_' + AMethod.Name);
   IsFunc   := AMethod.ResolvedReturnType <> nil;
 
-  { Build parameter signature.
-    sret functions: l %_par__sret comes first, then l %_par_Self.
-    Regular methods: just l %_par_Self first. }
-  if IsFunc and (AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface]) then
+  Sig := 'l %_par_Self';
+  if IsFunc and (AMethod.ResolvedReturnType.Kind = tyInterface) then
     Sig := 'l %_par__sret, l %_par_Self'
-  else
-    Sig := 'l %_par_Self';
+  else if IsFunc and (AMethod.ResolvedReturnType.Kind = tyRecord) then
+    EmitRecordReturnSignature(Sig,
+      TRecordTypeDesc(AMethod.ResolvedReturnType));
   for I := 0 to AMethod.Params.Count - 1 do
   begin
     Par := TMethodParam(AMethod.Params.Items[I]);
@@ -5938,8 +6307,18 @@ begin
   if IsFunc then
   begin
     RetQType := QbeTypeOf(AMethod.ResolvedReturnType);
-    if AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
+    if AMethod.ResolvedReturnType.Kind = tyInterface then
       EmitLine(Format('%sfunction %s(%s) {', [ExportPrefix(), FuncName, Sig]))
+    else if AMethod.ResolvedReturnType.Kind = tyRecord then
+    begin
+      RetDeclType := EmitRecordReturnDeclType(
+        TRecordTypeDesc(AMethod.ResolvedReturnType));
+      if RetDeclType = '' then
+        EmitLine(Format('%sfunction %s(%s) {', [ExportPrefix(), FuncName, Sig]))
+      else
+        EmitLine(Format('%sfunction %s %s(%s) {',
+          [ExportPrefix(), RetDeclType, FuncName, Sig]));
+    end
     else
       EmitLine(Format('%sfunction %s %s(%s) {', [ExportPrefix(), RetQType, FuncName, Sig]));
   end
@@ -5994,8 +6373,7 @@ begin
   if IsFunc then
   begin
     if AMethod.ResolvedReturnType.Kind = tyRecord then
-      { sret: Result IS the caller's buffer — no allocation needed }
-      EmitLine('  %_var_Result =l copy %_par__sret')
+      EmitRecordReturnPrologue(TRecordTypeDesc(AMethod.ResolvedReturnType))
     else if AMethod.ResolvedReturnType.Kind = tyInterface then
     begin
       { sret: interface Result is a 16-byte fat pointer (obj+itab) in the
@@ -6070,8 +6448,10 @@ begin
 
   if IsFunc then
   begin
-    if AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
-      EmitLine('  ret')  { sret: caller's buffer already holds result }
+    if AMethod.ResolvedReturnType.Kind = tyRecord then
+      EmitRecordReturnEpilogue(TRecordTypeDesc(AMethod.ResolvedReturnType))
+    else if AMethod.ResolvedReturnType.Kind = tyInterface then
+      EmitLine('  ret')
     else
     begin
       RetTemp := AllocTemp();
@@ -6697,6 +7077,7 @@ var
   FuncName:        string;
   IsFunc:          Boolean;
   RetQType:        string;
+  RetDeclType:     string;
   RetTemp:         string;
   ValTemp:         string;
   Prefix:          string;
@@ -6765,12 +7146,23 @@ begin
   if IsFunc then
   begin
     RetQType := QbeTypeOf(ADecl.ResolvedReturnType);
-    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
+    if ADecl.ResolvedReturnType.Kind = tyInterface then
     begin
-      { sret: prepend hidden result-buffer pointer; function becomes void }
       if Sig <> '' then Sig := 'l %_par__sret, ' + Sig
       else Sig := 'l %_par__sret';
       EmitLine(Format('%sfunction %s(%s) {', [Prefix, FuncName, Sig]));
+    end
+    else if ADecl.ResolvedReturnType.Kind = tyRecord then
+    begin
+      EmitRecordReturnSignature(Sig,
+        TRecordTypeDesc(ADecl.ResolvedReturnType));
+      RetDeclType := EmitRecordReturnDeclType(
+        TRecordTypeDesc(ADecl.ResolvedReturnType));
+      if RetDeclType = '' then
+        EmitLine(Format('%sfunction %s(%s) {', [Prefix, FuncName, Sig]))
+      else
+        EmitLine(Format('%sfunction %s %s(%s) {',
+          [Prefix, RetDeclType, FuncName, Sig]));
     end
     else
       EmitLine(Format('%sfunction %s %s(%s) {', [Prefix, RetQType, FuncName, Sig]));
@@ -6899,8 +7291,7 @@ begin
   if IsFunc then
   begin
     if ADecl.ResolvedReturnType.Kind = tyRecord then
-      { sret: Result IS the caller's buffer — no allocation needed }
-      EmitLine('  %_var_Result =l copy %_par__sret')
+      EmitRecordReturnPrologue(TRecordTypeDesc(ADecl.ResolvedReturnType))
     else if ADecl.ResolvedReturnType.Kind = tyInterface then
     begin
       { sret: interface Result is a 16-byte fat pointer (obj+itab) in the
@@ -6982,8 +7373,10 @@ begin
 
   if IsFunc then
   begin
-    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
-      EmitLine('  ret')  { sret: caller's buffer already holds result }
+    if ADecl.ResolvedReturnType.Kind = tyRecord then
+      EmitRecordReturnEpilogue(TRecordTypeDesc(ADecl.ResolvedReturnType))
+    else if ADecl.ResolvedReturnType.Kind = tyInterface then
+      EmitLine('  ret')
     else
     begin
       RetTemp := AllocTemp();

@@ -23,6 +23,8 @@ uses
   cp.test.symtable,
   cp.test.semantic,
   cp.test.records,
+  cp.test.recordret,
+  cp.test.e2e.recordret,
   cp.test.packedrecord,
   cp.test.classes,
   cp.test.arc,
