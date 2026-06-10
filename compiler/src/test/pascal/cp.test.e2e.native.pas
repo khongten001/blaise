@@ -290,6 +290,9 @@ type
 
     { Virtual method dispatch in expression context }
     procedure TestRun_Native_VirtualDispatch_Expr;
+
+    { String content equality via _StringEquals (not pointer cmp) }
+    procedure TestRun_Native_StringEquality;
   end;
 
 implementation
@@ -4353,6 +4356,21 @@ begin
     + '  B.Free '
     + 'end.',
     '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_StringEquality;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'function MakeStr(const S: string): string; begin Result := S end; '
+    + 'var A, B: string; '
+    + 'begin '
+    + '  A := MakeStr(''hello''); '
+    + '  B := ''hello''; '
+    + '  if A = B then WriteLn(''eq'') else WriteLn(''ne''); '
+    + '  if A <> ''world'' then WriteLn(''diff'') else WriteLn(''same'') '
+    + 'end.',
+    'eq' + LE + 'diff' + LE, 0);
 end;
 
 initialization

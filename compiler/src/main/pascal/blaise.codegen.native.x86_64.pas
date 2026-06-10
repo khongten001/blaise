@@ -4188,6 +4188,21 @@ begin
       Self.Emit(#9'callq _StringConcat');
       Exit;
     end;
+    { String equality/inequality: content comparison via _StringEquals. }
+    if (BE.Op in [boEQ, boNE]) and
+       (BE.Left.ResolvedType <> nil) and
+       (BE.Left.ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToEax(BE.Left);
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(BE.Right);
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringEquals');
+      if BE.Op = boNE then
+        Self.Emit(#9'xorl $1, %eax');
+      Exit;
+    end;
     { Set membership: elem in SetVar — (set >> ord(elem)) & 1 }
     if (BE.Op = boIn) and
        (BE.Right.ResolvedType <> nil) and
