@@ -281,6 +281,12 @@ type
 
     { Implicit-Self class field access — FInner.FVal inside a method }
     procedure TestRun_Native_ImplicitSelf_ClassField;
+
+    { Implicit-Self property getter call inside a method }
+    procedure TestRun_Native_ImplicitSelf_PropertyGetter;
+
+    { Const array data emission + ConstArraySymbol reference }
+    procedure TestRun_Native_ConstArray_StringElements;
   end;
 
 implementation
@@ -4281,6 +4287,47 @@ begin
     + '  I.Free '
     + 'end.',
     '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ImplicitSelf_PropertyGetter;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'type '
+    + '  TMyObj = class '
+    + '  private '
+    + '    FVal: Integer; '
+    + '    function GetVal: Integer; '
+    + '  public '
+    + '    property Val: Integer read GetVal; '
+    + '    procedure Show; '
+    + '  end; '
+    + 'function TMyObj.GetVal: Integer; '
+    + 'begin Result := FVal end; '
+    + 'procedure TMyObj.Show; '
+    + 'begin WriteLn(Val) end; '
+    + 'var O: TMyObj; '
+    + 'begin '
+    + '  O := TMyObj.Create; '
+    + '  O.FVal := 99; '
+    + '  O.Show; '
+    + '  O.Free '
+    + 'end.',
+    '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ConstArray_StringElements;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'const '
+    + '  Regs: array[0..2] of string = (''ax'', ''bx'', ''cx''); '
+    + 'var I: Integer; '
+    + 'begin '
+    + '  for I := 0 to 2 do '
+    + '    WriteLn(Regs[I]) '
+    + 'end.',
+    'ax' + LE + 'bx' + LE + 'cx' + LE, 0);
 end;
 
 initialization

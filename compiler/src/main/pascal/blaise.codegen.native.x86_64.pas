@@ -3161,6 +3161,7 @@ var
   FAE: TFieldAccessExpr;
   SAE: TStringSubscriptExpr;
   MD:  TMethodDecl;
+  IMD: TMethodDecl;
   Unsigned: Boolean;
   AOE: TAddrOfExpr;
   SetMask: Int64;
@@ -3191,6 +3192,15 @@ begin
 
   if AExpr is TIdentExpr then
   begin
+    if TIdentExpr(AExpr).IsImplicitSelfMethod and
+       (TIdentExpr(AExpr).ImplicitMethodDecl <> nil) then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Self')]));
+      IMD := TMethodDecl(TIdentExpr(AExpr).ImplicitMethodDecl);
+      Self.Emit(Format(#9'callq %s',
+        [MethodEmitNameNative(IMD, IMD.OwnerTypeName, IMD.Name)]));
+      Exit;
+    end;
     if TIdentExpr(AExpr).IsImplicitSelf and
        (TIdentExpr(AExpr).ImplicitFieldInfo <> nil) then
     begin
