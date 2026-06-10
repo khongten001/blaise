@@ -85,6 +85,7 @@ type
                                        its own next iteration. }
     FThreadVarNames:   TStringList;  { global names declared as threadvar }
     FUnitInitNames:    TStringList;  { unit names that have initialization sections }
+    FCurrentUnitName:  string;       { name of the unit/program being emitted }
     { mem2reg: parallel lists tracking which locals are promoted SSA temps.
       FPromotedLocals[i] = var name; FPromotedTypes[i] = QBE type ('w','l','d','s').
       Cleared at the start of each function by EmitVarAllocs. }
@@ -9168,7 +9169,8 @@ begin
           [L, ClassSymName(QBEMangle(RT.Name))]));
         R := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [R, L]));
-        EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s)', [SelfTemp, R]));
+        EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s, l %s, l %d)',
+          [SelfTemp, R, Self.EmitStrLit(FCurrentUnitName), MCallExpr.Line]));
       end;
       { If there's a user-defined Create method, call it }
       if MCallExpr.ResolvedMethod <> nil then
@@ -9961,13 +9963,13 @@ begin
           [ClassSymName(QBEMangle(FldAccess.ResolvedType.Name)), T]));
       if FDebugMode then
       begin
-        { Load classname ptr from typeinfo[2] (offset +16) and register with leak tracker }
         L := AllocTemp();
         EmitLine(Format('  %s =l add $typeinfo_%s, 16',
           [L, ClassSymName(QBEMangle(FldAccess.ResolvedType.Name))]));
         R := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [R, L]));
-        EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s)', [T, R]));
+        EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s, l %s, l %d)',
+          [T, R, Self.EmitStrLit(FCurrentUnitName), FldAccess.Line]));
       end;
       { Call user-defined Create body if one exists }
       if FldAccess.ResolvedMethod <> nil then
@@ -11324,6 +11326,7 @@ begin
   FStrLitsEmitted := 0;
   FTempCount  := 0;
   FLabelCount := 0;
+  FCurrentUnitName := AProg.Name;
 
   CollectThreadVarNames(AProg.Block);
 
@@ -11381,6 +11384,7 @@ begin
   FStrLitsEmitted := 0;
   FTempCount  := 0;
   FLabelCount := 0;
+  FCurrentUnitName := AUnit.Name;
 
   CollectThreadVarNames(AUnit.IntfBlock);
   CollectThreadVarNames(AUnit.ImplBlock);
@@ -11537,6 +11541,7 @@ begin
     Counter resets are safe: QBE temps and block labels are function-scoped. }
   FTempCount  := 0;
   FLabelCount := 0;
+  FCurrentUnitName := AUnit.Name;
 
   CollectThreadVarNames(AUnit.IntfBlock);
   CollectThreadVarNames(AUnit.ImplBlock);
@@ -11994,6 +11999,7 @@ begin
   { No clears — accumulates after AppendUnit calls. }
   FTempCount  := 0;
   FLabelCount := 0;
+  FCurrentUnitName := AProg.Name;
 
   CollectThreadVarNames(AProg.Block);
 

@@ -31,6 +31,8 @@ type
     procedure TestDebug_MultipleLeaks_AllReported;
     procedure TestDebug_CycleRetained_Reported;
     procedure TestRelease_NoReport_WhenDebugOff;
+    procedure TestDebug_LeakReport_IncludesUnitAndLine;
+    procedure TestDebug_LeakReport_IncludesUnitAndLine_Native;
   end;
 
 implementation
@@ -176,6 +178,24 @@ const
     end.
     ''';
 
+  { Leak with allocation-site info: the report must include the unit name and
+    line number where the leaking TBox.Create() call was made. }
+  SrcLeakWithSite = '''
+    program LeakSite;
+    uses blaise_arc;
+    type
+      TBox = class
+        Value: Integer;
+      end;
+    var
+      B: TBox;
+    begin
+      B := TBox.Create();
+      _ClassAddRef(Pointer(B));
+      WriteLn('done')
+    end.
+    ''';
+
 { ------------------------------------------------------------------ }
 
 procedure TE2ELeakCheckTests.TestDebug_NoLeak_NoReport;
@@ -267,6 +287,36 @@ begin
   AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcOneLeak, Output, ExitCode, False));
   AssertEquals('exit 0', 0, ExitCode);
   AssertTrue('no leak report', Pos('Blaise leak report', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_LeakReport_IncludesUnitAndLine;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcLeakWithSite, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertTrue('leak header', Pos('Blaise leak report', Output) >= 0);
+  AssertTrue('class name', Pos('TBox', Output) >= 0);
+  AssertTrue('unit name in report', Pos('LeakSite', Output) >= 0);
+  AssertTrue('at separator', Pos(' at ', Output) >= 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_LeakReport_IncludesUnitAndLine_Native;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run',
+    CompileAndRunWithRTLDebugOn(beNative, SrcLeakWithSite, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertTrue('leak header', Pos('Blaise leak report', Output) >= 0);
+  AssertTrue('class name', Pos('TBox', Output) >= 0);
+  AssertTrue('unit name in report', Pos('LeakSite', Output) >= 0);
+  AssertTrue('at separator', Pos(' at ', Output) >= 0);
 end;
 
 initialization

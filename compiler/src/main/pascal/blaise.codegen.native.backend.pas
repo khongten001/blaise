@@ -40,8 +40,9 @@ type
 
   TNativeBackend = class
   protected
-    FTarget:   TTargetDesc;
-    FSymTable: TSymbolTable;     { not owned }
+    FTarget:    TTargetDesc;
+    FSymTable:  TSymbolTable;     { not owned }
+    FDebugMode: Boolean;
     { Assembly text is built append-only and read once at the end, so a
       TStringBuilder (single growable buffer, no per-line heap string and no
       O(N^2) final concat) is the right structure — the same approach the QBE
@@ -73,6 +74,7 @@ type
     function  GetOutput: string;
 
     procedure SetSymbolTable(ASymTable: TSymbolTable);
+    procedure SetDebugMode(AEnabled: Boolean);
 
     { Lower a whole program to assembly text and return it. }
     function GenerateProgram(AProg: TProgram): string;
@@ -101,6 +103,11 @@ end;
 procedure TNativeBackend.SetSymbolTable(ASymTable: TSymbolTable);
 begin
   FSymTable := ASymTable;
+end;
+
+procedure TNativeBackend.SetDebugMode(AEnabled: Boolean);
+begin
+  FDebugMode := AEnabled;
 end;
 
 procedure TNativeBackend.Emit(const ALine: string);

@@ -59,7 +59,8 @@ function  _HasClassAttribute(AClassTI, AAttrTI: Pointer): Boolean;
 procedure _StringReleaseCheck(DataPtr: Pointer; RefCount, Length, Capacity: Integer);
 procedure _AbstractMethodError;
 procedure _LeakTrackerEnable;
-procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer);
+procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer;
+  UnitName: Pointer; Line: Int64);
 procedure _libc_atexit(Fn: Pointer); external name 'atexit';
 
 implementation
@@ -148,7 +149,7 @@ end;
 
 const
   LT_BUCKETS   = 1024;   { must be power of two }
-  LT_BUCKET_SZ = 16;     { 2 × 8-byte pointers }
+  LT_BUCKET_SZ = 32;     { 4 × 8-byte slots: key, classname, unitname, line }
 
 var
   GLTEnabled:   Boolean;
@@ -166,10 +167,11 @@ begin
   Result := Integer(V and (LT_BUCKETS - 1));
 end;
 
-procedure LTInsert(Key, Value: Pointer);
+procedure LTInsert(Key, ClassName, UnitName: Pointer; Line: Int64);
 var
   Idx, Step: Integer;
   Slot: ^Pointer;
+  LineSlot: ^Int64;
 begin
   Idx := LTHash(Key);
   Step := 0;
@@ -180,7 +182,11 @@ begin
     begin
       Slot^ := Key;
       Slot  := Pointer(Pointer(Slot) + 8);
-      Slot^ := Value;
+      Slot^ := ClassName;
+      Slot  := Pointer(Pointer(Slot) + 8);
+      Slot^ := UnitName;
+      LineSlot := Pointer(Pointer(Slot) + 8);
+      LineSlot^ := Line;
       Inc(GLTCount);
       Exit;
     end;
@@ -261,14 +267,30 @@ begin
     WriteInt(V);
 end;
 
+procedure WriteStrSlot(DataPtr: Pointer);
+var
+  LenSlot: ^Integer;
+  Len: Integer;
+begin
+  if DataPtr = nil then begin WriteStr('(unknown)', 9); Exit end;
+  LenSlot := DataPtr - 8;
+  Len := LenSlot^;
+  if (Len > 0) and (Len < 256) then
+    WriteStr(DataPtr, Len)
+  else
+    WriteStr('(unknown)', 9);
+end;
+
 procedure _LeakTrackerReport;
 var
   I: Integer;
   Slot: ^Pointer;
   NamePtr: ^Pointer;
   ClassName: Pointer;
-  LenSlot: ^Integer;
-  NameLen: Integer;
+  UnitSlot: ^Pointer;
+  UnitName: Pointer;
+  LineSlot: ^Int64;
+  Line: Int64;
   RCSlot: ^Integer;
   RC: Integer;
 begin
@@ -287,36 +309,35 @@ begin
     begin
       NamePtr   := Pointer(Pointer(Slot) + 8);
       ClassName := NamePtr^;
+      UnitSlot  := Pointer(Pointer(Slot) + 16);
+      UnitName  := UnitSlot^;
+      LineSlot  := Pointer(Pointer(Slot) + 24);
+      Line      := LineSlot^;
       WriteStr('  - ', 4);
-      if ClassName <> nil then
-      begin
-        LenSlot := ClassName - 8;   { string header: Length at data_ptr-8 }
-        NameLen := LenSlot^;
-        if (NameLen > 0) and (NameLen < 256) then
-          WriteStr(ClassName, NameLen)
-        else
-          WriteStr('(unknown)', 9);
-      end
-      else
-        WriteStr('(unknown)', 9);
-      { Refcount lives in the class header at UserPtr - CLASS_HDR.  A leaked
-        object with rc>1 indicates an over-retain (double-AddRef); rc=1
-        indicates a reference that was never released. }
+      WriteStrSlot(ClassName);
       RCSlot := Slot^ - CLASS_HDR;
       RC     := RCSlot^;
       WriteStr(' (rc=', 5);
       WriteSignedInt(RC);
       WriteStr(')', 1);
+      if UnitName <> nil then
+      begin
+        WriteStr(' at ', 4);
+        WriteStrSlot(UnitName);
+        WriteStr(':', 1);
+        WriteInt(Integer(Line));
+      end;
       WriteNL();
     end;
   end;
 end;
 
-procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer);
+procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer;
+  UnitName: Pointer; Line: Int64);
 begin
   if not GLTEnabled then Exit;
   if UserPtr = nil then Exit;
-  LTInsert(UserPtr, ClassName);
+  LTInsert(UserPtr, ClassName, UnitName, Line);
 end;
 
 procedure _LeakTrackerEnable;

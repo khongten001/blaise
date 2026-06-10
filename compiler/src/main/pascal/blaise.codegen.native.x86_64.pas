@@ -5402,6 +5402,21 @@ begin
         [Self.ClassSymName(FAE.ResolvedType.Name)]));
       Self.Emit(#9'movq %rcx, (%rax)');
     end;
+    if FDebugMode then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(#9'movq %rax, %rbx');
+      Self.Emit(#9'movq %rbx, %rdi');
+      Self.Emit(Format(#9'movq typeinfo_%s+16(%%rip), %%rsi',
+        [Self.ClassSymName(FAE.ResolvedType.Name)]));
+      SetI := FStrLits.IndexOf(FCurrentUnitName);
+      if SetI < 0 then SetI := FStrLits.Add(FCurrentUnitName);
+      Self.Emit(Format(#9'leaq __s%d+12(%%rip), %%rdx', [SetI]));
+      Self.Emit(Format(#9'movq $%d, %%rcx', [FAE.Line]));
+      Self.Emit(#9'callq _LeakTrackerRegister');
+      Self.Emit(#9'movq %rbx, %rax');
+      Self.Emit(#9'popq %rbx');
+    end;
     { Call user-defined zero-arg Create body if present. }
     if FAE.ResolvedMethod <> nil then
     begin
@@ -5506,6 +5521,7 @@ end;
 procedure TX86_64Backend.EmitMethodCallExpr(ACall: TMethodCallExpr);
 var
   I:          Integer;
+  SetI:       Integer;
   MD:         TMethodDecl;
   Sym:        string;
   Arg:        TASTExpr;
@@ -5546,6 +5562,21 @@ begin
     begin
       Self.Emit(Format(#9'leaq vtable_%s(%%rip), %%rcx', [Self.ClassSymName(RT.Name)]));
       Self.Emit(#9'movq %rcx, (%rax)');
+    end;
+    if FDebugMode then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(#9'movq %rax, %rbx');
+      Self.Emit(#9'movq %rbx, %rdi');
+      Self.Emit(Format(#9'movq typeinfo_%s+16(%%rip), %%rsi',
+        [Self.ClassSymName(RT.Name)]));
+      SetI := FStrLits.IndexOf(FCurrentUnitName);
+      if SetI < 0 then SetI := FStrLits.Add(FCurrentUnitName);
+      Self.Emit(Format(#9'leaq __s%d+12(%%rip), %%rdx', [SetI]));
+      Self.Emit(Format(#9'movq $%d, %%rcx', [ACall.Line]));
+      Self.Emit(#9'callq _LeakTrackerRegister');
+      Self.Emit(#9'movq %rbx, %rax');
+      Self.Emit(#9'popq %rbx');
     end;
     MD := TMethodDecl(ACall.ResolvedMethod);
     if MD <> nil then
@@ -10422,6 +10453,7 @@ var
   VD:    TVarDecl;
   Decl:  TMethodDecl;
 begin
+  FCurrentUnitName := AProg.Name;
   { Register declared program-level variables as global slots. }
   for I := 0 to AProg.Block.Decls.Count - 1 do
   begin
@@ -10491,6 +10523,8 @@ begin
   { Call initialization sections of imported units in order. }
   for I := 0 to FUnitInitNames.Count - 1 do
     Self.Emit(#9'callq ' + FUnitInitNames.Strings[I] + '_init');
+  if FDebugMode then
+    Self.Emit(#9'callq _LeakTrackerEnable');
   { Program body. }
   FExitLabel := Self.NewLabel('main_exit');
   for I := 0 to AProg.Block.Stmts.Count - 1 do

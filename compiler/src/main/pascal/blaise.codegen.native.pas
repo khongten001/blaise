@@ -137,6 +137,7 @@ procedure TCodeGenNative.Generate(AProg: TProgram);
 begin
   Self.EnsureBackend();
   FBackend.SetSymbolTable(FSymTable);
+  FBackend.SetDebugMode(FDebugMode);
   FOutput := FBackend.GenerateProgram(AProg);
 end;
 
@@ -152,6 +153,7 @@ procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
 begin
   Self.EnsureBackend();
   FBackend.SetSymbolTable(FSymTable);
+  FBackend.SetDebugMode(FDebugMode);
   FBackend.AppendUnit(AUnit);
   FOutput := FBackend.GetOutput();
 end;
@@ -160,6 +162,7 @@ procedure TCodeGenNative.AppendProgram(AProg: TProgram);
 begin
   Self.EnsureBackend();
   FBackend.SetSymbolTable(FSymTable);
+  FBackend.SetDebugMode(FDebugMode);
   FBackend.AppendProgram(AProg);
   FOutput := FBackend.GetOutput();
 end;

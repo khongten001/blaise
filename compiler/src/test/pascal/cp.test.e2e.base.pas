@@ -90,6 +90,11 @@ type
                                    out AStdout: string;
                                    out AExitCode: Integer;
                                    ADebugMode: Boolean): Boolean;
+    function  CompileAndRunWithRTLDebugOn(ABackend: TBackend;
+                                   const ASrc: string;
+                                   out AStdout: string;
+                                   out AExitCode: Integer;
+                                   ADebugMode: Boolean): Boolean;
     { Compile a program that USES a user unit written to the scratch dir, so
       the unit (not the program) is the compilation unit.  Exercises the
       multi-unit codegen path.  AUnitName is the unit identifier; AUnitSrc and
@@ -497,6 +502,95 @@ begin
   WriteFile(IRFile, IR);
   Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
   if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
+  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  AExitCode := RunProcNoArgs(BinFile, AStdout);
+  Result := True
+end;
+
+function TE2ETestCase.CompileAndRunWithRTLDebugOn(ABackend: TBackend;
+                                         const ASrc: string;
+                                         out AStdout: string;
+                                         out AExitCode: Integer;
+                                         ADebugMode: Boolean): Boolean;
+var
+  Lexer:       TLexer;
+  Parser:      TParser;
+  Prog:        TProgram;
+  Semantic:    TSemanticAnalyser;
+  QCG:         TCodeGenQBE;
+  NCG:         TCodeGenNative;
+  CG:          ICodeGen;
+  Loader:      TUnitLoader;
+  Units:       TObjectList;
+  SearchPaths: TStringList;
+  Emitted:     string;
+  IRFile:      string;
+  AsmFile:     string;
+  BinFile:     string;
+  ToolOut:     string;
+  Rc:          Integer;
+  I:           Integer;
+begin
+  Result := False;
+  Inc(FCounter);
+  IRFile  := FScratch + '/t' + IntToStr(FCounter) + '.ssa';
+  AsmFile := FScratch + '/t' + IntToStr(FCounter) + '.s';
+  BinFile := FScratch + '/t' + IntToStr(FCounter);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil;
+  QCG := nil; CG := nil; Loader := nil; Units := nil; SearchPaths := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
+    SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
+    Loader := TUnitLoader.Create(SearchPaths);
+    Units  := Loader.LoadAll(Prog.UsedUnits);
+    for I := 0 to Units.Count - 1 do
+      Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
+    Semantic.Analyse(Prog);
+    if ABackend = beNative then
+    begin
+      NCG := TCodeGenNative.Create();
+      NCG.SetTarget(HostTarget());
+      CG  := NCG;
+      CG.SetDebugMode(ADebugMode);
+      CG.SetSymbolTable(Prog.SymbolTable);
+      for I := 0 to Units.Count - 1 do
+        CG.AppendUnit(TUnit(Units.Items[I]));
+      CG.AppendProgram(Prog);
+      Emitted := CG.GetOutput()
+    end
+    else
+    begin
+      QCG := TCodeGenQBE.Create();
+      QCG.SetDebugMode(ADebugMode);
+      QCG.SetSymbolTable(Prog.SymbolTable);
+      for I := 0 to Units.Count - 1 do
+        QCG.AppendUnit(TUnit(Units.Items[I]));
+      QCG.AppendProgram(Prog);
+      Emitted := QCG.GetOutput()
+    end
+  finally
+    QCG.Free(); Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free()
+  end;
+
+  if ABackend = beNative then
+  begin
+    WriteFile(AsmFile, Emitted)
+  end
+  else
+  begin
+    WriteFile(IRFile, Emitted);
+    Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+    if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end
+  end;
   Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);
