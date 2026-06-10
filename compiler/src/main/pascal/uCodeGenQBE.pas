@@ -320,6 +320,9 @@ type
     { Returns True if AExpr is a function or method call that returns a record.
       Used in EmitAssignment to choose the sret path over a storel. }
     function  IsRecordCall(AExpr: TASTExpr): Boolean;
+    { Returns True if AExpr is a function or method call that returns an
+      interface.  Used in EmitAssignment to choose the sret path. }
+    function  IsInterfaceCall(AExpr: TASTExpr): Boolean;
     { Release every ARC-managed field of a record at AAddr in-line (no copy).
       Used before overwriting a record slot to prevent reference leaks. }
     procedure EmitRecordReleaseFields(ARec: TRecordTypeDesc; const AAddr: string);
@@ -3691,6 +3694,7 @@ var
   ISFld:     TFieldInfo;
   ISAddrT:   string;
   ExtTemp:   string;
+  SretBuf:   string;
 begin
   if AAssign.Expr.ResolvedType = nil then
     raise ECodeGenError.Create(Format(
@@ -3947,6 +3951,39 @@ begin
       EmitLine(Format('  storel 0, %s_obj', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
     end;
     EmitLine(Format('  storel 0, %s_itab', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    Exit;
+  end;
+
+  { Interface := FuncReturningInterface() — the callee writes the fat pointer
+    (obj+itab) into a caller-supplied 16-byte sret buffer.  Load both slots
+    from the buffer and store into the LHS split slots with ARC. }
+  if (AAssign.ResolvedLhsType <> nil) and
+     (AAssign.ResolvedLhsType.Kind = tyInterface) and
+     IsInterfaceCall(AAssign.Expr) then
+  begin
+    SretBuf := AllocTemp();
+    EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+    EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
+    EmitRecordCallSret(AAssign.Expr, SretBuf);
+    ObjTemp  := AllocTemp();
+    ItabTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [ObjTemp, SretBuf]));
+    ValTemp := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ValTemp, SretBuf]));
+    EmitLine(Format('  %s =l loadl %s', [ItabTemp, ValTemp]));
+    if AAssign.IsWeakLhs then
+    begin
+      EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
+        [VarRef(AAssign.Name, AAssign.IsGlobal), ObjTemp]));
+    end
+    else
+    begin
+      OldTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+      EmitLine(Format('  storel %s, %s_obj', [ObjTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    end;
+    EmitLine(Format('  storel %s, %s_itab', [ItabTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
     Exit;
   end;
 
@@ -4583,6 +4620,37 @@ begin
     MDecl := TMethodDecl(FldA.ResolvedMethod);
     Result := (MDecl.ResolvedReturnType <> nil) and
               (MDecl.ResolvedReturnType.Kind = tyRecord);
+  end;
+end;
+
+function TCodeGenQBE.IsInterfaceCall(AExpr: TASTExpr): Boolean;
+var
+  MDecl: TMethodDecl;
+  FldA:  TFieldAccessExpr;
+begin
+  Result := False;
+  if AExpr is TFuncCallExpr then
+  begin
+    if TFuncCallExpr(AExpr).ResolvedDecl = nil then Exit;
+    MDecl := TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl);
+    Result := (MDecl.ResolvedReturnType <> nil) and
+              (MDecl.ResolvedReturnType.Kind = tyInterface);
+  end
+  else if AExpr is TMethodCallExpr then
+  begin
+    if TMethodCallExpr(AExpr).ResolvedMethod = nil then Exit;
+    MDecl := TMethodDecl(TMethodCallExpr(AExpr).ResolvedMethod);
+    Result := (MDecl.ResolvedReturnType <> nil) and
+              (MDecl.ResolvedReturnType.Kind = tyInterface);
+  end
+  else if AExpr is TFieldAccessExpr then
+  begin
+    FldA := TFieldAccessExpr(AExpr);
+    if not FldA.IsMethodCall then Exit;
+    if FldA.ResolvedMethod = nil then Exit;
+    MDecl := TMethodDecl(FldA.ResolvedMethod);
+    Result := (MDecl.ResolvedReturnType <> nil) and
+              (MDecl.ResolvedReturnType.Kind = tyInterface);
   end;
 end;
 
@@ -5841,7 +5909,7 @@ begin
   { Build parameter signature.
     sret functions: l %_par__sret comes first, then l %_par_Self.
     Regular methods: just l %_par_Self first. }
-  if IsFunc and (AMethod.ResolvedReturnType.Kind = tyRecord) then
+  if IsFunc and (AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface]) then
     Sig := 'l %_par__sret, l %_par_Self'
   else
     Sig := 'l %_par_Self';
@@ -5869,7 +5937,7 @@ begin
   if IsFunc then
   begin
     RetQType := QbeTypeOf(AMethod.ResolvedReturnType);
-    if AMethod.ResolvedReturnType.Kind = tyRecord then
+    if AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
       EmitLine(Format('%sfunction %s(%s) {', [ExportPrefix(), FuncName, Sig]))
     else
       EmitLine(Format('%sfunction %s %s(%s) {', [ExportPrefix(), RetQType, FuncName, Sig]));
@@ -5927,6 +5995,15 @@ begin
     if AMethod.ResolvedReturnType.Kind = tyRecord then
       { sret: Result IS the caller's buffer — no allocation needed }
       EmitLine('  %_var_Result =l copy %_par__sret')
+    else if AMethod.ResolvedReturnType.Kind = tyInterface then
+    begin
+      { sret: interface Result is a 16-byte fat pointer (obj+itab) in the
+        caller's buffer.  Alias the two split slots to sret+0 and sret+8. }
+      EmitLine('  %_var_Result_obj =l copy %_par__sret');
+      EmitLine('  storel 0, %_var_Result_obj');
+      EmitLine('  %_var_Result_itab =l add %_par__sret, 8');
+      EmitLine('  storel 0, %_var_Result_itab');
+    end
     else if RetQType = 'w' then
     begin
       EmitLine('  %_var_Result =l alloc4 1');
@@ -5992,7 +6069,7 @@ begin
 
   if IsFunc then
   begin
-    if AMethod.ResolvedReturnType.Kind = tyRecord then
+    if AMethod.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
       EmitLine('  ret')  { sret: caller's buffer already holds result }
     else
     begin
@@ -6687,7 +6764,7 @@ begin
   if IsFunc then
   begin
     RetQType := QbeTypeOf(ADecl.ResolvedReturnType);
-    if ADecl.ResolvedReturnType.Kind = tyRecord then
+    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
     begin
       { sret: prepend hidden result-buffer pointer; function becomes void }
       if Sig <> '' then Sig := 'l %_par__sret, ' + Sig
@@ -6823,6 +6900,15 @@ begin
     if ADecl.ResolvedReturnType.Kind = tyRecord then
       { sret: Result IS the caller's buffer — no allocation needed }
       EmitLine('  %_var_Result =l copy %_par__sret')
+    else if ADecl.ResolvedReturnType.Kind = tyInterface then
+    begin
+      { sret: interface Result is a 16-byte fat pointer (obj+itab) in the
+        caller's buffer.  Alias the two split slots to sret+0 and sret+8. }
+      EmitLine('  %_var_Result_obj =l copy %_par__sret');
+      EmitLine('  storel 0, %_var_Result_obj');
+      EmitLine('  %_var_Result_itab =l add %_par__sret, 8');
+      EmitLine('  storel 0, %_var_Result_itab');
+    end
     else if RetQType = 'w' then
     begin
       EmitLine('  %_var_Result =l alloc4 1');
@@ -6895,7 +6981,7 @@ begin
 
   if IsFunc then
   begin
-    if ADecl.ResolvedReturnType.Kind = tyRecord then
+    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
       EmitLine('  ret')  { sret: caller's buffer already holds result }
     else
     begin
@@ -8789,6 +8875,15 @@ begin
         EmitRecordCallSret(AExpr, SretBuf);
         Exit(SretBuf);
       end;
+      { sret: interface-returning function — 16-byte buffer for obj+itab. }
+      if MDecl.ResolvedReturnType.Kind = tyInterface then
+      begin
+        SretBuf := AllocTemp();
+        EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+        EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
+        EmitRecordCallSret(AExpr, SretBuf);
+        Exit(SretBuf);
+      end;
       if FC.IsImplicitSelfMethod then
       begin
         ArgTemp := AllocTemp();
@@ -9209,6 +9304,15 @@ begin
         EmitLine(Format('  %s =l alloc4 %d', [SretBuf, RT.TotalSize()]));
       if RT.TotalSize() > 0 then
         EmitLine(Format('  call $memset(l %s, w 0, l %d)', [SretBuf, RT.TotalSize()]));
+      EmitRecordCallSret(AExpr, SretBuf);
+      Exit(SretBuf);
+    end;
+    { sret: interface-returning method }
+    if MDecl.ResolvedReturnType.Kind = tyInterface then
+    begin
+      SretBuf := AllocTemp();
+      EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+      EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
       EmitRecordCallSret(AExpr, SretBuf);
       Exit(SretBuf);
     end;
@@ -9707,6 +9811,14 @@ begin
           EmitLine(Format('  %s =l alloc4 %d', [SretBuf, RT.TotalSize()]));
         if RT.TotalSize() > 0 then
           EmitLine(Format('  call $memset(l %s, w 0, l %d)', [SretBuf, RT.TotalSize()]));
+        EmitRecordCallSret(AExpr, SretBuf);
+        Result := SretBuf;
+      end
+      else if MDecl.ResolvedReturnType.Kind = tyInterface then
+      begin
+        SretBuf := AllocTemp();
+        EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+        EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
         EmitRecordCallSret(AExpr, SretBuf);
         Result := SretBuf;
       end

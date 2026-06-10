@@ -308,6 +308,10 @@ type
                            ASretIsIndirect: Boolean);
     procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string;
                                  ASretIsIndirect: Boolean);
+    { Emit a call to a function that returns an interface via sret.  The 16-byte
+      buffer (obj+itab) is left on the stack; caller is responsible for loading
+      the slots and cleaning up (addq $16, %rsp). }
+    procedure EmitIntfSretCall(ACall: TFuncCallExpr);
     { Indirect call: load a bare function pointer from APtrOperand (an AT&T
       memory operand, e.g. "-8(%rbp)"), set up args as for EmitCall, then
       dispatch via callq *%r10.  AProcType supplies the param list for
@@ -2004,6 +2008,60 @@ begin
     Exit;
   end;
 
+  { sret interface Result: the Result slot holds a pointer to the caller's
+    16-byte buffer.  Dereference it into %r15 so that (%r15)=obj, 8(%r15)=itab. }
+  if FSretFunc and SameText(AAsgn.Name, 'Result') then
+  begin
+    Self.Emit(#9'pushq %r15');
+    Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('Result')]));
+    ObjOp  := '(%r15)';
+    ItabOp := '8(%r15)';
+    if AAsgn.Expr.ResolvedType.Kind = tyClass then
+    begin
+      ClassRT := TRecordTypeDesc(AAsgn.Expr.ResolvedType);
+      ItabSym := 'itab_' + Self.ClassSymName(ClassRT.Name) + '_' + Self.IntfTypeInfoName(Intf.Name);
+      Self.EmitExprToEax(AAsgn.Expr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'movq (%r15), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, (%r15)');
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [ItabSym]));
+      Self.Emit(#9'movq %rax, 8(%r15)');
+    end
+    else if AAsgn.Expr is TNilLiteral then
+    begin
+      Self.Emit(#9'movq (%r15), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'movq $0, (%r15)');
+      Self.Emit(#9'movq $0, 8(%r15)');
+    end
+    else if (AAsgn.Expr.ResolvedType.Kind = tyInterface) and (AAsgn.Expr is TIdentExpr) then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.IntfItabOperand(TIdentExpr(AAsgn.Expr).Name, TIdentExpr(AAsgn.Expr).IsGlobal)]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.IntfObjOperand(TIdentExpr(AAsgn.Expr).Name, TIdentExpr(AAsgn.Expr).IsGlobal)]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'movq (%r15), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, (%r15)');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, 8(%r15)');
+    end
+    else
+      raise ENativeCodeGenError.Create(
+        'native backend: unsupported sret interface Result assignment RHS');
+    Self.Emit(#9'popq %r15');
+    Exit;
+  end;
+
   { Register a global LHS so EmitDataSection emits its _obj/_itab labels. }
   if not Self.IsLocal(AAsgn.Name) then
   begin
@@ -2125,8 +2183,29 @@ begin
     Exit;
   end;
 
+  { F := FuncReturningInterface() — sret convention: allocate a 16-byte buffer
+    on the stack, pass its address as the hidden first arg (%rdi), call the
+    function (which writes obj+itab into the buffer), then move the result to
+    the LHS with ARC. }
+  if (AAsgn.Expr is TFuncCallExpr) and
+     (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) and
+     (TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
+     (TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyInterface) then
+  begin
+    Self.EmitIntfSretCall(TFuncCallExpr(AAsgn.Expr));
+    { Sret buffer at (%rsp): obj at 0(%rsp), itab at 8(%rsp). }
+    Self.Emit(Format(#9'movq %s, %%rdi', [ObjOp]));  { old obj }
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(#9'movq (%rsp), %rax');
+    Self.Emit(Format(#9'movq %%rax, %s', [ObjOp]));
+    Self.Emit(#9'movq 8(%rsp), %rax');
+    Self.Emit(Format(#9'movq %%rax, %s', [ItabOp]));
+    Self.Emit(#9'addq $16, %rsp');
+    Exit;
+  end;
+
   raise ENativeCodeGenError.Create(
-    'native backend: unsupported interface assignment RHS');
+    'native backend: unsupported interface-field assignment RHS');
 end;
 
 procedure TX86_64Backend.EmitInterfaceToFieldSlotsAt(AExpr: TASTExpr;
@@ -2579,7 +2658,7 @@ begin
     VarOperand returns the slot address (not the record address). }
   if ADecl.ResolvedReturnType <> nil then
   begin
-    if ADecl.ResolvedReturnType.Kind = tyRecord then
+    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
     begin
       FSretFunc := True;
       Self.AddSlot('Result', nil, Offset);  { nil = pointer-size (8 bytes) }
@@ -9577,6 +9656,58 @@ begin
     if CleanUp > 0 then
       Self.Emit(Format(#9'addq $%d, %%rsp', [CleanUp]));
   end;
+end;
+
+{ Emit a standalone function call that returns an interface via sret.
+  Allocates a 16-byte buffer on the stack, passes its address as the first
+  hidden arg (%rdi), calls the function, and leaves the buffer on the stack
+  (caller loads obj at 0(%rsp) and itab at 8(%rsp), then addq $16, %rsp). }
+procedure TX86_64Backend.EmitIntfSretCall(ACall: TFuncCallExpr);
+var
+  I:      Integer;
+  MD:     TMethodDecl;
+  FSym:   string;
+  Arg:    TASTExpr;
+  ArgCnt: Integer;
+begin
+  MD := TMethodDecl(ACall.ResolvedDecl);
+  FSym := FuncSymbolOf(ACall);
+  ArgCnt := ACall.Args.Count;
+  { Allocate the 16-byte sret buffer on the stack and zero it. }
+  Self.Emit(#9'subq $16, %rsp');
+  Self.Emit(#9'movq $0, (%rsp)');
+  Self.Emit(#9'movq $0, 8(%rsp)');
+  if ACall.IsImplicitSelfMethod then
+  begin
+    FMethodArgExtraStack := 0;
+    for I := 0 to ArgCnt - 1 do
+      Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]),
+        TASTExpr(ACall.Args.Items[I]));
+    Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
+    for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
+      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+    Self.Emit(#9'movq %r10, %rsi');
+    Self.Emit(#9'movq %rsp, %rdi');
+    Self.Emit(#9'callq ' + FSym);
+    if FMethodArgExtraStack > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
+  end
+  else if ArgCnt <= 5 then
+  begin
+    for I := 0 to ArgCnt - 1 do
+    begin
+      Arg := TASTExpr(ACall.Args.Items[I]);
+      Self.EmitExprToEax(Arg);
+      Self.Emit(#9'pushq %rax');
+    end;
+    for I := ArgCnt - 1 downto 0 do
+      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+    Self.Emit(#9'movq %rsp, %rdi');
+    Self.Emit(#9'callq ' + FSym);
+  end
+  else
+    raise ENativeCodeGenError.Create(
+      'native backend: interface sret with >5 args not yet supported');
 end;
 
 { Emit a method-pointer (of-object) call through a TMethod block.
