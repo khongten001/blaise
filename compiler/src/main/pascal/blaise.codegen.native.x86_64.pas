@@ -137,6 +137,7 @@ type
     procedure EmitClassSection(ATypeDecls: TObjectList;
                                AGenericInstances: TObjectList;
                                ASymTable: TSymbolTable);
+    procedure EmitArrayConstData(ABlock: TBlock; const APrefix: string);
     { Escape a Pascal string for use inside an AS .ascii directive. }
     function AsmEscapeString(const AStr: string): string;
     { Emit a leaq __sN+12(%rip), %rax for the string literal AValue,
@@ -756,6 +757,168 @@ end;
 
 { Evaluate a string literal: register it in the pool if new, then emit
   leaq __sN+12(%rip), %rax so %rax holds the Blaise data pointer. }
+procedure TX86_64Backend.EmitArrayConstData(ABlock: TBlock;
+  const APrefix: string);
+var
+  I, J, K, M: Integer;
+  CD:   TConstDecl;
+  TD:   TTypeDecl;
+  Decl: TMethodDecl;
+  Lbl:  string;
+  Idx:  Integer;
+  IsStr: Boolean;
+begin
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.ConstDecls.Count - 1 do
+  begin
+    CD := TConstDecl(ABlock.ConstDecls.Items[I]);
+    if not CD.IsArrayConst then Continue;
+    if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Continue;
+    if APrefix <> '' then
+      Lbl := APrefix + '_' + CD.Name
+    else if CD.ResolvedQbeName <> '' then
+      Lbl := NativeMangle(CD.ResolvedQbeName)
+    else
+      Lbl := CD.Name;
+    IsStr := SameText(CD.ArrayElemType, 'string');
+    if IsStr then
+    begin
+      for J := 0 to CD.ArrayElements.Count - 1 do
+        if FStrLits.IndexOf(CD.ArrayElements[J]) < 0 then
+          FStrLits.Add(CD.ArrayElements[J]);
+      Self.Emit('.data');
+      Self.Emit('.balign 8');
+      Self.Emit(Lbl + ':');
+      for J := 0 to CD.ArrayElements.Count - 1 do
+      begin
+        Idx := FStrLits.IndexOf(CD.ArrayElements[J]);
+        Self.Emit(Format(#9'.quad __s%d + 12', [Idx]));
+      end;
+    end
+    else
+    begin
+      Self.Emit('.data');
+      Self.Emit('.balign 4');
+      Self.Emit(Lbl + ':');
+      for J := 0 to CD.ArrayElements.Count - 1 do
+        Self.Emit(Format(#9'.long %s', [CD.ArrayElements[J]]));
+    end;
+  end;
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+  begin
+    Decl := TMethodDecl(ABlock.ProcDecls.Items[I]);
+    if Decl.Body = nil then Continue;
+    for J := 0 to Decl.Body.ConstDecls.Count - 1 do
+    begin
+      CD := TConstDecl(Decl.Body.ConstDecls.Items[J]);
+      if not CD.IsArrayConst then Continue;
+      if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Continue;
+      if CD.ResolvedQbeName <> '' then
+        Lbl := NativeMangle(CD.ResolvedQbeName)
+      else
+        Lbl := CD.Name;
+      IsStr := SameText(CD.ArrayElemType, 'string');
+      if IsStr then
+      begin
+        for K := 0 to CD.ArrayElements.Count - 1 do
+          if FStrLits.IndexOf(CD.ArrayElements[K]) < 0 then
+            FStrLits.Add(CD.ArrayElements[K]);
+        Self.Emit('.data');
+        Self.Emit('.balign 8');
+        Self.Emit(Lbl + ':');
+        for K := 0 to CD.ArrayElements.Count - 1 do
+        begin
+          Idx := FStrLits.IndexOf(CD.ArrayElements[K]);
+          Self.Emit(Format(#9'.quad __s%d + 12', [Idx]));
+        end;
+      end
+      else
+      begin
+        Self.Emit('.data');
+        Self.Emit('.balign 4');
+        Self.Emit(Lbl + ':');
+        for K := 0 to CD.ArrayElements.Count - 1 do
+          Self.Emit(Format(#9'.long %s', [CD.ArrayElements[K]]));
+      end;
+    end;
+  end;
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    for J := 0 to TClassTypeDef(TD.Def).ConstDecls.Count - 1 do
+    begin
+      CD := TConstDecl(TClassTypeDef(TD.Def).ConstDecls.Items[J]);
+      if not CD.IsArrayConst then Continue;
+      if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Continue;
+      Lbl := TD.Name + '_' + CD.Name;
+      IsStr := SameText(CD.ArrayElemType, 'string');
+      if IsStr then
+      begin
+        for K := 0 to CD.ArrayElements.Count - 1 do
+          if FStrLits.IndexOf(CD.ArrayElements[K]) < 0 then
+            FStrLits.Add(CD.ArrayElements[K]);
+        Self.Emit('.data');
+        Self.Emit('.balign 8');
+        Self.Emit('.globl ' + Lbl);
+        Self.Emit(Lbl + ':');
+        for K := 0 to CD.ArrayElements.Count - 1 do
+        begin
+          Idx := FStrLits.IndexOf(CD.ArrayElements[K]);
+          Self.Emit(Format(#9'.quad __s%d + 12', [Idx]));
+        end;
+      end
+      else
+      begin
+        Self.Emit('.data');
+        Self.Emit('.balign 4');
+        Self.Emit('.globl ' + Lbl);
+        Self.Emit(Lbl + ':');
+        for K := 0 to CD.ArrayElements.Count - 1 do
+          Self.Emit(Format(#9'.long %s', [CD.ArrayElements[K]]));
+      end;
+    end;
+    for J := 0 to TClassTypeDef(TD.Def).Methods.Count - 1 do
+    begin
+      Decl := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[J]);
+      if Decl.Body = nil then Continue;
+      for K := 0 to Decl.Body.ConstDecls.Count - 1 do
+      begin
+        CD := TConstDecl(Decl.Body.ConstDecls.Items[K]);
+        if not CD.IsArrayConst then Continue;
+        if (CD.ArrayElements = nil) or (CD.ArrayElements.Count = 0) then Continue;
+        if CD.ResolvedQbeName <> '' then
+          Lbl := NativeMangle(CD.ResolvedQbeName)
+        else
+          Lbl := CD.Name;
+        IsStr := SameText(CD.ArrayElemType, 'string');
+        if IsStr then
+        begin
+          for M := 0 to CD.ArrayElements.Count - 1 do
+            if FStrLits.IndexOf(CD.ArrayElements[M]) < 0 then
+              FStrLits.Add(CD.ArrayElements[M]);
+          Self.Emit('.data');
+          Self.Emit('.balign 8');
+          Self.Emit(Lbl + ':');
+          for M := 0 to CD.ArrayElements.Count - 1 do
+          begin
+            Idx := FStrLits.IndexOf(CD.ArrayElements[M]);
+            Self.Emit(Format(#9'.quad __s%d + 12', [Idx]));
+          end;
+        end
+        else
+        begin
+          Self.Emit('.data');
+          Self.Emit('.balign 4');
+          Self.Emit(Lbl + ':');
+          for M := 0 to CD.ArrayElements.Count - 1 do
+            Self.Emit(Format(#9'.long %s', [CD.ArrayElements[M]]));
+        end;
+      end;
+    end;
+  end;
+end;
+
 procedure TX86_64Backend.EmitStrLitAddr(const AValue: string);
 var
   Idx: Integer;
@@ -3052,6 +3215,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
       else if Self.IsLocal(TIdentExpr(AExpr).Name) then
         Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
+      else if TIdentExpr(AExpr).ConstArraySymbol <> '' then
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [NativeMangle(TIdentExpr(AExpr).ConstArraySymbol)]))
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AExpr).Name]));
       Exit;
@@ -5036,6 +5202,9 @@ begin
           begin
             if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
               Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(Arg).Name)]))
+            else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+              Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+                [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
             else if Arg is TIdentExpr then
               Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(Arg).Name]))
             else
@@ -5124,6 +5293,9 @@ begin
       begin
         if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+            [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(Arg).Name]))
         else
@@ -5188,6 +5360,9 @@ begin
     else if (AArg is TIdentExpr) and Self.IsLocal(TIdentExpr(AArg).Name) then
       Self.Emit(Format(#9'leaq %s, %%rax',
         [Self.VarOperand(TIdentExpr(AArg).Name)]))
+    else if (AArg is TIdentExpr) and (TIdentExpr(AArg).ConstArraySymbol <> '') then
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+        [NativeMangle(TIdentExpr(AArg).ConstArraySymbol)]))
     else if AArg is TIdentExpr then
       Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AArg).Name]))
     else
@@ -5419,6 +5594,9 @@ begin
       begin
         if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+            [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(Arg).Name]))
         else
@@ -8031,6 +8209,9 @@ begin
           if Self.IsLocal(TIdentExpr(Arg).Name) then
             Self.Emit(Format(#9'leaq %s, %%rax',
               [Self.VarOperand(TIdentExpr(Arg).Name)]))
+          else if TIdentExpr(Arg).ConstArraySymbol <> '' then
+            Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+              [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
           else
             Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
               [TIdentExpr(Arg).Name]));
@@ -8161,6 +8342,9 @@ begin
           if Self.IsLocal(TIdentExpr(Arg).Name) then
             Self.Emit(Format(#9'leaq %s, %%rax',
               [Self.VarOperand(TIdentExpr(Arg).Name)]))
+          else if TIdentExpr(Arg).ConstArraySymbol <> '' then
+            Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+              [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
           else
             Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
               [TIdentExpr(Arg).Name]));
@@ -8209,6 +8393,9 @@ begin
         else if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax',
             [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+            [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
@@ -8406,6 +8593,9 @@ begin
         else if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax',
             [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+            [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
@@ -8440,6 +8630,9 @@ begin
         else if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax',
             [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+            [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
@@ -9078,6 +9271,11 @@ begin
   Self.EmitClassMethods(AProg.Block.TypeDecls, AProg.GenericInstances,
                         AProg.GenericRecordInstances);
 
+  { Array-typed constants — emit data sections so const arrays are defined
+    as assembly labels before being referenced in code.  Covers block-level
+    consts and local consts inside procedure bodies. }
+  Self.EmitArrayConstData(AProg.Block, '');
+
   { Standalone procedures/functions, then $main. }
   for I := 0 to AProg.Block.ProcDecls.Count - 1 do
   begin
@@ -9198,6 +9396,10 @@ begin
     LinkClassMethodImpls the definition's TMethodDecl nodes hold the bodies. }
   Self.EmitClassMethods(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                         AUnit.GenericRecordInstances);
+
+  { Array-typed constants from both interface and implementation blocks. }
+  Self.EmitArrayConstData(AUnit.IntfBlock, '');
+  Self.EmitArrayConstData(AUnit.ImplBlock, '');
 
   { Standalone procedures/functions from the implementation block.  Skip class
     method stubs (OwnerTypeName <> '': their bodies were transferred to the
