@@ -264,6 +264,10 @@ type
 
     { Type-cast on pointer-sized types }
     procedure TestRun_Native_TypeCast_PointerClass;
+
+    { Property reads via getter methods }
+    procedure TestRun_Native_PropertyRead_Simple;
+    procedure TestRun_Native_PropertyRead_Indexed;
   end;
 
 implementation
@@ -4102,6 +4106,55 @@ begin
     + '  WriteLn(Integer(P))'
     + 'end.',
     '42' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_PropertyRead_Simple;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TBox = class'
+    + ' FVal: Integer;'
+    + ' constructor Create(V: Integer);'
+    + ' function GetVal: Integer;'
+    + ' property Val: Integer read GetVal;'
+    + 'end;'
+    + 'constructor TBox.Create(V: Integer);'
+    + 'begin FVal := V end;'
+    + 'function TBox.GetVal: Integer;'
+    + 'begin Result := FVal end;'
+    + 'var B: TBox;'
+    + 'begin'
+    + '  B := TBox.Create(99);'
+    + '  WriteLn(B.Val);'
+    + '  B.Free '
+    + 'end.',
+    '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_PropertyRead_Indexed;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth(
+    'program P;'
+    + 'type TArr = class'
+    + ' FA: Integer; FB: Integer;'
+    + ' constructor Create;'
+    + ' function GetItem(I: Integer): Integer;'
+    + ' property Items[I: Integer]: Integer read GetItem;'
+    + 'end;'
+    + 'constructor TArr.Create;'
+    + 'begin FA := 10; FB := 30 end;'
+    + 'function TArr.GetItem(I: Integer): Integer;'
+    + 'begin if I = 0 then Result := FA else Result := FB end;'
+    + 'var A: TArr;'
+    + 'begin'
+    + '  A := TArr.Create;'
+    + '  WriteLn(A.Items[0]);'
+    + '  WriteLn(A.Items[1]);'
+    + '  A.Free '
+    + 'end.',
+    '10' + LE + '30' + LE, 0);
 end;
 
 initialization

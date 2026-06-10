@@ -108,6 +108,7 @@ type
       AppendUnit order.  $main calls <Unit>_init for each, in order, after
       _SetArgs — mirrors the QBE backend's EmitMainHeader loop. }
     FUnitInitNames: TStringList;
+    FCurrentUnitName: string;
 
     { Allocate a fresh local assembly label (".L<prefix><N>"). }
     function NewLabel(const APrefix: string): string;
@@ -4237,6 +4238,58 @@ begin
     Exit;
   end;
 
+  { Method-backed property read: Obj.Prop or Obj.Prop[I].
+    Load the receiver (Self pointer) into %rdi, optional index into %rsi,
+    then call the getter method.  Covers chained (Base <> nil), implicit-Self,
+    and plain variable receivers. }
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).PropRead <> nil) and
+     (TFieldAccessExpr(AExpr).PropRead.ReadMethod <> '') then
+  begin
+    FAE := TFieldAccessExpr(AExpr);
+    if FAE.Base <> nil then
+    begin
+      Self.EmitExprToEax(FAE.Base);
+      Self.Emit(#9'movq %rax, %rdi');
+    end
+    else if FAE.IsImplicitSelf then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Self')]));
+      if (FAE.ImplicitBaseInfo <> nil) and (FAE.ImplicitBaseInfo.Offset > 0) then
+        Self.Emit(Format(#9'addq $%d, %%rdi', [FAE.ImplicitBaseInfo.Offset]));
+      if FAE.IsClassAccess then
+        Self.Emit(#9'movq (%rdi), %rdi');
+    end
+    else
+    begin
+      if Self.IsLocal(FAE.RecordName) then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FAE.RecordName]));
+    end;
+    if FAE.FieldInfo <> nil then
+    begin
+      if FAE.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rdi', [FAE.FieldInfo.Offset]));
+      Self.Emit(#9'movq (%rdi), %rdi');
+    end;
+    if FAE.PropIndexExpr <> nil then
+    begin
+      Self.Emit(#9'pushq %rdi');
+      Self.EmitExprToEax(FAE.PropIndexExpr);
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'movq %rax, %rsi');
+    end;
+    Self.Emit(#9'callq ' + Self.ClassSymName(FAE.PropOwnerType) + '_'
+      + NativeMangle(FAE.PropRead.ReadMethod));
+    if (FAE.ResolvedType <> nil) and
+       not IsIntFamily(FAE.ResolvedType) and
+       not IsFloatFamily(FAE.ResolvedType) and
+       (FAE.ResolvedType.Kind <> tyString) then
+      Self.EmitNarrowToType(FAE.ResolvedType);
+    Exit;
+  end;
+
   { Array field subscript read: R.Arr[I] where Arr is an array-typed field.
     Compute the record base address, add FieldInfo.Offset to reach the array
     field, then index into the array (static, dynamic, or open). }
@@ -4847,8 +4900,8 @@ begin
   end;
 
   raise ENativeCodeGenError.Create(
-    Format('native backend: unsupported expression form %s at line %d col %d',
-      [AExpr.ClassName, AExpr.Line, AExpr.Col]));
+    Format('native backend: unsupported expression form %s at line %d col %d in %s',
+      [AExpr.ClassName, AExpr.Line, AExpr.Col, FCurrentUnitName]));
 end;
 
 { Emit a class method call: load Self into %rdi, then scalar args starting at
@@ -8805,6 +8858,7 @@ var
   VD:        TVarDecl;
   UnitSym:   TSymbolTable;
 begin
+  FCurrentUnitName := AUnit.Name;
   { Register the unit's global variables (interface + implementation sections)
     as data slots, mirroring EmitProgram's program-global registration. }
   for I := 0 to AUnit.IntfBlock.Decls.Count - 1 do
