@@ -53,6 +53,12 @@ type
     procedure TestRun_RcSSEInt_DoubleInt64_RoundTrip;
     { rcSSE1 with Single — 4B record via xmm0 as `s`. }
     procedure TestRun_RcSSE1_Single_RoundTrip;
+    { Nested record — inner TPoint (8 B int) embedded in 12 B outer → rcInt2. }
+    procedure TestRun_RcInt2_NestedRecord_RoundTrip;
+    { Two Single fields — 8 B, all-float leaves → rcSSE1. }
+    procedure TestRun_RcSSE1_TwoSingle_RoundTrip;
+    { Managed-field record stays on sret (string field → no register return). }
+    procedure TestRun_ManagedField_StaysSret;
   end;
 
 implementation
@@ -354,6 +360,81 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcOneSingle, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('2.5 via xmm0 as s', '2.5', Trim(Output));
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RcInt2_NestedRecord_RoundTrip;
+const
+  Src = '''
+    program P;
+    type
+      TInner = record X, Y: Integer; end;
+      TOuter = record A: TInner; B: Integer; end;
+    function MakeIt(X, Y, B: Integer): TOuter;
+    begin
+      Result.A.X := X;
+      Result.A.Y := Y;
+      Result.B := B
+    end;
+    var R: TOuter;
+    begin
+      R := MakeIt(10, 20, 30);
+      WriteLn(R.A.X, ' ', R.A.Y, ' ', R.B)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('nested record fields', '10 20 30' + LE, Output);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RcSSE1_TwoSingle_RoundTrip;
+const
+  Src = '''
+    program P;
+    type T2S = record A, B: Single; end;
+    function MakeIt(A, B: Single): T2S;
+    begin
+      Result.A := A;
+      Result.B := B
+    end;
+    var R: T2S;
+    begin
+      R := MakeIt(1.5, -2.5);
+      WriteLn(R.A);
+      WriteLn(R.B)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('two Singles via xmm0', '1.5' + LE + '-2.5', Trim(Output));
+end;
+
+procedure TE2ERecordReturnTests.TestRun_ManagedField_StaysSret;
+const
+  Src = '''
+    program P;
+    type TS = record S: string; end;
+    function MakeIt(S: string): TS;
+    begin
+      Result.S := S
+    end;
+    var R: TS;
+    begin
+      R := MakeIt('hello');
+      WriteLn(R.S)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('managed field stays on sret', 'hello' + LE, Output);
 end;
 
 initialization

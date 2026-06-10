@@ -78,6 +78,10 @@ type
       to the pointer stored in the Result frame slot; field writes dereference
       through it; the epilogue emits a plain ret. }
     FSretFunc: Boolean;
+    { ABI classification for the current record-returning function.  Set in
+      BuildFrame; rcSret when FSretFunc is True; rcInt1/rcSSE1/etc. when the
+      record qualifies for register return (FSretFunc is False in that case). }
+    FRecRetClass: TRecReturnClass;
 
     { Captured outer-scope variables: when emitting a nested function, this
       holds the names of variables captured from the enclosing scope.  Each
@@ -317,6 +321,24 @@ type
                            ASretIsIndirect: Boolean);
     procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string;
                                  ASretIsIndirect: Boolean);
+    { Compute the address of a record/class field into %rcx.  Handles
+      local/global records, class fields, var-param records, chained
+      access (Base <> nil), and implicit-Self fields. }
+    procedure EmitFieldAddrToRcx(AFA: TFieldAccessExpr);
+    { Emit the function epilogue for a reg-return record: load the local
+      Result buffer into the SysV return registers (rax/rdx/xmm0/xmm1)
+      according to AClass, then the caller will ret.  Only called when
+      AClass <> rcSret.  VarOperand('Result') is the buffer address. }
+    procedure EmitRecordReturnEpilogue(ARec: TRecordTypeDesc;
+                                       AClass: TRecReturnClass);
+    { Caller-side: call a record-returning function whose return class is
+      AClass (non-sret).  The function is called, the return register(s)
+      are stored into ADestAddr.  Args must already be set up in the SysV
+      integer registers (%rdi onwards for free functions, %rsi onwards for
+      methods with Self in %rdi).  Only handles the return-capture part. }
+    procedure EmitRecordRegReturnCapture(const ADestAddr: string;
+                                         ARec: TRecordTypeDesc;
+                                         AClass: TRecReturnClass);
     { Emit a call to a function that returns an interface via sret.  The 16-byte
       buffer (obj+itab) is left on the stack; caller is responsible for loading
       the slots and cleaning up (addq $16, %rsp). }
@@ -502,6 +524,7 @@ begin
   FFrameSize      := 0;
   FExitLabel      := '';
   FSretFunc       := False;
+  FRecRetClass    := rcSret;
   FExcDepth           := 0;
   FExcFrameNext       := 0;
   FForEndNext         := 0;
@@ -2746,13 +2769,27 @@ begin
     For a record-returning (sret) function the Result IS the caller's buffer —
     we store the incoming sret pointer (%rdi) in an 8-byte slot and dereference
     through it on every field write.  We record the slot as tyPointer so
-    VarOperand returns the slot address (not the record address). }
+    VarOperand returns the slot address (not the record address).
+    For small POD records that qualify for register return, Result is a local
+    buffer and the epilogue loads it into rax/rdx/xmm0/xmm1. }
   if ADecl.ResolvedReturnType <> nil then
   begin
-    if ADecl.ResolvedReturnType.Kind in [tyRecord, tyInterface] then
+    if ADecl.ResolvedReturnType.Kind = tyInterface then
     begin
       FSretFunc := True;
-      Self.AddSlot('Result', nil, Offset);  { nil = pointer-size (8 bytes) }
+      Self.AddSlot('Result', nil, Offset);
+    end
+    else if ADecl.ResolvedReturnType.Kind = tyRecord then
+    begin
+      FRecRetClass := ClassifyRecordReturn(
+        TRecordTypeDesc(ADecl.ResolvedReturnType));
+      if FRecRetClass = rcSret then
+      begin
+        FSretFunc := True;
+        Self.AddSlot('Result', nil, Offset);
+      end
+      else
+        Self.AddSlot('Result', ADecl.ResolvedReturnType, Offset);
     end
     else
       Self.AddSlot('Result', ADecl.ResolvedReturnType, Offset);
@@ -2816,6 +2853,7 @@ begin
   end;
   FFrameSize    := 0;
   FSretFunc     := False;
+  FRecRetClass  := rcSret;
   FExcDepth     := 0;
   FExcFrameNext := 0;
   FForEndNext   := 0;
@@ -3132,6 +3170,18 @@ begin
     Exit;
   end;
 
+  if AExpr is TIntLiteral then
+  begin
+    Self.Emit(Format(#9'movsd .LF%s(%%rip), %%xmm0', [IntToStr(FLabelCount)]));
+    Self.Emit('.section .rodata');
+    Self.Emit('.balign 8');
+    Self.Emit(Format('.LF%s:', [IntToStr(FLabelCount)]));
+    Self.Emit(Format(#9'.double %d.0', [TIntLiteral(AExpr).Value]));
+    Self.Emit('.text');
+    Inc(FLabelCount);
+    Exit;
+  end;
+
   if AExpr is TIdentExpr then
   begin
     Ty := AExpr.ResolvedType;
@@ -3140,6 +3190,14 @@ begin
     if (Ty = nil) then
       Ty := Self.GlobalType(TIdentExpr(AExpr).Name);
     Self.EmitLoadFloat(Self.VarOperand(TIdentExpr(AExpr).Name), Ty);
+    Exit;
+  end;
+
+  if AExpr is TFieldAccessExpr then
+  begin
+    Self.EmitFieldAddrToRcx(TFieldAccessExpr(AExpr));
+    Ty := TFieldAccessExpr(AExpr).FieldInfo.TypeDesc;
+    Self.EmitLoadFloat('(%rcx)', Ty);
     Exit;
   end;
 
@@ -8493,6 +8551,66 @@ begin
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
+    if IsFloatFamily(FA.FieldInfo.TypeDesc) then
+    begin
+      Self.EmitExprToXmm0(FA.Expr);
+      if FA.ObjExpr <> nil then
+      begin
+        Self.Emit(#9'subq $8, %rsp');
+        Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.EmitExprToEax(FA.ObjExpr);
+        Self.Emit(#9'movq %rax, %rcx');
+        Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'addq $8, %rsp');
+      end
+      else if FSretFunc and (FA.RecordName = 'Result') then
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Result')]))
+      else if FA.IsImplicitSelf then
+      begin
+        Self.Emit(#9'subq $8, %rsp');
+        Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]));
+        if (FA.ImplicitBaseInfo <> nil) and (FA.ImplicitBaseInfo.Offset > 0) then
+          Self.Emit(Format(#9'addq $%d, %%rcx', [FA.ImplicitBaseInfo.Offset]));
+        if FA.IsClassAccess then
+          Self.Emit(#9'movq (%rcx), %rcx');
+        Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'addq $8, %rsp');
+      end
+      else if FA.IsClassAccess then
+      begin
+        Self.Emit(#9'subq $8, %rsp');
+        Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        if Self.IsLocal(FA.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'addq $8, %rsp');
+      end
+      else if FA.IsVarParam then
+      begin
+        Self.Emit(#9'subq $8, %rsp');
+        Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        if Self.IsLocal(FA.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
+        Self.Emit(#9'addq $8, %rsp');
+      end
+      else
+      begin
+        if Self.IsLocal(FA.RecordName) then
+          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
+      end;
+      if FA.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rcx', [FA.FieldInfo.Offset]));
+      Self.EmitStoreFloat('(%rcx)', FA.FieldInfo.TypeDesc);
+      Exit;
+    end;
     Self.EmitExprToEax(FA.Expr);
     { Chained field assignment: ObjExpr is the receiver expression (e.g. DT.Date
       or H.R.Obj).  Emit the receiver to get the base address, then store at the
@@ -9288,9 +9406,17 @@ begin
       begin
         Self.EmitExprToXmm0(Arg);
         if (ParamType <> nil) and (ParamType.Kind = tySingle) then
-          Self.Emit(Format(#9'movss %%xmm0, %d(%%rsp)', [SlotOff]))
+        begin
+          if (Arg.ResolvedType = nil) or (Arg.ResolvedType.Kind <> tySingle) then
+            Self.Emit(#9'cvtsd2ss %xmm0, %xmm0');
+          Self.Emit(Format(#9'movss %%xmm0, %d(%%rsp)', [SlotOff]));
+        end
         else
+        begin
+          if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tySingle) then
+            Self.Emit(#9'cvtss2sd %xmm0, %xmm0');
           Self.Emit(Format(#9'movsd %%xmm0, %d(%%rsp)', [SlotOff]));
+        end;
         Inc(SlotOff, 8);
       end
       else if IsVar then
@@ -9626,6 +9752,43 @@ begin
   Self.EmitSretArgReleases(AArgs);
 end;
 
+procedure TX86_64Backend.EmitFieldAddrToRcx(AFA: TFieldAccessExpr);
+begin
+  if AFA.Base <> nil then
+  begin
+    Self.EmitExprToEax(AFA.Base);
+    Self.Emit(#9'movq %rax, %rcx');
+  end
+  else if AFA.IsImplicitSelf then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]));
+    if (AFA.ImplicitBaseInfo <> nil) and (AFA.ImplicitBaseInfo.Offset > 0) then
+      Self.Emit(Format(#9'addq $%d, %%rcx', [AFA.ImplicitBaseInfo.Offset]));
+    if AFA.IsClassAccess then
+      Self.Emit(#9'movq (%rcx), %rcx');
+  end
+  else if AFA.IsClassAccess then
+  begin
+    if Self.IsLocal(AFA.RecordName) then
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
+    else
+      Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
+  end
+  else if AFA.IsVarParam then
+  begin
+    if Self.IsLocal(AFA.RecordName) then
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
+    else
+      Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
+  end
+  else if Self.IsLocal(AFA.RecordName) then
+    Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
+  else
+    Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [AFA.RecordName]));
+  if AFA.FieldInfo.Offset > 0 then
+    Self.Emit(Format(#9'addq $%d, %%rcx', [AFA.FieldInfo.Offset]));
+end;
+
 { Emit a call to a record-returning function using the sret convention.
   ASretAddr is the AT&T operand for the destination buffer already allocated
   by the caller.  Strategy:
@@ -9635,6 +9798,111 @@ end;
     4. movq %r10, %rdi  (hidden first arg = sret ptr)
     5. callq AFuncSym
   All args must be integer-family value params (≤5 since %rdi is taken by sret). }
+
+procedure TX86_64Backend.EmitRecordReturnEpilogue(ARec: TRecordTypeDesc;
+  AClass: TRecReturnClass);
+var
+  ResOp: string;
+  Sz: Integer;
+begin
+  ResOp := Self.VarOperand('Result');
+  Sz := ARec.TotalSize();
+  case AClass of
+    rcInt1:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rax', [ResOp]));
+        case Sz of
+          1: Self.Emit(#9'movzbl (%rax), %eax');
+          2: Self.Emit(#9'movzwl (%rax), %eax');
+          4: Self.Emit(#9'movl (%rax), %eax');
+          8: Self.Emit(#9'movq (%rax), %rax');
+        end;
+      end;
+    rcInt2:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ResOp]));
+        Self.Emit(#9'movq (%rcx), %rax');
+        Self.Emit(#9'movq 8(%rcx), %rdx');
+      end;
+    rcSSE1:
+      begin
+        if Sz = 4 then
+          Self.Emit(Format(#9'movss %s, %%xmm0', [ResOp]))
+        else
+          Self.Emit(Format(#9'movsd %s, %%xmm0', [ResOp]));
+      end;
+    rcSSE2:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ResOp]));
+        Self.Emit(#9'movsd (%rcx), %xmm0');
+        Self.Emit(#9'movsd 8(%rcx), %xmm1');
+      end;
+    rcIntSSE:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ResOp]));
+        Self.Emit(#9'movq (%rcx), %rax');
+        Self.Emit(#9'movsd 8(%rcx), %xmm0');
+      end;
+    rcSSEInt:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ResOp]));
+        Self.Emit(#9'movsd (%rcx), %xmm0');
+        Self.Emit(#9'movq 8(%rcx), %rax');
+      end;
+  end;
+end;
+
+procedure TX86_64Backend.EmitRecordRegReturnCapture(const ADestAddr: string;
+  ARec: TRecordTypeDesc; AClass: TRecReturnClass);
+var
+  Sz: Integer;
+begin
+  Sz := ARec.TotalSize();
+  case AClass of
+    rcInt1:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        case Sz of
+          1: Self.Emit(#9'movb %al, (%rcx)');
+          2: Self.Emit(#9'movw %ax, (%rcx)');
+          4: Self.Emit(#9'movl %eax, (%rcx)');
+          8: Self.Emit(#9'movq %rax, (%rcx)');
+        end;
+      end;
+    rcInt2:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+        Self.Emit(#9'movq %rdx, 8(%rcx)');
+      end;
+    rcSSE1:
+      begin
+        if Sz = 4 then
+          Self.Emit(Format(#9'movss %%xmm0, %s', [ADestAddr]))
+        else
+          Self.Emit(Format(#9'movsd %%xmm0, %s', [ADestAddr]));
+      end;
+    rcSSE2:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(#9'movsd %xmm0, (%rcx)');
+        Self.Emit(#9'movsd %xmm1, 8(%rcx)');
+      end;
+    rcIntSSE:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+        Self.Emit(#9'movsd %xmm0, 8(%rcx)');
+      end;
+    rcSSEInt:
+      begin
+        Self.Emit(Format(#9'leaq %s, %%rcx', [ADestAddr]));
+        Self.Emit(#9'movsd %xmm0, (%rcx)');
+        Self.Emit(#9'movq %rax, 8(%rcx)');
+      end;
+  end;
+end;
+
 procedure TX86_64Backend.EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
                                       AArgs: TObjectList; const ASretAddr: string;
                                       ASretIsIndirect: Boolean);
@@ -9643,7 +9911,31 @@ var
   Arg:      TASTExpr;
   AllocSz:  Integer;
   CleanUp:  Integer;
+  RC:       TRecReturnClass;
 begin
+  { Check if the callee returns a small POD record via registers. }
+  RC := rcSret;
+  if (ADecl <> nil) and (ADecl.ResolvedReturnType <> nil) and
+     (ADecl.ResolvedReturnType.Kind = tyRecord) then
+    RC := ClassifyRecordReturn(TRecordTypeDesc(ADecl.ResolvedReturnType));
+  if RC <> rcSret then
+  begin
+    { Reg-return: zero the dest buffer, call without hidden sret param,
+      capture return registers into the dest buffer. }
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+    Self.Emit(#9'movq %r10, %rdi');
+    Self.Emit(#9'xorl %esi, %esi');
+    Self.Emit(Format(#9'movq $%d, %%rdx',
+      [TRecordTypeDesc(ADecl.ResolvedReturnType).TotalSize()]));
+    Self.Emit(#9'callq memset');
+    Self.EmitCall(AFuncSym, ADecl, AArgs);
+    Self.EmitRecordRegReturnCapture(ASretAddr,
+      TRecordTypeDesc(ADecl.ResolvedReturnType), RC);
+    Exit;
+  end;
   { Save the destination address in %r10 (caller-saved scratch that survives
     arg evaluation and the memset call).  When ASretIsIndirect the operand holds
     a pointer to the buffer (sret forwarding) — load it with movq. }
@@ -9724,12 +10016,84 @@ var
   Arg:      TASTExpr;
   AllocSz:  Integer;
   CleanUp:  Integer;
+  RC:       TRecReturnClass;
 begin
   MD := TMethodDecl(ACall.ResolvedMethod);
   if MD = nil then
     raise ENativeCodeGenError.Create(
       'native backend: method-sret call has no ResolvedMethod (' + ACall.Name + ')');
   Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
+
+  { Check for register-return: no hidden sret param, Self goes in %rdi,
+    args in %rsi onwards. }
+  RC := rcSret;
+  if (MD.ResolvedReturnType <> nil) and
+     (MD.ResolvedReturnType.Kind = tyRecord) then
+    RC := ClassifyRecordReturn(TRecordTypeDesc(MD.ResolvedReturnType));
+  if RC <> rcSret then
+  begin
+    if ASretIsIndirect then
+      Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
+    else
+      Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+    Self.Emit(#9'movq %r10, %rdi');
+    Self.Emit(#9'xorl %esi, %esi');
+    Self.Emit(Format(#9'movq $%d, %%rdx',
+      [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
+    Self.Emit(#9'callq memset');
+    FMethodArgExtraStack := 0;
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      Arg := TASTExpr(ACall.Args.Items[I]);
+      Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]), Arg);
+    end;
+    if ACall.ObjectName <> '' then
+    begin
+      if MD.IsRecordMethod and ACall.IsVarParam then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
+      else if MD.IsRecordMethod then
+      begin
+        if Self.IsLocal(ACall.ObjectName) then
+          Self.Emit(Format(#9'leaq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [ACall.ObjectName]));
+      end
+      else if ACall.IsVarParam then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]));
+        Self.Emit(#9'movq (%rdi), %rdi');
+      end
+      else
+      begin
+        if Self.IsLocal(ACall.ObjectName) then
+          Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [ACall.ObjectName]));
+      end;
+    end
+    else if ACall.ObjExpr <> nil then
+    begin
+      Self.EmitExprToEax(ACall.ObjExpr);
+      Self.Emit(#9'movq %rax, %rdi');
+    end
+    else
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Self')]));
+    for I := ACall.Args.Count - 1 downto 0 do
+      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+    if MD.VTableSlot >= 0 then
+    begin
+      Self.Emit(#9'movq (%rdi), %rax');
+      Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+      Self.Emit(#9'callq *%rax');
+    end
+    else
+      Self.Emit(#9'callq ' + Sym);
+    if FMethodArgExtraStack > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rsp', [FMethodArgExtraStack]));
+    Self.EmitRecordRegReturnCapture(ASretAddr,
+      TRecordTypeDesc(MD.ResolvedReturnType), RC);
+    Exit;
+  end;
 
   if ASretIsIndirect then
     Self.Emit(Format(#9'movq %s, %%r10', [ASretAddr]))
@@ -10418,10 +10782,14 @@ begin
   end;
   { Now that every ARC release call is done (none can clobber the result), load
     Result into %rax (int) or %xmm0 (float).  sret functions return via the
-    caller's buffer and need no load. }
+    caller's buffer and need no load.  Reg-return records load into
+    rax/rdx/xmm0/xmm1 per the SysV classification. }
   if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
   begin
-    if IsFloatFamily(ADecl.ResolvedReturnType) then
+    if (ADecl.ResolvedReturnType.Kind = tyRecord) and (FRecRetClass <> rcSret) then
+      Self.EmitRecordReturnEpilogue(
+        TRecordTypeDesc(ADecl.ResolvedReturnType), FRecRetClass)
+    else if IsFloatFamily(ADecl.ResolvedReturnType) then
       Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
     else
       Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);

@@ -45,17 +45,6 @@ type
     property  Len: Integer read FLen;
   end;
 
-  TRecReturnClass = (
-    rcSret,
-    rcInt1,
-    rcInt2,
-    rcSSE1,
-    rcSSE2,
-    rcIntSSE,
-    rcSSEInt,
-    rcWin64Agg
-  );
-
   TCodeGenQBE = class(TObject, ICodeGen)
   private
     FOutput:          TIRBuffer;

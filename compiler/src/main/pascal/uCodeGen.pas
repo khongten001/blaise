@@ -30,6 +30,17 @@ uses
   uAST, uSymbolTable;
 
 type
+  TRecReturnClass = (
+    rcSret,
+    rcInt1,
+    rcInt2,
+    rcSSE1,
+    rcSSE2,
+    rcIntSSE,
+    rcSSEInt,
+    rcWin64Agg
+  );
+
   ICodeGen = interface
     { Single-file program compilation: reset output and emit all IR. }
     procedure Generate(AProg: TProgram);

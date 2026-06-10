@@ -336,6 +336,17 @@ type
     { M8b — sret temp record field release: managed fields of a record
       returned by a function and passed directly as an arg are released. }
     procedure TestRun_Native_SretTempFieldRelease;
+
+    { Record-by-value returns — all SysV ABI classification shapes }
+    procedure TestRun_Native_RecReturn_RcInt2_TwoInt64;
+    procedure TestRun_Native_RecReturn_RcSSE1_Double;
+    procedure TestRun_Native_RecReturn_RcSSE1_Single;
+    procedure TestRun_Native_RecReturn_RcSSE2_TwoDouble;
+    procedure TestRun_Native_RecReturn_RcIntSSE;
+    procedure TestRun_Native_RecReturn_RcSSEInt;
+    procedure TestRun_Native_RecReturn_Nested_RcInt2;
+    procedure TestRun_Native_RecReturn_Method_RcInt1;
+    procedure TestRun_Native_RecReturn_ManagedStaysSret;
   end;
 
 implementation
@@ -4968,6 +4979,201 @@ procedure TE2ENativeTests.TestRun_Native_SretTempFieldRelease;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnBoth(SrcSretTempFieldRelease, 'hello' + LE + 'done' + LE, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Record-by-value returns — all SysV ABI register-return shapes      }
+{ ------------------------------------------------------------------ }
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcInt2_TwoInt64;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type T2 = record A, B: Int64; end;
+    function MakeIt(A, B: Int64): T2;
+    begin
+      Result.A := A;
+      Result.B := B
+    end;
+    var R: T2;
+    begin
+      R := MakeIt(111111111111, 222222222222);
+      WriteLn(R.A, ' ', R.B)
+    end.
+    ''',
+    '111111111111 222222222222' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcSSE1_Double;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type TF = record V: Double; end;
+    function MakeIt(V: Double): TF;
+    begin
+      Result.V := V
+    end;
+    var R: TF;
+    begin
+      R := MakeIt(3.5);
+      WriteLn(R.V)
+    end.
+    ''',
+    '3.5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcSSE1_Single;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type TF = record V: Single; end;
+    function MakeIt(V: Single): TF;
+    begin
+      Result.V := V
+    end;
+    var R: TF;
+    begin
+      R := MakeIt(2.5);
+      WriteLn(R.V)
+    end.
+    ''',
+    '2.5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcSSE2_TwoDouble;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type T2D = record A, B: Double; end;
+    function MakeIt(A, B: Double): T2D;
+    begin
+      Result.A := A;
+      Result.B := B
+    end;
+    var R: T2D;
+    begin
+      R := MakeIt(1.5, -2.5);
+      WriteLn(R.A);
+      WriteLn(R.B)
+    end.
+    ''',
+    '1.5' + LE + '-2.5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcIntSSE;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type TM = record I: Int64; D: Double; end;
+    function MakeIt(I: Int64; D: Double): TM;
+    begin
+      Result.I := I;
+      Result.D := D
+    end;
+    var R: TM;
+    begin
+      R := MakeIt(42, 3.5);
+      WriteLn(R.I);
+      WriteLn(R.D)
+    end.
+    ''',
+    '42' + LE + '3.5' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_RcSSEInt;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type TM = record D: Double; I: Int64; end;
+    function MakeIt(D: Double; I: Int64): TM;
+    begin
+      Result.D := D;
+      Result.I := I
+    end;
+    var R: TM;
+    begin
+      R := MakeIt(-1.5, 99);
+      WriteLn(R.D);
+      WriteLn(R.I)
+    end.
+    ''',
+    '-1.5' + LE + '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_Nested_RcInt2;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type
+      TInner = record X, Y: Integer; end;
+      TOuter = record A: TInner; B: Integer; end;
+    function MakeIt(X, Y, B: Integer): TOuter;
+    begin
+      Result.A.X := X;
+      Result.A.Y := Y;
+      Result.B := B
+    end;
+    var R: TOuter;
+    begin
+      R := MakeIt(10, 20, 30);
+      WriteLn(R.A.X, ' ', R.A.Y, ' ', R.B)
+    end.
+    ''',
+    '10 20 30' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_Method_RcInt1;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type
+      TPoint = record X, Y: Integer; end;
+      TFactory = class
+        function MakePoint(X, Y: Integer): TPoint;
+      end;
+    function TFactory.MakePoint(X, Y: Integer): TPoint;
+    begin
+      Result.X := X;
+      Result.Y := Y
+    end;
+    var
+      F: TFactory;
+      Pt: TPoint;
+    begin
+      F := TFactory.Create();
+      Pt := F.MakePoint(5, 9);
+      WriteLn(Pt.X, ' ', Pt.Y);
+      F.Free()
+    end.
+    ''',
+    '5 9' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturn_ManagedStaysSret;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnBoth('''
+    program P;
+    type TS = record S: string; end;
+    function MakeIt(S: string): TS;
+    begin
+      Result.S := S
+    end;
+    var R: TS;
+    begin
+      R := MakeIt('hello');
+      WriteLn(R.S)
+    end.
+    ''',
+    'hello' + LE, 0);
 end;
 
 initialization
