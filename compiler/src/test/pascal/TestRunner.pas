@@ -65,6 +65,7 @@ uses
   cp.test.weakref,
   cp.test.stringops,
   cp.test.collections,
+  cp.test.stringlistfind,
   cp.test.caseenum,
   cp.test.sets,
   cp.test.selfhosting,

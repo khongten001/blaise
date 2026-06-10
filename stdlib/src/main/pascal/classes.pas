@@ -164,9 +164,26 @@ type
     FCaseSensitive: Boolean;
     FSorted:        Boolean;
     FDuplicates:    TDuplicates;
+    { Lazy hash index for UNSORTED lists: open-addressing table mapping a
+      case-folded FNV-1a hash of the string to its list index.  Built on the
+      first Find once Count reaches the threshold; duplicate keys keep the
+      first-added index (IndexOf contract).  Any structural mutation
+      (Delete, Insert, Put, Clear, sort, case-sensitivity change)
+      invalidates it; appends update it in place.  Sorted lists never use
+      it — they binary-search. }
+    FHashSlots:     ^Integer;   { slot -> list index; -1 = empty }
+    FHashCap:       Integer;    { power of two; 0 = index not built }
+    FHashUsed:      Integer;    { occupied slots (excludes duplicate keys) }
     procedure Grow;
     function  Compare(S1: string; S2: string): Integer;
     function  FindSorted(S: string; var Idx: Integer): Boolean;
+    function  HashOf(S: string): Integer;
+    function  KeyEquals(S1: string; S2: string): Boolean;
+    procedure HashInvalidate;
+    procedure HashInsertIdx(AIdx: Integer);
+    procedure HashRebuild;
+    procedure SetSorted(AValue: Boolean);
+    procedure SetCaseSensitive(AValue: Boolean);
     constructor Create;
     procedure   Destroy;
     function    Add(S: string): Integer;
@@ -190,8 +207,8 @@ type
     function    GetCommaText: string;
     procedure   SetCommaText(const S: string);
     property Count:         Integer read FCount;
-    property CaseSensitive: Boolean read FCaseSensitive write FCaseSensitive;
-    property Sorted:        Boolean read FSorted        write FSorted;
+    property CaseSensitive: Boolean read FCaseSensitive write SetCaseSensitive;
+    property Sorted:        Boolean read FSorted        write SetSorted;
     property Duplicates:    TDuplicates read FDuplicates write FDuplicates;
     property Text:          string  read GetText        write SetText;
     property CommaText:     string  read GetCommaText   write SetCommaText;
@@ -378,6 +395,115 @@ begin
     Result := CompareText(S1, S2)
 end;
 
+{ Equality-only comparison for hash probing.  Cheaper than Compare: both
+  RTL helpers reject on length before touching the bytes. }
+function TStringList.KeyEquals(S1: string; S2: string): Boolean;
+begin
+  if Self.FCaseSensitive then
+    Result := S1 = S2
+  else
+    Result := SameText(S1, S2)
+end;
+
+{ FNV-1a over the string bytes, folding A..Z to a..z when the list is
+  case-insensitive so equal-modulo-case keys land in the same bucket. }
+function TStringList.HashOf(S: string): Integer;
+var
+  I: Integer;
+  C: Integer;
+begin
+  Result := -2128831035;   { FNV offset basis 2166136261 as signed 32-bit }
+  for I := 0 to Length(S) - 1 do
+  begin
+    C := Ord(S[I]);
+    if (not Self.FCaseSensitive) and (C >= 65) and (C <= 90) then
+      C := C + 32;
+    Result := (Result xor C) * 16777619;
+  end;
+end;
+
+procedure TStringList.HashInvalidate;
+begin
+  if Self.FHashSlots <> nil then
+  begin
+    FreeMem(Self.FHashSlots);
+    Self.FHashSlots := nil;
+  end;
+  Self.FHashCap  := 0;
+  Self.FHashUsed := 0;
+end;
+
+{ Insert list index AIdx into the hash table.  A slot already holding an
+  equal key is left untouched so IndexOf keeps returning the first-added
+  occurrence (overload registration relies on this). }
+procedure TStringList.HashInsertIdx(AIdx: Integer);
+var
+  Slot:  Integer;
+  SlotP: ^Integer;
+  SPtr:  ^string;
+  NPtr:  ^string;
+begin
+  NPtr := Self.FStrings + AIdx * SizeOf(string);
+  Slot := Self.HashOf(NPtr^) and (Self.FHashCap - 1);
+  while True do
+  begin
+    SlotP := Self.FHashSlots + Slot * SizeOf(Integer);
+    if SlotP^ = -1 then
+    begin
+      SlotP^ := AIdx;
+      Self.FHashUsed := Self.FHashUsed + 1;
+      Exit;
+    end;
+    SPtr := Self.FStrings + SlotP^ * SizeOf(string);
+    if Self.KeyEquals(NPtr^, SPtr^) then
+      Exit;   { duplicate key — keep the first-added index }
+    Slot := (Slot + 1) and (Self.FHashCap - 1);
+  end;
+end;
+
+{ (Re)build the table at <= 50% load so probe chains stay short and the
+  probe loop in Find always terminates on an empty slot. }
+procedure TStringList.HashRebuild;
+var
+  Cap: Integer;
+  I:   Integer;
+  P:   ^Integer;
+begin
+  Cap := 16;
+  while Cap < Self.FCount * 2 do
+    Cap := Cap * 2;
+  if Self.FHashSlots <> nil then
+    FreeMem(Self.FHashSlots);
+  Self.FHashSlots := GetMem(Cap * SizeOf(Integer));
+  Self.FHashCap   := Cap;
+  Self.FHashUsed  := 0;
+  for I := 0 to Cap - 1 do
+  begin
+    P  := Self.FHashSlots + I * SizeOf(Integer);
+    P^ := -1;
+  end;
+  for I := 0 to Self.FCount - 1 do
+    Self.HashInsertIdx(I);
+end;
+
+procedure TStringList.SetSorted(AValue: Boolean);
+begin
+  if AValue <> Self.FSorted then
+  begin
+    Self.FSorted := AValue;
+    Self.HashInvalidate();
+  end;
+end;
+
+procedure TStringList.SetCaseSensitive(AValue: Boolean);
+begin
+  if AValue <> Self.FCaseSensitive then
+  begin
+    Self.FCaseSensitive := AValue;
+    Self.HashInvalidate();
+  end;
+end;
+
 function TStringList.FindSorted(S: string; var Idx: Integer): Boolean;
 var
   Lo:   Integer;
@@ -435,7 +561,8 @@ begin
   Self.FStrings  := nil;
   Self.FObjects  := nil;
   Self.FCount    := 0;
-  Self.FCapacity := 0
+  Self.FCapacity := 0;
+  Self.HashInvalidate()
 end;
 
 function TStringList.Add(S: string): Integer;
@@ -470,7 +597,16 @@ begin
     StrP^       := S;
     ObjP^       := nil;
     Result      := Self.FCount;
-    Self.FCount := Self.FCount + 1
+    Self.FCount := Self.FCount + 1;
+    { Keep the hash index live across appends; once the table would pass
+      50% load, drop it and let the next Find rebuild at double size. }
+    if Self.FHashCap > 0 then
+    begin
+      if (Self.FHashUsed + 1) * 2 > Self.FHashCap then
+        Self.HashInvalidate()
+      else
+        Self.HashInsertIdx(Result);
+    end;
   end
 end;
 
@@ -485,15 +621,44 @@ begin
 end;
 
 function TStringList.Find(S: string; var Index: Integer): Boolean;
+const
+  cHashThreshold = 16;   { below this a linear scan beats building a table }
 var
-  I:    Integer;
-  Ptr:  ^string;
+  I:     Integer;
+  Ptr:   ^string;
+  Slot:  Integer;
+  SlotP: ^Integer;
 begin
   if Self.FSorted then
     Result := Self.FindSorted(S, Index)
+  else if Self.FCount >= cHashThreshold then
+  begin
+    { Hash probe for large unsorted lists.  The table is at most half
+      full (HashRebuild / the Add guard), so an empty slot terminates
+      every probe chain. }
+    if Self.FHashCap = 0 then
+      Self.HashRebuild();
+    Slot := Self.HashOf(S) and (Self.FHashCap - 1);
+    while True do
+    begin
+      SlotP := Self.FHashSlots + Slot * SizeOf(Integer);
+      if SlotP^ = -1 then
+      begin
+        Index := -1;
+        Exit(False);
+      end;
+      Ptr := Self.FStrings + SlotP^ * SizeOf(string);
+      if Self.KeyEquals(S, Ptr^) then
+      begin
+        Index := SlotP^;
+        Exit(True);
+      end;
+      Slot := (Slot + 1) and (Self.FHashCap - 1);
+    end;
+  end
   else
   begin
-    { Linear search for unsorted list }
+    { Linear search for small unsorted list }
     I := 0;
     while I < Self.FCount do
     begin
@@ -534,7 +699,8 @@ var
   Ptr: ^string;
 begin
   Ptr  := Self.FStrings + AIndex * SizeOf(string);
-  Ptr^ := S
+  Ptr^ := S;
+  Self.HashInvalidate()
 end;
 
 function TStringList.GetObject(AIndex: Integer): Pointer;
@@ -577,7 +743,8 @@ begin
   SDst^ := nil;
   ODst  := Self.FObjects + (Self.FCount - 1) * SizeOf(Pointer);
   ODst^ := nil;
-  Self.FCount := Self.FCount - 1
+  Self.FCount := Self.FCount - 1;
+  Self.HashInvalidate()
 end;
 
 procedure TStringList.Clear;
@@ -592,7 +759,8 @@ begin
     Ptr^ := nil;
     I    := I + 1
   end;
-  Self.FCount := 0
+  Self.FCount := 0;
+  Self.HashInvalidate()
 end;
 
 procedure TStringList.Insert(AIndex: Integer; S: string);
@@ -627,7 +795,8 @@ begin
   OPtr  := Self.FObjects + AIndex * SizeOf(Pointer);
   Ptr^  := S;
   OPtr^ := nil;
-  Self.FCount := Self.FCount + 1
+  Self.FCount := Self.FCount + 1;
+  Self.HashInvalidate()
 end;
 
 procedure TStringList.AddStrings(ASource: TStringList);
@@ -798,7 +967,8 @@ begin
     I   := I + 1
   end;
   FreeMem(TmpStr);
-  FreeMem(TmpObj)
+  FreeMem(TmpObj);
+  Self.HashInvalidate()
 end;
 
 function TStringList.GetCommaText: string;
