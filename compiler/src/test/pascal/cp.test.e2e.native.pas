@@ -300,6 +300,9 @@ type
 
     { Constructor with args that require function calls must not lose Self }
     procedure TestRun_Native_Constructor_CallArg;
+
+    { Method call returning a record (sret convention) }
+    procedure TestRun_Native_MethodSretReturn;
   end;
 
 implementation
@@ -4426,6 +4429,29 @@ begin
     + '  H.Free() '
     + 'end.',
     'hello' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_MethodSretReturn;
+begin
+  AssertRunsOnBoth(
+    'program T;'
+    + 'type '
+    + '  TPoint = record X: Integer; Y: Integer; Z: Integer; end; '
+    + '  TMaker = class '
+    + '    function Make(AX, AY, AZ: Integer): TPoint; '
+    + '  end; '
+    + 'function TMaker.Make(AX, AY, AZ: Integer): TPoint; '
+    + 'begin Result.X := AX; Result.Y := AY; Result.Z := AZ end; '
+    + 'var M: TMaker; P: TPoint; '
+    + 'begin '
+    + '  M := TMaker.Create(); '
+    + '  P := M.Make(10, 20, 30); '
+    + '  WriteLn(P.X); '
+    + '  WriteLn(P.Y); '
+    + '  WriteLn(P.Z); '
+    + '  M.Free() '
+    + 'end.',
+    '10' + LE + '20' + LE + '30' + LE, 0);
 end;
 
 initialization

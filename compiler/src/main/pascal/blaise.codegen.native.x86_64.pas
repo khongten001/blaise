@@ -299,6 +299,7 @@ type
       by the caller), passed as the hidden first integer argument in %rdi. }
     procedure EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
                            AArgs: TObjectList; const ASretAddr: string);
+    procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string);
     { Indirect call: load a bare function pointer from APtrOperand (an AT&T
       memory operand, e.g. "-8(%rbp)"), set up args as for EmitCall, then
       dispatch via callq *%r10.  AProcType supplies the param list for
@@ -6973,7 +6974,6 @@ begin
        (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
        (TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
     begin
-      { Compute destination address: local → leaq N(%rbp); global → leaq sym(%rip). }
       if Self.IsLocal(Asgn.Name) then
         Self.EmitSretCall(
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
@@ -6985,6 +6985,23 @@ begin
           FuncSymbolOf(TFuncCallExpr(Asgn.Expr)),
           TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl),
           TFuncCallExpr(Asgn.Expr).Args,
+          Asgn.Name + '(%rip)');
+      Exit;
+    end;
+    { sret assignment: method call returning a record.
+      %rdi = sret ptr, %rsi = Self, %rdx.. = user args. }
+    if (Asgn.ResolvedLhsType <> nil) and
+       (Asgn.ResolvedLhsType.Kind = tyRecord) and
+       (Asgn.Expr is TMethodCallExpr) and
+       (TMethodCallExpr(Asgn.Expr).ResolvedMethod <> nil) and
+       (TMethodDecl(TMethodCallExpr(Asgn.Expr).ResolvedMethod).ResolvedReturnType <> nil) and
+       (TMethodDecl(TMethodCallExpr(Asgn.Expr).ResolvedMethod).ResolvedReturnType.Kind = tyRecord) then
+    begin
+      if Self.IsLocal(Asgn.Name) then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name))
+      else
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
           Asgn.Name + '(%rip)');
       Exit;
     end;
@@ -8797,6 +8814,117 @@ begin
     { Shift %rsp past the 6 register-bound slots (sret + 5 args). }
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     Self.Emit(#9'callq ' + AFuncSym);
+    CleanUp := AllocSz - 6 * 8;
+    if CleanUp > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rsp', [CleanUp]));
+  end;
+end;
+
+{ Emit a method call that returns a record via the sret convention.
+  Register layout: %rdi = sret ptr, %rsi = Self, %rdx.. = user args.
+  The destination buffer is at ASretAddr (AT&T operand, already allocated). }
+procedure TX86_64Backend.EmitMethodSretCall(ACall: TMethodCallExpr;
+                                            const ASretAddr: string);
+var
+  I:        Integer;
+  MD:       TMethodDecl;
+  Sym:      string;
+  Arg:      TASTExpr;
+  AllocSz:  Integer;
+  CleanUp:  Integer;
+begin
+  MD := TMethodDecl(ACall.ResolvedMethod);
+  if MD = nil then
+    raise ENativeCodeGenError.Create(
+      'native backend: method-sret call has no ResolvedMethod (' + ACall.Name + ')');
+  Sym := MethodEmitNameNative(MD, MD.OwnerTypeName, ACall.Name);
+
+  Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+  if (MD.ResolvedReturnType <> nil) then
+  begin
+    Self.Emit(#9'movq %r10, %rdi');
+    Self.Emit(#9'xorl %esi, %esi');
+    Self.Emit(Format(#9'movq $%d, %%rdx',
+      [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
+    Self.Emit(#9'callq memset');
+    Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
+  end;
+
+  if ACall.Args.Count <= 4 then
+  begin
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      Arg := TASTExpr(ACall.Args.Items[I]);
+      Self.EmitMethodArgPush(TMethodParam(MD.Params.Items[I]), Arg);
+    end;
+
+    if ACall.ObjectName <> '' then
+    begin
+      if MD.IsRecordMethod then
+      begin
+        if Self.IsLocal(ACall.ObjectName) then
+          Self.Emit(Format(#9'leaq %s, %%rsi', [Self.VarOperand(ACall.ObjectName)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rsi', [ACall.ObjectName]));
+      end
+      else
+      begin
+        if Self.IsLocal(ACall.ObjectName) then
+          Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand(ACall.ObjectName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rsi', [ACall.ObjectName]));
+      end;
+    end
+    else if ACall.ObjExpr <> nil then
+    begin
+      Self.EmitExprToEax(ACall.ObjExpr);
+      Self.Emit(#9'movq %rax, %rsi');
+    end
+    else
+      Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand('Self')]));
+
+    for I := ACall.Args.Count - 1 downto 0 do
+      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+    Self.Emit(Format(#9'leaq %s, %%rdi', [ASretAddr]));
+    if MD.VTableSlot >= 0 then
+    begin
+      Self.Emit(#9'pushq %rdi');
+      Self.Emit(#9'movq (%rsi), %rax');
+      Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+      Self.Emit(#9'callq *%rax');
+      Self.Emit(#9'popq %rax');
+    end
+    else
+      Self.Emit(#9'callq ' + Sym);
+  end
+  else
+  begin
+    AllocSz := (((ACall.Args.Count + 2) * 8 + 15) and (-16));
+    Self.Emit(Format(#9'subq $%d, %%rsp', [AllocSz]));
+    Self.Emit(Format(#9'movq %%r10, 0(%%rsp)', []));
+    for I := 0 to ACall.Args.Count - 1 do
+    begin
+      Arg := TASTExpr(ACall.Args.Items[I]);
+      Self.EmitExprToEax(Arg);
+      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [(I + 2) * 8]));
+    end;
+    if ACall.ObjectName <> '' then
+    begin
+      if Self.IsLocal(ACall.ObjectName) then
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+    end
+    else if ACall.ObjExpr <> nil then
+      Self.EmitExprToEax(ACall.ObjExpr)
+    else
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+    Self.Emit(Format(#9'movq %%rax, 8(%%rsp)', []));
+    Self.Emit(#9'movq 0(%rsp), %rdi');
+    for I := 0 to 4 do
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArgRegs64[I + 1]]));
+    Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
+    Self.Emit(#9'callq ' + Sym);
     CleanUp := AllocSz - 6 * 8;
     if CleanUp > 0 then
       Self.Emit(Format(#9'addq $%d, %%rsp', [CleanUp]));
