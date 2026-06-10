@@ -97,6 +97,7 @@ type
     procedure TestRun_BitwiseNot_Byte;
     procedure TestRun_BitwiseNot_Int64;
     procedure TestRun_BitwiseNot_Bitmask;
+    procedure TestRun_WriteLn_StdErr_NotOnStdout;
   end;
 
 implementation
@@ -1226,6 +1227,32 @@ begin
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('output', '4' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_WriteLn_StdErr_NotOnStdout;
+const Src = '''
+    program P;
+    begin
+      WriteLn(StdErr, 'error msg');
+      WriteLn('ok')
+    end.
+    ''';
+var
+  Output: string;
+  RCode:  Integer;
+  BE:     TBackend;
+  BName:  string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  for BE := Low(TBackend) to High(TBackend) do
+  begin
+    BName := BackendName(BE);
+    AssertTrue('[' + BName + '] compile+run',
+      Self.CompileAndRunOn(BE, Src, Output, RCode));
+    AssertEquals('[' + BName + '] exit code', 0, RCode);
+    AssertTrue('[' + BName + '] fd not printed as integer prefix',
+      Pos('2error', Output) = -1)
+  end
 end;
 
 initialization
