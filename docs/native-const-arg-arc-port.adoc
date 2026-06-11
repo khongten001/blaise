@@ -1,0 +1,99 @@
+= Porting shape-aware const-string argument ARC to the native backend
+:toc: macro
+:toclevels: 2
+
+== Status
+
+IMPLEMENTED 2026-06-11 — the port landed atomically in the native
+backend along the lines below, with one major design improvement: a
+single unified hoist region (EmitArgHoist) carries open-array literal
+blocks, record-call argument buffers AND const-string pin slots, which
+eliminated the sret-buffer/argument-slot interleaving bug as a side
+effect.  At unknown-signature sites (interface dispatch) every
+string-typed value argument is protected by shape — pin/consume are
+correct on top of a value-param callee pair too, so no
+TInterfaceTypeDesc const-flag extension was needed (the var flags it
+already carries mark positions to skip).  Validated: full suite both
+backends, FIXPOINT_OK, NATIVE_FIXPOINT_OK, natively-compiled
+TestRunner (two pre-existing generic-template round-trip failures
+remain — see bugs.txt).
+
+The original analysis below is kept for the record.
+
+The QBE backend gained shape-aware
+const-string argument handling (commits 91f44ec, 17c14b3): literals and
+named consts borrow (no ARC ops), owned returns are consumed (one
+post-call release), plain locals/params borrow behind aliasing
+exclusions, everything else pins.  Combined with the const conversion of
+the hot TStringList signatures this removed most caller/callee ARC pairs
+on the compiler's hottest paths (self-compile 0.78 s -> 0.60 s).
+
+The native backend currently uses the OPPOSITE convention: the callee
+retains const string params at entry and releases at exit
+(blaise.codegen.native.x86_64.pas, the entry/exit passes in
+EmitFunctionDef).  That convention was chosen deliberately during the
+native TestRunner bring-up: it protects rc=0 transients at EVERY call
+site with zero per-site machinery, because the protection lives in the
+callee.
+
+== Why the port must land atomically
+
+Flipping the native callee to skip the const-string pair makes EVERY
+call path responsible for caller-side protection.  Any path that passes
+a const-string argument without protection reintroduces the exact heap
+corruption fixed during the TestRunner bring-up (rc=0 concat transient
+freed mid-call).  The native backend has more call-emission paths than
+the QBE backend:
+
+. The ~10 standard push-loop sites already funnelled through
+  BeginCallArgs/PushCallArg/EndCallArgs (open-array hoist machinery) —
+  straightforward to extend.
+. EmitCall's two inline strategies (≤6 push/pop and >6 slot-block) —
+  extend like the open-array literal hoist.
+. EmitInterfaceCall — args are pushed via EmitMethodArgPush(nil, Arg):
+  the TMethodParam is nil, so const-ness is invisible at the call site
+  today.  The information EXISTS (TInterfaceTypeDesc carries method
+  param signatures, incl. var-param flags) but is not wired through.
+  Without this wiring, interface method implementors whose params are
+  const would be called unprotected.
+. EmitCallIndirect / EmitMethodPtrCall — TProceduralTypeDesc signatures
+  available; same wiring needed.
+. EmitIntfSretCall — no call frame (the sret buffer must sit exactly at
+  %rsp at call time); needs its own pin-slot region or a loud
+  unsupported-shape error.
+
+== Mechanism (per-site pin slots)
+
+Extend TOALCallFrame:
+
+  PinDepths: TList<Integer>;  { per-arg slot depth in the pre-region; -1 = none }
+  PinModes:  TList<Integer>;  { 1 = pin (AddRef+Release), 2 = consume (Release) }
+
+BeginCallArgs phase A: after hoisting open-array literal blocks, reserve
+one zeroed slot (pushq $0, Total += 8) per const-string argument whose
+NativeConstArgMode is pin or consume.  PushCallArg: after the value is
+pushed, copy it into its slot at (Total - PinDepth + Pushed)(%rsp); for
+pin mode also AddRef it.  EndCallArgs: after the callq, before the
+region addq — release every reserved slot (release of a still-zero slot
+is a nil no-op).  The release loop must preserve the call's return
+registers: %rax, %rdx (reg-class record returns) and %xmm0/%xmm1
+(SSE-class record returns) around the _StringRelease calls.
+
+NativeConstArgMode mirrors the QBE classification.  For borrowed locals
+the address-taken walker (CollectAddressTaken + the nested-capture
+union) must be shared — it is pure AST logic; move it out of
+TCodeGenQBE into a common unit rather than duplicating it.
+
+== Validation requirements
+
+The full QBE-side lesson applies: a codegen-rule change can pass the
+fixpoint while a second-generation binary breaks elsewhere.  Required:
+two self-hosted generations, gen-2 `--backend native` emission of the
+full compiler, the native-runner suites (127/134 currently green), the
+e2e suite on both backends, and both fixpoints.
+
+== Expected gain
+
+Lower than the QBE side's, and it accrues to native-COMPILED programs,
+not to compiler build times (the compiler runs as a QBE-built binary).
+Worth doing for output-code quality once the wiring above is in place.
