@@ -54,7 +54,8 @@ type
     procedure EmitUtf8Str;
     procedure EmitGlobalVar(const AVarName: string; AType: TTypeDesc);
     procedure EmitFunctionScope(AMethod: TMethodDecl; AScopeID: Integer;
-                                ADeclIdx: Integer; const ANextLabel: string);
+                                ADeclIdx: Integer; const ANextLabel: string;
+                                const ALabel: string);
     procedure EmitParameters(AMethod: TMethodDecl);
     procedure EmitLocalVars(ABlock: TBlock; AScopeID: Integer);
     procedure EmitFunctionScope_Main(AScopeID, ADeclIdx: Integer);
@@ -510,13 +511,16 @@ begin
 end;
 
 procedure TOPDFEmitter.EmitFunctionScope(AMethod: TMethodDecl; AScopeID: Integer;
-  ADeclIdx: Integer; const ANextLabel: string);
+  ADeclIdx: Integer; const ANextLabel: string; const ALabel: string);
 var
   FuncName, Label_: string;
   RecSize: Integer;
 begin
-  FuncName := AMethod.Name;
-  Label_   := FuncLabel(AMethod);
+  { The record name doubles as the symbol a debugger resolves for
+    break-by-function-name — use the qualified label (TThing_Bump), which
+    equals the bare name for plain functions. }
+  FuncName := ALabel;
+  Label_   := ALabel;
   RecSize  := 24 + Length(FuncName);
 
   L('');
@@ -1002,49 +1006,78 @@ end;
 
 procedure TOPDFEmitter.EmitFunctionScopes;
 var
-  I, NextI, ScopeID, DeclIdx: Integer;
-  M, NM: TMethodDecl;
+  I, J, ScopeID, DeclIdx: Integer;
+  M: TMethodDecl;
+  Decls: TObjectList;
   Labels: TStringList;
   NextLabel: string;
+  TD: TTypeDecl;
+  CD: TClassTypeDef;
+  RD: TRecordTypeDef;
 begin
+  { Gather every function with a body: standalone procedures/functions from
+    ProcDecls, plus class and record METHODS — after semantic analysis the
+    implementation bodies live on the type declarations' method lists (the
+    ProcDecls impl entries are body-less matching stubs).  Without this walk
+    no method — destructors included — ever got a scope record. }
+  Decls  := TObjectList.Create(False);
   Labels := TStringList.Create();
   try
     for I := 0 to FProgram.Block.ProcDecls.Count - 1 do
     begin
       M := TMethodDecl(FProgram.Block.ProcDecls.Items[I]);
-      if M.IsExternal or (M.Body = nil) then
-        Labels.Add('')
-      else
-        Labels.Add(FuncLabel(M));
+      if M.IsExternal or (M.Body = nil) then Continue;
+      Decls.Add(M);
+      Labels.Add(FuncLabel(M));
+    end;
+    for I := 0 to FProgram.Block.TypeDecls.Count - 1 do
+    begin
+      TD := TTypeDecl(FProgram.Block.TypeDecls.Items[I]);
+      if TD.Def is TClassTypeDef then
+      begin
+        CD := TClassTypeDef(TD.Def);
+        for J := 0 to CD.Methods.Count - 1 do
+        begin
+          M := TMethodDecl(CD.Methods.Items[J]);
+          if M.IsExternal or (M.Body = nil) then Continue;
+          Decls.Add(M);
+          if M.OwnerTypeName <> '' then
+            Labels.Add(FuncLabel(M))
+          else
+            Labels.Add(TD.Name + '_' + M.Name);
+        end;
+      end
+      else if TD.Def is TRecordTypeDef then
+      begin
+        RD := TRecordTypeDef(TD.Def);
+        if RD.Methods <> nil then
+          for J := 0 to RD.Methods.Count - 1 do
+          begin
+            M := TMethodDecl(RD.Methods.Items[J]);
+            if M.IsExternal or (M.Body = nil) then Continue;
+            Decls.Add(M);
+            if M.OwnerTypeName <> '' then
+              Labels.Add(FuncLabel(M))
+            else
+              Labels.Add(TD.Name + '_' + M.Name);
+          end;
+      end;
     end;
 
     ScopeID := 0;
     DeclIdx := 0;
-    for I := 0 to FProgram.Block.ProcDecls.Count - 1 do
+    for I := 0 to Decls.Count - 1 do
     begin
-      M := TMethodDecl(FProgram.Block.ProcDecls.Items[I]);
-      if M.IsExternal or (M.Body = nil) then Continue;
-
+      M := TMethodDecl(Decls.Items[I]);
       ScopeID := ScopeID + 1;
-
       NextLabel := '';
-      NextI := I + 1;
-      while NextI < Labels.Count do
-      begin
-        if Labels.Strings[NextI] <> '' then
-        begin
-          NextLabel := Labels.Strings[NextI];
-          Break;
-        end;
-        NextI := NextI + 1;
-      end;
-
-      EmitFunctionScope(M, ScopeID, DeclIdx, NextLabel);
+      if I + 1 < Labels.Count then
+        NextLabel := Labels.Strings[I + 1];
+      EmitFunctionScope(M, ScopeID, DeclIdx, NextLabel, Labels.Strings[I]);
       EmitParameters(M);
       if M.Body <> nil then
         EmitLocalVars(M.Body, ScopeID);
-      EmitLineInfoForScope(M);
-
+      EmitLineInfoForBlock(M.Body, Labels.Strings[I], Labels.Strings[I]);
       DeclIdx := DeclIdx + 1;
     end;
 
@@ -1056,6 +1089,7 @@ begin
     end;
   finally
     Labels.Free();
+    Decls.Free();
   end;
 end;
 

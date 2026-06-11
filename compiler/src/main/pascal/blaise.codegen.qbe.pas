@@ -606,7 +606,10 @@ end;
 
 function TCodeGenQBE.ExportPrefix(): string;
 begin
-  if FExportAll then
+  { OPDF mode exports every function symbol: the .opdf companion object is
+    assembled separately and its scope records reference function labels —
+    local symbols would fail to link (same rationale as VTableDataPrefix). }
+  if FExportAll or FOpdfMode then
     Result := 'export '
   else
     Result := ''
@@ -7150,7 +7153,7 @@ begin
   RC := rcSret;
   if IsFunc and (ADecl.ResolvedReturnType.Kind = tyRecord) then
     RC := Self.ClassifyRecordReturn(TRecordTypeDesc(ADecl.ResolvedReturnType));
-  if AExported or FExportAll then Prefix := 'export ' else Prefix := '';
+  if AExported or FExportAll or FOpdfMode then Prefix := 'export ' else Prefix := '';
 
   { Captured outer-scope variables are prepended as implicit pointer params.
     The call site in the enclosing function passes the address of each var. }
@@ -11974,8 +11977,8 @@ begin
         EmitLine(Format('data $typeinfo_%s = { l 0 }', [QBEMangle(GI.TypeName)]));
         if RT.HasVTable() then
         begin
-          VLine := Format('data $vtable_%s = { l $typeinfo_%s',
-            [QBEMangle(GI.TypeName), QBEMangle(GI.TypeName)]);
+          VLine := Format('%s$vtable_%s = { l $typeinfo_%s',
+            [VTableDataPrefix(), QBEMangle(GI.TypeName), QBEMangle(GI.TypeName)]);
           for S := 0 to RT.VTableCount() - 1 do
           begin
             E := RT.VTableEntryAt(S);

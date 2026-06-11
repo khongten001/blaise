@@ -35,6 +35,8 @@ type
     procedure TestOPDF_Class_RecType;
     procedure TestOPDF_Class_VtableRef;
     procedure TestOPDF_FunctionScope_RecType;
+    procedure TestOPDF_MethodScope_Emitted;
+    procedure TestOPDF_DestructorScope_Emitted;
     procedure TestOPDF_FunctionScope_LowPC;
     procedure TestOPDF_Parameter_RecType;
     procedure TestOPDF_LocalVar_RecType;
@@ -579,6 +581,54 @@ var
 begin
   IR := GenOPDF('program P; begin end.');
   AssertTrue('unit count is 1', Contains(IR, '.int  1  # UnitCount'));
+end;
+
+procedure TOPDFTests.TestOPDF_MethodScope_Emitted;
+var O: string;
+begin
+  O := GenOPDF('''
+      program P;
+      type
+        TThing = class
+          N: Integer;
+          procedure Bump();
+        end;
+      procedure TThing.Bump();
+      begin
+        N := N + 1;
+      end;
+      var T: TThing;
+      begin
+        T := TThing.Create();
+        T.Bump();
+      end.
+      ''');
+  AssertTrue('method gets a function scope record',
+    Pos('recFunctionScope: TThing_Bump', O) > 0);
+end;
+
+procedure TOPDFTests.TestOPDF_DestructorScope_Emitted;
+var O: string;
+begin
+  O := GenOPDF('''
+      program P;
+      type
+        TThing = class
+          N: Integer;
+          destructor Destroy();
+        end;
+      destructor TThing.Destroy();
+      begin
+        N := 0;
+      end;
+      var T: TThing;
+      begin
+        T := TThing.Create();
+        T.Free();
+      end.
+      ''');
+  AssertTrue('destructor gets a function scope record',
+    Pos('recFunctionScope: TThing_Destroy', O) > 0);
 end;
 
 initialization
