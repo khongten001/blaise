@@ -4247,6 +4247,13 @@ begin
     begin
       Loaded := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal)]));
+      if Id.ParamMode <> pmNone then
+      begin
+        { var-param class ident: slot -> caller var -> instance. }
+        Result := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [Result, Loaded]));
+        Exit;
+      end;
       Result := Loaded;
     end
     else if Id.ParamMode <> pmNone then
@@ -4296,7 +4303,15 @@ begin
       begin
         Loaded := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Fld.RecordName, Fld.IsGlobal)]));
-        Base := Loaded;
+        if Fld.IsVarParam then
+        begin
+          { var-param class: the slot holds the ADDRESS of the caller's
+            variable — load again to reach the instance pointer. }
+          Base := AllocTemp();
+          EmitLine(Format('  %s =l loadl %s', [Base, Loaded]));
+        end
+        else
+          Base := Loaded;
       end
       else if Fld.IsVarParam then
       begin
@@ -4429,11 +4444,18 @@ begin
     begin
       { Class field leaf: the variable's slot holds a pointer to the heap
         object — load it so the offset addition reaches the field, not a
-        location adjacent to the slot itself. }
+        location adjacent to the slot itself.  A var-param class slot holds
+        the ADDRESS of the caller's variable: load twice. }
       T := AllocTemp();
       EmitLine(Format('  %s =l loadl %s',
         [T, VarRef(FldAcc.RecordName, FldAcc.IsGlobal)]));
-      BaseAddr := T;
+      if FldAcc.IsVarParam then
+      begin
+        BaseAddr := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [BaseAddr, T]));
+      end
+      else
+        BaseAddr := T;
     end
     else if FldAcc.IsImplicitSelf then
     begin
@@ -5453,9 +5475,16 @@ begin
   end
   else if AAssign.IsClassAccess then
   begin
-    { Load the heap pointer stored in the class variable }
+    { Load the heap pointer stored in the class variable.  var-param class:
+      the slot holds the caller variable's address — one more load first. }
     PtrTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [PtrTemp, VarRef(AAssign.RecordName, AAssign.IsGlobal)]));
+    if AAssign.IsVarParam then
+    begin
+      Ptr := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [Ptr, PtrTemp]));
+      PtrTemp := Ptr;
+    end;
     if AAssign.FieldInfo.Offset > 0 then
     begin
       Ptr := AllocTemp();
@@ -7163,8 +7192,8 @@ begin
     for I := 0 to ADecl.CapturedVars.Count - 1 do
     begin
       CapName := ADecl.CapturedVars.Strings[I];
+      if Sig <> '' then Sig := Sig + ', ';
       Sig := Sig + Format('l %%_cap_%s', [CapName]);
-      if ADecl.Params.Count > 0 then Sig := Sig + ', ';
     end;
 
   for I := 0 to ADecl.Params.Count - 1 do
@@ -10524,7 +10553,16 @@ begin
         end;
       end
       else if FldAccess.IsClassAccess or FldAccess.IsVarParam then
-        EmitLine(Format('  %s =l loadl %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]))
+      begin
+        EmitLine(Format('  %s =l loadl %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+        if FldAccess.IsClassAccess and FldAccess.IsVarParam then
+        begin
+          { var-param class: slot -> caller var -> instance. }
+          T := AllocTemp();
+          EmitLine(Format('  %s =l loadl %s', [T, L]));
+          L := T;
+        end;
+      end
       else
         EmitLine(Format('  %s =l copy %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
       if FldAccess.FieldInfo.Offset > 0 then
@@ -10639,9 +10677,16 @@ begin
     end
     else if FldAccess.IsClassAccess then
     begin
-      { Load heap pointer, then load field }
+      { Load heap pointer, then load field.  var-param class: the slot holds
+        the caller variable's address — one more load first. }
       L := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [L, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+      if FldAccess.IsVarParam then
+      begin
+        Ptr := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [Ptr, L]));
+        L := Ptr;
+      end;
       if FldAccess.FieldInfo.Offset > 0 then
       begin
         Ptr := AllocTemp();

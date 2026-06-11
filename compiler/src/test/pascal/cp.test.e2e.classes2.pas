@@ -88,6 +88,15 @@ type
     { Statement-position method call through a non-Self interface field:
       H.S.Note(); — expression position already worked. }
     procedure TestRun_InterfaceFieldCall_StatementPosition;
+
+    { var-param class: field reads/writes must double-deref (slot -> caller
+      var -> instance); single-deref corrupted the caller frame. }
+    procedure TestRun_VarParamClass_FieldReadWrite;
+    { Nested proc with captured vars AND regular params: signature emission. }
+    procedure TestRun_NestedProc_CaptureAndParams;
+    { var Double param (pointer arrives in an int register, not xmm) and
+      captured float read/write through the _cap_ slot. }
+    procedure TestRun_VarParamFloat_CapturedFloat;
   end;
 
 implementation
@@ -1399,6 +1408,110 @@ procedure TE2EClasses2Tests.TestRun_InterfaceFieldCall_StatementPosition;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcIntfFieldCallStmt, '9' + LE + 'note' + LE, 0);
+end;
+
+const
+  SrcVarParamClass = '''
+    program P;
+    type
+      TBox = class
+        V: Integer;
+        W: Integer;
+      end;
+    procedure MutB(var B: TBox);
+    begin
+      B.V := B.V + 98;
+      B.W := B.V * 2;
+      writeln(B.V);
+    end;
+    procedure Swap(var B: TBox);
+    var T: TBox;
+    begin
+      T := TBox.Create();
+      T.V := 500;
+      B := T;
+    end;
+    var
+      Box: TBox;
+    begin
+      Box := TBox.Create();
+      Box.V := 1;
+      MutB(Box);
+      writeln(Box.V);
+      writeln(Box.W);
+      Swap(Box);
+      writeln(Box.V);
+    end.
+    ''';
+
+  SrcNestedCaptureParams = '''
+    program P;
+    procedure Outer();
+    var
+      Total: Integer;
+      Name: string;
+      procedure Inner(K: Integer; Tag: string);
+      begin
+        Total := Total + K;
+        Name := Name + Tag;
+      end;
+    begin
+      Total := 5;
+      Name := 'x';
+      Inner(7, 'y');
+      Inner(8, 'z');
+      writeln(Total);
+      writeln(Name);
+    end;
+    begin
+      Outer();
+    end.
+    ''';
+
+procedure TE2EClasses2Tests.TestRun_VarParamClass_FieldReadWrite;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcVarParamClass,
+    '99' + LE + '99' + LE + '198' + LE + '500' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_NestedProc_CaptureAndParams;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcNestedCaptureParams, '20' + LE + 'xyz' + LE, 0);
+end;
+
+const
+  SrcVarParamFloat = '''
+    program P;
+    procedure SetD(var D: Double);
+    begin
+      D := 2.5;
+    end;
+    procedure Outer();
+    var
+      X: Double;
+      procedure Bump(F: Double);
+      begin
+        X := X + F;
+      end;
+    begin
+      X := 1.0;
+      SetD(X);
+      writeln(X);
+      Bump(0.5);
+      Bump(1.0);
+      writeln(X);
+    end;
+    begin
+      Outer();
+    end.
+    ''';
+
+procedure TE2EClasses2Tests.TestRun_VarParamFloat_CapturedFloat;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcVarParamFloat, '2.5' + LE + '4' + LE, 0);
 end;
 
 initialization

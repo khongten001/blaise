@@ -68,6 +68,10 @@ type
     [Unretained] FDbgFacts: TDbgFacts;
     [Unretained] FDbgCur: TDbgFunc;   { facts entry for the function being emitted }
     FDbgSeq: Integer;                 { .Ldbg_N label counter }
+    { Enclosing function while a nested proc is being emitted — lets
+      DbgMarkParams resolve captured-var types from the outer var/param
+      declarations.  nil for top-level functions. }
+    [Unretained] FDbgOuterDecl: TMethodDecl;
     { Global slots to define in the .data section: program-level variables plus
       hidden for-loop end-value slots.  Insertion-ordered so EmitDataSection
       emits them in declaration order; ContainsKey gives O(1) dedup.  The value
@@ -424,6 +428,7 @@ type
     procedure DbgBeginFunc(const ASymbol: string);
     procedure DbgRecordSlot(const AName: string; AType: TTypeDesc; AOffset: Integer);
     procedure DbgMarkParams(ADecl: TMethodDecl);
+    function OuterVarType(const AName: string): TTypeDesc;
     procedure DbgStmtLabel(AStmt: TASTStmt);
     procedure DbgEndFunc;
     procedure EmitIncDec(ACall: TProcCall);
@@ -2657,6 +2662,9 @@ begin
       Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AFA.RecordName), ADstReg]))
     else
       Self.Emit(Format(#9'movq %s(%%rip), %s', [AFA.RecordName, ADstReg]));
+    if AFA.IsVarParam then
+      { var-param class: slot -> caller var -> instance }
+      Self.Emit(Format(#9'movq (%s), %s', [ADstReg, ADstReg]));
   end
   else if AFA.IsVarParam then
   begin
@@ -3192,6 +3200,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FAE.RecordName]));
+      if FAE.IsClassAccess and FAE.IsVarParam then
+        { var-param class: slot -> caller var -> instance }
+        Self.Emit(#9'movq (%rdx), %rdx');
     end
     else if Self.IsLocal(FAE.RecordName) then
       Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
@@ -3220,12 +3231,12 @@ procedure TX86_64Backend.DbgRecordSlot(const AName: string; AType: TTypeDesc;
   AOffset: Integer);
 begin
   if FDbgCur = nil then Exit;
-  { Skip internal companion/bookkeeping slots: capture pointers, exception
-    frames, open-array highs.  '_data' record-param shadows are kept —
-    DbgMarkParams presents them AS the parameter (the shadow holds the
-    callee's inline record copy, which is what a debugger should show). }
+  { Skip internal bookkeeping slots (exception frames, open-array highs).
+    '_data' record-param shadows and '_cap_' capture pointers are kept —
+    DbgMarkParams presents the shadow AS the parameter and a capture slot
+    AS the outer variable (indirect location). }
   if AName = '' then Exit;
-  if AName[0] = '_' then Exit;
+  if (AName[0] = '_') and (Copy(AName, 0, 5) <> '_cap_') then Exit;
   if (Length(AName) > 5) and (Copy(AName, Length(AName) - 5, 5) = '_high') then Exit;
   FDbgCur.AddVar(AName, AType, AOffset);
 end;
@@ -3274,9 +3285,57 @@ begin
       DV.IsVarParam := P.IsVarParam;
       DV.IsConstParam := P.IsConstParam;
     end
-    else if (V.TypeDesc = nil) and (P.ResolvedType <> nil) and
-            not P.IsVarParam then
+    else if P.IsVarParam then
+    begin
+      { var/out parameter: the slot holds the ADDRESS of the caller's
+        variable — indirect location, typed as the VALUE. }
+      V.Indirect := True;
+      if (V.TypeDesc = nil) and (P.ResolvedType <> nil) then
+        V.TypeDesc := P.ResolvedType;
+    end
+    else if (V.TypeDesc = nil) and (P.ResolvedType <> nil) then
       V.TypeDesc := P.ResolvedType;
+  end;
+  { Captured outer locals: each '_cap_<Name>' slot holds a pointer to the
+    outer variable.  Present it as the variable itself via the indirect
+    location, typed from the enclosing function's var/param declarations
+    (FDbgOuterDecl — set while nested procs are emitted). }
+  if ADecl.CapturedVars <> nil then
+    for I := 0 to ADecl.CapturedVars.Count - 1 do
+    begin
+      V := FDbgCur.FindVar('_cap_' + ADecl.CapturedVars.Strings[I]);
+      if V = nil then Continue;
+      V.Name := ADecl.CapturedVars.Strings[I];
+      V.Indirect := True;
+      if V.TypeDesc = nil then
+        V.TypeDesc := Self.OuterVarType(ADecl.CapturedVars.Strings[I]);
+    end;
+end;
+
+{ Resolve the type of a captured outer variable by name from the enclosing
+  function's local var declarations and parameters.  Returns nil when no
+  enclosing decl is recorded or the name is not found. }
+function TX86_64Backend.OuterVarType(const AName: string): TTypeDesc;
+var
+  I, J: Integer;
+  VD: TVarDecl;
+  P: TMethodParam;
+begin
+  Result := nil;
+  if FDbgOuterDecl = nil then Exit;
+  if FDbgOuterDecl.Body <> nil then
+    for I := 0 to FDbgOuterDecl.Body.Decls.Count - 1 do
+    begin
+      VD := TVarDecl(FDbgOuterDecl.Body.Decls.Items[I]);
+      for J := 0 to VD.Names.Count - 1 do
+        if SameText(VD.Names.Strings[J], AName) then
+          Exit(VD.ResolvedType);
+    end;
+  for I := 0 to FDbgOuterDecl.Params.Count - 1 do
+  begin
+    P := TMethodParam(FDbgOuterDecl.Params.Items[I]);
+    if SameText(P.ParamName, AName) then
+      Exit(P.ResolvedType);
   end;
 end;
 
@@ -3633,7 +3692,22 @@ begin
       Ty := Self.LocalType(TIdentExpr(AExpr).Name);
     if (Ty = nil) then
       Ty := Self.GlobalType(TIdentExpr(AExpr).Name);
-    Self.EmitLoadFloat(Self.VarOperand(TIdentExpr(AExpr).Name), Ty);
+    if TIdentExpr(AExpr).ParamMode <> pmNone then
+    begin
+      { var/out float param: the slot holds the value's address. }
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand(TIdentExpr(AExpr).Name)]));
+      Self.EmitLoadFloat('(%rcx)', Ty);
+    end
+    else if Self.IsCaptured(TIdentExpr(AExpr).Name) then
+    begin
+      { Captured outer local: the _cap_ slot holds the var's address. }
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand('_cap_' + TIdentExpr(AExpr).Name)]));
+      Self.EmitLoadFloat('(%rcx)', Ty);
+    end
+    else
+      Self.EmitLoadFloat(Self.VarOperand(TIdentExpr(AExpr).Name), Ty);
     Exit;
   end;
 
@@ -5437,6 +5511,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FAE.RecordName]));
+      if FAE.IsClassAccess and FAE.IsVarParam then
+        { var-param class: slot -> caller var -> instance }
+        Self.Emit(#9'movq (%rdi), %rdi');
     end;
     if FAE.FieldInfo <> nil then
     begin
@@ -5492,6 +5569,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      if FAE.IsClassAccess and FAE.IsVarParam then
+        { var-param class: slot -> caller var -> instance }
+        Self.Emit(#9'movq (%rcx), %rcx');
     end
     else if Self.IsLocal(FAE.RecordName) then
       Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
@@ -5590,6 +5670,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      if FAE.IsVarParam then
+        { var-param class: slot -> caller var -> instance }
+        Self.Emit(#9'movq (%rcx), %rcx');
       if FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray] then
         Self.Emit(Format(#9'leaq %d(%%rcx), %%rax', [FAE.FieldInfo.Offset]))
       else
@@ -5831,6 +5914,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+        if FAE.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if FAE.IsVarParam then
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
@@ -5909,6 +5995,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+        if FAE.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if FAE.IsVarParam then
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
@@ -8360,7 +8449,17 @@ begin
         (cvtss2sd). }
       Self.EmitXmm0WidthAdjust(Asgn.Expr.ResolvedType,
         Asgn.ResolvedLhsType.Kind = tySingle);
-      if Self.IsLocal(Asgn.Name) then
+      if Asgn.IsVarParam then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.EmitStoreFloat('(%rcx)', Asgn.ResolvedLhsType);
+      end
+      else if Self.IsCaptured(Asgn.Name) then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.EmitStoreFloat('(%rcx)', Asgn.ResolvedLhsType);
+      end
+      else if Self.IsLocal(Asgn.Name) then
         Self.EmitStoreFloat(Self.VarOperand(Asgn.Name), Self.LocalType(Asgn.Name))
       else
       begin
@@ -8386,6 +8485,16 @@ begin
         Self.Emit(#9'callq _StringRelease');
         Self.Emit(#9'popq %rax');
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
+      else if Self.IsCaptured(Asgn.Name) then
+      begin
+        { Captured outer local: the _cap_ slot holds the var's address. }
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
         Self.Emit(#9'movq %rax, (%rcx)');
       end
       else
@@ -8421,6 +8530,16 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
         Self.Emit(#9'movq %rax, (%rcx)');
       end
+      else if Self.IsCaptured(Asgn.Name) then
+      begin
+        { Captured outer local: the _cap_ slot holds the var's address. }
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _DynArrayRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
       else
       begin
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
@@ -8452,6 +8571,15 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
         Self.Emit(#9'movq $0, (%rcx)');
       end
+      else if Self.IsCaptured(Asgn.Name) then
+      begin
+        { Captured outer local: the _cap_ slot holds the var's address. }
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq $0, (%rcx)');
+      end
       else
       begin
         Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]));
@@ -8480,6 +8608,16 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(Asgn.Name)]));
         Self.Emit(#9'movq %rax, (%rcx)');
       end
+      else if Self.IsCaptured(Asgn.Name) then
+      begin
+        { Captured outer local: the _cap_ slot holds the var's address. }
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq (%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + Asgn.Name)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+      end
       else
       begin
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(Asgn.Name)]));
@@ -8501,6 +8639,8 @@ begin
       Self.Emit(#9'movq %rax, %rsi');
       if Asgn.IsVarParam then
         Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Asgn.Name)]))
+      else if Self.IsCaptured(Asgn.Name) then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('_cap_' + Asgn.Name)]))
       else if FSretFunc and SameText(Asgn.Name, 'Result') then
         Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Result')]))
       else if Self.IsLocal(Asgn.Name) then
@@ -9105,6 +9245,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FA.RecordName]));
+        if FA.IsClassAccess and FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rdi), %rdi');
       end;
       if FA.PropIndexExpr <> nil then
       begin
@@ -9164,6 +9307,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FA.RecordName]));
+        if FA.IsClassAccess and FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rdx), %rdx');
       end
       else if Self.IsLocal(FA.RecordName) then
         Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(FA.RecordName)]))
@@ -9248,6 +9394,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        if FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if FA.IsVarParam then
       begin
@@ -9295,6 +9444,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rbx', [FA.RecordName]));
+        if FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rbx), %rbx');
       end
       else if FA.IsVarParam then
       begin
@@ -9346,6 +9498,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rbx', [FA.RecordName]));
+        if FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rbx), %rbx');
       end
       else
       begin
@@ -9399,6 +9554,9 @@ begin
           Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        if FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rcx), %rcx');
         Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
         Self.Emit(#9'addq $8, %rsp');
       end
@@ -9527,10 +9685,16 @@ begin
         if FA.IsClassAccess then
           Self.Emit(#9'movq (%rcx), %rcx');
       end
-      else if Self.IsLocal(FA.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+      begin
+        if Self.IsLocal(FA.RecordName) then
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        else
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        if FA.IsVarParam then
+          { var-param class: slot -> caller var -> instance }
+          Self.Emit(#9'movq (%rcx), %rcx');
+      end;
       if FA.FieldInfo.IsUnretained and (FA.FieldInfo.TypeDesc.Kind = tyClass) then
       begin
         Self.Emit(#9'popq %rax');
@@ -10714,7 +10878,7 @@ begin
           Inc(SlotOff, 8);
         end;
       end
-      else if IsFloatFamily(ParamType) then
+      else if IsFloatFamily(ParamType) and not IsVar then
       begin
         Self.EmitExprToXmm0(Arg);
         if (ParamType <> nil) and (ParamType.Kind = tySingle) then
@@ -10836,8 +11000,10 @@ begin
         ParamType := Arg.ResolvedType;
       IsOA := (ADecl <> nil) and (I < ADecl.Params.Count) and
               TMethodParam(ADecl.Params.Items[I]).IsOpenArray;
+      IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
+               TMethodParam(ADecl.Params.Items[I]).IsVarParam;
 
-      if IsFloatFamily(ParamType) and not IsOA then
+      if IsFloatFamily(ParamType) and not IsOA and not IsVar then
       begin
         if XmmIdx < 8 then
         begin
@@ -11064,6 +11230,9 @@ begin
       Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
     else
       Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
+    if AFA.IsVarParam then
+      { var-param class: slot -> caller var -> instance }
+      Self.Emit(#9'movq (%rcx), %rcx');
   end
   else if AFA.IsVarParam then
   begin
@@ -11822,19 +11991,27 @@ var
   IntIdx:      Integer;
   XmmIdx:      Integer;
   NestedDecl:  TMethodDecl;
+  SavedOuterDecl: TMethodDecl;
   AddrTaken:   TStringList;
 begin
   { Emit any nested procedures declared inside this function's body before
     emitting this function itself.  Each nested proc gets a mangled name
-    OuterName_InnerName to avoid global symbol collisions. }
+    OuterName_InnerName to avoid global symbol collisions.  FDbgOuterDecl
+    carries the enclosing decl so DbgMarkParams can type captured vars;
+    saved/restored to keep doubly-nested emission consistent. }
   if ADecl.Body <> nil then
+  begin
+    SavedOuterDecl := FDbgOuterDecl;
     for I := 0 to ADecl.Body.ProcDecls.Count - 1 do
     begin
       NestedDecl := TMethodDecl(ADecl.Body.ProcDecls.Items[I]);
       if NestedDecl.Body = nil then Continue;
       NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
+      FDbgOuterDecl := ADecl;
       Self.EmitFunctionDef(NestedDecl);
     end;
+    FDbgOuterDecl := SavedOuterDecl;
+  end;
 
   for I := 0 to ADecl.Params.Count - 1 do
   begin
@@ -11942,7 +12119,7 @@ begin
         Inc(IntIdx);
       end;
     end
-    else if IsFloatFamily(P.ResolvedType) then
+    else if IsFloatFamily(P.ResolvedType) and not P.IsVarParam then
     begin
       if XmmIdx < 6 then
       begin

@@ -43,6 +43,10 @@ type
     IsParam: Boolean;
     IsVarParam: Boolean;
     IsConstParam: Boolean;
+    { The slot holds the value's ADDRESS rather than the value itself
+      (var/out params, by-reference aggregates, captured outer locals) —
+      emitted as LocationExpr=3 'RBP-relative indirect'. }
+    Indirect: Boolean;
   end;
 
   { One statement-level line marker: the backend emitted LabelName ('.Ldbg_N')

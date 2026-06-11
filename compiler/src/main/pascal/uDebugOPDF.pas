@@ -121,6 +121,7 @@ const
   SK_BOOLEAN = 1;
 
   LOC_RBP = 1;
+  LOC_RBP_INDIRECT = 3;  { frame slot holds the value's address }
 
   PAT_FIELD  = 0;  { property accessor: direct field offset }
   PAT_METHOD = 1;  { property accessor: method call }
@@ -479,7 +480,18 @@ begin
       end;
     end;
   end;
-  Result := Pfx + AClassName;
+  { Generic instance names carry '<', '>' and ',' — apply the same
+    character mangling the native backend uses for its symbols
+    (NativeMangle: '<' and ',' become '_', '>' is dropped). }
+  Result := '';
+  for I := 0 to Length(AClassName) - 1 do
+  begin
+    Ch := Copy(AClassName, I, 1);
+    if (Ch = '<') or (Ch = ',') then Result := Result + '_'
+    else if Ch = '>' then
+    else Result := Result + Ch;
+  end;
+  Result := Pfx + Result;
 end;
 
 procedure TOPDFEmitter.EmitClass(AType: TRecordTypeDesc);
@@ -677,7 +689,7 @@ begin
   L('    .byte 8                        # PointerSize: 8');
   FTotRecIdx := FOutput.Count;
   L('    .int  0                        # TotalRecords (patched at end)');
-  L('    .int  1                        # Flags: OPDF_FLAG_HAS_DIRECTORY');
+  L('    .int  3                        # Flags: HAS_DIRECTORY or DYNARRAY_LEN32');
 end;
 
 procedure TOPDFEmitter.EmitFunctionScope_Main(AScopeID, ADeclIdx: Integer);
@@ -1097,7 +1109,11 @@ begin
   EmitRecHdr(REC_LOCALVAR, RecSize);
   L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
   L('    .int  ' + IntToStr(AScopeID) + '  # ScopeID');
-  L('    .byte ' + IntToStr(LOC_RBP) + '  # LocationExpr (RBP-relative)');
+  if AVar.Indirect then
+    L('    .byte ' + IntToStr(LOC_RBP_INDIRECT) +
+      '  # LocationExpr (RBP-relative indirect)')
+  else
+    L('    .byte ' + IntToStr(LOC_RBP) + '  # LocationExpr (RBP-relative)');
   L('    .word ' + IntToStr(ADeclIdx) + '  # DeclIndex');
   EmitNameLen(AVar.Name);
   L('    .word ' + IntToStr(AVar.RbpOffset) + '  # LocationData (RBP offset)');
