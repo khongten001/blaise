@@ -10,16 +10,6 @@
       <path>../runtime/src/main/pascal</path>
       <path>../stdlib/src/main/pascal</path>
     </unitPaths>
-    <!-- Build the compiler (and its TestRunner) with the native x86-64
-         backend to exercise it locally.  The shipped default backend
-         stays QBE for now; remove this once native becomes the default.
-         debug-opdf embeds OPDF debug info so the binaries can be debugged
-         with pdr (see the Debugging section in CLAUDE.md); it roughly
-         triples binary size but has no runtime cost. -->
-    <compilerOptions>
-      <option>--backend native</option>
-      <option>--debug-opdf</option>
-    </compilerOptions>
   </build>
 
   <test>
