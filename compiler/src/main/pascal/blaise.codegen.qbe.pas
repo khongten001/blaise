@@ -156,6 +156,8 @@ type
     function  AllocLabel(const APrefix: string): string;
     function  CoerceArg(const AArgTemp: string; AArgExpr: TASTExpr; const AParamQType: string): string;
     function  EmitByteRhs(AExpr: TASTExpr): string;
+    function  IntfObjAddr(const AName: string; AIsGlobal, AIsVarParam: Boolean): string;
+    function  IntfItabAddr(const AName: string; AIsGlobal, AIsVarParam: Boolean): string;
     function  EmitStrLit(const AValue: string): string;
     { Emit a class-name string literal as a data-section label expression.
       Returns '$__cn_ClassName + 12' which can be embedded in another data item. }
@@ -695,6 +697,44 @@ end;
   normal lowering emits a string-literal data item and returns its data
   pointer, whose low byte is then storeb'd — yielding the address byte,
   not the intended Ord.  Fold to the Ord value directly. }
+{ Operand strings ADDRESSING an interface variable's obj / itab slots.
+  Plain locals and globals use split slots Name_obj / Name_itab.  A var/out
+  parameter's single slot holds the address of the caller's contiguous
+  16-byte fat pointer — obj at +0, itab at +8 — so the address is computed
+  with a load (and an add for the itab half). }
+function TCodeGenQBE.IntfObjAddr(const AName: string; AIsGlobal, AIsVarParam: Boolean): string;
+begin
+  if AIsVarParam then
+  begin
+    Result := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [Result, VarRef(AName, False)]));
+  end
+  else
+    Result := VarRef(AName, AIsGlobal) + '_obj';
+end;
+
+function TCodeGenQBE.IntfItabAddr(const AName: string; AIsGlobal, AIsVarParam: Boolean): string;
+var
+  P: string;
+begin
+  if AIsVarParam then
+  begin
+    P := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [P, VarRef(AName, False)]));
+    Result := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [Result, P]));
+  end
+  else if AIsGlobal then
+  begin
+    { Global interface data is ONE 16-byte item $Name_obj; the itab half
+      lives at +8 — there is no $Name_itab symbol. }
+    Result := AllocTemp();
+    EmitLine(Format('  %s =l add %s_obj, 8', [Result, VarRef(AName, True)]));
+  end
+  else
+    Result := VarRef(AName, AIsGlobal) + '_itab';
+end;
+
 function TCodeGenQBE.EmitByteRhs(AExpr: TASTExpr): string;
 var
   FC: TFuncCallExpr;
@@ -1693,10 +1733,13 @@ begin
 
         tyInterface:
           begin
-            { Interface var = fat pointer: obj slot + itab slot, both nil-init }
-            EmitLine(Format('  %%_var_%s_obj  =l alloc8 1', [VarName]));
+            { Interface var = fat pointer: ONE contiguous 16-byte block —
+              obj at +0, itab at +8 — so its base address can be passed to
+              a var/out interface parameter.  Both halves nil-init. }
+            EmitLine(Format('  %%_var_%s_obj  =l alloc8 16', [VarName]));
+            EmitLine(Format('  %%_var_%s_itab =l add %%_var_%s_obj, 8',
+              [VarName, VarName]));
             EmitLine(Format('  storel 0, %%_var_%s_obj',    [VarName]));
-            EmitLine(Format('  %%_var_%s_itab =l alloc8 1', [VarName]));
             EmitLine(Format('  storel 0, %%_var_%s_itab',   [VarName]));
           end;
 
@@ -1770,10 +1813,11 @@ begin
         tySingle:
           EmitLine(Format('%s $%s = { s 0 }', [Pfx, VarName]));
         tyInterface:
-          begin
-            EmitLine(Format('%s $%s_obj  = { l 0 }', [Pfx, VarName]));
-            EmitLine(Format('%s $%s_itab = { l 0 }', [Pfx, VarName]));
-          end;
+          { ONE contiguous 16-byte fat pointer: obj at +0, itab at +8.
+            Itab accesses compute $Name_obj + 8 (IntfItabAddr) — keeping a
+            separate $Name_itab item would not be adjacent, which breaks
+            passing the variable to a var/out interface parameter. }
+          EmitLine(Format('%s $%s_obj = { l 0, l 0 }', [Pfx, VarName]));
         tyRecord:
           begin
             RT := TRecordTypeDesc(Decl.ResolvedType);
@@ -3570,6 +3614,7 @@ end;
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
 var
   ValTemp, OldTemp, QType, StoreInstr, PtrTemp: string;
+  ObjAddr, ItabAddr: string;
   IntfDesc:  TInterfaceTypeDesc;
   ClassRT:   TRecordTypeDesc;
   ItabName:  string;
@@ -3739,18 +3784,19 @@ begin
     EmitLine('  call $_Raise_InvalidCast()');
     EmitLine(Format('  jmp @%s', [LblEnd]));
     EmitLine('@' + LblOk);
+    ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
+    ItabAddr := IntfItabAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
     if AAssign.IsWeakLhs then
-      EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), ObjTemp]))
+      EmitLine(Format('  call $_WeakAssign(l %s, l %s)', [ObjAddr, ObjTemp]))
     else
     begin
       OldTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjAddr]));
       EmitLine(Format('  call $_ClassAddRef(l %s)',  [ObjTemp]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-      EmitLine(Format('  storel %s, %s_obj',  [ObjTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel %s, %s',  [ObjTemp, ObjAddr]));
     end;
-    EmitLine(Format('  storel %s, %s_itab', [ItabTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  storel %s, %s', [ItabTemp, ItabAddr]));
     EmitLine('@' + LblEnd);
     Exit;
   end;
@@ -3767,19 +3813,20 @@ begin
     ClassRT  := TRecordTypeDesc(AAssign.Expr.ResolvedType);
     ItabName := '$itab_' + QBEMangle(ClassSymName(ClassRT.Name)) + '_' + QBEMangle(IntfDesc.Name);
     ValTemp  := EmitExpr(AAssign.Expr);
+    ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
+    ItabAddr := IntfItabAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
     if AAssign.IsWeakLhs then
-      EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp]))
+      EmitLine(Format('  call $_WeakAssign(l %s, l %s)', [ObjAddr, ValTemp]))
     else
     begin
       OldTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjAddr]));
       if not ExprOwnsRef(AAssign.Expr) then
         EmitLine(Format('  call $_ClassAddRef(l %s)',  [ValTemp]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-      EmitLine(Format('  storel %s, %s_obj',  [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel %s, %s',  [ValTemp, ObjAddr]));
     end;
-    EmitLine(Format('  storel %s, %s_itab', [ItabName, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  storel %s, %s', [ItabName, ItabAddr]));
     Exit;
   end;
 
@@ -3802,19 +3849,20 @@ begin
      ((AAssign.Expr is TIdentExpr) or (AAssign.Expr is TFieldAccessExpr)) then
   begin
     EmitInterfaceExprPair(AAssign.Expr, ObjTemp, ItabTemp);
+    ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
+    ItabAddr := IntfItabAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
     if AAssign.IsWeakLhs then
     begin
-      EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), ObjTemp]));
-      EmitLine(Format('  storel %s, %s_itab', [ItabTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  call $_WeakAssign(l %s, l %s)', [ObjAddr, ObjTemp]));
+      EmitLine(Format('  storel %s, %s', [ItabTemp, ItabAddr]));
       Exit;
     end;
     OldTemp := AllocTemp();
-    EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjAddr]));
     EmitLine(Format('  call $_ClassAddRef(l %s)',  [ObjTemp]));
     EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-    EmitLine(Format('  storel %s, %s_obj',  [ObjTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
-    EmitLine(Format('  storel %s, %s_itab', [ItabTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  storel %s, %s',  [ObjTemp, ObjAddr]));
+    EmitLine(Format('  storel %s, %s', [ItabTemp, ItabAddr]));
     Exit;
   end;
 
@@ -3829,17 +3877,18 @@ begin
      (AAssign.ResolvedLhsType.Kind = tyInterface) and
      (AAssign.Expr is TNilLiteral) then
   begin
+    ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
+    ItabAddr := IntfItabAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
     if AAssign.IsWeakLhs then
-      EmitLine(Format('  call $_WeakClear(l %s_obj)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal)]))
+      EmitLine(Format('  call $_WeakClear(l %s)', [ObjAddr]))
     else
     begin
       OldTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjAddr]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-      EmitLine(Format('  storel 0, %s_obj', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel 0, %s', [ObjAddr]));
     end;
-    EmitLine(Format('  storel 0, %s_itab', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  storel 0, %s', [ItabAddr]));
     Exit;
   end;
 
@@ -3860,19 +3909,18 @@ begin
     ValTemp := AllocTemp();
     EmitLine(Format('  %s =l add %s, 8', [ValTemp, SretBuf]));
     EmitLine(Format('  %s =l loadl %s', [ItabTemp, ValTemp]));
+    ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
+    ItabAddr := IntfItabAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
     if AAssign.IsWeakLhs then
-    begin
-      EmitLine(Format('  call $_WeakAssign(l %s_obj, l %s)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), ObjTemp]));
-    end
+      EmitLine(Format('  call $_WeakAssign(l %s, l %s)', [ObjAddr, ObjTemp]))
     else
     begin
       OldTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, ObjAddr]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-      EmitLine(Format('  storel %s, %s_obj', [ObjTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel %s, %s', [ObjTemp, ObjAddr]));
     end;
-    EmitLine(Format('  storel %s, %s_itab', [ItabTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+    EmitLine(Format('  storel %s, %s', [ItabTemp, ItabAddr]));
     Exit;
   end;
 
@@ -4397,6 +4445,14 @@ begin
     // original address, not the address of the local slot.
     Result := AllocTemp();
     EmitLine(Format('  %s =l loadl %%_var_%s', [Result, AIdent.Name]));
+  end
+  else if (AIdent.ResolvedType <> nil) and
+          (AIdent.ResolvedType.Kind = tyInterface) then
+  begin
+    { Interface variable: the fat pointer lives in one contiguous 16-byte
+      block (locals: one alloc; globals: one 16-byte data item) whose base
+      is the _obj slot — that base IS the var-arg address. }
+    Result := VarRef(AIdent.Name, AIdent.IsGlobal) + '_obj';
   end
   else if AIdent.IsImplicitSelf then
   begin
@@ -5346,10 +5402,10 @@ begin
     IntfDesc := TInterfaceTypeDesc(AAssign.IntfWriteDesc);
     SelfPtr := AllocTemp();
     PtrTemp := AllocTemp();
-    EmitLine(Format('  %s =l loadl %s_obj',
-      [SelfPtr, VarRef(AAssign.RecordName, AAssign.IsGlobal)]));
-    EmitLine(Format('  %s =l loadl %s_itab',
-      [PtrTemp, VarRef(AAssign.RecordName, AAssign.IsGlobal)]));
+    EmitLine(Format('  %s =l loadl %s',
+      [SelfPtr, IntfObjAddr(AAssign.RecordName, AAssign.IsGlobal, AAssign.IsVarParam)]));
+    EmitLine(Format('  %s =l loadl %s',
+      [PtrTemp, IntfItabAddr(AAssign.RecordName, AAssign.IsGlobal, AAssign.IsVarParam)]));
     SlotOff := IntfDesc.MethodIndex(AAssign.FieldName) * 8;
     Ptr := AllocTemp();
     if SlotOff = 0 then
@@ -5730,8 +5786,10 @@ begin
     end
     else
     begin
-      EmitLine(Format('  %s =l loadl %s_obj', [SelfTemp, VarRef(ACall.ObjectName, ACall.IsGlobal)]));
-      EmitLine(Format('  %s =l loadl %s_itab', [VTblTemp, VarRef(ACall.ObjectName, ACall.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s',
+        [SelfTemp, IntfObjAddr(ACall.ObjectName, ACall.IsGlobal, ACall.IsVarParam)]));
+      EmitLine(Format('  %s =l loadl %s',
+        [VTblTemp, IntfItabAddr(ACall.ObjectName, ACall.IsGlobal, ACall.IsVarParam)]));
     end;
     SlotOff  := IntfDesc.MethodIndex(ACall.Name) * 8;
     FPtrTemp := AllocTemp();
@@ -6307,10 +6365,11 @@ begin
             a method with a by-value interface param fell into the generic
             single-slot `else` below: the signature passed a single `w` and the
             `storel %_par_X` here was invalid QBE. }
-          EmitLine(Format('  %%_var_%s_obj =l alloc8 1', [Par.ParamName]));
+          EmitLine(Format('  %%_var_%s_obj =l alloc8 16', [Par.ParamName]));
+          EmitLine(Format('  %%_var_%s_itab =l add %%_var_%s_obj, 8',
+            [Par.ParamName, Par.ParamName]));
           EmitLine(Format('  storel %%_par_%s_obj, %%_var_%s_obj',
             [Par.ParamName, Par.ParamName]));
-          EmitLine(Format('  %%_var_%s_itab =l alloc8 1', [Par.ParamName]));
           EmitLine(Format('  storel %%_par_%s_itab, %%_var_%s_itab',
             [Par.ParamName, Par.ParamName]));
         end;
@@ -7306,10 +7365,11 @@ begin
             { Two-slot fat pointer — matches the local-var layout used
               by interface-aware codegen (e.g. EmitMethodCall reads
               %_var_X_obj / %_var_X_itab to dispatch). }
-            EmitLine(Format('  %%_var_%s_obj =l alloc8 1', [Par.ParamName]));
+            EmitLine(Format('  %%_var_%s_obj =l alloc8 16', [Par.ParamName]));
+            EmitLine(Format('  %%_var_%s_itab =l add %%_var_%s_obj, 8',
+              [Par.ParamName, Par.ParamName]));
             EmitLine(Format('  storel %%_par_%s_obj, %%_var_%s_obj',
               [Par.ParamName, Par.ParamName]));
-            EmitLine(Format('  %%_var_%s_itab =l alloc8 1', [Par.ParamName]));
             EmitLine(Format('  storel %%_par_%s_itab, %%_var_%s_itab',
               [Par.ParamName, Par.ParamName]));
           end;
@@ -9611,11 +9671,11 @@ begin
       else
       begin
         SelfTemp := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s_obj',
-          [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
+        EmitLine(Format('  %s =l loadl %s',
+          [SelfTemp, IntfObjAddr(MCallExpr.ObjectName, MCallExpr.IsGlobal, MCallExpr.IsVarParam)]));
         VTblTemp := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s_itab',
-          [VTblTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
+        EmitLine(Format('  %s =l loadl %s',
+          [VTblTemp, IntfItabAddr(MCallExpr.ObjectName, MCallExpr.IsGlobal, MCallExpr.IsVarParam)]));
       end;
       SlotOff := IntfDesc.MethodIndex(MCallExpr.Name) * 8;
       FPtrTemp := AllocTemp();
@@ -10397,11 +10457,11 @@ begin
       { Zero-arg method call through interface itab: M.GetCount where M: IFoo }
       IntfDesc := TInterfaceTypeDesc(FldAccess.ResolvedClassType);
       SelfTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj',
-        [SelfTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s',
+        [SelfTemp, IntfObjAddr(FldAccess.RecordName, FldAccess.IsGlobal, FldAccess.IsVarParam)]));
       VTblTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_itab',
-        [VTblTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s',
+        [VTblTemp, IntfItabAddr(FldAccess.RecordName, FldAccess.IsGlobal, FldAccess.IsVarParam)]));
       SlotOff  := IntfDesc.MethodIndex(FldAccess.FieldName) * 8;
       FPtrTemp := AllocTemp();
       if SlotOff = 0 then
@@ -11569,14 +11629,27 @@ begin
       EmitLine(Format('  %s =l add %s, 8', [ItabT, ObjT]));
       EmitLine(Format('  %s =l loadl %s', [AItabTemp, ItabT]));
     end
+    else if IE.ParamMode <> pmNone then
+    begin
+      { var/out interface param: the slot holds the address of the caller's
+        contiguous fat pointer — obj at +0, itab at +8. }
+      ObjT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [ObjT, VarRef(IE.Name, False)]));
+      AObjTemp  := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [AObjTemp, ObjT]));
+      ItabT := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [ItabT, ObjT]));
+      AItabTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [AItabTemp, ItabT]));
+    end
     else
     begin
       AObjTemp  := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [AObjTemp,
+        IntfObjAddr(IE.Name, IE.IsGlobal, False)]));
       AItabTemp := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s_obj', [AObjTemp,
-        VarRef(IE.Name, IE.IsGlobal)]));
-      EmitLine(Format('  %s =l loadl %s_itab', [AItabTemp,
-        VarRef(IE.Name, IE.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [AItabTemp,
+        IntfItabAddr(IE.Name, IE.IsGlobal, False)]));
     end;
   end
   else if AExpr is TAsExpr then
@@ -11718,17 +11791,18 @@ begin
   EmitLine(Format('  jnz %s, @%s, @%s', [OkTemp, LblYes, LblNo]));
 
   EmitLine('@' + LblYes);
-  OutRef   := VarRef(AExpr.OutVarName, AExpr.OutVarIsGlobal);
+  OutRef   := IntfObjAddr(AExpr.OutVarName, AExpr.OutVarIsGlobal, False);
   ItabTemp := AllocTemp();
   EmitLine(Format('  %s =l call $_GetItab(l %s, l $typeinfo_%s)',
     [ItabTemp, ObjTemp, ClassSymName(AExpr.IntfTypeName)]));
   { ARC: retain new obj, release old obj slot of out-var }
   OldTemp := AllocTemp();
-  EmitLine(Format('  %s =l loadl %s_obj', [OldTemp, OutRef]));
+  EmitLine(Format('  %s =l loadl %s', [OldTemp, OutRef]));
   EmitLine(Format('  call $_ClassAddRef(l %s)',  [ObjTemp]));
   EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
-  EmitLine(Format('  storel %s, %s_obj',  [ObjTemp, OutRef]));
-  EmitLine(Format('  storel %s, %s_itab', [ItabTemp, OutRef]));
+  EmitLine(Format('  storel %s, %s',  [ObjTemp, OutRef]));
+  EmitLine(Format('  storel %s, %s', [ItabTemp,
+    IntfItabAddr(AExpr.OutVarName, AExpr.OutVarIsGlobal, False)]));
   EmitLine(Format('  storew 1, %s', [ResSlot]));
   EmitLine(Format('  jmp @%s', [LblEnd]));
 
@@ -12964,6 +13038,15 @@ begin
       EmitLine(Format('  %s =l copy %%_var_%s', [PCharBase, AStmt.ArrayName]))
     else
       EmitLine(Format('  %s =l loadl %%_var_%s', [PCharBase, AStmt.ArrayName]));
+    if AStmt.IsVarParam then
+    begin
+      { var/out param: the slot holds the ADDRESS of the caller's variable,
+        which in turn holds the char pointer — one extra dereference. }
+      ElemPtr := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [ElemPtr, PCharBase]));
+      PCharBase := ElemPtr;
+      ElemPtr := AllocTemp();
+    end;
     EmitLine(Format('  %s =l extuw %s', [IdxL, IdxW]));
     EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, IdxL]));
     EmitLine(Format('  storeb %s, %s', [ElemVal, ElemPtr]));
@@ -12998,6 +13081,15 @@ begin
       EmitLine(Format('  %s =l copy %%_var_%s', [PCharBase, AStmt.ArrayName]))
     else
       EmitLine(Format('  %s =l loadl %%_var_%s', [PCharBase, AStmt.ArrayName]));
+    if AStmt.IsVarParam then
+    begin
+      { var/out param: the slot holds the ADDRESS of the caller's variable,
+        which in turn holds the data pointer — one extra dereference. }
+      ElemPtr := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [ElemPtr, PCharBase]));
+      PCharBase := ElemPtr;
+      ElemPtr := AllocTemp();
+    end;
     IdxW    := EmitExpr(AStmt.IndexExpr);
     IdxL    := AllocTemp();
     Offset  := AllocTemp();
@@ -13091,6 +13183,16 @@ begin
         [Adj, PCharBase, AStmt.ImplicitFieldInfo.Offset]));
       PCharBase := Adj;
     end;
+    EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, Offset]));
+  end
+  else if AStmt.IsVarParam then
+  begin
+    { var/out param: the slot holds the ADDRESS of the caller's array —
+      load it before adding the element offset (adding to the slot address
+      itself would write into the parameter slot region). }
+    PCharBase := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s',
+      [PCharBase, VarRef(AStmt.ArrayName, AStmt.IsGlobal)]));
     EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, Offset]));
   end
   else

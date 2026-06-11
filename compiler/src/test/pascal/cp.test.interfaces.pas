@@ -739,9 +739,10 @@ var
   IR: string;
 begin
   IR := GenIR(SrcInterfaceVar);
-  { F is a program-level global — slots are $F_obj and $F_itab }
-  AssertTrue('obj slot for F', Pos('$F_obj', IR) > 0);
-  AssertTrue('itab slot for F', Pos('$F_itab', IR) > 0);
+  { F is a program-level global — ONE 16-byte data item based at $F_obj;
+    the itab half is addressed as $F_obj + 8 (no $F_itab symbol). }
+  AssertTrue('fat-pointer data item for F', Pos('$F_obj = { l 0, l 0 }', IR) > 0);
+  AssertTrue('itab half addressed at +8', Pos('add $F_obj, 8', IR) > 0);
 end;
 
 procedure TInterfaceTests.TestCodegen_InterfaceMethodCall_IndirectDispatch;
@@ -749,8 +750,9 @@ var
   IR: string;
 begin
   IR := GenIR(SrcInterfaceVar);
-  { Interface dispatch loads the itab pointer and calls indirectly }
-  AssertTrue('loads itab pointer', Pos('$F_itab', IR) > 0);
+  { Interface dispatch loads the itab pointer (global: $F_obj + 8) and
+    calls indirectly. }
+  AssertTrue('addresses itab half', Pos('add $F_obj, 8', IR) > 0);
   AssertTrue('indirect call via register', Pos('call %', IR) > 0);
 end;
 
@@ -942,11 +944,12 @@ begin
     _F_obj and _F_itab are loaded for the read side and both _G_obj and
     _G_itab are stored on the write side. }
   IR := GenIR(SrcIntfToIntf);
-  { F, G are program-level globals — slots accessed via $F_obj, $F_itab etc. }
+  { F, G are program-level globals — ONE 16-byte item each, base label
+    $Name_obj with the itab half addressed as $Name_obj + 8. }
   AssertTrue('reads F_obj',  Pos('loadl $F_obj',   IR) > 0);
-  AssertTrue('reads F_itab', Pos('loadl $F_itab',  IR) > 0);
+  AssertTrue('addresses F itab half', Pos('add $F_obj, 8', IR) > 0);
   AssertTrue('writes G_obj', Pos('storel ', IR) > 0);
-  AssertTrue('writes G_itab slot', Pos('$G_itab', IR) > 0);
+  AssertTrue('addresses G itab half', Pos('add $G_obj, 8', IR) > 0);
 end;
 
 procedure TInterfaceTests.TestCodegen_InterfaceVar_ScopeExit_ReleasesObjOnly;
@@ -960,8 +963,8 @@ begin
     Check that scope-exit cleanup loads the obj slot for release. }
   AssertTrue('scope-exit loads obj slot of interface var',
     Pos('loadl $F_obj', IR) > 0);
-  AssertTrue('no StringRelease or direct free on itab slot',
-    Pos('loadl $F_itab', IR) > 0);  { itab is read during the method
+  AssertTrue('itab half read for dispatch but never released',
+    Pos('add $F_obj, 8', IR) > 0);  { itab is read during the method
                                             call path but never released. }
 end;
 
@@ -1138,8 +1141,9 @@ begin
   IR := GenIR(SrcInterfaceArgIdent);
   AssertTrue('loads _obj slot for ident arg',
     Pos('loadl $F_obj', IR) > 0);
-  AssertTrue('loads _itab slot for ident arg',
-    Pos('loadl $F_itab', IR) > 0);
+  { Global interfaces are one 16-byte item; the itab half is $F_obj + 8. }
+  AssertTrue('addresses the itab half for ident arg',
+    Pos('add $F_obj, 8', IR) > 0);
   AssertTrue('calls UseIntf',
     Pos('call $UseIntf', IR) > 0);
 end;
@@ -1152,21 +1156,25 @@ begin
     alloc both local halves — not a single `w %_par_X` slot. }
   AssertTrue('method signature splits param into obj + itab',
     Pos('l %_par_X_obj, l %_par_X_itab', IR) > 0);
-  AssertTrue('allocs local obj slot for the param',
-    Pos('%_var_X_obj =l alloc8', IR) > 0);
-  AssertTrue('allocs local itab slot for the param',
-    Pos('%_var_X_itab =l alloc8', IR) > 0);
+  { The param's fat pointer is ONE contiguous 16-byte alloc whose base is
+    the _obj slot; the _itab name is derived at +8. }
+  AssertTrue('allocs contiguous fat-pointer block for the param',
+    Pos('%_var_X_obj =l alloc8 16', IR) > 0);
+  AssertTrue('derives the itab slot at obj + 8',
+    Pos('%_var_X_itab =l add %_var_X_obj, 8', IR) > 0);
 end;
 
 procedure TInterfaceTests.TestCodegen_MethodInterfaceArg_PassesBothSlots;
 var IR: string;
 begin
   IR := GenIR(SrcMethodInterfaceParam);
-  { The method call site must pass both halves of the caller's fat pointer. }
+  { The method call site must pass both halves of the caller's fat pointer.
+    Global interfaces are ONE 16-byte data item ($F_obj): the itab half has
+    no symbol of its own and is addressed as $F_obj + 8. }
   AssertTrue('passes _obj slot at the method call site',
     Pos('loadl $F_obj', IR) > 0);
-  AssertTrue('passes _itab slot at the method call site',
-    Pos('loadl $F_itab', IR) > 0);
+  AssertTrue('addresses the itab half at $F_obj + 8',
+    Pos('add $F_obj, 8', IR) > 0);
 end;
 
 { Regression (issue #64): inside a method body, an interface-typed field
@@ -1367,9 +1375,11 @@ procedure TInterfaceTests.TestCodegen_InterfacePropertyRead_DispatchesGetter;
 var IR: string;
 begin
   IR := GenIR(SrcIntfProperty);
-  { Property read lowers to an itab-dispatched getter: the itab slot is
-    loaded and called indirectly — the IR must load from the _itab slot. }
-  AssertTrue('reads receiver itab slot', Pos('_itab', IR) > 0);
+  { Property read lowers to an itab-dispatched getter: the itab half of the
+    receiver's fat pointer is addressed (locals keep a _itab slot name;
+    global receivers compute $Name_obj + 8) and called indirectly. }
+  AssertTrue('reads receiver itab half',
+    (Pos('_itab', IR) > 0) or (Pos('_obj, 8', IR) > 0));
   AssertTrue('indirect call through function pointer temp',
     Pos('=w call %', IR) > 0);
 end;

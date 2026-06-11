@@ -378,6 +378,10 @@ type
     IndexExpr: TASTExpr;  { owned }
     ValueExpr: TASTExpr;  { owned }
     IsGlobal: Boolean;    { set by uSemantic }
+    IsVarParam: Boolean;  { set by uSemantic — ArrayName is a var/out
+                            parameter, so the local slot holds the ADDRESS
+                            of the caller's variable; codegen needs one
+                            extra dereference to reach the array }
     [Unretained] ResolvedArrayType: TTypeDesc;  { set by uSemantic; not owned }
     IsImplicitSelf: Boolean;  { set by uSemantic — ArrayName is an array-typed field of Self }
     [Unretained] ImplicitFieldInfo: TFieldInfo;  { non-owned — the Self field; set with IsImplicitSelf }

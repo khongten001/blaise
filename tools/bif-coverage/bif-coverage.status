@@ -183,6 +183,7 @@ TStaticSubscriptAssign.ArrayName  serialise
 TStaticSubscriptAssign.IndexExpr  serialise
 TStaticSubscriptAssign.ValueExpr  serialise
 TStaticSubscriptAssign.IsGlobal  safe
+TStaticSubscriptAssign.IsVarParam  safe
 TStaticSubscriptAssign.IsImplicitSelf  safe
 
 # TPointerWriteStmt (uAST.pas:388)

@@ -9528,6 +9528,7 @@ begin
   if Sym.TypeDesc.Kind = tyPChar then
   begin
     AStmt.IsGlobal := Sym.IsGlobal;
+    AStmt.IsVarParam := Sym.Kind = skVarParameter;
     AStmt.ResolvedArrayType := FTable.TypePChar;
     IdxType := AnalyseExpr(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
@@ -9539,6 +9540,7 @@ begin
   if Sym.TypeDesc.Kind = tyDynArray then
   begin
     AStmt.IsGlobal          := Sym.IsGlobal;
+    AStmt.IsVarParam        := Sym.Kind = skVarParameter;
     AStmt.ResolvedArrayType := Sym.TypeDesc;
     IdxType := AnalyseExpr(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
@@ -9554,6 +9556,7 @@ begin
       AStmt.Line, AStmt.Col);
   ArrType := TStaticArrayTypeDesc(Sym.TypeDesc);
   AStmt.IsGlobal := Sym.IsGlobal;
+  AStmt.IsVarParam := Sym.Kind = skVarParameter;
   AStmt.ResolvedArrayType := ArrType;
   IdxType := AnalyseExpr(AStmt.IndexExpr);
   if not IdxType.IsNumeric() then

@@ -262,6 +262,7 @@ type
       field, e.g. H.G.Greet()), obj/itab are loaded from that field's contiguous
       fat pointer instead and AObjName is ignored. }
     procedure EmitInterfaceCall(const AObjName: string; AIsGlobal: Boolean;
+                                AIsVarParam: Boolean;
                                 AIntf: TInterfaceTypeDesc;
                                 const AMethName: string; AArgs: TObjectList;
                                 AObjExpr: TASTExpr = nil);
@@ -1806,6 +1807,7 @@ end;
   by one for Self in %rdi), set %rdi := obj, then `callq *%r11`. }
 procedure TX86_64Backend.EmitInterfaceCall(const AObjName: string;
                                            AIsGlobal: Boolean;
+                                           AIsVarParam: Boolean;
                                            AIntf: TInterfaceTypeDesc;
                                            const AMethName: string;
                                            AArgs: TObjectList);
@@ -1904,6 +1906,14 @@ begin
     Self.EmitInterfaceFieldAddr(TFieldAccessExpr(AObjExpr), '%r10');
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
+  end
+  else if AIsVarParam then
+  begin
+    { var/out interface param receiver: the slot holds the address of the
+      caller's contiguous fat pointer — obj at +0, itab at +8. }
+    Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(AObjName)]));
+    Self.Emit(#9'movq 8(%r10), %rax');
+    Self.Emit(#9'movq (%r10), %r10');
   end
   else
   begin
@@ -2308,10 +2318,15 @@ begin
 
   { sret interface Result: the Result slot holds a pointer to the caller's
     16-byte buffer.  Dereference it into %r15 so that (%r15)=obj, 8(%r15)=itab. }
-  if FSretFunc and SameText(AAsgn.Name, 'Result') then
+  if (FSretFunc and SameText(AAsgn.Name, 'Result')) or AAsgn.IsVarParam then
   begin
+    { Both shapes hold a POINTER to the caller's 16-byte fat-pointer block:
+      the sret Result slot, or a var/out interface param slot. }
     Self.Emit(#9'pushq %r15');
-    Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('Result')]));
+    if AAsgn.IsVarParam then
+      Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand(AAsgn.Name)]))
+    else
+      Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('Result')]));
     ObjOp  := '(%r15)';
     ItabOp := '8(%r15)';
     if AAsgn.Expr.ResolvedType.Kind = tyClass then
@@ -4172,7 +4187,10 @@ begin
       if FSretFunc and (TIdentExpr(AExpr).Name = 'Result') then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
       else if Self.IsLocal(TIdentExpr(AExpr).Name) and
-              (TIdentExpr(AExpr).ParamMode in [pmRecordValue, pmStaticArrayValue]) then
+              (TIdentExpr(AExpr).ParamMode <> pmNone) then
+        { Any param mode: the slot holds the record/array ADDRESS (value
+          record/static-array params are ABI by-ref; var/out params hold
+          the caller variable's address, which IS the aggregate). }
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
       else if Self.IsLocal(TIdentExpr(AExpr).Name) then
         Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(TIdentExpr(AExpr).Name)]))
@@ -5473,7 +5491,7 @@ begin
      TFieldAccessExpr(AExpr).IsInterfaceCall then
   begin
     FAE := TFieldAccessExpr(AExpr);
-    Self.EmitInterfaceCall(FAE.RecordName, FAE.IsGlobal,
+    Self.EmitInterfaceCall(FAE.RecordName, FAE.IsGlobal, FAE.IsVarParam,
       TInterfaceTypeDesc(FAE.ResolvedClassType), FAE.FieldName, nil);
     if (FAE.ResolvedType <> nil) and
        not (FAE.ResolvedType.Kind in [tyInt64, tyUInt64, tyPointer, tyClass,
@@ -6268,7 +6286,7 @@ begin
       H.G.Greet()), ACall.ObjectName is empty — pass ACall.ObjExpr so the obj/
       itab are loaded from the field's fat pointer rather than bogus _obj/_itab
       operands. }
-    Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal,
+    Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal, ACall.IsVarParam,
       TInterfaceTypeDesc(ACall.ResolvedClassType), ACall.Name, ACall.Args,
       ACall.ObjExpr);
     Exit;
@@ -6576,6 +6594,11 @@ begin
     else if (AArg is TIdentExpr) and (TIdentExpr(AArg).ConstArraySymbol <> '') then
       Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
         [NativeMangle(TIdentExpr(AArg).ConstArraySymbol)]))
+    else if (AArg is TIdentExpr) and (AArg.ResolvedType <> nil) and
+            (AArg.ResolvedType.Kind = tyInterface) then
+      { Global interface: there is no bare Name symbol — the 16-byte fat
+        pointer block starts at the Name_obj label. }
+      Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax', [TIdentExpr(AArg).Name]))
     else if AArg is TIdentExpr then
       Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AArg).Name]))
     else
@@ -6746,7 +6769,7 @@ begin
       Self.EmitInterfaceFieldCall(ACall.ImplicitBaseInfo,
         TInterfaceTypeDesc(ACall.ResolvedClassType), ACall.Name, ACall.Args)
     else
-      Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal,
+      Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal, ACall.IsVarParam,
         TInterfaceTypeDesc(ACall.ResolvedClassType), ACall.Name, ACall.Args,
         ACall.ObjExpr);
     Exit;
@@ -9252,7 +9275,7 @@ begin
       IntfArgs := TObjectList.Create(False);
       try
         IntfArgs.Add(FA.Expr);
-        Self.EmitInterfaceCall(FA.RecordName, FA.IsGlobal,
+        Self.EmitInterfaceCall(FA.RecordName, FA.IsGlobal, FA.IsVarParam,
           TInterfaceTypeDesc(FA.IntfWriteDesc), FA.FieldName, IntfArgs);
       finally
         IntfArgs.Free();
@@ -9943,6 +9966,9 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
+      if SSA.IsVarParam then
+        { var/out param: slot -> caller var -> char pointer. }
+        Self.Emit(#9'movq (%rcx), %rcx');
       Self.Emit(#9'addq %rax, %rcx');
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'movb %al, (%rcx)');
@@ -9968,7 +9994,12 @@ begin
           Self.Emit(#9'movq (%rcx), %rcx');
         end
         else if Self.IsLocal(SSA.ArrayName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
+        begin
+          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]));
+          if SSA.IsVarParam then
+            { var/out param: slot -> caller var -> data pointer. }
+            Self.Emit(#9'movq (%rcx), %rcx');
+        end
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
         Self.Emit(#9'addq %rcx, %rax');
@@ -9995,7 +10026,12 @@ begin
         Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if Self.IsLocal(SSA.ArrayName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
+      begin
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]));
+        if SSA.IsVarParam then
+          { var/out param: slot -> caller var -> data pointer. }
+          Self.Emit(#9'movq (%rcx), %rcx');
+      end
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
       Self.Emit(#9'addq %rcx, %rax');
@@ -10069,6 +10105,9 @@ begin
         if SSA.ImplicitFieldInfo.Offset > 0 then
           Self.Emit(Format(#9'addq $%d, %%rcx', [SSA.ImplicitFieldInfo.Offset]));
       end
+      else if SSA.IsVarParam then
+        { var/out param: the slot HOLDS the caller array's address. }
+        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
       else if Self.IsLocal(SSA.ArrayName) then
         Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
       else
@@ -10098,6 +10137,9 @@ begin
       if SSA.ImplicitFieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [SSA.ImplicitFieldInfo.Offset]));
     end
+    else if SSA.IsVarParam then
+      { var/out param: the slot HOLDS the caller array's address. }
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
     else if Self.IsLocal(SSA.ArrayName) then
       Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
     else
@@ -10639,14 +10681,17 @@ begin
     Arg := TASTExpr(AArgs.Items[I]);
     IsOA := (ADecl <> nil) and (I < ADecl.Params.Count) and
             TMethodParam(ADecl.Params.Items[I]).IsOpenArray;
+    IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
+             TMethodParam(ADecl.Params.Items[I]).IsVarParam;
     ParamType := nil;
     if (ADecl <> nil) and (I < ADecl.Params.Count) then
       ParamType := TMethodParam(ADecl.Params.Items[I]).ResolvedType;
     if ParamType = nil then
       ParamType := Arg.ResolvedType;
-    if IsFloatFamily(ParamType) then
+    if IsFloatFamily(ParamType) and not IsVar then
       HasFloat := True;
-    if IsOA or ((ParamType <> nil) and (ParamType.Kind = tyInterface)) then
+    if IsOA or ((not IsVar) and (ParamType <> nil) and
+                (ParamType.Kind = tyInterface)) then
       Inc(SlotCount, 2)
     else
       Inc(SlotCount);
@@ -10775,6 +10820,9 @@ begin
         else if (Arg is TIdentExpr) and Self.IsLocal(TIdentExpr(Arg).Name) then
           Self.Emit(Format(#9'leaq %s, %%rax',
             [Self.VarOperand(TIdentExpr(Arg).Name)]))
+        else if (Arg is TIdentExpr) and (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyInterface) then
+          Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax', [TIdentExpr(Arg).Name]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
@@ -10959,6 +11007,9 @@ begin
         else if (Arg is TIdentExpr) and (TIdentExpr(Arg).ConstArraySymbol <> '') then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [NativeMangle(TIdentExpr(Arg).ConstArraySymbol)]))
+        else if (Arg is TIdentExpr) and (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyInterface) then
+          Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax', [TIdentExpr(Arg).Name]))
         else if Arg is TIdentExpr then
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [TIdentExpr(Arg).Name]));
@@ -11077,7 +11128,8 @@ begin
           end;
           Inc(SlotOff, 8);
         end
-        else if (ParamType <> nil) and (ParamType.Kind = tyInterface) then
+        else if (ParamType <> nil) and (ParamType.Kind = tyInterface) and
+                not IsVar then
         begin
           if IntIdx < 6 then
           begin
@@ -12177,11 +12229,14 @@ begin
         Inc(XmmIdx);
       end;
     end
-    else if (P.ResolvedType <> nil) and (P.ResolvedType.Kind = tyInterface) then
+    else if (P.ResolvedType <> nil) and (P.ResolvedType.Kind = tyInterface) and
+            not P.IsVarParam then
     begin
       { Interface param: spill obj register into the 16-byte slot base,
         itab register into base+8.  IntfItabOperand computes Off+8 from the
-        frame entry, which lands correctly because AddSlot reserved 16 bytes. }
+        frame entry, which lands correctly because AddSlot reserved 16 bytes.
+        A var/out interface param arrives as ONE pointer (the caller's fat
+        pointer address) and is spilled by the IsVarParam branch below. }
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',

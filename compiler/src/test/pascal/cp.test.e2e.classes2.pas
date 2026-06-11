@@ -97,6 +97,14 @@ type
     { var Double param (pointer arrives in an int register, not xmm) and
       captured float read/write through the _cap_ slot. }
     procedure TestRun_VarParamFloat_CapturedFloat;
+    { var-param dynamic array: element writes and SetLength must reach the
+      caller's array (slot -> caller var -> data pointer). }
+    procedure TestRun_VarParamDynArray_WriteAndGrow;
+    { var-param static array element write and var-param PChar byte write. }
+    procedure TestRun_VarParamStaticArray_PChar;
+    { var-param interface: method dispatch and reassignment through the
+      var param must reach the caller's variable. }
+    procedure TestRun_VarParamInterface_DispatchAndReassign;
   end;
 
 implementation
@@ -1512,6 +1520,125 @@ procedure TE2EClasses2Tests.TestRun_VarParamFloat_CapturedFloat;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcVarParamFloat, '2.5' + LE + '4' + LE, 0);
+end;
+
+const
+  SrcVarParamDynArr = '''
+    program P;
+    type
+      TIntArr = array of Integer;
+    procedure MutArr(var A: TIntArr);
+    begin
+      writeln(A[1]);
+      A[2] := 99;
+    end;
+    procedure GrowArr(var A: TIntArr);
+    begin
+      SetLength(A, 6);
+      A[5] := 55;
+    end;
+    var
+      Arr: TIntArr;
+      I: Integer;
+    begin
+      SetLength(Arr, 4);
+      for I := 0 to 3 do
+        Arr[I] := I * 10;
+      MutArr(Arr);
+      writeln(Arr[2]);
+      GrowArr(Arr);
+      writeln(Length(Arr), ' ', Arr[5]);
+    end.
+    ''';
+
+  SrcVarParamSAPChar = '''
+    program P;
+    type
+      TFive = array[0..4] of Integer;
+    procedure MutSA(var A: TFive);
+    begin
+      writeln(A[1]);
+      A[2] := 77;
+    end;
+    procedure MutPC(var P: PChar);
+    begin
+      P[0] := Chr(88);
+    end;
+    var
+      SA: TFive;
+      Buf: string;
+      PC: PChar;
+      I: Integer;
+    begin
+      for I := 0 to 4 do
+        SA[I] := I * 10;
+      MutSA(SA);
+      writeln(SA[2]);
+      Buf := Chr(97) + Chr(98) + Chr(99);
+      PC := PChar(Buf);
+      MutPC(PC);
+      writeln(Buf);
+    end.
+    ''';
+
+  SrcVarParamIntf = '''
+    program P;
+    type
+      IGreeter = interface
+        procedure Greet;
+      end;
+      THello = class(TObject, IGreeter)
+        FCount: Integer;
+        procedure Greet;
+        begin
+          FCount := FCount + 1;
+          writeln('hello ', FCount);
+        end;
+      end;
+    procedure UseIntf(var G: IGreeter);
+    begin
+      G.Greet();
+    end;
+    procedure Swap(var G: IGreeter; H2: THello);
+    begin
+      G := H2;
+    end;
+    var
+      H, HB: THello;
+      G: IGreeter;
+    begin
+      H := THello.Create();
+      HB := THello.Create();
+      HB.FCount := 100;
+      G := H;
+      UseIntf(G);
+      UseIntf(G);
+      writeln(H.FCount);
+      Swap(G, HB);
+      UseIntf(G);
+      writeln(HB.FCount);
+    end.
+    ''';
+
+procedure TE2EClasses2Tests.TestRun_VarParamDynArray_WriteAndGrow;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcVarParamDynArr,
+    '10' + LE + '99' + LE + '6 55' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_VarParamStaticArray_PChar;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcVarParamSAPChar,
+    '10' + LE + '77' + LE + 'Xbc' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_VarParamInterface_DispatchAndReassign;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcVarParamIntf,
+    'hello 1' + LE + 'hello 2' + LE + '2' + LE + 'hello 101' + LE + '101' + LE, 0);
 end;
 
 initialization
