@@ -70,6 +70,7 @@ type
     procedure EmitAllTypes;
     procedure EmitGlobalVars;
     procedure EmitFunctionScopes;
+    function MangledClassSym(const AClassName: string): string;
     procedure EmitFunctionScopesFromFacts;
     procedure EmitFactParameter(AVar: TDbgVar; var ADeclIdx: Integer);
     procedure EmitFactLocalVar(AVar: TDbgVar; AScopeID: Integer;
@@ -447,6 +448,40 @@ begin
   EmitFields(AType);
 end;
 
+function TOPDFEmitter.MangledClassSym(const AClassName: string): string;
+var
+  Sym:   TSymbol;
+  Owner: string;
+  I:     Integer;
+  Ch:    string;
+  Pfx:   string;
+begin
+  Pfx := '';
+  if (FProgram <> nil) and (FProgram.SymbolTable <> nil) then
+  begin
+    Sym := FProgram.SymbolTable.Lookup(AClassName);
+    if Sym <> nil then
+    begin
+      Owner := Sym.OwningUnit;
+      if (Owner <> '') and
+         not SameText(Owner, FProgram.Name) and
+         not SameText(Owner, 'System') and
+         not ((Length(Owner) >= 4) and SameText(Copy(Owner, 0, 4), 'rtl.')) and
+         not ((Length(Owner) >= 7) and SameText(Copy(Owner, 0, 7), 'blaise_')) then
+      begin
+        for I := 0 to Length(Owner) - 1 do
+        begin
+          Ch := Copy(Owner, I, 1);
+          if Ch = '.' then Pfx := Pfx + '_'
+          else             Pfx := Pfx + Ch;
+        end;
+        Pfx := Pfx + '_';
+      end;
+    end;
+  end;
+  Result := Pfx + AClassName;
+end;
+
 procedure TOPDFEmitter.EmitClass(AType: TRecordTypeDesc);
 var
   CName, ParentName: string;
@@ -485,7 +520,7 @@ begin
   L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
   L('    .int  ' + IntToStr(ParentID) + '  # ParentTypeID');
   if AType.HasVTable() then
-    L('    .quad vtable_' + CName + '  # VMTAddress')
+    L('    .quad vtable_' + MangledClassSym(CName) + '  # VMTAddress')
   else
     L('    .quad 0  # VMTAddress (no vtable)');
   L('    .int  ' + IntToStr(AType.TotalSize()) + '  # InstanceSize');
@@ -901,7 +936,7 @@ begin
         L('    .quad 0  # ReadAddr (field not found)');
     end
     else if ReadType = PAT_METHOD then
-      L('    .quad ' + AClass.Name + '_' + PI.ReadMethod + '  # ReadAddr (getter)')
+      L('    .quad ' + MangledClassSym(AClass.Name) + '_' + PI.ReadMethod + '  # ReadAddr (getter)')
     else
       L('    .quad 0  # ReadAddr (none)');
 
@@ -915,7 +950,7 @@ begin
         L('    .quad 0  # WriteAddr (field not found)');
     end
     else if WriteType = PAT_METHOD then
-      L('    .quad ' + AClass.Name + '_' + PI.WriteMethod + '  # WriteAddr (setter)')
+      L('    .quad ' + MangledClassSym(AClass.Name) + '_' + PI.WriteMethod + '  # WriteAddr (setter)')
     else
       L('    .quad 0  # WriteAddr (none)');
 

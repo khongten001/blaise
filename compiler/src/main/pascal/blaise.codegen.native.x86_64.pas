@@ -3221,11 +3221,12 @@ procedure TX86_64Backend.DbgRecordSlot(const AName: string; AType: TTypeDesc;
 begin
   if FDbgCur = nil then Exit;
   { Skip internal companion/bookkeeping slots: capture pointers, exception
-    frames, open-array highs, record-param data shadows. }
+    frames, open-array highs.  '_data' record-param shadows are kept —
+    DbgMarkParams presents them AS the parameter (the shadow holds the
+    callee's inline record copy, which is what a debugger should show). }
   if AName = '' then Exit;
   if AName[0] = '_' then Exit;
   if (Length(AName) > 5) and (Copy(AName, Length(AName) - 5, 5) = '_high') then Exit;
-  if (Length(AName) > 5) and (Copy(AName, Length(AName) - 5, 5) = '_data') then Exit;
   FDbgCur.AddVar(AName, AType, AOffset);
 end;
 
@@ -3234,11 +3235,24 @@ var
   I: Integer;
   P: TMethodParam;
   V: TDbgVar;
+  DV: TDbgVar;
+  Sym: TSymbol;
 begin
   if (FDbgCur = nil) or (ADecl = nil) then Exit;
   V := FDbgCur.FindVar('Self');
   if V <> nil then
+  begin
     V.IsParam := True;
+    { Type Self as the owning class so the debugger can drill its fields
+      (the slot holds the instance pointer; pdr derefs class types). }
+    if (V.TypeDesc = nil) and (ADecl.OwnerTypeName <> '') and
+       (FSymTable <> nil) then
+    begin
+      Sym := FSymTable.Lookup(ADecl.OwnerTypeName);
+      if (Sym <> nil) and (Sym.TypeDesc <> nil) then
+        V.TypeDesc := Sym.TypeDesc;
+    end;
+  end;
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[I]);
@@ -3247,6 +3261,22 @@ begin
     V.IsParam := True;
     V.IsVarParam := P.IsVarParam;
     V.IsConstParam := P.IsConstParam;
+    { Value record/static-array params: the named slot holds an ABI pointer;
+      the callee's inline copy lives in the '_data' shadow slot.  Present
+      the shadow AS the parameter — its fields are inline at known offsets,
+      which is what field drilldown needs. }
+    DV := FDbgCur.FindVar(P.ParamName + '_data');
+    if DV <> nil then
+    begin
+      FDbgCur.Vars.Delete(FDbgCur.Vars.IndexOf(V));   { drop the raw pointer slot }
+      DV.Name := P.ParamName;
+      DV.IsParam := True;
+      DV.IsVarParam := P.IsVarParam;
+      DV.IsConstParam := P.IsConstParam;
+    end
+    else if (V.TypeDesc = nil) and (P.ResolvedType <> nil) and
+            not P.IsVarParam then
+      V.TypeDesc := P.ResolvedType;
   end;
 end;
 

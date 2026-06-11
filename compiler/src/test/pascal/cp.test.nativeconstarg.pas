@@ -58,6 +58,9 @@ type
       records exact frame offsets; normal builds stay label-free. }
     procedure TestOpdf_StatementLabels_AndFacts;
     procedure TestOpdf_Off_NoDbgLabels;
+    { Self is typed as the owning class; value record params present the
+      '_data' shadow slot (the inline copy) so field drilldown works. }
+    procedure TestOpdf_Facts_SelfAndRecordParamTyping;
   end;
 
 implementation
@@ -562,6 +565,65 @@ begin
       end.
       ''');
   AssertTrue('no debug labels in a normal build', Pos('.Ldbg_', Asm_) < 0);
+end;
+
+procedure TNativeConstArgTests.TestOpdf_Facts_SelfAndRecordParamTyping;
+var
+  L:    TLexer;
+  P:    TParser;
+  Prog: TProgram;
+  A:    TSemanticAnalyser;
+  CG:   TCodeGenNative;
+  F:    TDbgFunc;
+  V:    TDbgVar;
+  I:    Integer;
+begin
+  L := TLexer.Create('''
+      program P;
+      type
+        TPt = record X, Y: Integer; end;
+        TW = class
+          N: Integer;
+          procedure Track(Q: TPt);
+        end;
+      procedure TW.Track(Q: TPt);
+      begin
+        N := N + Q.X;
+      end;
+      var W: TW; G: TPt;
+      begin
+        W := TW.Create();
+        W.Track(G);
+      end.
+      ''');
+  P := TParser.Create(L);
+  Prog := P.Parse();
+  P.Free(); L.Free();
+  A := TSemanticAnalyser.Create();
+  A.Analyse(Prog);
+  CG := TCodeGenNative.Create();
+  CG.SetTarget(HostTarget());
+  CG.SetOpdfMode(True);
+  CG.SetSymbolTable(Prog.SymbolTable);
+  CG.Generate(Prog);
+  A.Free();
+  F := nil;
+  for I := 0 to CG.GetDebugFacts().Funcs.Count - 1 do
+    if TDbgFunc(CG.GetDebugFacts().Funcs.Items[I]).SymbolName = 'TW_Track' then
+      F := TDbgFunc(CG.GetDebugFacts().Funcs.Items[I]);
+  AssertNotNil('Track scope recorded', F);
+  V := F.FindVar('Self');
+  AssertNotNil('Self recorded', V);
+  AssertNotNil('Self typed as the owning class', V.TypeDesc);
+  AssertEquals('Self type', 'TW', V.TypeDesc.Name);
+  V := F.FindVar('Q');
+  AssertNotNil('record param recorded', V);
+  AssertTrue('record param is a param', V.IsParam);
+  AssertNotNil('record param typed', V.TypeDesc);
+  AssertEquals('record param presents the inline copy type', 'TPt', V.TypeDesc.Name);
+  AssertTrue('inline copy below the raw pointer slot', V.RbpOffset < -16);
+  Prog.Free();
+  CG.Free();
 end;
 
 initialization

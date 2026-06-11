@@ -962,7 +962,13 @@ begin
         CG.AppendProgram(Prog);
       end
       else
+      begin
+        { Unit-less program: the backend still needs the symbol table for
+          class symbol prefixes and OPDF Self typing; the analyser (the
+          table's uses-chain provider) outlives codegen here. }
+        CG.SetSymbolTable(Prog.SymbolTable);
         CG.Generate(Prog);
+      end;
       IR := CG.GetOutput();
       { CG (ICodeGen) is released by ARC at program scope exit.  We avoid an
         explicit `CG := nil` here: the stage-1 release binary mis-compiles an
