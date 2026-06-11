@@ -4850,11 +4850,20 @@ begin
     if FC.IsIndirectCall then
     begin
       { Bare function-pointer call: load the pointer from the variable slot
-        and dispatch via callq *%r10. }
-      Self.EmitCallIndirect(
-        Self.VarOperand(FC.Name),   { local slot or global RIP-relative }
-        TProceduralTypeDesc(FC.ResolvedProcType),
-        FC.Args);
+        and dispatch via callq *%r10.  Method pointers (of object) carry a
+        16-byte TMethod block — Data (Self) must be loaded from +8 and the
+        user args shifted right, exactly as in the statement path. }
+      if (FC.ResolvedProcType <> nil) and
+         TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr then
+        Self.EmitMethodPtrCall(
+          Self.VarOperand(FC.Name),
+          TProceduralTypeDesc(FC.ResolvedProcType),
+          FC.Args)
+      else
+        Self.EmitCallIndirect(
+          Self.VarOperand(FC.Name),   { local slot or global RIP-relative }
+          TProceduralTypeDesc(FC.ResolvedProcType),
+          FC.Args);
       { Normalise the return value width. }
       if FC.ResolvedType <> nil then
         Self.EmitNarrowToType(FC.ResolvedType);

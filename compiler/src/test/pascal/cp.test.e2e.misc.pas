@@ -98,6 +98,10 @@ type
     procedure TestRun_BitwiseNot_Int64;
     procedure TestRun_BitwiseNot_Bitmask;
     procedure TestRun_WriteLn_StdErr_NotOnStdout;
+
+    { function-of-object called through a variable must load Data (Self)
+      from the TMethod block and shift user args right. }
+    procedure TestRun_FunctionOfObject_IndirectCall;
   end;
 
 implementation
@@ -1253,6 +1257,39 @@ begin
     AssertTrue('[' + BName + '] fd not printed as integer prefix',
       Pos('2error', Output) = -1)
   end
+end;
+
+const
+  SrcFuncOfObjectIndirect = '''
+    program P;
+    type
+      TFn = function(N: Integer): Integer of object;
+      TC = class
+        FBase: Integer;
+        function AddBase(N: Integer): Integer;
+      end;
+    function TC.AddBase(N: Integer): Integer;
+    begin
+      Result := FBase + N;
+    end;
+    var
+      C: TC;
+      F: TFn;
+      X: Integer;
+    begin
+      C := TC.Create();
+      C.FBase := 100;
+      F := @C.AddBase;
+      writeln(F(23));
+      X := F(7) + F(8);
+      writeln(X);
+    end.
+    ''';
+
+procedure TE2EMiscTests.TestRun_FunctionOfObject_IndirectCall;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcFuncOfObjectIndirect, '123' + LE + '215' + LE, 0);
 end;
 
 initialization
