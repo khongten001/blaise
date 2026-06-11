@@ -10695,7 +10695,12 @@ begin
         L := AllocTemp();
         EmitLine(Format('  %s =%s %s %s', [L, QType, LoadInstr, T]));
         Exit(L);
-      end;
+      end
+      else
+        raise ECodeGenError.Create(Format(
+          'IsArrayAccess on non-array field ''%s'' (kind %d) at line %d',
+          [FldAccess.FieldName, Ord(FldAccess.FieldInfo.TypeDesc.Kind),
+           FldAccess.Line]));
     end
     else if FldAccess.PropRead <> nil then
     begin

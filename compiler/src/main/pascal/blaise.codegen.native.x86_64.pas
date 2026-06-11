@@ -5668,7 +5668,11 @@ begin
         Exit;
       Self.EmitLoadVar('(%rax)',
         TOpenArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType);
-    end;
+    end
+    else
+      raise ENativeCodeGenError.Create(Format(
+        'IsArrayAccess on non-array field ''%s'' (kind %d) at line %d',
+        [FAE.FieldName, Ord(FAE.FieldInfo.TypeDesc.Kind), FAE.Line]));
     Exit;
   end;
 
