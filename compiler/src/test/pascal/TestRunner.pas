@@ -131,7 +131,8 @@ uses
   cp.test.e2e.sepcompile,
   cp.test.threadvar,
   cp.test.config,
-  cp.test.assembler;
+  cp.test.assembler,
+  cp.test.linker;
 
 begin
   Halt(RunAll());
