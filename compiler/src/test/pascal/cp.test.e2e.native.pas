@@ -338,6 +338,9 @@ type
     { Class-receiver method call returning an interface (Obj.Make()) into
       local/global vars, sret Result, and an implicit-Self field. }
     procedure TestRun_Native_IntfFromClassMethod;
+    { Virtual method returning a record must dispatch through the vtable —
+      a static call would bind the base-class body. }
+    procedure TestRun_Native_RecReturnVirtualOverride;
     { M8b — interface-field := function-returning-interface (sret into field). }
     procedure TestRun_Native_IntfFieldFromFunc;
     { M8b — weak interface variable: _WeakAssign/_WeakClear instead of ARC. }
@@ -3178,6 +3181,9 @@ const
         function MakeVirt(N: Integer): IThing; virtual;
         procedure Fill(N: Integer);
       end;
+      TSubFactory = class(TFactory)
+        function MakeVirt(N: Integer): IThing; override;
+      end;
     function TThing.Tag(): Integer;
     begin
       Result := V
@@ -3192,6 +3198,10 @@ const
     function TFactory.MakeVirt(N: Integer): IThing;
     begin
       Result := Self.Make(N + 100)
+    end;
+    function TSubFactory.MakeVirt(N: Integer): IThing;
+    begin
+      Result := Self.Make(N + 200)
     end;
     procedure TFactory.Fill(N: Integer);
     begin
@@ -3214,7 +3224,10 @@ const
       G := Fac.MakeVirt(3);
       WriteLn(G.Tag());
       Fac.Fill(5);
-      WriteLn(Fac.F.Tag())
+      WriteLn(Fac.F.Tag());
+      Fac := TSubFactory.Create();
+      G := Fac.MakeVirt(3);
+      WriteLn(G.Tag())
     end.
     ''';
 
@@ -5323,7 +5336,42 @@ procedure TE2ENativeTests.TestRun_Native_IntfFromClassMethod;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcIntfFromClassMethod,
-    '1' + LE + '2' + LE + '103' + LE + '5' + LE, 0);
+    '1' + LE + '2' + LE + '103' + LE + '5' + LE + '203' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RecReturnVirtualOverride;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TPair = record A, B: Int64; end;
+      TBase = class
+        function Get(): TPair; virtual;
+      end;
+      TSub = class(TBase)
+        function Get(): TPair; override;
+      end;
+    function TBase.Get(): TPair;
+    begin
+      Result.A := 1;
+      Result.B := 2
+    end;
+    function TSub.Get(): TPair;
+    begin
+      Result.A := 10;
+      Result.B := 20
+    end;
+    var
+      B: TBase;
+      P: TPair;
+    begin
+      B := TSub.Create();
+      P := B.Get();
+      WriteLn(P.A, ' ', P.B)
+    end.
+    ''',
+    '10 20' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_IntfFieldFromFunc;

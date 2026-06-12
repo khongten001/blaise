@@ -357,6 +357,12 @@ type
       ACall is a TMethodCallExpr (args form) or a TFieldAccessExpr with
       IsInterfaceCall set (zero-arg form). }
     procedure EmitIntfSretDispatch(ACall: TASTExpr; const ASretAddr: string);
+    { Call target for a record/interface-returning method call: when the
+      method is virtual, emit the vptr + slot loads and return the loaded
+      function-pointer temp; otherwise return the static '$' symbol.
+      ASelfTemp must already hold the receiver instance pointer. }
+    function SretMethodCallTarget(AMDecl: TMethodDecl;
+      const ASelfTemp, AMethName: string): string;
     { Build the visible-argument fragment (', t %a, ...') for an itab
       dispatch site.  No TMethodParam list exists there — only the var-param
       flags recorded on the interface descriptor and each argument's
@@ -5224,6 +5230,31 @@ begin
   FlushPendingReleases(PMark);
 end;
 
+function TCodeGenQBE.SretMethodCallTarget(AMDecl: TMethodDecl;
+  const ASelfTemp, AMethName: string): string;
+var
+  VTblTemp: string;
+  SlotTemp: string;
+begin
+  if AMDecl.VTableSlot >= 0 then
+  begin
+    { Virtual dispatch: load vptr from instance[0], then the fptr from the
+      vtable.  Slot 0 of the vtable is typeinfo, so method N is at offset
+      (N+1)*8.  A static call here would bind the declaring class's body —
+      wrong for overrides, and a link error for virtual-abstract methods
+      (no body is emitted for them). }
+    VTblTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [VTblTemp, ASelfTemp]));
+    SlotTemp := AllocTemp();
+    EmitLine(Format('  %s =l add %s, %d',
+      [SlotTemp, VTblTemp, (AMDecl.VTableSlot + 1) * 8]));
+    Result := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [Result, SlotTemp]));
+  end
+  else
+    Result := '$' + MethodEmitName(AMDecl, AMDecl.OwnerTypeName, AMethName);
+end;
+
 procedure TCodeGenQBE.EmitRecordCallSret(AExpr: TASTExpr;
   const ASretAddr: string);
 var
@@ -5251,7 +5282,7 @@ begin
     begin
       SelfTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %%_var_Self', [SelfTemp]));
-      FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, FCallExpr.Name);
+      FuncName := SretMethodCallTarget(MDecl, SelfTemp, FCallExpr.Name);
       VisArgs  := Format('l %s', [SelfTemp]);
     end
     else
@@ -5320,7 +5351,7 @@ begin
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(MCallExpr.ObjectName, MCallExpr.IsGlobal)]));
     end;
-    FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, MCallExpr.Name);
+    FuncName := SretMethodCallTarget(MDecl, SelfTemp, MCallExpr.Name);
     VisArgs  := Format('l %s', [SelfTemp]);
     for I := 0 to MCallExpr.Args.Count - 1 do
     begin
@@ -5385,7 +5416,7 @@ begin
       EmitLine(Format('  %s =l loadl %s',
         [SelfTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
     end;
-    FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, FldAccess.FieldName);
+    FuncName := SretMethodCallTarget(MDecl, SelfTemp, FldAccess.FieldName);
     VisArgs  := Format('l %s', [SelfTemp]);
     EmitRecordReturnCallSite(FuncName, VisArgs, RetType, ASretAddr);
     FlushPendingReleases(PMark);
