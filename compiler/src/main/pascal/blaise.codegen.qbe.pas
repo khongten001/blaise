@@ -3846,7 +3846,9 @@ begin
      (AAssign.ResolvedLhsType.Kind = tyInterface) and
      (AAssign.Expr.ResolvedType <> nil) and
      (AAssign.Expr.ResolvedType.Kind = tyInterface) and
-     ((AAssign.Expr is TIdentExpr) or (AAssign.Expr is TFieldAccessExpr)) then
+     ((AAssign.Expr is TIdentExpr) or
+      (AAssign.Expr is TFieldAccessExpr) or
+      (AAssign.Expr is TStringSubscriptExpr)) then
   begin
     EmitInterfaceExprPair(AAssign.Expr, ObjTemp, ItabTemp);
     ObjAddr  := IntfObjAddr(AAssign.Name, AAssign.IsGlobal, AAssign.IsVarParam);
@@ -11724,6 +11726,25 @@ begin
     AItabTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [AItabTemp, ItabT]));
   end
+  else if (AExpr is TStringSubscriptExpr) and
+          (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+          (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyStaticArray) then
+  begin
+    { Interface element in a STATIC array: EmitStringSubscriptExpr's
+      static-array branch returns the contiguous element address when
+      the element type is tyInterface (obj at +0, itab at +8).  Same
+      layout as a record field — just a different address source.
+      Dynamic-array subscripts return a loaded VALUE, not an address,
+      so they must keep hitting the fail-loud else below until they
+      get their own handling. }
+    ObjT := EmitExpr(AExpr);
+    AObjTemp  := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [AObjTemp, ObjT]));
+    ItabT := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ItabT, ObjT]));
+    AItabTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [AItabTemp, ItabT]));
+  end
   else
     raise ECodeGenError.Create(
       'Unsupported interface expression form for argument passing: ' +
@@ -12776,6 +12797,15 @@ begin
     begin
       Exit(ElemPtr);
     end;
+    { Interface elements: the 16-byte fat pointer lives contiguously at
+      ElemPtr (obj at +0, itab at +8).  Return the address; consumers
+      (assignment to another interface, method dispatch, arg passing)
+      route through EmitInterfaceExprPair, which has a TStringSubscriptExpr
+      case that loads both halves from here. }
+    if SAT.ElementType.Kind = tyInterface then
+    begin
+      Exit(ElemPtr);
+    end;
     QLoad := LoadInstrFor(SAT.ElementType);
     QType := QbeTypeOf(SAT.ElementType);
     ByteVal := AllocTemp();
@@ -13057,6 +13087,10 @@ var
   ElemVal:    string;
   OldVal:     string;
   PCharBase:  string;
+  ObjTemp:    string;   { interface RHS obj slot }
+  ItabTemp:   string;   { interface RHS itab slot or itab name literal }
+  ItabPtr:    string;   { ElemPtr + 8, target of itab store }
+  IntfDesc:   TInterfaceTypeDesc;
 begin
   { PChar subscript write: P[I] := Integer — storeb at ptr + I.
     EmitByteRhs short-circuits Chr(N) so we store N directly instead of
@@ -13238,6 +13272,60 @@ begin
   begin
     ElemVal := EmitExpr(AStmt.ValueExpr);
     EmitRecordCopy(TRecordTypeDesc(ElemType), ElemPtr, ElemVal);
+    Exit;
+  end;
+  { Interface element: the slot is a contiguous 16-byte fat pointer
+    (obj at +0, itab at +8).  Three RHS shapes are supported, mirroring
+    EmitAssignment's iface-LHS branches:
+      class       — read class ptr as l, look up the itab via the
+                    LHS element interface's name (`$itab_<Class>_<Iface>`).
+      interface   — EmitInterfaceExprPair resolves obj/itab from the
+                    source's storage shape (split slots, contiguous
+                    field, contiguous array element).
+      nil literal — write 0 into both halves.
+    Without this special case the generic path below picks `storew`
+    (QbeTypeOf falls to 'w' for tyInterface) and emits a single-slot
+    store against the 16-byte slot, leaving itab uninitialised. }
+  if ElemType.Kind = tyInterface then
+  begin
+    if AStmt.ValueExpr is TNilLiteral then
+    begin
+      OldVal := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
+      EmitLine(Format('  storel 0, %s', [ElemPtr]));
+      ItabPtr := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [ItabPtr, ElemPtr]));
+      EmitLine(Format('  storel 0, %s', [ItabPtr]));
+      Exit;
+    end;
+    if (AStmt.ValueExpr.ResolvedType <> nil) and
+       (AStmt.ValueExpr.ResolvedType.Kind = tyClass) then
+    begin
+      { class → iface: itab name is `$itab_<ClassName>_<InterfaceName>`. }
+      IntfDesc := TInterfaceTypeDesc(ElemType);
+      ObjTemp  := EmitExpr(AStmt.ValueExpr);
+      ItabTemp := Format('$itab_%s_%s',
+        [QBEMangle(ClassSymName(TRecordTypeDesc(AStmt.ValueExpr.ResolvedType).Name)),
+         QBEMangle(IntfDesc.Name)]);
+    end
+    else
+      EmitInterfaceExprPair(AStmt.ValueExpr, ObjTemp, ItabTemp);
+    { ARC: addref new backing object, release the slot's prior obj.
+      A class RHS that already owns +1 (constructor or call result)
+      transfers its reference instead — mirroring EmitAssignment's
+      class->iface branch; an unconditional AddRef leaks. }
+    OldVal := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
+    if not (((AStmt.ValueExpr.ResolvedType <> nil) and
+             (AStmt.ValueExpr.ResolvedType.Kind = tyClass)) and
+            ExprOwnsRef(AStmt.ValueExpr)) then
+      EmitLine(Format('  call $_ClassAddRef(l %s)',  [ObjTemp]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
+    EmitLine(Format('  storel %s, %s', [ObjTemp, ElemPtr]));
+    ItabPtr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ItabPtr, ElemPtr]));
+    EmitLine(Format('  storel %s, %s', [ItabTemp, ItabPtr]));
     Exit;
   end;
   if ElemType.Kind in [tyByte, tyBoolean] then

@@ -63,6 +63,8 @@ type
     procedure TestCodegen_Class_Itab_Emitted;
     procedure TestCodegen_Itab_ContainsMethodPointer;
     procedure TestCodegen_InterfaceVar_AllocsTwoSlots;
+    procedure TestCodegen_InterfaceArrayElement_StoresFatPointer;
+    procedure TestCodegen_InterfaceArrayElement_ReadsFatPointer;
     procedure TestCodegen_InterfaceMethodCall_IndirectDispatch;
     procedure TestCodegen_InterfaceField_InRecord_NoUndefObjTemp;
     procedure TestCodegen_InterfaceField_InRecord_SizedSixteen;
@@ -294,6 +296,57 @@ const
           T := TFoo.Create();
           F := T;
           F.DoIt()
+        end.
+        ''';
+
+  { Write an interface into a static-array element.  Before the fix
+    the element-store fell through to the generic path which picked
+    storew (QbeTypeOf falls to 'w' for tyInterface), leaving itab
+    uninitialised and clobbering only the low 4 bytes of obj.  After:
+    the obj+itab pair is stored with two storel instructions. }
+  SrcInterfaceArrayElementWrite =
+    '''
+        program P;
+        type
+          IFoo = interface
+            procedure DoIt;
+          end;
+          TFoo = class(TObject, IFoo)
+            procedure DoIt;
+          end;
+        procedure TFoo.DoIt; begin end;
+        var
+          Reg: array[0..1] of IFoo;
+        procedure Register(AItem: IFoo);
+        begin
+          Reg[0] := AItem
+        end;
+        var T: TFoo;
+        begin
+          T := TFoo.Create();
+          Register(T)
+        end.
+        ''';
+
+  { Read an interface back out of a static-array element and assign
+    to another interface var.  Before the fix the subscript-read
+    path emitted `loadw` against the 16-byte slot and then `storel`
+    into the global LHS (which only has split _obj/_itab slots —
+    producing an undefined-symbol link error at the bare global
+    name).  After: the obj+itab halves are loaded from ElemPtr /
+    ElemPtr+8 and written into the LHS's split slots. }
+  SrcInterfaceArrayElementRead =
+    '''
+        program P;
+        type
+          IFoo = interface
+            procedure DoIt;
+          end;
+        var
+          Reg: array[0..1] of IFoo;
+          F:   IFoo;
+        begin
+          F := Reg[0]
         end.
         ''';
 
@@ -743,6 +796,40 @@ begin
     the itab half is addressed as $F_obj + 8 (no $F_itab symbol). }
   AssertTrue('fat-pointer data item for F', Pos('$F_obj = { l 0, l 0 }', IR) > 0);
   AssertTrue('itab half addressed at +8', Pos('add $F_obj, 8', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_InterfaceArrayElement_StoresFatPointer;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcInterfaceArrayElementWrite);
+  { Element store must use storel (fat-pointer halves), not storew. }
+  AssertTrue('element store uses storel',
+    Pos('storel', IR) > 0);
+  AssertFalse('element store must not use storew on a 16-byte fat slot',
+    Pos('storew %_t', IR) > 0);
+  { itab half is written at ElemPtr + 8 (computed via `add %, 8`). }
+  AssertTrue('itab store offset built via add %, 8',
+    Pos('add %', IR) > 0);
+end;
+
+procedure TInterfaceTests.TestCodegen_InterfaceArrayElement_ReadsFatPointer;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcInterfaceArrayElementRead);
+  { No mistyped loads or single-slot stores against the global LHS. }
+  AssertFalse('subscript read must not emit `=w loadl` (typed-w with 8-byte load)',
+    Pos('=w loadl', IR) > 0);
+  AssertFalse('LHS write must not emit storew %_t targeting the global iface',
+    Pos('storew %_t', IR) > 0);
+  { Both halves are written into the global LHS's contiguous fat-pointer
+    block: obj at $F_obj, itab at $F_obj + 8.  (Globals stopped using
+    split _obj/_itab slots when the contiguous layout landed.) }
+  AssertTrue('LHS obj store hits the fat-pointer block',
+    Pos(', $F_obj', IR) >= 0);
+  AssertTrue('LHS itab half addressed at +8',
+    Pos('add $F_obj, 8', IR) >= 0);
 end;
 
 procedure TInterfaceTests.TestCodegen_InterfaceMethodCall_IndirectDispatch;

@@ -30,6 +30,7 @@ type
     procedure TestRun_IMap_TOrderedDictionary_TryGetValue;
     procedure TestRun_IMap_SwapImplementation_SameCallSite;
     procedure TestRun_IMap_GenericDictInUnit_LinksAndRuns;
+    procedure TestRun_StaticArrayOfInterface_FatPointer;
   end;
 
 implementation
@@ -461,6 +462,61 @@ begin
     CompileAndRunWithUnit('genmapunit', UnitSrc, ProgSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('Get(answer) = 42', '42' + #10, Output);
+end;
+
+const
+  { Static array of interface: each element is a contiguous 16-byte fat
+    pointer (obj + itab).  Pins the codegen fix where element writes
+    stored only one slot (lost itab -> crash on dispatch) and element
+    reads loaded a single slot.  Covers: class -> element store,
+    dispatch through Arr[I], element -> interface-var copy, element ->
+    element copy, and nil store (release path). }
+  SrcStaticArrIface =
+    '''
+    program P;
+    type
+      IGreet = interface
+        function Greet: Integer;
+      end;
+      TA = class(IGreet)
+        function Greet: Integer;
+        begin
+          Result := 11
+        end;
+      end;
+      TB = class(IGreet)
+        function Greet: Integer;
+        begin
+          Result := 22
+        end;
+      end;
+    var
+      Arr: array[0..2] of IGreet;
+      G: IGreet;
+    begin
+      Arr[0] := TA.Create;
+      Arr[1] := TB.Create;
+      WriteLn(Arr[0].Greet());
+      WriteLn(Arr[1].Greet());
+      G := Arr[1];
+      WriteLn(G.Greet());
+      Arr[2] := Arr[0];
+      WriteLn(Arr[2].Greet());
+      Arr[0] := nil;
+      WriteLn(Arr[2].Greet());
+    end.
+    ''';
+
+procedure TE2EIMapTests.TestRun_StaticArrayOfInterface_FatPointer;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable() then begin Fail('<toolchain-missing>'); Exit end;
+  AssertTrue('compile+run', CompileAndRun(SrcStaticArrIface, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertTrue('output: ' + Output,
+    Pos('11' + #10 + '22' + #10 + '22' + #10 + '11' + #10 + '11', Output) >= 0);
 end;
 
 initialization
