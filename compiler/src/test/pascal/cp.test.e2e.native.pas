@@ -5953,13 +5953,8 @@ const
     procedure Check();
     var
       S: TFlags;
-      I: Integer;
     begin
-      I := 0;
-      if fA in S then I := I + 1;
-      if fB in S then I := I + 1;
-      if fC in S then I := I + 1;
-      WriteLn(I)
+      if S = [] then WriteLn('empty') else WriteLn('not-empty')
     end;
     begin
       Dirty();
@@ -6067,7 +6062,7 @@ end;
 procedure TE2ENativeTests.TestRun_ZeroInit_SetLocal;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertRunsOnAll(SrcZeroInit_SetLocal, '0' + LE, 0);
+  AssertRunsOnAll(SrcZeroInit_SetLocal, 'empty' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_ZeroInit_RecordWithMixedFields;
