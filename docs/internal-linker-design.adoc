@@ -1,0 +1,944 @@
+= Internal Linker Design
+:author: Graeme Geldenhuys
+:revdate: 2026-06-12
+:toc:
+:sectnums:
+
+== Motivation
+
+The Blaise compiler currently depends on an external C compiler driver (`cc` /
+`gcc` / `clang`) to link executables. This is the last remaining external
+toolchain dependency — the internal assembler and ELF object writer
+(`--assembler internal`) already eliminated the dependency on an external
+assembler. Replacing the linker completes the toolchain-independence goal:
+a single `blaise` binary that compiles Pascal source to a runnable executable
+with no external tools.
+
+Benefits:
+
+* **Simpler bootstrapping.** A self-contained compiler binary avoids the
+  chicken-and-egg problem of needing an external linker to build the linker.
+  Cold bootstrap reduces to: previous release binary → new binary. Done.
+* **Portable builds.** Users on minimal systems (containers, embedded, CI
+  images) do not need to install a C toolchain.
+* **Deterministic output.** The compiler controls every byte of the output
+  binary. No variation from different `cc` versions, CRT object versions,
+  or default flag differences across distributions.
+* **Faster builds.** Eliminating the fork+exec of `cc` (which itself forks
+  `collect2` → `ld`) removes ~50ms of process overhead per link.
+
+== Scope and Non-Goals
+
+=== In scope
+
+* Link `.o` files (from the internal assembler) and `.a` archives (the RTL)
+  into a dynamically-linked ELF executable on Linux x86-64.
+* Resolve relocations: `R_X86_64_PC32`, `R_X86_64_PLT32`, `R_X86_64_64`,
+  `R_X86_64_32S`, `R_X86_64_GOTPCREL`, `R_X86_64_TPOFF32`, and their
+  relaxable variants (`R_X86_64_GOTPCRELX`, `R_X86_64_REX_GOTPCRELX`).
+* Produce PIE executables (ET_DYN with PT_INTERP) — the same format `cc`
+  produces by default on modern Linux.
+* Emit a GOT for external data symbols and a PLT with eager binding
+  (`DT_FLAGS BIND_NOW`) for external function calls.
+* Emit `.rela.dyn` with `R_X86_64_RELATIVE` entries for absolute 64-bit
+  relocations in writable sections (vtable pointers, typeinfo, etc.) —
+  required for PIE because the load address is not known at link time.
+* Emit a `.dynamic` section with `DT_NEEDED` entries for `libc.so.6` (and
+  conditionally `libm.so.6` / `libpthread.so.0` for glibc < 2.34).
+* Handle TLS variables (`.tbss` and `.tdata` sections,
+  `R_X86_64_TPOFF32`, `PT_TLS` segment).
+* Merge `.init_array` / `.fini_array` sections and emit corresponding
+  `DT_INIT_ARRAY` / `DT_FINI_ARRAY` dynamic tags.
+* Merge CRT startup objects (`Scrt1.o`, `crti.o`, `crtn.o`) — these are
+  system-provided and supply `_start`, `.init`, and `.fini`.
+* Define linker-synthesised symbols: `_GLOBAL_OFFSET_TABLE_`,
+  `__bss_start`, `_edata`, `_end`, `__TMC_END__`.
+* Resolve weak undefined symbols (e.g. `__gmon_start__`,
+  `_ITM_registerTMCloneTable` from CRT objects) to address 0 without error.
+* Pass through OPDF debug sections (`.opdf.*`) from input objects into the
+  final executable, preserving the debug workflow for pdr.
+
+=== Not in scope (future work)
+
+* **Static linking** — linking libc statically (`-static`) requires pulling
+  in hundreds of libc `.o` files and resolving IFUNC dispatchers. The
+  internal linker links dynamically against `libc.so.6` (same as today).
+* **macOS / Mach-O linking** — macOS uses Mach-O, not ELF. The linker will
+  be structured to allow a future Mach-O backend, but this design covers
+  ELF only.
+* **Windows / PE-COFF linking** — Windows uses PE format with import
+  libraries. Deferred.
+* **Shared library output** — producing `.so` files. The compiler only
+  produces executables.
+* **Link-time optimisation (LTO)** — no IR-level linking.
+* **Linker scripts** — not needed for simple executables.
+* **`.eh_frame` merging** — CRT objects carry `.eh_frame` sections.  The
+  internal linker will pass them through unmerged (or drop them) rather than
+  implementing the `.eh_frame_hdr` binary-search table.  The compiler's own
+  exception handling uses `setjmp`/`longjmp`, not DWARF unwinding.
+
+== PIE Across Target Platforms
+
+The design targets PIE (Position-Independent Executable) output because it
+is the modern default and required for ASLR security. This section records
+the PIE landscape for all target platforms in the Blaise roadmap.
+
+=== Linux
+
+PIE is the default output format of `gcc` and `clang` on all modern
+distributions (Ubuntu 17.10+, Fedora 23+, Debian 10+, Arch). GCC is
+configured with `--enable-default-pie`. The ELF type is `ET_DYN` with a
+`PT_INTERP` segment pointing to `/lib64/ld-linux-x86-64.so.2`.
+
+Our internal linker produces this format. Non-PIE (`ET_EXEC`) would be
+simpler but is increasingly treated as a second-class citizen by toolchains
+and some hardened kernels refuse to run non-PIE executables.
+
+=== FreeBSD
+
+FreeBSD 13+ uses LLVM/Clang as the system compiler. PIE executables are
+fully supported. FreeBSD's `cc` (clang) defaults to PIE on amd64.
+The ELF structure is the same as Linux with the following differences:
+
+* **Dynamic linker path:** `/libexec/ld-elf.so.1` (not
+  `/lib64/ld-linux-x86-64.so.2`).
+* **ELF OS/ABI brand:** FreeBSD's image activator checks
+  `EI_OSABI = ELFOSABI_FREEBSD` (9) or an `NT_FREEBSD_ABI_TAG` note.  The
+  existing ELF writer hardcodes `ELFOSABI_NONE` — the executable writer
+  must parameterise this per target.
+* **CRT objects:** `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`,
+  `crtn.o` from `/usr/lib/`.
+* **No libgcc:** FreeBSD uses compiler-rt instead of libgcc.
+* **libc version:** `libc.so.7` instead of `libc.so.6`.
+* **Symbol versioning:** FreeBSD libc uses `FBSD_1.x` symbol versions.
+  Unversioned symbol references work (the dynamic linker binds to the
+  default version), so the internal linker does not need to emit
+  `.gnu.version` / `.gnu.version_r` sections initially.
+
+The relocation types, GOT/PLT layout, and section merging are identical to
+Linux.
+
+=== macOS
+
+macOS uses Mach-O, not ELF. PIE is the default and effectively mandatory
+since macOS 10.7 (Lion). The Mach-O header includes an `MH_PIE` flag.
+Apple's linker (`ld64` / `ld-prime`) produces PIE by default.
+
+The internal linker's ELF code does not apply to macOS. A future Mach-O
+linker backend would be a separate implementation behind the `ILinker`
+interface. The segment/section model (segments containing sections, with
+`__TEXT` and `__DATA` segments) differs from ELF's flat section model.
+
+=== Windows
+
+Windows uses PE (Portable Executable) format. The equivalent of PIE is
+ASLR, enabled by the `/DYNAMICBASE` linker flag (default since MSVC 2012).
+PE executables include a `.reloc` section with base relocations. The OS
+kernel relocates the entire image at load time.
+
+Like macOS, a Windows PE linker would be a separate implementation. The PE
+format has import tables (`.idata`), export tables, and a fundamentally
+different relocation model from ELF.
+
+== Architecture
+
+=== Interface Design
+
+The linker integrates into the compiler via a strategy interface, mirroring
+the existing `--assembler internal|external` pattern:
+
+[source,pascal]
+----
+type
+  ILinker = interface
+    procedure Link(const AInputFiles: array of string;
+                   const AOutputFile: string;
+                   const ATarget: TTargetDesc);
+  end;
+
+  TInternalLinker = class(TObject, ILinker)
+    procedure Link(const AInputFiles: array of string;
+                   const AOutputFile: string;
+                   const ATarget: TTargetDesc);
+  end;
+
+  TExternalLinker = class(TObject, ILinker)
+    procedure Link(const AInputFiles: array of string;
+                   const AOutputFile: string;
+                   const ATarget: TTargetDesc);
+  end;
+----
+
+`TExternalLinker` wraps the current `cc` invocation (extracting the existing
+code from `LinkObjectFile` / `CompileToNativeDirect` in `Blaise.pas`).
+
+`TInternalLinker` implements the ELF linking pipeline described below.
+
+The compiler selects the implementation via a `--linker internal|external`
+CLI flag, defaulting to `external` initially (switched to `internal` once
+validated).
+
+=== Source Layout
+
+[cols="1,3"]
+|===
+| Unit | Purpose
+
+| `blaise.linker.pas`
+| `ILinker` interface, `TExternalLinker`, factory function
+
+| `blaise.linker.elf.pas`
+| `TInternalLinker` — ELF executable writer, relocation resolver, GOT/PLT
+  builder, section merger
+
+| `blaise.elfreader.pas`
+| ELF `.o` and `.a` reader — parses ELF headers, section headers, symbol
+  tables, relocation entries from input files
+
+| `blaise.elfwriter.pas`
+| _Existing_ — ELF relocatable object writer (used by the assembler).
+  Shared constants and low-level helpers reused by the linker.
+|===
+
+=== Data Flow
+
+[source]
+----
+Input .o files ──┐
+                 ├──→ ELF Reader ──→ Section merge ──→ Symbol resolution
+RTL .a archive ──┘                                          │
+                                                            ▼
+                                               Relocation resolution
+                                                            │
+                              ┌──────────────────────────────┘
+                              ▼
+                  GOT/PLT generation (for external symbols)
+                              │
+                              ▼
+                  Layout: assign virtual addresses to sections
+                              │
+                              ▼
+                  Emit ELF executable: ELF header, program headers,
+                  sections (.text, .rodata, .data, .bss, .tdata, .tbss,
+                  .got, .plt, .dynamic, .interp, .dynsym, .dynstr,
+                  .hash, .rela.dyn, .rela.plt, .init_array, .fini_array,
+                  .opdf.*), section headers
+----
+
+== ELF Linking Pipeline
+
+=== Phase 1: Read Input Objects
+
+Parse each input `.o` file and each member of the `.a` archive:
+
+* Read ELF header — validate `ELFCLASS64`, `ELFDATA2LSB`, `ET_REL`,
+  `EM_X86_64`.
+* Read section headers — collect `.text`, `.data`, `.rodata`, `.bss`,
+  `.tdata`, `.tbss`, `.init_array`, `.fini_array`, `.init`, `.fini`,
+  `.symtab`, `.strtab`, `.rela.*`, and `.opdf.*` sections.
+* Read symbol table — collect all `STB_GLOBAL` and `STB_LOCAL` symbols
+  with their section index, value (offset within section), size, and type.
+* Read relocation sections — collect all `RELA` entries (type, symbol
+  index, offset, addend).
+
+Archive processing: read the `!<arch>\n` magic, parse the GNU extended
+name table (`//` member) for long filenames (required — `blaise_rtl.a`
+contains `blaise_setjmp_x86_64.o` which exceeds the 15-character ar name
+limit), then iterate members and parse each as an ELF object.
+
+For the initial implementation, all archive members are included
+unconditionally.  The RTL archive contains ~11 curated object files; full
+inclusion is acceptable and avoids the complexity of iterative symbol-
+driven member selection.  Selective inclusion (maintain an unresolved
+symbol set, pull members that define needed symbols, iterate until no new
+members are pulled) should be added in Phase D — the infrastructure is
+nearly free since the unresolved-symbol set is already needed for
+"undefined reference" diagnostics.
+
+=== Phase 2: Merge Sections
+
+Concatenate like-named sections from all input objects:
+
+* All `.text` sections → merged `.text`
+* All `.rodata` sections → merged `.rodata`
+* All `.data` sections → merged `.data`
+* All `.bss` sections → merged `.bss` (sizes summed, no data)
+* All `.tdata` sections → merged `.tdata` (initialised TLS data;
+  `SHF_TLS | SHF_WRITE`, `SHT_PROGBITS`)
+* All `.tbss` sections → merged `.tbss` (zero-initialised TLS;
+  `SHF_TLS | SHF_WRITE`, `SHT_NOBITS`)
+* All `.init_array` sections → merged `.init_array` (constructor pointers)
+* All `.fini_array` sections → merged `.fini_array` (destructor pointers)
+* All `.opdf.*` sections → passed through into the output (OPDF debug
+  info for the pdr debugger)
+
+Sections from CRT objects (`.init`, `.fini`, `.eh_frame`) are merged or
+dropped as appropriate — `.init`/`.fini` are merged (the CRT prologue/
+epilogue objects bracket them), `.eh_frame` is dropped (the Blaise runtime
+uses `setjmp`/`longjmp`, not DWARF unwinding).
+
+For each input section, record its start offset within the merged section.
+This offset is added to all symbol values and relocation offsets from that
+input section.
+
+Section alignment: each input section has an `sh_addralign` value. The
+merged section's alignment is the maximum of all input sections'
+alignments. When concatenating, insert padding to satisfy alignment.
+
+=== Phase 3: Resolve Symbols
+
+Build a global symbol table from all input objects:
+
+* For each `STB_GLOBAL` or `STB_WEAK` symbol with a definition
+  (`SHN_UNDEF` excluded): if the name is already in the table, a new
+  `STB_GLOBAL` wins over `STB_WEAK`; two `STB_GLOBAL` definitions is a
+  "duplicate symbol" error.
+* `STB_LOCAL` symbols are not merged — they remain scoped to their input
+  object.
+* Undefined symbols (`SHN_UNDEF`): add to the unresolved set.
+
+**Linker-defined symbols.** The linker itself must define the following
+symbols, which are referenced by CRT objects and the RTL:
+
+[cols="1,3"]
+|===
+| Symbol | Value
+
+| `_GLOBAL_OFFSET_TABLE_`
+| Address of the `.got` section (referenced by RTL objects `blaise_exc.o`,
+  `blaise_mem.o`)
+
+| `__bss_start`
+| Start of `.bss`
+
+| `_edata`
+| End of initialised data (end of `.data`)
+
+| `_end`
+| End of `.bss` (program break)
+
+| `__TMC_END__`
+| Referenced by `crtbeginS.o`; set to end of `.tm_clone_table` or 0
+|===
+
+**Weak undefined symbols.** CRT objects reference symbols like
+`__gmon_start__`, `_ITM_registerTMCloneTable`,
+`_ITM_deregisterTMCloneTable`, and `__cxa_finalize` as weak undefined.
+These must resolve to address 0 without error when no definition exists.
+
+After processing all inputs, classify remaining unresolved symbols:
+
+* **Weak undefined** → resolve to 0 (no error).
+* **Strong undefined, name matches a libc function** → generate GOT/PLT
+  entries and `.dynsym` records.
+* **Strong undefined, not found anywhere** → link error ("undefined
+  reference to ...").
+
+=== Phase 4: Build GOT, PLT, and Dynamic Relocations
+
+External symbols (those resolved to shared library functions) need
+indirection.  The design uses **eager binding** (`DT_FLAGS BIND_NOW`,
+`DT_FLAGS_1 NOW`) rather than lazy PLT resolution.  This is simpler to
+implement (no PLT[0] resolver stub, no `_dl_runtime_resolve` protocol) and
+matches what `cc` produces by default (`-z now`).  Eager binding also
+enables full RELRO (`PT_GNU_RELRO` covering the GOT), which hardened
+distributions require.
+
+**GOT (Global Offset Table):**
+
+* Three reserved entries at the start: GOT[0] = address of `.dynamic`,
+  GOT[1] = 0, GOT[2] = 0 (no lazy resolver).
+* One 8-byte entry per external symbol.
+* Located in a writable data segment (becomes read-only after RELRO).
+* At load time, the dynamic linker fills each entry with the symbol's
+  actual address (eager, not lazy).
+
+**PLT (Procedure Linkage Table):**
+
+With eager binding, PLT stubs are simplified — each is a single indirect
+jump through the pre-resolved GOT entry:
+
+[source,asm]
+----
+jmpq *GOT_ENTRY(%rip)       ; indirect jump through GOT (6 bytes)
+nop                          ; padding to 16-byte alignment (10 bytes)
+----
+
+No PLT[0] resolver stub is needed.  The dynamic linker resolves all
+`R_X86_64_JUMP_SLOT` entries at load time before `_start` runs.
+
+**`.rela.plt` — PLT relocations:**
+
+* One `R_X86_64_JUMP_SLOT` relocation per PLT entry, pointing at the
+  corresponding GOT slot.
+* Processed eagerly at load time due to `DT_FLAGS BIND_NOW`.
+
+**`.rela.dyn` — data relocations (critical for PIE):**
+
+In a PIE executable (`ET_DYN`), absolute 64-bit addresses in writable
+sections cannot be resolved at link time because the load base is unknown.
+Every `R_X86_64_64` relocation against an internally-defined symbol in
+`.data` (vtable pointers, typeinfo records, class-name `.quad` entries)
+must be converted to an `R_X86_64_RELATIVE` dynamic relocation:
+
+* The linker patches the data section with the link-time value `S + A`.
+* An `R_X86_64_RELATIVE` entry is emitted in `.rela.dyn` with the offset
+  and addend = `S + A`.
+* At load time, the dynamic linker adds the load base to the addend and
+  writes the result.
+
+The `.dynamic` section must include `DT_RELA`, `DT_RELASZ`,
+`DT_RELAENT`, and `DT_RELACOUNT` tags for `.rela.dyn`.
+
+NOTE: The RTL archive contains ~131 `R_X86_64_64` relocations.  Every
+vtable/typeinfo `.quad` the native backend emits is one.  Without
+`.rela.dyn`, no program using classes can link under PIE.
+
+NOTE: `R_X86_64_32S` against a symbol address is a **link error** under
+PIE (it would be a text relocation, which the loader refuses).  The
+linker must reject this case with a diagnostic rather than silently
+emitting a wrong value.
+
+**GOTPCREL relaxation:**
+
+* `R_X86_64_GOTPCRELX` and `R_X86_64_REX_GOTPCRELX` can be relaxed to
+  direct `leaq` when the symbol is defined locally. The internal linker
+  will handle this for internally-defined symbols.
+
+=== Phase 5: Layout
+
+Assign virtual addresses to sections. The layout follows the standard
+Linux convention:
+
+[source]
+----
+Address space layout:
+
+0x0000             ELF header + program headers
+                   .interp
+                   .dynsym, .dynstr, .hash
+                   .rela.dyn, .rela.plt
+                   ─── R segment (read-only, non-executable) ───
+
+0x0000 + page      .text (merged)
+                   .init, .fini
+                   .plt
+                   ─── R+X segment (read + execute) ───
+
+next page          .rodata (merged)
+                   ─── R segment (read-only) ───
+
+next page          .init_array, .fini_array
+                   .dynamic
+                   .got
+              ─── RELRO boundary (PT_GNU_RELRO covers above) ───
+                   .data (merged)
+                   ─── R+W segment (read + write) ───
+
+after .data        .bss (merged, no file content)
+
+TLS block:         .tdata (initialised TLS data, file content)
+                   .tbss (zero-initialised TLS, no file content)
+                   ─── PT_TLS segment ───
+
+                   .opdf.* (debug sections, non-loadable)
+----
+
+Each `PT_LOAD` segment starts on a page boundary (4096 bytes).
+
+**RELRO.** The `.got`, `.dynamic`, `.init_array`, and `.fini_array`
+sections are placed in the RELRO region — a `PT_GNU_RELRO` program header
+marks them as read-only after relocation.  With eager binding
+(`DT_FLAGS BIND_NOW`), the dynamic linker mprotects the GOT to read-only
+after resolving all symbols, preventing GOT-overwrite attacks.
+
+**TLS layout.** The `.tdata` and `.tbss` sections form the TLS block,
+described by a `PT_TLS` program header.  The TLS offset formula for x86-64
+variant II (used by Linux and FreeBSD) is:
+`TP_offset = -(align_up(tls_size, tls_align))`, where `tls_size` =
+`sizeof(.tdata) + sizeof(.tbss)` and `tls_align` = max alignment of the
+TLS sections.  `R_X86_64_TPOFF32` relocations use this negative offset.
+
+The entry point is set to the symbol `_start` (provided by `Scrt1.o` from
+the system CRT). `_start` calls `__libc_start_main`, which calls `main`.
+
+=== Phase 6: Apply Relocations
+
+Walk all relocation entries from the input objects. For each relocation:
+
+* Look up the symbol — now has a resolved virtual address.
+* Compute the final value based on relocation type:
+
+[cols="2,4"]
+|===
+| Type | Computation
+
+| `R_X86_64_PC32`
+| `S + A - P` (32-bit, PC-relative)
+
+| `R_X86_64_PLT32`
+| `L + A - P` where L = PLT entry address (32-bit)
+
+| `R_X86_64_64`
+| In writable section: patch `S + A`, emit `R_X86_64_RELATIVE` in
+  `.rela.dyn`.  In read-only section: link error (PIE cannot have text
+  relocations).
+
+| `R_X86_64_32S`
+| Link error under PIE — absolute 32-bit address is a text relocation
+  that the loader refuses.  The native backend should not emit this for
+  symbol references (only for stack-frame offsets, which are PC-relative).
+
+| `R_X86_64_GOTPCREL`
+| `G + GOT + A - P` (32-bit, GOT-relative)
+
+| `R_X86_64_TPOFF32`
+| `S + A - align_up(TLS_SIZE, TLS_ALIGN)` (negative offset from TP,
+  x86-64 variant II)
+
+| `R_X86_64_GOTPCRELX`
+| Relax to `leaq` if local, else `G + GOT + A - P`
+
+| `R_X86_64_REX_GOTPCRELX`
+| Same as above with REX prefix
+|===
+
+Where: S = symbol value, A = addend, P = relocation offset (virtual
+address of the byte being patched), L = PLT entry address, G = GOT entry
+offset, GOT = GOT base address, TLS_SIZE = total TLS block size.
+
+* Patch the bytes at the relocation offset with the computed value.
+
+=== Phase 7: Emit Executable
+
+Write the final ELF executable file:
+
+* **ELF header** — `ET_DYN` (PIE), `EM_X86_64`, entry point = `_start`.
+* **Program headers** — `PT_PHDR`, `PT_INTERP`, `PT_LOAD` × N,
+  `PT_DYNAMIC`, `PT_TLS`, `PT_GNU_STACK` (NX stack).
+* **Section contents** — merged and relocated `.text`, `.rodata`, `.data`,
+  `.tdata`, `.init_array`, `.fini_array`, `.init`, `.fini`, plus
+  generated `.interp`, `.plt`, `.got`, `.dynamic`, `.dynsym`, `.dynstr`,
+  `.hash`, `.rela.dyn`, `.rela.plt`, and pass-through `.opdf.*`.
+* **Section headers** — for tooling (objdump, readelf, strip).
+
+The `.dynamic` section contains:
+
+[cols="1,2"]
+|===
+| Tag | Value
+
+| `DT_NEEDED`
+| `libc.so.6` (and conditionally `libpthread.so.0`, `libm.so.6` for
+  glibc < 2.34 — see Platform Parameterisation)
+
+| `DT_SYMTAB`
+| Address of `.dynsym`
+
+| `DT_STRTAB`
+| Address of `.dynstr`
+
+| `DT_STRSZ`
+| Size of `.dynstr`
+
+| `DT_SYMENT`
+| Size of one `.dynsym` entry (24)
+
+| `DT_PLTGOT`
+| Address of `.got`
+
+| `DT_PLTRELSZ`
+| Size of `.rela.plt`
+
+| `DT_PLTREL`
+| `DT_RELA` (7)
+
+| `DT_JMPREL`
+| Address of `.rela.plt`
+
+| `DT_RELA`
+| Address of `.rela.dyn`
+
+| `DT_RELASZ`
+| Size of `.rela.dyn`
+
+| `DT_RELAENT`
+| Size of one RELA entry (24)
+
+| `DT_RELACOUNT`
+| Number of `R_X86_64_RELATIVE` entries in `.rela.dyn`
+
+| `DT_INIT_ARRAY`
+| Address of `.init_array`
+
+| `DT_INIT_ARRAYSZ`
+| Size of `.init_array`
+
+| `DT_FINI_ARRAY`
+| Address of `.fini_array`
+
+| `DT_FINI_ARRAYSZ`
+| Size of `.fini_array`
+
+| `DT_INIT`
+| Address of `.init` (from CRT)
+
+| `DT_FINI`
+| Address of `.fini` (from CRT)
+
+| `DT_FLAGS`
+| `DF_BIND_NOW` (eager binding)
+
+| `DT_FLAGS_1`
+| `DF_1_NOW \| DF_1_PIE`
+
+| `DT_HASH`
+| Address of SysV symbol hash table (start with SysV `.hash`; add
+  `.gnu.hash` as polish)
+
+| `DT_DEBUG`
+| 0 (filled by the dynamic linker; enables `r_debug` rendezvous for
+  GDB/pdr shared-library awareness)
+
+| `DT_NULL`
+| Terminator
+|===
+
+== CRT Objects
+
+The C runtime startup objects provide the `_start` entry point and
+initialisation/finalisation scaffolding. On Linux x86-64 with PIE:
+
+[cols="1,3"]
+|===
+| Object | Purpose
+
+| `Scrt1.o`
+| Defines `_start`, calls `__libc_start_main(main, argc, argv, ...)`
+
+| `crti.o`
+| `.init` and `.fini` section prologue
+
+| `crtn.o`
+| `.init` and `.fini` section epilogue
+
+| `crtbeginS.o`
+| GCC internal — `.ctors`/`.dtors` registration (PIE variant)
+
+| `crtendS.o`
+| GCC internal — `.ctors`/`.dtors` termination (PIE variant)
+|===
+
+These are small relocatable objects (< 1 KB each) installed by the C
+toolchain. The internal linker must locate them at link time. Resolution
+strategy:
+
+1. Check `$BLAISE_CRT_DIR` environment variable.
+2. Probe well-known paths:
+   - `/usr/lib/x86_64-linux-gnu/` (Debian/Ubuntu multiarch)
+   - `/usr/lib64/` (Fedora/RHEL)
+   - `/usr/lib/` (general)
+3. For `crtbeginS.o` / `crtendS.o`, probe the GCC install directory:
+   - Run `cc -print-file-name=crtbeginS.o` at configure time, or
+   - Search `/usr/lib/gcc/x86_64-linux-gnu/*/` (Debian)
+   - Search `/usr/lib/gcc/x86_64-linux-gnu-*/` (Debian trixie)
+
+If no CRT objects are found, fall back to `TExternalLinker` with a
+diagnostic message. This avoids a hard failure on systems where the CRT
+layout is non-standard.
+
+**IMPORTANT:** CRT discovery succeeding does not guarantee correctness.
+On musl-based systems (Alpine Linux), CRT objects exist under `/usr/lib/`
+but require a different dynamic linker path (`/lib/ld-musl-x86_64.so.1`)
+and libc name (`libc.musl-x86_64.so.1`).  The linker must detect the
+libc flavour — e.g. by checking for the existence of
+`/lib/ld-musl-x86_64.so.1` — and parameterise accordingly, or fall back
+to `TExternalLinker`.  A future `--libc glibc|musl` flag can provide
+explicit control.
+
+=== Eliminating CRT Dependency (Future)
+
+Long-term, the compiler can provide its own `_start` implementation in
+assembly, eliminating the need for system CRT objects entirely. The minimal
+`_start` for Linux x86-64 is:
+
+[source,asm]
+----
+.text
+.globl _start
+_start:
+    xorl  %ebp, %ebp         ; mark deepest stack frame
+    movq  %rsp, %rdi          ; argc+argv on stack
+    andq  $-16, %rsp          ; align stack to 16 bytes
+    callq _blaise_entry       ; Blaise program entry point
+    movl  %eax, %edi          ; exit code
+    movl  $60, %eax           ; SYS_exit
+    syscall
+----
+
+This removes the libc dependency for `__libc_start_main` but also loses
+`atexit` handling, stdio buffer flushing, TLS setup, and
+`.init`/`.fini`/`.ctors`/`.dtors` processing. Worth pursuing after the
+runtime's libc dependency list is minimised (many RTL functions currently
+call libc — `mmap`, `write`, `memcpy`, etc.).
+
+== Platform Parameterisation
+
+The linker's platform-dependent values are collected in a record, keyed by
+the target triple:
+
+[cols="2,2,2,2"]
+|===
+| Parameter | Linux x86-64 | FreeBSD x86-64 | Notes
+
+| Dynamic linker
+| `/lib64/ld-linux-x86-64.so.2`
+| `/libexec/ld-elf.so.1`
+| Written into `PT_INTERP`
+
+| `EI_OSABI`
+| `ELFOSABI_NONE` (0)
+| `ELFOSABI_FREEBSD` (9)
+| FreeBSD image activator checks this
+
+| libc
+| `libc.so.6`
+| `libc.so.7`
+| `DT_NEEDED` entry
+
+| Extra `DT_NEEDED`
+| `libpthread.so.0`, `libm.so.6` (glibc < 2.34 only)
+| none (FreeBSD libc bundles these)
+| See note below
+
+| Page size
+| 4096
+| 4096
+| Segment alignment
+
+| CRT objects
+| `Scrt1.o`, `crti.o`, `crtn.o`
+| `Scrt1.o`, `crti.o`, `crtn.o`
+| Same names, different paths
+
+| Default base
+| 0 (PIE)
+| 0 (PIE)
+| ET_DYN, loaded by kernel
+|===
+
+**glibc version note.** glibc 2.34+ merged libpthread and libm into
+`libc.so.6`, making separate `DT_NEEDED` entries unnecessary.  However,
+older distributions (Debian 10 with glibc 2.28, Ubuntu 18.04 with
+glibc 2.27) still ship separate `libpthread.so.0` and `libm.so.6`.  The
+internal linker should detect the glibc version at link time (check
+whether `libpthread.so.0` exists in the library search path) and emit
+conditional `DT_NEEDED` entries.  Alternatively, always emit all three
+`DT_NEEDED` entries — redundant on glibc 2.34+ but harmless (the loader
+ignores `DT_NEEDED` for already-loaded libraries).
+
+**musl / Alpine Linux.** On musl-based systems, the dynamic linker is
+`/lib/ld-musl-x86_64.so.1` and libc is `libc.musl-x86_64.so.1`.  CRT
+objects exist under `/usr/lib/` but require the correct interp path.
+The CRT discovery strategy must detect musl (e.g. by checking for
+`/lib/ld-musl-x86_64.so.1`) and parameterise accordingly, or fall back
+to `TExternalLinker`.  A `--libc` flag (e.g. `--libc musl`) is a future
+option for explicit selection.
+
+== Implementation Phases
+
+=== Phase A: ELF Reader + Archive Reader + Section Merge
+
+* Implement `blaise.elfreader.pas` — parse ELF headers, section headers,
+  symbol tables, relocation entries from `.o` files.
+* Implement `.a` archive reader — parse the `!<arch>\n` header, GNU
+  long-name table (`//`), iterate members.
+* Merge like-named sections with alignment padding.
+* Test: read the internal assembler's `.o` output and verify section
+  contents match.  Read `blaise_rtl.a` and verify all 11 members parse
+  correctly (validates the long-name table handling).
+
+=== Phase B: Symbol Resolution + Static Relocations
+
+* Build global symbol table from merged sections.
+* Define linker-synthesised symbols (`_GLOBAL_OFFSET_TABLE_`,
+  `__bss_start`, `_edata`, `_end`, `__TMC_END__`).
+* Resolve weak undefined symbols to 0.
+* Resolve `R_X86_64_PC32` and `R_X86_64_PLT32` relocations between
+  internally-defined symbols (intra-program calls/references).
+* Produce a non-PIE `ET_EXEC` executable with a fixed base address and
+  no GOT/PLT — skipping dynamic linking entirely.
+* Validate by structural comparison: link a hand-crafted `.o` fixture,
+  then compare section contents and relocated bytes against `ld -r`
+  output or the `cc`-linked binary.  (Every Blaise program reaches libc
+  through the RTL, so a truly standalone test needs a hand-written
+  fixture that uses `SYS_exit` directly.)
+
+=== Phase C: Dynamic Linking + RTL + TLS
+
+This phase produces the first real runnable Blaise program.  It must
+include the RTL archive and TLS support because the RTL is required for
+any program that calls `WriteLn` (or any runtime function), and the RTL
+itself uses TLS (`blaise_mem.o` contains `.tdata` and `.tbss` with 26
+`R_X86_64_TPOFF32` relocations).
+
+* Read and link CRT startup objects (`Scrt1.o`, `crti.o`, `crtn.o`,
+  `crtbeginS.o`, `crtendS.o`).
+* Link the RTL archive (`blaise_rtl.a` — all members).
+* Classify unresolved symbols as external (libc) or weak-undefined.
+* Generate GOT entries with eager binding, PLT stubs, `.rela.plt`.
+* Generate `.rela.dyn` with `R_X86_64_RELATIVE` entries for all
+  `R_X86_64_64` relocations in writable sections.
+* Generate `.dynamic`, `.dynsym`, `.dynstr`, `.hash` sections (start
+  with SysV `.hash`; `.gnu.hash` is polish for Phase E).
+* Handle TLS: merge `.tdata` and `.tbss`, compute TLS block size with
+  variant-II alignment, emit `PT_TLS`, resolve `R_X86_64_TPOFF32`.
+* Merge `.init_array`/`.fini_array` from CRT objects; emit
+  `DT_INIT_ARRAY` / `DT_FINI_ARRAY` tags.
+* Merge `.init`/`.fini` sections from CRT; emit `DT_INIT`/`DT_FINI`.
+* Add `PT_INTERP`, `PT_DYNAMIC`, `PT_GNU_RELRO`, `PT_GNU_STACK`
+  program headers.
+* Switch from `ET_EXEC` to `ET_DYN` (PIE).
+* Test: link a "Hello, world" program that calls `WriteLn`.  Link a
+  program using classes (exercises `.rela.dyn` for vtable pointers).
+  Link a program using threadvars (exercises TLS).
+
+=== Phase D: Full Integration
+
+* Wire `TInternalLinker` into the compiler driver behind `--linker
+  internal`.
+* Pass through OPDF debug sections (`.opdf.*`) from input objects into
+  the final executable.  The OPDF `.s` companion file is assembled by
+  the internal assembler into a `.o`, then its sections are merged.
+* Implement selective archive member inclusion (pull only members that
+  define symbols in the unresolved set, iterate until stable).
+* Run the full test suite with `--linker internal`, including the
+  native TestRunner.
+* Run fixpoint with `--linker internal`.
+* Differential validation: compile the existing e2e test corpus with
+  both `--linker external` and `--linker internal`, compare stdout and
+  exit codes.
+* Test: compile and run the compiler itself.
+
+=== Phase E: Default and Polish
+
+* Switch default from `external` to `internal`.
+* Add FreeBSD x86-64 support (different `PT_INTERP`, `EI_OSABI`,
+  CRT locations, `libc.so.7`).
+* Detect musl-based systems and parameterise interp/libc accordingly
+  (or fall back to `TExternalLinker`).
+* Replace SysV `.hash` with `.gnu.hash` (bloom filter, sorted
+  `.dynsym`).
+* Emit conditional `DT_NEEDED` for `libpthread.so.0` / `libm.so.6`
+  on glibc < 2.34 systems.
+* Add `--linker external` escape hatch documentation.
+
+== Testing Strategy
+
+[cols="1,2,3"]
+|===
+| Layer | Tests | What It Catches
+
+| Unit tests
+| `TElfReaderTests` — parse known `.o` files, verify headers, symbols,
+  relocations.  Parse `blaise_rtl.a` archive members.
+| ELF/archive parsing bugs
+
+| Unit tests
+| `TLinkerTests` — merge sections, resolve symbols, apply relocations on
+  synthetic inputs.  Must cover every relocation type with
+  manually-verified expected bytes.  Include relocation serialisation
+  (`.rela.*` `r_info` packing, symbol remapping after local/global sort).
+| Relocation arithmetic, symbol resolution logic
+
+| E2E tests
+| `TInternalLinkerE2ETests` — compile small programs with `--linker
+  internal`, run, assert stdout.  Must include: class with virtual
+  method, `Double` arithmetic, threadvar, global nil-assignment,
+  exception handling, dynamic array, string operations.
+| Full pipeline integration
+
+| Differential
+| Compile the existing e2e test corpus with both `--linker external` and
+  `--linker internal`; assert identical stdout and exit codes.  Structural
+  comparison of `readelf -l` / `readelf -d` output between the two
+  binaries.
+| Subtle divergences in section layout, relocation, or symbol resolution
+
+| Negative tests
+| Undefined reference (strong), duplicate symbol (two globals), wrong-class
+  object file (32-bit ELF, non-x86_64)
+| Error reporting quality and robustness
+
+| Native TestRunner
+| Run the full native TestRunner under `--linker internal`
+| Catches issues the fixpoint misses (documented in project memory)
+
+| Fixpoint
+| Run `fixpoint.sh` and `fixpoint-native.sh` with `--linker internal`
+| Self-hosting correctness
+
+| Container matrix
+| Run the e2e suite on Alpine (musl), Debian oldstable (glibc 2.31),
+  Ubuntu 24.04 (glibc 2.39) — at minimum as a manual validation step
+| CRT discovery and glibc version edge cases
+|===
+
+== Risk Assessment
+
+**Highest risk:** Dynamic relocations for PIE.  The `.rela.dyn` /
+`R_X86_64_RELATIVE` mechanism is conceptually simple but touches every
+vtable and typeinfo pointer in `.data`.  A single missing entry produces
+a binary that loads but segfaults on the first virtual method call —
+the symptom is indistinguishable from a codegen bug, making diagnosis
+difficult.  The differential test harness (compare against `cc`-linked
+binary) is the primary mitigation.
+
+**High risk:** TLS layout.  The x86-64 variant-II TLS offset formula
+requires `align_up(tls_size, tls_align)` — a classic off-by-alignment
+bug.  The RTL's `blaise_mem.o` contains both `.tdata` (initialised) and
+`.tbss` (zero-initialised) TLS sections; a wrong TLS offset corrupts
+the memory allocator's thread-local state, causing non-deterministic
+crashes anywhere in the program.
+
+**High risk:** Relocation arithmetic.  A single off-by-one in
+`S + A - P` produces a binary that crashes at runtime with no obvious
+diagnostic.  The unit tests for Phase B must cover every relocation type
+with manually-verified expected values.
+
+**Medium risk:** CRT object location.  Systems have varying layouts
+(multiarch, cross-compilation sysroots, musl).  The fallback to
+`TExternalLinker` mitigates this — if CRT objects cannot be found, the
+compiler degrades gracefully.  The musl case is particularly tricky:
+CRT objects exist but require a different interp path.
+
+**Medium risk:** `.init_array` / `.fini_array` ordering.  CRT objects
+bracket these sections (`crtbeginS.o` before, `crtendS.o` after).
+If the linker merges them in the wrong order, constructors run in the
+wrong sequence or not at all — a load-time crash with no useful
+backtrace.
+
+**Low risk:** GOT/PLT generation.  With eager binding, PLT stubs are
+trivial (one indirect jump each).  No lazy resolver protocol to
+implement.
+
+== Current Linker Dependency Analysis
+
+For reference, the current `cc` link line for a simple Blaise program
+pulls in:
+
+* **CRT objects:** `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`,
+  `crtn.o`
+* **Dynamic libraries:** `libc.so.6` (provides all ~47 undefined symbols
+  in a typical program: `write`, `mmap`, `memcpy`, `exit`, `fork`,
+  `pthread_*`, `clock_gettime`, etc.)
+* **Implicit flags:** `-pie`, `-z now`, `-z relro`, `--build-id`,
+  `--eh-frame-hdr`, `--hash-style=gnu`
+
+The RTL archive (`blaise_rtl.a`) contains 11 object files and ~131
+`R_X86_64_64` relocations (vtable/typeinfo pointers).  All undefined
+symbols in the RTL are libc functions — there are no dependencies on
+libgcc or libstdc++.  The `-lm` and `-lpthread` flags on the current
+link line are unnecessary on glibc 2.34+ (which merged libm and
+libpthread into `libc.so.6`), but are required on older glibc versions
+still in use on Debian 10, Ubuntu 18.04, etc.
