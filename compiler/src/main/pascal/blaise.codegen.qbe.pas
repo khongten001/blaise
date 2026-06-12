@@ -13213,6 +13213,17 @@ begin
     ElemVal := EmitByteRhs(AStmt.ValueExpr)
   else
     ElemVal := EmitExpr(AStmt.ValueExpr);
+  if (ElemType.Kind in [tyInt64, tyUInt64]) and
+     (AStmt.ValueExpr.ResolvedType <> nil) and
+     not (AStmt.ValueExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
+  begin
+    Adj := AllocTemp();
+    if ElemType.Kind = tyUInt64 then
+      EmitLine(Format('  %s =l extuw %s', [Adj, ElemVal]))
+    else
+      EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
+    ElemVal := Adj;
+  end;
   case ElemType.Kind of
     tyByte, tyBoolean: StoreInstr := 'storeb';
     tySmallInt, tyWord: StoreInstr := 'storeh';

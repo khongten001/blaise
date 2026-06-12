@@ -26,7 +26,7 @@ uses
   blaise.codegen.target, blaise.codegen.native, uToolchain,
   uUnitLoader, uDebugOPDF, uUnitInterface, uSemanticExport, uSemanticImport,
   uUnitInterfaceIO, uIfaceObject, uASTDump,
-  uStrCompat, uConfig;
+  uStrCompat, uConfig, blaise.assembler.x86_64;
 
 type
   TBackend = (bkQBE, bkNative);
@@ -53,6 +53,7 @@ begin
   WriteLn('                      freebsd-x86_64, windows-x86_64, macos-arm64');
   WriteLn('  --emit-ir           Print QBE IR to stdout and exit');
   WriteLn('  --emit-asm          Print native assembly to stdout (requires --backend native)');
+  WriteLn('  --assembler <id>    internal | external (default: external)');
   WriteLn('  --emit-iface <dir>  Write each unit''s TUnitInterface as <dir>/<unit>.bif');
   WriteLn('  --skip-dep-codegen  Omit dep unit bodies from emitted IR (separate-compilation path)');
   WriteLn('  --incremental       Compile each dep to its own .o as a side effect');
@@ -204,7 +205,8 @@ function ParseArgs(
   out SkipDepCodegen: Boolean;
   out EmitIfaceDir:   string;
   out Incremental:    Boolean;
-  out UnitCacheDir:   string): Boolean;
+  out UnitCacheDir:   string;
+  out UseInternalAsm: Boolean): Boolean;
 var
   I: Integer;
   Arg: string;
@@ -223,6 +225,7 @@ begin
   EmitIfaceDir   := '';
   Incremental    := False;
   UnitCacheDir   := '';
+  UseInternalAsm := False;
   SearchPaths    := TStringList.Create();
 
   I := 1;
@@ -289,6 +292,20 @@ begin
       else
       begin
         WriteLn(StdErr, 'Error: --backend must be ''qbe'' or ''native''');
+        SearchPaths.Free();
+        Exit;
+      end;
+    end
+    else if (Arg = '--assembler') and (I < ParamCount()) then
+    begin
+      Inc(I);
+      if ParamStr(I) = 'internal' then
+        UseInternalAsm := True
+      else if ParamStr(I) = 'external' then
+        UseInternalAsm := False
+      else
+      begin
+        WriteLn(StdErr, 'Error: --assembler must be ''internal'' or ''external''');
         SearchPaths.Free();
         Exit;
       end;
@@ -550,6 +567,41 @@ begin
   end;
 end;
 
+{ Link a pre-assembled object file (.o) into the final binary.  Used when
+  the internal assembler has already produced the .o — only the linker driver
+  is invoked. }
+procedure LinkObjectFile(const AObjFile, AOutputFile: string;
+  const ATarget: TTargetDesc; const AOPDFAsmFile: string);
+var
+  TC:       TToolchain;
+  Msg:      string;
+  ExitCode: Integer;
+  Args:     TStringList;
+begin
+  TC := ResolveToolchain(ATarget);
+  Args := TStringList.Create();
+  try
+    Args.Add('-o');
+    Args.Add(AOutputFile);
+    Args.Add(AObjFile);
+    if (AOPDFAsmFile <> '') and FileExists(AOPDFAsmFile) then
+      Args.Add(AOPDFAsmFile);
+    if TC.RTLPath <> '' then
+      Args.Add(TC.RTLPath);
+    Args.Add('-lm');
+    Args.Add('-lpthread');
+    ExitCode := RunProcess(TC.Linker.Path, Args, Msg);
+  finally
+    Args.Free();
+  end;
+  if ExitCode <> 0 then
+  begin
+    WriteLn(StdErr, 'link error (exit ', ExitCode, '):');
+    Write(StdErr, Msg);
+    Halt(1);
+  end;
+end;
+
 type
   TCompileWorker = class(TThread)
     WorkUnit: TUnit;
@@ -664,6 +716,8 @@ var
   UnitOPath:   string;   { per-dep .o output path in --incremental mode }
   UnitBifPath: string;   { per-dep iface temp path }
   UnitIR:      string;   { per-dep IR text under --incremental }
+  UseInternalAsm: Boolean;
+  ObjFile:     string;
   Workers:  TObjectList; { TCompileWorker threads for parallel incremental }
   Worker:   TCompileWorker;
 
@@ -699,13 +753,14 @@ begin
     EmitIfaceDir   := '';
     Incremental    := False;
     UnitCacheDir   := '';
+    UseInternalAsm := False;
   end
   else
   begin
     if not ParseArgs(SourceFile, OutputFile, EmitIR, EmitAsm, DumpAST,
                      OPDFEnabled, DebugMode,
                      Backend, Target, SearchPaths, SkipDepCodegen, EmitIfaceDir,
-                     Incremental, UnitCacheDir) then
+                     Incremental, UnitCacheDir, UseInternalAsm) then
     begin
       PrintUsage();
       Halt(1);
@@ -1046,8 +1101,6 @@ begin
     Write(IR)
   else if Backend = bkNative then
   begin
-    { Native backend: IR holds target assembly text.  Write it to a .s file
-      and link via the same cc driver the QBE path uses. }
     AsmFile := ChangeFileExt(OutputFile, '.s');
     try
       Source := TStringList.Create();
@@ -1065,7 +1118,23 @@ begin
       end;
     end;
 
-    CompileToNativeDirect(AsmFile, OutputFile, Target, OPDFAsmFile, OPDFEnabled);
+    if UseInternalAsm then
+    begin
+      ObjFile := ChangeFileExt(OutputFile, '.o');
+      try
+        AssembleToObject(IR, ObjFile);
+      except
+        on E: EAssembler do
+        begin
+          WriteLn(StdErr, 'Internal assembler error: ', Exception(E).Message);
+          Halt(1);
+        end;
+      end;
+      LinkObjectFile(ObjFile, OutputFile, Target, OPDFAsmFile);
+      DeleteFile(ObjFile);
+    end
+    else
+      CompileToNativeDirect(AsmFile, OutputFile, Target, OPDFAsmFile, OPDFEnabled);
     DeleteFile(AsmFile);
     if OPDFAsmFile <> '' then
       DeleteFile(OPDFAsmFile);
