@@ -3133,6 +3133,9 @@ begin
     Sz := (AType.RawSize() + 7) and (-8)
   else if (AType <> nil) and (AType.Kind = tyInterface) then
     Sz := 16   { fat pointer: obj slot (+0) then itab slot (+8) }
+  else if (AType <> nil) and (AType.Kind = tyProcedural) and
+          TProceduralTypeDesc(AType).IsMethodPtr then
+    Sz := 16   { method pointer: code slot (+0) and data/self slot (+8) }
   else
     Sz := 8;
   Inc(AOffset, Sz);
@@ -12680,6 +12683,7 @@ var
   NestedDecl:  TMethodDecl;
   SavedOuterDecl: TMethodDecl;
   AddrTaken:   TStringList;
+  SlotOff:     Integer;
 begin
   { Emit any nested procedures declared inside this function's body before
     emitting this function itself.  Each nested proc gets a mangled name
@@ -12910,61 +12914,114 @@ begin
       Self.EmitStoreVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
     end;
   end;
-  { Zero-initialise ARC-managed local slots (string / interface) so the first
-    assignment's release-old step sees nil, not stack garbage, and so an unused
-    local releases nil at the epilogue.  Interface locals zero both halves of
-    the fat pointer. }
+  { Zero-initialise ALL local variable slots — Blaise guarantees zero
+    initialisation of every variable as a language semantic.  The case
+    branches mirror EmitVarAllocs in the QBE backend so both backends
+    behave identically.  The else clause deliberately raises an error so
+    that any new TTypeKind added in the future is caught here immediately. }
   if ADecl.Body <> nil then
     for I := 0 to ADecl.Body.Decls.Count - 1 do
     begin
       if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType = nil then Continue;
-      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyString then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-          Self.Emit(Format(#9'movq $0, %s',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyClass then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-          Self.Emit(Format(#9'movq $0, %s',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyInterface then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'movq $0, %s',
-            [Self.IntfObjOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
-          Self.Emit(Format(#9'movq $0, %s',
-            [Self.IntfItabOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
-        end
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyDynArray then
-        { Dyn-array locals MUST start nil: SetLength reads the old pointer
-          (_DynArrayLength / _BlaiseFreeMem on it) and the epilogue releases
-          it — stack garbage in the slot corrupts the heap or crashes. }
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-          Self.Emit(Format(#9'movq $0, %s',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyRecord then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'leaq %s, %%rdi',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.Emit(#9'xorl %esi, %esi');
-          Self.Emit(Format(#9'movq $%d, %%rdx',
-            [TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize()]));
-          Self.Emit(#9'callq memset');
-        end
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyStaticArray then
-        { Static-array locals are memset to zero, mirroring the QBE backend's
-          EmitVarAllocs.  Element stores into arrays of managed types release
-          the old element first — without the memset that release reads stack
-          garbage. }
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'leaq %s, %%rdi',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.Emit(#9'xorl %esi, %esi');
-          Self.Emit(Format(#9'movq $%d, %%rdx',
-            [TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize()]));
-          Self.Emit(#9'callq memset');
-        end;
+      case TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind of
+
+        tyInteger, tyUInt32, tySmallInt, tyWord, tyBoolean, tyByte, tyEnum:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+            Self.Emit(Format(#9'movl $0, %s',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+
+        tyInt64, tyUInt64,
+        tyString,
+        tyClass,
+        tyPointer, tyPChar, tyMetaClass,
+        tyDynArray:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+            Self.Emit(Format(#9'movq $0, %s',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+
+        tyInterface:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          begin
+            Self.Emit(Format(#9'movq $0, %s',
+              [Self.IntfObjOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
+            Self.Emit(Format(#9'movq $0, %s',
+              [Self.IntfItabOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
+          end;
+
+        tyDouble:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          begin
+            Self.Emit(#9'xorpd %xmm0, %xmm0');
+            Self.Emit(Format(#9'movsd %%xmm0, %s',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          end;
+
+        tySingle:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          begin
+            Self.Emit(#9'xorps %xmm0, %xmm0');
+            Self.Emit(Format(#9'movss %%xmm0, %s',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          end;
+
+        tySet:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+            if TSetTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).BitCount <= 32 then
+              Self.Emit(Format(#9'movl $0, %s',
+                [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]))
+            else
+              Self.Emit(Format(#9'movq $0, %s',
+                [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+
+        tyProcedural:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+            if TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsMethodPtr then
+            begin
+              { Method pointer: two consecutive 8-byte slots (Code + Data).
+                VarOperand gives Code at the base; Data is 8 bytes above it. }
+              Self.Emit(Format(#9'movq $0, %s',
+                [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+              FFrame.TryGetValue(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], SlotOff);
+              Self.Emit(Format(#9'movq $0, %d(%%rbp)', [SlotOff + 8]));
+            end
+            else
+              Self.Emit(Format(#9'movq $0, %s',
+                [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+
+        tyRecord:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          begin
+            Self.Emit(Format(#9'leaq %s, %%rdi',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+            Self.Emit(#9'xorl %esi, %esi');
+            Self.Emit(Format(#9'movq $%d, %%rdx',
+              [TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize()]));
+            Self.Emit(#9'callq memset');
+          end;
+
+        tyStaticArray:
+          for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+          begin
+            Self.Emit(Format(#9'leaq %s, %%rdi',
+              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+            Self.Emit(#9'xorl %esi, %esi');
+            Self.Emit(Format(#9'movq $%d, %%rdx',
+              [TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize()]));
+            Self.Emit(#9'callq memset');
+          end;
+
+        { Open-array locals are never declared — they are caller-owned
+          pointer+high pairs passed as parameters only. }
+        tyOpenArray: ;
+
+        { tyVoid and tyNil cannot appear as the type of a declared variable;
+          any hit here indicates a semantic-pass bug. }
+      else
+        raise ENativeCodeGenError.Create(Format(
+          'native zero-init: unhandled type kind %d for local ''%s''',
+          [Ord(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind),
+           TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[0]]));
+      end;
     end;
   { ARC: retain string/class/interface value params on entry — balances the
     release pass at the epilogue.  Skip var, out, open-array and const

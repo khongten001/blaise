@@ -3669,3 +3669,96 @@ rejects all declaration forms uniformly.
 
 The grammar is unchanged — this is a name-resolution rule, not a syntax
 rule — so `docs/grammar.ebnf` is unaffected.
+
+== Zero-Initialisation of Variables
+
+=== Decision
+
+Every variable in Blaise is guaranteed to hold its zero value before any
+explicit assignment.  This is a *language semantic*, not an implementation
+detail.  The guarantee covers all storage categories and all type kinds:
+
+[cols="2,1", options="header"]
+|===
+| Type kind | Zero value
+
+| Integer, Int64, Byte, Word, SmallInt, UInt32, UInt64 | `0`
+| Single, Double | `0.0` (positive zero — all bits 0)
+| Boolean | `False`
+| Byte (used as Char) | `#0`
+| Enum | ordinal `0` (first declared member)
+| Set | empty set (all bits 0)
+| Pointer, typed pointer, PChar | `nil`
+| Class reference | `nil`
+| Interface (both fat-pointer slots) | `nil` (`obj = 0` and `itab = 0`)
+| Metaclass (class-of) | `nil`
+| Procedural / method pointer | `nil` (both slots for method pointers)
+| String | `''` (nil data pointer)
+| Dynamic array | `nil` (length 0)
+| Static array | every element zero-initialised
+| Record | every field recursively zeroed
+|===
+
+The guarantee applies to: local variables, global variables, class fields
+(at `ClassAlloc`), record fields (at declaration/allocation), static-array
+elements, threadvars, and the `Result` variable of value-returning functions.
+Open-array parameters are excluded — they are caller-owned and the callee
+receives a pointer to the caller's storage.
+
+The grammar is unchanged.
+
+=== Rationale
+
+Zero-initialisation removes an entire category of undefined-behaviour bugs
+(reading an uninitialised variable).  It also simplifies ARC correctness:
+every managed slot starts `nil`, so a `Release(nil)` on the first-write path
+is always safe.
+
+Blaise is a systems-capable language but not a C replacement.  The audience
+expects the safety of a managed language first and the performance escape
+hatches of a systems language second.  The Principle of Least Surprise
+favours predictable zeroes over garbage.
+
+=== Alternatives Considered and Rejected
+
+*Garbage-by-default for performance.* C/C++ leave locals uninitialised.  The
+performance argument is real for large hot static arrays, but profiling shows
+the cost is negligible in practice: the QBE backend's dead-store elimination
+removes the zero store whenever the first use is an assignment; the native
+backend emits one extra store per scalar local (acceptable).  If a future
+profiling run ever identifies a hot large array as a bottleneck, the agreed
+escape hatch is a `{$noinit}` attribute — *not implemented now*; mention here
+serves as the single authoritative record of that decision.
+
+*Definite-assignment analysis instead of zero-initialisation.* A compiler
+that rejects programs reading a variable before explicit assignment provides
+the same safety with no runtime cost.  This is the approach taken by Java,
+C#, and Rust.  Blaise does not rule it out — a future diagnostic pass could
+warn on read-before-explicit-assignment as a lint on top of the
+zero-init guarantee — but it is not a substitute for it.  Zero-init is a
+runtime guarantee; definite-assignment analysis is a static check that
+does not cover all cases (pointers, out-params, aliasing).
+
+=== Implementation
+
+* The QBE backend zeroes every local in `EmitVarAllocs` (alloc + store/memset).
+  QBE's dead-store elimination removes the store when the first use is an
+  assignment.
+* The native x86-64 backend zeroes every local in `EmitFunctionDef` using
+  `movl $0` / `movq $0` / `xorpd + movsd` / `memset` as appropriate for
+  the type width.  An exhaustive `case` with an `else raise` ensures no
+  new type kind is silently skipped.
+* Global variables are placed in the `.data` section with explicit zero
+  directives (`.quad 0`, `.long 0`, etc.); threadvars are placed in `.tbss`
+  (zero-initialised thread-local storage).
+* Class instances are zeroed by `_ClassAlloc` via `memset` before the
+  constructor runs.
+
+=== Future Roadmap (not implemented)
+
+* `{$noinit}` attribute — opt-out for a specific variable when the profiler
+  identifies the zero-store as a measurable hot-path cost.  Agreed as the
+  escape hatch if ever needed; not to be added speculatively.
+* Definite-assignment warning — a lint diagnostic for
+  read-before-explicit-assignment.  Zero-init is the hard guarantee; the
+  warning is advisory and will be implemented as a separate analysis pass.

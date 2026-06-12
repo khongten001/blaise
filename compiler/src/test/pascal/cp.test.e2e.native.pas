@@ -380,6 +380,24 @@ type
       0-based like every other Blaise subscript (regression: QBE
       subtracted 1, native read garbage through the unhandled path). }
     procedure TestRun_Native_StringFieldCharRead;
+
+    { Zero-initialisation — both backends must guarantee every local variable
+      starts at its zero value even on a dirty stack.  Each test category uses
+      a Dirty() helper that fills the stack with 0xDEADBEEF garbage before the
+      real procedure runs, proving that the zero-init comes from the prologue
+      and not from lucky stack layout.
+      Note: TestRun_ZeroInit_SetLocal runs QBE-only because the native backend
+      currently crashes the compiler on set-typed variables (bugs.txt). }
+    procedure TestRun_ZeroInit_ScalarIntegers;
+    procedure TestRun_ZeroInit_FloatLocals;
+    procedure TestRun_ZeroInit_BooleanAndChar;
+    procedure TestRun_ZeroInit_PointerLocals;
+    procedure TestRun_ZeroInit_EnumLocal;
+    procedure TestRun_ZeroInit_SetLocal;
+    procedure TestRun_ZeroInit_RecordWithMixedFields;
+    procedure TestRun_ZeroInit_StaticArray;
+    procedure TestRun_ZeroInit_ThreadVar;
+    procedure TestRun_ZeroInit_GlobalVars;
   end;
 
 implementation
@@ -5806,6 +5824,288 @@ begin
   AssertRunsOnAll(Src,
     'exe:gcc' + LE + 'arg:-o' + LE + 'arg:file1' + LE + 'arg:file2' + LE +
     'tail:7' + LE, 0)
+end;
+
+{ ===================================================================== }
+{ Zero-initialisation tests                                             }
+{ Dirty() fills the stack frame with 0xDEADBEEF garbage before the     }
+{ real procedure runs, so any zero we observe must come from the        }
+{ prologue zero-init, not from lucky leftover zeros.                    }
+{ ===================================================================== }
+
+const
+  { Dirty helper shared across all zero-init tests. }
+  SrcZeroInitDirtyPrologue =
+    '''
+    procedure Dirty();
+    var
+      A: array[0..127] of Int64;
+      I: Integer;
+    begin
+      for I := 0 to 127 do
+        A[I] := -81985529216486896
+    end;
+    ''';
+
+  SrcZeroInit_ScalarIntegers =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    procedure Check();
+    var
+      A: Integer;
+      B: Int64;
+      C: Byte;
+      D: Word;
+      E: SmallInt;
+      F: UInt32;
+      G: UInt64;
+    begin
+      WriteLn(A);
+      WriteLn(B);
+      WriteLn(C);
+      WriteLn(D);
+      WriteLn(E);
+      WriteLn(F);
+      WriteLn(G)
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_FloatLocals =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    procedure Check();
+    var
+      D: Double;
+      S: Single;
+    begin
+      if D = 0.0 then WriteLn('d_ok');
+      if S = 0.0 then WriteLn('s_ok')
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_BooleanAndChar =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    procedure Check();
+    var
+      B: Boolean;
+      C: Byte;
+    begin
+      if not B then WriteLn('b_ok');
+      if C = 0 then WriteLn('c_ok')
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_PointerLocals =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    procedure Check();
+    var
+      P: Pointer;
+    begin
+      if not Assigned(P) then WriteLn('ok')
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_EnumLocal =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    type
+      TColor = (clRed, clGreen, clBlue);
+    procedure Check();
+    var
+      C: TColor;
+    begin
+      if Ord(C) = 0 then WriteLn('ok')
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_SetLocal =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    type
+      TFlag = (fA, fB, fC);
+      TFlags = set of TFlag;
+    procedure Check();
+    var
+      S: TFlags;
+      I: Integer;
+    begin
+      I := 0;
+      if fA in S then I := I + 1;
+      if fB in S then I := I + 1;
+      if fC in S then I := I + 1;
+      WriteLn(I)
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_RecordWithMixedFields =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    type
+      TPoint = record
+        X: Integer;
+        Y: Integer;
+        Z: Double;
+      end;
+    procedure Check();
+    var
+      P: TPoint;
+    begin
+      WriteLn(P.X);
+      WriteLn(P.Y);
+      if P.Z = 0.0 then WriteLn('z_ok')
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_StaticArray =
+    'program Prg;' + LE +
+    SrcZeroInitDirtyPrologue +
+    '''
+    procedure Check();
+    var
+      A: array[0..4] of Integer;
+      I: Integer;
+    begin
+      for I := 0 to 4 do
+        WriteLn(A[I])
+    end;
+    begin
+      Dirty();
+      Check()
+    end.
+    ''';
+
+  SrcZeroInit_ThreadVar =
+    '''
+    program Prg;
+    threadvar
+      T: Integer;
+    begin
+      WriteLn(T)
+    end.
+    ''';
+
+  SrcZeroInit_GlobalVars =
+    '''
+    program Prg;
+    var
+      I: Integer;
+      D: Double;
+      B: Boolean;
+    begin
+      WriteLn(I);
+      if D = 0.0 then WriteLn('d_ok');
+      if not B then WriteLn('b_ok')
+    end.
+    ''';
+
+procedure TE2ENativeTests.TestRun_ZeroInit_ScalarIntegers;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_ScalarIntegers,
+    '0' + LE + '0' + LE + '0' + LE + '0' + LE + '0' + LE + '0' + LE + '0' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_FloatLocals;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_FloatLocals, 'd_ok' + LE + 's_ok' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_BooleanAndChar;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_BooleanAndChar, 'b_ok' + LE + 'c_ok' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_PointerLocals;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_PointerLocals, 'ok' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_EnumLocal;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_EnumLocal, 'ok' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_SetLocal;
+var
+  Stdout: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Native backend crashes the compiler on set-typed variables — QBE only
+    until that pre-existing bug is fixed (see bugs.txt).
+    Note: set equality (S = []) also crashes the semantic pass (separate bug),
+    so we probe zero-init via the 'in' operator instead. }
+  if not CompileAndRun(SrcZeroInit_SetLocal, Stdout, ExitCode) then
+    Fail('QBE compile/run failed');
+  AssertEquals('0' + LE, Stdout);
+  AssertEquals(0, ExitCode);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_RecordWithMixedFields;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_RecordWithMixedFields,
+    '0' + LE + '0' + LE + 'z_ok' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_StaticArray;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_StaticArray,
+    '0' + LE + '0' + LE + '0' + LE + '0' + LE + '0' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_ThreadVar;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_ThreadVar, '0' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_ZeroInit_GlobalVars;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcZeroInit_GlobalVars, '0' + LE + 'd_ok' + LE + 'b_ok' + LE, 0);
 end;
 
 initialization
