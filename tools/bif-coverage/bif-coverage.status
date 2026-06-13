@@ -22,6 +22,7 @@ TStringSubscriptExpr.IndexExpr  serialise
 
 # TArrayLiteralExpr (uAST.pas:63)
 TArrayLiteralExpr.Elements  serialise
+TArrayLiteralExpr.IsConstArray  safe
 
 # TNilLiteral (uAST.pas:70)
 

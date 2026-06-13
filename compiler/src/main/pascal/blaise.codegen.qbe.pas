@@ -330,6 +330,7 @@ type
     function  EmitStringSubscriptExpr(AExpr: TStringSubscriptExpr): string;
     function  EmitAddrOfExpr(AExpr: TAddrOfExpr): string;
     function  EmitArrayLiteralExpr(AExpr: TArrayLiteralExpr): string;
+    function  EmitConstArrayLiteral(AExpr: TArrayLiteralExpr): string;
     function  EmitSetLiteralExpr(AExpr: TArrayLiteralExpr): string;
     { Returns a QBE temp holding a pointer to the storage of a record or class
       instance referenced by AExpr.  Used by chained field access to traverse
@@ -13870,6 +13871,20 @@ begin
     Exit(EmitSetLiteralExpr(AExpr));
   end;
 
+  { 'array of const' literal: build an array of 16-byte TVarRec records
+    (VType at +0, VValue at +8). }
+  if AExpr.IsConstArray then
+    Exit(EmitConstArrayLiteral(AExpr));
+
+  { Empty literal with no resolved element type (an [] that never gained a
+    context): emit a null data pointer rather than dereferencing a nil type. }
+  if (AExpr.ResolvedType = nil) or (AExpr.Elements.Count = 0) then
+  begin
+    BufPtr := AllocTemp();
+    EmitLine(Format('  %s =l copy 0', [BufPtr]));
+    Exit(BufPtr);
+  end;
+
   OAType   := TOpenArrayTypeDesc(AExpr.ResolvedType);
   ElemType := OAType.ElementType;
   ElemSize := ElemType.ByteSize();
@@ -13900,6 +13915,108 @@ begin
       EmitLine(Format('  %s =l add %s, %s', [ElemPtr, BufPtr, Offset]));
       EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
     end;
+  end;
+  Result := BufPtr;
+end;
+
+{ Build an 'array of const' temporary: one 16-byte TVarRec per element
+  (VType byte at +0, pointer-sized VValue at +8).  Borrow semantics — string
+  and object values are stored without an AddRef; the callee must not retain
+  them beyond the call.  Doubles are heap-boxed (a PDouble in the slot, tag
+  vtExtended) because a double does not fit the integer value slot. }
+function TCodeGenQBE.EmitConstArrayLiteral(AExpr: TArrayLiteralExpr): string;
+var
+  BufPtr:   string;
+  Count:    Integer;
+  I, Tag:   Integer;
+  Elem:     TASTExpr;
+  EK:       TTypeKind;
+  SlotPtr:  string;
+  ValPtr:   string;
+  ElemVal:  string;
+  BoxPtr:   string;
+  Widened:  string;
+begin
+  Count := AExpr.Elements.Count;
+  if Count < 1 then
+  begin
+    { Empty [] — no storage needed; pass a null data pointer (high = -1). }
+    BufPtr := AllocTemp();
+    EmitLine(Format('  %s =l copy 0', [BufPtr]));
+    Exit(BufPtr);
+  end;
+  BufPtr := AllocTemp();
+  EmitLine(Format('  %s =l alloc8 %d', [BufPtr, Count * 16]));
+  for I := 0 to Count - 1 do
+  begin
+    Elem := TASTExpr(AExpr.Elements.Items[I]);
+    EK   := Elem.ResolvedType.Kind;
+    { Slot base = BufPtr + I*16; value pointer = slot + 8. }
+    SlotPtr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, %d', [SlotPtr, BufPtr, I * 16]));
+    ValPtr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ValPtr, SlotPtr]));
+    { Determine the vt tag and box the value into the 8-byte slot. }
+    case EK of
+      tyInteger, tyUInt32, tyByte, tySmallInt, tyWord:
+        begin
+          Tag := 0;   { vtInteger }
+          ElemVal := EmitExpr(Elem);
+          Widened := AllocTemp();
+          EmitLine(Format('  %s =l extsw %s', [Widened, ElemVal]));
+          EmitLine(Format('  storel %s, %s', [Widened, ValPtr]));
+        end;
+      tyBoolean:
+        begin
+          Tag := 1;   { vtBoolean }
+          ElemVal := EmitExpr(Elem);
+          Widened := AllocTemp();
+          EmitLine(Format('  %s =l extub %s', [Widened, ElemVal]));
+          EmitLine(Format('  storel %s, %s', [Widened, ValPtr]));
+        end;
+      tyEnum:
+        begin
+          Tag := 24;  { vtEnum }
+          ElemVal := EmitExpr(Elem);
+          Widened := AllocTemp();
+          EmitLine(Format('  %s =l extsw %s', [Widened, ElemVal]));
+          EmitLine(Format('  storel %s, %s', [Widened, ValPtr]));
+        end;
+      tyInt64, tyUInt64:
+        begin
+          Tag := 16;  { vtInt64 }
+          ElemVal := EmitExpr(Elem);
+          EmitLine(Format('  storel %s, %s', [ElemVal, ValPtr]));
+        end;
+      tyDouble, tySingle:
+        begin
+          Tag := 3;   { vtExtended — heap-box the double }
+          ElemVal := EmitExpr(Elem);
+          BoxPtr := AllocTemp();
+          EmitLine(Format('  %s =l call $_BlaiseGetMem(w 8)', [BoxPtr]));
+          EmitLine(Format('  stored %s, %s', [ElemVal, BoxPtr]));
+          EmitLine(Format('  storel %s, %s', [BoxPtr, ValPtr]));
+        end;
+      tyString:
+        begin
+          Tag := 20;  { vtAnsiString — borrow the string data pointer }
+          ElemVal := EmitExpr(Elem);
+          EmitLine(Format('  storel %s, %s', [ElemVal, ValPtr]));
+        end;
+      tyClass, tyMetaClass:
+        begin
+          Tag := 7;   { vtObject — borrow the object pointer }
+          ElemVal := EmitExpr(Elem);
+          EmitLine(Format('  storel %s, %s', [ElemVal, ValPtr]));
+        end;
+    else
+      { tyPointer, tyPChar, and anything else: store the pointer-sized value. }
+      Tag := 5;     { vtPointer }
+      ElemVal := EmitExpr(Elem);
+      EmitLine(Format('  storel %s, %s', [ElemVal, ValPtr]));
+    end;
+    { Store the tag byte at slot +0. }
+    EmitLine(Format('  storeb %d, %s', [Tag, SlotPtr]));
   end;
   Result := BufPtr;
 end;

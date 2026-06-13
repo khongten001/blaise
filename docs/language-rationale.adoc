@@ -4039,12 +4039,67 @@ that makes `Format`-style APIs feel native, which is the expected Pascal idiom.
 
 Unlike `Variant`, `array of const` is a compiler-generated *call construct*,
 not a free-floating dynamic value type.  The compiler builds an array of tagged
-records (`TVarRec`: a `VType` discriminator plus a union of the value or a
-pointer to it) at the call site from the bracket literal, and the callee
-dispatches on `VType`.  The tag set is fixed and known at compile time, the
-array length is known, and the construct cannot leak into arbitrary storage the
-way a `Variant` value can — so it admits the heterogeneous-list ergonomics
-without importing `Variant`'s runtime-coercion surface.
+records (`TVarRec`: a `VType` discriminator plus a pointer-sized `VValue` slot)
+at the call site from the bracket literal, and the callee dispatches on
+`VType`.  The tag set is fixed and known at compile time, the array length is
+known, and the construct cannot leak into arbitrary storage the way a `Variant`
+value can — so it admits the heterogeneous-list ergonomics without importing
+`Variant`'s runtime-coercion surface.
+
+==== Implementation
+
+A parameter declared `array of const` is an open array whose element type is
+the intrinsic record `TVarRec`.  `TVarRec` is registered as a compiler builtin
+(like `TObject` and `TMethod`), so it and the `vt*` discriminant constants are
+available with no `uses` clause — matching Delphi, where `array of const` lives
+in the auto-available System unit.  Its layout is a 16-byte record: a `VType`
+byte at offset 0 and a pointer-sized `VValue` at offset 8.
+
+Because Blaise has no record variant parts (a deliberate omission), `TVarRec`
+does not expose Delphi's overlapping union fields (`VInteger`, `VAnsiString`,
+…).  Instead the callee reads each element by reinterpret-casting the single
+`VValue` slot, switching on `VType`:
+
+[source,pascal]
+----
+procedure Log(args: array of const);
+var i: Integer;
+begin
+  for i := 0 to High(args) do
+    case args[i].VType of
+      vtInteger:    WriteLn(Integer(args[i].VValue));
+      vtBoolean:    WriteLn(Boolean(args[i].VValue));
+      vtAnsiString: WriteLn(string(PChar(args[i].VValue)));
+      vtExtended:   WriteLn(PDouble(args[i].VValue)^);
+      vtObject:     ...TObject(args[i].VValue)...;
+    end;
+end;
+----
+
+The supported element kinds and their tags are `vtInteger` (also boolean as
+`vtBoolean`, enum ordinals as `vtEnum`), `vtInt64`, `vtExtended` (`Double`),
+`vtAnsiString` (the UTF-8 string), `vtObject`, and `vtPointer`.
+
+Two representation choices follow from the pointer-sized value slot:
+
+* *Doubles are heap-boxed.*  A `Double` does not fit a reinterpret-cast through
+  the pointer slot (it is a different register class, and `Double(ptr)` is not a
+  bit-reinterpretation).  So a `vtExtended` element stores a pointer to a
+  heap-allocated `Double`; the callee dereferences it (`PDouble(VValue)^`).
+  This mirrors FPC's `vtExtended: PExtended`.
+* *Strings and objects are borrowed, not retained.*  The boxed value is the
+  string's data pointer / the object pointer, stored without an `AddRef`
+  (FPC semantics).  The `array of const` array borrows its elements for the
+  duration of the call; the caller's source values outlive the call, and the
+  callee must not retain a reference beyond it.  Borrowing avoids the ARC
+  traffic and lifetime entanglement that owning each element would impose on a
+  transient stack array.
+
+A heterogeneous bracket literal is accepted only in `array of const` position:
+the array-literal analyser, on finding mixed element types, types the literal
+as `array of TVarRec` instead of rejecting it, and overload resolution binds it
+to an `array of const` formal (or fails with "no matching overload").  A
+homogeneous literal (`[1, 2, 3]`) and the empty literal (`[]`) bind too.
 
 === Alternatives considered
 

@@ -1452,6 +1452,7 @@ var
   TObjectDesc:      TRecordTypeDesc;
   FCustomAttrDesc:  TRecordTypeDesc;
   TMethodDesc:      TRecordTypeDesc;
+  VarRecDesc:       TRecordTypeDesc;
 begin
   { Primitive types }
   FTypeInteger  := NewType(tyInteger,  'Integer');
@@ -1513,6 +1514,41 @@ begin
   TMethodDesc.AddField('Code', FTypePointer);
   TMethodDesc.AddField('Data', FTypePointer);
   Define(TSymbol.Create('TMethod', skType, TMethodDesc));
+
+  { TVarRec — one element of an 'array of const' argument list.  A 16-byte
+    tagged value: VType (a vt* discriminant) at +0, and a single pointer-sized
+    VValue slot at +8 holding the boxed value (or a pointer to it).  The
+    compiler builds these at the call site from a bracket literal; the callee
+    reads each element by switching on VType and reinterpret-casting VValue:
+      vtInteger / vtBoolean / vtEnum  → Integer(v.VValue)
+      vtInt64                         → Int64(v.VValue)
+      vtPointer / vtObject            → Pointer/TObject(v.VValue)
+      vtAnsiString                    → string(v.VValue)
+      vtExtended                      → PDouble(v.VValue)^   (heap-boxed double)
+    Layout matches FPC's TVarRec (VType at +0, value slot at +8). }
+  VarRecDesc := NewRecordType('TVarRec');
+  VarRecDesc.AddField('VType',  FTypeByte);
+  VarRecDesc.AddField('VValue', FTypePointer);
+  Define(TSymbol.Create('TVarRec', skType, VarRecDesc));
+
+  { vt* discriminant constants for TVarRec.VType.  Values follow FPC where a
+    direct equivalent exists, so ported case statements line up. }
+  Sym := TSymbol.Create('vtInteger', skConstant, FTypeInteger);
+  Sym.ConstValue := 0;  Define(Sym);
+  Sym := TSymbol.Create('vtBoolean', skConstant, FTypeInteger);
+  Sym.ConstValue := 1;  Define(Sym);
+  Sym := TSymbol.Create('vtExtended', skConstant, FTypeInteger);  { Double (heap-boxed) }
+  Sym.ConstValue := 3;  Define(Sym);
+  Sym := TSymbol.Create('vtPointer', skConstant, FTypeInteger);
+  Sym.ConstValue := 5;  Define(Sym);
+  Sym := TSymbol.Create('vtObject', skConstant, FTypeInteger);
+  Sym.ConstValue := 7;  Define(Sym);
+  Sym := TSymbol.Create('vtInt64', skConstant, FTypeInteger);
+  Sym.ConstValue := 16;  Define(Sym);
+  Sym := TSymbol.Create('vtAnsiString', skConstant, FTypeInteger);  { the UTF-8 string }
+  Sym.ConstValue := 20;  Define(Sym);
+  Sym := TSymbol.Create('vtEnum', skConstant, FTypeInteger);  { Blaise enum ordinal }
+  Sym.ConstValue := 24;  Define(Sym);
 
   { IInterface — root of the interface hierarchy; no methods }
   Define(TSymbol.Create('IInterface', skType, NewInterfaceType('IInterface')));

@@ -63,6 +63,10 @@ type
   TArrayLiteralExpr = class(TASTExpr)
   public
     Elements: TObjectList;  { owned list of TASTExpr }
+    IsConstArray: Boolean;  { set by uSemantic when this bracket literal is an
+                              'array of const' argument — its elements are boxed
+                              into TVarRec records at the call site rather than
+                              forming a homogeneous open array. }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1733,6 +1737,7 @@ begin
     AL := TArrayLiteralExpr.Create();
     for I := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
       AL.Elements.Add(CloneExpr(TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[I])));
+    AL.IsConstArray := TArrayLiteralExpr(AExpr).IsConstArray;
     Result := AL;
   end
   else if AExpr is TIdentExpr then

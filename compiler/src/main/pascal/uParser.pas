@@ -1720,7 +1720,16 @@ begin
       begin
         Advance();        { consume 'array' }
         Expect(tkOf);
-        TypeN := ParseTypeName();   { element type }
+        { 'array of const' — a heterogeneous variadic list.  The element type
+          is the intrinsic TVarRec; each call-site bracket element is boxed
+          into a (VType, VValue) record.  Reuses the open-array ABI. }
+        if Check(tkConst) then
+        begin
+          Advance();      { consume 'const' }
+          TypeN := 'TVarRec';
+        end
+        else
+          TypeN := ParseTypeName();   { element type }
       end
       else
         TypeN := ParseTypeName();

@@ -6637,6 +6637,17 @@ begin
     if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tySet) and
        (Arg is TArrayLiteralExpr) then
       Arg.ResolvedType := Par.ResolvedType;
+    { Bracket literal bound to an 'array of const' formal: mark it so codegen
+      boxes each element into a TVarRec, and pin its type to the formal's
+      array-of-TVarRec (the homogeneous case was typed 'array of <T>'). }
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyOpenArray) and
+       (TOpenArrayTypeDesc(Par.ResolvedType).ElementType <> nil) and
+       SameText(TOpenArrayTypeDesc(Par.ResolvedType).ElementType.Name, 'TVarRec') and
+       (Arg is TArrayLiteralExpr) then
+    begin
+      TArrayLiteralExpr(Arg).IsConstArray := True;
+      Arg.ResolvedType := Par.ResolvedType;
+    end;
   end;
 end;
 
@@ -6692,6 +6703,19 @@ begin
        (TSetTypeDesc(AParam).BaseType =
           SetLiteralBaseEnum(TArrayLiteralExpr(AArgExpr))) then
       Result := 2;
+    Exit;
+  end;
+  { An 'array of const' formal (open array of TVarRec) accepts any bracket
+    literal — homogeneous or heterogeneous.  Matched here before the generic
+    open-array rules so a heterogeneous literal (typed 'array of TVarRec') and
+    a homogeneous one ('array of Integer') both bind, and the empty literal []
+    (nil arg type) binds too. }
+  if (AParam.Kind = tyOpenArray) and
+     (TOpenArrayTypeDesc(AParam).ElementType <> nil) and
+     SameText(TOpenArrayTypeDesc(AParam).ElementType.Name, 'TVarRec') and
+     (AArgExpr is TArrayLiteralExpr) then
+  begin
+    Result := 2;
     Exit;
   end;
   if AArg = nil then Exit;
@@ -8080,6 +8104,7 @@ begin
         [AExpr.Name, AExpr.Args.Count]),
       AExpr.Line, AExpr.Col);
 
+  RetypeSetLiteralArgs(AExpr.Args, MDecl);
   AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
   AExpr.ResolvedDecl := MDecl;
   Result := MDecl.ResolvedReturnType;
@@ -9959,13 +9984,20 @@ begin
   for I := 1 to AExpr.Elements.Count - 1 do
   begin
     ActType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
-    if ActType <> ElemType then
-      SemanticError(
-        Format('Array literal element %d has type ''%s''; expected ''%s''',
-          [I + 1, ActType.Name, ElemType.Name]),
-        AExpr.Line, AExpr.Col);
+    if (ActType <> ElemType) and not AExpr.IsConstArray then
+    begin
+      { A heterogeneous bracket literal is only valid as an 'array of const'
+        argument.  Rather than rejecting it here, type it as 'array of TVarRec'
+        and flag it; overload resolution then matches it against an
+        array-of-const formal (or fails with 'no matching overload' if none
+        exists), and codegen boxes each element into a TVarRec. }
+      AExpr.IsConstArray := True;
+    end;
   end;
-  Result := FTable.NewOpenArrayType(ElemType);
+  if AExpr.IsConstArray then
+    Result := FTable.NewOpenArrayType(FTable.FindType('TVarRec'))
+  else
+    Result := FTable.NewOpenArrayType(ElemType);
   AExpr.ResolvedType := Result;
 end;
 

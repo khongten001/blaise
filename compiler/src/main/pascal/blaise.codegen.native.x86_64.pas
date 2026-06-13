@@ -368,6 +368,7 @@ type
       element, and leave the base pointer in %rax.  Returns the number of bytes
       allocated on the stack (caller must addq that amount after the call). }
     function EmitOpenArrayLiteral(ALit: TArrayLiteralExpr): Integer;
+    function EmitConstArrayLiteral(ALit: TArrayLiteralExpr): Integer;
     { Emit a direct call to a user procedure/function; result (if any) in %eax.
       ADecl is the callee's declaration (needed for var/out param handling);
       nil for type-cast calls. }
@@ -4157,6 +4158,16 @@ begin
     Self.EmitFieldAddrToRcx(TFieldAccessExpr(AExpr));
     Ty := TFieldAccessExpr(AExpr).FieldInfo.TypeDesc;
     Self.EmitLoadFloat('(%rcx)', Ty);
+    Exit;
+  end;
+
+  { Pointer dereference yielding a float: P^ where P: ^Double/^Single.
+    Evaluate the pointer into %rcx and load the float from (%rcx). }
+  if AExpr is TDerefExpr then
+  begin
+    Self.EmitExprToEax(TDerefExpr(AExpr).Expr);
+    Self.Emit(#9'movq %rax, %rcx');
+    Self.EmitLoadFloat('(%rcx)', AExpr.ResolvedType);
     Exit;
   end;
 
@@ -10817,6 +10828,11 @@ var
   TotalSz:  Integer;
   I:        Integer;
 begin
+  { 'array of const' literal: each element is a 16-byte TVarRec (VType at +0,
+    VValue at +8). }
+  if ALit.IsConstArray then
+    Exit(Self.EmitConstArrayLiteral(ALit));
+
   OAType   := TOpenArrayTypeDesc(ALit.ResolvedType);
   ElemType := OAType.ElementType;
   ElemSize := ElemType.RawSize();
@@ -10839,6 +10855,101 @@ begin
   end;
   { Re-load %rax with the base ptr (EmitExprToEax may have clobbered it). }
   Self.Emit(#9'movq %rsp, %rax');
+  Exit(TotalSz);
+end;
+
+function TX86_64Backend.EmitConstArrayLiteral(ALit: TArrayLiteralExpr): Integer;
+{ Build an 'array of const' temporary on the stack: one 16-byte TVarRec per
+  element (VType byte at +0, pointer-sized VValue at +8).  Borrow semantics —
+  strings/objects are stored without an AddRef.  Doubles are heap-boxed (a
+  PDouble in the slot) since a double does not fit the integer value slot.
+  Returns the bytes subtracted from %rsp (caller restores), with %rax = base. }
+var
+  Count, TotalSz, I, Tag, Off: Integer;
+  Elem: TASTExpr;
+  EK:   TTypeKind;
+begin
+  Count := ALit.Elements.Count;
+  if Count < 1 then
+  begin
+    { Empty [] — no storage; null data pointer, callee sees high = -1. }
+    Self.Emit(#9'xorq %rax, %rax');
+    Exit(0);
+  end;
+  TotalSz := Count * 16;
+  TotalSz := (TotalSz + 15) and (-16);   { 16-byte ABI alignment }
+  Self.Emit(Format(#9'subq $%d, %%rsp', [TotalSz]));
+  { %rbx holds the stable block base across element evaluation (callee-saved). }
+  Self.Emit(#9'pushq %rbx');
+  Self.Emit(#9'leaq 8(%rsp), %rbx');     { base = rsp + 8 (skip saved rbx) }
+  for I := 0 to Count - 1 do
+  begin
+    Elem := TASTExpr(ALit.Elements.Items[I]);
+    EK   := Elem.ResolvedType.Kind;
+    Off  := I * 16;
+    case EK of
+      tyDouble, tySingle:
+        begin
+          Tag := 3;   { vtExtended — heap-box the double }
+          Self.EmitExprToXmm0(Elem);
+          Self.Emit(#9'subq $8, %rsp');
+          Self.Emit(#9'movsd %xmm0, (%rsp)');   { stash the double }
+          Self.Emit(#9'movl $8, %edi');
+          Self.Emit(#9'callq _BlaiseGetMem');   { ptr in %rax }
+          Self.Emit(#9'movsd (%rsp), %xmm0');
+          Self.Emit(#9'addq $8, %rsp');
+          Self.Emit(#9'movsd %xmm0, (%rax)');   { *box = double }
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyBoolean:
+        begin
+          Tag := 1;
+          Self.EmitExprToEax(Elem);
+          Self.Emit(#9'movzbl %al, %eax');
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyInteger, tyUInt32, tyByte, tySmallInt, tyWord:
+        begin
+          Tag := 0;   { vtInteger }
+          Self.EmitExprToEax(Elem);
+          Self.Emit(#9'movslq %eax, %rax');     { sign-extend to 64 bits }
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyEnum:
+        begin
+          Tag := 24;  { vtEnum }
+          Self.EmitExprToEax(Elem);
+          Self.Emit(#9'movslq %eax, %rax');
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyInt64, tyUInt64:
+        begin
+          Tag := 16;  { vtInt64 }
+          Self.EmitExprToEax(Elem);
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyString:
+        begin
+          Tag := 20;  { vtAnsiString — borrow the string data pointer }
+          Self.EmitExprToEax(Elem);
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+      tyClass, tyMetaClass:
+        begin
+          Tag := 7;   { vtObject — borrow the object pointer }
+          Self.EmitExprToEax(Elem);
+          Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+        end;
+    else
+      Tag := 5;       { vtPointer }
+      Self.EmitExprToEax(Elem);
+      Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [Off + 8]));
+    end;
+    { Store the tag byte at slot +0. }
+    Self.Emit(Format(#9'movb $%d, %d(%%rbx)', [Tag, Off]));
+  end;
+  Self.Emit(#9'movq %rbx, %rax');   { base pointer to the TVarRec block }
+  Self.Emit(#9'popq %rbx');
   Exit(TotalSz);
 end;
 

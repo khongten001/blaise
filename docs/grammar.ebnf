@@ -426,7 +426,8 @@ ParamGroup
     ;
 
 ParamType
-    = ARRAY OF TypeName
+    = ARRAY OF CONST                         (* heterogeneous variadic list *)
+    | ARRAY OF TypeName
     | TypeName
     ;
 
@@ -443,6 +444,12 @@ DefaultValue
  * tooling/interface metadata); CONST marks a read-only parameter.
  * ARRAY OF TypeName denotes an open-array parameter using the two-register
  * ABI: a data pointer and a high-index value passed as separate arguments.
+ *
+ * ARRAY OF CONST is a heterogeneous variadic parameter.  Its element type is
+ * the intrinsic record TVarRec; a call-site bracket literal [a, b, ...] is
+ * boxed into an array of TVarRec (each a VType discriminant + a pointer-sized
+ * VValue) and passed via the same open-array ABI.  The callee reads each
+ * element by switching on VType.  See language-rationale.adoc.
  *
  * A DefaultValue is permitted only on a single-name ParamGroup that is not
  * VAR/OUT and not an open-array.  A call site may omit any trailing
