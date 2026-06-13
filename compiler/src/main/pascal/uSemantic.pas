@@ -146,6 +146,12 @@ type
     function  NewArrayConstLabel(const AName: string): string;
     function  FoldConstBitOpExpr(ATokens: TStringList;
                                  ALine, ACol: Integer): Int64;
+    { Fold a compile-time integer constant expression AST (literals, named
+      constants, and the integer binary/unary operators with the precedence
+      already encoded in the tree shape) to its Int64 value.  Named-constant
+      references are resolved against the symbol table, so this must run after
+      the referenced consts are declared. }
+    function  EvalConstIntExpr(AExpr: TASTExpr; ALine, ACol: Integer): Int64;
     procedure AnalyseTypeDecls(ABlock: TBlock);
     procedure LinkClassMethodImpls(ABlock: TBlock);
     procedure LinkGenericClassMethodImpls(ABlock: TBlock);
@@ -3048,6 +3054,81 @@ begin
   end;
 end;
 
+function TSemanticAnalyser.EvalConstIntExpr(AExpr: TASTExpr;
+                                            ALine, ACol: Integer): Int64;
+var
+  Bin:    TBinaryExpr;
+  IdSym:  TSymbol;
+  L, R:   Int64;
+begin
+  Result := 0;
+  if AExpr = nil then Exit;
+
+  if AExpr is TIntLiteral then
+    Exit(TIntLiteral(AExpr).Value);
+
+  if AExpr is TIdentExpr then
+  begin
+    { Named-constant reference; also resolves True/False to 1/0. }
+    if SameText(TIdentExpr(AExpr).Name, 'True') then Exit(1);
+    if SameText(TIdentExpr(AExpr).Name, 'False') then Exit(0);
+    IdSym := FTable.Lookup(TIdentExpr(AExpr).Name);
+    if (IdSym = nil) or (IdSym.Kind <> skConstant) then
+    begin
+      SemanticError(Format(
+        'Constant expression references ''%s'', which is not a constant',
+        [TIdentExpr(AExpr).Name]), ALine, ACol);
+      Exit;
+    end;
+    Exit(IdSym.ConstValue);
+  end;
+
+  if AExpr is TNotExpr then
+    Exit(not EvalConstIntExpr(TNotExpr(AExpr).Expr, ALine, ACol));
+
+  if AExpr is TBinaryExpr then
+  begin
+    Bin := TBinaryExpr(AExpr);
+    L := EvalConstIntExpr(Bin.Left,  ALine, ACol);
+    R := EvalConstIntExpr(Bin.Right, ALine, ACol);
+    case Bin.Op of
+      boAdd: Exit(L + R);
+      boSub: Exit(L - R);
+      boMul: Exit(L * R);
+      boDiv:
+        begin
+          if R = 0 then
+          begin
+            SemanticError('Division by zero in constant expression', ALine, ACol);
+            Exit;
+          end;
+          Exit(L div R);
+        end;
+      boMod:
+        begin
+          if R = 0 then
+          begin
+            SemanticError('Division by zero in constant expression', ALine, ACol);
+            Exit;
+          end;
+          Exit(L mod R);
+        end;
+      boAnd: Exit(L and R);
+      boOr:  Exit(L or R);
+      boXor: Exit(L xor R);
+      boShl: Exit(L shl R);
+      boShr, boSar: Exit(L shr R);
+    else
+      SemanticError(
+        'Unsupported operator in integer constant expression', ALine, ACol);
+      Exit;
+    end;
+  end;
+
+  SemanticError(
+    'Constant expression is not a compile-time integer', ALine, ACol);
+end;
+
 procedure TSemanticAnalyser.AnalyseSetConstDecl(ACD: TConstDecl);
 var
   I:         Integer;
@@ -3185,6 +3266,10 @@ begin
       named-constant values in scope. }
     if CD.IntExprTokens <> nil then
       CD.IntVal := FoldConstBitOpExpr(CD.IntExprTokens, CD.Line, CD.Col);
+    { Compile-time integer expression (arithmetic/bitwise with precedence):
+      fold the AST now that prior consts in scope are resolvable. }
+    if CD.IntValueExpr <> nil then
+      CD.IntVal := EvalConstIntExpr(CD.IntValueExpr, CD.Line, CD.Col);
     { Set-valued constants reference enum members, which are not registered
       until AnalyseTypeDecls runs — so they are resolved in the second pass
       (AnalyseArrayConstDecls), like array consts. }
@@ -5175,6 +5260,8 @@ begin
       CD.Line, CD.Col);
   if CD.IntExprTokens <> nil then
     CD.IntVal := FoldConstBitOpExpr(CD.IntExprTokens, CD.Line, CD.Col);
+  if CD.IntValueExpr <> nil then
+    CD.IntVal := EvalConstIntExpr(CD.IntValueExpr, CD.Line, CD.Col);
 
   { Type compatibility check between the folded value kind and the declared
     type — catches 'var N: Integer = ''text''' and similar. }

@@ -115,6 +115,17 @@ type
     procedure TestTypedConst_OrChain_MixedLiteralAndNamed_Folds;
     procedure TestTypedConst_AndMaskOfHexLiteral_Folds;
     procedure TestTypedConst_ShiftLeftLiteral_Folds;
+
+    { Compile-time integer constant expressions (issue #96) — arithmetic
+      operators, precedence, parentheses, and forward const references }
+    procedure TestConstExpr_Multiply_Folds;
+    procedure TestConstExpr_Parenthesised_Folds;
+    procedure TestConstExpr_PrecedenceMulOverAdd_Folds;
+    procedure TestConstExpr_ParensOverridePrecedence_Folds;
+    procedure TestConstExpr_DivAndMod_Folds;
+    procedure TestConstExpr_NamedConstReference_Folds;
+    procedure TestConstExpr_UnaryMinus_Folds;
+    procedure TestConstExpr_MixedArithAndBitwise_Folds;
     procedure TestArrayConst_OrChainElement_FoldsToFinalInteger;
   end;
 
@@ -1322,6 +1333,123 @@ begin
     ''');
   AssertTrue('IR non-empty', IR <> '');
   AssertTrue('1 shl 8 = 256 in IR', IRContains(IR, '256'));
+end;
+
+procedure TConstTests.TestConstExpr_Multiply_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = 2 * 3;
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('2 * 3 = 6 in IR', IRContains(IR, '6'));
+end;
+
+procedure TConstTests.TestConstExpr_Parenthesised_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = (2 * 3);
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('(2 * 3) = 6 in IR', IRContains(IR, '6'));
+end;
+
+procedure TConstTests.TestConstExpr_PrecedenceMulOverAdd_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = 2 + 3 * 4;
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { 2 + (3 * 4) = 14, not (2 + 3) * 4 = 20 }
+  AssertTrue('2 + 3 * 4 = 14 in IR', IRContains(IR, '14'));
+end;
+
+procedure TConstTests.TestConstExpr_ParensOverridePrecedence_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = (2 + 3) * 4;
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('(2 + 3) * 4 = 20 in IR', IRContains(IR, '20'));
+end;
+
+procedure TConstTests.TestConstExpr_DivAndMod_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const Q = 100 div 7;
+          R = 100 mod 7;
+    var a, b: Integer;
+    begin a := Q; b := R end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('100 div 7 = 14 in IR', IRContains(IR, '14'));
+  AssertTrue('100 mod 7 = 2 in IR', IRContains(IR, '2'));
+end;
+
+procedure TConstTests.TestConstExpr_NamedConstReference_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const Base = 10;
+          Derived = Base * 2 + 1;
+    var v: Integer;
+    begin v := Derived end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('Base * 2 + 1 = 21 in IR', IRContains(IR, '21'));
+end;
+
+procedure TConstTests.TestConstExpr_UnaryMinus_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = -5 * 3;
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('-5 * 3 = -15 in IR', IRContains(IR, '-15'));
+end;
+
+procedure TConstTests.TestConstExpr_MixedArithAndBitwise_Folds;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    const X = (1 shl 4) or 3;
+    var v: Integer;
+    begin v := X end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  { (1 shl 4) or 3 = 16 or 3 = 19 }
+  AssertTrue('(1 shl 4) or 3 = 19 in IR', IRContains(IR, '19'));
 end;
 
 procedure TConstTests.TestArrayConst_OrChainElement_FoldsToFinalInteger;

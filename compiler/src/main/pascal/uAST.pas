@@ -563,6 +563,15 @@ type
       operator names (one of 'or'/'and'/'xor'/'shl'/'shr').  Semantic
       resolves idents and folds to CD.IntVal. }
     IntExprTokens:  TStringList;
+    { Integer constant expression in the value position — non-nil when the RHS
+      is a compile-time arithmetic/bitwise expression with operator precedence
+      and/or parentheses (e.g. '2 + 3 * 4', '(1 shl 8) or 7', 'BASE * 2').
+      Stored as a normal expression AST so precedence and grouping are encoded
+      structurally; the semantic pass folds it to CD.IntVal via EvalConstIntExpr
+      (resolving any named-constant references after all consts are declared).
+      Supersedes the flat IntExprTokens form for newly-parsed expressions; the
+      token form is retained only for the legacy single-precedence bit-op path. }
+    IntValueExpr:   TASTExpr;
     { Parallel to ArrayElements — each non-nil entry is an IntExprTokens-
       shaped TStringList describing the bit-op expression for that
       element.  Semantic folds it and overwrites ArrayElements[i] with
@@ -2153,6 +2162,8 @@ begin
       Result.IntExprTokens.AddObject(
         ASrc.IntExprTokens.Strings[I], ASrc.IntExprTokens.Objects[I]);
   end;
+  if ASrc.IntValueExpr <> nil then
+    Result.IntValueExpr := CloneExpr(ASrc.IntValueExpr);
 end;
 
 function CloneMethodParam(ASrc: TMethodParam): TMethodParam;

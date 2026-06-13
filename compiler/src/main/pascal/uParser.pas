@@ -73,6 +73,8 @@ type
     procedure ParseConstArrayGroup(CD: TConstDecl);
     procedure ParseConstValue(CD: TConstDecl);
     function  TryParseConstIntTypecast(out AValue: Int64): Boolean;
+    function  IsConstExprOp(AKind: TTokenKind): Boolean;
+    function  ConstRhsStartsIntExpr: Boolean;
     function  CurrentIsConstBitOp: Boolean;
     function  ConsumeConstBitOpName: string;
     function  CollectConstBitOpExpr(const AFirstStr: string;
@@ -761,6 +763,42 @@ end;
   const initialiser: 'or', 'and', 'xor', 'shl', 'shr'.  Used to detect
   the start of a deferred bit-op expression chain after the first
   operand has been parsed. }
+{ True when the const RHS is a multi-token integer expression that must be
+  parsed with full operator precedence (via ParseExpr) rather than the
+  single-literal / single-precedence bit-op fast paths.  Recognises:
+    - a leading '(' (always an arithmetic grouping in const position),
+    - an integer literal followed by any binary operator,
+    - a leading minus + integer literal followed by any binary operator.
+  A lone integer literal (no trailing operator) is deliberately NOT matched,
+  so the simple 'const X = 5;' fast path is preserved. }
+function TParser.IsConstExprOp(AKind: TTokenKind): Boolean;
+begin
+  Result := (AKind = tkPlus) or (AKind = tkMinus) or (AKind = tkStar)
+         or (AKind = tkDiv)  or (AKind = tkMod)
+         or (AKind = tkOr)   or (AKind = tkAnd)   or (AKind = tkXor)
+         or (AKind = tkShl)  or (AKind = tkShr);
+end;
+
+function TParser.ConstRhsStartsIntExpr: Boolean;
+begin
+  Result := False;
+  if Check(tkLParen) then
+    Result := True
+  else if Check(tkIntLit) and Self.IsConstExprOp(PeekKind()) then
+    Result := True
+  else if Check(tkMinus) and (PeekKind() = tkIntLit)
+       and Self.IsConstExprOp(PeekKind2()) then
+    Result := True
+  { Ident-led integer expression (e.g. BASE * 2).  Only the unambiguously
+    numeric operators trigger this — '+' is left to the string path so that
+    string-concat consts ('a' + b) keep their existing behaviour, and the
+    legacy ident-bitop chain handles or/and/xor/shl/shr starting on an ident. }
+  else if Check(tkIdent) and
+          ((PeekKind() = tkStar) or (PeekKind() = tkDiv) or
+           (PeekKind() = tkMod)  or (PeekKind() = tkMinus)) then
+    Result := True;
+end;
+
 function TParser.CurrentIsConstBitOp: Boolean;
 begin
   Result := Check(tkOr)  or Check(tkAnd) or Check(tkXor)
@@ -1097,6 +1135,17 @@ begin
     begin
       CD.ArrayElements := TStringList.Create();
       Self.ParseConstArrayGroup(CD);
+      Exit;
+    end;
+    { Compile-time integer expression with precedence / parentheses
+      (e.g. 2 * 3, 2 + 3 * 4, (1 shl 8) or 7).  Parsed into a normal
+      expression AST and folded by the semantic pass (EvalConstIntExpr),
+      which also resolves any named-constant references.  A bare literal
+      without a trailing operator skips this and uses the fast path below. }
+    if Self.ConstRhsStartsIntExpr() then
+    begin
+      CD.IsString    := False;
+      CD.IntValueExpr := Self.ParseExpr();
       Exit;
     end;
     if Check(tkMinus) then

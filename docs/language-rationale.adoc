@@ -2731,6 +2731,56 @@ to distinguish a type-cast expression from a function call inside a const
 initialiser, which is more complex than a simple colon annotation and is not
 the FPC/Delphi convention.
 
+== Constant Expressions
+
+=== Decision
+
+A constant declaration may take a compile-time *integer expression* on the
+right-hand side, not just a single literal:
+
+[source]
+----
+const
+  A = 2 * 3;            // 6
+  B = 2 + 3 * 4;        // 14 — '*' binds tighter than '+'
+  C = (2 + 3) * 4;      // 20 — parentheses override precedence
+  D = 100 div 7;        // 14
+  Base = 10;
+  Derived = Base * 2 + 1; // 21 — references a prior constant
+  Flags = (1 shl 4) or 3; // 19 — arithmetic and bitwise mixed
+----
+
+Supported operators are `+ - * div mod` and the bitwise/shift set
+`and or xor shl shr`, together with unary minus and parentheses, using the same
+precedence as the executable-expression grammar.  Operands are integer
+literals and references to previously declared integer constants.
+
+=== Rationale
+
+The right-hand side is parsed with the existing full-precedence expression
+parser into a normal expression AST, then folded to a single `Int64` by the
+semantic pass.  Folding in the semantic pass (rather than at parse time) is
+what makes forward references to other constants work: every constant in scope
+is registered before any expression is folded, so `Derived = Base * 2 + 1`
+resolves `Base` cleanly regardless of declaration order within the block.
+
+Reusing the executable-expression parser means operator precedence,
+associativity, and parenthesised grouping are encoded in the AST shape for
+free — there is no separate, precedence-unaware constant evaluator to keep in
+sync.  This supersedes the earlier flat bit-op token-chain representation,
+which only handled a single left-to-right precedence level and could not
+express `2 + 3 * 4` correctly.
+
+=== Scope
+
+Constant expressions fold to an integer.  Floating-point constant arithmetic
+(`const X = 3.14 * 2`) and string concatenation beyond the existing literal/
+named-constant `+` form are not folded by this path; a multi-token float or
+string expression is left for a future extension.  Compile-time constants are
+not yet accepted as static-array bounds (`array[0..N-1]`), which is a separate
+parser limitation in the type grammar, independent of constant-expression
+folding.
+
 == Array-of-enum Typed Constants
 
 === Decision

@@ -36,6 +36,7 @@ type
     procedure TestRun_Const_IntegerConst;
     procedure TestRun_Const_StringConst;
     procedure TestRun_Const_NegativeConst;
+    procedure TestRun_Const_CompileTimeExpression;
     procedure TestRun_Const_LocalArrayInFunction;
 
     { Procedural types }
@@ -221,6 +222,26 @@ const
     begin
       X := MinVal * 2;
       WriteLn(X)
+    end.
+    ''';
+
+  { issue #96 — const declared with a compile-time formula (precedence,
+    parentheses, division, and a forward reference to a prior const). }
+  SrcConstExpr = '''
+    program Prg;
+    const
+      A = 2 * 3;
+      B = 2 + 3 * 4;
+      C = (2 + 3) * 4;
+      D = 100 div 7;
+      Base = 10;
+      E = Base * 2 + 1;
+    begin
+      WriteLn(A);
+      WriteLn(B);
+      WriteLn(C);
+      WriteLn(D);
+      WriteLn(E)
     end.
     ''';
 
@@ -752,6 +773,14 @@ procedure TE2EMiscTests.TestRun_Const_NegativeConst;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcConstNeg, '-20' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_Const_CompileTimeExpression;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { A=6, B=14 (precedence), C=20 (parens), D=14 (div), E=21 (named-ref). }
+  AssertRunsOnAll(SrcConstExpr,
+    '6' + LE + '14' + LE + '20' + LE + '14' + LE + '21' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ProcType_CallViaVariable;

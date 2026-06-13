@@ -509,11 +509,32 @@ ConstArrayValue
              { COMMA ( ConstArrayValue | ConstExpr ) } RPAREN
     ;
 
+(* A constant value position.  A scalar const may be a string/float literal or
+ * a compile-time INTEGER expression: integer literals, named-constant
+ * references, the binary operators ( + - * div mod and or xor shl shr ), unary
+ * minus, and parentheses, with the usual operator precedence.  The integer
+ * expression is folded to a single value by the semantic pass (which resolves
+ * named-constant references), so it may appear anywhere a constant is required. *)
 ConstExpr
-    = [ MINUS ] IntLit
+    = ConstIntExpr
     | [ MINUS ] FloatLit
-    | StrLit
+    | StrLit { PLUS StrLit }    (* string constant, with concatenation *)
     | IDENT                    (* named constant reference, e.g. True / False *)
+    ;
+
+ConstIntExpr
+    = ConstIntTerm { ( PLUS | MINUS | OR | XOR ) ConstIntTerm }
+    ;
+
+ConstIntTerm
+    = ConstIntFactor { ( STAR | DIV | MOD | AND | SHL | SHR ) ConstIntFactor }
+    ;
+
+ConstIntFactor
+    = IntLit
+    | IDENT                    (* named integer constant *)
+    | MINUS ConstIntFactor     (* unary minus *)
+    | LPAREN ConstIntExpr RPAREN
     ;
 
 (* ConstDecl supports untyped, scalar-typed, array-typed, and set-typed forms:
