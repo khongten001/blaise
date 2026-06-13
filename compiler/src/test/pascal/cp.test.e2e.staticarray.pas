@@ -59,6 +59,13 @@ type
     procedure TestRun_MultiDim_ThreeDimensions;
     procedure TestRun_MultiDim_StringElements_ARC;
     procedure TestRun_MultiDim_MixedNotation;
+
+    { Floating-point array elements — run on both backends (QBE + native).
+      Regression: the dyn-array element store used storel/movq for any
+      non-integer element, corrupting Double/Single stores. }
+    procedure TestRun_DynArray_DoubleElement_ReadWrite;
+    procedure TestRun_DynArray_SingleElement_ReadWrite;
+    procedure TestRun_StaticArray_DoubleElement_ReadWrite;
   end;
 
 implementation
@@ -650,6 +657,71 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   LE := LineEnding;
   AssertRunsOnAll(Src, '77' + LE + '33' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_DynArray_DoubleElement_ReadWrite;
+const Src =
+  '''
+  program P;
+  type TArr = array of Double;
+  var A: TArr;
+  begin
+    SetLength(A, 3);
+    A[0] := 12.5;
+    A[1] := -3.25;
+    A[2] := 100.0;
+    WriteLn(A[0]);
+    WriteLn(A[1]);
+    WriteLn(A[2])
+  end.
+  ''';
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll(Src, '12.5' + LE + '-3.25' + LE + '100' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_DynArray_SingleElement_ReadWrite;
+const Src =
+  '''
+  program P;
+  type TArr = array of Single;
+  var A: TArr;
+  begin
+    SetLength(A, 2);
+    A[0] := 1.5;
+    A[1] := 2.25;
+    WriteLn(A[0]);
+    WriteLn(A[1])
+  end.
+  ''';
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll(Src, '1.5' + LE + '2.25' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_StaticArray_DoubleElement_ReadWrite;
+const Src =
+  '''
+  program P;
+  var A: array[0..2] of Double;
+  begin
+    A[0] := 12.5;
+    A[1] := -3.25;
+    A[2] := 100.0;
+    WriteLn(A[0]);
+    WriteLn(A[1]);
+    WriteLn(A[2])
+  end.
+  ''';
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll(Src, '12.5' + LE + '-3.25' + LE + '100' + LE, 0);
 end;
 
 initialization

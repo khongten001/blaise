@@ -13625,6 +13625,11 @@ begin
       ElemVal := EmitByteRhs(AStmt.ValueExpr)
     else
       ElemVal := EmitExpr(AStmt.ValueExpr);
+    { Float element: coerce the value temp to the element width.  A literal
+      like 1.5 evaluates to a `d` temp; storing it into a Single element needs
+      a truncd first or QBE rejects the `stores`. }
+    if ElemType.Kind in [tyDouble, tySingle] then
+      ElemVal := CoerceArg(ElemVal, AStmt.ValueExpr, QbeTypeOf(ElemType));
     EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
     EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
     EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, Offset]));
@@ -13632,6 +13637,8 @@ begin
       tyByte, tyBoolean:           StoreInstr := 'storeb';
       tySmallInt, tyWord:          StoreInstr := 'storeh';
       tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
+      tyDouble:                    StoreInstr := 'stored';
+      tySingle:                    StoreInstr := 'stores';
     else
       begin
         StoreInstr := 'storel';
@@ -13797,10 +13804,16 @@ begin
       EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
     ElemVal := Adj;
   end;
+  { Float element: coerce value temp to element width (e.g. a `d` literal into
+    a Single slot needs truncd before `stores`). }
+  if ElemType.Kind in [tyDouble, tySingle] then
+    ElemVal := CoerceArg(ElemVal, AStmt.ValueExpr, QbeTypeOf(ElemType));
   case ElemType.Kind of
     tyByte, tyBoolean: StoreInstr := 'storeb';
     tySmallInt, tyWord: StoreInstr := 'storeh';
     tyInteger, tyUInt32, tyEnum: StoreInstr := 'storew';
+    tyDouble: StoreInstr := 'stored';
+    tySingle: StoreInstr := 'stores';
     tyInt64, tyUInt64, tyString, tyClass, tyPointer, tyPChar, tyMetaClass,
     tyProcedural: StoreInstr := 'storel';
   else

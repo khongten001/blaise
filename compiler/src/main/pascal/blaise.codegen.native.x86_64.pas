@@ -4311,6 +4311,55 @@ begin
     Exit;
   end;
 
+  { Float array element read A[I] (dynamic or static array of Double/Single).
+    The element ADDRESS computation matches the integer EmitExprToEax subscript
+    paths; only the final load differs — movsd/movss into %xmm0 rather than a
+    GPR load.  Without this case a float element read falls through to the
+    error below. }
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyDynArray) and
+     IsFloatFamily(TDynArrayTypeDesc(
+       TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType) then
+  begin
+    Self.EmitExprToEax(TStringSubscriptExpr(AExpr).StrExpr);
+    Self.Emit(#9'pushq %rax');
+    Self.EmitExprToEax(TStringSubscriptExpr(AExpr).IndexExpr);
+    Self.Emit(Format(#9'imulq $%d, %%rax',
+      [TDynArrayTypeDesc(TStringSubscriptExpr(AExpr).StrExpr.ResolvedType)
+        .ElementType.RawSize()]));
+    Self.Emit(#9'popq %rcx');
+    Self.Emit(#9'addq %rcx, %rax');
+    Self.EmitLoadFloat('(%rax)',
+      TDynArrayTypeDesc(TStringSubscriptExpr(AExpr).StrExpr.ResolvedType)
+        .ElementType);
+    Exit;
+  end;
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyStaticArray) and
+     IsFloatFamily(TStaticArrayTypeDesc(
+       TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType) then
+  begin
+    Self.EmitExprToEax(TStringSubscriptExpr(AExpr).StrExpr);
+    Self.Emit(#9'pushq %rax');
+    Self.EmitExprToEax(TStringSubscriptExpr(AExpr).IndexExpr);
+    if TStaticArrayTypeDesc(
+         TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).LowBound <> 0 then
+      Self.Emit(Format(#9'subq $%d, %%rax',
+        [TStaticArrayTypeDesc(
+          TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).LowBound]));
+    Self.Emit(Format(#9'imulq $%d, %%rax',
+      [TStaticArrayTypeDesc(TStringSubscriptExpr(AExpr).StrExpr.ResolvedType)
+        .ElementType.RawSize()]));
+    Self.Emit(#9'popq %rcx');
+    Self.Emit(#9'addq %rcx, %rax');
+    Self.EmitLoadFloat('(%rax)',
+      TStaticArrayTypeDesc(TStringSubscriptExpr(AExpr).StrExpr.ResolvedType)
+        .ElementType);
+    Exit;
+  end;
+
   raise ENativeCodeGenError.Create(
     'native backend: unsupported float expression form ' + AExpr.ClassName);
 end;
@@ -10531,7 +10580,18 @@ begin
         Self.Emit(#9'popq %rbx');
         Exit;
       end;
-      if DAElemType.Kind in [tyByte, tyBoolean] then
+      { Float element: evaluate the RHS into %xmm0, coerce to the element's
+        width, then spill the bit pattern through %rax onto the stack (x86 has
+        no push for xmm regs).  EmitExprToEax cannot evaluate a float
+        expression; the integer store path (movq) would store garbage. }
+      if IsFloatFamily(DAElemType) then
+      begin
+        Self.EmitExprToXmm0(SSA.ValueExpr);
+        Self.EmitXmm0WidthAdjust(SSA.ValueExpr.ResolvedType,
+                                 DAElemType.Kind = tySingle);
+        Self.Emit(#9'movq %xmm0, %rax');
+      end
+      else if DAElemType.Kind in [tyByte, tyBoolean] then
         Self.EmitByteRhsToEax(SSA.ValueExpr)
       else
         Self.EmitExprToEax(SSA.ValueExpr);
@@ -10558,6 +10618,15 @@ begin
         Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
       Self.Emit(#9'addq %rcx, %rax');
       Self.Emit(#9'movq %rax, %rcx');
+      if IsFloatFamily(DAElemType) then
+      begin
+        { Float store: reload the spilled value into %xmm0, store at the
+          element address with the element's width. }
+        Self.Emit(#9'popq %rax');
+        Self.Emit(#9'movq %rax, %xmm0');
+        Self.EmitStoreFloat('(%rcx)', DAElemType);
+        Exit;
+      end;
       if DAElemType.Kind = tyRecord then
       begin
         { Record element: ARC-aware copy of the record contents (retain the
@@ -10650,7 +10719,16 @@ begin
       Self.EmitExprToEax(SSA.BaseExpr);
       Self.Emit(#9'pushq %rax');             { stack: [baseaddr] }
     end;
-    if DAElemType.Kind in [tyByte, tyBoolean] then
+    { Float element: evaluate into %xmm0, coerce to the element width, then
+      spill through %rax (see the dyn-array float branch above). }
+    if IsFloatFamily(DAElemType) then
+    begin
+      Self.EmitExprToXmm0(SSA.ValueExpr);
+      Self.EmitXmm0WidthAdjust(SSA.ValueExpr.ResolvedType,
+                               DAElemType.Kind = tySingle);
+      Self.Emit(#9'movq %xmm0, %rax');
+    end
+    else if DAElemType.Kind in [tyByte, tyBoolean] then
       Self.EmitByteRhsToEax(SSA.ValueExpr)
     else
       Self.EmitExprToEax(SSA.ValueExpr);
@@ -10683,6 +10761,17 @@ begin
       Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [SSA.ArrayName]));
     Self.Emit(#9'addq %rcx, %rax');
     Self.Emit(#9'movq %rax, %rcx');
+    if IsFloatFamily(DAElemType) then
+    begin
+      { Float store: reload the spilled value into %xmm0 and store with the
+        element width. }
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, %xmm0');
+      Self.EmitStoreFloat('(%rcx)', DAElemType);
+      if SSA.BaseExpr <> nil then
+        Self.Emit(#9'addq $8, %rsp');           { drop stashed base address }
+      Exit;
+    end;
     if DAElemType.Kind = tyRecord then
     begin
       { Record element: ARC-aware copy — same scheme as the dyn-array
