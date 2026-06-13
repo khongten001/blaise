@@ -28,6 +28,7 @@ type
     procedure TestRun_For_BreakExitsEarly;
     procedure TestRun_For_ContinueSkipsIteration;
     procedure TestRun_Nested_For_Loops;
+    procedure TestRun_IncDec_CapturedVar;
     procedure TestRun_ExitValue_ReturnsEarly;
   end;
 
@@ -144,6 +145,30 @@ const
     end.
     ''';
 
+  { Inc/Dec on a captured outer-scope variable: the _cap_ slot holds the
+    var's address, so Inc must load/modify/store through it.  Regression for
+    a codegen bug where Inc(captured) referenced a non-existent %_var_ slot
+    (QBE: 'invalid type ... in loadsw'; native: 'undefined reference'). }
+  SrcIncCaptured = '''
+    program P;
+    procedure Outer;
+    var
+      Counter: Integer;
+      procedure Inner;
+      begin
+        Inc(Counter);
+        Inc(Counter, 5);
+      end;
+    begin
+      Counter := 0;
+      Inner;
+      WriteLn(Counter);
+    end;
+    begin
+      Outer;
+    end.
+    ''';
+
 procedure TE2EControlFlowTests.TestRun_For_Upward_PrintsRange;
 var Output: string; RCode: Integer;
 begin
@@ -205,6 +230,15 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcNestedFor, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('nested 2x2', '11' + LE + '12' + LE + '21' + LE + '22' + LE, Output);
+end;
+
+procedure TE2EControlFlowTests.TestRun_IncDec_CapturedVar;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcIncCaptured, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Inc(captured) + Inc(captured,5) = 6', '6' + LE, Output);
 end;
 
 procedure TE2EControlFlowTests.TestRun_ExitValue_ReturnsEarly;

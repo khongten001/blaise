@@ -3745,6 +3745,13 @@ begin
       Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(IE.Name)]));
       Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
     end
+    else if Self.IsCaptured(IE.Name) then
+    begin
+      { Captured outer local: the _cap_ slot holds the var's ADDRESS — load it
+        into %rdx and do the in-place add/sub through it. }
+      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('_cap_' + IE.Name)]));
+      Self.EmitIncDecAddrOp(IsInc, IsWide, HasStep);
+    end
     else
     begin
       if IsWide then

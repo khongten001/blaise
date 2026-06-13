@@ -8105,6 +8105,45 @@ begin
       For promoted locals the variable is an SSA temp (no memory address);
       use copy/add/sub instead of load/store. }
     if (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) and
+       IsCaptured(TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name) then
+    begin
+      { Captured outer-scope variable: %_cap_Name holds the ADDRESS of the
+        outer var.  Load through it, add/sub, store back through it — the
+        same indirection the assignment path uses (EmitLValueAddr does not
+        cover captured vars, so handle it explicitly here). }
+      ArgTemp  := '%_cap_' + TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name;
+      ArgTemp2 := AllocTemp();
+      if (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
+         (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind in [tyInt64, tyUInt64, tyClass, tyPointer]) then
+      begin
+        EmitLine(Format('  %s =l loadl %s', [ArgTemp2, ArgTemp]));
+        if ACall.Args.Count >= 2 then
+          SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]))
+        else
+          SizeTemp := '1';
+        ArgLine := AllocTemp();
+        if UCaseName = 'INC' then
+          EmitLine(Format('  %s =l add %s, %s', [ArgLine, ArgTemp2, SizeTemp]))
+        else
+          EmitLine(Format('  %s =l sub %s, %s', [ArgLine, ArgTemp2, SizeTemp]));
+        EmitLine(Format('  storel %s, %s', [ArgLine, ArgTemp]));
+      end
+      else
+      begin
+        EmitLine(Format('  %s =w loadw %s', [ArgTemp2, ArgTemp]));
+        if ACall.Args.Count >= 2 then
+          SizeTemp := EmitExpr(TASTExpr(ACall.Args.Items[1]))
+        else
+          SizeTemp := '1';
+        ArgLine := AllocTemp();
+        if UCaseName = 'INC' then
+          EmitLine(Format('  %s =w add %s, %s', [ArgLine, ArgTemp2, SizeTemp]))
+        else
+          EmitLine(Format('  %s =w sub %s, %s', [ArgLine, ArgTemp2, SizeTemp]));
+        EmitLine(Format('  storew %s, %s', [ArgLine, ArgTemp]));
+      end;
+    end
+    else if (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) and
        not TIdentExpr(TASTExpr(ACall.Args.Items[0])).IsGlobal and
        IsPromoted(TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name) then
     begin
