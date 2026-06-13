@@ -46,6 +46,9 @@ type
     procedure TestSemantic_PackedRecord_StringField_StaysAlignedTo8;
     procedure TestParse_PackedClass_RaisesError;
     procedure TestParse_PackedArray_RaisesError;
+    procedure TestParse_PackedArray_ErrorMentionsSetOf;
+    procedure TestParse_BitpackedArray_RaisesError;
+    procedure TestParse_Bitpacked_ErrorMentionsSetOf;
     procedure TestCodegen_PackedRecord_TypeSizeMatchesPacked;
   end;
 
@@ -347,6 +350,98 @@ begin
     L.Free();
   end;
   AssertTrue('packed array rejected', Raised);
+end;
+
+procedure TPackedRecordTests.TestParse_PackedArray_ErrorMentionsSetOf;
+const
+  Src = '''
+        program P;
+        type TArr = packed array[0..3] of Byte;
+        begin end.
+        ''';
+var
+  L: TLexer;
+  P: TParser;
+  Prog: TProgram;
+  Msg: string;
+begin
+  Msg := '';
+  L := TLexer.Create(Src);
+  P := TParser.Create(L);
+  try
+    try
+      Prog := P.Parse();
+      Prog.Free();
+    except
+      on E: EParseError do Msg := E.Message;
+    end;
+  finally
+    P.Free();
+    L.Free();
+  end;
+  AssertTrue('error names packed array', Pos('packed array', Msg) >= 0);
+  AssertTrue('error suggests set of', Pos('set of', Msg) >= 0);
+end;
+
+procedure TPackedRecordTests.TestParse_BitpackedArray_RaisesError;
+const
+  Src = '''
+        program P;
+        type TArr = bitpacked array[0..2] of Boolean;
+        begin end.
+        ''';
+var
+  L: TLexer;
+  P: TParser;
+  Prog: TProgram;
+  Raised: Boolean;
+begin
+  Raised := False;
+  L := TLexer.Create(Src);
+  P := TParser.Create(L);
+  try
+    try
+      Prog := P.Parse();
+      Prog.Free();
+    except
+      on EParseError do Raised := True;
+    end;
+  finally
+    P.Free();
+    L.Free();
+  end;
+  AssertTrue('bitpacked array rejected', Raised);
+end;
+
+procedure TPackedRecordTests.TestParse_Bitpacked_ErrorMentionsSetOf;
+const
+  Src = '''
+        program P;
+        type TArr = bitpacked array[0..2] of Boolean;
+        begin end.
+        ''';
+var
+  L: TLexer;
+  P: TParser;
+  Prog: TProgram;
+  Msg: string;
+begin
+  Msg := '';
+  L := TLexer.Create(Src);
+  P := TParser.Create(L);
+  try
+    try
+      Prog := P.Parse();
+      Prog.Free();
+    except
+      on E: EParseError do Msg := E.Message;
+    end;
+  finally
+    P.Free();
+    L.Free();
+  end;
+  AssertTrue('error names bitpacked', Pos('bitpacked', Msg) >= 0);
+  AssertTrue('error suggests set of', Pos('set of', Msg) >= 0);
 end;
 
 procedure TPackedRecordTests.TestCodegen_PackedRecord_TypeSizeMatchesPacked;

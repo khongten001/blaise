@@ -605,12 +605,28 @@ begin
     else
     begin
       Expect(tkEquals);
+      { `bitpacked` is an FPC-only keyword (bit-level packing); Delphi has no
+        equivalent and Blaise does not support it.  It lexes as a plain
+        identifier, so catch it here and point users at the supported idiom
+        (`set of` for boolean flags) rather than letting it fall through to a
+        confusing "expected ..." error. }
+      if (FCurrent.Kind = tkIdent) and SameText(FCurrent.Value, 'bitpacked') then
+        raise EParseError.Create(Format(
+          '''bitpacked'' is not supported in Blaise (FPC-only, bit-level ' +
+          'packing). Use ''set of'' for packed boolean flags, or an integer ' +
+          'with explicit bit operations, at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
       if Check(tkPacked) then
       begin
         { Only `packed record` is supported.  `packed class` and `packed
           array` are legal Delphi/FPC syntax but Blaise rejects them
           explicitly so users get a clear error rather than silent no-op. }
         Advance();
+        if Check(tkArray) then
+          raise EParseError.Create(Format(
+            '''packed array'' is not supported in Blaise. Use ''set of'' for ' +
+            'packed boolean flags, or a plain array, at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
         if not Check(tkRecord) then
           raise EParseError.Create(Format(
             '''packed'' may only precede ''record'' at line %d col %d in %s',
