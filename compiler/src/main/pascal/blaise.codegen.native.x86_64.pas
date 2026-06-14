@@ -13238,6 +13238,19 @@ begin
         Arg := TASTExpr(ArrLit.Elements.Items[I])
       else
         Arg := TASTExpr(AArgs.Items[I + 1]);
+      if (Arg.ResolvedType <> nil) and
+         (Arg.ResolvedType.Kind in [tyDouble, tySingle]) then
+      begin
+        { Float arg: tag 2, value = raw IEEE-754 binary64 bits.  Evaluate to
+          %xmm0, widen a Single to Double, then bit-copy the 64-bit pattern
+          via movq into the value slot (matching the QBE backend's 'cast'). }
+        Self.Emit(Format(#9'movq $2, %d(%%rbx)', [I * 16]));
+        Self.EmitExprToXmm0(Arg);
+        Self.EmitXmm0WidthAdjust(Arg.ResolvedType, False);
+        Self.Emit(#9'movq %xmm0, %rax');
+        Self.Emit(Format(#9'movq %%rax, %d(%%rbx)', [I * 16 + 8]));
+        Continue;
+      end;
       IsIntArg := (Arg.ResolvedType = nil) or
         (Arg.ResolvedType.Kind in [tyInteger, tyBoolean, tyByte, tyUInt32,
                                     tyInt64, tyUInt64, tySmallInt, tyWord, tyEnum]);

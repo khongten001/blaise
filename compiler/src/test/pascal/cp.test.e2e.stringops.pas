@@ -34,6 +34,12 @@ type
     procedure TestRun_StringOps_Format_IntArg;
     procedure TestRun_StringOps_Format_StrArg;
     procedure TestRun_StringOps_Format_MixedArgs;
+    procedure TestRun_StringOps_Format_FloatDefault;
+    procedure TestRun_StringOps_Format_FloatPrecision;
+    procedure TestRun_StringOps_Format_FloatWidth;
+    procedure TestRun_StringOps_Format_FloatExp;
+    procedure TestRun_StringOps_Format_FloatGeneral;
+    procedure TestRun_StringOps_Format_FloatMixedWithIntStr;
     procedure TestRun_StringSubscript_ReadByte;
     procedure TestRun_StringConcat_TwoStrings;
     procedure TestRun_StringConcat_WithInt;
@@ -207,6 +213,76 @@ const
           age  := 30;
           s := Format('%s=%d', name, age);
           WriteLn(s)
+        end.
+        ''';
+
+  { %f with explicit precision }
+  SrcFormatFloatPrecision =
+    '''
+        program P;
+        var x: Double;
+        begin
+          x := 3.14159;
+          WriteLn(Format('v=%.2f', x))
+        end.
+        ''';
+
+  { %f with no precision → default 2 decimal places (Delphi semantics) }
+  SrcFormatFloatDefault =
+    '''
+        program P;
+        var x: Double;
+        begin
+          x := 3.5;
+          WriteLn(Format('v=%f', x))
+        end.
+        ''';
+
+  { %f with width + precision, right-justified padding }
+  SrcFormatFloatWidth =
+    '''
+        program P;
+        var x: Double;
+        begin
+          x := 2.5;
+          WriteLn(Format('[%8.2f]', x))
+        end.
+        ''';
+
+  { %e exponential notation }
+  SrcFormatFloatExp =
+    '''
+        program P;
+        var x: Double;
+        begin
+          x := 12345.678;
+          WriteLn(Format('%.2e', x))
+        end.
+        ''';
+
+  { %g general notation }
+  SrcFormatFloatGeneral =
+    '''
+        program P;
+        var x: Double;
+        begin
+          x := 0.0001;
+          WriteLn(Format('%g', x))
+        end.
+        ''';
+
+  { float interleaved with int and string args }
+  SrcFormatFloatMixed =
+    '''
+        program P;
+        var x: Double;
+        var n: Integer;
+        var nm: string;
+        begin
+          x  := 1.5;
+          n  := 7;
+          nm := 'ok';
+          WriteLn(Format('%s %d %.1f', nm, n, x))
         end.
         ''';
 
@@ -386,6 +462,46 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcFormatMixedArgs, Output, RCode));
   AssertEquals('Format mixed args', 'Alice=30', Trim(Output));
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatDefault;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { %f with no precision → 2 decimals (Delphi default). }
+  AssertRunsOnAll(SrcFormatFloatDefault, 'v=3.50' + LE, 0);
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatPrecision;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcFormatFloatPrecision, 'v=3.14' + LE, 0);
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatWidth;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { width 8, precision 2 → "    2.50" (right-justified in 8 columns). }
+  AssertRunsOnAll(SrcFormatFloatWidth, '[    2.50]' + LE, 0);
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatExp;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 12345.678 in %.2e → 1.23e+04. }
+  AssertRunsOnAll(SrcFormatFloatExp, '1.23e+04' + LE, 0);
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatGeneral;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 0.0001 in %g → 0.0001 (shortest round-trippable form). }
+  AssertRunsOnAll(SrcFormatFloatGeneral, '0.0001' + LE, 0);
+end;
+
+procedure TE2EStringOpsTests.TestRun_StringOps_Format_FloatMixedWithIntStr;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcFormatFloatMixed, 'ok 7 1.5' + LE, 0);
 end;
 
 procedure TE2EStringOpsTests.TestRun_StringSubscript_ReadByte;
