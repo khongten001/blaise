@@ -43,7 +43,8 @@ type
 procedure MakeTarget(AOS: TTargetOS; ACPU: TTargetCPU; out ATarget: TTargetDesc);
 
 { The host target this compiler binary runs on (the default when --target is
-  omitted).  Today the only build host is linux-x86_64. }
+  omitted).  The host OS is one of TTargetOS, detected from our own
+  executable's name — a '.exe' suffix means Windows (including under wine). }
 function HostTarget: TTargetDesc;
 
 { Pointer size in bytes for the target (8 for 64-bit, 4 for 32-bit). }
@@ -65,6 +66,11 @@ function TargetLineEnding(const ATarget: TTargetDesc): string;
 function TargetDirectorySeparator(const ATarget: TTargetDesc): string;
 function TargetPathSeparator(const ATarget: TTargetDesc): string;
 
+{ Executable-file extension for binaries that run on ATarget's OS: '.exe' on
+  Windows, empty elsewhere.  Used to probe host tools (llc, cc) with the right
+  suffix and to name output binaries. }
+function ExecutableExtension(const ATarget: TTargetDesc): string;
+
 var
   GTarget: TTargetDesc;
 
@@ -81,7 +87,14 @@ end;
 
 function HostTarget: TTargetDesc;
 begin
-  MakeTarget(osLinux, cpuX86_64, Result);
+  { A '.exe' suffix on our own path means we are running on Windows (incl.
+    under wine).  Unix hosts carry no extension; we can't cheaply tell
+    linux/macos/freebsd apart here, and only the Windows distinction matters
+    for tool extensions today, so default the unix case to linux. }
+  if LowerCase(ExtractFileExt(ParamStr(0))) = '.exe' then
+    MakeTarget(osWindows, cpuX86_64, Result)
+  else
+    MakeTarget(osLinux, cpuX86_64, Result);
 end;
 
 function PtrSize(const ATarget: TTargetDesc): Integer;
@@ -168,6 +181,15 @@ begin
     osWindows: Result := ';';
   else
     Result := ':';
+  end;
+end;
+
+function ExecutableExtension(const ATarget: TTargetDesc): string;
+begin
+  case ATarget.OS of
+    osWindows: Result := '.exe';
+  else
+    Result := '';
   end;
 end;
 

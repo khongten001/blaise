@@ -55,7 +55,8 @@ interface
 uses
   Classes,
   blaise.codegen,
-  blaise.codegen.target;
+  blaise.codegen.target,
+  uToolchain;
 
 type
   TBackendKind = (bkQBE, bkNative);
@@ -102,6 +103,18 @@ type
       content-hash match.  QBE = true today; native = false until it
       learns to write .bif sidecars and the loader trusts them. }
     function SupportsWarmCache: Boolean; virtual;
+
+    { The external tools this backend needs for ATarget, as resolvable
+      specs.  uToolchain.ResolveSpec turns each into a path (env override,
+      $BLAISE_TOOLCHAIN_PREFIX, cross-triple prefix, $PATH, host ext).  The
+      base lists the shared linker (cc, or the mingw cross-linker for a
+      Windows target); a backend overrides to add its own (e.g. the LLVM
+      driver appends llc) — call inherited and extend. }
+    function DescribeTools(const ATarget: TTargetDesc): TToolSpecArray; virtual;
+
+    { Resolve one named tool from DescribeTools for ATarget; '' if the
+      backend declares no such tool. }
+    function ToolPath(const AName: string; const ATarget: TTargetDesc): string;
 
     { Verify any tools the backend needs are reachable.  Returns '' on
       success, an error message otherwise.  Called once before the
@@ -164,6 +177,12 @@ type
     function ClaimsEmitIR: Boolean; virtual;
 
   protected
+    { The shared linker tool spec for ATarget (cc/clang, or the mingw
+      cross-linker for a Windows target).  A subclass's DescribeTools builds
+      its array from this plus its own tools — the parser has no
+      expression-position `inherited`, so this is the reuse seam. }
+    function LinkerToolSpec(const ATarget: TTargetDesc): TToolSpec;
+
     { Shared link line: cc-driver resolved via uToolchain (env overrides
       and target awareness apply), input file, OPDF sidecar, extra
       objects, RTL archive, -lm, -lpthread.  Used by every driver's
@@ -233,6 +252,42 @@ begin
   Result := False;
 end;
 
+function TBackendDriver.LinkerToolSpec(const ATarget: TTargetDesc): TToolSpec;
+begin
+  { Shared linker slot.  A target tool (HostTool=False): native build uses
+    cc/clang; a Windows target cross-links via the mingw clang driver
+    (x86_64-w64-mingw32-clang) and never falls back to the host cc. }
+  Result.Name     := 'linker';
+  Result.EnvVar   := 'BLAISE_LINKER';
+  SetLength(Result.Cands, 2);
+  Result.Cands[0] := 'cc';
+  Result.Cands[1] := 'clang';
+  Result.HostTool := False;
+  if ATarget.OS = osWindows then
+    Result.CrossPrefix := 'x86_64-w64-mingw32-'
+  else
+    Result.CrossPrefix := '';
+end;
+
+function TBackendDriver.DescribeTools(const ATarget: TTargetDesc): TToolSpecArray;
+begin
+  SetLength(Result, 1);
+  Result[0] := Self.LinkerToolSpec(ATarget);
+end;
+
+function TBackendDriver.ToolPath(const AName: string;
+  const ATarget: TTargetDesc): string;
+var
+  Specs: TToolSpecArray;
+  I:     Integer;
+begin
+  Result := '';
+  Specs := Self.DescribeTools(ATarget);
+  for I := 0 to High(Specs) do
+    if SameText(Specs[I].Name, AName) then
+      Exit(ResolveSpec(Specs[I], ATarget));
+end;
+
 function TBackendDriver.CheckToolchain(AOpts: TBackendOpts): string;
 begin
   { No tools to probe by default.  AOpts is part of the signature so a
@@ -289,6 +344,8 @@ begin
     Args.Add('-o');
     Args.Add(AOutputFile);
     Args.Add(AInputFile);
+    { Linker resolved via DescribeTools so a Windows target picks the mingw
+      cross-linker and a Windows host adds the .exe extension. }
     { OPDF sidecar (QBE backend only — the native backend appends its
       exact-facts OPDF section to the main assembly instead). }
     if (AOpts.OPDFAsmFile <> '') and FileExists(AOpts.OPDFAsmFile) then
@@ -302,7 +359,7 @@ begin
       Args.Add(TC.RTLPath);
     Args.Add('-lm');       { math functions (sqrt, sin, cos, etc.) }
     Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
-    ExitCode := RunProcess(TC.Linker.Path, Args, Msg);
+    ExitCode := RunProcess(Self.ToolPath('linker', AOpts.Target), Args, Msg);
   finally
     Args.Free();
   end;

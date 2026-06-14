@@ -3799,7 +3799,12 @@ begin
         Self.Emit(#9'movq (%rdx), %rdx');
     end
     else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
+      { The slot IS the record for an ordinary local, but holds a POINTER for
+        the sret-function Result — EmitLocalRecordBase loads vs leaq-s
+        accordingly.  Without this, SetLength(Result.DynField, N) and other
+        l-value field slots in an sret function added the field offset to the
+        address of the pointer slot instead of to the pointed-to record. }
+      Self.EmitLocalRecordBase(FAE.RecordName, '%rdx')
     else
       Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [FAE.RecordName]));
     if FAE.FieldInfo.Offset > 0 then
@@ -11898,7 +11903,18 @@ begin
       argument slots and corrupt the popq sequence. }
     if (not IsVarPos) and Self.IsRecCallArg(Arg) then
     begin
-      Self.EmitExprToEax(Arg);          { buffer at %rsp, pointer in %rax }
+      if Arg is TMethodCallExpr then
+      begin
+        { EmitExprToEax routes a method call through EmitMethodCallExpr, which
+          has no sret-buffer path — it would leave %rax pointing at nothing.
+          Allocate the buffer and drive the sret call directly, mirroring the
+          TFuncCallExpr path in EmitExprToEax. }
+        Self.Emit(Format(#9'subq $%d, %%rsp', [Self.RecArgBufBytes(Arg)]));
+        Self.EmitMethodSretCall(TMethodCallExpr(Arg), '(%rsp)', False);
+        Self.Emit(#9'leaq (%rsp), %rax');
+      end
+      else
+        Self.EmitExprToEax(Arg);        { buffer at %rsp, pointer in %rax }
       Self.Emit(#9'pushq %rax');
       Result := Result + Self.RecArgBufBytes(Arg) + 8;
       ADepths.Add(Result);

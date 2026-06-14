@@ -59,6 +59,17 @@ type
     procedure TestRun_RcSSE1_TwoSingle_RoundTrip;
     { Managed-field record stays on sret (string field → no register return). }
     procedure TestRun_ManagedField_StaysSret;
+    { Regression: SetLength + indexed store on a dynamic-array FIELD of an
+      sret-Result record.  The native backend used to leaq the address of the
+      Result pointer slot and add the field offset to it, instead of loading
+      the pointer first — corrupting the stack (crash).  Both backends. }
+    procedure TestRun_SretResult_DynArrayField_SetLength;
+    { Regression: a record-returning METHOD call result passed directly as a
+      const-record argument.  EmitArgHoist materialised the sret buffer via
+      EmitExprToEax, which has no sret path for method calls (only functions),
+      so the argument pointer was garbage and the callee read junk (crash).
+      Both backends. }
+    procedure TestRun_RecordMethodResult_AsConstArg;
   end;
 
 implementation
@@ -435,6 +446,70 @@ begin
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('managed field stays on sret', 'hello' + LE, Output);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_SretResult_DynArrayField_SetLength;
+const
+  Src = '''
+    program P;
+    type
+      TRec = record
+        Name: string;
+        Cands: array of string;
+      end;
+    function Make: TRec;
+    begin
+      Result.Name := 'linker';
+      SetLength(Result.Cands, 2);
+      Result.Cands[0] := 'cc';
+      Result.Cands[1] := 'clang'
+    end;
+    var R: TRec;
+    begin
+      R := Make();
+      WriteLn(R.Name);
+      WriteLn(R.Cands[0]);
+      WriteLn(R.Cands[1])
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'linker' + LE + 'cc' + LE + 'clang' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordMethodResult_AsConstArg;
+const
+  Src = '''
+    program P;
+    type
+      TR = record A, B: Integer; end;
+      TFoo = class
+        function MakeR: TR;
+        procedure Run;
+      end;
+    function Sum(const R: TR): Integer;
+    begin
+      Result := R.A + R.B
+    end;
+    function TFoo.MakeR: TR;
+    begin
+      Result.A := 1;
+      Result.B := 2
+    end;
+    procedure TFoo.Run;
+    begin
+      WriteLn(Sum(Self.MakeR()))
+    end;
+    var F: TFoo;
+    begin
+      F := TFoo.Create();
+      F.Run();
+      F.Free()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '3' + LE, 0);
 end;
 
 initialization

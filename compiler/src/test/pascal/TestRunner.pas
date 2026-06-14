@@ -129,6 +129,7 @@ uses
   cp.test.tokenkindname,
   cp.test.strutils,
   cp.test.e2e.strutils,
+  cp.test.toolchain,
   cp.test.dynarray,
   cp.test.math,
   cp.test.e2e.math,

@@ -53,6 +53,32 @@ type
     RTLPath:    string;  { '' if not found }
   end;
 
+  { One external tool a backend declares it needs (TBackendDriver.DescribeTools).
+    Cands lists candidate basenames in preference order (e.g. 'llc-18','llc'),
+    '' terminates the list.  Resolution order in ResolveSpec, per candidate:
+      1. EnvVar override (verbatim, FileExists)            — once, before Cands
+      2. $BLAISE_TOOLCHAIN_PREFIX + candidate              (+ host ext)
+      3. CrossPrefix + candidate on $PATH, when cross-compiling
+      4. bare candidate on $PATH                           (+ host ext)
+      5. fallback to the first candidate (clean exec-time error)
+    The host extension ('.exe' on a Windows host) is appended at every probe.
+
+    HostTool distinguishes the two natures the cross case needs:
+      * True  — the tool runs on the host and targets via flags (llc with
+                -mtriple); a bare $PATH match is fine even when cross.
+      * False — the tool must be the *target's* own binary (the linker); on a
+                cross build the bare host fallback (step 4) is suppressed so we
+                don't link Windows output with the host cc. }
+  TToolSpec = record
+    Name:        string;            { 'linker' | 'llc' | 'qbe' | 'as' }
+    EnvVar:      string;            { per-tool override, e.g. 'BLAISE_LLC' }
+    Cands:       array of string;   { ordered candidate basenames }
+    CrossPrefix: string;            { triple prefix, 'x86_64-w64-mingw32-' }
+    HostTool:    Boolean;           { see above }
+  end;
+
+  TToolSpecArray = array of TToolSpec;
+
 { One-shot resolver — call once per native/QBE compile, read the resulting
   record for every subprocess + library path. }
 function ResolveToolchain(const ATarget: TTargetDesc): TToolchain;
@@ -66,6 +92,13 @@ function FindRTLArchive(const ATarget: TTargetDesc): string;
 { Walks $PATH for the first file named ABaseName that exists.  Returns the
   absolute path on hit, '' on miss.  On Windows hosts also tries '.exe'. }
 function WhichInPath(const ABaseName: string): string;
+
+{ Host executable-file extension ('.exe' on a Windows host, else '').
+  Derived from blaise.codegen.target.HostTarget. }
+function HostExeExt: string;
+
+{ Resolve one tool spec against the active target (see TToolSpec). }
+function ResolveSpec(const ASpec: TToolSpec; const ATarget: TTargetDesc): string;
 
 implementation
 
@@ -83,34 +116,44 @@ uses
 { PATH walker                                                          }
 { ------------------------------------------------------------------ }
 
-function IsWindowsHost: Boolean;
+function HostExeExt: string;
 begin
-  Result := False;
+  Result := ExecutableExtension(HostTarget());
 end;
 
 function PathSep: string;
 begin
-  Result := PathSeparator;  { ':' on POSIX }
+  Result := PathSeparator;  { ':' on POSIX, ';' on a Windows host }
 end;
 
 function TrySingleName(const ADir, ABaseName: string): string;
 var
-  Candidate: string;
+  Candidate, Ext: string;
 begin
   Candidate := IncludeTrailingPathDelimiter(ADir) + ABaseName;
   if FileExists(Candidate) then
   begin
     Exit(Candidate);
   end;
-  { Blaise Pos: -1 = not found.  `< 0` is the "not present" test. }
-  if IsWindowsHost() and (Pos('.exe', LowerCase(ABaseName)) < 0) then
+  { On a Windows host, retry with the executable extension — unless the
+    basename already carries it.  Blaise Pos: -1 = not found. }
+  Ext := HostExeExt();
+  if (Ext <> '') and (Pos(LowerCase(Ext), LowerCase(ABaseName)) < 0) then
   begin
-    Candidate := IncludeTrailingPathDelimiter(ADir) + ABaseName + '.exe';
+    Candidate := IncludeTrailingPathDelimiter(ADir) + ABaseName + Ext;
     if FileExists(Candidate) then
     begin
       Exit(Candidate);
     end;
   end;
+  Result := '';
+end;
+
+{ FileExists(APath), then FileExists(APath+AExt) when AExt is non-empty. }
+function TryPathWithExt(const APath, AExt: string): string;
+begin
+  if FileExists(APath) then Exit(APath);
+  if (AExt <> '') and FileExists(APath + AExt) then Exit(APath + AExt);
   Result := '';
 end;
 
@@ -189,6 +232,60 @@ begin
     Result := ACandA
   else
     Result := ACandB;
+end;
+
+{ Spec-driven resolver — the path a backend's DescribeTools spec takes.
+  See TToolSpec for the order.  HostExeExt is appended at every probe. }
+function ResolveSpec(const ASpec: TToolSpec; const ATarget: TTargetDesc): string;
+var
+  Ext, EnvP, Pref, Hit: string;
+  Cross: Boolean;
+  I: Integer;
+begin
+  Ext   := HostExeExt();
+  Cross := HostTarget().OS <> ATarget.OS;
+
+  { 1. explicit per-tool override — verbatim, wins over everything. }
+  if ASpec.EnvVar <> '' then
+  begin
+    EnvP := GetEnvironmentVariable(ASpec.EnvVar);
+    if (EnvP <> '') and FileExists(EnvP) then Exit(EnvP);
+  end;
+
+  Pref := GetEnvironmentVariable('BLAISE_TOOLCHAIN_PREFIX');
+
+  { 2. $BLAISE_TOOLCHAIN_PREFIX + each candidate. }
+  if Pref <> '' then
+    for I := 0 to High(ASpec.Cands) do
+    begin
+      Hit := TryPathWithExt(Pref + ASpec.Cands[I], Ext);
+      if Hit <> '' then Exit(Hit);
+    end;
+
+  { 3. derived cross-triple prefix on $PATH (cross builds only). }
+  if Cross and (ASpec.CrossPrefix <> '') then
+    for I := 0 to High(ASpec.Cands) do
+    begin
+      Hit := WhichInPath(ASpec.CrossPrefix + ASpec.Cands[I]);
+      if Hit <> '' then Exit(Hit);
+    end;
+
+  { 4. bare candidate on $PATH.  Host tools (llc) always; target tools
+       (the linker) only on a native build — never fall back to the host
+       linker for a cross target. }
+  if ASpec.HostTool or (not Cross) then
+    for I := 0 to High(ASpec.Cands) do
+    begin
+      Hit := WhichInPath(ASpec.Cands[I]);
+      if Hit <> '' then Exit(Hit);
+    end;
+
+  { 5. fallback — name the cross tool when we have a prefix so the exec-time
+       "not found" error is actionable. }
+  if Cross and (ASpec.CrossPrefix <> '') then
+    Result := ASpec.CrossPrefix + ASpec.Cands[0]
+  else
+    Result := ASpec.Cands[0];
 end;
 
 { ------------------------------------------------------------------ }

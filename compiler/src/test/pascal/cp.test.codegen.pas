@@ -12,12 +12,14 @@ interface
 
 uses
   blaise.testing,
-  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe;
+  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe,
+  blaise.codegen.native, blaise.codegen.target;
 
 type
   TCodeGenTests = class(TTestCase)
   private
     function GenerateIR(const ASrc: string): string;
+    function GenerateNativeAsm(const ASrc: string): string;
     function IRContains(const AIR, AFragment: string): Boolean;
   published
     { Data sections }
@@ -28,6 +30,7 @@ type
     procedure TestOutput_HasMainFunction;
     procedure TestOutput_HasRetZero;
     procedure TestMain_CallsBlaiseInit;
+    procedure TestMain_Native_CallsBlaiseInit;
 
     { WriteLn }
     procedure TestWriteLn_NoArgs_CallsSysWriteNewline;
@@ -117,6 +120,36 @@ begin
   end;
 end;
 
+function TCodeGenTests.GenerateNativeAsm(const ASrc: string): string;
+var
+  L:  TLexer;
+  P:  TParser;
+  Pr: TProgram;
+  A:  TSemanticAnalyser;
+  CG: TCodeGenNative;
+begin
+  L  := TLexer.Create(ASrc);
+  P  := TParser.Create(L);
+  Pr := P.Parse();
+  A  := TSemanticAnalyser.Create();
+  try
+    A.Analyse(Pr);
+  finally
+    A.Free();
+  end;
+  CG := TCodeGenNative.Create();
+  try
+    CG.SetTarget(HostTarget());
+    CG.Generate(Pr);
+    Result := CG.GetOutput();
+  finally
+    CG.Free();
+    Pr.Free();
+    P.Free();
+    L.Free();
+  end;
+end;
+
 function TCodeGenTests.IRContains(const AIR, AFragment: string): Boolean;
 begin
   Result := Pos(AFragment, AIR) >= 0;
@@ -173,6 +206,24 @@ begin
   IR := GenerateIR('program P; begin end.');
   AssertTrue('main calls $_BlaiseInit',
     IRContains(IR, 'call $_BlaiseInit()'));
+end;
+
+{ The native backend must also emit the _BlaiseInit call (right after
+  _SetArgs, which it must follow because _BlaiseInit clobbers the SysV arg
+  registers).  Guards against a backend skew where only one backend wires
+  up the RTL startup hook. }
+procedure TCodeGenTests.TestMain_Native_CallsBlaiseInit;
+var
+  Asm_: string;
+begin
+  Asm_ := GenerateNativeAsm('program P; begin end.');
+  AssertTrue('native main calls _BlaiseInit',
+    IRContains(Asm_, 'callq _BlaiseInit'));
+  AssertTrue('native main calls _SetArgs',
+    IRContains(Asm_, 'callq _SetArgs'));
+  { _SetArgs must precede _BlaiseInit. }
+  AssertTrue('_SetArgs precedes _BlaiseInit',
+    Pos('callq _SetArgs', Asm_) < Pos('callq _BlaiseInit', Asm_));
 end;
 
 { WriteLn }
