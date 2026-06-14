@@ -83,6 +83,9 @@ type
     procedure TestCodegen_Format_CallsRTL;
     procedure TestCodegen_Format_IntArgUsesTagZero;
     procedure TestCodegen_Format_StringArgUsesTagOne;
+    procedure TestSemantic_Format_FloatArg_OK;
+    procedure TestCodegen_Format_FloatArgUsesTagTwo;
+    procedure TestCodegen_Format_FloatArgCastsBits;
     { ------------------------------------------------------------------ }
     { String subscript S[N]                                               }
     { ------------------------------------------------------------------ }
@@ -639,6 +642,17 @@ const
         end.
         ''';
 
+  SrcFormatFloat =
+    '''
+        program P;
+        var x: Double;
+        var s: string;
+        begin
+          x := 3.5;
+          s := Format('v=%.1f', x)
+        end.
+        ''';
+
 procedure TStringOpsTests.TestSemantic_Format_OneIntArg_OK;
 begin
   SemanticOK(SrcFormatOneInt);
@@ -700,6 +714,28 @@ begin
   IR := GenIR(SrcFormatOneStr);
   { String args store tag 1 into the arg array }
   AssertTrue('tag 1 for str arg', IRContains(IR, 'storel 1,'));
+end;
+
+procedure TStringOpsTests.TestSemantic_Format_FloatArg_OK;
+begin
+  SemanticOK(SrcFormatFloat);
+end;
+
+procedure TStringOpsTests.TestCodegen_Format_FloatArgUsesTagTwo;
+var IR: string;
+begin
+  IR := GenIR(SrcFormatFloat);
+  { Float args store tag 2 into the arg array }
+  AssertTrue('tag 2 for float arg', IRContains(IR, 'storel 2,'));
+end;
+
+procedure TStringOpsTests.TestCodegen_Format_FloatArgCastsBits;
+var IR: string;
+begin
+  IR := GenIR(SrcFormatFloat);
+  { The double value must be cast to integer bits before storel, otherwise
+    QBE rejects 'storel <d-temp>' with "invalid type for first operand". }
+  AssertTrue('cast double bits to l', IRContains(IR, '=l cast'));
 end;
 
 { ------------------------------------------------------------------ }

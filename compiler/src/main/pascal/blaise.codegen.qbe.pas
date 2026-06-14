@@ -8853,6 +8853,9 @@ var
   FmtSlotTemp:  string;
   FmtValTemp:   string;
   IsIntArg:     Boolean;
+  IsFloatArg:   Boolean;
+  FmtArgElem:   TASTExpr;
+  FmtCastTemp:  string;
   FT:           string;
   ItabName:     string;
   PT:           TProceduralTypeDesc;
@@ -9526,39 +9529,49 @@ begin
           for I := 0 to FmtArgCount - 1 do
           begin
             if (FC.Args.Count = 2) and (FC.Args.Items[1] is TArrayLiteralExpr) then
-            begin
-              ArgTemp := EmitExpr(TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]));
-              IsIntArg := TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]).ResolvedType.Kind in
-                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyUInt64,
-                 tySmallInt, tyWord, tyEnum];
-            end
+              FmtArgElem := TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I])
             else
-            begin
-              ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I + 1]));
-              IsIntArg := TASTExpr(FC.Args.Items[I + 1]).ResolvedType.Kind in
-                [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyUInt64,
-                 tySmallInt, tyWord, tyEnum];
-            end;
+              FmtArgElem := TASTExpr(FC.Args.Items[I + 1]);
+            IsFloatArg := FmtArgElem.ResolvedType.Kind in [tyDouble, tySingle];
+            IsIntArg := FmtArgElem.ResolvedType.Kind in
+              [tyInteger, tyBoolean, tyByte, tyUInt32, tyInt64, tyUInt64,
+               tySmallInt, tyWord, tyEnum];
+
+            { Tag: 0=int, 1=string/pointer, 2=float. }
             FmtSlotTemp := AllocTemp();
             EmitLine(Format('  %s =l add %s, %d', [FmtSlotTemp, FmtArrTemp, I * 16]));
-            if IsIntArg then
+            if IsFloatArg then
+              EmitLine(Format('  storel 2, %s', [FmtSlotTemp]))
+            else if IsIntArg then
               EmitLine(Format('  storel 0, %s', [FmtSlotTemp]))
             else
               EmitLine(Format('  storel 1, %s', [FmtSlotTemp]));
             FmtValTemp := AllocTemp();
             EmitLine(Format('  %s =l add %s, 8', [FmtValTemp, FmtSlotTemp]));
-            if IsIntArg then
+
+            if IsFloatArg then
             begin
-              { Integer args may be w-typed; widen to l for storel. }
-              if (FC.Args.Count = 2) and (FC.Args.Items[1] is TArrayLiteralExpr) then
-                QType := QbeTypeOf(TASTExpr(TArrayLiteralExpr(FC.Args.Items[1]).Elements.Items[I]).ResolvedType)
-              else
-                QType := QbeTypeOf(TASTExpr(FC.Args.Items[I + 1]).ResolvedType);
-              if QType = 'w' then
+              { Float: evaluate as a Double, then reinterpret the d-bits as l.
+                'cast' between d and l is QBE's bit-preserving conversion —
+                'storel <d-temp>' alone is a type error. }
+              ArgTemp := EmitFloatArgAsDouble(FmtArgElem);
+              FmtCastTemp := AllocTemp();
+              EmitLine(Format('  %s =l cast %s', [FmtCastTemp, ArgTemp]));
+              ArgTemp := FmtCastTemp;
+            end
+            else
+            begin
+              ArgTemp := EmitExpr(FmtArgElem);
+              if IsIntArg then
               begin
-                FmtSlotTemp := AllocTemp();
-                EmitLine(Format('  %s =l extsw %s', [FmtSlotTemp, ArgTemp]));
-                ArgTemp := FmtSlotTemp;
+                { Integer args may be w-typed; widen to l for storel. }
+                QType := QbeTypeOf(FmtArgElem.ResolvedType);
+                if QType = 'w' then
+                begin
+                  FmtSlotTemp := AllocTemp();
+                  EmitLine(Format('  %s =l extsw %s', [FmtSlotTemp, ArgTemp]));
+                  ArgTemp := FmtSlotTemp;
+                end;
               end;
             end;
             EmitLine(Format('  storel %s, %s', [ArgTemp, FmtValTemp]));

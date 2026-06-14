@@ -44,6 +44,12 @@ procedure _libc_memcpy(Dst, Src: Pointer; N: Int64);                   external 
   the one above. }
 function  _BlaiseGetMem(Size: Integer): Pointer; external name '_BlaiseGetMem';
 procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
+function  _BlaiseReallocMem(Ptr: Pointer; NewSize: Integer): Pointer;
+  external name '_BlaiseReallocMem';
+
+{ blaise_float binding — used by Format()'s %f/%e/%g handling. }
+function  _FormatFloatSpec(V: Double; Spec: Integer; Prec: Integer): Pointer;
+  external name '_FormatFloatSpec';
 
 { ------------------------------------------------------------------ }
 { String RTL public interface                                          }
@@ -108,8 +114,14 @@ function _ExcludeTrailingPathDelimiter(Path: Pointer): Pointer;
 
 { _StringFormatN — pure Pascal Format implementation.
   Args points to an array of 16-byte records: [Tag:Int64, Value:Int64].
-  Tag=0 → integer (Value is the int), Tag=1 → string (Value is the pointer).
-  Supported specifiers: %d (integer), %s (string), %% (literal %). }
+    Tag=0 → integer (Value is the int).
+    Tag=1 → string  (Value is the data pointer).
+    Tag=2 → float   (Value is the IEEE-754 binary64 bit pattern).
+  Specifier syntax: %[-][width][.prec]<conv>
+    -      left-justify within the field width (default: right-justify).
+    width  minimum field width; the rendered value is space-padded to it.
+    .prec  precision — fraction digits for %f/%e, significant digits for %g.
+  Conversions: d (integer), s (string), f/F/e/E/g/G (float), %% (literal %). }
 function _StringFormatN(Fmt: Pointer; Args: Pointer; Count: Integer): Pointer;
 
 implementation
@@ -922,175 +934,230 @@ begin
   end;
 end;
 
+{ Render one Format argument (without field-width padding) into a freshly
+  allocated raw buffer.  Returns the buffer in OutBuf and its length as the
+  function result.  The caller must _BlaiseFreeMem(OutBuf) when OutFree is
+  True; when OutFree is False, OutBuf aliases an existing buffer (a string
+  argument's data pointer) and must NOT be freed.
+    Tag    : 0=int, 1=string, 2=float (raw double bits in Val).
+    Conv   : ASCII code of the conversion letter ('d','s','f','e','g',...).
+    Prec   : precision (-1 = default). }
+function RenderFmtArg(Tag: Integer; Val: Int64; Conv: Integer; Prec: Integer;
+  out OutBuf: PChar; out OutFree: Boolean): Integer;
+var
+  Buf: PChar;
+  N:   Integer;
+  FStr: Pointer;
+  V:    Double;
+  VP:   ^Double;
+begin
+  OutFree := True;
+  if Tag = 2 then
+  begin
+    { Float — delegate to blaise_float, copy out, release the temp string. }
+    VP := Pointer(@Val);
+    V := VP^;
+    FStr := _FormatFloatSpec(V, Conv, Prec);
+    N := StrLen(FStr);
+    Buf := PChar(_BlaiseGetMem(N + 1));
+    if N > 0 then
+      MemCopy(Buf, PChar(FStr), N);
+    Buf[N] := 0;
+    _BlaiseFreeMem(Pointer(Pointer(FStr) - HDR_SIZE));
+    OutBuf := Buf;
+    Exit(N);
+  end;
+  if Tag = 1 then
+  begin
+    { String — alias its data pointer, no copy, no free. }
+    OutFree := False;
+    OutBuf := PChar(Pointer(Val));
+    Exit(StrLen(Pointer(Val)));
+  end;
+  { Integer (Tag = 0) — render decimal into a small heap buffer. }
+  Buf := PChar(_BlaiseGetMem(24));
+  N := WriteDecimal(Val, Buf);
+  Buf[N] := 0;
+  OutBuf := Buf;
+  Result := N;
+end;
+
+{ Append Len bytes from Src into the growable output buffer described by
+  Out / OutLen / OutCap, growing it as needed.  Returns the (possibly
+  reallocated) buffer; the caller writes back OutLen and OutCap from the
+  var parameters. }
+function FmtAppend(OutB: PChar; var OutLen: Integer; var OutCap: Integer;
+  Src: PChar; Len: Integer): PChar;
+var
+  NewCap: Integer;
+begin
+  if OutLen + Len > OutCap then
+  begin
+    NewCap := OutCap * 2;
+    if NewCap < OutLen + Len then
+      NewCap := OutLen + Len + 16;
+    OutB := PChar(_BlaiseReallocMem(OutB, NewCap));
+    OutCap := NewCap;
+  end;
+  if Len > 0 then
+    MemCopy(OutB + OutLen, Src, Len);
+  OutLen := OutLen + Len;
+  Result := OutB;
+end;
+
+{ Append Count copies of byte B (used for field-width space padding). }
+function FmtAppendFill(OutB: PChar; var OutLen: Integer; var OutCap: Integer;
+  B: Integer; Count: Integer): PChar;
+var
+  K: Integer;
+begin
+  if OutLen + Count > OutCap then
+  begin
+    if OutCap < OutLen + Count then
+      OutCap := OutLen + Count + 16;
+    OutB := PChar(_BlaiseReallocMem(OutB, OutCap));
+  end;
+  K := 0;
+  while K < Count do
+  begin
+    OutB[OutLen] := B;
+    OutLen := OutLen + 1;
+    K := K + 1;
+  end;
+  Result := OutB;
+end;
+
 function _StringFormatN(Fmt: Pointer; Args: Pointer; Count: Integer): Pointer;
 var
-  F, Dst: PChar;
-  FLen, OutLen, I, ArgIdx, Tag, SLen, Written: Integer;
-  Val: Int64;
-  AP: Pointer;
+  F, Dst:  PChar;
+  FLen, I, ArgIdx, Tag: Integer;
+  Val:     Int64;
+  AP:      Pointer;
   TagPtr, ValPtr: ^Int64;
-  IntBuf: array[0..21] of Byte;   { shared stack scratch for %d rendering }
-  IBP: PChar;
+  OutB:    PChar;        { growable output buffer (raw bytes, no header) }
+  OutLen, OutCap: Integer;
+  Width, Prec, Conv: Integer;
+  LeftJust: Boolean;
+  ArgBuf:  PChar;
+  ArgFree: Boolean;
+  ArgLen, Pad: Integer;
+  ByteBuf: array[0..1] of Byte;
 begin
   F := StrData(Fmt);
   FLen := StrLen(Fmt);
   ArgIdx := 0;
 
-  { Pass 1: compute output length }
+  OutCap := FLen + 16;
+  OutB := PChar(_BlaiseGetMem(OutCap));
   OutLen := 0;
+
   I := 0;
   while I < FLen do
   begin
     if (F[I] = 37) and (I + 1 < FLen) then  { '%' }
     begin
       Inc(I);
-      if F[I] = 100 then  { 'd' }
+      { Literal '%%'. }
+      if F[I] = 37 then
       begin
-        if ArgIdx < Count then
+        ByteBuf[0] := 37;
+        OutB := FmtAppend(OutB, OutLen, OutCap, PChar(@ByteBuf[0]), 1);
+        Inc(I);
+        Continue;
+      end;
+
+      { Parse [-][width][.prec]. }
+      LeftJust := False;
+      while (I < FLen) and (F[I] = 45) do  { '-' }
+      begin
+        LeftJust := True;
+        Inc(I);
+      end;
+      Width := 0;
+      while (I < FLen) and (F[I] >= 48) and (F[I] <= 57) do
+      begin
+        Width := Width * 10 + (F[I] - 48);
+        Inc(I);
+      end;
+      Prec := -1;
+      if (I < FLen) and (F[I] = 46) then  { '.' }
+      begin
+        Inc(I);
+        Prec := 0;
+        while (I < FLen) and (F[I] >= 48) and (F[I] <= 57) do
         begin
-          AP := Args + ArgIdx * 16;
-          TagPtr := AP;
-          ValPtr := AP + 8;
-          Tag := Integer(TagPtr^);
-          Val := ValPtr^;
-          if Tag = 0 then
-            OutLen := OutLen + DecimalWidth(Val)
-          else
-          begin
-            SLen := StrLen(Pointer(Val));
-            OutLen := OutLen + SLen;
-          end;
+          Prec := Prec * 10 + (F[I] - 48);
+          Inc(I);
         end;
-        Inc(ArgIdx);
-        Inc(I);
-      end
-      else if F[I] = 115 then  { 's' }
+      end;
+
+      if I >= FLen then
       begin
-        if ArgIdx < Count then
+        { Trailing '%' with no conversion: emit it verbatim. }
+        ByteBuf[0] := 37;
+        OutB := FmtAppend(OutB, OutLen, OutCap, PChar(@ByteBuf[0]), 1);
+        Continue;
+      end;
+
+      Conv := F[I];
+      Inc(I);
+
+      { Recognised conversions consume one argument. }
+      if (Conv = 100) or (Conv = 115) or          { d s }
+         (Conv = 102) or (Conv = 70) or           { f F }
+         (Conv = 101) or (Conv = 69) or           { e E }
+         (Conv = 103) or (Conv = 71) then          { g G }
+      begin
+        if ArgIdx >= Count then
         begin
-          AP := Args + ArgIdx * 16;
-          TagPtr := AP;
-          ValPtr := AP + 8;
-          Tag := Integer(TagPtr^);
-          Val := ValPtr^;
-          if Tag = 1 then
-          begin
-            SLen := StrLen(Pointer(Val));
-            OutLen := OutLen + SLen;
-          end
-          else
-            OutLen := OutLen + DecimalWidth(Val);
+          { Missing argument — skip (no output). }
+          Inc(ArgIdx);
+          Continue;
         end;
+        AP := Args + ArgIdx * 16;
+        TagPtr := AP;
+        ValPtr := AP + 8;
+        Tag := Integer(TagPtr^);
+        Val := ValPtr^;
         Inc(ArgIdx);
-        Inc(I);
-      end
-      else if F[I] = 37 then  { '%%' → literal % }
-      begin
-        Inc(OutLen);
-        Inc(I);
+
+        ArgLen := RenderFmtArg(Tag, Val, Conv, Prec, ArgBuf, ArgFree);
+
+        Pad := Width - ArgLen;
+        if Pad < 0 then Pad := 0;
+        if (Pad > 0) and (not LeftJust) then
+          OutB := FmtAppendFill(OutB, OutLen, OutCap, 32, Pad);
+        OutB := FmtAppend(OutB, OutLen, OutCap, ArgBuf, ArgLen);
+        if (Pad > 0) and LeftJust then
+          OutB := FmtAppendFill(OutB, OutLen, OutCap, 32, Pad);
+        if ArgFree then
+          _BlaiseFreeMem(ArgBuf);
       end
       else
       begin
-        OutLen := OutLen + 2;
-        Inc(I);
+        { Unknown conversion: emit '%' followed by the letter. }
+        ByteBuf[0] := 37;
+        ByteBuf[1] := Conv;
+        OutB := FmtAppend(OutB, OutLen, OutCap, PChar(@ByteBuf[0]), 2);
       end;
     end
     else
     begin
-      Inc(OutLen);
+      OutB := FmtAppend(OutB, OutLen, OutCap, F + I, 1);
       Inc(I);
     end;
   end;
 
-  Result := StrAlloc(OutLen);
-  if Result = nil then Exit;
-  Dst := PChar(Result);
-
-  { Pass 2: fill buffer }
-  I := 0;
-  ArgIdx := 0;
-  while I < FLen do
+  { Materialise the final Blaise string and release the scratch buffer. }
+  Dst := PChar(StrAlloc(OutLen));
+  if Dst <> nil then
   begin
-    if (F[I] = 37) and (I + 1 < FLen) then
-    begin
-      Inc(I);
-      if F[I] = 100 then  { 'd' }
-      begin
-        if ArgIdx < Count then
-        begin
-          AP := Args + ArgIdx * 16;
-          TagPtr := AP;
-          ValPtr := AP + 8;
-          Tag := Integer(TagPtr^);
-          Val := ValPtr^;
-          if Tag = 0 then
-          begin
-            IBP := PChar(@IntBuf[0]);
-            Written := WriteDecimal(Val, IBP);
-            MemCopy(Dst, IBP, Written);
-            Dst := Dst + Written;
-          end
-          else
-          begin
-            SLen := StrLen(Pointer(Val));
-            if SLen > 0 then
-              MemCopy(Dst, PChar(Pointer(Val)), SLen);
-            Dst := Dst + SLen;
-          end;
-        end;
-        Inc(ArgIdx);
-        Inc(I);
-      end
-      else if F[I] = 115 then  { 's' }
-      begin
-        if ArgIdx < Count then
-        begin
-          AP := Args + ArgIdx * 16;
-          TagPtr := AP;
-          ValPtr := AP + 8;
-          Tag := Integer(TagPtr^);
-          Val := ValPtr^;
-          if Tag = 1 then
-          begin
-            SLen := StrLen(Pointer(Val));
-            if SLen > 0 then
-              MemCopy(Dst, PChar(Pointer(Val)), SLen);
-            Dst := Dst + SLen;
-          end
-          else
-          begin
-            IBP := PChar(@IntBuf[0]);
-            Written := WriteDecimal(Val, IBP);
-            MemCopy(Dst, IBP, Written);
-            Dst := Dst + Written;
-          end;
-        end;
-        Inc(ArgIdx);
-        Inc(I);
-      end
-      else if F[I] = 37 then
-      begin
-        Dst[0] := 37;
-        Dst := Dst + 1;
-        Inc(I);
-      end
-      else
-      begin
-        Dst[0] := 37;
-        Dst := Dst + 1;
-        Dst[0] := F[I];
-        Dst := Dst + 1;
-        Inc(I);
-      end;
-    end
-    else
-    begin
-      Dst[0] := F[I];
-      Dst := Dst + 1;
-      Inc(I);
-    end;
+    if OutLen > 0 then
+      MemCopy(Dst, OutB, OutLen);
+    Dst[OutLen] := 0;
   end;
-  Dst[0] := 0;
+  _BlaiseFreeMem(OutB);
+  Result := Pointer(Dst);
 end;
 
 { ------------------------------------------------------------------ }

@@ -34,6 +34,13 @@ function _StrToDouble(S: Pointer): Double;
 function _AbsInt(N: Integer): Integer;
 function _AbsInt64(N: Int64): Int64;
 
+{ Render V according to a printf-style float conversion for Format().
+    Spec : ASCII code of the conversion letter — 'f'/'F', 'e'/'E', 'g'/'G'.
+    Prec : number of digits after the point (f/e) or significant digits (g);
+           -1 selects the conversion's default precision.
+  Returns a freshly-allocated Blaise string (refcount = 1). }
+function _FormatFloatSpec(V: Double; Spec: Integer; Prec: Integer): Pointer;
+
 implementation
 
 const
@@ -618,6 +625,404 @@ begin
   Result := BlaiseAllocStr(Buf, Pos);
   _BlaiseFreeMem(Buf);
   _BlaiseFreeMem(Digits);
+end;
+
+{ --- printf-style float formatting for Format() (%f / %e / %g) --- }
+
+{ Round the decimal digit buffer Digits[0..NDigits-1] so that only Keep
+  significant digits remain, applying round-half-up on the first dropped
+  digit.  Adjusts NDigits and DecExp in place.  Keep <= 0 collapses the
+  value to zero (NDigits := 1, Digits[0] := '0').  On all-nines carry the
+  result becomes a single leading '1' with DecExp incremented. }
+procedure RoundDigits(Digits: PChar; var NDigits: Integer;
+  var DecExp: Integer; Keep: Integer);
+var
+  I: Integer;
+begin
+  if Keep >= NDigits then
+    Exit;
+  if Keep < 0 then
+    Keep := 0;
+  if Keep = 0 then
+  begin
+    { Everything is dropped; the leading dropped digit decides 0 vs 1. }
+    if Digits[0] >= 53 then  { '5' }
+    begin
+      Digits[0] := 49;       { '1' }
+      NDigits := 1;
+      DecExp := DecExp + 1;
+    end
+    else
+    begin
+      Digits[0] := 48;       { '0' }
+      NDigits := 1;
+    end;
+    Exit;
+  end;
+  if Digits[Keep] >= 53 then  { round half up }
+  begin
+    I := Keep - 1;
+    while I >= 0 do
+    begin
+      Digits[I] := Digits[I] + 1;
+      if Digits[I] <= 57 then  { '9' }
+        Break;
+      Digits[I] := 48;
+      if I = 0 then
+      begin
+        { Carry past the most-significant digit: 999.. → 1000.. }
+        Digits[0] := 49;
+        NDigits := 1;
+        DecExp := DecExp + 1;
+        Exit;
+      end;
+      I := I - 1;
+    end;
+  end;
+  NDigits := Keep;
+end;
+
+{ Write the absolute integer N (>= 0) as decimal digits into Buf at Pos,
+  zero-padded to at least MinW characters.  Returns the new Pos. }
+function PutPaddedInt(Buf: PChar; Pos, N, MinW: Integer): Integer;
+var
+  Tmp: array[0..15] of Byte;
+  TmpLen, I: Integer;
+begin
+  TmpLen := 0;
+  if N = 0 then
+  begin
+    Tmp[0] := 48;
+    TmpLen := 1;
+  end
+  else
+    while N > 0 do
+    begin
+      Tmp[TmpLen] := (N mod 10) + 48;
+      TmpLen := TmpLen + 1;
+      N := N div 10;
+    end;
+  while TmpLen < MinW do
+  begin
+    Tmp[TmpLen] := 48;
+    TmpLen := TmpLen + 1;
+  end;
+  I := TmpLen - 1;
+  while I >= 0 do
+  begin
+    Buf[Pos] := Tmp[I];
+    Pos := Pos + 1;
+    I := I - 1;
+  end;
+  Result := Pos;
+end;
+
+{ Render in fixed notation: Digits/NDigits/DecExp already rounded to Prec
+  fraction digits.  Emits sign, integer part, '.', and Prec fraction digits.
+  Returns characters written (Buf has room: header callers size it). }
+function RenderFixed(Buf: PChar; Pos: Integer; Digits: PChar;
+  NDigits, DecExp, Prec: Integer; Negative: Boolean): Integer;
+var
+  I, FracEmitted, SrcIdx: Integer;
+begin
+  if Negative then
+  begin
+    Buf[Pos] := 45;  { '-' }
+    Pos := Pos + 1;
+  end;
+  { Integer part }
+  if DecExp <= 0 then
+  begin
+    Buf[Pos] := 48;  { '0' }
+    Pos := Pos + 1;
+  end
+  else
+  begin
+    I := 0;
+    while I < DecExp do
+    begin
+      if I < NDigits then
+        Buf[Pos] := Digits[I]
+      else
+        Buf[Pos] := 48;
+      Pos := Pos + 1;
+      I := I + 1;
+    end;
+  end;
+  if Prec > 0 then
+  begin
+    Buf[Pos] := 46;  { '.' }
+    Pos := Pos + 1;
+    FracEmitted := 0;
+    { Leading zeros for values < 1 (when DecExp < 0). }
+    while (FracEmitted < Prec) and (DecExp + FracEmitted < 0) do
+    begin
+      Buf[Pos] := 48;
+      Pos := Pos + 1;
+      FracEmitted := FracEmitted + 1;
+    end;
+    { Significant fraction digits. }
+    if DecExp >= 0 then
+      SrcIdx := DecExp
+    else
+      SrcIdx := 0;
+    while FracEmitted < Prec do
+    begin
+      if SrcIdx < NDigits then
+        Buf[Pos] := Digits[SrcIdx]
+      else
+        Buf[Pos] := 48;
+      Pos := Pos + 1;
+      SrcIdx := SrcIdx + 1;
+      FracEmitted := FracEmitted + 1;
+    end;
+  end;
+  Result := Pos;
+end;
+
+function FormatFloatSpec(V: Double; Spec: Integer; Prec: Integer): Pointer;
+var
+  Bits: Int64;
+  BExp: Integer;
+  Frac: Int64;
+  Negative: Boolean;
+  Digits: PChar;
+  Buf: PChar;
+  NDigits, DecExp, Pos, I, ExpVal: Integer;
+  IsZero: Boolean;
+  UpperExp: Boolean;
+  ExpChar: Integer;
+begin
+  Bits := DoubleBits(V);
+  BExp := Integer((Bits shr 52) and $7FF);
+  Frac := Bits and $000FFFFFFFFFFFFF;
+  Negative := (Bits shr 63) <> 0;
+  IsZero := (BExp = 0) and (Frac = 0);
+
+  { Special values: inf / nan ignore precision and width. }
+  if BExp = DBL_EXP_SPECIAL then
+  begin
+    if Frac <> 0 then
+    begin
+      if Negative then
+        Result := BlaiseAllocStr(PChar('-nan'), 4)
+      else
+        Result := BlaiseAllocStr(PChar('nan'), 3);
+      Exit;
+    end;
+    if Negative then
+      Result := BlaiseAllocStr(PChar('-inf'), 4)
+    else
+      Result := BlaiseAllocStr(PChar('inf'), 3);
+    Exit;
+  end;
+
+  { Generous scratch: 32 raw digits, 64-byte output is enough for any
+    double in f/e/g with reasonable precision; clamp precision below. }
+  if Prec > 40 then
+    Prec := 40;
+  Digits := PChar(_BlaiseGetMem(48));
+  Buf := PChar(_BlaiseGetMem(96));
+
+  UpperExp := (Spec = 69) or (Spec = 71);  { 'E' or 'G' }
+  if UpperExp then
+    ExpChar := 69
+  else
+    ExpChar := 101;
+
+  if IsZero then
+  begin
+    NDigits := 1;
+    Digits[0] := 48;
+    DecExp := 1;
+  end
+  else
+    DoubleToDigits(V, Digits, NDigits, DecExp, Negative);
+
+  Pos := 0;
+
+  if (Spec = 102) or (Spec = 70) then          { 'f' / 'F' }
+  begin
+    if Prec < 0 then Prec := 2;
+    if not IsZero then
+      RoundDigits(Digits, NDigits, DecExp, DecExp + Prec);
+    Pos := RenderFixed(Buf, Pos, Digits, NDigits, DecExp, Prec, Negative);
+  end
+  else if (Spec = 101) or (Spec = 69) then     { 'e' / 'E' }
+  begin
+    if Prec < 0 then Prec := 6;
+    if not IsZero then
+      RoundDigits(Digits, NDigits, DecExp, Prec + 1);
+    if Negative then
+    begin
+      Buf[Pos] := 45;
+      Pos := Pos + 1;
+    end;
+    if NDigits > 0 then
+      Buf[Pos] := Digits[0]
+    else
+      Buf[Pos] := 48;
+    Pos := Pos + 1;
+    if Prec > 0 then
+    begin
+      Buf[Pos] := 46;
+      Pos := Pos + 1;
+      I := 1;
+      while I <= Prec do
+      begin
+        if I < NDigits then
+          Buf[Pos] := Digits[I]
+        else
+          Buf[Pos] := 48;
+        Pos := Pos + 1;
+        I := I + 1;
+      end;
+    end;
+    Buf[Pos] := ExpChar;
+    Pos := Pos + 1;
+    if IsZero then
+      ExpVal := 0
+    else
+      ExpVal := DecExp - 1;
+    if ExpVal < 0 then
+    begin
+      Buf[Pos] := 45;
+      Pos := Pos + 1;
+      ExpVal := -ExpVal;
+    end
+    else
+    begin
+      Buf[Pos] := 43;
+      Pos := Pos + 1;
+    end;
+    { Exponent: at least two digits (printf convention). }
+    Pos := PutPaddedInt(Buf, Pos, ExpVal, 2);
+  end
+  else                                          { 'g' / 'G' (default) }
+  begin
+    if Prec < 0 then Prec := 6;
+    if Prec = 0 then Prec := 1;
+    if not IsZero then
+      RoundDigits(Digits, NDigits, DecExp, Prec);
+    { Strip trailing zeros for %g. }
+    while (NDigits > 1) and (Digits[NDigits - 1] = 48) do
+      NDigits := NDigits - 1;
+    { %g picks exponential when DecExp-1 < -4 or DecExp-1 >= Prec. }
+    ExpVal := DecExp - 1;
+    if (ExpVal < -4) or (ExpVal >= Prec) then
+    begin
+      { Exponential form, no trailing zeros. }
+      if Negative then
+      begin
+        Buf[Pos] := 45;
+        Pos := Pos + 1;
+      end;
+      Buf[Pos] := Digits[0];
+      Pos := Pos + 1;
+      if NDigits > 1 then
+      begin
+        Buf[Pos] := 46;
+        Pos := Pos + 1;
+        I := 1;
+        while I < NDigits do
+        begin
+          Buf[Pos] := Digits[I];
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+      end;
+      Buf[Pos] := ExpChar;
+      Pos := Pos + 1;
+      if ExpVal < 0 then
+      begin
+        Buf[Pos] := 45;
+        Pos := Pos + 1;
+        ExpVal := -ExpVal;
+      end
+      else
+      begin
+        Buf[Pos] := 43;
+        Pos := Pos + 1;
+      end;
+      Pos := PutPaddedInt(Buf, Pos, ExpVal, 2);
+    end
+    else
+    begin
+      { Fixed form: emit only the significant digits (no padding zeros
+        after the point, matching %g). }
+      if Negative then
+      begin
+        Buf[Pos] := 45;
+        Pos := Pos + 1;
+      end;
+      if DecExp <= 0 then
+      begin
+        Buf[Pos] := 48;
+        Pos := Pos + 1;
+        Buf[Pos] := 46;
+        Pos := Pos + 1;
+        I := 0;
+        while I < -DecExp do
+        begin
+          Buf[Pos] := 48;
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+        I := 0;
+        while I < NDigits do
+        begin
+          Buf[Pos] := Digits[I];
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+      end
+      else if DecExp >= NDigits then
+      begin
+        I := 0;
+        while I < NDigits do
+        begin
+          Buf[Pos] := Digits[I];
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+        I := NDigits;
+        while I < DecExp do
+        begin
+          Buf[Pos] := 48;
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+      end
+      else
+      begin
+        I := 0;
+        while I < DecExp do
+        begin
+          Buf[Pos] := Digits[I];
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+        Buf[Pos] := 46;
+        Pos := Pos + 1;
+        while I < NDigits do
+        begin
+          Buf[Pos] := Digits[I];
+          Pos := Pos + 1;
+          I := I + 1;
+        end;
+      end;
+    end;
+  end;
+
+  Buf[Pos] := 0;
+  Result := BlaiseAllocStr(Buf, Pos);
+  _BlaiseFreeMem(Buf);
+  _BlaiseFreeMem(Digits);
+end;
+
+function _FormatFloatSpec(V: Double; Spec: Integer; Prec: Integer): Pointer;
+begin
+  Result := FormatFloatSpec(V, Spec, Prec);
 end;
 
 function _DoubleToStr(V: Double): Pointer;
