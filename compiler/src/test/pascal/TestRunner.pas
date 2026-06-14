@@ -100,6 +100,7 @@ uses
   cp.test.e2e.textblock,
   cp.test.e2e.classes2,
   cp.test.e2e.misc,
+  cp.test.e2e.sets,
   cp.test.e2e.tstack,
   cp.test.e2e.tlist,
   cp.test.e2e.tqueue,
