@@ -915,6 +915,9 @@ begin
   EmitLine('export function w $main(w %argc, l %argv) {');
   EmitLine('@start');
   EmitLine('  call $_SetArgs(w %argc, l %argv)');
+  { RTL one-time setup the per-unit init dispatch below misses for archive
+    units (e.g. blaise_weak's WeakMutex — see _BlaiseInit). }
+  EmitLine('  call $_BlaiseInit()');
   { Call initialization sections of imported units in order }
   for I := 0 to FUnitInitNames.Count - 1 do
     EmitLine('  call $' + FUnitInitNames.Strings[I] + '_init()');

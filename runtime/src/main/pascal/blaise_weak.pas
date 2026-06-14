@@ -48,6 +48,14 @@ procedure _WeakAssign(Slot: Pointer; NewTarget: Pointer);
 procedure _WeakClear(Slot: Pointer);
 procedure _WeakZeroSlots(Target: Pointer);
 
+{ RTL startup hook — every Blaise program's main calls this once, before its
+  body, to run RTL initialisation that the per-unit `initialization` sections
+  do not: units linked from a prebuilt archive never get their _init called,
+  only units compiled into the program's own TU do.  Currently this sets up
+  the weak-reference table mutex; other RTL one-time setup belongs here too
+  as it arises. }
+procedure _BlaiseInit;
+
 implementation
 
 const
@@ -79,6 +87,32 @@ function pthread_mutex_unlock(Mutex: Pointer): Integer;
 var
   WeakTable: array[0..255] of PWeakEntry;
   WeakMutex: array[0..5] of Int64;
+  WeakMutexReady: Boolean;   { False until WeakMutex has been mutex_init'd }
+
+{ Initialise WeakMutex exactly once.  Driven by _BlaiseInit at program
+  startup; the WeakMutexReady guard makes it idempotent so the foot-of-unit
+  `initialization` block (which runs only when blaise_weak is compiled into
+  the program's own TU) and _BlaiseInit cannot double-init.  Initialising
+  explicitly matters because a zero-filled mutex object is not a valid
+  unlocked mutex on every platform — where it happens to be, skipping the
+  init merely worked by luck.  The guard is non-atomic, consistent with the
+  weak table's single-threaded-RTL assumption. }
+procedure EnsureWeakMutex;
+begin
+  if not WeakMutexReady then
+  begin
+    pthread_mutex_init(@WeakMutex, nil);
+    WeakMutexReady := True;
+  end;
+end;
+
+{ Program-startup hook (see interface comment).  Runs the RTL's one-time
+  setup that the per-unit init dispatch misses for archive units.
+  Idempotent — safe even if a future caller invokes it twice. }
+procedure _BlaiseInit;
+begin
+  EnsureWeakMutex();
+end;
 
 function WeakHash(Ptr: Pointer): Integer;
 begin
@@ -246,6 +280,10 @@ begin
 end;
 
 initialization
+  { Runs only when blaise_weak is compiled into the program's own TU.
+    For the archive case EnsureWeakMutex() does the work lazily; setting
+    the flag here keeps the two paths from double-initialising. }
   pthread_mutex_init(@WeakMutex, nil);
+  WeakMutexReady := True;
 
 end.

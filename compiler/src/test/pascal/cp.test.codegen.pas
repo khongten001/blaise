@@ -27,6 +27,7 @@ type
     { Main function structure }
     procedure TestOutput_HasMainFunction;
     procedure TestOutput_HasRetZero;
+    procedure TestMain_CallsBlaiseInit;
 
     { WriteLn }
     procedure TestWriteLn_NoArgs_CallsSysWriteNewline;
@@ -160,6 +161,18 @@ var
 begin
   IR := GenerateIR('program P; begin end.');
   AssertTrue('Has ret 0', IRContains(IR, 'ret 0'));
+end;
+
+{ main must call $_BlaiseInit so RTL units whose initialization sections do
+  not otherwise run (archive units) get their one-time setup — e.g. the
+  weak-reference table mutex.  See blaise_weak._BlaiseInit. }
+procedure TCodeGenTests.TestMain_CallsBlaiseInit;
+var
+  IR: string;
+begin
+  IR := GenerateIR('program P; begin end.');
+  AssertTrue('main calls $_BlaiseInit',
+    IRContains(IR, 'call $_BlaiseInit()'));
 end;
 
 { WriteLn }

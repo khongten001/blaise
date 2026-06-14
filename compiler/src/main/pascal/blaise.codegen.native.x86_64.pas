@@ -14420,8 +14420,12 @@ begin
   { Prologue: establish a frame.  argc is in %edi, argv in %rsi per SysV. }
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
-  { _SetArgs(argc, argv): args already in %edi/%rsi — pass through. }
+  { _SetArgs(argc, argv): args already in %edi/%rsi — pass through.  Must
+    precede _BlaiseInit, which clobbers the SysV arg registers. }
   Self.Emit(#9'callq _SetArgs');
+  { RTL one-time setup the per-unit init dispatch below misses for archive
+    units (e.g. blaise_weak's WeakMutex — see _BlaiseInit). }
+  Self.Emit(#9'callq _BlaiseInit');
   { Call initialization sections of imported units in order. }
   for I := 0 to FUnitInitNames.Count - 1 do
     Self.Emit(#9'callq ' + FUnitInitNames.Strings[I] + '_init');
