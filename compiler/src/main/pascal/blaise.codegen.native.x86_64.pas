@@ -393,6 +393,15 @@ type
     procedure EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string);
     procedure EmitMethodSretCall(ACall: TMethodCallExpr; const ASretAddr: string;
                                  ASretIsIndirect: Boolean);
+    { Emit the base ADDRESS of a NAMED LOCAL record into AReg (e.g.
+      '%rcx', '%rax').  Normally a stack value record, so leaq the slot.
+      The one exception is the sret-function Result: its frame slot holds
+      the caller's buffer POINTER, not the record, so it must be loaded
+      with movq.  Every field-access receiver ladder routes its
+      "IsLocal(RecordName)" leaf through here so the sret-Result
+      indirection is decided in ONE place (the implicit-Result analogue of
+      the implicit-Self field-access symmetry rule). }
+    procedure EmitLocalRecordBase(const AName, AReg: string);
     { Compute the address of a record/class field into %rcx.  Handles
       local/global records, class fields, var-param records, chained
       access (Base <> nil), and implicit-Self fields. }
@@ -6318,7 +6327,7 @@ begin
         Self.Emit(#9'movq (%rcx), %rcx');
     end
     else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+      Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
     else
       Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
     if FAE.FieldInfo.Offset > 0 then
@@ -6368,7 +6377,7 @@ begin
         Self.Emit(#9'movq (%rcx), %rcx');
     end
     else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+      Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
     else
       Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
     if FAE.FieldInfo.Offset > 0 then
@@ -6498,7 +6507,7 @@ begin
       if (IsJumboSet(FAE.FieldInfo.TypeDesc) or
          (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray])) then
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]));
+        Self.EmitLocalRecordBase(FAE.RecordName, '%rcx');
         if FAE.FieldInfo.Offset = 0 then
           Self.Emit(#9'movq %rcx, %rax')
         else
@@ -6508,7 +6517,7 @@ begin
         Self.EmitLoadVar(Self.VarOperand(FAE.RecordName), FAE.FieldInfo.TypeDesc)
       else
       begin
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]));
+        Self.EmitLocalRecordBase(FAE.RecordName, '%rcx');
         Self.EmitLoadVar(Format('%d(%%rcx)', [FAE.FieldInfo.Offset]),
           FAE.FieldInfo.TypeDesc);
       end;
@@ -6727,7 +6736,7 @@ begin
       else
       begin
         if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+          Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
       end;
@@ -6808,7 +6817,7 @@ begin
       else
       begin
         if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
+          Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FAE.RecordName]));
       end;
@@ -7365,7 +7374,7 @@ begin
         Self.Emit(#9'movq (%rax), %rax');
     end
     else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
+      Self.EmitLocalRecordBase(FAE.RecordName, '%rax')
     else
       Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [FAE.RecordName]));
     if FAE.FieldInfo.Offset > 0 then
@@ -10286,7 +10295,7 @@ begin
           Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
       end
       else if Self.IsLocal(FA.RecordName) then
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
       Self.EmitInterfaceToFieldSlotsAt(FA.Expr, '%rcx', FA.FieldInfo.Offset,
@@ -10454,7 +10463,7 @@ begin
       else
       begin
         if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+          Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
       end;
@@ -10498,7 +10507,7 @@ begin
           Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if Self.IsLocal(FA.RecordName) then
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
       if FA.FieldInfo.Offset > 0 then
@@ -10774,7 +10783,7 @@ begin
     begin
       Self.Emit(#9'pushq %rax');
       if Self.IsLocal(FA.RecordName) then
-        Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
+        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [FA.RecordName]));
       if FA.FieldInfo.TypeDesc.IsString() then
@@ -12280,6 +12289,16 @@ begin
   HK.Free();
 end;
 
+procedure TX86_64Backend.EmitLocalRecordBase(const AName, AReg: string);
+begin
+  if FSretFunc and SameText(AName, 'Result') then
+    { sret Result: the slot holds the caller's buffer POINTER. }
+    Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand('Result'), AReg]))
+  else
+    { Ordinary local value record: the slot IS the record. }
+    Self.Emit(Format(#9'leaq %s, %s', [Self.VarOperand(AName), AReg]));
+end;
+
 procedure TX86_64Backend.EmitFieldAddrToRcx(AFA: TFieldAccessExpr);
 begin
   if AFA.Base <> nil then
@@ -12313,7 +12332,7 @@ begin
       Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
   end
   else if Self.IsLocal(AFA.RecordName) then
-    Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
+    Self.EmitLocalRecordBase(AFA.RecordName, '%rcx')
   else
     Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [AFA.RecordName]));
   if AFA.FieldInfo.Offset > 0 then
