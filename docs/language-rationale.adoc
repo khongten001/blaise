@@ -4214,3 +4214,66 @@ homogeneous literal (`[1, 2, 3]`) and the empty literal (`[]`) bind too.
   array/record.*  Rejected — it would make `Format`-style APIs verbose and
   un-idiomatic, and the construct is compiler-bounded and tagged, so it does
   not carry the open-ended risks of the omitted three.
+
+== Variable Names May Not Shadow Type Names
+
+=== Decision
+
+A variable declaration may not share its identifier with any type name that is
+visible at the point of declaration — whether the type is built-in
+(`Integer`, `string`), declared in the same block, declared in an enclosing
+scope, or imported from another unit.  Pascal is case-insensitive, so the
+shadowing is detected regardless of letter case:
+
+[source,pascal]
+----
+type
+  Iface = interface
+    procedure Test;
+  end;
+var
+  iface: Iface;   // ERROR: 'iface' and the type 'Iface' are the same identifier
+----
+
+The diagnostic is `Duplicate identifier 'X' — a type with this name is already
+visible`, reported at the variable's declaration site.
+
+This rule is stricter than FPC `mode objfpc`, which reports a duplicate only
+when the variable clashes with a type declared in the *same* scope, and
+silently permits a variable to shadow a built-in or outer-scope type
+(`var Integer: Int64` compiles in FPC).
+
+=== Rationale
+
+A variable that bears the same name as a type is almost always a mistake, and
+when it is not, it is a readability trap: every subsequent use of the
+identifier in that scope means the variable, so the type becomes unreferenceable
+by its own name and later declarations like `x: Iface` resolve in surprising
+ways.  Issue #102 reported exactly this confusion — a program declaring both an
+`Iface` interface and an `iface` variable compiled without complaint on both
+backends.
+
+Blaise already rejects variable-vs-variable, variable-vs-constant, and
+type-vs-type clashes in the same scope.  The variable-vs-type case slipped
+through only because of an implementation detail: type declarations are
+registered in the block's enclosing scope so they remain visible after the
+block scope is popped, while variable declarations are registered one scope
+deeper.  The duplicate check at definition time therefore never saw the type.
+Closing the gap with an explicit type-name lookup restores the symmetry users
+expect: no two declarations in overlapping scopes may claim the same
+identifier.
+
+=== Alternatives considered
+
+* *Match FPC exactly (same-scope clash only; built-in/outer shadowing
+  allowed).*  Rejected.  It fixes the reported case but keeps the underlying
+  footgun: `var Integer: Int64` would still compile and silently rebind the
+  type name for the rest of the scope.  Blaise favours a clean rule over FPC
+  bug-for-bug compatibility (cf. the deliberate omission of `Char`, the
+  uniform 0-based indexing, and the required `overload` keyword).
+* *Warn instead of error.*  Rejected.  The construct has no legitimate use that
+  a rename would not serve more clearly, and a warning that is routinely
+  ignored would leave the confusion in place.
+* *Restrict the rule to reference types (classes, interfaces) only.*  Rejected
+  as arbitrary — the confusion is identical for records, enums, aliases, and
+  built-ins, and a name-based rule is simpler to explain than a kind-based one.

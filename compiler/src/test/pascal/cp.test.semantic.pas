@@ -27,6 +27,15 @@ type
     procedure TestVarDecl_MultiName_BothRegistered;
     procedure TestVarDecl_UnknownType_RaisesError;
     procedure TestVarDecl_Duplicate_RaisesError;
+    { A variable may not share a name with ANY visible type (issue #102):
+      same-block, outer-scope, imported, or built-in.  Stricter than FPC
+      mode objfpc (which allows shadowing built-in/outer types); Blaise
+      rejects the whole class to eliminate the confusion.  Case-insensitive. }
+    procedure TestVarDecl_DuplicatesType_RaisesError;
+    procedure TestVarDecl_DuplicatesType_DifferentCase_RaisesError;
+    procedure TestVarDecl_DuplicatesInterfaceType_RaisesError;
+    procedure TestVarDecl_ShadowsBuiltinType_RaisesError;
+    procedure TestVarDecl_ShadowsOuterScopeType_RaisesError;
     { Const then var with same name in same block is a duplicate }
     procedure TestVarDecl_DuplicatesConst_RaisesError;
     { Const redeclared with same name in same block is a duplicate }
@@ -183,6 +192,46 @@ procedure TSemanticTests.TestVarDecl_Duplicate_RaisesError;
 begin
   AnalyseExpectError(
     'program P; var x: Integer; x: string; begin end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_DuplicatesType_RaisesError;
+begin
+  AnalyseExpectError(
+    'program P; type TFoo = record X: Integer; end; var TFoo: Integer; begin end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_DuplicatesType_DifferentCase_RaisesError;
+begin
+  { The exact issue #102 reproduction: type Iface, var iface — same
+    identifier, different case.  Pascal is case-insensitive. }
+  AnalyseExpectError(
+    'program P; type Iface = interface procedure Test; end; ' +
+    'var iface: Iface; begin end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_DuplicatesInterfaceType_RaisesError;
+begin
+  AnalyseExpectError(
+    'program P; type IThing = interface procedure Go; end; ' +
+    'var IThing: Integer; begin end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_ShadowsBuiltinType_RaisesError;
+begin
+  { Unlike FPC, Blaise rejects a var that shadows a built-in type name —
+    `var Integer` is almost always a mistake and shadowing it silently
+    redefines the type for the rest of the scope. }
+  AnalyseExpectError('program P; var Integer: Int64; begin end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_ShadowsOuterScopeType_RaisesError;
+begin
+  { A type declared in an outer scope may not be shadowed by a local var —
+    Blaise rejects the whole var/type name-clash class regardless of scope. }
+  AnalyseExpectError(
+    'program P; type TFoo = record X: Integer; end; ' +
+    'procedure Q; var TFoo: Integer; begin end; ' +
+    'begin Q(); end.');
 end;
 
 procedure TSemanticTests.TestVarDecl_DuplicatesConst_RaisesError;

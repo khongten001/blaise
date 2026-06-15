@@ -5202,6 +5202,20 @@ begin
           SemanticError(
             Format('Duplicate identifier ''%s''', [VarName]),
             Decl.Line, Decl.Col);
+      { A variable may not share a name with any visible type — built-in,
+        same-block, outer-scope, or imported (issue #102).  Pascal is
+        case-insensitive, so `type Iface` and `var iface` are the same
+        identifier; allowing both silently shadows the type and is a
+        common source of confusion.  Stricter than FPC mode objfpc, which
+        permits shadowing built-in/outer types; Blaise rejects the whole
+        class.  (Same-scope type-vs-var is otherwise invisible to
+        FTable.Define because types live in the enclosing scope while
+        var decls are registered one scope deeper.) }
+      if FTable.FindType(VarName) <> nil then
+        SemanticError(
+          Format('Duplicate identifier ''%s'' — a type with this name is ' +
+                 'already visible', [VarName]),
+          Decl.Line, Decl.Col);
       if Decl.IsThreadVar and not Decl.IsGlobal then
         SemanticError('threadvar is only allowed at unit or program scope',
           Decl.Line, Decl.Col);
