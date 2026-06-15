@@ -58,6 +58,7 @@ type
     procedure TestRun_UInt64_LargeLiteral;
     procedure TestRun_UInt64_Arithmetic;
     procedure TestRun_UInt64_UnsignedCompare;
+    procedure TestRun_Int64_MinValue;
   end;
 
 implementation
@@ -433,6 +434,19 @@ const
     end.
     ''';
 
+  { Low(Int64) = -9223372036854775808 has no positive counterpart, so a
+    naive negate-then-extract-digits path overflows and prints only '-'.
+    WriteDecimal must handle the most-negative value correctly. }
+  SrcInt64MinValue =
+    '''
+    program P;
+    var N: Int64;
+    begin
+      N := Int64(1) shl 63;
+      WriteLn(N)
+    end.
+    ''';
+
 procedure TUInt64E2ETests.TestRun_UInt64_RoundTrip;
 var Output: string; RCode: Integer;
 begin
@@ -479,6 +493,16 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('17e18 > 1 unsigned',
     'yes' + LE, Output);
+end;
+
+procedure TUInt64E2ETests.TestRun_Int64_MinValue;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRun(SrcInt64MinValue, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('Low(Int64) prints in full',
+    '-9223372036854775808' + LE, Output);
 end;
 
 initialization

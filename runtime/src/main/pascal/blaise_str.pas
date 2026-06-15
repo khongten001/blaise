@@ -510,7 +510,7 @@ end;
 function WriteDecimal(N: Int64; Buf: PChar): Integer;
 var
   IsNeg: Boolean;
-  AbsN:  Int64;
+  NegN:  Int64;
   Pos:   Integer;
   Tmp:   array[0..21] of Byte;   { stack scratch — this is the hottest
                                    integer-to-text path; no heap traffic }
@@ -520,11 +520,16 @@ var
 begin
   TP  := PChar(@Tmp[0]);
   IsNeg := N < 0;
+  { Extract digits working on the negative magnitude.  The two's-complement
+    negative range reaches Low(Int64) = -9223372036854775808, whereas its
+    positive counterpart does not exist — negating first would overflow and
+    leave the value negative, printing only the sign.  Keeping the value
+    negative and negating each remainder avoids that. }
   if IsNeg then
-    AbsN := -N
+    NegN := N
   else
-    AbsN := N;
-  if AbsN = 0 then
+    NegN := -N;
+  if NegN = 0 then
   begin
     TP[0] := 48;  { '0' }
     Pos   := 1;
@@ -532,11 +537,11 @@ begin
   else
   begin
     Pos := 0;
-    while AbsN > 0 do
+    while NegN < 0 do
     begin
-      Digit  := Integer(AbsN mod 10);
+      Digit  := -Integer(NegN mod 10);
       TP[Pos] := 48 + Digit;
-      AbsN   := AbsN div 10;
+      NegN   := NegN div 10;
       Inc(Pos);
     end;
   end;
