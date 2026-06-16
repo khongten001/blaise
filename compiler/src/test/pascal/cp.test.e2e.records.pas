@@ -52,6 +52,11 @@ type
     procedure TestRun_RecordField_StaticArrayElemWrite;
     procedure TestRun_RecordField_DynArrayOfString_ElemWrite_ARC;
     procedure TestRun_RecordCallResult_IntoArrayElement;
+    { Added by the hardening sweep. }
+    procedure TestRun_RecordMethodMutatesSelf;
+    procedure TestRun_RecordReturnFieldInline;
+    procedure TestRun_RecordWithStaticArrayField_DeepCopy;
+    procedure TestRun_NestedRecordMethod;
   end;
 
 implementation
@@ -1072,6 +1077,65 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcRecordCallIntoElem,
     '1 tok1' + LE + '3 tok3' + LE + '4 tok4' + LE, 0);
+end;
+
+const
+  SrcRecMutatesSelf = '''
+    program Prg;
+    type TP = record X: Integer; procedure Inc; begin X := X + 1 end; end;
+    var a: TP;
+    begin a.X := 5; a.Inc(); a.Inc(); WriteLn(a.X) end.
+    ''';
+
+  SrcRecReturnFieldInline = '''
+    program Prg;
+    type TP = record X, Y: Integer; end;
+    function Make(V: Integer): TP; begin Result.X := V; Result.Y := V * 2 end;
+    begin WriteLn(Make(10).X + Make(10).Y) end.
+    ''';
+
+  SrcRecStaticArrDeepCopy = '''
+    program Prg;
+    type TP = record A: array[0..2] of Integer; end;
+    var x, y: TP; i: Integer;
+    begin
+      for i := 0 to 2 do x.A[i] := i + 1;
+      y := x;
+      y.A[1] := 99;
+      WriteLn(x.A[1], ',', y.A[1])
+    end.
+    ''';
+
+  SrcNestedRecMethod = '''
+    program Prg;
+    type TInner = record V: Integer; function Get: Integer; begin Result := V end; end;
+      TOuter = record I: TInner; end;
+    var o: TOuter;
+    begin o.I.V := 88; WriteLn(o.I.Get()) end.
+    ''';
+
+procedure TE2ERecordsTests.TestRun_RecordMethodMutatesSelf;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcRecMutatesSelf, '7' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordReturnFieldInline;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcRecReturnFieldInline, '30' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordWithStaticArrayField_DeepCopy;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcRecStaticArrDeepCopy, '2,99' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_NestedRecordMethod;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcNestedRecMethod, '88' + LE, 0);
 end;
 
 initialization
