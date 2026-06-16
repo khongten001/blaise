@@ -108,6 +108,10 @@ type
     { (expr as T).Field := value — a parenthesised cast as an assignment
       TARGET. Was a parser gap (statements could not start with '('). }
     procedure TestRun_ParenCastAsAssignmentTarget;
+
+    { Nested generic type arguments: TList<TList<Integer>>. Was a parser gap
+      (type-arg list did not recurse, in both type and constructor position). }
+    procedure TestRun_NestedGenericTypeArgs;
   end;
 
 implementation
@@ -1144,6 +1148,33 @@ procedure TE2EMiscTests.TestRun_ParenCastAsAssignmentTarget;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcParenCastTarget, '42' + LE, 0);
+end;
+
+const
+  { Nested generic type args, in both var-type and constructor position. }
+  SrcNestedGeneric = '''
+    program Prg;
+    type TBox<T> = class
+      FV: T;
+      procedure SetV(V: T); begin FV := V end;
+      function GetV: T; begin Result := FV end;
+    end;
+    var outer: TBox<TBox<Integer>>; inner: TBox<Integer>;
+    begin
+      inner := TBox<Integer>.Create();
+      inner.SetV(7);
+      outer := TBox<TBox<Integer>>.Create();
+      outer.SetV(inner);
+      WriteLn(outer.GetV().GetV());
+      outer.Free();
+      inner.Free()
+    end.
+    ''';
+
+procedure TE2EMiscTests.TestRun_NestedGenericTypeArgs;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcNestedGeneric, '7' + LE, 0);
 end;
 
 initialization

@@ -711,8 +711,10 @@ SetElement
     = Expr [ DOTDOT Expr ]
     ;
 
+(* Each type argument is itself a (possibly-generic) type name, so type
+ * arguments nest: TList<TList<Integer>>, TBox<TPair<Integer, string>>. *)
 TypeArgList
-    = IDENT { COMMA IDENT }
+    = GenericName { COMMA GenericName }
     ;
 
 

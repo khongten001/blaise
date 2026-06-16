@@ -273,8 +273,10 @@ begin
       raise EParseError.Create(Format(
         'Expected type argument after ''<'' at line %d col %d in %s',
         [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-    Result := Result + FCurrent.Value;
-    Advance();
+    { Each type argument is itself a (possibly-generic) type name, so recurse
+      — this is what makes nested generics like TList<TList<Integer>> and
+      TBox<TPair<Integer, string>> parse. }
+    Result := Result + Self.ParseTypeName();
     while Check(tkComma) do
     begin
       Advance();
@@ -282,8 +284,7 @@ begin
         raise EParseError.Create(Format(
           'Expected type argument after '','' at line %d col %d in %s',
           [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
-      Result := Result + ',' + FCurrent.Value;
-      Advance();
+      Result := Result + ',' + Self.ParseTypeName();
     end;
     Expect(tkGreaterThan);
     Result := Result + '>';
@@ -3970,16 +3971,18 @@ begin
               [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
         end
         else if Check(tkLessThan) and (PeekKind() = tkIdent) and
-           (PeekKind2() in [tkGreaterThan, tkComma]) then
+           (PeekKind2() in [tkGreaterThan, tkComma, tkLessThan]) then
         begin
+          { Generic type args.  PeekKind2 = '<' means the first arg is itself
+            generic (TList<TList<Integer>>) — recurse via ParseTypeName so
+            nested generics parse.  Plain idents also go through ParseTypeName
+            (which simply returns the ident when no '<' follows). }
           Advance();  { consume '<' }
-          Name := Name + '<' + FCurrent.Value;
-          Advance();
+          Name := Name + '<' + Self.ParseTypeName();
           while Check(tkComma) do
           begin
             Advance();
-            Name := Name + ',' + FCurrent.Value;
-            Advance();
+            Name := Name + ',' + Self.ParseTypeName();
           end;
           Expect(tkGreaterThan);
           Name := Name + '>';
