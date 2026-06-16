@@ -2898,6 +2898,14 @@ begin
     begin
       NewMDecl.Body    := CloneBlock(Templ.Body);
       NewMDecl.OwnBody := True;
+      { Substitute the type parameter in the body's local var declarations
+        (e.g. `var v: T` -> `var v: Integer`).  Signature substitution
+        (params + return) is done below, but a local of type T would
+        otherwise reach AnalyseStandaloneDecl with T still unresolved. }
+      for I := 0 to NewMDecl.Body.Decls.Count - 1 do
+        TVarDecl(NewMDecl.Body.Decls.Items[I]).TypeName :=
+          Self.SubstTypeParam(TVarDecl(NewMDecl.Body.Decls.Items[I]).TypeName,
+            Templ.TypeParams, Args);
     end
     else
     begin
