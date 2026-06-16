@@ -37,6 +37,10 @@ type
     procedure TestRun_GenericClass_DistinctInstantiations;
     { Nesting }
     procedure TestRun_NestedGeneric_TBoxOfTBox;
+    { Local variable named after the type parameter (var t: T) — must not be
+      rejected as shadowing a visible type. }
+    procedure TestRun_GenericClass_LocalNamedLikeTypeParam;
+    procedure TestRun_GenericRecord_LocalNamedLikeTypeParam;
   end;
 
 implementation
@@ -201,6 +205,39 @@ procedure TE2EGenericsTests.TestRun_NestedGeneric_TBoxOfTBox;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcNestedBox, '7' + LE, 0);
+end;
+
+const
+  SrcClassLocalLikeParam = '''
+    program Prg;
+    type TB<T> = class
+      V: T;
+      function R: T; var t: T; begin t := V; Result := t end;
+    end;
+    var b: TB<Integer>;
+    begin b := TB<Integer>.Create(); b.V := 7; WriteLn(b.R()); b.Free() end.
+    ''';
+
+  SrcRecordLocalLikeParam = '''
+    program Prg;
+    type TW<T> = record
+      V: T;
+      function R: T; var t: T; begin t := V; Result := t end;
+    end;
+    var w: TW<Integer>;
+    begin w.V := 55; WriteLn(w.R()) end.
+    ''';
+
+procedure TE2EGenericsTests.TestRun_GenericClass_LocalNamedLikeTypeParam;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcClassLocalLikeParam, '7' + LE, 0);
+end;
+
+procedure TE2EGenericsTests.TestRun_GenericRecord_LocalNamedLikeTypeParam;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcRecordLocalLikeParam, '55' + LE, 0);
 end;
 
 initialization

@@ -53,6 +53,12 @@ type
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
+    { Type-parameter names in scope while analysing an instantiated generic
+      body (T, K, V, ...).  These are registered as skType aliases (T=Integer)
+      so the body resolves, but they are NOT user-declared types, so a local
+      variable may legitimately share a name with one (var t: T).  The
+      shadow-a-type-name check skips names found here. }
+    FActiveTypeParams:     TStringList;
     FCurrentLocalBlock:    TBlock;       { block currently being stmt-analysed; for-in injects synthetic TVarDecl here }
     FForInCounter:         Integer;      { counter for generating unique __forin_N variable names }
     FArrayConstCounter:    Integer;      { counter for generating unique array-const data labels }
@@ -451,11 +457,14 @@ begin
   FUnitIfaces.CaseSensitive := False;
   FUnitSymbols          := TStringList.Create();
   FUnitSymbols.CaseSensitive := False;
+  FActiveTypeParams     := TStringList.Create();
+  FActiveTypeParams.CaseSensitive := False;
   FLoopDepth            := 0;
 end;
 
 destructor TSemanticAnalyser.Destroy;
 begin
+  FActiveTypeParams.Free();
   FUnitSymbols.Free();
   FUnitIfaces.Free();
   FCurrentUsesChain.Free();
@@ -2478,6 +2487,8 @@ begin
       Push type-param bindings (T=Integer etc.) so that SizeOf(T) and
       local var declarations like 'var P: ^T' resolve to concrete types. }
     FTable.PushScope();
+    for K := 0 to Templ.ParamNames.Count - 1 do
+      FActiveTypeParams.Add(Templ.ParamNames.Strings[K]);
     try
       for K := 0 to Templ.ParamNames.Count - 1 do
       begin
@@ -2495,6 +2506,8 @@ begin
           AnalyseMethodDecl(NewMDecl, RT);
       end;
     finally
+      for K := 0 to Templ.ParamNames.Count - 1 do
+        FActiveTypeParams.Delete(FActiveTypeParams.Count - 1);
       FTable.PopScope();
     end;
 
@@ -2686,6 +2699,8 @@ begin
     end;
 
     FTable.PushScope();
+    for K := 0 to Templ.ParamNames.Count - 1 do
+      FActiveTypeParams.Add(Templ.ParamNames.Strings[K]);
     try
       for K := 0 to Templ.ParamNames.Count - 1 do
       begin
@@ -2703,6 +2718,8 @@ begin
           AnalyseMethodDecl(NewMDecl, RT);
       end;
     finally
+      for K := 0 to Templ.ParamNames.Count - 1 do
+        FActiveTypeParams.Delete(FActiveTypeParams.Count - 1);
       FTable.PopScope();
     end;
 
@@ -5225,7 +5242,12 @@ begin
         class.  (Same-scope type-vs-var is otherwise invisible to
         FTable.Define because types live in the enclosing scope while
         var decls are registered one scope deeper.) }
-      if FTable.FindType(VarName) <> nil then
+      { A generic type PARAMETER in scope (registered as a T=Integer alias
+        while an instantiated body is analysed) is not a user-declared type
+        the programmer is shadowing — a local `var t: T` is legitimate.  Only
+        flag a clash with a genuine visible type. }
+      if (FTable.FindType(VarName) <> nil) and
+         (FActiveTypeParams.IndexOf(VarName) < 0) then
         SemanticError(
           Format('Duplicate identifier ''%s'' — a type with this name is ' +
                  'already visible', [VarName]),
