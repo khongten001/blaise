@@ -78,6 +78,13 @@ type
     procedure TestRun_Native_SevenArgs;
     procedure TestRun_Native_EightArgs;
     procedure TestRun_Native_TenArgs;
+    { Regression: an implicit-Self method call in statement position with more
+      argument slots than fit in registers (Self + 6 args = 7 > 6).  The
+      statement-call fast path indexed SysVArgRegs64 past %r9, reading adjacent
+      data as a garbage string pointer and crashing _StringConcat during a
+      later native self-compile.  Must spill the surplus to the stack. }
+    procedure TestRun_Native_ImplicitSelfMethod_SixArgs;
+    procedure TestRun_Native_ImplicitSelfMethod_SevenArgs;
     procedure TestRun_Native_IndirectCall_BareProc;
     procedure TestRun_Native_IndirectCall_BareFunc;
     procedure TestRun_Native_Record_GlobalReadWrite;
@@ -1652,6 +1659,53 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 1+2+3+4+5+6+7+8+9+10 = 55 }
   AssertRunsOnAll(SrcTenArgs, '55' + LE, 0);
+end;
+
+const
+  { Implicit-Self method call (unqualified Sink(...) inside a method) with 6
+    args: Self + 6 = 7 register slots, one past the 6 SysV integer registers. }
+  SrcImplicitSelf6 = '''
+    program Prog;
+    type
+      TC = class
+        FSum: Integer;
+        procedure Sink(a, b, c, d, e, f: Integer);
+        procedure Caller;
+      end;
+    procedure TC.Sink(a, b, c, d, e, f: Integer);
+    begin FSum := a + b + c + d + e + f end;
+    procedure TC.Caller;
+    begin Sink(1, 2, 3, 4, 5, 6) end;
+    var t: TC;
+    begin t := TC.Create; t.Caller(); WriteLn(t.FSum); t := nil end.
+    ''';
+
+  SrcImplicitSelf7 = '''
+    program Prog;
+    type
+      TC = class
+        FSum: Integer;
+        procedure Sink(a, b, c, d, e, f, g: Integer);
+        procedure Caller;
+      end;
+    procedure TC.Sink(a, b, c, d, e, f, g: Integer);
+    begin FSum := a + b + c + d + e + f + g end;
+    procedure TC.Caller;
+    begin Sink(1, 2, 3, 4, 5, 6, 7) end;
+    var t: TC;
+    begin t := TC.Create; t.Caller(); WriteLn(t.FSum); t := nil end.
+    ''';
+
+procedure TE2ENativeTests.TestRun_Native_ImplicitSelfMethod_SixArgs;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcImplicitSelf6, '21' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_ImplicitSelfMethod_SevenArgs;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcImplicitSelf7, '28' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_IndirectCall_BareProc;

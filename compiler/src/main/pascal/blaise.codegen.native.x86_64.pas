@@ -583,6 +583,8 @@ type
       params = 2 slots (ptr + high).  Used by pop loops so they count slots, not
       logical argument positions. }
     function CountArgSlots(AParams: TObjectList): Integer;
+    { Bounds-checked System V integer-arg-register accessor (raises if > 5). }
+    function SysVArg64(AIndex: Integer): string;
     { Emit a method-pointer (of-object) call: load Code from offset 0 and Data
       from offset 8 of the TMethod block at APtrOperand; call Code with Data as
       Self (%rdi) and the remaining args shifted. }
@@ -2218,14 +2220,14 @@ begin
   begin
     { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx. }
     for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 2));
     Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
     for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(#9'movq %r10, %rdi');
   end;
   Self.Emit(#9'callq *%r11');
@@ -2381,14 +2383,14 @@ begin
   begin
     { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx. }
     for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 2));
     Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
     for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(#9'movq %r10, %rdi');
   end;
   Self.Emit(#9'callq *%r11');
@@ -4506,7 +4508,7 @@ begin
           TASTExpr(FC.Args.Items[I]), I);
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
       for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-        Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+        Self.Emit(#9'popq ' + SysVArg64(I + 1));
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolOf(FC));
       Self.EndCallArgs();
@@ -5366,7 +5368,7 @@ begin
           Self.Emit(#9'pushq %rax');
         end;
         for SetI := FC.Args.Count - 1 downto 1 do
-          Self.Emit(Format(#9'popq %s', [SysVArgRegs64[SetI]]));
+          Self.Emit(Format(#9'popq %s', [SysVArg64(SetI)]));
         Self.Emit(#9'movq %rbx, %rdi');
         Self.Emit(Format(#9'callq %s',
           [MethodEmitNameNative(TMethodDecl(FC.ResolvedDecl),
@@ -5876,7 +5878,7 @@ begin
             TASTExpr(FC.Args.Items[I]), I);
         Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('Self')]));
         for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-          Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+          Self.Emit(#9'popq ' + SysVArg64(I + 2));
         Self.Emit(#9'movq %r11, %rsi');
         Self.Emit(#9'movq %r10, %rdi');
         Self.Emit(#9'callq ' + FuncSymbolOf(FC));
@@ -5896,7 +5898,7 @@ begin
           TASTExpr(FC.Args.Items[I]), I);
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
       for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-        Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+        Self.Emit(#9'popq ' + SysVArg64(I + 1));
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolOf(FC));
       Self.EndCallArgs();
@@ -7136,7 +7138,7 @@ begin
       Self.Emit(#9'pushq %rax');
     end;
     for SetI := TIndirectFuncCallExpr(AExpr).Args.Count - 1 downto 0 do
-      Self.Emit(Format(#9'popq %s', [SysVArgRegs64[SetI]]));
+      Self.Emit(Format(#9'popq %s', [SysVArg64(SetI)]));
     Self.Emit(#9'popq %r10');
     Self.Emit(#9'callq *%r10');
     Exit;
@@ -7292,7 +7294,7 @@ begin
           Self.PushCallArg(TMethodParam(MD.Params.Items[I]),
             TASTExpr(ACall.Args.Items[I]), I);
         for I := UserSlots - 1 downto 0 do
-          Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+          Self.Emit(#9'popq ' + SysVArg64(I + 1));
         Self.Emit(#9'movq %rbx, %rdi');
         Self.Emit(#9'callq ' + Sym);
         Self.EndCallArgs();
@@ -7328,7 +7330,7 @@ begin
         end;
         Self.Emit(Format(#9'movq %%rbx, 0(%%rsp)', []));
         for I := 0 to 5 do
-          Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArgRegs64[I]]));
+          Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
         Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
         Self.Emit(#9'callq ' + Sym);
         Self.EmitHoistEpilogue(ACall.Args, HD, HK, HTotal, CleanUp, True);
@@ -7392,7 +7394,7 @@ begin
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
 
     for I := UserSlots - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(#9'movq %r10, %rdi');
     if MD.VTableSlot >= 0 then
     begin
@@ -7463,7 +7465,7 @@ begin
     Self.Emit(Format(#9'movq %%rax, 0(%%rsp)', []));
 
     for I := 0 to 5 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArgRegs64[I]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
 
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     if MD.VTableSlot >= 0 then
@@ -7712,6 +7714,22 @@ end;
 { Count total integer register slots consumed by a parameter list.
   Most params = 1 slot; interface params = 2 (obj + itab); open-array = 2.
   Used by pop loops so they iterate over slots, not logical arg positions. }
+function TX86_64Backend.SysVArg64(AIndex: Integer): string;
+{ Bounds-checked accessor for the 6 System V integer argument registers.  An
+  index > 5 means a call-emission slot loop tried to use more than the 6
+  available integer registers (args + sret/Self offset overflowed) — a latent
+  codegen bug that previously read past SysVArgRegs64[0..5] and returned an
+  adjacent data-section value (garbage pointer -> _StringConcat crash).  Raise
+  loudly so the offending call path is named instead of silently miscompiling. }
+begin
+  if (AIndex < 0) or (AIndex > 5) then
+    raise ENativeCodeGenError.Create(Format(
+      'native backend: System V integer arg register index %d out of range ' +
+      '[0..5] — a call has more register-passed slots than the ABI allows ' +
+      '(sret/Self offset + args); this path must spill to the stack', [AIndex]));
+  Result := SysVArgRegs64[AIndex];
+end;
+
 function TX86_64Backend.CountArgSlots(AParams: TObjectList): Integer;
 var
   I: Integer;
@@ -7884,7 +7902,7 @@ begin
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
 
     for I := UserSlots - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(#9'movq %r10, %rdi');
   end
   else
@@ -7952,7 +7970,7 @@ begin
     Self.Emit(Format(#9'movq %%rax, 0(%%rsp)', []));
 
     for I := 0 to 5 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArgRegs64[I]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
 
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
   end;
@@ -7997,7 +8015,7 @@ begin
   { Self is the current method's Self slot. }
   Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
   for I := CountArgSlots(MD.Params) - 1 downto 0 do
-    Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+    Self.Emit(#9'popq ' + SysVArg64(I + 1));
   Self.Emit(#9'movq %r10, %rdi');
   Self.Emit(#9'callq ' + Sym);
   Self.EndCallArgs();
@@ -9224,6 +9242,9 @@ var
   FDynElemSz:  Integer;
   ISFld:   TFieldInfo;
   IntfArgs: TObjectList;
+  PCUserSlots, PCTotalSlots, PCOverflow, PCCleanUp, PCAllocSz, PCDest: Integer;
+  PCHD, PCHK: TList<Integer>;
+  PCHTotal: Integer;
 begin
   Self.DbgStmtLabel(AStmt);
   if AStmt is TAssignment then
@@ -10156,16 +10177,62 @@ begin
     if PC.IsImplicitSelfMethod and (PC.ResolvedDecl <> nil) then
     begin
       MD := TMethodDecl(PC.ResolvedDecl);
-      Self.BeginCallArgs(MD.Params, PC.Args);
+      { Self occupies %rdi, leaving %rsi..%r9 (5 registers) for arguments.  The
+        push/pop-into-registers fast path is only valid when every argument
+        slot fits a register — i.e. Self + args <= 6 total.  When the call has
+        more slots, the surplus must go on the stack; otherwise the pop loop
+        indexes SysVArg64 past %r9 (the OOB that crashed _StringConcat). }
+      if Self.CountArgSlots(MD.Params) + 1 <= 6 then
+      begin
+        Self.BeginCallArgs(MD.Params, PC.Args);
+        for I := 0 to PC.Args.Count - 1 do
+          Self.PushCallArg(TMethodParam(MD.Params.Items[I]),
+            TASTExpr(PC.Args.Items[I]), I);
+        Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
+        for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
+          Self.Emit(#9'popq ' + SysVArg64(I + 1));
+        Self.Emit(#9'movq %r10, %rdi');
+        Self.Emit(#9'callq ' + FuncSymbolFromDecl(MD));
+        Self.EndCallArgs();
+        Exit;
+      end;
+      { >6 slots: stack-spill path (mirrors EmitMethodCallStmt).  Reserve a
+        6-register staging area plus overflow space; slot 0 = Self -> %rdi,
+        slots 1..5 -> %rsi..%r9, surplus slots stay on the stack. }
+      PCUserSlots := Self.CountArgSlots(MD.Params);
+      PCTotalSlots := PCUserSlots + 1;
+      PCOverflow := PCTotalSlots - 6;
+      PCCleanUp := ((PCOverflow * 8 + 15) and (-16));
+      PCAllocSz := 6 * 8 + PCCleanUp;
+      PCHD := TList<Integer>.Create();
+      PCHK := TList<Integer>.Create();
+      PCHTotal := Self.EmitArgHoist(MD.Params, nil, True, '', PC.Args, PCHD, PCHK);
+      Self.Emit(Format(#9'subq $%d, %%rsp', [PCAllocSz]));
       for I := 0 to PC.Args.Count - 1 do
-        Self.PushCallArg(TMethodParam(MD.Params.Items[I]),
-          TASTExpr(PC.Args.Items[I]), I);
-      Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
-      for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-        Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
-      Self.Emit(#9'movq %r10, %rdi');
+      begin
+        if I + 1 < 6 then
+          PCDest := (I + 1) * 8
+        else
+          PCDest := 6 * 8 + (I + 1 - 6) * 8;
+        if PCHK.Get(I) >= akRecCall then
+          Self.Emit(Format(#9'movq %d(%%rsp), %%rax',
+            [PCAllocSz + PCHTotal - PCHD.Get(I)]))
+        else if TMethodParam(MD.Params.Items[I]).IsVarParam then
+          Self.EmitVarArgAddrToRax(TASTExpr(PC.Args.Items[I]))
+        else
+          Self.EmitExprToEax(TASTExpr(PC.Args.Items[I]));
+        Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [PCDest]));
+      end;
+      { Self into slot 0 -> %rdi. }
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+      Self.Emit(#9'movq %rax, 0(%rsp)');
+      for I := 0 to 5 do
+        Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
+      Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
       Self.Emit(#9'callq ' + FuncSymbolFromDecl(MD));
-      Self.EndCallArgs();
+      Self.EmitHoistEpilogue(PC.Args, PCHD, PCHK, PCHTotal, PCCleanUp, True);
+      PCHD.Free();
+      PCHK.Free();
       Exit;
     end;
     { User procedure call (result, if any, ignored in statement position). }
@@ -12178,7 +12245,7 @@ begin
     end;
 
     for I := SlotCount - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I]);
+      Self.Emit(#9'popq ' + SysVArg64(I));
   end
   else
   begin
@@ -12384,7 +12451,7 @@ begin
       begin
         if IntIdx < 6 then
         begin
-          Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+          Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
           Inc(IntIdx);
         end;
         Inc(SlotOff, 8);
@@ -12420,13 +12487,13 @@ begin
         begin
           if IntIdx < 6 then
           begin
-            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
             Inc(IntIdx);
           end;
           Inc(SlotOff, 8);
           if IntIdx < 6 then
           begin
-            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
             Inc(IntIdx);
           end;
           Inc(SlotOff, 8);
@@ -12436,13 +12503,13 @@ begin
         begin
           if IntIdx < 6 then
           begin
-            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
             Inc(IntIdx);
           end;
           Inc(SlotOff, 8);
           if IntIdx < 6 then
           begin
-            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
             Inc(IntIdx);
           end;
           Inc(SlotOff, 8);
@@ -12451,7 +12518,7 @@ begin
         begin
           if IntIdx < 6 then
           begin
-            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArgRegs64[IntIdx]]));
+            Self.Emit(Format(#9'movq %d(%%rsp), %s', [SlotOff, SysVArg64(IntIdx)]));
             Inc(IntIdx);
           end;
           Inc(SlotOff, 8);
@@ -12485,7 +12552,7 @@ begin
   case IntByteSize(AType) of
     1: Self.Emit(Format(#9'movb %s, %s', [SysVArgRegs8[AIdx],  AOperand]));
     2: Self.Emit(Format(#9'movw %s, %s', [SysVArgRegs16[AIdx], AOperand]));
-    8: Self.Emit(Format(#9'movq %s, %s', [SysVArgRegs64[AIdx], AOperand]));
+    8: Self.Emit(Format(#9'movq %s, %s', [SysVArg64(AIdx), AOperand]));
   else
     Self.Emit(Format(#9'movl %s, %s', [SysVArgRegs[AIdx], AOperand]));
   end;
@@ -12547,7 +12614,7 @@ begin
       end;
     end;
     for I := AArgs.Count - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I]);
+      Self.Emit(#9'popq ' + SysVArg64(I));
     Self.Emit(Format(#9'movq %s, %%r10', [APtrOperand]));
     Self.Emit(#9'callq *%r10');
     Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, 0, True);
@@ -12574,7 +12641,7 @@ begin
       Inc(SlotOff, 8);
     end;
     for I := 0 to 5 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArgRegs64[I]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     CleanUp := AllocSz - 6 * 8;
     Self.Emit(Format(#9'movq %s, %%r10', [APtrOperand]));
@@ -12846,7 +12913,7 @@ begin
       Self.Emit(#9'pushq %rax');
     end;
     for I := AArgs.Count - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     { The saved dest sits just below the hoist region. }
     Self.Emit(Format(#9'movq %d(%%rsp), %%rdi', [HTotal]));
     Self.Emit(#9'callq ' + AFuncSym);
@@ -12877,7 +12944,7 @@ begin
     { Load sret ptr into %rdi, first 5 explicit args into %rsi..%r9. }
     Self.Emit(#9'movq 0(%rsp), %rdi');
     for I := 0 to 4 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArgRegs64[I + 1]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArg64(I + 1)]));
     { Shift %rsp past the 6 register-bound slots (sret + 5 args). }
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     Self.Emit(#9'callq ' + AFuncSym);
@@ -12969,7 +13036,7 @@ begin
     else
       Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Self')]));
     for I := ACall.Args.Count - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     if MD.VTableSlot >= 0 then
     begin
       Self.Emit(#9'movq (%rdi), %rax');
@@ -13043,7 +13110,7 @@ begin
       Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand('Self')]));
 
     for I := ACall.Args.Count - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 2));
     { The saved dest sits just below the call frame's hoist region. }
     Self.Emit(Format(#9'movq %d(%%rsp), %%rdi', [Self.TopFrameTotal()]));
     if MD.VTableSlot >= 0 then
@@ -13091,7 +13158,7 @@ begin
     Self.Emit(Format(#9'movq %%rax, 8(%%rsp)', []));
     Self.Emit(#9'movq 0(%rsp), %rdi');
     for I := 0 to 4 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArgRegs64[I + 1]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArg64(I + 1)]));
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     Self.Emit(#9'callq ' + Sym);
     CleanUp := AllocSz - 6 * 8;
@@ -13162,7 +13229,7 @@ begin
     end;
     Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
     for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 2));
     Self.Emit(#9'movq %r10, %rsi');
     Self.Emit(#9'movq %rsp, %rdi');
     Self.Emit(#9'callq ' + FSym);
@@ -13182,7 +13249,7 @@ begin
       Pushed := Pushed + 8;
     end;
     for I := ArgCnt - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(#9'movq %rsp, %rdi');
     Self.Emit(#9'callq ' + FSym);
   end
@@ -13361,7 +13428,7 @@ begin
       Inc(SlotOff);
   end;
   for I := SlotOff - 1 downto 0 do
-    Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+    Self.Emit(#9'popq ' + SysVArg64(I + 2));
   Self.Emit(#9'movq %r10, %rsi');
   Self.Emit(#9'movq %rsp, %rdi');
   Self.Emit(#9'callq *%r11');
@@ -13457,7 +13524,7 @@ begin
     Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
   { Pop args shifted by 2: %rdi = sret buffer, %rsi = receiver. }
   for I := UserSlots - 1 downto 0 do
-    Self.Emit(#9'popq ' + SysVArgRegs64[I + 2]);
+    Self.Emit(#9'popq ' + SysVArg64(I + 2));
   Self.Emit(#9'movq %r10, %rsi');
   Self.Emit(#9'movq %rsp, %rdi');
   if MD.VTableSlot >= 0 then
@@ -13530,7 +13597,7 @@ begin
       end;
     end;
     for I := AArgs.Count - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArgRegs64[I + 1]);
+      Self.Emit(#9'popq ' + SysVArg64(I + 1));
     Self.Emit(Format(#9'leaq %s, %%rcx', [APtrOperand]));
     Self.Emit(#9'movq (%rcx), %r10');
     Self.Emit(#9'movq 8(%rcx), %rdi');
@@ -13556,7 +13623,7 @@ begin
     Self.Emit(#9'movq (%rcx), %r10');
     Self.Emit(#9'movq 8(%rcx), %rdi');
     for I := 0 to 4 do
-      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArgRegs64[I + 1]]));
+      Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArg64(I + 1)]));
     Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
     CleanUp := AllocSz - 6 * 8;
     Self.Emit(#9'callq *%r10');
@@ -13773,7 +13840,7 @@ begin
     for I := 0 to ADecl.CapturedVars.Count - 1 do
     begin
       Self.Emit(Format(#9'movq %s, %s',
-        [SysVArgRegs64[IntIdx],
+        [SysVArg64(IntIdx),
          Self.VarOperand('_cap_' + ADecl.CapturedVars.Strings[I])]));
       Inc(IntIdx);
     end;
@@ -13787,7 +13854,7 @@ begin
   begin
     { Class method: spill Self from the first int arg register into its slot. }
     Self.Emit(Format(#9'movq %s, %s',
-      [SysVArgRegs64[IntIdx], Self.VarOperand('Self')]));
+      [SysVArg64(IntIdx), Self.VarOperand('Self')]));
     Inc(IntIdx);
   end;
   for I := 0 to ADecl.Params.Count - 1 do
@@ -13799,13 +13866,13 @@ begin
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName)]));
+          [SysVArg64(IntIdx), Self.VarOperand(P.ParamName)]));
         Inc(IntIdx);
       end;
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName + '_high')]));
+          [SysVArg64(IntIdx), Self.VarOperand(P.ParamName + '_high')]));
         Inc(IntIdx);
       end;
     end
@@ -13833,13 +13900,13 @@ begin
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName)]));
+          [SysVArg64(IntIdx), Self.VarOperand(P.ParamName)]));
         Inc(IntIdx);
       end;
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.IntfItabOperand(P.ParamName, False)]));
+          [SysVArg64(IntIdx), Self.IntfItabOperand(P.ParamName, False)]));
         Inc(IntIdx);
       end;
     end
@@ -13848,7 +13915,7 @@ begin
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName)]));
+          [SysVArg64(IntIdx), Self.VarOperand(P.ParamName)]));
         Inc(IntIdx);
       end;
     end
@@ -13863,7 +13930,7 @@ begin
       if IntIdx < 6 then
       begin
         Self.Emit(Format(#9'movq %s, %s',
-          [SysVArgRegs64[IntIdx], Self.VarOperand(P.ParamName)]));
+          [SysVArg64(IntIdx), Self.VarOperand(P.ParamName)]));
         Inc(IntIdx);
       end;
     end
