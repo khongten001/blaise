@@ -849,6 +849,7 @@ PointerWriteStmt
 
 FieldAssignment
     = IDENT DOT IDENT [ LBRACKET Expr RBRACKET ] ASSIGN Expr
+    | LPAREN Expr RPAREN DOT IDENT ASSIGN Expr   (* parenthesised lvalue, e.g. (a as TB).FX := v *)
     ;
 
 MethodCall

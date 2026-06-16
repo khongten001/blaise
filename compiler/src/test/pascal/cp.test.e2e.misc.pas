@@ -104,6 +104,10 @@ type
       function and using its result (Result := inherited F() + ...). Was a
       parser gap (inherited only worked as a statement). }
     procedure TestRun_InheritedFunctionCall_InExpression;
+
+    { (expr as T).Field := value — a parenthesised cast as an assignment
+      TARGET. Was a parser gap (statements could not start with '('). }
+    procedure TestRun_ParenCastAsAssignmentTarget;
   end;
 
 implementation
@@ -1117,6 +1121,29 @@ procedure TE2EMiscTests.TestRun_InheritedFunctionCall_InExpression;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcInheritedExprCall, '105' + LE + '31' + LE, 0);
+end;
+
+const
+  { Assign through a parenthesised cast: (a as TB).FX := 42.  The statement
+    parser must accept a leading '(' as an assignment lvalue. }
+  SrcParenCastTarget = '''
+    program Prg;
+    type
+      TBase = class end;
+      TDerived = class(TBase) FX: Integer; end;
+    var a: TBase;
+    begin
+      a := TDerived.Create();
+      (a as TDerived).FX := 42;
+      WriteLn((a as TDerived).FX);
+      a.Free()
+    end.
+    ''';
+
+procedure TE2EMiscTests.TestRun_ParenCastAsAssignmentTarget;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcParenCastTarget, '42' + LE, 0);
 end;
 
 initialization

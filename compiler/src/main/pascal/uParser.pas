@@ -2173,6 +2173,7 @@ var
   DerefNode:   TDerefExpr;
   SecondIdent: string;
   FldNode:     TFieldAccessExpr;
+  ParenExpr:   TASTExpr;
   InnerFld:    TFieldAccessExpr;
   CastRcv:     TASTExpr;
   FCallNode:   TFuncCallExpr;
@@ -2265,6 +2266,44 @@ begin
   if Check(tkBegin) then
   begin
     Exit(ParseCompoundStmt());
+  end;
+
+  { A statement that begins with '(' is an assignment whose lvalue is a
+    parenthesised expression, e.g. a typecast target:  (a as TB).FX := V.
+    Parse the parenthesised expression, then require a '.Field := Expr'
+    suffix and build a TFieldAssignment whose receiver is that expression
+    (the same ObjExpr path used for element-field writes). }
+  if Check(tkLParen) then
+  begin
+    Line := FCurrent.Line;
+    Col  := FCurrent.Col;
+    Advance();  { consume '(' }
+    ParenExpr := Self.ParseExpr();
+    try
+      Expect(tkRParen);
+      if not Check(tkDot) then
+        raise EParseError.Create(Format(
+          'Expected ''.'' after parenthesised assignment target at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      Advance();  { consume '.' }
+      if not Check(tkIdent) then
+        raise EParseError.Create(Format(
+          'Expected field name at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      SecondIdent := FCurrent.Value;
+      Advance();
+      Expect(tkAssign);
+    except
+      ParenExpr.Free();
+      raise;
+    end;
+    FldAssign := TFieldAssignment.Create();
+    FldAssign.Line := Line;
+    FldAssign.Col := Col;
+    FldAssign.FieldName := SecondIdent;
+    FldAssign.ObjExpr := ParenExpr;
+    FldAssign.Expr := Self.ParseExpr();
+    Exit(FldAssign);
   end;
 
   if not Check(tkIdent) then
