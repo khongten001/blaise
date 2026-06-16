@@ -38,6 +38,9 @@ type
       vtable, exactly like a direct accessor call does. }
     procedure TestRun_VirtualPropertyGetter_Dispatches;
     procedure TestRun_VirtualPropertySetter_Dispatches;
+    { A derived `overload` method must MERGE with the inherited overload set,
+      not shadow it — both the base and derived variants stay callable. }
+    procedure TestRun_OverloadMergeAcrossInheritance;
   end;
 
 implementation
@@ -273,6 +276,26 @@ const
     end.
     ''';
 
+  { TDerived adds F(string) as an overload; the inherited F(Integer) must
+    remain callable — the overload set merges across inheritance. }
+  SrcOverloadMerge = '''
+    program P;
+    type
+      TBase = class
+        function F(x: Integer): string; overload; begin Result := 'int:' + IntToStr(x); end;
+      end;
+      TDerived = class(TBase)
+        function F(s: string): string; overload; begin Result := 'str:' + s; end;
+      end;
+    var d: TDerived;
+    begin
+      d := TDerived.Create;
+      WriteLn(d.F('a'));
+      WriteLn(d.F(5));
+      d := nil;
+    end.
+    ''';
+
 procedure TE2EInheritTests.TestRun_ThreeLevelVirtualOverride;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
@@ -337,6 +360,12 @@ procedure TE2EInheritTests.TestRun_VirtualPropertySetter_Dispatches;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcVirtualSetter, '42' + LE, 0);
+end;
+
+procedure TE2EInheritTests.TestRun_OverloadMergeAcrossInheritance;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcOverloadMerge, 'str:a' + LE + 'int:5' + LE, 0);
 end;
 
 initialization

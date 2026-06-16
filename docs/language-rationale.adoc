@@ -1837,6 +1837,36 @@ ambiguity" pitfalls that surface when an `Integer` argument matches
 both an `Integer` and a `Double` overload — exact match always wins,
 ambiguity is escalated to the user.
 
+=== Overload sets merge across inheritance
+
+When a derived class declares an `overload` method whose name matches an
+overload inherited from a base class, the two sets *merge*: both the
+inherited and the newly declared variants remain callable on the derived
+type.
+
+[source,pascal]
+----
+TBase = class
+  function F(x: Integer): string; overload;
+end;
+TDerived = class(TBase)
+  function F(s: string): string; overload;   // adds to, does not replace
+end;
+var d: TDerived;
+begin
+  d.F(5);     // resolves to TBase.F(Integer)
+  d.F('a');   // resolves to TDerived.F(string)
+end;
+----
+
+This follows Delphi: a derived method marked `overload` extends the
+inherited overload set rather than hiding it.  A derived method declared
+*without* `overload` still hides every inherited variant of that name (the
+conventional "redeclaration hides" rule) — only the `overload` directive
+opts into merging.  Resolution collects candidates up the inheritance
+chain until it reaches a level that declares the name without `overload`,
+then scores the combined set with the normal exact-over-widening rules.
+
 === Name mangling
 
 Each overload is emitted under a distinct QBE symbol name derived from

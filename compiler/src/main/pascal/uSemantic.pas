@@ -4576,6 +4576,7 @@ var
   ExactNew:    Integer;
   ExactBest:   Integer;
   S1, S2:      Integer;
+  SawHiding:   Boolean;
 begin
   Result    := nil;
   if AArgs <> nil then Arity := AArgs.Count else Arity := -1;
@@ -4587,19 +4588,26 @@ begin
     begin
       Key := CurrName + '.' + AMethodName;
       Grp := GroupOf(FMethodGroups, Key);
+      SawHiding := False;
       if Grp <> nil then
         for K := 0 to Grp.Count - 1 do
         begin
           Inc(TotalCnt);
           Cand := TMethodDecl(Grp.Items[K]);
+          { A method declared WITHOUT `overload` hides all inherited methods of
+            the same name — once seen at this (more-derived) level, the parent
+            chain is not consulted.  Methods WITH `overload` merge with the
+            inherited overload set, so the walk continues to the parent. }
+          if not Cand.IsOverload then SawHiding := True;
           if (Arity < 0) or
              ((Arity >= MinArity(Cand)) and (Arity <= Cand.Params.Count)) then
             ArityMatch.Add(Cand);
         end;
-      if ArityMatch.Count > 0 then Break;
-      { Walk parent — only if no candidates yet (Delphi: derived overloads
-        do not mix with inherited ones unless the descendant explicitly
-        repeats the directive, which our model treats as a fresh slot). }
+      { Delphi overload semantics: derived `overload` methods MERGE with the
+        inherited overload set (walk continues), but a non-`overload` method at
+        this level hides the inherited ones (stop).  Stop too once any class in
+        the chain actually declares the name without `overload`. }
+      if SawHiding then Break;
       Sym := FTable.Lookup(CurrName);
       if (Sym <> nil) and (Sym.TypeDesc is TRecordTypeDesc) then
       begin
@@ -8792,7 +8800,16 @@ begin
   end;
 
   RT    := TRecordTypeDesc(ObjSym.TypeDesc);
-  MDecl := FindMethodDecl(RT.Name, AExpr.Name);
+  { Overload-aware resolution: pick the variant matching the argument list
+    (merging overloads across the inheritance chain).  Args must be analysed
+    first so ResolveMethodOverload can score against their resolved types.
+    Fall back to a plain chain lookup for the no-overload / single case. }
+  for I := 0 to AExpr.Args.Count - 1 do
+    AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+  MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
+    AExpr.Line, AExpr.Col);
+  if MDecl = nil then
+    MDecl := FindMethodDecl(RT.Name, AExpr.Name);
   { Built-in TObject.ToString: virtual dispatch yielding string.
     Every class inherits this from TObject (vtable slot 1). }
   if (MDecl = nil) and SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) and
