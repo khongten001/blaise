@@ -7456,8 +7456,10 @@ begin
       if (ArgType = nil) or not (ArgType.Kind in [tyString, tyDynArray]) then
         SemanticError('First argument of ''SetLength'' must be a string or dynamic array variable',
           ACall.Line, ACall.Col);
-      if not ((TASTExpr(ACall.Args.Items[0]) is TIdentExpr) or
-              (TASTExpr(ACall.Args.Items[0]) is TFieldAccessExpr)) then
+      { Accept any addressable l-value: a variable, a field, a pointer deref,
+        or an array element — the last enables 2-D dynamic arrays
+        (SetLength(m[i], n) resizes the inner array). }
+      if not IsVarArgLValue(TASTExpr(ACall.Args.Items[0])) then
         SemanticError('First argument of ''SetLength'' must be an assignable variable',
           ACall.Line, ACall.Col);
       AnalyseExpr(TASTExpr(ACall.Args.Items[1]));

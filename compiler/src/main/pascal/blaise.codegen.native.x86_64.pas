@@ -3675,6 +3675,7 @@ var
   IE:  TIdentExpr;
   FAE: TFieldAccessExpr;
   FI:  TFieldInfo;
+  SlotAddrWrap: TAddrOfExpr;
 begin
   if AExpr is TIdentExpr then
   begin
@@ -3730,6 +3731,22 @@ begin
       Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [FAE.RecordName]));
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
+    Exit;
+  end;
+  { Array element a[i] as an l-value slot (e.g. SetLength(m[i], n) for a 2-D
+    dynamic array): its address is what @a[i] computes — evaluate that into
+    %rax via a transient TAddrOfExpr, then move to %rdx. }
+  if AExpr is TStringSubscriptExpr then
+  begin
+    SlotAddrWrap := TAddrOfExpr.Create();
+    try
+      SlotAddrWrap.Expr := AExpr;
+      Self.EmitExprToEax(SlotAddrWrap);
+    finally
+      SlotAddrWrap.Expr := nil;   { AExpr owned by the caller }
+      SlotAddrWrap.Free();
+    end;
+    Self.Emit(#9'movq %rax, %rdx');
     Exit;
   end;
   raise ENativeCodeGenError.Create(
