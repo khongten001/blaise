@@ -38,7 +38,7 @@ jobs:
       #    so a shallow clone is useless — fetch-depth: 0 gets everything.
       # --------------------------------------------------------------------
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -85,7 +85,7 @@ jobs:
       - name: Restore bootstrap cache
         id: cache-restore
         if: ${{ !inputs.force_full }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .bootstrap-cache
           key: blaise-bootstrap-${{ github.run_id }}
@@ -235,7 +235,7 @@ jobs:
 
       - name: Save bootstrap cache
         if: success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .bootstrap-cache
           key: blaise-bootstrap-${{ github.run_id }}
@@ -245,7 +245,7 @@ jobs:
       # --------------------------------------------------------------------
       - name: Upload -pre binary artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blaise-pre-${{ github.sha }}
           path: |
