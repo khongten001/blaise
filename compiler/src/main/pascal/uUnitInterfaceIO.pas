@@ -311,7 +311,8 @@ begin
               EncodeLpstr(P.ReadName) +
               EncodeLpstr(P.WriteName) +
               EncodeLpstr(P.IndexParamName) +
-              EncodeLpstr(P.IndexTypeName);
+              EncodeLpstr(P.IndexTypeName) +
+              EncodeBool(P.IsDefault);
   end;
 end;
 
@@ -1807,6 +1808,7 @@ begin
     P.WriteName      := ReadLpstrAt(AText, APos);
     P.IndexParamName := ReadLpstrAt(AText, APos);
     P.IndexTypeName  := ReadLpstrAt(AText, APos);
+    P.IsDefault      := DecodeBool(AText, APos);
     ATarget.Add(P);
   end;
 end;

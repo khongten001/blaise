@@ -218,6 +218,7 @@ type
     WriteMethod:    string;      { '' if field-backed write or read-only }
     IndexParamName: string;  { '' = non-indexed property }
     [Unretained] IndexTypeDesc: TTypeDesc;  { not owned; non-nil when IndexParamName <> '' }
+    IsDefault:      Boolean; { declared with the `default` directive (Obj[I] sugar) }
   end;
 
   { Type descriptor for zero-GUID interface types (Phase 3). }
@@ -294,6 +295,7 @@ type
     procedure AddProperty(AProp: TPropertyInfo);
     function  FindProperty(const AName: string): TPropertyInfo;
     function  FindIndexedProperty: TPropertyInfo;
+    function  FindDefaultProperty: TPropertyInfo;
 
     { Custom attribute tracking }
     procedure AddClassAttribute(const AName: string);
@@ -1001,6 +1003,27 @@ begin
       begin
         Exit(P);
       end;
+    end;
+    Walk := Walk.Parent;
+  end;
+  Result := nil;
+end;
+
+function TRecordTypeDesc.FindDefaultProperty: TPropertyInfo;
+{ Returns the property marked `default` (Obj[I] sugar), walking the inheritance
+  chain; nil if the class has no default property. }
+var
+  I:    Integer;
+  P:    TPropertyInfo;
+  Walk: TRecordTypeDesc;
+begin
+  Walk := Self;
+  while Walk <> nil do
+  begin
+    for I := 0 to Walk.FProperties.Count - 1 do
+    begin
+      P := TPropertyInfo(Walk.FProperties.Items[I]);
+      if P.IsDefault then Exit(P);
     end;
     Walk := Walk.Parent;
   end;

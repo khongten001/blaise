@@ -194,6 +194,8 @@ TStaticSubscriptAssign.BaseExpr  serialise
 TStaticSubscriptAssign.IsGlobal  safe
 TStaticSubscriptAssign.IsVarParam  safe
 TStaticSubscriptAssign.IsImplicitSelf  safe
+TStaticSubscriptAssign.PropOwnerType  safe
+TStaticSubscriptAssign.PropAccessorVSlot  safe
 
 # TPointerWriteStmt (uAST.pas:420)
 TPointerWriteStmt.PtrExpr  serialise

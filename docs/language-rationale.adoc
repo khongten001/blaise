@@ -755,6 +755,29 @@ the idiomatic subscript syntax the compiler source already uses.
   names in the declaration are more transparent and consistent with the
   existing non-indexed property design.
 
+==== Default array property
+
+An indexed property may carry the `default` directive, marking it as the
+class's default array property:
+
+----
+property Items[I: Integer]: T read Get write Put; default;
+----
+
+A subscript applied directly to an object of that class — `Obj[I]` — is then
+sugar for `Obj.Items[I]`: it lowers to the getter on read and the setter on
+write, exactly as the named form does.  This is the mechanism behind the
+familiar `List[i]` syntax.  Resolution walks the inheritance chain, so a
+default property declared on a base class is usable through a derived class.
+The `default` flag is carried across units in the `.bif` interface so a
+default property declared in one unit keeps its subscript sugar when the unit
+is used elsewhere.
+
+Only one default property per class is meaningful (the first one found wins);
+the directive is only valid on an indexed property.  The accessor dispatch
+honours `virtual`/`override` on the getter/setter, the same as a named indexed
+property access.
+
 ---
 
 === Constructor and Destructor Keywords

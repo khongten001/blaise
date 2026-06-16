@@ -2537,6 +2537,7 @@ begin
       PropInfo.IndexParamName := NewPDecl.IndexParamName;
       if NewPDecl.IndexTypeName <> '' then
         PropInfo.IndexTypeDesc := FindTypeOrInstantiate(NewPDecl.IndexTypeName);
+      PropInfo.IsDefault := NewPDecl.IsDefault;
       RT.AddProperty(PropInfo);
     end;
 
@@ -4264,6 +4265,7 @@ begin
         PropInfo.IndexParamName := PropDecl.IndexParamName;
         if PropDecl.IndexTypeName <> '' then
           PropInfo.IndexTypeDesc := FTable.FindType(PropDecl.IndexTypeName);
+        PropInfo.IsDefault := PropDecl.IsDefault;
         RT.AddProperty(PropInfo);
       end;
 
@@ -10165,6 +10167,8 @@ function TSemanticAnalyser.AnalyseStringSubscriptExpr(AExpr: TStringSubscriptExp
 var
   StrType, IdxType: TTypeDesc;
   FldAccess: TFieldAccessExpr;
+  DefProp:   TPropertyInfo;
+  DefFA:     TFieldAccessExpr;
 begin
   StrType := AnalyseExpr(AExpr.StrExpr);
   { Indexed property read: Obj.Prop[I] where Prop is a method-backed indexed property }
@@ -10228,6 +10232,31 @@ begin
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
+  end;
+  { Default array property: Obj[I] on a class/record with a `default` indexed
+    property is sugar for Obj.<DefaultProp>[I].  Synthesise the field-access for
+    the default property's getter, analyse it (which sets PropRead / owner /
+    vtable slot), and reuse the indexed-property-read path above. }
+  if (StrType.Kind in [tyClass, tyRecord]) then
+  begin
+    DefProp := TRecordTypeDesc(StrType).FindDefaultProperty();
+    if (DefProp <> nil) and (DefProp.ReadMethod <> '') then
+    begin
+      DefFA := TFieldAccessExpr.Create();
+      DefFA.Line := AExpr.Line;
+      DefFA.Col  := AExpr.Col;
+      DefFA.Base := AExpr.StrExpr;     { transfer ownership of the receiver expr }
+      DefFA.FieldName := DefProp.Name;
+      { Attach the index BEFORE analysis — the indexed-property field-access
+        path expects PropIndexExpr to be present. }
+      DefFA.PropIndexExpr := AExpr.IndexExpr;
+      AExpr.IndexExpr := nil;
+      AExpr.StrExpr := DefFA;          { StrExpr now owns DefFA }
+      AnalyseExpr(DefFA);              { sets DefFA.PropRead / PropOwnerType / VSlot }
+      Result := DefProp.TypeDesc;
+      AExpr.ResolvedType := Result;
+      Exit;
+    end;
   end;
   if not StrType.IsString() then
     SemanticError(
@@ -10335,6 +10364,7 @@ var
   ValType:  TTypeDesc;
   BaseInfo: TFieldInfo;
   ElemT:    TTypeDesc;
+  DefProp:  TPropertyInfo;
 begin
   { Chained / multi-dimensional element write: BaseExpr yields the inner
     array (A[I][J] := V, lowered from A[I, J] := V or written directly).
@@ -10393,6 +10423,30 @@ begin
       AStmt.Line, AStmt.Col);
   end;
   AStmt.ArrayName := Sym.Name;  { normalise to declared casing }
+  { Default array property write: Obj[I] := V where Obj's class/record has a
+    `default` indexed property with a setter — lower to a setter call. }
+  if Sym.TypeDesc.Kind in [tyClass, tyRecord] then
+  begin
+    DefProp := TRecordTypeDesc(Sym.TypeDesc).FindDefaultProperty();
+    if (DefProp <> nil) and (DefProp.WriteMethod <> '') then
+    begin
+      AStmt.IsGlobal   := Sym.IsGlobal;
+      AStmt.IsVarParam := Sym.Kind = skVarParameter;
+      AStmt.PropWriteInfo := DefProp;
+      AStmt.PropOwnerType :=
+        PropAccessorOwner(TRecordTypeDesc(Sym.TypeDesc).Name, DefProp.WriteMethod);
+      AStmt.PropAccessorVSlot :=
+        PropAccessorVSlot(TRecordTypeDesc(Sym.TypeDesc).Name, DefProp.WriteMethod);
+      IdxType := AnalyseExpr(AStmt.IndexExpr);
+      if (DefProp.IndexTypeDesc <> nil) then
+        CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
+          AStmt.Line, AStmt.Col);
+      ValType := AnalyseExpr(AStmt.ValueExpr);
+      CheckTypesMatch(DefProp.TypeDesc, ValType, 'default property assignment',
+        AStmt.Line, AStmt.Col);
+      Exit;
+    end;
+  end;
   { PChar subscript write: P[I] := Integer — storeb at ptr + I }
   if Sym.TypeDesc.Kind = tyPChar then
   begin

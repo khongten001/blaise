@@ -6155,6 +6155,17 @@ begin
 
   { Open-array element read: A[I] where A is an open-array parameter.
     The data pointer lives in the _var_A slot (not _var_A_high). }
+  { Indexed/default property read: Obj.Items[I] or Obj[I] (default property) —
+    semantic has folded the index into StrExpr (a TFieldAccessExpr with PropRead
+    + PropIndexExpr), leaving AExpr.IndexExpr nil.  Delegate to the StrExpr. }
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead <> nil) then
+  begin
+    Self.EmitExprToEax(TStringSubscriptExpr(AExpr).StrExpr);
+    Exit;
+  end;
+
   if (AExpr is TStringSubscriptExpr) and
      (TStringSubscriptExpr(AExpr).StrExpr is TIdentExpr) and
      (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
@@ -10967,6 +10978,28 @@ begin
   if AStmt is TStaticSubscriptAssign then
   begin
     SSA := TStaticSubscriptAssign(AStmt);
+    { Default array property write: Obj[I] := V lowered to a setter call.
+      Args: receiver %rdi, index %rsi, value %rdx (System V).  Evaluate value
+      and index first (they clobber registers), stash on the stack, then load
+      the receiver and reload the args. }
+    if SSA.PropWriteInfo <> nil then
+    begin
+      Self.EmitExprToEax(SSA.ValueExpr);       { value }
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(SSA.IndexExpr);       { index }
+      Self.Emit(#9'pushq %rax');
+      if Self.IsLocal(SSA.ArrayName) then
+        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(SSA.ArrayName)]))
+      else
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [SSA.ArrayName]));
+      if SSA.IsVarParam then
+        Self.Emit(#9'movq (%rdi), %rdi');      { var-param: slot -> instance }
+      Self.Emit(#9'popq %rsi');                { index }
+      Self.Emit(#9'popq %rdx');                { value }
+      Self.EmitPropAccessorCallNative(SSA.PropOwnerType,
+        TPropertyInfo(SSA.PropWriteInfo).WriteMethod, SSA.PropAccessorVSlot);
+      Exit;
+    end;
     if (SSA.ResolvedArrayType <> nil) and
        (SSA.ResolvedArrayType.Kind = tyPChar) then
     begin

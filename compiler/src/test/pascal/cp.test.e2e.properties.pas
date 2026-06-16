@@ -30,6 +30,11 @@ type
     procedure TestRun_DefaultValueIsZero;
     procedure TestRun_InheritedProperty;
     procedure TestRun_IndexedProperty;
+    { Default array property: Obj[I] sugar (read + write), string element, and
+      inheritance of the default property from a base class. }
+    procedure TestRun_DefaultProperty_ReadWrite;
+    procedure TestRun_DefaultProperty_StringElement;
+    procedure TestRun_DefaultProperty_Inherited;
     { Static-array field accessed from inside a method (implicit Self). }
     procedure TestRun_StaticArrayField_ReadInMethod;
     procedure TestRun_StaticArrayField_WriteInMethod;
@@ -213,6 +218,80 @@ procedure TE2EPropertyTests.TestRun_StaticArrayOfRecordField;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcArrOfRecord, '77' + LE, 0);
+end;
+
+const
+  SrcDefaultRW = '''
+    program P;
+    type
+      TVec = class
+        FData: array[0..4] of Integer;
+        function Get(i: Integer): Integer; begin Result := FData[i] end;
+        procedure Put(i: Integer; v: Integer); begin FData[i] := v end;
+        property Items[i: Integer]: Integer read Get write Put; default;
+      end;
+    var v: TVec;
+    begin
+      v := TVec.Create;
+      v[0] := 10; v[1] := 20;
+      WriteLn(v[0] + v[1]);
+      v := nil
+    end.
+    ''';
+
+  SrcDefaultStr = '''
+    program P;
+    type
+      TBag = class
+        FData: array[0..2] of string;
+        function Get(i: Integer): string; begin Result := FData[i] end;
+        procedure Put(i: Integer; v: string); begin FData[i] := v end;
+        property Items[i: Integer]: string read Get write Put; default;
+      end;
+    var b: TBag;
+    begin
+      b := TBag.Create;
+      b[0] := 'foo'; b[1] := 'bar';
+      WriteLn(b[0] + b[1]);
+      b := nil
+    end.
+    ''';
+
+  SrcDefaultInherited = '''
+    program P;
+    type
+      TBase = class
+        FData: array[0..2] of Integer;
+        function Get(i: Integer): Integer; begin Result := FData[i] end;
+        procedure Put(i: Integer; v: Integer); begin FData[i] := v end;
+        property Items[i: Integer]: Integer read Get write Put; default;
+      end;
+      TDerived = class(TBase) end;
+    var d: TDerived;
+    begin
+      d := TDerived.Create;
+      d[0] := 5; d[1] := 7;
+      WriteLn(d[0] + d[1]);
+      d := nil
+    end.
+    ''';
+
+procedure TE2EPropertyTests.TestRun_DefaultProperty_ReadWrite;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDefaultRW, '30' + LE, 0);
+end;
+
+procedure TE2EPropertyTests.TestRun_DefaultProperty_StringElement;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDefaultStr, 'foobar' + LE, 0);
+end;
+
+procedure TE2EPropertyTests.TestRun_DefaultProperty_Inherited;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDefaultInherited, '12' + LE, 0);
 end;
 
 initialization

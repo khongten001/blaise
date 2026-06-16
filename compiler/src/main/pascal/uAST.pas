@@ -430,6 +430,13 @@ type
     [Unretained] ResolvedArrayType: TTypeDesc;  { set by uSemantic; not owned }
     IsImplicitSelf: Boolean;  { set by uSemantic — ArrayName is an array-typed field of Self }
     [Unretained] ImplicitFieldInfo: TFieldInfo;  { non-owned — the Self field; set with IsImplicitSelf }
+    { Default array property write: Obj[I] := V where Obj's class has a
+      `default` indexed property — lowered to a setter call.  When
+      PropWriteInfo is non-nil, ArrayName is the receiver variable, IndexExpr
+      is the index arg, ValueExpr is the value arg. }
+    [Unretained] PropWriteInfo: TObject;  { TPropertyInfo — non-owned; nil = plain array write }
+    PropOwnerType:     string;  { declaring class of the setter }
+    PropAccessorVSlot: Integer; { setter vtable slot, -1 = static call }
     destructor Destroy; override;
   end;
 
@@ -846,6 +853,7 @@ type
     WriteName:      string;  { backing field or setter method; '' = read-only }
     IndexParamName: string;  { '' = non-indexed property }
     IndexTypeName: string;  { type name of the index parameter; '' when non-indexed }
+    IsDefault:      Boolean; { declared with the `default` directive (Obj[I] sugar) }
   end;
 
   TClassTypeDef = class(TASTTypeDef)

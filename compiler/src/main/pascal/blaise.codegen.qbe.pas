@@ -13976,7 +13976,38 @@ var
   ItabTemp:   string;   { interface RHS itab slot or itab name literal }
   ItabPtr:    string;   { ElemPtr + 8, target of itab store }
   IntfDesc:   TInterfaceTypeDesc;
+  DefProp:    TPropertyInfo;
+  RecvTemp:   string;
+  IdxQType:   string;
+  ValQType:   string;
+  PropTgt:    string;
 begin
+  { Default array property write: Obj[I] := V lowered to a setter call.
+    Semantic set PropWriteInfo; ArrayName is the receiver, IndexExpr/ValueExpr
+    are the setter args.  Dispatch through the vtable when the setter is
+    virtual (PropAccessorVSlot >= 0), else a static call. }
+  if AStmt.PropWriteInfo <> nil then
+  begin
+    DefProp  := TPropertyInfo(AStmt.PropWriteInfo);
+    RecvTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s',
+      [RecvTemp, VarRef(AStmt.ArrayName, AStmt.IsGlobal)]));
+    if AStmt.IsVarParam then
+    begin
+      ElemPtr := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [ElemPtr, RecvTemp]));
+      RecvTemp := ElemPtr;
+    end;
+    IdxW     := EmitExpr(AStmt.IndexExpr);
+    IdxQType := QbeTypeOf(DefProp.IndexTypeDesc);
+    ElemVal  := EmitExpr(AStmt.ValueExpr);
+    ValQType := QbeTypeOf(DefProp.TypeDesc);
+    PropTgt  := PropAccessorTarget(AStmt.PropOwnerType, DefProp.WriteMethod,
+      AStmt.PropAccessorVSlot, RecvTemp);
+    EmitLine(Format('  call %s(l %s, %s %s, %s %s)',
+      [PropTgt, RecvTemp, IdxQType, IdxW, ValQType, ElemVal]));
+    Exit;
+  end;
   { PChar subscript write: P[I] := Integer — storeb at ptr + I.
     EmitByteRhs short-circuits Chr(N) so we store N directly instead of
     truncating the low byte of a _Chr-allocated string pointer. }

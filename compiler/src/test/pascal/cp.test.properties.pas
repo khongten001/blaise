@@ -70,6 +70,10 @@ type
     procedure TestCodegen_IndexedProperty_Read_EmitsGetterWithIndex;
     procedure TestCodegen_IndexedProperty_Write_EmitsSetterWithIndex;
 
+    { Default array property: Obj[I] lowers to the getter/setter call. }
+    procedure TestCodegen_DefaultProperty_Read_EmitsGetter;
+    procedure TestCodegen_DefaultProperty_Write_EmitsSetter;
+
     { Regression: 'Outer.Inner.Indexed[Variable]' — chained base + indexed
       property read with a variable index.  Previously crashed the codegen
       because the analyser skipped AnalyseExpr on PropIndexExpr in the
@@ -586,6 +590,50 @@ var
 begin
   IR := GenIR(SrcIndexedPropWriteUsage);
   AssertTrue('indexed write emits setter call', Pos('call $TList_Put', IR) > 0);
+end;
+
+procedure TPropertyTests.TestCodegen_DefaultProperty_Read_EmitsGetter;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TVec = class
+            FD: array[0..3] of Integer;
+            function Get(i: Integer): Integer; begin Result := FD[i] end;
+            procedure Put(i: Integer; v: Integer); begin FD[i] := v end;
+            property Items[i: Integer]: Integer read Get write Put; default;
+          end;
+        var v: TVec; x: Integer;
+        begin v := TVec.Create(); x := v[2]; WriteLn(x) end.
+        '''
+  );
+  AssertTrue('default-property read emits getter call',
+    Pos('call $TVec_Get', IR) > 0);
+end;
+
+procedure TPropertyTests.TestCodegen_DefaultProperty_Write_EmitsSetter;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TVec = class
+            FD: array[0..3] of Integer;
+            function Get(i: Integer): Integer; begin Result := FD[i] end;
+            procedure Put(i: Integer; v: Integer); begin FD[i] := v end;
+            property Items[i: Integer]: Integer read Get write Put; default;
+          end;
+        var v: TVec;
+        begin v := TVec.Create(); v[2] := 9 end.
+        '''
+  );
+  AssertTrue('default-property write emits setter call',
+    Pos('call $TVec_Put', IR) > 0);
 end;
 
 procedure TPropertyTests.TestCodegen_IndexedProperty_ChainedBase_VarIndex_Compiles;

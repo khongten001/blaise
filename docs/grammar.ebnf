@@ -405,6 +405,7 @@ PropertyDecl
       [ "read"  IDENT ]
       [ "write" IDENT ]
       SEMICOLON
+      [ "default" SEMICOLON ]                      (* default array property *)
     ;
 
 (* If the index parameter is present, the property is indexed:
@@ -412,7 +413,12 @@ PropertyDecl
  * Indexed reads emit a getter call with one extra argument (the index).
  * Indexed writes emit a setter call with two extra arguments (index, value).
  * Only a single index parameter is supported; multiple-index properties
- * (as in Delphi) are not. *)
+ * (as in Delphi) are not.
+ *
+ * The optional "default" directive (only meaningful on an indexed property)
+ * marks it as the class's default array property, enabling the Obj[I] sugar:
+ *   property Items[I: Integer]: T read Get write Put; default;
+ * Obj[I] then lowers to Obj.Items[I] (getter on read, setter on write). *)
 
 (* "property", "read", "write" are contextual soft keywords; they may be used
  * as identifiers outside a class body. *)

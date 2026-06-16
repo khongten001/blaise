@@ -1992,6 +1992,16 @@ begin
       Advance();
     end;
     Expect(tkSemicolon);
+    { Optional `default` directive on an indexed property — marks it as the
+      class's default array property, enabling Obj[I] sugar.  It appears as a
+      separate directive after the property's own semicolon:
+        property Items[I: Integer]: T read Get write Put; default; }
+    if Check(tkIdent) and SameText(FCurrent.Value, 'default') then
+    begin
+      Result.IsDefault := True;
+      Advance();
+      Expect(tkSemicolon);
+    end;
   except
     Result.Free();
     raise;
