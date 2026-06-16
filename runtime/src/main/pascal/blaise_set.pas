@@ -42,6 +42,7 @@ procedure _SetUnion(Dest, A, B: Pointer; NBytes: Integer);    { Dest := A or B }
 procedure _SetInter(Dest, A, B: Pointer; NBytes: Integer);    { Dest := A and B }
 procedure _SetDiff(Dest, A, B: Pointer; NBytes: Integer);     { Dest := A and not B }
 function  _SetEqual(A, B: Pointer; NBytes: Integer): Integer;  { 1 if equal }
+function  _SetSubset(A, B: Pointer; NBytes: Integer): Integer; { 1 if A subset of B }
 procedure _SetCopy(Dest, Src: Pointer; NBytes: Integer);      { byte copy }
 
 implementation
@@ -143,6 +144,22 @@ begin
   while I < NBytes do
   begin
     if GetByte(A, I) <> GetByte(B, I) then
+      Exit(0);
+    Inc(I);
+  end;
+  Result := 1;
+end;
+
+{ 1 if A is a subset of B (every bit set in A is also set in B), else 0. }
+function _SetSubset(A, B: Pointer; NBytes: Integer): Integer;
+var
+  I: Integer;
+begin
+  I := 0;
+  while I < NBytes do
+  begin
+    { A byte of A has a bit absent from B iff (A[i] and not B[i]) <> 0. }
+    if (GetByte(A, I) and not GetByte(B, I)) <> 0 then
       Exit(0);
     Inc(I);
   end;

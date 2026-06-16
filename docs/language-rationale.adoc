@@ -4412,6 +4412,24 @@ when the variable clashes with a type declared in the *same* scope, and
 silently permits a variable to shadow a built-in or outer-scope type
 (`var Integer: Int64` compiles in FPC).
 
+The same rule applies to *enum members*: a variable may not share its name with
+a visible enum constant.
+
+[source,pascal]
+----
+type TC = (A, B, C, D);
+var  c: TC;     // ERROR: 'c' and the enum member 'C' are the same identifier
+----
+
+Without this rule the variable shadows the member, so a set literal that names
+the member — `s := [A, C, D]` — silently resolves `C` to the variable (not the
+constant).  That is not a compile-time constant, so the QBE backend rejects it
+with a cryptic message while the native backend produced a *wrong bitmap with
+no error at all* (the member's bit was simply dropped).  Rejecting the shadow
+at the declaration, with `Duplicate identifier 'X' — an enum member with this
+name is already visible`, removes both failure modes (FPC/Delphi allow the
+shadow; Blaise does not, consistent with the type-name rule above).
+
 === Rationale
 
 A variable that bears the same name as a type is almost always a mistake, and

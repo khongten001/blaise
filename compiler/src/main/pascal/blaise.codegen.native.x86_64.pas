@@ -6031,7 +6031,7 @@ begin
     { Set arithmetic: union (+), difference (-), intersection (*), equality. }
     if (BE.Left.ResolvedType <> nil) and
        (BE.Left.ResolvedType.Kind = tySet) and
-       (BE.Op in [boAdd, boSub, boMul, boEQ, boNE]) then
+       (BE.Op in [boAdd, boSub, boMul, boEQ, boNE, boLE, boGE]) then
     begin
       if IsJumboSet(BE.Left.ResolvedType) then
       begin
@@ -6048,6 +6048,28 @@ begin
           Self.Emit(#9'callq _SetEqual');
           if BE.Op = boNE then
             Self.Emit(#9'xorl $1, %eax');
+          Exit;
+        end;
+        { Subset (<=) / superset (>=): _SetSubset(A, B) tests A subset of B.
+          For >= the operands are swapped (B subset of A). }
+        if BE.Op in [boLE, boGE] then
+        begin
+          Self.EmitExprToEax(BE.Left);
+          Self.Emit(#9'pushq %rax');
+          Self.EmitExprToEax(BE.Right);
+          if BE.Op = boLE then
+          begin
+            Self.Emit(#9'movq %rax, %rsi');   { B }
+            Self.Emit(#9'popq %rdi');         { A }
+          end
+          else
+          begin
+            Self.Emit(#9'movq %rax, %rdi');   { B -> A-arg }
+            Self.Emit(#9'popq %rsi');         { A -> B-arg }
+          end;
+          Self.Emit(Format(#9'movl $%d, %%edx',
+            [JumboSetNBytes(BE.Left.ResolvedType)]));
+          Self.Emit(#9'callq _SetSubset');
           Exit;
         end;
         { Union/intersection/difference: write the result into a frame scratch
@@ -6094,6 +6116,25 @@ begin
             Self.Emit(#9'sete %al')
           else
             Self.Emit(#9'setne %al');
+          Self.Emit(#9'movzbl %al, %eax');
+        end;
+        boLE, boGE:
+        begin
+          { subset s<=t: (s and not t)=0 ; superset s>=t: (t and not s)=0.
+            %rax=s (left), %rcx=t (right).  For <= mask = s and not t; for >=
+            mask = t and not s.  Then test the mask is zero. }
+          if BE.Op = boLE then
+          begin
+            Self.Emit(#9'notq %rcx');        { ~t }
+            Self.Emit(#9'andq %rcx, %rax');  { s and ~t }
+          end
+          else
+          begin
+            Self.Emit(#9'notq %rax');        { ~s }
+            Self.Emit(#9'andq %rcx, %rax');  { t and ~s }
+          end;
+          Self.Emit(#9'testq %rax, %rax');
+          Self.Emit(#9'sete %al');
           Self.Emit(#9'movzbl %al, %eax');
         end;
       end;

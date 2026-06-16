@@ -36,6 +36,7 @@ type
     procedure TestVarDecl_DuplicatesInterfaceType_RaisesError;
     procedure TestVarDecl_ShadowsBuiltinType_RaisesError;
     procedure TestVarDecl_ShadowsOuterScopeType_RaisesError;
+    procedure TestVarDecl_ShadowsEnumMember_RaisesError;
     { Const then var with same name in same block is a duplicate }
     procedure TestVarDecl_DuplicatesConst_RaisesError;
     { Const redeclared with same name in same block is a duplicate }
@@ -232,6 +233,15 @@ begin
     'program P; type TFoo = record X: Integer; end; ' +
     'procedure Q; var TFoo: Integer; begin end; ' +
     'begin Q(); end.');
+end;
+
+procedure TSemanticTests.TestVarDecl_ShadowsEnumMember_RaisesError;
+begin
+  { A var may not shadow a visible enum member — shadowing silently retargets
+    the member in a set literal to the variable, miscompiling the bitmask.
+    Blaise rejects it, in the same spirit as the type-name-shadow rule. }
+  AnalyseExpectError(
+    'program P; type TC = (A, B, C); var c: TC; begin end.');
 end;
 
 procedure TSemanticTests.TestVarDecl_DuplicatesConst_RaisesError;

@@ -40,6 +40,7 @@ type
     procedure TestRun_Set_EqualityWithLiteral;
     procedure TestRun_Set_ForIn_PrintsMembers;
     procedure TestRun_Set_RangeLiteral_Membership;
+    procedure TestRun_Set_SubsetSuperset;
 
     { 33..64-member sets (the QBE 'l' / 64-bit register boundary) }
     procedure TestRun_Set64_InOperator_HighBit;
@@ -166,6 +167,21 @@ const
       S := [Red, Blue];
       for C in S do
         WriteLn(Ord(C));
+    end.
+    ''';
+
+  { Subset (<=) and superset (>=) operators. }
+  SrcSetSubset = '''
+    program Prg;
+    type TC = (Aa, Bb, Cc, Dd);
+    var s, t: set of TC;
+    begin
+      s := [Aa, Bb]; t := [Aa, Bb, Cc];
+      WriteLn(s <= t);
+      WriteLn(t <= s);
+      WriteLn(s >= t);
+      WriteLn(t >= s);
+      WriteLn(s <= s)
     end.
     ''';
 
@@ -322,6 +338,14 @@ begin
   AssertRunsOnAll(SrcSetRange,
     'n' + LE + 'y' + LE + 'y' + LE + 'n' + LE +
     'n' + LE + 'y' + LE + 'y' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_Set_SubsetSuperset;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { s<=t, t<=s, s>=t, t>=s, s<=s }
+  AssertRunsOnAll(SrcSetSubset,
+    'True' + LE + 'False' + LE + 'False' + LE + 'True' + LE + 'True' + LE, 0);
 end;
 
 procedure TE2ESetOpsTests.TestRun_Set64_InOperator_HighBit;

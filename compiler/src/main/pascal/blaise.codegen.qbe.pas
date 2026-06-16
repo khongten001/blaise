@@ -9019,6 +9019,9 @@ var
   DataTemp:     string;
   SQT:          string;
   PMark:        Integer;
+  CmpTemp:      string;
+  SetTmpA:      string;
+  SetTmpB:      string;
   SetNB:        Integer;   { jumbo set bitmap byte count }
   SetRS:        Integer;   { jumbo set slot size (RawSize, 8-rounded) }
 begin
@@ -11991,6 +11994,12 @@ begin
               [ArgTemp, L, R, SetNB]));
             EmitLine(Format('  %s =w ceqw %s, 0', [T, ArgTemp]));
           end;
+          boLE:  { subset: A subset of B }
+            EmitLine(Format('  %s =w call $_SetSubset(l %s, l %s, w %d)',
+              [T, L, R, SetNB]));
+          boGE:  { superset: B subset of A }
+            EmitLine(Format('  %s =w call $_SetSubset(l %s, l %s, w %d)',
+              [T, R, L, SetNB]));
         else
           raise ECodeGenError.Create(Format(
             'Operator not supported for set types at line %d', [BinExpr.Line]));
@@ -12019,6 +12028,24 @@ begin
             EmitLine(Format('  %s =w cnel %s, %s', [T, L, R]))
           else
             EmitLine(Format('  %s =w cnew %s, %s', [T, L, R]));
+        boLE,  { subset:   s <= t  iff  (s and not t) = 0 }
+        boGE:  { superset: s >= t  iff  (t and not s) = 0 }
+        begin
+          { Pick which operand must be fully contained in the other. }
+          if BinExpr.Op = boLE then
+          begin ArgTemp := L; CmpTemp := R; end
+          else
+          begin ArgTemp := R; CmpTemp := L; end;
+          { notOther := ~CmpTemp ; rem := ArgTemp and notOther ; result := rem = 0 }
+          SetTmpA := AllocTemp();
+          EmitLine(Format('  %s =%s xor %s, -1', [SetTmpA, SQT, CmpTemp]));
+          SetTmpB := AllocTemp();
+          EmitLine(Format('  %s =%s and %s, %s', [SetTmpB, SQT, ArgTemp, SetTmpA]));
+          if SQT = 'l' then
+            EmitLine(Format('  %s =w ceql %s, 0', [T, SetTmpB]))
+          else
+            EmitLine(Format('  %s =w ceqw %s, 0', [T, SetTmpB]));
+        end;
       else
         raise ECodeGenError.Create(Format(
           'Operator not supported for set types at line %d', [BinExpr.Line]));

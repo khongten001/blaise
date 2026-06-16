@@ -5526,6 +5526,7 @@ var
   Typ:     TTypeDesc;
   VarName: string;
   Sym:     TSymbol;
+  EnumShadowSym: TSymbol;
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
@@ -5586,6 +5587,19 @@ begin
         SemanticError(
           Format('Duplicate identifier ''%s'' — a type with this name is ' +
                  'already visible', [VarName]),
+          Decl.Line, Decl.Col);
+      { A variable may not share a name with a visible ENUM MEMBER (case-
+        insensitive).  Shadowing it silently retargets the member in a set
+        literal `[A, c, D]` to the variable — which is not a constant, so QBE
+        errors cryptically and native miscompiles the bitmask.  Reject it, in
+        the same spirit as the type-name rule above. }
+      EnumShadowSym := FTable.Lookup(VarName);
+      if (EnumShadowSym <> nil) and (EnumShadowSym.Kind = skConstant) and
+         (EnumShadowSym.TypeDesc <> nil) and
+         (EnumShadowSym.TypeDesc.Kind = tyEnum) then
+        SemanticError(
+          Format('Duplicate identifier ''%s'' — an enum member with this name ' +
+                 'is already visible', [VarName]),
           Decl.Line, Decl.Col);
       if Decl.IsThreadVar and not Decl.IsGlobal then
         SemanticError('threadvar is only allowed at unit or program scope',
@@ -9986,7 +10000,8 @@ begin
         Format('Incompatible set types in ''%s'': ''%s'' vs ''%s''',
           [BinaryOpName(ABin.Op), LType.Name, RType.Name]),
         ABin.Line, ABin.Col);
-    if ABin.Op in [boEQ, boNE] then
+    if ABin.Op in [boEQ, boNE, boLE, boGE] then
+      { = <> equality; <= subset; >= superset — all yield Boolean. }
       Result := FTable.TypeBoolean
     else if ABin.Op in [boAdd, boSub, boMul] then
       Result := LType
