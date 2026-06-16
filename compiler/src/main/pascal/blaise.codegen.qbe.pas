@@ -11926,6 +11926,25 @@ begin
       end;
       Exit(T);
     end;
+    { String relational order: _StringCompare returns <0 / 0 / >0 (strcmp-like);
+      compare that word against 0 with the corresponding signed op.  Without
+      this the operands fall through to the generic comparison path, which
+      compares the string POINTERS (and emits a mismatched-type compare that
+      makes QBE abort: selcmp k != Kw). }
+    if (BinExpr.Left.ResolvedType <> nil) and
+       BinExpr.Left.ResolvedType.IsString() and
+       (BinExpr.Op in [boLT, boGT, boLE, boGE]) then
+    begin
+      ArgTemp := AllocTemp();
+      EmitLine(Format('  %s =w call $_StringCompare(l %s, l %s)', [ArgTemp, L, R]));
+      case BinExpr.Op of
+        boLT: EmitLine(Format('  %s =w csltw %s, 0', [T, ArgTemp]));
+        boGT: EmitLine(Format('  %s =w csgtw %s, 0', [T, ArgTemp]));
+        boLE: EmitLine(Format('  %s =w cslew %s, 0', [T, ArgTemp]));
+        boGE: EmitLine(Format('  %s =w csgew %s, 0', [T, ArgTemp]));
+      end;
+      Exit(T);
+    end;
     { Set membership: elem in SetVar }
     if BinExpr.Op = boIn then
     begin

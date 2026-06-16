@@ -45,6 +45,10 @@ type
     procedure TestRun_StringConcat_WithInt;
     procedure TestRun_StringDelete_Modifies;
     procedure TestRun_StringSetLength_Truncates;
+    { Relational order operators on strings (< > <= >=): QBE used to abort
+      (selcmp k != Kw) and native silently compared pointers; both now route
+      through _StringCompare. }
+    procedure TestRun_StringRelational_Order;
     procedure TestRun_Int64_ArithmeticOverInt32;
     procedure TestRun_Int64_Comparison;
     procedure TestRun_Int64_ForLoop;
@@ -576,6 +580,30 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcInt64ForLoop, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('15', '15' + LE, Output);
+end;
+
+const
+  SrcStringRelational = '''
+    program Prog;
+    procedure Chk(b: Boolean; const nm: string);
+    begin if b then WriteLn(nm + ':T') else WriteLn(nm + ':F') end;
+    begin
+      Chk('abc' < 'abd', 'lt');
+      Chk('abd' < 'abc', 'lt2');
+      Chk('b' > 'a', 'gt');
+      Chk('a' > 'b', 'gt2');
+      Chk('abc' <= 'abc', 'le');
+      Chk('abc' >= 'abc', 'ge');
+      Chk('' < 'a', 'empty')
+    end.
+    ''';
+
+procedure TE2EStringOpsTests.TestRun_StringRelational_Order;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcStringRelational,
+    'lt:T' + LE + 'lt2:F' + LE + 'gt:T' + LE + 'gt2:F' + LE +
+    'le:T' + LE + 'ge:T' + LE + 'empty:T' + LE, 0);
 end;
 
 initialization

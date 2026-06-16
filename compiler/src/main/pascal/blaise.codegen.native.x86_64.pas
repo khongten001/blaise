@@ -5988,6 +5988,30 @@ begin
         Self.Emit(#9'xorl $1, %eax');
       Exit;
     end;
+    { String relational order via _StringCompare (strcmp-like: <0 / 0 / >0).
+      Compare the result against 0 with the matching signed condition.  Without
+      this, string < > <= >= fell through to the integer comparison path, which
+      compared the string POINTERS (wrong answer). }
+    if (BE.Op in [boLT, boGT, boLE, boGE]) and
+       (BE.Left.ResolvedType <> nil) and
+       (BE.Left.ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToEax(BE.Left);
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(BE.Right);
+      Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _StringCompare');
+      Self.Emit(#9'cmpl $0, %eax');
+      case BE.Op of
+        boLT: Self.Emit(#9'setl %al');
+        boGT: Self.Emit(#9'setg %al');
+        boLE: Self.Emit(#9'setle %al');
+        boGE: Self.Emit(#9'setge %al');
+      end;
+      Self.Emit(#9'movzbl %al, %eax');
+      Exit;
+    end;
     { Set membership: elem in SetVar — (set >> ord(elem)) & 1 }
     if (BE.Op = boIn) and
        (BE.Right.ResolvedType <> nil) and
