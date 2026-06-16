@@ -318,12 +318,15 @@ type
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     function  EmitExpr(AExpr: TASTExpr): string;
     procedure EmitInterfaceExprPair(AExpr: TASTExpr;
-      out AObjTemp, AItabTemp: string);
+      out AObjTemp, AItabTemp: string; AIntfType: TTypeDesc = nil);
     { Emit AExpr as an interface argument and return the ', l %obj, l %itab'
       call-argument fragment.  Wraps EmitInterfaceExprPair so the method-call
       arg loops can pass an interface param as the two-slot fat pointer the
-      callee now expects, without each site declaring extra temps. }
-    function  InterfaceArgFragment(AExpr: TASTExpr): string;
+      callee now expects, without each site declaring extra temps.  AIntfType
+      is the target interface type (the param's type); needed when AExpr is a
+      class instance being narrowed to that interface, to pick its itab. }
+    function  InterfaceArgFragment(AExpr: TASTExpr;
+      AIntfType: TTypeDesc = nil): string;
     function  OpenArrayArgFragment(AArg: TASTExpr): string;
     { Assign the interface value produced by AExpr into the two memory slots
       pointed to by AObjSlotPtr (obj) and AItabSlotPtr (itab).  Handles ARC
@@ -5494,9 +5497,11 @@ begin
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
       begin
         if VisArgs = '' then
-          VisArgs := Copy(InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I])), 2, MaxInt)
+          VisArgs := Copy(InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]),
+            Par.ResolvedType), 2, MaxInt)
         else
-          VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]));
+          VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(FCallExpr.Args.Items[I]),
+            Par.ResolvedType);
       end
       else
       begin
@@ -5549,7 +5554,8 @@ begin
         VisArgs := VisArgs + Format(', l %s',
           [EmitLValueAddr(TASTExpr(MCallExpr.Args.Items[I]))])
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
-        VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]))
+        VisArgs := VisArgs + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]),
+          Par.ResolvedType)
       else
       begin
         ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
@@ -6325,7 +6331,8 @@ begin
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
       begin
         ArgTemps.Add('');
-        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]),
+          Par.ResolvedType);
       end
       else
       begin
@@ -8230,7 +8237,7 @@ begin
             else
             begin
               EmitInterfaceExprPair(TASTExpr(ACall.Args.Items[I]),
-                ArgTemp, ArgTemp2);
+                ArgTemp, ArgTemp2, Par.ResolvedType);
               ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
             end;
           end
@@ -10152,7 +10159,7 @@ begin
                     (Par.ResolvedType.Kind = tyInterface) then
             begin
               EmitInterfaceExprPair(TASTExpr(FC.Args.Items[I]),
-                ArgTemp, ArgTemp2);
+                ArgTemp, ArgTemp2, Par.ResolvedType);
               ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
             end
             else
@@ -10226,7 +10233,7 @@ begin
           begin
             ArgTemps.Add('');
             EmitInterfaceExprPair(TASTExpr(FC.Args.Items[I]),
-              ArgTemp, ArgTemp2);
+              ArgTemp, ArgTemp2, Par.ResolvedType);
             ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
           end
           else
@@ -10602,7 +10609,8 @@ begin
       else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
       begin
         ArgTemps.Add('');
-        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]));
+        ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(MCallExpr.Args.Items[I]),
+          Par.ResolvedType);
       end
       else
       begin
@@ -12370,7 +12378,7 @@ begin
 end;
 
 procedure TCodeGenQBE.EmitInterfaceExprPair(AExpr: TASTExpr;
-  out AObjTemp, AItabTemp: string);
+  out AObjTemp, AItabTemp: string; AIntfType: TTypeDesc = nil);
 var
   ObjT, ItabT: string;
   OkT, LblOk, LblFail, LblEnd: string;
@@ -12378,7 +12386,25 @@ var
   IE: TIdentExpr;
   IEFld: TFieldInfo;
   ClassRT: TRecordTypeDesc;
+  ItabName: string;
 begin
+  { Class instance narrowed to an interface: the value is a plain class
+    pointer (obj), paired with the static itab for this (class, interface).
+    Covers passing a class variable/global/field directly to an interface
+    parameter — mirrors the class->interface assignment path.  Must precede
+    the TIdentExpr branch, which assumes interface-typed split slots. }
+  if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyClass) and
+     (AIntfType <> nil) and (AIntfType.Kind = tyInterface) then
+  begin
+    ClassRT  := TRecordTypeDesc(AExpr.ResolvedType);
+    ItabName := '$itab_' + QBEMangle(ClassSymName(ClassRT.Name)) + '_' +
+                QBEMangle(AIntfType.Name);
+    AObjTemp  := EmitExpr(AExpr);
+    AItabTemp := AllocTemp();
+    EmitLine(Format('  %s =l copy %s', [AItabTemp, ItabName]));
+    Exit;
+  end;
+
   if AExpr is TIdentExpr then
   begin
     IE := TIdentExpr(AExpr);
@@ -12506,11 +12532,12 @@ begin
       AExpr.ClassName);
 end;
 
-function TCodeGenQBE.InterfaceArgFragment(AExpr: TASTExpr): string;
+function TCodeGenQBE.InterfaceArgFragment(AExpr: TASTExpr;
+  AIntfType: TTypeDesc = nil): string;
 var
   ObjTemp, ItabTemp: string;
 begin
-  EmitInterfaceExprPair(AExpr, ObjTemp, ItabTemp);
+  EmitInterfaceExprPair(AExpr, ObjTemp, ItabTemp, AIntfType);
   Result := Format(', l %s, l %s', [ObjTemp, ItabTemp]);
 end;
 
