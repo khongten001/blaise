@@ -43,6 +43,15 @@ type
     { Open-array params on METHODS and CONSTRUCTORS: the call sites must
       pass the (data, high) pair just like standalone functions. }
     procedure TestRun_OpenArray_MethodAndCtorParams;
+
+    { Dynamic array variable coerced to open-array parameter: the call
+      sites must pass (data ptr, runtime-length - 1) — high comes from
+      _DynArrayLength, not a compile-time static bound. }
+    procedure TestRun_DynToOpen_Sum;
+    procedure TestRun_DynToOpen_HighLength;
+    procedure TestRun_DynToOpen_Empty;
+    procedure TestRun_DynToOpen_OfString;
+    procedure TestRun_DynToOpen_PassToNested;
   end;
 
 implementation
@@ -359,6 +368,120 @@ procedure TE2EOpenArrayTests.TestRun_OpenArray_MethodAndCtorParams;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcOpenArrayMethodCtor, '3' + #10 + '63' + #10 + '4' + #10, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Tests — dynamic array coerced to open-array                         }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcDynSum = '''
+    program P;
+    function Sum(const A: array of Integer): Integer;
+    var I: Integer;
+    begin
+      Result := 0;
+      for I := 0 to High(A) do Result := Result + A[I];
+    end;
+    var X: array of Integer; I: Integer;
+    begin
+      SetLength(X, 5);
+      for I := 0 to 4 do X[I] := I + 1;
+      WriteLn(Sum(X));
+    end.
+    ''';
+
+  SrcDynHighLen = '''
+    program P;
+    procedure Report(const A: array of Integer);
+    begin
+      WriteLn(Length(A));
+      WriteLn(High(A));
+    end;
+    var X: array of Integer;
+    begin
+      SetLength(X, 7);
+      Report(X);
+    end.
+    ''';
+
+  SrcDynEmpty = '''
+    program P;
+    function Count(const A: array of Integer): Integer;
+    begin
+      Result := Length(A);
+    end;
+    var X: array of Integer;
+    begin
+      SetLength(X, 0);
+      WriteLn(Count(X));
+    end.
+    ''';
+
+  SrcDynOfString = '''
+    program P;
+    function Join(const A: array of string): string;
+    var I: Integer;
+    begin
+      Result := '';
+      for I := 0 to High(A) do Result := Result + A[I];
+    end;
+    var X: array of string;
+    begin
+      SetLength(X, 3);
+      X[0] := 'a'; X[1] := 'b'; X[2] := 'c';
+      WriteLn(Join(X));
+    end.
+    ''';
+
+  SrcDynNested = '''
+    program P;
+    function Sum(const A: array of Integer): Integer;
+    var I: Integer;
+    begin
+      Result := 0;
+      for I := 0 to High(A) do Result := Result + A[I];
+    end;
+    procedure Process(const A: array of Integer);
+    begin
+      WriteLn(Sum(A));
+    end;
+    var X: array of Integer; I: Integer;
+    begin
+      SetLength(X, 4);
+      for I := 0 to 3 do X[I] := (I + 1) * 10;
+      Process(X);
+    end.
+    ''';
+
+procedure TE2EOpenArrayTests.TestRun_DynToOpen_Sum;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDynSum, '15' + #10, 0);
+end;
+
+procedure TE2EOpenArrayTests.TestRun_DynToOpen_HighLength;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDynHighLen, '7' + #10 + '6' + #10, 0);
+end;
+
+procedure TE2EOpenArrayTests.TestRun_DynToOpen_Empty;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDynEmpty, '0' + #10, 0);
+end;
+
+procedure TE2EOpenArrayTests.TestRun_DynToOpen_OfString;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDynOfString, 'abc' + #10, 0);
+end;
+
+procedure TE2EOpenArrayTests.TestRun_DynToOpen_PassToNested;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDynNested, '100' + #10, 0);
 end;
 
 initialization

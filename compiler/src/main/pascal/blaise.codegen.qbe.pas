@@ -6140,8 +6140,10 @@ end;
   open-array parameter. }
 function TCodeGenQBE.OpenArrayArgFragment(AArg: TASTExpr): string;
 var
-  ArgTemp:  string;
-  HighTemp: string;
+  ArgTemp:    string;
+  HighTemp:   string;
+  LenTemp:    string;
+  LenExtTemp: string;
 begin
   if AArg is TArrayLiteralExpr then
   begin
@@ -6158,6 +6160,21 @@ begin
     Result := Format('l %s, l %d', [ArgTemp,
       TStaticArrayTypeDesc(AArg.ResolvedType).HighBound -
       TStaticArrayTypeDesc(AArg.ResolvedType).LowBound]);
+    Exit;
+  end;
+  if (AArg.ResolvedType <> nil) and
+     (AArg.ResolvedType.Kind = tyDynArray) then
+  begin
+    { Dynamic array coerced to open-array: pass data ptr + (runtime length - 1)
+      as the high index. }
+    ArgTemp  := EmitExpr(AArg);
+    LenTemp  := AllocTemp();
+    EmitLine(Format('  %s =w call $_DynArrayLength(l %s)', [LenTemp, ArgTemp]));
+    LenExtTemp := AllocTemp();
+    EmitLine(Format('  %s =l extsw %s', [LenExtTemp, LenTemp]));
+    HighTemp := AllocTemp();
+    EmitLine(Format('  %s =l sub %s, 1', [HighTemp, LenExtTemp]));
+    Result := Format('l %s, l %s', [ArgTemp, HighTemp]);
     Exit;
   end;
   { Forward an open-array param variable }
@@ -8218,22 +8235,12 @@ begin
               ArgLine := ArgLine + Format(', l %s, l %d',
                 [ArgTemp, TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])).Elements.Count - 1]);
             end
-            else if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyStaticArray then
-            begin
-              { Static array coerced to open-array: pass base ptr + compile-time high }
-              ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-              ArgLine := ArgLine + Format(', l %s, l %d', [ArgTemp,
-                TStaticArrayTypeDesc(TASTExpr(ACall.Args.Items[I]).ResolvedType).HighBound -
-                TStaticArrayTypeDesc(TASTExpr(ACall.Args.Items[I]).ResolvedType).LowBound]);
-            end
             else
-            begin
-              ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-              ArgTemp2 := AllocTemp();
-              EmitLine(Format('  %s =l loadl %%_var_%s_high',
-                [ArgTemp2, TIdentExpr(TASTExpr(ACall.Args.Items[I])).Name]));
-              ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
-            end;
+              { Static array, dynamic array, or open-array variable — the
+                fragment helper handles all three (and returns 'l ptr, l high'
+                without a leading comma). }
+              ArgLine := ArgLine + ', ' +
+                Copy(OpenArrayArgFragment(TASTExpr(ACall.Args.Items[I])), 1, MaxInt);
           end
           else if Par.IsVarParam then
             ArgLine := ArgLine + Format(', l %s',
@@ -8308,23 +8315,9 @@ begin
             ArgLine := ArgLine + Format('l %s, l %d',
               [ArgTemp, TArrayLiteralExpr(TASTExpr(ACall.Args.Items[I])).Elements.Count - 1]);
           end
-          else if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyStaticArray then
-          begin
-            { Static array coerced to open-array: pass base ptr + compile-time high }
-            ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-            ArgLine := ArgLine + Format('l %s, l %d', [ArgTemp,
-              TStaticArrayTypeDesc(TASTExpr(ACall.Args.Items[I]).ResolvedType).HighBound -
-              TStaticArrayTypeDesc(TASTExpr(ACall.Args.Items[I]).ResolvedType).LowBound]);
-          end
           else
-          begin
-            { Forward an open-array param variable }
-            ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-            ArgTemp2 := AllocTemp();
-            EmitLine(Format('  %s =l loadl %%_var_%s_high',
-              [ArgTemp2, TIdentExpr(TASTExpr(ACall.Args.Items[I])).Name]));
-            ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
-          end;
+            { Static array, dynamic array, or open-array variable. }
+            ArgLine := ArgLine + OpenArrayArgFragment(TASTExpr(ACall.Args.Items[I]));
         end
         else if Par.IsVarParam then
         begin
@@ -10150,22 +10143,10 @@ begin
                 ArgLine := ArgLine + Format(', l %s, l %d',
                   [ArgTemp, TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])).Elements.Count - 1]);
               end
-              else if TASTExpr(FC.Args.Items[I]).ResolvedType.Kind = tyStaticArray then
-              begin
-                { Static array coerced to open-array: pass base ptr + compile-time high }
-                ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
-                ArgLine := ArgLine + Format(', l %s, l %d', [ArgTemp,
-                  TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[I]).ResolvedType).HighBound -
-                  TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[I]).ResolvedType).LowBound]);
-              end
               else
-              begin
-                ArgTemp  := EmitExpr(TASTExpr(FC.Args.Items[I]));
-                ArgTemp2 := AllocTemp();
-                EmitLine(Format('  %s =l loadl %%_var_%s_high',
-                  [ArgTemp2, TIdentExpr(TASTExpr(FC.Args.Items[I])).Name]));
-                ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
-              end;
+                { Static array, dynamic array, or open-array variable. }
+                ArgLine := ArgLine + ', ' +
+                  OpenArrayArgFragment(TASTExpr(FC.Args.Items[I]));
             end
             else if Par.IsVarParam then
               ArgLine := ArgLine + Format(', l %s',
@@ -10219,23 +10200,9 @@ begin
               ArgLine := ArgLine + Format('l %s, l %d',
                 [ArgTemp, TArrayLiteralExpr(TASTExpr(FC.Args.Items[I])).Elements.Count - 1]);
             end
-            else if TASTExpr(FC.Args.Items[I]).ResolvedType.Kind = tyStaticArray then
-            begin
-              { Static array coerced to open-array: pass base ptr + compile-time high }
-              ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
-              ArgLine := ArgLine + Format('l %s, l %d', [ArgTemp,
-                TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[I]).ResolvedType).HighBound -
-                TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[I]).ResolvedType).LowBound]);
-            end
             else
-            begin
-              { Forward an open-array param variable }
-              ArgTemp  := EmitExpr(TASTExpr(FC.Args.Items[I]));
-              ArgTemp2 := AllocTemp();
-              EmitLine(Format('  %s =l loadl %%_var_%s_high',
-                [ArgTemp2, TIdentExpr(TASTExpr(FC.Args.Items[I])).Name]));
-              ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
-            end;
+              { Static array, dynamic array, or open-array variable. }
+              ArgLine := ArgLine + OpenArrayArgFragment(TASTExpr(FC.Args.Items[I]));
           end
           else if Par.IsVarParam then
           begin

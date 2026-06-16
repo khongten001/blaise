@@ -7542,6 +7542,18 @@ begin
         [TStaticArrayTypeDesc(TIdentExpr(AArg).ResolvedType).HighBound -
          TStaticArrayTypeDesc(TIdentExpr(AArg).ResolvedType).LowBound]));
     end
+    else if (AArg.ResolvedType <> nil) and
+            (AArg.ResolvedType.Kind = tyDynArray) then
+    begin
+      { Dynamic array coerced to open-array: push data ptr + (length - 1). }
+      Self.EmitExprToEax(AArg);          { data ptr -> %rax }
+      Self.Emit(#9'pushq %rax');         { push ptr }
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _DynArrayLength');
+      Self.Emit(#9'movslq %eax, %rax');
+      Self.Emit(#9'decq %rax');          { high = length - 1 }
+      Self.Emit(#9'pushq %rax');         { push high }
+    end
     else
     begin
       Self.Emit(Format(#9'movq %s, %%rax',
@@ -11895,6 +11907,19 @@ begin
             [TStaticArrayTypeDesc(TIdentExpr(Arg).ResolvedType).HighBound -
              TStaticArrayTypeDesc(TIdentExpr(Arg).ResolvedType).LowBound]));
         end
+        else if (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyDynArray) then
+        begin
+          { Dynamic array coerced to open-array: push data ptr +
+            (runtime length - 1) as the high index. }
+          Self.EmitExprToEax(Arg);          { data ptr -> %rax }
+          Self.Emit(#9'pushq %rax');         { push ptr }
+          Self.Emit(#9'movq %rax, %rdi');
+          Self.Emit(#9'callq _DynArrayLength');
+          Self.Emit(#9'movslq %eax, %rax');
+          Self.Emit(#9'decq %rax');          { high = length - 1 }
+          Self.Emit(#9'pushq %rax');         { push high }
+        end
         else
         begin
           Self.Emit(Format(#9'movq %s, %%rax',
@@ -12039,6 +12064,21 @@ begin
             [TStaticArrayTypeDesc(TIdentExpr(Arg).ResolvedType).HighBound -
              TStaticArrayTypeDesc(TIdentExpr(Arg).ResolvedType).LowBound,
              SlotOff]));
+          Inc(SlotOff, 8);
+        end
+        else if (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyDynArray) then
+        begin
+          { Dynamic array coerced to open-array: store data ptr +
+            (runtime length - 1) as the high index. }
+          Self.EmitExprToEax(Arg);          { data ptr -> %rax }
+          Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [SlotOff]));
+          Inc(SlotOff, 8);
+          Self.Emit(#9'movq %rax, %rdi');
+          Self.Emit(#9'callq _DynArrayLength');
+          Self.Emit(#9'movslq %eax, %rax');
+          Self.Emit(#9'decq %rax');          { high = length - 1 }
+          Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [SlotOff]));
           Inc(SlotOff, 8);
         end
         else

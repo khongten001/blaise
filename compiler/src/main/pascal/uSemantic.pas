@@ -786,6 +786,15 @@ begin
        TStaticArrayTypeDesc(AActual).ElementType then
       Exit;
   end;
+  { Dynamic array coerced to open-array: element types must match.  A dynamic
+    array's data + length give the (ptr, high) pair an open-array param
+    expects, so `S(dyn)` where S(a: array of T) is valid. }
+  if (AExpected.Kind = tyOpenArray) and (AActual.Kind = tyDynArray) then
+  begin
+    if TOpenArrayTypeDesc(AExpected).ElementType =
+       TDynArrayTypeDesc(AActual).ElementType then
+      Exit;
+  end;
   { Procedural-type assignability: signatures must match (return type,
     parameter count, parameter types, parameter modes). }
   if (AExpected.Kind = tyProcedural) and (AActual.Kind = tyProcedural) then
@@ -7051,6 +7060,14 @@ begin
   if (AParam.Kind = tyOpenArray) and (AArg.Kind = tyStaticArray) and
      (TOpenArrayTypeDesc(AParam).ElementType =
       TStaticArrayTypeDesc(AArg).ElementType) then
+  begin
+    Exit(1);
+  end;
+  { Dynamic array coerced to open-array: widening match (score 1).  A dynamic
+    array passes its (data ptr, high) to an open-array formal. }
+  if (AParam.Kind = tyOpenArray) and (AArg.Kind = tyDynArray) and
+     (TOpenArrayTypeDesc(AParam).ElementType =
+      TDynArrayTypeDesc(AArg).ElementType) then
   begin
     Exit(1);
   end;
