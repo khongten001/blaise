@@ -143,6 +143,7 @@ uses
   cp.test.assembler,
   cp.test.cli,
   cp.test.driver,
+  cp.test.e2e.inherit,
   cp.test.e2e.generics,
   cp.test.e2e.interfaces,
   cp.test.e2e.properties,
