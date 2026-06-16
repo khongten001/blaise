@@ -314,6 +314,8 @@ type
       const AContext: string; ALine, ACol: Integer);
     { Returns True if AActual is AExpected or a subclass of AExpected. }
     function  IsSubtypeOf(AActual, AExpected: TTypeDesc): Boolean;
+    function  InterfaceInheritsFrom(
+      AActual, AExpected: TInterfaceTypeDesc): Boolean;
     { Validates a generic type parameter's constraint against a concrete type
       argument name.  Raises ESemanticError on constraint violation.
       AConstraint: '' (no constraint), 'class', 'record', or a type name. }
@@ -688,6 +690,23 @@ begin
   end;
 end;
 
+function TSemanticAnalyser.InterfaceInheritsFrom(
+  AActual, AExpected: TInterfaceTypeDesc): Boolean;
+{ True when AActual is, or transitively inherits from, AExpected — i.e. an
+  AActual value is assignable where AExpected is required.  Walks the
+  TInterfaceTypeDesc.Parent chain (IDog = interface(IAnimal) -> Parent). }
+var
+  Walk: TInterfaceTypeDesc;
+begin
+  Walk := AActual;
+  while Walk <> nil do
+  begin
+    if Walk = AExpected then Exit(True);
+    Walk := Walk.Parent;
+  end;
+  Result := False;
+end;
+
 procedure TSemanticAnalyser.CheckTypesMatch(AExpected, AActual: TTypeDesc;
   const AContext: string; ALine, ACol: Integer);
 var
@@ -764,12 +783,22 @@ begin
   if (AExpected.Kind = tyClass) and (AExpected.Name = 'TObject') and
      (AActual.Kind = tyClass) then
     Exit;
-  { class → interface: allowed when the class implements that interface }
+  { interface → base interface: IDerived is assignable to IBase when IBase is
+    on IDerived's parent chain (IDog = interface(IAnimal) -> IDog is-a IAnimal). }
+  if (AExpected.Kind = tyInterface) and (AActual.Kind = tyInterface) then
+    if InterfaceInheritsFrom(TInterfaceTypeDesc(AActual),
+                             TInterfaceTypeDesc(AExpected)) then
+      Exit;
+  { class → interface: allowed when the class implements that interface (or a
+    descendant of it — implementing IDog also satisfies IAnimal). }
   if (AExpected.Kind = tyInterface) and (AActual.Kind = tyClass) then
   begin
     RT := TRecordTypeDesc(AActual);
     for I := 0 to RT.ImplementsCount() - 1 do
-      if RT.ImplementsIntfAt(I) = AExpected then
+      if (RT.ImplementsIntfAt(I) = AExpected) or
+         ((RT.ImplementsIntfAt(I) is TInterfaceTypeDesc) and
+          InterfaceInheritsFrom(TInterfaceTypeDesc(RT.ImplementsIntfAt(I)),
+                                TInterfaceTypeDesc(AExpected))) then
         Exit;
   end;
   { Untyped pointer accepts any class/interface/string/PChar reference and vice-versa }

@@ -32,6 +32,11 @@ type
     procedure TestRun_LocalClassVar_ToInterfaceParam;
     procedure TestRun_ConstructorResult_ToInterfaceParam;
     procedure TestRun_ProcInterfaceParam;
+    { Interface inheritance: a derived-interface value is assignable where the
+      base interface is expected (assignment, parameter, multi-level chain). }
+    procedure TestRun_DerivedInterface_ToBaseVar;
+    procedure TestRun_DerivedInterface_ToBaseParam;
+    procedure TestRun_ThreeLevelInterfaceChain;
   end;
 
 implementation
@@ -170,6 +175,84 @@ procedure TE2EInterfaceTests.TestRun_ProcInterfaceParam;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcProcParam, 'emit' + LE, 0);
+end;
+
+const
+  { IDog = interface(IAnimal): a derived-interface value is assignable where
+    the base interface is expected. }
+  SrcDerivedToBaseVar = '''
+    program P;
+    type
+      IAnimal = interface function Name: string; end;
+      IDog = interface(IAnimal) function Bark: string; end;
+      TDog = class(IDog)
+        function Name: string; begin Result := 'Rex' end;
+        function Bark: string; begin Result := 'woof' end;
+      end;
+    var d: IDog; a: IAnimal;
+    begin
+      d := TDog.Create;
+      a := d;
+      WriteLn(a.Name());
+      d := nil; a := nil
+    end.
+    ''';
+
+  SrcDerivedToBaseParam = '''
+    program P;
+    type
+      IAnimal = interface function Name: string; end;
+      IDog = interface(IAnimal) function Bark: string; end;
+      TDog = class(IDog)
+        function Name: string; begin Result := 'Rex' end;
+        function Bark: string; begin Result := 'woof' end;
+      end;
+    function Describe(a: IAnimal): string;
+    begin Result := 'Animal: ' + a.Name() end;
+    var d: IDog;
+    begin
+      d := TDog.Create;
+      WriteLn(Describe(d));
+      d := nil
+    end.
+    ''';
+
+  SrcThreeLevelChain = '''
+    program P;
+    type
+      IA = interface function A: Integer; end;
+      IB = interface(IA) function B: Integer; end;
+      IC = interface(IB) function C: Integer; end;
+      TImpl = class(IC)
+        function A: Integer; begin Result := 1 end;
+        function B: Integer; begin Result := 2 end;
+        function C: Integer; begin Result := 3 end;
+      end;
+    var c: IC; a: IA;
+    begin
+      c := TImpl.Create;
+      a := c;
+      WriteLn(a.A());
+      c := nil; a := nil
+    end.
+    ''';
+
+procedure TE2EInterfaceTests.TestRun_DerivedInterface_ToBaseVar;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDerivedToBaseVar, 'Rex' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_DerivedInterface_ToBaseParam;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDerivedToBaseParam, 'Animal: Rex' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_ThreeLevelInterfaceChain;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcThreeLevelChain, '1' + LE, 0);
 end;
 
 initialization
