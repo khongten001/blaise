@@ -42,7 +42,7 @@ https://github.com/graemeg/opdebugger[OPDF] debug format support.
 == 🚀 Project Status
 
 * **Self-Hosting:** Yes. Blaise bootstraps and recompiles itself with byte-for-byte fixpoint. FPC is no longer required — the entire toolchain runs on Blaise alone.
-* **Testing:** 3172 tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
+* **Testing:** 3474 tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
 * **Backends:** Two code-generation backends — QBE (default, production) and a direct native x86-64 backend (in active development, approaching feature parity with QBE).
 
 
