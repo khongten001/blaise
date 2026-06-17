@@ -87,6 +87,11 @@ type
     procedure TestArrayConst_MultiDim_RowMajorData_InIR;
     procedure TestArrayConst_MultiDim_WrongCount_Error;
 
+    { Named type alias array constants (issue #113) }
+    procedure TestArrayConst_NamedAlias_Parses;
+    procedure TestArrayConst_NamedAlias_InIR;
+    procedure TestArrayConst_NamedAlias_WrongCount_Error;
+
     { Class-level array constants }
     procedure TestClassArrayConst_RangeIndexed_InIR;
     procedure TestClassArrayConst_EnumIndexed_InIR;
@@ -1027,6 +1032,70 @@ begin
       SA.Analyse(Pr);
     except
       on E: ESemanticError do GotError := True;
+    end;
+  finally
+    SA.Free(); Pr.Free(); P.Free(); L.Free();
+  end;
+  AssertTrue('wrong element count raises error', GotError);
+end;
+
+procedure TConstTests.TestArrayConst_NamedAlias_Parses;
+var U: TUnit;
+begin
+  U := ParseUnit(
+    '''
+    unit W;
+    interface
+    type TArr = array[0..2] of Integer;
+    const A: TArr = (10, 20, 30);
+    implementation
+    end.
+    ''');
+  AssertNotNull('unit parsed', U);
+  AssertEquals('one const decl', 1, U.IntfBlock.ConstDecls.Count);
+  U.Free();
+end;
+
+procedure TConstTests.TestArrayConst_NamedAlias_InIR;
+var IR: string;
+begin
+  IR := GenIR(
+    '''
+    program P;
+    type TArr = array[0..2] of Integer;
+    const Vals: TArr = (10, 20, 30);
+    begin
+    end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('Vals in IR', IRContains(IR, 'Vals'));
+end;
+
+procedure TConstTests.TestArrayConst_NamedAlias_WrongCount_Error;
+var
+  L:  TLexer;
+  P:  TParser;
+  Pr: TProgram;
+  SA: TSemanticAnalyser;
+  GotError: Boolean;
+begin
+  GotError := False;
+  L  := TLexer.Create(
+    '''
+    program P;
+    type TArr = array[0..3] of Integer;
+    const Vals: TArr = (10, 20);
+    begin end.
+    ''');
+  P  := TParser.Create(L);
+  Pr := P.Parse();
+  SA := TSemanticAnalyser.Create();
+  try
+    try
+      SA.Analyse(Pr);
+    except
+      on E: ESemanticError do
+        GotError := True;
     end;
   finally
     SA.Free(); Pr.Free(); P.Free(); L.Free();

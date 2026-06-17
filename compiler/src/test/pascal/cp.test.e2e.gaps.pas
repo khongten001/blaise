@@ -58,6 +58,9 @@ type
     { Published RTTI + MethodAddress }
     procedure TestRun_PublishedRTTI_MethodAddress;
 
+    { Named-type alias array const (GitHub #113) }
+    procedure TestRun_NamedArrayAlias_IntConst;
+
     { Multi-arg WriteLn }
     procedure TestRun_WriteLn_MultipleArgs_MixedTypes;
   end;
@@ -626,6 +629,23 @@ const Src = '''
     ''';
 begin
   AssertRunsOnAll(Src, 'val=42' + Chr(10) + 'ok:True' + Chr(10), 0);
+end;
+
+procedure TE2EGapTests.TestRun_NamedArrayAlias_IntConst;
+const
+  Src =
+    '''
+    program P;
+    type TArr = array[0..2] of Integer;
+    const Vals: TArr = (10, 20, 30);
+    var I: Integer;
+    begin
+      for I := 0 to 2 do
+        WriteLn(Vals[I])
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '10' + Chr(10) + '20' + Chr(10) + '30' + Chr(10), 0);
 end;
 
 initialization

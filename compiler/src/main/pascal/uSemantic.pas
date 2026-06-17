@@ -3730,29 +3730,49 @@ begin
       Continue;
     end;
     if not CD.IsArrayConst then Continue;
-    ElemTD := FTable.FindType(CD.ArrayElemType);
-    if ElemTD = nil then
-      SemanticError(Format('Unknown element type ''%s'' in array const ''%s''',
-        [CD.ArrayElemType, CD.Name]), CD.Line, CD.Col);
-    if CD.ArrayIsRangeIndexed then
-      ArrTD := Self.BuildConstArrayType(CD, ElemTD)
-    else
+    if (CD.ArrayElemType = '') and (CD.TypeName <> '') then
     begin
-      IdxTD := FTable.FindType(CD.ArrayIndexType);
-      if IdxTD = nil then
-        SemanticError(Format('Unknown index type ''%s'' in array const ''%s''',
-          [CD.ArrayIndexType, CD.Name]), CD.Line, CD.Col);
-      if IdxTD.Kind <> tyEnum then
-        SemanticError(Format('Array const index type must be an enum, got ''%s''',
-          [IdxTD.Name]), CD.Line, CD.Col);
-      EnumDesc := TEnumTypeDesc(IdxTD);
-      Expected := EnumDesc.Members.Count;
+      ElemTD := FTable.FindType(CD.TypeName);
+      if ElemTD = nil then
+        SemanticError(Format('Unknown type ''%s'' in typed constant ''%s''',
+          [CD.TypeName, CD.Name]), CD.Line, CD.Col);
+      if ElemTD.Kind <> tyStaticArray then
+        SemanticError(Format('Type ''%s'' is not a static array in typed constant ''%s''',
+          [CD.TypeName, CD.Name]), CD.Line, CD.Col);
+      ArrTD := TStaticArrayTypeDesc(ElemTD);
+      Expected := ArrTD.HighBound - ArrTD.LowBound + 1;
       if CD.ArrayElements.Count <> Expected then
         SemanticError(Format(
-          'Array const ''%s'' has %d element(s) but index type ''%s'' has %d member(s)',
-          [CD.Name, CD.ArrayElements.Count, CD.ArrayIndexType, Expected]),
+          'Array const ''%s'' has %d element(s) but type ''%s'' expects %d',
+          [CD.Name, CD.ArrayElements.Count, CD.TypeName, Expected]),
           CD.Line, CD.Col);
-      ArrTD := FTable.NewStaticArrayType(ElemTD, 0, Expected - 1);
+    end
+    else
+    begin
+      ElemTD := FTable.FindType(CD.ArrayElemType);
+      if ElemTD = nil then
+        SemanticError(Format('Unknown element type ''%s'' in array const ''%s''',
+          [CD.ArrayElemType, CD.Name]), CD.Line, CD.Col);
+      if CD.ArrayIsRangeIndexed then
+        ArrTD := Self.BuildConstArrayType(CD, ElemTD)
+      else
+      begin
+        IdxTD := FTable.FindType(CD.ArrayIndexType);
+        if IdxTD = nil then
+          SemanticError(Format('Unknown index type ''%s'' in array const ''%s''',
+            [CD.ArrayIndexType, CD.Name]), CD.Line, CD.Col);
+        if IdxTD.Kind <> tyEnum then
+          SemanticError(Format('Array const index type must be an enum, got ''%s''',
+            [IdxTD.Name]), CD.Line, CD.Col);
+        EnumDesc := TEnumTypeDesc(IdxTD);
+        Expected := EnumDesc.Members.Count;
+        if CD.ArrayElements.Count <> Expected then
+          SemanticError(Format(
+            'Array const ''%s'' has %d element(s) but index type ''%s'' has %d member(s)',
+            [CD.Name, CD.ArrayElements.Count, CD.ArrayIndexType, Expected]),
+            CD.Line, CD.Col);
+        ArrTD := FTable.NewStaticArrayType(ElemTD, 0, Expected - 1);
+      end;
     end;
     { Fold any deferred bit-op expressions into their final integer
       strings in ArrayElements before publishing to the symbol. }

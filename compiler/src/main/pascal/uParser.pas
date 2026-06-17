@@ -1140,6 +1140,18 @@ begin
       Self.ParseConstArrayGroup(CD);
       Exit;
     end;
+    { Named-type array const: const A: TArr = (10, 20, 30).  The type is
+      a named alias for a static array.  Detect the value-list shape by
+      lookahead: '(' value ',' must be a comma-separated list (Pascal has
+      no comma operator).  Also catch nested groups: '(' '(' .. }
+    if (CD.TypeName <> '') and Check(tkLParen) and
+       ((PeekKind2() = tkComma) or (PeekKind() = tkLParen)) then
+    begin
+      CD.IsArrayConst := True;
+      CD.ArrayElements := TStringList.Create();
+      Self.ParseConstArrayGroup(CD);
+      Exit;
+    end;
     { Compile-time integer expression with precedence / parentheses
       (e.g. 2 * 3, 2 + 3 * 4, (1 shl 8) or 7).  Parsed into a normal
       expression AST and folded by the semantic pass (EvalConstIntExpr),
