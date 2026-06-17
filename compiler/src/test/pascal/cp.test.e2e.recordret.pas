@@ -70,6 +70,12 @@ type
       so the argument pointer was garbage and the callee read junk (crash).
       Both backends. }
     procedure TestRun_RecordMethodResult_AsConstArg;
+    { Regression: a SCALAR FIELD of a record-returning call result, read inline
+      as an argument alongside a const-string argument.  Reading the field via
+      EmitExprToEax left the call's sret buffer allocated on the stack, shifting
+      %rsp so the already-pushed string argument was reloaded from the wrong
+      slot and lost.  Both backends. }
+    procedure TestRun_RecordCallFieldArg_WithStringArg;
   end;
 
 implementation
@@ -510,6 +516,29 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '3' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordCallFieldArg_WithStringArg;
+const
+  Src = '''
+    program P;
+    type TR = record A, B: Integer; end;
+    function MakeR: TR;
+    begin
+      Result.A := 1;
+      Result.B := 2
+    end;
+    procedure Check(const Msg: string; Expected, Actual: Integer);
+    begin
+      WriteLn(Msg, ' ', Expected, ' ', Actual)
+    end;
+    begin
+      Check('vals', 1, MakeR().A)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'vals 1 1' + LE, 0);
 end;
 
 initialization

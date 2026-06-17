@@ -114,16 +114,13 @@ begin
 end;
 
 procedure TToolchainTests.TestHostTarget_OnThisHost_IsLinux;
-var
-  HostOS: Integer;
 begin
   { The compiler binary running the suite has no .exe suffix, so HostTarget
     detects linux.  (On a Windows host this test would need adjusting — but
-    the suite is built and run on linux.)  Read .OS into a local first: a
-    record-call result read inline as an AssertEquals argument trips a
-    separate native sret bug (see bugs.txt). }
-  HostOS := Ord(HostTarget().OS);
-  AssertEquals('host OS is linux', Ord(osLinux), HostOS);
+    the suite is built and run on linux.)  The inline HostTarget().OS read as
+    an AssertEquals argument also exercises the native sret-call-field-arg
+    path fixed alongside this work. }
+  AssertEquals('host OS is linux', Ord(osLinux), Ord(HostTarget().OS));
 end;
 
 procedure TToolchainTests.TestHostExeExt_OnThisHost_IsEmpty;

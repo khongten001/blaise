@@ -6650,6 +6650,29 @@ begin
      (TFieldAccessExpr(AExpr).Base <> nil) then
   begin
     FAE := TFieldAccessExpr(AExpr);
+    { When the base is a record-returning call, EmitExprToEax materialises an
+      sret buffer with `subq $N,%rsp` and never frees it — fine for a
+      standalone expression (the frame epilogue reclaims it), but inside an
+      argument push/pop sequence that stray allocation shifts %rsp and
+      corrupts the other already-pushed arguments (e.g. a const-string arg
+      reloaded by %rsp offset).  Allocate the buffer here, read the scalar
+      field out of it, then FREE it so this expression nets zero stack change.
+      Only safe for scalar fields — a record/static-array field returns an
+      address INTO the buffer, so its lifetime must outlive this read and the
+      buffer cannot be freed here. }
+    if Self.IsNativeRecordCall(FAE.Base) and
+       not (IsJumboSet(FAE.FieldInfo.TypeDesc) or
+            (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray])) then
+    begin
+      Self.Emit(Format(#9'subq $%d, %%rsp', [Self.RecArgBufBytes(FAE.Base)]));
+      Self.EmitRecordCallSretAt(FAE.Base, '(%rsp)');
+      Self.Emit(#9'movq %rsp, %rcx');
+      if FAE.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'leaq %d(%%rcx), %%rcx', [FAE.FieldInfo.Offset]));
+      Self.EmitLoadVar('(%rcx)', FAE.FieldInfo.TypeDesc);
+      Self.Emit(Format(#9'addq $%d, %%rsp', [Self.RecArgBufBytes(FAE.Base)]));
+      Exit;
+    end;
     Self.EmitExprToEax(FAE.Base);
     Self.Emit(#9'movq %rax, %rcx');
     if FAE.FieldInfo.Offset > 0 then
