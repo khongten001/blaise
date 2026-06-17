@@ -6307,6 +6307,102 @@ var
   PMark:    Integer;
 begin
   PMark := PendingReleaseMark();
+
+  { Metaclass-var constructor dispatch in statement position: C.Create(args)
+    where C is a 'class of' variable and the result is discarded.  Only the
+    expression-position path (EmitExpr) allocated the instance and dispatched
+    the ctor through the vtable; here we must do the same.  Without this
+    branch the code fell through to the regular virtual-dispatch path below,
+    which loads the metaclass typeinfo pointer as if it were the object and
+    calls a garbage vtable slot — crashing at runtime.  The freshly built
+    instance comes back from _ClassCreate at refcount 1; since the result is
+    discarded we release it once so it is freed rather than leaked. }
+  if ACall.IsConstructorCall and ACall.IsMetaclassDispatch then
+  begin
+    RT       := TRecordTypeDesc(ACall.ResolvedClassType);
+    MDecl    := TMethodDecl(ACall.ResolvedMethod);
+    SelfTemp := AllocTemp();
+    FPtrTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s',
+      [FPtrTemp, VarRef(ACall.ObjectName, ACall.IsGlobal)]));
+    EmitLine(Format('  %s =l call $_ClassCreate(l %s)', [SelfTemp, FPtrTemp]));
+    if MDecl <> nil then
+    begin
+      ArgLine  := Format('l %s', [SelfTemp]);
+      ArgTemps := TStringList.Create();
+      try
+        for I := 0 to ACall.Args.Count - 1 do
+        begin
+          Par := TMethodParam(MDecl.Params.Items[I]);
+          if Par.IsOpenArray then
+          begin
+            ArgTemps.Add('');
+            ArgLine := ArgLine + ', ' +
+              OpenArrayArgFragment(TASTExpr(ACall.Args.Items[I]));
+          end
+          else if Par.IsVarParam then
+          begin
+            ArgTemps.Add('');
+            ArgLine := ArgLine + Format(', l %s',
+              [EmitLValueAddr(TASTExpr(ACall.Args.Items[I]))]);
+          end
+          else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyInterface) then
+          begin
+            ArgTemps.Add('');
+            if TASTExpr(ACall.Args.Items[I]).ResolvedType.Kind = tyClass then
+            begin
+              ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+              ItabName := '$itab_' +
+                ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+                + '_' + QBEMangle(Par.ResolvedType.Name);
+              ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ItabName]);
+            end
+            else
+              ArgLine := ArgLine + InterfaceArgFragment(TASTExpr(ACall.Args.Items[I]));
+          end
+          else
+          begin
+            ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+            ArgTemps.Add(ArgTemp);
+            EnsureConstStringRef(ArgTemp, Par, TASTExpr(ACall.Args.Items[I]), MDecl.Params);
+            ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]),
+              QbeTypeOf(Par.ResolvedType));
+            ArgLine := ArgLine + Format(', %s %s',
+              [QbeParamTypeOf(Par.ResolvedType), ArgTemp]);
+          end;
+        end;
+        if MDecl.VTableSlot >= 0 then
+        begin
+          { Indirect ctor call via vtable: load vptr from instance[0],
+            then load ctor address from vtable[ctorSlot]. }
+          VTblTemp := AllocTemp();
+          EmitLine(Format('  %s =l loadl %s', [VTblTemp, SelfTemp]));
+          SlotOff  := (MDecl.VTableSlot + 1) * 8;
+          ArgTemp  := AllocTemp();
+          EmitLine(Format('  %s =l add %s, %d', [ArgTemp, VTblTemp, SlotOff]));
+          FPtrTemp := AllocTemp();
+          EmitLine(Format('  %s =l loadl %s', [FPtrTemp, ArgTemp]));
+          EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
+        end
+        else
+        begin
+          if MDecl.OwnerTypeName <> '' then
+            FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName, ACall.Name)
+          else
+            FuncName := '$' + MethodEmitName(MDecl, RT.Name, ACall.Name);
+          EmitLine(Format('  call %s(%s)', [FuncName, ArgLine]));
+        end;
+        EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
+        ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
+      finally
+        ArgTemps.Free();
+      end;
+    end;
+    EmitLine(Format('  call $_ClassRelease(l %s)', [SelfTemp]));
+    FlushPendingReleases(PMark);
+    Exit;
+  end;
+
   { Interface method dispatch: load obj + itab, index by method slot }
   if (ACall.ResolvedClassType <> nil) and
      (ACall.ResolvedClassType.Kind = tyInterface) then

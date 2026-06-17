@@ -123,6 +123,9 @@ type
     procedure TestRun_MetaclassCreate_DispatchesToDerived;
     { Metaclass-var ctor with args: cls.Create(N) passes args correctly. }
     procedure TestRun_MetaclassCreate_WithArgs;
+    { Metaclass-var ctor in statement position (result discarded): allocates,
+      dispatches the most-derived ctor, then frees the instance. }
+    procedure TestRun_MetaclassCreate_StatementDiscardsResult;
     { Direct TFoo.Create stays static (no vtable dispatch). }
     procedure TestRun_DirectCreate_StaysStatic;
     { ClassCreate builtin still works (backwards compat) and now dispatches
@@ -1788,6 +1791,42 @@ const SrcMetaclassCreateArgs = '''
     end.
     ''';
 
+{ Metaclass-var constructor in STATEMENT position (result discarded):
+  cls.Create(); must allocate, run the most-derived ctor for its side
+  effects, then free the unreachable instance — not crash. Regression:
+  the statement-call lowering used to treat the metaclass typeinfo pointer
+  as the object and call a garbage vtable slot.  Destroy bumps gFreed, so
+  the trailing '1' proves the discarded instance was freed, not leaked. }
+const SrcMetaclassCreateStatement = '''
+    program Prg;
+    type
+      TBase = class(TObject)
+        constructor Create(N: Integer); virtual;
+        destructor Destroy; override;
+      end;
+      TChild = class(TBase)
+        constructor Create(N: Integer); override;
+      end;
+      TBaseClass = class of TBase;
+    var gVal: Integer;
+    var gFreed: Integer;
+    constructor TBase.Create(N: Integer);
+    begin gVal := N end;
+    destructor TBase.Destroy;
+    begin gFreed := gFreed + 1; inherited Destroy() end;
+    constructor TChild.Create(N: Integer);
+    begin inherited Create(N); gVal := gVal * 10 end;
+    procedure Run(C: TBaseClass; N: Integer);
+    begin
+      C.Create(N)
+    end;
+    begin
+      Run(TBase, 4);   WriteLn(gVal);
+      Run(TChild, 4);  WriteLn(gVal);
+      WriteLn(gFreed)
+    end.
+    ''';
+
 const SrcDirectCreateStatic = '''
     program Prg;
     type
@@ -1841,6 +1880,13 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcMetaclassCreateArgs,
     '3' + LE + '30' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_MetaclassCreate_StatementDiscardsResult;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcMetaclassCreateStatement,
+    '4' + LE + '40' + LE + '2' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_DirectCreate_StaysStatic;

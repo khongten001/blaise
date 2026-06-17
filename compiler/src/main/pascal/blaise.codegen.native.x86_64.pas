@@ -8301,7 +8301,104 @@ var
   HD:       TList<Integer>;
   HK:       TList<Integer>;
   HTotal:   Integer;
+  RT:       TRecordTypeDesc;
 begin
+  { Metaclass-var constructor dispatch in statement position: C.Create(args)
+    where C is a 'class of' variable and the result is discarded.  Only the
+    expression-position path (EmitExpr) allocated the instance and dispatched
+    the ctor through the vtable; without this branch the generic dispatch
+    below loads the metaclass typeinfo pointer as the object and calls a
+    garbage vtable slot — crashing at runtime.  (A non-metaclass ctor as a
+    statement, TFoo.Create();, is rejected by the semantic pass as 'not a
+    variable', so only the metaclass shape reaches here.)  The instance comes
+    back from _ClassCreate at refcount 1; the result is discarded, so we
+    release it once afterwards to free rather than leak it. }
+  if ACall.IsConstructorCall and ACall.IsMetaclassDispatch then
+  begin
+    RT := TRecordTypeDesc(ACall.ResolvedClassType);
+    MD := TMethodDecl(ACall.ResolvedMethod);
+    Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]));
+    Self.Emit(#9'callq _ClassCreate');
+    if MD <> nil then
+    begin
+      UserSlots  := Self.CountArgSlots(MD.Params);
+      TotalSlots := UserSlots + 1;
+      Sym := MethodEmitNameNative(MD, RT.Name, ACall.Name);
+      if TotalSlots <= 6 then
+      begin
+        Self.Emit(#9'pushq %rbx');
+        Self.Emit(#9'movq %rax, %rbx');
+        Self.BeginCallArgs(MD.Params, ACall.Args);
+        for I := 0 to ACall.Args.Count - 1 do
+          Self.PushCallArg(TMethodParam(MD.Params.Items[I]),
+            TASTExpr(ACall.Args.Items[I]), I);
+        for I := UserSlots - 1 downto 0 do
+          Self.Emit(#9'popq ' + SysVArg64(I + 1));
+        Self.Emit(#9'movq %rbx, %rdi');
+        if MD.VTableSlot >= 0 then
+        begin
+          Self.Emit(#9'movq (%rdi), %rax');
+          Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+          Self.Emit(#9'callq *%rax');
+        end
+        else
+          Self.Emit(#9'callq ' + Sym);
+        Self.EndCallArgs();
+        Self.Emit(#9'movq %rbx, %rax');
+        Self.Emit(#9'popq %rbx');
+      end
+      else
+      begin
+        Self.Emit(#9'pushq %rbx');
+        Self.Emit(#9'movq %rax, %rbx');
+        HD := TList<Integer>.Create();
+        HK := TList<Integer>.Create();
+        HTotal := Self.EmitArgHoist(MD.Params, nil, True, '', ACall.Args, HD, HK);
+        OverflowSlots := TotalSlots - 6;
+        AllocSz := (((6 * 8 + OverflowSlots * 8) + 15) and (-16)) + 8;
+        CleanUp := AllocSz - 6 * 8;
+        Self.Emit(Format(#9'subq $%d, %%rsp', [AllocSz]));
+        for I := 0 to ACall.Args.Count - 1 do
+        begin
+          Arg := TASTExpr(ACall.Args.Items[I]);
+          if I + 1 < 6 then
+            Dest := I * 8 + 8
+          else
+            Dest := 6 * 8 + (I + 1 - 6) * 8;
+          if HK.Get(I) >= akRecCall then
+            Self.Emit(Format(#9'movq %d(%%rsp), %%rax',
+              [AllocSz + HTotal - HD.Get(I)]))
+          else if TMethodParam(MD.Params.Items[I]).IsVarParam then
+            Self.EmitVarArgAddrToRax(Arg)
+          else
+            Self.EmitExprToEax(Arg);
+          Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [Dest]));
+        end;
+        Self.Emit(Format(#9'movq %%rbx, 0(%%rsp)', []));
+        for I := 0 to 5 do
+          Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
+        Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
+        if MD.VTableSlot >= 0 then
+        begin
+          Self.Emit(#9'movq (%rdi), %rax');
+          Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+          Self.Emit(#9'callq *%rax');
+        end
+        else
+          Self.Emit(#9'callq ' + Sym);
+        Self.EmitHoistEpilogue(ACall.Args, HD, HK, HTotal, CleanUp, True);
+        HD.Free();
+        HK.Free();
+        Self.Emit(#9'movq %rbx, %rax');
+        Self.Emit(#9'popq %rbx');
+      end;
+    end;
+    { Discarded result: free the rc=1 instance. }
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassRelease');
+    Exit;
+  end;
+
   { Interface method dispatch (statement position): route through the itab.
     Pass ObjExpr so receivers that are interface-typed fields (H.S.Note())
     load obj/itab from the field's fat pointer instead of bogus _obj/_itab
