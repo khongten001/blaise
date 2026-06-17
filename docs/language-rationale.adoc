@@ -1293,30 +1293,60 @@ code.
 _Deferred to Phase 6 (LLVM backend + Windows target). No implementation
 required for the current Linux x86_64 target._
 
-=== Set Types (`set of TEnum`)
+=== Set Types (`set of TEnum` / `set of Byte`)
 
 ==== Decision
 
-Blaise supports Pascal bit-set types declared as `set of EnumType`, where
-`EnumType` must be a previously-defined enumeration.  A set variable holds a
-bitmask in which bit N is set when the enum member with ordinal N is included.
+Blaise supports Pascal bit-set types declared as `set of BaseType`, where
+`BaseType` is either a previously-defined enumeration or one of the small
+ordinal types `Byte` (256 values, 0..255) or `Boolean` (2 values).  A set
+variable holds a bitmask in which bit N is set when the member with ordinal N
+is included.
+
+==== Ordinal-based sets
+
+In addition to enum-based sets, Blaise supports `set of Byte` and
+`set of Boolean`.  These ordinal-base sets use the same bitmap
+representation as enum sets: `set of Boolean` is a 2-bit (1-byte) small
+set, while `set of Byte` is a 256-bit (32-byte) jumbo set.
+
+Set literals for ordinal-base sets accept integer literals and range
+expressions:
+
+[source,pascal]
+----
+type TByteFlags = set of Byte;
+var F: TByteFlags;
+begin
+  F := [1, 5, 10..20];
+  Include(F, 200);
+  if 15 in F then WriteLn('yes');
+end.
+----
+
+Integer range expressions `[lo..hi]` are expanded to individual members at
+compile time using `EvalConstIntExpr`.  Bounds are validated against the
+set's bit count (0..255 for Byte, 0..1 for Boolean).
+
+Larger ordinal types (`Integer`, `Word`, `Int64`) are rejected because they
+would require impractically large bitmaps.
 
 ==== Storage model
 
-Storage scales with the enum member count, so the common small-set case stays a
-single fast machine register and larger sets remain correct:
+Storage scales with the base type's value count, so the common small-set
+case stays a single fast machine register and larger sets remain correct:
 
-- ≤ 32 enum members: a single QBE `w` (32-bit word) register bitmask.
-- 33–64 members: a single QBE `l` (64-bit long) register bitmask.
-- 65–256 members ("jumbo" sets): an inline byte-array bitmap of `ceil(N/8)`
-  bytes (≤ 32 for the 256-member ceiling).  QBE has no integer type wider than
+- ≤ 32 values: a single QBE `w` (32-bit word) register bitmask.
+- 33–64 values: a single QBE `l` (64-bit long) register bitmask.
+- 65–256 values ("jumbo" sets): an inline byte-array bitmap of `ceil(N/8)`
+  bytes (≤ 32 for the 256-value ceiling).  QBE has no integer type wider than
   `l`, so a jumbo set cannot live in one register; it is treated as a value
   aggregate (like a record or static array) — passed by reference, returned via
   sret, zero-initialised with `memset`, copied with `memcpy` — and its
   operations (`in`, `+`, `-`, `*`, `=`, `<>`, `Include`, `Exclude`, `for..in`)
   are performed by the `_Set*` RTL helpers in `blaise_set.pas` rather than
   inline register instructions.
-- More than 256 members: rejected by the semantic analyser.  256 is the classic
+- More than 256 values: rejected by the semantic analyser.  256 is the classic
   Pascal maximum — a byte-indexed set covering ordinals 0..255 — matching FPC's
   32-byte fixed-size set.
 
@@ -1422,6 +1452,13 @@ the member identifiers are not in scope during the first pass.
   small enumerations (≤ 32 members).  A single word is the correct choice.
 - *`not` for set complement* — deferred.  Not required for current self-hosting
   targets.  Can be added as a unary `not` on set operands when needed.
+- *`set of Integer`* — rejected.  Integer has 2^32 possible values; a bitmap
+  would require 512 MB.  Only Byte (256 values) and Boolean (2 values) are
+  accepted as ordinal base types alongside enumerations.
+- *Integer-literal set constants* — deferred.  The `const X = [1, 2, 3]`
+  parser path currently only accepts identifier (enum) members.  Ordinal-base
+  set literals work in var/assignment/argument context; set constants with
+  integer members require parser extensions.
 
 ---
 

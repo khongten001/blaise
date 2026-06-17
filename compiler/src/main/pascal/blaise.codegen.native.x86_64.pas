@@ -7135,7 +7135,9 @@ begin
     for SetI := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
     begin
       SetElem := TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[SetI]);
-      if (SetElem is TIdentExpr) and TIdentExpr(SetElem).IsConstant then
+      if SetElem is TIntLiteral then
+        SetMask := SetMask or (Int64(1) shl TIntLiteral(SetElem).Value)
+      else if (SetElem is TIdentExpr) and TIdentExpr(SetElem).IsConstant then
         SetMask := SetMask or (Int64(1) shl TIdentExpr(SetElem).ConstValue);
     end;
     if TSetTypeDesc(AExpr.ResolvedType).BitCount > 32 then

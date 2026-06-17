@@ -21,6 +21,7 @@ type
   TSetTests = class(TTestCase)
   private
     function GenIR(const ASrc: string): string;
+    function AnalyseSrc(const ASrc: string): TProgram;
     procedure SemanticOK(const ASrc: string);
     procedure SemanticFail(const ASrc: string);
     procedure ParseOK(const ASrc: string);
@@ -109,6 +110,25 @@ type
     procedure TestSemantic_EmptyLiteral_NonSetAssign_Fails;
     procedure TestCodegen_SetLiteralArg_FoldsToBitmask;
     procedure TestCodegen_SetParam_SpillsAtWordWidth;
+
+    { ------------------------------------------------------------------ }
+    { set of Byte / ordinal-based sets (issue #105)                        }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_SetOfByte_TypeRegistered;
+    procedure TestSemantic_SetOfByte_VarDecl_OK;
+    procedure TestSemantic_SetOfByte_IntLiteralAssign_OK;
+    procedure TestSemantic_SetOfByte_RangeLiteral_OK;
+    procedure TestSemantic_SetOfByte_InOperator_OK;
+    procedure TestSemantic_SetOfByte_Include_OK;
+    procedure TestSemantic_SetOfByte_Exclude_OK;
+    procedure TestSemantic_SetOfByte_InlineType_OK;
+    procedure TestSemantic_SetOfBoolean_OK;
+    procedure TestCodegen_SetOfByte_SmallLiteral_Bitmask;
+    procedure TestCodegen_SetOfByte_Range_ExpandsToBitmask;
+    procedure TestCodegen_SetOfByte_InOperator;
+    procedure TestCodegen_SetOfByte_IncludeEmitsShlAndOr;
+    procedure TestCodegen_SetOfByte_Union;
+    procedure TestCodegen_SetOfByte_IsJumbo;
 
     { ------------------------------------------------------------------ }
     { 64-bit sets (>32 members)                                            }
@@ -643,6 +663,24 @@ begin
   Result := CG.GetOutput();
   CG.Free();
   Prog.Free();
+end;
+
+function TSetTests.AnalyseSrc(const ASrc: string): TProgram;
+var
+  Lex:  TLexer;
+  Par:  TParser;
+  SA:   TSemanticAnalyser;
+begin
+  Lex  := TLexer.Create(ASrc);
+  Par  := TParser.Create(Lex);
+  Result := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
+  try
+    SA.Analyse(Result);
+  finally
+    SA.Free();
+  end;
 end;
 
 procedure TSetTests.SemanticOK(const ASrc: string);
@@ -1317,6 +1355,226 @@ begin
   IR := GenIR(SrcSet64LiteralArg);
   AssertTrue('64-bit set param spilled with storel', Pos('storel %_par_S', IR) > 0);
   AssertFalse('64-bit set param not spilled with storew', Pos('storew %_par_S', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ set of Byte / ordinal-based sets (issue #105)                       }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSetOfByteType =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        begin
+        end.
+        ''';
+
+  SrcSetOfByteVar =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var F: TByteFlags;
+        begin
+          F := [1, 2, 4]
+        end.
+        ''';
+
+  SrcSetOfByteRange =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var F: TByteFlags;
+        begin
+          F := [1..5]
+        end.
+        ''';
+
+  SrcSetOfByteIn =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var F: TByteFlags;
+        begin
+          F := [1, 2, 3];
+          if 2 in F then
+            WriteLn('yes')
+        end.
+        ''';
+
+  SrcSetOfByteInclude =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var F: TByteFlags;
+        begin
+          F := [];
+          Include(F, 5)
+        end.
+        ''';
+
+  SrcSetOfByteExclude =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var F: TByteFlags;
+        begin
+          F := [1, 2, 3];
+          Exclude(F, 2)
+        end.
+        ''';
+
+  SrcSetOfByteInline =
+    '''
+        program P;
+        var F: set of Byte;
+        begin
+          F := [10, 20]
+        end.
+        ''';
+
+  SrcSetOfBoolean =
+    '''
+        program P;
+        type TBoolSet = set of Boolean;
+        var B: TBoolSet;
+        begin
+          B := [True]
+        end.
+        ''';
+
+  SrcSetOfByteUnion =
+    '''
+        program P;
+        type TByteFlags = set of Byte;
+        var A, B, C: TByteFlags;
+        begin
+          A := [1, 2];
+          B := [3, 4];
+          C := A + B
+        end.
+        ''';
+
+procedure TSetTests.TestSemantic_SetOfByte_TypeRegistered;
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+begin
+  Prog := AnalyseSrc(SrcSetOfByteType);
+  try
+    TD := Prog.SymbolTable.FindType('TByteFlags');
+    AssertNotNull('type registered', TD);
+    AssertTrue('kind is tySet', TD.Kind = tySet);
+    AssertTrue('base is Byte', TSetTypeDesc(TD).BaseType.Kind = tyByte);
+    AssertEquals('256 bits', 256, TSetTypeDesc(TD).BitCount);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_VarDecl_OK;
+begin
+  SemanticOK(SrcSetOfByteVar);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_IntLiteralAssign_OK;
+begin
+  SemanticOK(SrcSetOfByteVar);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_RangeLiteral_OK;
+begin
+  SemanticOK(SrcSetOfByteRange);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_InOperator_OK;
+begin
+  SemanticOK(SrcSetOfByteIn);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_Include_OK;
+begin
+  SemanticOK(SrcSetOfByteInclude);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_Exclude_OK;
+begin
+  SemanticOK(SrcSetOfByteExclude);
+end;
+
+procedure TSetTests.TestSemantic_SetOfByte_InlineType_OK;
+begin
+  SemanticOK(SrcSetOfByteInline);
+end;
+
+procedure TSetTests.TestSemantic_SetOfBoolean_OK;
+begin
+  SemanticOK(SrcSetOfBoolean);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_SmallLiteral_Bitmask;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TSmall = set of Byte;
+        var S: TSmall;
+        begin
+          S := [1, 3]
+        end.
+        ''');
+  AssertTrue('_SetInclude emitted for member 1',
+    Pos('_SetInclude', IR) > 0);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_Range_ExpandsToBitmask;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSetOfByteRange);
+  AssertTrue('_SetInclude emitted for range',
+    Pos('_SetInclude', IR) > 0);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_InOperator;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSetOfByteIn);
+  AssertTrue('in operator emits code', Length(IR) > 0);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_IncludeEmitsShlAndOr;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSetOfByteInclude);
+  AssertTrue('Include emits _SetInclude',
+    Pos('_SetInclude', IR) > 0);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_Union;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSetOfByteUnion);
+  AssertTrue('union emits code', Length(IR) > 0);
+end;
+
+procedure TSetTests.TestCodegen_SetOfByte_IsJumbo;
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+begin
+  Prog := AnalyseSrc(SrcSetOfByteType);
+  try
+    TD := Prog.SymbolTable.FindType('TByteFlags');
+    AssertTrue('set of Byte is jumbo', TSetTypeDesc(TD).IsJumbo());
+  finally
+    Prog.Free();
+  end;
 end;
 
 initialization

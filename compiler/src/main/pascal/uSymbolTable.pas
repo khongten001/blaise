@@ -123,9 +123,9 @@ type
     function    OrdinalOf(const AMember: string): Integer;
   end;
 
-  { Set type descriptor.  BaseType is the element enum; BitCount is the number
-    of bits required (= BaseType.Members.Count).  Each member ordinal N maps to
-    bit N of the bitmap.  Representation depends on BitCount:
+  { Set type descriptor.  BaseType is the element type (enum or ordinal such
+    as Byte/Word).  BitCount is the number of bits required.  Each member
+    ordinal N maps to bit N of the bitmap.  Representation depends on BitCount:
       BitCount <= 32  -> QBE 'w' (32-bit register), bit (1 shl N)
       BitCount <= 64  -> QBE 'l' (64-bit register), bit (1 shl N)
       BitCount  > 64  -> JUMBO: an inline byte-array bitmap of RawByteSize
@@ -135,8 +135,8 @@ type
                           register.  Max 256 members -> 32 bytes. }
   TSetTypeDesc = class(TTypeDesc)
   public
-    [Unretained] BaseType: TEnumTypeDesc;  { not owned }
-    BitCount: Integer;        { = BaseType.Members.Count }
+    [Unretained] BaseType: TTypeDesc;  { not owned — enum or ordinal type }
+    BitCount: Integer;
     { True when this set is too wide for a single 64-bit register and must use
       the inline byte-array (aggregate) representation + _Set* RTL helpers. }
     function IsJumbo: Boolean;
@@ -546,6 +546,8 @@ type
     function NewMetaClassType(const AName: string; ABase: TTypeDesc): TMetaClassTypeDesc;
     function NewEnumType(const AName: string): TEnumTypeDesc;
     function NewSetType(const AName: string; ABase: TEnumTypeDesc): TSetTypeDesc;
+    function NewOrdinalSetType(const AName: string; ABase: TTypeDesc;
+      ABitCount: Integer): TSetTypeDesc;
     function NewProceduralType(const AName: string): TProceduralTypeDesc;
 
     { Creates an open-array type descriptor for element type AElementType.
@@ -1428,6 +1430,17 @@ begin
   Result.Name     := AName;
   Result.BaseType := ABase;
   Result.BitCount := ABase.Members.Count;
+  FAllTypes.Add(Result);
+end;
+
+function TSymbolTable.NewOrdinalSetType(const AName: string; ABase: TTypeDesc;
+  ABitCount: Integer): TSetTypeDesc;
+begin
+  Result          := TSetTypeDesc.Create();
+  Result.Kind     := tySet;
+  Result.Name     := AName;
+  Result.BaseType := ABase;
+  Result.BitCount := ABitCount;
   FAllTypes.Add(Result);
 end;
 

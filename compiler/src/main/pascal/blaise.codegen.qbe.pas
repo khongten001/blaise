@@ -14536,13 +14536,18 @@ begin
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
     Elem := TASTExpr(AExpr.Elements.Items[I]);
-    if not (Elem is TIdentExpr) then
-      raise ECodeGenError.Create('Set literal elements must be enum constant references');
-    IdExpr := TIdentExpr(Elem);
-    if not IdExpr.IsConstant then
-      raise ECodeGenError.Create(Format(
-        'Set literal element ''%s'' is not a constant', [IdExpr.Name]));
-    Mask := Mask or (Int64(1) shl IdExpr.ConstValue);
+    if Elem is TIntLiteral then
+      Mask := Mask or (Int64(1) shl TIntLiteral(Elem).Value)
+    else if Elem is TIdentExpr then
+    begin
+      IdExpr := TIdentExpr(Elem);
+      if not IdExpr.IsConstant then
+        raise ECodeGenError.Create(Format(
+          'Set literal element ''%s'' is not a constant', [IdExpr.Name]));
+      Mask := Mask or (Int64(1) shl IdExpr.ConstValue);
+    end
+    else
+      raise ECodeGenError.Create('Set literal elements must be constants');
   end;
   Tmp := AllocTemp();
   QT := QbeTypeOf(AExpr.ResolvedType);

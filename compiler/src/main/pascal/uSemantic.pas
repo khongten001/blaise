@@ -260,6 +260,7 @@ type
     { Expand [lo..hi] range elements of a set literal into individual member
       idents (issue #105).  Constant ascending ranges only. }
     procedure ExpandSetRanges(AExpr: TArrayLiteralExpr; ABaseEnum: TEnumTypeDesc);
+    procedure ExpandOrdinalSetRanges(AExpr: TArrayLiteralExpr; ASetType: TSetTypeDesc);
     function  SetRangeBoundOrdinal(ABound: TASTExpr; ABaseEnum: TEnumTypeDesc;
                                    const AWhich: string): Integer;
     { Width (in bits) needed for the anonymous set type of an 'X in [a,b,c]'
@@ -2344,9 +2345,10 @@ begin
     Exit;
   end;
   { Inline set type: 'set of TypeName' — create on demand.  The element type
-    must resolve to an enum.  The canonical name 'set of <Enum>' matches the
-    inferred-set-constant path, so identical inline and named sets share one
-    descriptor (set types compare structurally regardless). }
+    must be an enum (up to 256 members) or a small ordinal type (Byte,
+    Boolean).  The canonical name 'set of <Base>' matches the inferred-set-
+    constant path, so identical inline and named sets share one descriptor
+    (set types compare structurally regardless). }
   if (Length(AName) > 7) and (StrHead(AName, 7) = 'set of ') then
   begin
     BaseName := StrCopyTail(AName, 7);
@@ -2369,7 +2371,31 @@ begin
         Result := FTable.NewSetType(CanonName, TEnumTypeDesc(BaseType));
         FTable.DefineGlobal(TSymbol.Create(CanonName, skType, Result));
       end;
-    end;
+    end
+    else if (BaseType <> nil) and (BaseType.Kind = tyByte) then
+    begin
+      CanonName := 'set of ' + BaseType.Name;
+      Result    := FTable.FindType(CanonName);
+      if Result = nil then
+      begin
+        Result := FTable.NewOrdinalSetType(CanonName, BaseType, 256);
+        FTable.DefineGlobal(TSymbol.Create(CanonName, skType, Result));
+      end;
+    end
+    else if (BaseType <> nil) and (BaseType.Kind = tyBoolean) then
+    begin
+      CanonName := 'set of ' + BaseType.Name;
+      Result    := FTable.FindType(CanonName);
+      if Result = nil then
+      begin
+        Result := FTable.NewOrdinalSetType(CanonName, BaseType, 2);
+        FTable.DefineGlobal(TSymbol.Create(CanonName, skType, Result));
+      end;
+    end
+    else if BaseType <> nil then
+      SemanticError(Format(
+        'Set base type ''%s'' must be an enumeration, Byte, or Boolean',
+        [BaseType.Name]), 0, 0);
     Exit;
   end;
   if StrPos('<', AName) >= 0 then
@@ -4148,20 +4174,33 @@ begin
     end
     else if TD.Def is TSetTypeDef then
     begin
-      { Set type: base type must be a previously-defined enum }
       SetDef   := TSetTypeDef(TD.Def);
       BaseSym  := FTable.Lookup(SetDef.BaseTypeName);
-      if (BaseSym = nil) or (BaseSym.Kind <> skType) or
-         not (BaseSym.TypeDesc is TEnumTypeDesc) then
+      if (BaseSym = nil) or (BaseSym.Kind <> skType) then
         SemanticError(
-          Format('Set base type ''%s'' must be an enumeration type', [SetDef.BaseTypeName]),
+          Format('Set base type ''%s'' is not a known type', [SetDef.BaseTypeName]),
           TD.Line, TD.Col);
-      if TEnumTypeDesc(BaseSym.TypeDesc).Members.Count > 256 then
+      if BaseSym.TypeDesc is TEnumTypeDesc then
+      begin
+        if TEnumTypeDesc(BaseSym.TypeDesc).Members.Count > 256 then
+          SemanticError(
+            Format('Enumeration ''%s'' has %d members; set types support at most 256',
+              [SetDef.BaseTypeName, TEnumTypeDesc(BaseSym.TypeDesc).Members.Count]),
+            TD.Line, TD.Col);
+        SetDesc := FTable.NewSetType(TD.Name, TEnumTypeDesc(BaseSym.TypeDesc));
+      end
+      else if BaseSym.TypeDesc.Kind = tyByte then
+        SetDesc := FTable.NewOrdinalSetType(TD.Name, BaseSym.TypeDesc, 256)
+      else if BaseSym.TypeDesc.Kind = tyBoolean then
+        SetDesc := FTable.NewOrdinalSetType(TD.Name, BaseSym.TypeDesc, 2)
+      else
+      begin
         SemanticError(
-          Format('Enumeration ''%s'' has %d members; set types support at most 256',
-            [SetDef.BaseTypeName, TEnumTypeDesc(BaseSym.TypeDesc).Members.Count]),
+          Format('Set base type ''%s'' must be an enumeration, Byte, or Boolean',
+            [SetDef.BaseTypeName]),
           TD.Line, TD.Col);
-      SetDesc := FTable.NewSetType(TD.Name, TEnumTypeDesc(BaseSym.TypeDesc));
+        SetDesc := nil;
+      end;
       Sym := TSymbol.Create(TD.Name, skType, SetDesc);
       if not FTable.Define(Sym) then
       begin
@@ -7626,9 +7665,12 @@ begin
     first because an empty-literal arg has no ResolvedType. }
   if (AParam.Kind = tySet) and (AArgExpr is TArrayLiteralExpr) then
   begin
-    if (TArrayLiteralExpr(AArgExpr).Elements.Count = 0) or
-       (TSetTypeDesc(AParam).BaseType =
-          SetLiteralBaseEnum(TArrayLiteralExpr(AArgExpr))) then
+    if TArrayLiteralExpr(AArgExpr).Elements.Count = 0 then
+      Result := 2
+    else if TSetTypeDesc(AParam).BaseType.Kind in [tyByte, tyBoolean] then
+      Result := 2
+    else if TSetTypeDesc(AParam).BaseType =
+            SetLiteralBaseEnum(TArrayLiteralExpr(AArgExpr)) then
       Result := 2;
     Exit;
   end;
@@ -8044,19 +8086,30 @@ begin
           Format('First argument of ''%s'' must be a set variable, got ''%s''',
             [ACall.Name, ArgType.Name]),
           ACall.Line, ACall.Col);
-      { Validate the second arg is the correct enum element type }
       if ACall.Args.Count >= 2 then
       begin
         ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
-        { The set type arg was the first; recover it }
-        if (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tySet) and
-           (ArgType <> TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType) then
-          SemanticError(
-            Format('Second argument of ''%s'' must be type ''%s'', got ''%s''',
-              [ACall.Name,
-               TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Name,
-               ArgType.Name]),
-            ACall.Line, ACall.Col);
+        if TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tySet then
+        begin
+          if TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Kind
+             in [tyByte, tyBoolean] then
+          begin
+            if not ArgType.IsNumeric() then
+              SemanticError(
+                Format('Second argument of ''%s'' must be numeric for ''set of %s'', got ''%s''',
+                  [ACall.Name,
+                   TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Name,
+                   ArgType.Name]),
+                ACall.Line, ACall.Col);
+          end
+          else if ArgType <> TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType then
+            SemanticError(
+              Format('Second argument of ''%s'' must be type ''%s'', got ''%s''',
+                [ACall.Name,
+                 TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Name,
+                 ArgType.Name]),
+              ACall.Line, ACall.Col);
+        end;
       end;
     end
     else
@@ -10257,7 +10310,15 @@ begin
       SemanticError(
         Format('Right operand of ''in'' must be a set type, got ''%s''', [RType.Name]),
         ABin.Line, ABin.Col);
-    if LType <> TSetTypeDesc(RType).BaseType then
+    if TSetTypeDesc(RType).BaseType.Kind in [tyByte, tyBoolean] then
+    begin
+      if not LType.IsNumeric() then
+        SemanticError(
+          Format('Left operand of ''in'' must be numeric for ''set of %s'', got ''%s''',
+            [TSetTypeDesc(RType).BaseType.Name, LType.Name]),
+          ABin.Line, ABin.Col);
+    end
+    else if LType <> TSetTypeDesc(RType).BaseType then
       SemanticError(
         Format('Left operand of ''in'' must be type ''%s'', got ''%s''',
           [TSetTypeDesc(RType).BaseType.Name, LType.Name]),
@@ -11259,24 +11320,96 @@ begin
   end;
 end;
 
+procedure TSemanticAnalyser.ExpandOrdinalSetRanges(AExpr: TArrayLiteralExpr;
+  ASetType: TSetTypeDesc);
+var
+  I, J:      Integer;
+  Elem:      TASTExpr;
+  Range:     TSetRangeExpr;
+  LoVal:     Int64;
+  HiVal:     Int64;
+  NewList:   TObjectList;
+  Lit:       TIntLiteral;
+  HasRanges: Boolean;
+begin
+  HasRanges := False;
+  for I := 0 to AExpr.Elements.Count - 1 do
+    if TASTExpr(AExpr.Elements.Items[I]) is TSetRangeExpr then
+    begin
+      HasRanges := True;
+      Break;
+    end;
+  if not HasRanges then Exit;
+
+  NewList := TObjectList.Create(False);
+  try
+    for I := 0 to AExpr.Elements.Count - 1 do
+    begin
+      Elem := TASTExpr(AExpr.Elements.Items[I]);
+      if not (Elem is TSetRangeExpr) then
+      begin
+        NewList.Add(Elem);
+        Continue;
+      end;
+      Range := TSetRangeExpr(Elem);
+      LoVal := EvalConstIntExpr(Range.LowExpr, Range.Line, Range.Col);
+      HiVal := EvalConstIntExpr(Range.HighExpr, Range.Line, Range.Col);
+      if HiVal < LoVal then
+        SemanticError(
+          Format('Set range is reversed (%d > %d)', [LoVal, HiVal]),
+          Range.Line, Range.Col);
+      if (LoVal < 0) or (HiVal >= ASetType.BitCount) then
+        SemanticError(
+          Format('Set range %d..%d out of bounds (0..%d)',
+            [LoVal, HiVal, ASetType.BitCount - 1]),
+          Range.Line, Range.Col);
+      for J := LoVal to HiVal do
+      begin
+        Lit := TIntLiteral.Create();
+        Lit.Line := Range.Line;
+        Lit.Col := Range.Col;
+        Lit.Value := J;
+        Lit.ResolvedType := ASetType.BaseType;
+        NewList.Add(Lit);
+      end;
+    end;
+    for I := AExpr.Elements.Count - 1 downto 0 do
+      if not (TASTExpr(AExpr.Elements.Items[I]) is TSetRangeExpr) then
+        AExpr.Elements.Extract(AExpr.Elements.Items[I]);
+    AExpr.Elements.Clear();
+    for I := 0 to NewList.Count - 1 do
+      AExpr.Elements.Add(NewList.Items[I]);
+  finally
+    NewList.Free();
+  end;
+end;
+
 function TSemanticAnalyser.AnalyseSetLiteralExpr(AExpr: TArrayLiteralExpr;
   ASetType: TSetTypeDesc): TTypeDesc;
-{ Validates a set literal [elem, ...] against ASetType.
-  Elements must be constants or variables of the set's base enum type.
-  Range elements [lo..hi] are expanded to members first (issue #105).
-  An empty literal [] is valid and yields the set type with bitmask 0. }
 var
   ElemType: TTypeDesc;
   I:        Integer;
+  IsOrdBase: Boolean;
 begin
+  IsOrdBase := ASetType.BaseType.Kind in [tyByte, tyBoolean];
   if ASetType.BaseType is TEnumTypeDesc then
     ExpandSetRanges(AExpr, TEnumTypeDesc(ASetType.BaseType))
+  else if IsOrdBase then
+    ExpandOrdinalSetRanges(AExpr, ASetType)
   else
     ExpandSetRanges(AExpr, nil);
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
     ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
-    if ElemType <> ASetType.BaseType then
+    if IsOrdBase then
+    begin
+      if (not ElemType.IsNumeric()) and (ElemType <> ASetType.BaseType) then
+        SemanticError(
+          Format('Set literal element %d has type ''%s''; expected ''%s'' or integer',
+            [I + 1, ElemType.Name, ASetType.BaseType.Name]),
+          AExpr.Line, AExpr.Col);
+    end
+    else if ElemType <> ASetType.BaseType then
       SemanticError(
         Format('Set literal element %d has type ''%s''; expected ''%s''',
           [I + 1, ElemType.Name, ASetType.BaseType.Name]),

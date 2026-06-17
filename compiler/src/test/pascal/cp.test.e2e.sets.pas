@@ -47,6 +47,12 @@ type
     procedure TestRun_Set64_IncludeExclude;
     procedure TestRun_Set64_Union;
     procedure TestRun_Set64_ForIn;
+
+    { set of Byte — ordinal-based sets (issue #105) }
+    procedure TestRun_SetOfByte_IncludeExclude;
+    procedure TestRun_SetOfByte_InOperator;
+    procedure TestRun_SetOfByte_RangeLiteral;
+    procedure TestRun_SetOfByte_Union;
   end;
 
 implementation
@@ -374,6 +380,96 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcSet64ForIn,
     '2' + LE + '40' + LE + '47' + LE, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ set of Byte — ordinal-based sets (issue #105)                       }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSetOfByteIncExcl = '''
+    program Prg;
+    type TByteFlags = set of Byte;
+    var F: TByteFlags;
+    begin
+      F := [];
+      Include(F, 3);
+      Include(F, 100);
+      if 3 in F then WriteLn('3');
+      if 100 in F then WriteLn('100');
+      if 50 in F then WriteLn('50');
+      Exclude(F, 3);
+      if 3 in F then WriteLn('3again')
+    end.
+    ''';
+
+  SrcSetOfByteIn = '''
+    program Prg;
+    type TByteFlags = set of Byte;
+    var F: TByteFlags;
+    begin
+      F := [1, 5, 200];
+      if 1 in F then WriteLn('1');
+      if 2 in F then WriteLn('2');
+      if 5 in F then WriteLn('5');
+      if 200 in F then WriteLn('200')
+    end.
+    ''';
+
+  SrcSetOfByteRange = '''
+    program Prg;
+    type TByteFlags = set of Byte;
+    var F: TByteFlags;
+        I: Integer;
+    begin
+      F := [10..15];
+      for I := 8 to 17 do
+        if I in F then
+          WriteLn(I)
+    end.
+    ''';
+
+  SrcSetOfByteUnion = '''
+    program Prg;
+    type TByteFlags = set of Byte;
+    var A, B, C: TByteFlags;
+    begin
+      A := [1, 2];
+      B := [2, 3];
+      C := A + B;
+      if 1 in C then WriteLn('1');
+      if 2 in C then WriteLn('2');
+      if 3 in C then WriteLn('3');
+      if 4 in C then WriteLn('4')
+    end.
+    ''';
+
+procedure TE2ESetOpsTests.TestRun_SetOfByte_IncludeExclude;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetOfByteIncExcl,
+    '3' + LE + '100' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_SetOfByte_InOperator;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetOfByteIn,
+    '1' + LE + '5' + LE + '200' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_SetOfByte_RangeLiteral;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetOfByteRange,
+    '10' + LE + '11' + LE + '12' + LE + '13' + LE + '14' + LE + '15' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_SetOfByte_Union;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetOfByteUnion,
+    '1' + LE + '2' + LE + '3' + LE, 0);
 end;
 
 initialization

@@ -643,26 +643,29 @@ EnumMember
  * subsequent members without EQUALS continue incrementing from that value.
  * This matches Delphi and FPC semantics. *)
 
-(* A set's element type is an enumeration: either a named enum type or an
- * anonymous enum written inline.  Inline set types are accepted anywhere a
- * TypeName appears (var, parameter, record field, …), not only in a named
- * type declaration — e.g. var S: set of TColour;  var T: set of (a, b, c);
- * The anonymous form synthesises an enum type whose members become ordinary
- * enum constants in scope. *)
+(* A set's element type is either an enumeration (named or anonymous inline)
+ * or a small ordinal type (Byte, Boolean).  Inline set types are accepted
+ * anywhere a TypeName appears (var, parameter, record field, …), not only
+ * in a named type declaration — e.g. var S: set of TColour;
+ * var T: set of (a, b, c);  var F: set of Byte;
+ * The anonymous enum form synthesises an enum type whose members become
+ * ordinary enum constants in scope. *)
 SetType
     = SET OF ( IDENT | EnumDef )
     ;
 
-(* The base enumeration must have at most 256 members.  Storage scales with the
- * member count:
- *   <= 32 members : 4 bytes, a QBE 'w' register bitmask
- *   <= 64 members : 8 bytes, a QBE 'l' register bitmask
- *   <= 256 members: an inline byte-array bitmap of ceil(N/8) bytes (a "jumbo"
+(* The base type must have at most 256 ordinal values.  Storage scales with
+ * the value count:
+ *   <= 32 values  : 4 bytes, a QBE 'w' register bitmask
+ *   <= 64 values  : 8 bytes, a QBE 'l' register bitmask
+ *   <= 256 values : an inline byte-array bitmap of ceil(N/8) bytes (a "jumbo"
  *                   set), operated on via the _Set* RTL helpers like an
  *                   aggregate (record/static array)
- * Member ordinal N maps to bit (N mod 8) of byte (N div 8) in all forms.
- * Enumerations with more than 256 members are rejected by the semantic
- * analyser (256 is the classic Pascal maximum, matching a byte-indexed set). *)
+ * Value ordinal N maps to bit (N mod 8) of byte (N div 8) in all forms.
+ * Types with more than 256 possible values (e.g. Integer, Word) are rejected
+ * by the semantic analyser — only Byte (256 values), Boolean (2 values), and
+ * enumerations with at most 256 members are accepted.  Set literals with
+ * ordinal base types accept integer literals and ranges: [1, 2, 10..20]. *)
 
 (* Procedural type — bare or method pointer.
  *
