@@ -131,12 +131,15 @@ type
     procedure HashRebuild;
     function  FindKey(Key: K): Integer;
     procedure Add(Key: K; Value: V);
+    function  GetItem(Key: K): V;
+    procedure SetItem(Key: K; Value: V);
     function  TryGetValue(Key: K; var Value: V): Boolean;
     function  ContainsKey(Key: K): Boolean;
     procedure Remove(Key: K);
     function  GetCount: Integer;
     procedure Destroy;
     property Count: Integer read FCount;
+    property Items[Key: K]: V read GetItem write SetItem; default;
   end;
 
   { Generic insertion-ordered map.  Entries are stored in the order they were
@@ -157,6 +160,8 @@ type
     procedure HashRebuild;
     function  FindKey(Key: K): Integer;
     procedure Add(Key: K; Value: V);
+    function  GetItem(Key: K): V;
+    procedure SetItem(Key: K; Value: V);
     function  TryGetValue(Key: K; var Value: V): Boolean;
     function  ContainsKey(Key: K): Boolean;
     procedure Remove(Key: K);
@@ -165,6 +170,7 @@ type
     function  GetCount: Integer;
     procedure Destroy;
     property Count: Integer read FCount;
+    property Items[Key: K]: V read GetItem write SetItem; default;
     property Keys[Index: Integer]: K read GetKey;
     property Values[Index: Integer]: V read GetValue;
   end;
@@ -865,6 +871,26 @@ begin
   end
 end;
 
+function TDictionary<K, V>.GetItem(Key: K): V;
+var
+  Idx:  Integer;
+  VPtr: ^V;
+begin
+  Idx := Self.FindKey(Key);
+  if Idx >= 0 then
+  begin
+    VPtr   := Self.FValues + Idx * SizeOf(V);
+    Result := VPtr^
+  end
+  else
+    Halt(1)
+end;
+
+procedure TDictionary<K, V>.SetItem(Key: K; Value: V);
+begin
+  Self.Add(Key, Value)
+end;
+
 function TDictionary<K, V>.GetCount: Integer;
 begin
   Result := Self.FCount
@@ -1086,6 +1112,26 @@ var
 begin
   Ptr    := Self.FValues + AIndex * SizeOf(V);
   Result := Ptr^
+end;
+
+function TOrderedDictionary<K, V>.GetItem(Key: K): V;
+var
+  Idx:  Integer;
+  VPtr: ^V;
+begin
+  Idx := Self.FindKey(Key);
+  if Idx >= 0 then
+  begin
+    VPtr   := Self.FValues + Idx * SizeOf(V);
+    Result := VPtr^
+  end
+  else
+    Halt(1)
+end;
+
+procedure TOrderedDictionary<K, V>.SetItem(Key: K; Value: V);
+begin
+  Self.Add(Key, Value)
 end;
 
 function TOrderedDictionary<K, V>.GetCount: Integer;

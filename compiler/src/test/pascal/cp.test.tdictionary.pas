@@ -52,6 +52,10 @@ type
     procedure TestCodegen_TryGetValueEmitted;
     procedure TestCodegen_ContainsKeyEmitted;
     procedure TestCodegen_RemoveEmitted;
+
+    { Default property d[key] }
+    procedure TestCodegen_DefaultProperty_Read_EmitsGetItem;
+    procedure TestCodegen_DefaultProperty_Write_EmitsSetItem;
   end;
 
 implementation
@@ -73,10 +77,13 @@ const
             procedure Grow;
             function  FindKey(Key: K): Integer;
             procedure Add(Key: K; Value: V);
+            function  GetItem(Key: K): V;
+            procedure SetItem(Key: K; Value: V);
             function  TryGetValue(Key: K; var Value: V): Boolean;
             function  ContainsKey(Key: K): Boolean;
             procedure Remove(Key: K);
             property Count: Integer read FCount;
+            property Items[Key: K]: V read GetItem write SetItem; default;
           end;
         ''';
 
@@ -136,6 +143,24 @@ const
             VPtr^ := Value;
             Self.FCount := Self.FCount + 1
           end
+        end;
+        function TDictionary<K, V>.GetItem(Key: K): V;
+        var
+          Idx:  Integer;
+          VPtr: ^V;
+        begin
+          Idx := Self.FindKey(Key);
+          if Idx >= 0 then
+          begin
+            VPtr   := Self.FValues + Idx * SizeOf(V);
+            Result := VPtr^
+          end
+          else
+            Halt(1)
+        end;
+        procedure TDictionary<K, V>.SetItem(Key: K; Value: V);
+        begin
+          Self.Add(Key, Value)
         end;
         function TDictionary<K, V>.TryGetValue(Key: K; var Value: V): Boolean;
         var
@@ -243,6 +268,21 @@ const
         end.
         ''';
 
+  SrcDefaultProp =
+    'program P;' + #10 +
+    DictDecl +
+    DictImpls +
+    '''
+        var
+          D: TDictionary<Integer, Integer>;
+          V: Integer;
+        begin
+          D := TDictionary<Integer, Integer>.Create();
+          D[1] := 100;
+          V := D[1]
+        end.
+        ''';
+
 { ------------------------------------------------------------------ }
 { Helpers                                                              }
 { ------------------------------------------------------------------ }
@@ -321,7 +361,7 @@ begin
   Prog := ParseSrc(SrcCreate);
   try
     GD := TGenericTypeDef(TTypeDecl(Prog.Block.TypeDecls[0]).Def);
-    AssertEquals('Six methods in class', 6, GD.ClassDef.Methods.Count);
+    AssertEquals('Eight methods in class', 8, GD.ClassDef.Methods.Count);
   finally
     Prog.Free();
   end;
@@ -437,6 +477,28 @@ begin
   IR := GenIR(SrcRemove);
   AssertTrue('Remove body emitted',
     Pos('$TDictionary_Integer_Integer_Remove', IR) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Default property tests                                               }
+{ ------------------------------------------------------------------ }
+
+procedure TTDictionaryTests.TestCodegen_DefaultProperty_Read_EmitsGetItem;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcDefaultProp);
+  AssertTrue('GetItem getter called',
+    Pos('$TDictionary_Integer_Integer_GetItem', IR) >= 0);
+end;
+
+procedure TTDictionaryTests.TestCodegen_DefaultProperty_Write_EmitsSetItem;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcDefaultProp);
+  AssertTrue('SetItem setter called',
+    Pos('$TDictionary_Integer_Integer_SetItem', IR) >= 0);
 end;
 
 initialization

@@ -46,6 +46,11 @@ type
     procedure TestRun_GenericRecord_FieldAccess;
     procedure TestRun_GenericRecord_MethodCall;
 
+    { TDictionary default property d[key] }
+    procedure TestRun_TDictionary_DefaultProp_IntKeys;
+    procedure TestRun_TDictionary_DefaultProp_StringKeys;
+    procedure TestRun_TDictionary_DefaultProp_Update;
+
     { Published RTTI + MethodAddress }
     procedure TestRun_PublishedRTTI_MethodAddress;
 
@@ -263,6 +268,232 @@ const Src = '''
     ''';
 begin
   AssertRunsOnAll(Src, '2' + Chr(10) + 'ok' + Chr(10), 0);
+end;
+
+{ ---- TDictionary default property ---- }
+
+procedure TE2EGapTests.TestRun_TDictionary_DefaultProp_IntKeys;
+const Src = '''
+    program T;
+    type
+      TMap<K, V> = class
+        FKeys:     ^K;
+        FValues:   ^V;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        function  FindKey(Key: K): Integer;
+        procedure Add(Key: K; Value: V);
+        function  GetItem(Key: K): V;
+        procedure SetItem(Key: K; Value: V);
+        property Items[Key: K]: V read GetItem write SetItem; default;
+      end;
+    procedure TMap<K, V>.Grow;
+    var NewCap: Integer;
+    begin
+      if Self.FCapacity = 0 then NewCap := 8
+      else NewCap := Self.FCapacity * 2;
+      Self.FKeys   := ReallocMem(Self.FKeys,   NewCap * SizeOf(K));
+      Self.FValues := ReallocMem(Self.FValues, NewCap * SizeOf(V));
+      Self.FCapacity := NewCap
+    end;
+    function TMap<K, V>.FindKey(Key: K): Integer;
+    var I: Integer; Ptr: ^K;
+    begin
+      Result := -1;
+      I := 0;
+      while I < Self.FCount do
+      begin
+        Ptr := Self.FKeys + I * SizeOf(K);
+        if Ptr^ = Key then begin Result := I; I := Self.FCount end
+        else I := I + 1
+      end
+    end;
+    procedure TMap<K, V>.Add(Key: K; Value: V);
+    var Idx: Integer; KPtr: ^K; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); VPtr^ := Value end
+      else begin
+        if Self.FCount = Self.FCapacity then Self.Grow();
+        KPtr := Self.FKeys + Self.FCount * SizeOf(K);
+        VPtr := Self.FValues + Self.FCount * SizeOf(V);
+        KPtr^ := Key; VPtr^ := Value;
+        Self.FCount := Self.FCount + 1
+      end
+    end;
+    function TMap<K, V>.GetItem(Key: K): V;
+    var Idx: Integer; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); Result := VPtr^ end
+      else Halt(1)
+    end;
+    procedure TMap<K, V>.SetItem(Key: K; Value: V);
+    begin Self.Add(Key, Value) end;
+    var D: TMap<Integer, Integer>;
+    begin
+      D := TMap<Integer, Integer>.Create();
+      D[1] := 100;
+      D[2] := 200;
+      WriteLn(D[1]);
+      WriteLn(D[2]);
+      D.Free()
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '100' + Chr(10) + '200' + Chr(10), 0);
+end;
+
+procedure TE2EGapTests.TestRun_TDictionary_DefaultProp_StringKeys;
+const Src = '''
+    program T;
+    type
+      TMap<K, V> = class
+        FKeys:     ^K;
+        FValues:   ^V;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        function  FindKey(Key: K): Integer;
+        procedure Add(Key: K; Value: V);
+        function  GetItem(Key: K): V;
+        procedure SetItem(Key: K; Value: V);
+        property Items[Key: K]: V read GetItem write SetItem; default;
+      end;
+    procedure TMap<K, V>.Grow;
+    var NewCap: Integer;
+    begin
+      if Self.FCapacity = 0 then NewCap := 8
+      else NewCap := Self.FCapacity * 2;
+      Self.FKeys   := ReallocMem(Self.FKeys,   NewCap * SizeOf(K));
+      Self.FValues := ReallocMem(Self.FValues, NewCap * SizeOf(V));
+      Self.FCapacity := NewCap
+    end;
+    function TMap<K, V>.FindKey(Key: K): Integer;
+    var I: Integer; Ptr: ^K;
+    begin
+      Result := -1;
+      I := 0;
+      while I < Self.FCount do
+      begin
+        Ptr := Self.FKeys + I * SizeOf(K);
+        if Ptr^ = Key then begin Result := I; I := Self.FCount end
+        else I := I + 1
+      end
+    end;
+    procedure TMap<K, V>.Add(Key: K; Value: V);
+    var Idx: Integer; KPtr: ^K; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); VPtr^ := Value end
+      else begin
+        if Self.FCount = Self.FCapacity then Self.Grow();
+        KPtr := Self.FKeys + Self.FCount * SizeOf(K);
+        VPtr := Self.FValues + Self.FCount * SizeOf(V);
+        KPtr^ := Key; VPtr^ := Value;
+        Self.FCount := Self.FCount + 1
+      end
+    end;
+    function TMap<K, V>.GetItem(Key: K): V;
+    var Idx: Integer; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); Result := VPtr^ end
+      else Halt(1)
+    end;
+    procedure TMap<K, V>.SetItem(Key: K; Value: V);
+    begin Self.Add(Key, Value) end;
+    var D: TMap<string, Integer>;
+    begin
+      D := TMap<string, Integer>.Create();
+      D['one'] := 1;
+      D['two'] := 2;
+      WriteLn(D['one']);
+      WriteLn(D['two']);
+      D.Free()
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '1' + Chr(10) + '2' + Chr(10), 0);
+end;
+
+procedure TE2EGapTests.TestRun_TDictionary_DefaultProp_Update;
+const Src = '''
+    program T;
+    type
+      TMap<K, V> = class
+        FKeys:     ^K;
+        FValues:   ^V;
+        FCount:    Integer;
+        FCapacity: Integer;
+        procedure Grow;
+        function  FindKey(Key: K): Integer;
+        procedure Add(Key: K; Value: V);
+        function  GetItem(Key: K): V;
+        procedure SetItem(Key: K; Value: V);
+        property Items[Key: K]: V read GetItem write SetItem; default;
+      end;
+    procedure TMap<K, V>.Grow;
+    var NewCap: Integer;
+    begin
+      if Self.FCapacity = 0 then NewCap := 8
+      else NewCap := Self.FCapacity * 2;
+      Self.FKeys   := ReallocMem(Self.FKeys,   NewCap * SizeOf(K));
+      Self.FValues := ReallocMem(Self.FValues, NewCap * SizeOf(V));
+      Self.FCapacity := NewCap
+    end;
+    function TMap<K, V>.FindKey(Key: K): Integer;
+    var I: Integer; Ptr: ^K;
+    begin
+      Result := -1;
+      I := 0;
+      while I < Self.FCount do
+      begin
+        Ptr := Self.FKeys + I * SizeOf(K);
+        if Ptr^ = Key then begin Result := I; I := Self.FCount end
+        else I := I + 1
+      end
+    end;
+    procedure TMap<K, V>.Add(Key: K; Value: V);
+    var Idx: Integer; KPtr: ^K; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); VPtr^ := Value end
+      else begin
+        if Self.FCount = Self.FCapacity then Self.Grow();
+        KPtr := Self.FKeys + Self.FCount * SizeOf(K);
+        VPtr := Self.FValues + Self.FCount * SizeOf(V);
+        KPtr^ := Key; VPtr^ := Value;
+        Self.FCount := Self.FCount + 1
+      end
+    end;
+    function TMap<K, V>.GetItem(Key: K): V;
+    var Idx: Integer; VPtr: ^V;
+    begin
+      Idx := Self.FindKey(Key);
+      if Idx >= 0 then
+      begin VPtr := Self.FValues + Idx * SizeOf(V); Result := VPtr^ end
+      else Halt(1)
+    end;
+    procedure TMap<K, V>.SetItem(Key: K; Value: V);
+    begin Self.Add(Key, Value) end;
+    var D: TMap<string, Integer>;
+    begin
+      D := TMap<string, Integer>.Create();
+      D['x'] := 10;
+      D['x'] := 42;
+      WriteLn(D['x']);
+      D.Free()
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '42' + Chr(10), 0);
 end;
 
 { ---- Generic records ---- }
