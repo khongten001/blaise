@@ -3899,8 +3899,13 @@ begin
   if (AExpr is TStringLiteral) and
      (Length(TStringLiteral(AExpr).Value) = 1) then
   begin
+    { Use StrAt (OrdAt) rather than Ord(Value[0]): the bare subscript-then-Ord
+      idiom miscompiles under the self-hosted native stage (it produced a
+      pointer-sized garbage immediate, surfacing as a CI-only failure of the
+      S[i] := 'c' test), whereas StrAt is the stage-stable byte-read helper
+      used everywhere else in this backend. }
     Self.Emit(Format(#9'movl $%d, %%eax',
-      [Ord(TStringLiteral(AExpr).Value[0])]));
+      [StrAt(TStringLiteral(AExpr).Value, 0)]));
     Exit;
   end;
   Self.EmitExprToEax(AExpr);
