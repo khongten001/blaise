@@ -586,6 +586,8 @@ type
       Most params = 1 slot; interface params = 2 slots (obj + itab); open-array
       params = 2 slots (ptr + high).  Used by pop loops so they count slots, not
       logical argument positions. }
+    { Load a class method call's receiver instance pointer into %rax. }
+    procedure EmitMethodReceiverToRax(ACall: TMethodCallExpr);
     function CountArgSlots(AParams: TObjectList): Integer;
     { Bounds-checked System V integer-arg-register accessor (raises if > 5). }
     function SysVArg64(AIndex: Integer): string;
@@ -7552,6 +7554,39 @@ begin
     Exit;
   end;
 
+  { Built-in TObject.InheritsFrom(C): _InheritsFrom(self_typeinfo, arg_typeinfo)
+    → Boolean in %eax.  A class-instance receiver carries its typeinfo at
+    vtable[0] = *( *obj ); the argument is a class-of value that EmitExprToEax
+    lowers to a typeinfo pointer (mirrors the QBE path). }
+  if ACall.IsBuiltinInheritsFrom then
+  begin
+    Self.EmitMethodReceiverToRax(ACall);     { instance ptr -> %rax }
+    if (ACall.ResolvedClassType <> nil) and
+       (ACall.ResolvedClassType.Kind = tyClass) then
+    begin
+      Self.Emit(#9'movq (%rax), %rax');       { vtable }
+      Self.Emit(#9'movq (%rax), %rax');       { typeinfo = vtable[0] }
+    end;
+    Self.Emit(#9'pushq %rax');                { save self typeinfo }
+    Self.EmitExprToEax(TASTExpr(ACall.Args.Items[0]));  { arg typeinfo -> %rax }
+    Self.Emit(#9'movq %rax, %rsi');
+    Self.Emit(#9'popq %rdi');                 { self typeinfo }
+    Self.Emit(#9'callq _InheritsFrom');
+    Exit;
+  end;
+
+  { Built-in TObject.ToString: virtual dispatch through vtable slot 2 (offset 16:
+    [0]=typeinfo, [8]=Destroy, [16]=ToString).  Returns a string in %rax. }
+  if ACall.IsBuiltinToString then
+  begin
+    Self.EmitMethodReceiverToRax(ACall);     { instance ptr -> %rax }
+    Self.Emit(#9'movq %rax, %rdi');           { Self }
+    Self.Emit(#9'movq (%rdi), %rax');         { vtable }
+    Self.Emit(#9'movq 16(%rax), %rax');       { vtable[2] = ToString }
+    Self.Emit(#9'callq *%rax');
+    Exit;
+  end;
+
   MD := TMethodDecl(ACall.ResolvedMethod);
   if MD = nil then
     raise ENativeCodeGenError.Create(
@@ -7956,6 +7991,30 @@ begin
       '[0..5] — a call has more register-passed slots than the ABI allows ' +
       '(sret/Self offset + args); this path must spill to the stack', [AIndex]));
   Result := SysVArgRegs64[AIndex];
+end;
+
+{ Load the receiver object pointer of a class method call into %rax.  Covers an
+  expression receiver, a named local/global instance, and implicit Self.  Used by
+  the TObject builtins (InheritsFrom, ToString) which only need the instance
+  pointer, not the record/var-param address handling of the full call path. }
+procedure TX86_64Backend.EmitMethodReceiverToRax(ACall: TMethodCallExpr);
+begin
+  if ACall.ObjExpr <> nil then
+    Self.EmitExprToEax(ACall.ObjExpr)
+  else if ACall.ObjectName <> '' then
+  begin
+    if ACall.IsVarParam then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]));
+      Self.Emit(#9'movq (%rax), %rax');
+    end
+    else if Self.IsLocal(ACall.ObjectName) then
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
+    else
+      Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+  end
+  else
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
 end;
 
 function TX86_64Backend.CountArgSlots(AParams: TObjectList): Integer;

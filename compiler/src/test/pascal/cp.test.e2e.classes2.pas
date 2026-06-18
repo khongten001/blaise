@@ -1009,13 +1009,9 @@ begin
 end;
 
 procedure TE2EClasses2Tests.TestRun_ToString_DefaultReturnsClassName;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcToStringDefault, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('default ToString returns class name',
-    'TFoo' + LE + 'TBar' + LE, Output);
+  AssertRunsOnAll(SrcToStringDefault, 'TFoo' + LE + 'TBar' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_ToString_OverrideDispatchedVirtually;
@@ -1039,57 +1035,39 @@ begin
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_SameClass_ReturnsTrue;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromBase, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('same class returns true', 'yes' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromBase, 'yes' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_Parent_ReturnsTrue;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromParent, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('child inherits from parent', 'yes' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromParent, 'yes' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_GrandParent_ReturnsTrue;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromGrandParent, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('grandchild inherits from base', 'yes' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromGrandParent, 'yes' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_Unrelated_ReturnsFalse;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromUnrelated, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('unrelated class returns false', 'no' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromUnrelated, 'no' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_Reverse_ReturnsFalse;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromReverse, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('parent does not inherit from child', 'no' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromReverse, 'no' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_InheritsFrom_ClassType_Works;
-var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRun(SrcInheritsFromClassType, Output, RCode));
-  AssertEquals('exit code 0', 0, RCode);
-  AssertEquals('ClassType.InheritsFrom works', 'yes' + LE, Output);
+  AssertRunsOnAll(SrcInheritsFromClassType, 'yes' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_Is_CorrectSubclass_True;
