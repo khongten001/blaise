@@ -4008,6 +4008,18 @@ var
 begin
   Result := AElem;
   if AElem = '' then Exit;
+  { Radix-prefixed integer literal — $hex, %binary, &octal (with optional
+    leading sign).  The lexer keeps the prefixed form in the token text, but
+    the rest of the const-array pipeline (codegen, OPDF) expects a plain
+    decimal string.  Fold through ParseIntLiteral, the same canonical parser
+    the parser uses for scalar/typed consts, so all three radixes behave
+    identically inside an array initialiser. }
+  if AElem[0] = '$' then Exit(IntToStr(ParseIntLiteral(AElem)));
+  if AElem[0] = '%' then Exit(IntToStr(ParseIntLiteral(AElem)));
+  if AElem[0] = '&' then Exit(IntToStr(ParseIntLiteral(AElem)));
+  if (Length(AElem) > 1) and (AElem[0] = '-') and
+     ((AElem[1] = '$') or (AElem[1] = '%') or (AElem[1] = '&')) then
+    Exit(IntToStr(-ParseIntLiteral(StrCopyTail(AElem, 1))));
   { Already a numeric literal (int, negative int, or float) — leave as is. }
   if IsPlainInt(AElem) then Exit;
   if (AElem[0] >= '0') and (AElem[0] <= '9') then Exit;

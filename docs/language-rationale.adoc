@@ -583,6 +583,32 @@ The bit pattern is preserved in every case; the literal type only
 selects which signed/unsigned interpretation the surrounding expression
 sees.
 
+==== Radix prefixes
+
+Integer literals may be written in four radixes, following FPC (not
+Delphi):
+
+* decimal — `42`
+* hexadecimal — `$2A` (also Delphi)
+* binary — `%101010` (Delphi 11+ also accepts this)
+* octal — `&52` (FPC only; Delphi has never supported octal — there `&`
+  is the identifier-escape prefix)
+
+Underscore digit separators are permitted in any radix (`$FF_FF`,
+`%1010_1010`).  All four forms are accepted everywhere an integer literal
+is — scalar and typed constants, expressions, static-array bounds, and
+*array-constant element lists*.  The last was the gap behind issue #129:
+`array[0..1] of Int64 = ($1, $2)` rejected the hex elements while the
+scalar form `= $1` accepted them.  Array-constant elements now fold
+through the same `ParseIntLiteral` radix parser the rest of the compiler
+uses, so every radix behaves identically inside an initialiser.
+
+The decision to keep FPC's `&` octal (rather than Delphi's no-octal /
+`&`-as-escape) follows the project rule of preferring FPC syntax where the
+two dialects diverge; the lexer already tokenised all four radixes, so the
+fix only made the array-constant path consistent with the rest of the
+language.
+
 ==== Built-in constant
 
 `MaxInt: Integer = 2147483647` is a compiler built-in constant.  It
