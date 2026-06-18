@@ -43,6 +43,10 @@ type
     FTarget:    TTargetDesc;
     FSymTable:  TSymbolTable;     { not owned }
     FDebugMode: Boolean;
+    { Separate-compilation (incremental unit) mode: suppress the once-per-program
+      TObject/TCustomAttribute system defs, which the program object provides —
+      emitting them in each unit object would collide at link time. }
+    FSeparateCompile: Boolean;
     { Assembly text is built append-only and read once at the end, so a
       TStringBuilder (single growable buffer, no per-line heap string and no
       O(N^2) final concat) is the right structure — the same approach the QBE
@@ -81,6 +85,7 @@ type
     function  GetOutput: string;
 
     procedure SetSymbolTable(ASymTable: TSymbolTable);
+    procedure SetSeparateCompile(AEnabled: Boolean);
     { OPDF debug-facts sink — concrete backends that support exact debug
       info override this; the default ignores the facts object. }
     procedure SetDebugFacts(AFacts: TDbgFacts); virtual;
@@ -88,6 +93,8 @@ type
 
     { Lower a whole program to assembly text and return it. }
     function GenerateProgram(AProg: TProgram): string;
+    { Lower a single unit (in isolation) to assembly text and return it. }
+    function GenerateUnit(AUnit: TUnit): string;
 
     property Target: TTargetDesc read FTarget;
   end;
@@ -118,6 +125,11 @@ end;
 procedure TNativeBackend.SetSymbolTable(ASymTable: TSymbolTable);
 begin
   FSymTable := ASymTable;
+end;
+
+procedure TNativeBackend.SetSeparateCompile(AEnabled: Boolean);
+begin
+  FSeparateCompile := AEnabled;
 end;
 
 procedure TNativeBackend.SetDebugMode(AEnabled: Boolean);
@@ -299,6 +311,18 @@ function TNativeBackend.GenerateProgram(AProg: TProgram): string;
 begin
   FAsm.Clear();
   Self.EmitProgram(AProg);
+  Result := FAsm.ToString();
+end;
+
+function TNativeBackend.GenerateUnit(AUnit: TUnit): string;
+begin
+  { Single-unit-in-isolation: emit just this unit's object (its globals, class
+    methods, procs, init section and class data) into a fresh buffer.  EmitUnit
+    is self-contained and prefers the unit's own symbol table when it was
+    analysed standalone (AUnit.SymbolTable <> nil). }
+  FAsm.Clear();
+  FSeparateCompile := True;
+  Self.EmitUnit(AUnit);
   Result := FAsm.ToString();
 end;
 

@@ -47,6 +47,7 @@ type
     procedure TestGenericClass_RoundTrip_WithoutSource;
     procedure TestUninstantiatedGenericFunc_InUnit_Compiles;
     procedure TestDuplicateExternalAcrossUnits_Compiles;
+    procedure TestNativeIncremental_MultiUnitClass_Compiles;
   end;
 
 implementation
@@ -434,6 +435,77 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_dupext exit code', 0, Rc);
   AssertEquals('use_dupext stdout', '8' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestNativeIncremental_MultiUnitClass_Compiles;
+{ The native backend supports --incremental (per-unit .o + embedded .bif) the
+  same as QBE.  Compile a program using a unit that declares a class (exercises
+  the system-def suppression + global typeinfo_TObject and per-unit string
+  literals in the unit object), then run it.  A unit .o must be left behind. }
+const
+  UnitSrc =
+    '''
+    unit ShapesU;
+    interface
+    type
+      TShape = class
+        Name: string;
+        function Describe: string;
+      end;
+    implementation
+    function TShape.Describe: string;
+    begin Result := 'shape:' + Name end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseShapes;
+    uses ShapesU;
+    var S: TShape;
+    begin
+      S := TShape.Create();
+      S.Name := 'box';
+      WriteLn(S.Describe());
+      S.Free()
+    end.
+    ''';
+var
+  UnitPas, ProgPas, ProgBin, UnitObj: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitPas := FScratch + '/ShapesU.pas';
+  ProgPas := FScratch + '/use_shapes.pas';
+  ProgBin := FScratch + '/use_shapes';
+  { Incremental writes the per-unit .o next to the output with a lowercased
+    unit name (see UnitOPath in Blaise.pas). }
+  UnitObj := FScratch + '/shapesu.o';
+
+  WriteFile(UnitPas, UnitSrc);
+  WriteFile(ProgPas, ProgSrc);
+  DeleteFile(UnitObj);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'native', '--incremental',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(use_shapes) exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_shapes exists', FileExists(ProgBin));
+  AssertTrue('per-unit ShapesU.o cached', FileExists(UnitObj));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_shapes exit code', 0, Rc);
+  AssertEquals('use_shapes stdout', 'shape:box' + #10, Captured)
 end;
 
 initialization

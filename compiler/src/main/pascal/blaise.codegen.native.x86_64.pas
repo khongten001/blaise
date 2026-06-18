@@ -1794,8 +1794,11 @@ var
 begin
   { Fixed RTL class-name strings and stubs for TObject and TCustomAttribute.
     Emitted exactly once across the whole program (the first class section that
-    runs); guarded so multiple units + the program do not redefine the symbols. }
-  EmitSys := not FSystemDefsEmitted;
+    runs); guarded so multiple units + the program do not redefine the symbols.
+    In separate-compilation (incremental unit) mode they are NOT emitted at all —
+    the program object provides the single definition, so emitting them in each
+    unit object would collide at link time. }
+  EmitSys := (not FSystemDefsEmitted) and (not FSeparateCompile);
   Self.Emit('.data');
   if EmitSys then
   begin
@@ -1862,6 +1865,9 @@ begin
   if EmitSys then
   begin
     Self.Emit('.balign 8');
+    { Global so separately-compiled unit objects (incremental mode) can
+      reference the single program-provided system typeinfo. }
+    Self.Emit('.globl typeinfo_TObject');
     Self.Emit('typeinfo_TObject:');
     Self.Emit(#9'.quad 0');          { parent = nil }
     Self.Emit(#9'.quad 0');          { impllist = nil }
@@ -1873,6 +1879,7 @@ begin
     Self.Emit(#9'.quad 0');          { attrs = nil }
 
     Self.Emit('.balign 8');
+    Self.Emit('.globl typeinfo_TCustomAttribute');
     Self.Emit('typeinfo_TCustomAttribute:');
     Self.Emit(#9'.quad typeinfo_TObject');
     Self.Emit(#9'.quad 0');
@@ -1982,12 +1989,14 @@ begin
   if EmitSys then
   begin
     Self.Emit('.balign 8');
+    Self.Emit('.globl vtable_TObject');
     Self.Emit('vtable_TObject:');
     Self.Emit(#9'.quad typeinfo_TObject');
     Self.Emit(#9'.quad TObject_Destroy');
     Self.Emit(#9'.quad TObject_ToString');
 
     Self.Emit('.balign 8');
+    Self.Emit('.globl vtable_TCustomAttribute');
     Self.Emit('vtable_TCustomAttribute:');
     Self.Emit(#9'.quad typeinfo_TCustomAttribute');
     Self.Emit(#9'.quad TObject_Destroy');
@@ -15159,6 +15168,13 @@ begin
   Self.Emit('.data');
   Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                          AUnit.GenericIntfInstances, UnitSym);
+  { Separate-compilation: emit this unit's string-literal blobs into its own
+    object.  The __sN labels are file-local, so each unit object carries the
+    literals its own code references — without this a unit method referencing a
+    string literal links with an undefined __sN.  In the whole-program (program)
+    path the literals are emitted once by EmitDataSection instead. }
+  if FSeparateCompile then
+    Self.EmitStrLitSection();
 end;
 
 end.

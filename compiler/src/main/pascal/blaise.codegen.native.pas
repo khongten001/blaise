@@ -41,6 +41,7 @@ type
     FTarget:    TTargetDesc;
     FSymTable:  TSymbolTable;
     FDebugMode: Boolean;
+    FSeparateCompile: Boolean;
     FBackend:   TNativeBackend;
     FOutput:    string;
     FDbgFacts:  TDbgFacts;   { owned; created by SetOpdfMode(True) }
@@ -52,6 +53,9 @@ type
     { Backend-specific configuration — set before the object is used as an
       ICodeGen.  Not part of the ICodeGen contract. }
     procedure SetTarget(const ATarget: TTargetDesc);
+    { Separate-compilation (incremental unit) mode: suppress per-unit system
+      defs.  Set by the driver's CreateUnitCodeGen before AppendUnit. }
+    procedure SetSeparateCompile(AEnabled: Boolean);
 
     { ICodeGen }
     procedure Generate(AProg: TProgram);
@@ -97,6 +101,7 @@ begin
   MakeTarget(osLinux, cpuX86_64, FTarget);
   FSymTable  := nil;
   FDebugMode := False;
+  FSeparateCompile := False;
   FBackend   := nil;
   FOutput    := '';
 end;
@@ -110,6 +115,11 @@ end;
 procedure TCodeGenNative.SetTarget(const ATarget: TTargetDesc);
 begin
   FTarget := ATarget;
+end;
+
+procedure TCodeGenNative.SetSeparateCompile(AEnabled: Boolean);
+begin
+  FSeparateCompile := AEnabled;
 end;
 
 procedure TCodeGenNative.EnsureBackend;
@@ -154,9 +164,10 @@ end;
 procedure TCodeGenNative.GenerateUnit(AUnit: TUnit);
 begin
   Self.EnsureBackend();
-  raise ENativeCodeGenError.Create(
-    'native backend: single-unit compilation not yet implemented (target ' +
-    TargetName(FTarget) + ')');
+  FBackend.SetSymbolTable(FSymTable);
+  FBackend.SetDebugMode(FDebugMode);
+  FBackend.SetDebugFacts(FDbgFacts);
+  FOutput := FBackend.GenerateUnit(AUnit);
 end;
 
 procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
@@ -164,6 +175,7 @@ begin
   Self.EnsureBackend();
   FBackend.SetSymbolTable(FSymTable);
   FBackend.SetDebugMode(FDebugMode);
+  FBackend.SetSeparateCompile(FSeparateCompile);
   FBackend.SetDebugFacts(FDbgFacts);
   FBackend.AppendUnit(AUnit);
   FOutput := FBackend.GetOutput();
