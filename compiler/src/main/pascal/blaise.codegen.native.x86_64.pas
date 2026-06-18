@@ -4814,6 +4814,9 @@ var
   ScEndLbl: string;
   IsS: Boolean;
   DivOkLbl: string;
+  SuppOut: string;
+  LSuppNo: string;
+  LSuppEnd: string;
 begin
   if AExpr is TNilLiteral then
   begin
@@ -7324,15 +7327,60 @@ begin
     Exit;
   end;
 
-  { Supports(Obj, IFoo) — interface query via _ImplementsInterface.
-    Result: 0/1 in %eax. }
+  { Supports(Obj, IFoo[, OutVar]) — interface query via _ImplementsInterface.
+    Result: 0/1 in %eax.  The 3-arg form additionally populates OutVar's fat
+    pointer (obj+itab) on success, with ARC retain/release, mirroring the QBE
+    EmitSupportsExpr path. }
   if AExpr is TSupportsExpr then
   begin
+    SuppOut := TSupportsExpr(AExpr).OutVarName;
     Self.EmitExprToEax(TSupportsExpr(AExpr).Obj);
+    if SuppOut = '' then
+    begin
+      { 2-arg form: boolean result only. }
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(Format(#9'leaq typeinfo_%s(%%rip), %%rsi',
+        [Self.IntfTypeInfoName(TSupportsExpr(AExpr).IntfTypeName)]));
+      Self.Emit(#9'callq _ImplementsInterface');
+      Exit;
+    end;
+    { 3-arg form.  Keep obj on the stack across the helper calls. }
+    Self.Emit(#9'pushq %rax');               { (obj) }
     Self.Emit(#9'movq %rax, %rdi');
     Self.Emit(Format(#9'leaq typeinfo_%s(%%rip), %%rsi',
       [Self.IntfTypeInfoName(TSupportsExpr(AExpr).IntfTypeName)]));
     Self.Emit(#9'callq _ImplementsInterface');
+    LSuppNo  := Self.NewLabel('supports_no');
+    LSuppEnd := Self.NewLabel('supports_end');
+    Self.Emit(#9'testl %eax, %eax');
+    Self.Emit(#9'jz ' + LSuppNo);
+    { Success: register the out-var (if global) so its _obj/_itab labels are
+      emitted, then store the new fat pointer with ARC. }
+    if not Self.IsLocal(SuppOut) then
+      Self.AddGlobal(SuppOut, TSupportsExpr(AExpr).ResolvedIntfType);
+    Self.Emit(#9'movq (%rsp), %rdi');        { obj }
+    Self.Emit(Format(#9'leaq typeinfo_%s(%%rip), %%rsi',
+      [Self.IntfTypeInfoName(TSupportsExpr(AExpr).IntfTypeName)]));
+    Self.Emit(#9'callq _GetItab');           { itab -> %rax }
+    Self.Emit(#9'pushq %rax');               { (itab, obj) }
+    { ARC: retain new obj, release the out-var's old obj slot. }
+    Self.Emit(#9'movq 8(%rsp), %rdi');       { obj }
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rdi',
+      [Self.IntfObjOperand(SuppOut, TSupportsExpr(AExpr).OutVarIsGlobal)]));
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(#9'popq %rax');                { itab }
+    Self.Emit(Format(#9'movq %%rax, %s',
+      [Self.IntfItabOperand(SuppOut, TSupportsExpr(AExpr).OutVarIsGlobal)]));
+    Self.Emit(#9'popq %rax');                { obj }
+    Self.Emit(Format(#9'movq %%rax, %s',
+      [Self.IntfObjOperand(SuppOut, TSupportsExpr(AExpr).OutVarIsGlobal)]));
+    Self.Emit(#9'movl $1, %eax');
+    Self.Emit(#9'jmp ' + LSuppEnd);
+    Self.Emit(LSuppNo + ':');
+    Self.Emit(#9'addq $8, %rsp');            { discard saved obj }
+    Self.Emit(#9'movl $0, %eax');
+    Self.Emit(LSuppEnd + ':');
     Exit;
   end;
 

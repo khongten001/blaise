@@ -76,6 +76,26 @@ type
       exercise fewer than AllBackends (e.g. a feature not yet ported). }
     procedure AssertRunsOn(ABackends: TBackends; const ASrc, AExpectedOut: string;
                             AExpectedCode: Integer);
+    { RTL/stdlib equivalents of AssertRunsOn*: compile+run ASrc against the RTL
+      and stdlib (multi-unit, TUnitLoader) on every backend and assert parity.
+      Use these in RTL/stdlib suites so native gets the same coverage as QBE. }
+    procedure AssertRTLRunsOnAll(const ASrc, AExpectedOut: string;
+                            AExpectedCode: Integer);
+    procedure AssertRTLRunsOn(ABackends: TBackends; const ASrc, AExpectedOut: string;
+                            AExpectedCode: Integer);
+    procedure AssertRTLRunsOnOne(ABackend: TBackend; const AName, ASrc,
+                            AExpectedOut: string; AExpectedCode: Integer);
+    { Convenience: RTL/stdlib compile+run on a specific backend (debug off). }
+    function  CompileAndRunWithRTLOn(ABackend: TBackend; const ASrc: string;
+                            out AStdout: string;
+                            out AExitCode: Integer): Boolean;
+    { QBE-only RTL compile+run.  Escape hatch for the rare case where native
+      has a known, documented gap that is tracked separately — keeps the rest of
+      a suite dual-backend while not blocking on the one failing construct.  Add
+      a comment at each call site naming the tracked bug. }
+    function  CompileAndRunWithRTLQBEOnly(const ASrc: string;
+                            out AStdout: string;
+                            out AExitCode: Integer): Boolean;
     { Per-backend worker used by AssertRunsOn (separate method because Blaise
       has no nested procedures). }
     procedure AssertRunsOnOne(ABackend: TBackend; const AName, ASrc,
@@ -453,8 +473,30 @@ end;
 function TE2ETestCase.CompileAndRunWithRTL(const ASrc: string;
                                            out AStdout: string;
                                            out AExitCode: Integer): Boolean;
+var
+  NOut: string;
+  NCode: Integer;
+  NOk: Boolean;
 begin
-  Result := CompileAndRunWithRTLDebug(ASrc, AStdout, AExitCode, False);
+  { Run on BOTH backends and require parity.  Historically this helper was
+    QBE-only, which left every RTL/stdlib suite that uses it unvalidated on the
+    native backend.  We now compile+run the program with QBE first (its result
+    is returned so the caller's existing assertions still pin correctness), then
+    repeat on native and assert the native stdout/exit code match QBE.  A native
+    codegen or RTL-ABI divergence therefore fails the test with a clear message
+    rather than going unnoticed.  Debug-mode and *On variants stay single-backend
+    for callers that need a specific backend (e.g. leak checks). }
+  Result := Self.CompileAndRunWithRTLDebugOn(beQBE, ASrc, AStdout, AExitCode,
+                                             False);
+  if not Result then Exit;
+  NOk := Self.CompileAndRunWithRTLDebugOn(beNative, ASrc, NOut, NCode, False);
+  AssertTrue('[native] RTL compile+run', NOk);
+  if NCode <> AExitCode then
+    AssertEquals('[native] exit code parity with qbe (native stdout: ' +
+      NOut + ')', AExitCode, NCode)
+  else
+    AssertEquals('[native] exit code parity with qbe', AExitCode, NCode);
+  AssertEquals('[native] stdout parity with qbe', AStdout, NOut);
 end;
 
 function TE2ETestCase.CompileAndRunWithRTL(const ASrc: string;
@@ -469,64 +511,64 @@ function TE2ETestCase.CompileAndRunWithRTLDebug(const ASrc: string;
                                            out AStdout: string;
                                            out AExitCode: Integer;
                                            ADebugMode: Boolean): Boolean;
-var
-  Lexer:       TLexer;
-  Parser:      TParser;
-  Prog:        TProgram;
-  Semantic:    TSemanticAnalyser;
-  CG:          TCodeGenQBE;
-  Loader:      TUnitLoader;
-  Units:       TObjectList;
-  SearchPaths: TStringList;
-  IR:          string;
-  IRFile:      string;
-  AsmFile:     string;
-  BinFile:     string;
-  ToolOut:     string;
-  Rc:          Integer;
-  I:           Integer;
 begin
-  Result := False;
-  Inc(FCounter);
-  IRFile  := FScratch + '/t' + IntToStr(FCounter) + '.ssa';
-  AsmFile := FScratch + '/t' + IntToStr(FCounter) + '.s';
-  BinFile := FScratch + '/t' + IntToStr(FCounter);
+  { QBE-backed convenience; the full dual-backend implementation lives in
+    CompileAndRunWithRTLDebugOn.  Kept so existing QBE-only callers behave
+    exactly as before. }
+  Result := Self.CompileAndRunWithRTLDebugOn(beQBE, ASrc, AStdout, AExitCode,
+                                             ADebugMode)
+end;
 
-  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
-  Loader := nil; Units := nil; SearchPaths := nil;
-  try
-    Lexer    := TLexer.Create(ASrc);
-    Parser   := TParser.Create(Lexer);
-    Prog     := Parser.Parse();
-    Semantic := TSemanticAnalyser.Create();
-    SearchPaths := TStringList.Create();
-    SearchPaths.Add(FRTLUnitPath);
-    SearchPaths.Add(FStdlibUnitPath);
-    Loader := TUnitLoader.Create(SearchPaths);
-    Units  := Loader.LoadAll(Prog.UsedUnits);
-    for I := 0 to Units.Count - 1 do
-      Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
-    Semantic.Analyse(Prog);
-    CG := TCodeGenQBE.Create();
-    CG.SetDebugMode(ADebugMode);
-    CG.SetSymbolTable(Prog.SymbolTable);
-    for I := 0 to Units.Count - 1 do
-      CG.AppendUnit(TUnit(Units.Items[I]));
-    CG.AppendProgram(Prog);
-    IR := CG.GetOutput()
-  finally
-    CG.Free(); Semantic.Free();
-    Units.Free(); Loader.Free(); SearchPaths.Free();
-    Prog.Free(); Parser.Free(); Lexer.Free()
-  end;
+function TE2ETestCase.CompileAndRunWithRTLOn(ABackend: TBackend;
+                                           const ASrc: string;
+                                           out AStdout: string;
+                                           out AExitCode: Integer): Boolean;
+begin
+  Result := Self.CompileAndRunWithRTLDebugOn(ABackend, ASrc, AStdout, AExitCode,
+                                             False)
+end;
 
-  WriteFile(IRFile, IR);
-  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
-  if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
-  Rc := RunProc('cc', ['-o', BinFile, AsmFile, FRTL, '-lm', '-lpthread'], ToolOut);
-  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
-  AExitCode := RunProcNoArgs(BinFile, AStdout);
-  Result := True
+function TE2ETestCase.CompileAndRunWithRTLQBEOnly(const ASrc: string;
+                                           out AStdout: string;
+                                           out AExitCode: Integer): Boolean;
+begin
+  Result := Self.CompileAndRunWithRTLDebugOn(beQBE, ASrc, AStdout, AExitCode,
+                                             False)
+end;
+
+procedure TE2ETestCase.AssertRTLRunsOnAll(const ASrc, AExpectedOut: string;
+                                          AExpectedCode: Integer);
+begin
+  Self.AssertRTLRunsOn(AllBackends, ASrc, AExpectedOut, AExpectedCode)
+end;
+
+procedure TE2ETestCase.AssertRTLRunsOn(ABackends: TBackends;
+                                       const ASrc, AExpectedOut: string;
+                                       AExpectedCode: Integer);
+var
+  BE: TBackend;
+begin
+  for BE := Low(TBackend) to High(TBackend) do
+    if BE in ABackends then
+      Self.AssertRTLRunsOnOne(BE, BackendName(BE), ASrc, AExpectedOut,
+                              AExpectedCode)
+end;
+
+procedure TE2ETestCase.AssertRTLRunsOnOne(ABackend: TBackend;
+                                          const AName, ASrc, AExpectedOut: string;
+                                          AExpectedCode: Integer);
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  AssertTrue('[' + AName + '] compile+run (RTL)',
+    Self.CompileAndRunWithRTLOn(ABackend, ASrc, Output, RCode));
+  if RCode <> AExpectedCode then
+    AssertEquals('[' + AName + '] exit code (stdout: ' + Output + ')',
+      AExpectedCode, RCode)
+  else
+    AssertEquals('[' + AName + '] exit code', AExpectedCode, RCode);
+  AssertEquals('[' + AName + '] stdout', AExpectedOut, Output)
 end;
 
 function TE2ETestCase.CompileAndRunWithRTLDebugOn(ABackend: TBackend;
