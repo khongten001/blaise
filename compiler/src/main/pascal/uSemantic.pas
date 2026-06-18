@@ -97,6 +97,17 @@ type
       entry. }
     procedure RegisterProcDecl(const AName: string; ADecl: TMethodDecl);
 
+    { Like FProcIndex.IndexOf, but only matches a forward decl whose OwningUnit
+      is AUnitName.  FProcIndex is global across all compiled units, so a bare
+      IndexOf can return a same-named decl from an imported unit. }
+    function IndexOfProcInUnit(const AName, AUnitName: string): Integer;
+
+    { True when A and B are two declarations of the SAME external C function —
+      both external, same effective link name, same arity.  Used to collapse the
+      false "ambiguous overload" that arises when two units each privately
+      declare e.g. `external name 'strlen'`. }
+    function SameExternalDecl(A, B: TMethodDecl): Boolean;
+
     { Overload-group plumbing (see FProcGroups/FMethodGroups).  Every
       FProcIndex/FMethodIndex AddObject must go through the Add*GroupEntry
       sibling so the groups stay complete; FProcIndex.Objects[] rewrites go
@@ -951,6 +962,36 @@ begin
   AddGroupEntry(FProcGroups, AName, ADecl);
 end;
 
+function TSemanticAnalyser.IndexOfProcInUnit(const AName, AUnitName: string): Integer;
+var
+  I: Integer;
+begin
+  for I := 0 to FProcIndex.Count - 1 do
+    if SameText(FProcIndex.Strings[I], AName) and
+       SameText(TMethodDecl(FProcIndex.Objects[I]).OwningUnit, AUnitName) then
+      Exit(I);
+  Result := -1;
+end;
+
+function TSemanticAnalyser.SameExternalDecl(A, B: TMethodDecl): Boolean;
+var
+  LinkA, LinkB: string;
+begin
+  Result := False;
+  if (A = nil) or (B = nil) then Exit;
+  if not (A.IsExternal and B.IsExternal) then Exit;
+  if A.Params.Count <> B.Params.Count then Exit;
+  if A.ExternalName <> '' then
+    LinkA := A.ExternalName
+  else
+    LinkA := A.Name;
+  if B.ExternalName <> '' then
+    LinkB := B.ExternalName
+  else
+    LinkB := B.Name;
+  Result := SameText(LinkA, LinkB);
+end;
+
 procedure TSemanticAnalyser.BuildUsesChain(AUsedUnits: TStringList);
 var
   I: Integer;
@@ -1198,11 +1239,20 @@ begin
         overload variant pairs with the correct forward decl.  This handles the
         common pattern where the interface marks each overload but the
         implementation body omits the 'overload' keyword. }
+      { An impl-section routine may only pair with a forward decl from its OWN
+        unit.  FProcIndex is global across all compiled units, so an unqualified
+        IndexOf would match an identically-named forward decl from an imported
+        unit — including the common case of two units that each privately declare
+        the same `external name '...'` C function.  When that happened the second
+        unit's routine was treated as an impl of the first unit's decl and was
+        never defined into its own scope, so calls to it reported "Undeclared
+        function".  Restrict every match to the current unit. }
       ImplIdx := -1;
       if ImplDecl.IsOverload then
       begin
         for J := 0 to FProcIndex.Count - 1 do
           if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             SameText(TMethodDecl(FProcIndex.Objects[J]).OwningUnit, FCurrentUnitName) and
              (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
              (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
               MangleParamSig(ImplDecl)) then
@@ -1217,6 +1267,7 @@ begin
           If so, use signature matching even without 'overload' on the impl. }
         for J := 0 to FProcIndex.Count - 1 do
           if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             SameText(TMethodDecl(FProcIndex.Objects[J]).OwningUnit, FCurrentUnitName) and
              (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
              (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
               MangleParamSig(ImplDecl)) then
@@ -1225,7 +1276,7 @@ begin
             Break;
           end;
         if ImplIdx < 0 then
-          ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+          ImplIdx := IndexOfProcInUnit(ImplDecl.Name, FCurrentUnitName);
       end;
 
       if ImplIdx >= 0 then
@@ -1237,9 +1288,12 @@ begin
             Format('Signature mismatch for ''%s'': interface has %d params, implementation has %d',
               [ImplDecl.Name, MDecl.Params.Count, ImplDecl.Params.Count]),
             ImplDecl.Line, ImplDecl.Col);
-        { Carry mangling forward, then update the index entry. }
+        { Carry mangling forward, then update the index entry.  The impl decl
+          must inherit the forward decl's OwningUnit so the later
+          IndexOfProcInUnit "has no implementation" check still finds it. }
         ImplDecl.ResolvedQbeName := MDecl.ResolvedQbeName;
         ImplDecl.IsOverload      := MDecl.IsOverload;
+        ImplDecl.OwningUnit      := MDecl.OwningUnit;
         TransferDefaultValues(MDecl, ImplDecl);
         ReplaceProcIndexObject(ImplIdx, ImplDecl);
       end
@@ -1277,7 +1331,7 @@ begin
       { Generic free routines live in FGenericFuncTemplates, not FProcIndex —
         their impl is checked by AnalyseStandaloneDecl. }
       if MDecl.TypeParams <> nil then Continue;
-      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
+      ImplIdx := IndexOfProcInUnit(MDecl.Name, FCurrentUnitName);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
         SemanticError(
@@ -1502,11 +1556,14 @@ begin
         This covers the common Pascal pattern where the interface marks each
         overload with the 'overload' keyword but the implementation section
         repeats the body without re-stating 'overload'. }
+      { Impl pairs only with a forward decl from its OWN unit — see the matching
+        comment in AnalyseUnit.  FProcIndex is global across units. }
       ImplIdx := -1;
       if ImplDecl.IsOverload then
       begin
         for J := 0 to FProcIndex.Count - 1 do
           if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             SameText(TMethodDecl(FProcIndex.Objects[J]).OwningUnit, FCurrentUnitName) and
              (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
              (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
               MangleParamSig(ImplDecl)) then
@@ -1521,6 +1578,7 @@ begin
           If so, use signature matching even though the impl lacks 'overload'. }
         for J := 0 to FProcIndex.Count - 1 do
           if SameText(FProcIndex.Strings[J], ImplDecl.Name) and
+             SameText(TMethodDecl(FProcIndex.Objects[J]).OwningUnit, FCurrentUnitName) and
              (TMethodDecl(FProcIndex.Objects[J]).IsOverload) and
              (MangleParamSig(TMethodDecl(FProcIndex.Objects[J])) =
               MangleParamSig(ImplDecl)) then
@@ -1529,7 +1587,7 @@ begin
             Break;
           end;
         if ImplIdx < 0 then
-          ImplIdx := FProcIndex.IndexOf(ImplDecl.Name);
+          ImplIdx := IndexOfProcInUnit(ImplDecl.Name, FCurrentUnitName);
       end;
 
       if ImplIdx >= 0 then
@@ -1543,6 +1601,7 @@ begin
             ImplDecl.Line, ImplDecl.Col);
         ImplDecl.ResolvedQbeName := MDecl.ResolvedQbeName;
         ImplDecl.IsOverload      := MDecl.IsOverload;
+        ImplDecl.OwningUnit      := MDecl.OwningUnit;
         TransferDefaultValues(MDecl, ImplDecl);
         ReplaceProcIndexObject(ImplIdx, ImplDecl);
       end
@@ -1579,7 +1638,7 @@ begin
       if MDecl.IsExternal then Continue;
       { Generic free routines: impl lives in FGenericFuncTemplates. }
       if MDecl.TypeParams <> nil then Continue;
-      ImplIdx := FProcIndex.IndexOf(MDecl.Name);
+      ImplIdx := IndexOfProcInUnit(MDecl.Name, FCurrentUnitName);
       if (ImplIdx < 0) or
          (TMethodDecl(FProcIndex.Objects[ImplIdx]).Body = nil) then
         SemanticError(
@@ -8103,7 +8162,14 @@ begin
           BestCount := 1;
         end
         else if ExactNew = ExactBest then
-          Inc(BestCount);
+        begin
+          { Two units may each privately declare the SAME external C function
+            (e.g. `external name 'strlen'`).  Both land in the global overload
+            group and score identically, but they denote ONE function — not an
+            ambiguous overload.  Collapse the duplicate instead of erroring. }
+          if not SameExternalDecl(Cand, Best) then
+            Inc(BestCount);
+        end;
       end;
     end;
 

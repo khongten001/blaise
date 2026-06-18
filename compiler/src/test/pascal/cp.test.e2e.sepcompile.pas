@@ -46,6 +46,7 @@ type
     procedure TestFreeRoutine_RoundTrip_WithoutSource;
     procedure TestGenericClass_RoundTrip_WithoutSource;
     procedure TestUninstantiatedGenericFunc_InUnit_Compiles;
+    procedure TestDuplicateExternalAcrossUnits_Compiles;
   end;
 
 implementation
@@ -354,6 +355,85 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_mymax exit code', 0, Rc);
   AssertEquals('use_mymax stdout', 'Doubled(21) = 42' + #10, Captured)
+end;
+
+{ Two units that each privately declare the SAME C function via
+  `external name '...'` must both resolve calls to it.  Regression for a
+  cross-unit clash in impl-only proc matching: the per-unit forward-decl
+  fallback (FProcIndex.IndexOf) ignored unit ownership, so the second unit's
+  external matched the FIRST unit's already-indexed decl and was never defined
+  into its own scope -> "Undeclared function" at the call site. }
+procedure TSepCompileTests.TestDuplicateExternalAcrossUnits_Compiles;
+const
+  UnitASrc =
+    '''
+    unit DupExtA;
+    interface
+    function LenA(const S: string): Integer;
+    implementation
+    function _strlenA(S: Pointer): Int64; external name 'strlen';
+    function LenA(const S: string): Integer;
+    begin
+      Result := Integer(_strlenA(PChar(S)))
+    end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit DupExtB;
+    interface
+    function LenB(const S: string): Integer;
+    implementation
+    function _strlenA(S: Pointer): Int64; external name 'strlen';
+    function LenB(const S: string): Integer;
+    begin
+      Result := Integer(_strlenA(PChar(S)))
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseDupExt;
+    uses DupExtA, DupExtB;
+    begin
+      WriteLn(LenA('abc') + LenB('defgh'))
+    end.
+    ''';
+var
+  APas, BPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  APas    := FScratch + '/DupExtA.pas';
+  BPas    := FScratch + '/DupExtB.pas';
+  ProgPas := FScratch + '/use_dupext.pas';
+  ProgBin := FScratch + '/use_dupext';
+
+  WriteFile(APas, UnitASrc);
+  WriteFile(BPas, UnitBSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  { Single invocation: both units are picked up off the unit path and
+    compiled alongside the program. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(use_dupext) exit code 0' + #10 + Captured, 0, Rc);
+  AssertTrue('use_dupext exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_dupext exit code', 0, Rc);
+  AssertEquals('use_dupext stdout', '8' + #10, Captured)
 end;
 
 initialization
