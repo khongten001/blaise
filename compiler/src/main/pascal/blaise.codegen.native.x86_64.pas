@@ -12269,8 +12269,16 @@ begin
       end
       else
         Self.EmitExprToEax(Arg);        { buffer at %rsp, pointer in %rax }
+      { The buffer (RecArgBufBytes, 16-aligned) plus the 8-byte saved pointer
+        would leave the hoist region 8 bytes off 16-alignment.  Reserve a
+        16-byte slot for the pointer (push + 8-byte pad) so the total stays a
+        multiple of 16 — otherwise a later call in this argument list (or the
+        callee, e.g. a libm routine using `movdqa`) faults on a misaligned %rsp.
+        The pad sits ABOVE the saved pointer, so the reload offset (which uses
+        Result - depth) is unchanged. }
+      Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'pushq %rax');
-      Result := Result + Self.RecArgBufBytes(Arg) + 8;
+      Result := Result + Self.RecArgBufBytes(Arg) + 16;
       ADepths.Add(Result);
       AKinds.Add(akRecCall);
       Continue;

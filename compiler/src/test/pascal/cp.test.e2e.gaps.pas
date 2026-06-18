@@ -82,6 +82,10 @@ type
 
     { Interface-returning call result passed positionally as an arg }
     procedure TestRun_IntfArg_CallResult_AsParam;
+
+    { Record-returning call result passed as a record-by-value arg (the hoist
+      must keep %rsp 16-aligned) }
+    procedure TestRun_RecordCallResult_AsValueArg;
   end;
 
 implementation
@@ -945,6 +949,39 @@ const
     ''';
 begin
   AssertRunsOnAll(Src, '42' + Chr(10), 0);
+end;
+
+procedure TE2EGapTests.TestRun_RecordCallResult_AsValueArg;
+{ A record-returning function's result passed directly as a record-by-value
+  argument to another function — Use(Make(10), 16.0).  The native arg-hoist
+  materialises Make's result into a stack buffer and saves a pointer; that
+  region must stay a multiple of 16 bytes or %rsp drifts off 16-alignment and a
+  later SSE op (here Sqrt) — or a libm routine using movdqa — faults.  This
+  regressed DateAddDays(MakeDate(...), 5). }
+const
+  Src =
+    '''
+    program P;
+    type
+      TR = record
+        A, B, C: Integer;
+      end;
+    function Make(N: Integer): TR;
+    begin
+      Result.A := N; Result.B := N + 1; Result.C := N + 2
+    end;
+    function Use(R: TR; D: Double): Double;
+    begin
+      Result := Sqrt(D) + R.A + R.B + R.C
+    end;
+    var X: Double;
+    begin
+      X := Use(Make(10), 16.0);
+      WriteLn(X)
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '37' + Chr(10), 0);
 end;
 
 initialization

@@ -1148,12 +1148,12 @@ var
   Lines:  TStringList;
 begin
   if not ToolchainAvailable() then begin Fail('<toolchain-missing>'); Exit end;
-  { QBE-only for now: native segfaults when a record-returning (sret) function
-    receives a record-by-value argument that is itself a record-returning call
-    result, e.g. DateAddDays(MakeDate(...), 5).  EmitSretCall mishandles the
-    record-value argument in that nested shape (the non-nested form works).
-    Tracked in bugs.txt; the rest of this suite runs on both backends. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(SrcDateAddDays, Output, RCode));
+  { Dual-backend again: the native segfault on DateAddDays(MakeDate(...), 5) was
+    a stack-alignment bug in the record-call-argument hoist (buffer 16 + 8-byte
+    saved pointer = 24, leaving %rsp 8 off 16-alignment), which only faulted once
+    the callee chain reached a movdqa (libm mktime).  Fixed by padding the hoist
+    region to a 16-byte multiple. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcDateAddDays, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   Lines := TStringList.Create();
   try
