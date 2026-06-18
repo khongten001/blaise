@@ -79,6 +79,9 @@ type
     procedure TestRun_IntfSret_SixArgs_DirectClassCall;
     procedure TestRun_IntfSret_SixArgs_InterfaceDispatch;
     procedure TestRun_IntfSret_SevenArgs_InterfaceDispatch;
+
+    { Interface-returning call result passed positionally as an arg }
+    procedure TestRun_IntfArg_CallResult_AsParam;
   end;
 
 implementation
@@ -905,6 +908,43 @@ const
     ''';
 begin
   AssertRunsOnAll(Src, '28' + Chr(10), 0);
+end;
+
+procedure TE2EGapTests.TestRun_IntfArg_CallResult_AsParam;
+{ Passing an interface-returning function's result directly as an interface
+  argument (Show(MakeFoo(42))) — native previously raised "unsupported
+  interface argument expression" for this positional call-result form. }
+const
+  Src =
+    '''
+    program P;
+    type
+      IFoo = interface
+        function Val: Integer;
+      end;
+      TFoo = class(TObject, IFoo)
+        FN: Integer;
+        function Val: Integer;
+      end;
+    function TFoo.Val: Integer;
+    begin Result := FN end;
+    function MakeFoo(N: Integer): IFoo;
+    var F: TFoo;
+    begin
+      F := TFoo.Create();
+      F.FN := N;
+      Result := F
+    end;
+    procedure Show(F: IFoo);
+    begin
+      WriteLn(F.Val())
+    end;
+    begin
+      Show(MakeFoo(42))
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '42' + Chr(10), 0);
 end;
 
 initialization

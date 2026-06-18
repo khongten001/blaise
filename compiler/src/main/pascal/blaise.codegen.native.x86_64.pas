@@ -7848,6 +7848,25 @@ begin
       Self.Emit(#9'pushq %rax');         { push obj }
       Self.Emit(#9'pushq %rcx');         { push itab }
     end
+    else if ((AArg is TFuncCallExpr) or (AArg is TMethodCallExpr)) and
+            (AArg.ResolvedType <> nil) and
+            (AArg.ResolvedType.Kind = tyInterface) then
+    begin
+      { Interface-returning call result passed positionally, e.g.
+        Show(MakeFoo(42)).  EmitIntfSretCall leaves the owned (+1) fat pointer
+        at (%rsp): obj at 0, itab at 8.  Load both halves and push in the
+        arg-slot order (obj first, itab on top), then drop the sret buffer.
+        The pushed obj keeps the +1 ref; the callee borrows it for the call. }
+      if AArg is TFuncCallExpr then
+        Self.EmitIntfSretCall(TFuncCallExpr(AArg))
+      else
+        Self.EmitIntfSretMethodCall(TMethodCallExpr(AArg));
+      Self.Emit(#9'movq (%rsp), %rax');   { obj }
+      Self.Emit(#9'movq 8(%rsp), %rcx');  { itab }
+      Self.Emit(#9'addq $16, %rsp');      { drop the sret buffer }
+      Self.Emit(#9'pushq %rax');          { push obj }
+      Self.Emit(#9'pushq %rcx');          { push itab }
+    end
     else
       raise ENativeCodeGenError.Create(
         'native backend: unsupported interface argument expression');
