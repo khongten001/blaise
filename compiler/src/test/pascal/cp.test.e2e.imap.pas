@@ -515,15 +515,13 @@ const
     ''';
 
 procedure TE2EIMapTests.TestRun_StaticArrayOfInterface_FatPointer;
-var
-  Output: string;
-  RCode:  Integer;
 begin
   if not ToolchainAvailable() then begin Fail('<toolchain-missing>'); Exit end;
-  AssertTrue('compile+run', CompileAndRun(SrcStaticArrIface, Output, RCode));
-  AssertEquals('exit 0', 0, RCode);
-  AssertTrue('output: ' + Output,
-    Pos('11' + #10 + '22' + #10 + '22' + #10 + '11' + #10 + '11', Output) >= 0);
+  { Both backends now: native gained interface static-array element store, read
+    and dispatch (the fat pointer is contiguous obj/itab; see
+    EmitIntfStaticElemAddr). }
+  AssertRunsOnAll(SrcStaticArrIface,
+    '11' + #10 + '22' + #10 + '22' + #10 + '11' + #10 + '11' + #10, 0);
 end;
 
 const

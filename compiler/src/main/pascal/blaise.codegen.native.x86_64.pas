@@ -328,6 +328,9 @@ type
       a nested receiver expression (FA.Base).  ADstReg must be free to clobber;
       callers that need it across calls pick a callee-saved register. }
     procedure EmitInterfaceFieldAddr(AFA: TFieldAccessExpr; const ADstReg: string);
+    { Leave the address of an interface element of a static array in ADstReg. }
+    procedure EmitIntfStaticElemAddr(ASub: TStringSubscriptExpr;
+                                     const ADstReg: string);
     { True when AMethName resolves to an abstract slot on ARec (the itab entry
       must then point at _AbstractMethodError). }
     function IsAbstractClassMethod(ARec: TRecordTypeDesc;
@@ -2202,6 +2205,14 @@ begin
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
   end
+  else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) then
+  begin
+    { Static-array interface element receiver (Arr[I].M()): the element is a
+      contiguous fat pointer (obj at the element address, itab at +8). }
+    Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AObjExpr), '%r10');
+    Self.Emit(#9'movq 8(%r10), %rax');   { itab }
+    Self.Emit(#9'movq (%r10), %r10');    { obj }
+  end
   else if AIsVarParam then
   begin
     { var/out interface param receiver: the slot holds the address of the
@@ -2964,6 +2975,32 @@ begin
     Exit;
   end;
 
+  { F := Arr[I] where the RHS is an interface element of a static array.  The
+    element is a contiguous fat pointer (obj at the element address, itab at +8)
+    — compute the element address into %r15 and copy obj+itab with ARC, mirroring
+    the field-access case above. }
+  if (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
+     (AAsgn.Expr is TStringSubscriptExpr) then
+  begin
+    Self.Emit(#9'pushq %r15');
+    Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AAsgn.Expr), '%r15');
+    Self.Emit(#9'movq 8(%r15), %rax');     { src itab }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq (%r15), %rax');      { src obj }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rdi', [ObjOp]));   { old obj }
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(#9'popq %rax');              { new obj }
+    Self.Emit(Format(#9'movq %%rax, %s', [ObjOp]));
+    Self.Emit(#9'popq %rax');              { itab }
+    Self.Emit(Format(#9'movq %%rax, %s', [ItabOp]));
+    Self.Emit(#9'popq %r15');
+    Exit;
+  end;
+
   { F := FuncReturningInterface() — sret convention: allocate a 16-byte buffer
     on the stack, pass its address as the hidden first arg (%rdi), call the
     function (which writes obj+itab into the buffer), then move the result to
@@ -3100,6 +3137,15 @@ begin
       Self.Emit(#9'movq (%rax), %rcx');
       Self.Emit(#9'pushq %rcx');
     end
+    else if AExpr is TStringSubscriptExpr then
+    begin
+      { Static-array interface element source (Arr[I]): contiguous fat pointer. }
+      Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AExpr), '%rax');
+      Self.Emit(#9'movq 8(%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { itab }
+      Self.Emit(#9'movq (%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { obj on top }
+    end
     else if (AExpr is TFuncCallExpr) and
             (TFuncCallExpr(AExpr).ResolvedDecl <> nil) then
     begin
@@ -3178,6 +3224,46 @@ begin
   { Add the field offset to reach the fat pointer's obj slot. }
   if AFA.FieldInfo.Offset > 0 then
     Self.Emit(Format(#9'addq $%d, %s', [AFA.FieldInfo.Offset, ADstReg]));
+end;
+
+procedure TX86_64Backend.EmitIntfStaticElemAddr(ASub: TStringSubscriptExpr;
+  const ADstReg: string);
+{ Leave the address of an interface element of a static array (the contiguous
+  obj/itab fat pointer) in ADstReg.  Computes base + (idx - LowBound) * 16.
+  The element-address arithmetic clobbers %rax/%rcx, so ADstReg should be a
+  callee-saved register (e.g. %r15) when it must survive subsequent ARC calls. }
+var
+  SAT: TStaticArrayTypeDesc;
+begin
+  SAT := TStaticArrayTypeDesc(ASub.StrExpr.ResolvedType);
+  Self.EmitExprToEax(ASub.IndexExpr);          { index -> %rax }
+  if SAT.LowBound <> 0 then
+    Self.Emit(Format(#9'subq $%d, %%rax', [SAT.LowBound]));
+  Self.Emit(Format(#9'imulq $%d, %%rax', [SAT.ElementType.RawSize()]));
+  { Base address of the array's inline storage into %rcx. }
+  if (ASub.StrExpr is TIdentExpr) and
+     TIdentExpr(ASub.StrExpr).IsImplicitSelf and
+     (TIdentExpr(ASub.StrExpr).ImplicitFieldInfo <> nil) then
+  begin
+    { Static-array field of Self: inline storage at Self + field offset. }
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('Self')]));
+    if TFieldInfo(TIdentExpr(ASub.StrExpr).ImplicitFieldInfo).Offset > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rcx',
+        [TFieldInfo(TIdentExpr(ASub.StrExpr).ImplicitFieldInfo).Offset]));
+  end
+  else if ASub.StrExpr is TIdentExpr then
+  begin
+    if Self.IsLocal(TIdentExpr(ASub.StrExpr).Name) then
+      Self.Emit(Format(#9'leaq %s, %%rcx',
+        [Self.VarOperand(TIdentExpr(ASub.StrExpr).Name)]))
+    else
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [TIdentExpr(ASub.StrExpr).Name]));
+  end
+  else
+    raise ENativeCodeGenError.Create(
+      'native backend: unsupported interface static-array base expression');
+  Self.Emit(Format(#9'addq %%rax, %%rcx', []));
+  Self.Emit(Format(#9'movq %%rcx, %s', [ADstReg]));
 end;
 
 procedure TX86_64Backend.EmitClassMethods(ATypeDecls: TObjectList;
@@ -11740,6 +11826,41 @@ begin
       raise ENativeCodeGenError.Create(
         'native backend: static subscript assign on non-static-array');
     DAElemType := TStaticArrayTypeDesc(SSA.ResolvedArrayType).ElementType;
+    { Interface element write (Arr[I] := V): the element is a contiguous 16-byte
+      fat pointer (obj at +0, itab at +8).  A plain EmitStoreVar would store only
+      the 8-byte obj and leave the itab garbage, so a later dispatch/read faults.
+      Compute the element address into a callee-saved register (it must survive
+      the helper's ARC calls) and delegate to EmitInterfaceToFieldSlotsAt, which
+      stores obj+itab with ARC for nil / class-instance / interface sources. }
+    if DAElemType.Kind = tyInterface then
+    begin
+      Self.Emit(#9'pushq %r14');
+      { Build a TStringSubscriptExpr-equivalent address: reuse the SSA fields.
+        EmitIntfStaticElemAddr expects StrExpr/IndexExpr, but here the array is
+        named by SSA — compute the element address inline (base + idx*16). }
+      Self.EmitExprToEax(SSA.IndexExpr);
+      if TStaticArrayTypeDesc(SSA.ResolvedArrayType).LowBound <> 0 then
+        Self.Emit(Format(#9'subq $%d, %%rax',
+          [TStaticArrayTypeDesc(SSA.ResolvedArrayType).LowBound]));
+      Self.Emit(Format(#9'imulq $%d, %%rax', [DAElemType.RawSize()]));
+      if SSA.IsImplicitSelf then
+      begin
+        Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand('Self')]));
+        if SSA.ImplicitFieldInfo.Offset > 0 then
+          Self.Emit(Format(#9'addq $%d, %%r14', [SSA.ImplicitFieldInfo.Offset]));
+      end
+      else if SSA.IsVarParam or
+              (FSretFunc and SameText(SSA.ArrayName, 'Result')) then
+        Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand(SSA.ArrayName)]))
+      else if Self.IsLocal(SSA.ArrayName) then
+        Self.Emit(Format(#9'leaq %s, %%r14', [Self.VarOperand(SSA.ArrayName)]))
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%r14', [SSA.ArrayName]));
+      Self.Emit(#9'addq %rax, %r14');          { %r14 = element address }
+      Self.EmitInterfaceToFieldSlotsAt(SSA.ValueExpr, '%r14', 0, DAElemType);
+      Self.Emit(#9'popq %r14');
+      Exit;
+    end;
     { Record-returning call RHS: sret directly into the element (see the
       dyn-array branch above). }
     if (DAElemType.Kind = tyRecord) and Self.IsNativeRecordCall(SSA.ValueExpr) then
