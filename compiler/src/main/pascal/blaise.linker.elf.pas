@@ -8,9 +8,9 @@
 
 unit blaise.linker.elf;
 
-{ Internal ELF linker — section merging (Phase A) plus symbol
-  resolution, static relocations, and non-PIE ET_EXEC emission
-  (Phase B of docs/internal-linker-design.adoc).
+{ Internal ELF linker — section merging, symbol resolution, static
+  and dynamic relocations, and executable emission (Phases A–C of
+  docs/internal-linker-design.adoc).
 
   Phase A — TSectionMerger concatenates like-named allocatable
   sections from a set of parsed input objects, padding each
@@ -27,22 +27,23 @@ unit blaise.linker.elf;
   itself.  Non-alloc .opdf.* debug sections ARE kept: they must ride
   through into the final executable for the OPDF debugger.
 
-  Phase B — TLinker takes a set of parsed objects, merges their
-  sections, assigns virtual addresses at a fixed base (non-PIE
-  ET_EXEC, no GOT/PLT, no dynamic linking), builds a global symbol
-  table, resolves intra-program PC-relative relocations
+  Phase B — TLinker in static mode takes a set of parsed objects,
+  merges their sections, assigns virtual addresses at a fixed base
+  (non-PIE ET_EXEC, no GOT/PLT, no dynamic linking), builds a global
+  symbol table, resolves intra-program PC-relative relocations
   (R_X86_64_PC32, R_X86_64_PLT32), and writes a runnable executable.
-  This is the standalone-program path of the design: every real
-  Blaise program reaches libc through the RTL and needs Phase C's
-  dynamic linker, but a hand-written object that talks to the kernel
-  through raw syscalls links and runs with Phase B alone.
+  This is the standalone-program path of the design: a hand-written
+  object that talks to the kernel through raw syscalls links and runs
+  with Phase B alone.
 
-  Relocation types that require dynamic linking (R_X86_64_64 in a
-  PIE, GOT/PLT/TLS forms) and absolute 32-bit symbol references
-  (R_X86_64_32 / R_X86_64_32S, which a static ET_EXEC could in
-  principle take but the native backend does not emit for symbol
-  references) are rejected with a diagnostic — they belong to later
-  phases or are codegen bugs. }
+  Phase C — TLinker in dynamic mode (SetDynamic(True)) produces a
+  PIE (ET_DYN) executable linked against libc.  It reads CRT startup
+  objects, generates GOT/PLT for undefined (libc) symbols, emits
+  .dynamic/.dynsym/.dynstr/.hash sections, resolves R_X86_64_64 as
+  R_X86_64_RELATIVE in .rela.dyn, handles R_X86_64_TPOFF32 for TLS,
+  and merges .init_array/.fini_array from CRT objects.  The entry
+  point is _start (from Scrt1.o), which calls __libc_start_main with
+  main as the program's entry. }
 
 interface
 
@@ -137,12 +138,41 @@ type
     IsWeakSlot: Boolean;   { defined only by a STB_WEAK symbol so far }
   end;
 
-  { Phase B linker: merge → layout → resolve symbols → relocate →
-    emit a non-PIE ET_EXEC.  One instance links one executable.
+  { A pending runtime relocation for .rela.dyn (R_X86_64_RELATIVE). }
+  TRelaDynEntry = class
+  public
+    VAddr:  Int64;   { virtual address to patch at load time }
+    Addend: Int64;   { absolute target address (base-relative) }
+  end;
 
-    Lifecycle: AddObject* for each input, then Link(entry, output).
-    The merger, layout addresses, symbol table and patched section
-    bytes are all owned by the linker and freed with it. }
+  { A PLT/GOT slot for one external (libc) symbol. }
+  TPltEntry = class
+  public
+    Name:       string;    { symbol name (e.g. 'write') }
+    DynSymIdx:  Integer;   { index in .dynsym (set during BuildDynamic) }
+    GotOffset:  Integer;   { byte offset within .got for this slot }
+    PltOffset:  Integer;   { byte offset within .plt for this stub }
+  end;
+
+  { A non-PLT GOT slot for GOTPCREL references to locally-defined or
+    weak-undefined symbols (e.g. __dso_handle, __gmon_start__). }
+  TGotSlot = class
+  public
+    Name:      string;
+    GotOffset: Integer;
+    Value:     Int64;     { resolved absolute address (0 for weak-undef) }
+  end;
+
+  { Linker: merge → layout → resolve symbols → relocate → emit.
+
+    In static mode (default): non-PIE ET_EXEC, PC-relative relocations
+    only, no dynamic linker.
+
+    In dynamic mode (SetDynamic(True)): PIE ET_DYN, GOT/PLT for
+    external symbols, .dynamic/.dynsym/.dynstr/.hash, R_X86_64_64 →
+    R_X86_64_RELATIVE, TLS (R_X86_64_TPOFF32), CRT startup objects.
+
+    Lifecycle: SetDynamic, AddObject* for each input, then Link. }
   TLinker = class
   private
     FTarget:   TLinkTarget;
@@ -154,6 +184,41 @@ type
     FSecAddr:  TList<TMergedSection>;   { merged sections, in layout order }
     FAddrOf:   TList<Int64>;            { virtual base addr per FSecAddr entry }
     FEntry:    Int64;
+    FDynamic:  Boolean;
+
+    { Phase C dynamic linking state }
+    FPltEntries:  TList<TPltEntry>;     { external symbols needing PLT }
+    FGotSlots:    TList<TGotSlot>;      { non-PLT GOT slots }
+    FRelaDyn:     TList<TRelaDynEntry>; { R_X86_64_RELATIVE entries }
+    FDynSymNames: TList<string>;        { .dynsym name list }
+    FDynStrTab:   string;               { .dynstr contents }
+    FDynSymTab:   string;               { .dynsym contents }
+    FHashTab:     string;               { .hash (SysV) contents }
+    FPltCode:     string;               { .plt section bytes }
+    FGotData:     string;               { .got section bytes }
+    FRelaPlt:     string;               { .rela.plt contents }
+    FRelaDynData: string;               { .rela.dyn contents }
+    FDynamicData: string;               { .dynamic section contents }
+    FInterpData:  string;               { .interp contents }
+    FTlsSize:     Int64;                { total TLS block size }
+    FTlsAlign:    Int64;                { TLS block alignment }
+    FTlsFileSize: Int64;                { .tdata file size }
+
+    { Section virtual addresses for dynamic linking (set during layout) }
+    FInterpAddr:    Int64;
+    FHashAddr:      Int64;
+    FDynSymAddr:    Int64;
+    FDynStrAddr:    Int64;
+    FRelaDynAddr:   Int64;
+    FRelaPltAddr:   Int64;
+    FPltAddr:       Int64;
+    FGotAddr:       Int64;
+    FDynamicAddr:   Int64;
+    FInitArrayAddr: Int64;
+    FInitArraySize: Int64;
+    FFiniArrayAddr: Int64;
+    FFiniArraySize: Int64;
+    FTlsAddr:       Int64;
 
     function MergedAddr(AMerged: TMergedSection): Int64;
     function SectionOfPlacement(AObjIdx, ASecIdx: Integer): TMergedSection;
@@ -169,20 +234,38 @@ type
     function ResolveSymbolAddr(AObj: TElfObjectFile; ASymIdx: Integer;
       const AContext: string): Int64;
     function EmitExecutable(AEntry: Int64): string;
+
+    { Phase C methods }
+    procedure CollectExternals;
+    procedure CollectGotSlots;
+    function CountRelativeRelocs: Integer;
+    function FindPltEntry(const AName: string): TPltEntry;
+    function FindOrCreateGotSlot(const AName: string): TGotSlot;
+    procedure BuildDynamic;
+    procedure LayoutDynamic;
+    function EmitDynExecutable(AEntry: Int64): string;
   public
     constructor Create; overload;
     constructor Create(ATarget: TLinkTarget); overload;  { borrows target }
     destructor Destroy; override;
+
+    { Enable dynamic linking mode (PIE, GOT/PLT, libc). }
+    procedure SetDynamic(AEnabled: Boolean);
 
     { Add a parsed object the caller owns (not freed by the linker). }
     procedure AddObject(AObj: TElfObjectFile);
     { Add an object the linker takes ownership of and frees. }
     procedure AddOwnedObject(AObj: TElfObjectFile);
 
-    { Merge, lay out, resolve, relocate and write an ET_EXEC whose
-      entry point is the symbol AEntryName.  Raises ELinker on any
-      unresolved symbol, duplicate definition, or unsupported
-      relocation. }
+    { Add a system CRT object file by path (linker takes ownership). }
+    procedure AddCrtObject(const APath: string);
+    { Add all members of a static archive (linker takes ownership). }
+    procedure AddArchive(const APath: string);
+
+    { Merge, lay out, resolve, relocate and write an executable.
+      In static mode: ET_EXEC; in dynamic mode: PIE ET_DYN.
+      Raises ELinker on unresolved symbol, duplicate definition,
+      or unsupported relocation. }
     procedure Link(const AEntryName, AOutputPath: string);
 
     { Same pipeline, returning the executable bytes instead of writing
@@ -199,6 +282,7 @@ type
     function FindMergedText: TMergedSection;
 
     property Target: TLinkTarget read FTarget;
+    property Dynamic: Boolean read FDynamic;
   end;
 
 { Mark a file user+group+other readable/executable (0755).  Used to
@@ -373,21 +457,65 @@ begin
   Result := nil;
 end;
 
-{ ---- ELF executable constants (Phase B) ------------------------------- }
+{ ---- ELF executable constants ----------------------------------------- }
 
 const
   ET_EXEC = 2;
+  ET_DYN  = 3;
   EM_386  = 3;
 
   ELFOSABI_SYSV    = 0;
   ELFOSABI_FREEBSD = 9;
 
-  PT_LOAD   = 1;
+  PT_LOAD    = 1;
+  PT_DYNAMIC = 2;
+  PT_INTERP  = 3;
+  PT_TLS     = 7;
+  PT_PHDR      = 6;
+  PT_GNU_STACK = $6474E551;
+  PT_GNU_RELRO = $6474E552;
+
   PF_X = 1;
   PF_W = 2;
   PF_R = 4;
 
   EI_NIDENT = 16;
+
+  { Dynamic section tag values }
+  DT_NULL       = 0;
+  DT_NEEDED     = 1;
+  DT_PLTRELSZ   = 2;
+  DT_PLTGOT     = 3;
+  DT_HASH       = 4;
+  DT_STRTAB     = 5;
+  DT_SYMTAB     = 6;
+  DT_RELA       = 7;
+  DT_RELASZ     = 8;
+  DT_RELAENT    = 9;
+  DT_STRSZ      = 10;
+  DT_SYMENT     = 11;
+  DT_INIT       = 12;
+  DT_FINI       = 13;
+  DT_INIT_ARRAY    = 25;
+  DT_FINI_ARRAY    = 26;
+  DT_INIT_ARRAYSZ  = 27;
+  DT_FINI_ARRAYSZ  = 28;
+  DT_FLAGS      = 30;
+  DT_FLAGS_1    = $6FFFFFFB;
+  DT_PLTREL     = 20;
+  DT_JMPREL     = 23;
+  DT_RELACOUNT  = $6FFFFFF9;
+  DT_DEBUG      = 21;
+
+  DF_1_PIE = $08000000;
+
+  R_X86_64_RELATIVE   = 8;
+  R_X86_64_JUMP_SLOT  = 7;
+  R_X86_64_GLOB_DAT   = 6;
+
+  PLT_ENTRY_SIZE = 16;
+  PLT_HEADER_SIZE = 16;
+  DYN_MAX_ENTRIES = 24;   { upper bound on .dynamic tag entries }
 
 { ---- Little-endian byte writers --------------------------------------- }
 
@@ -424,6 +552,24 @@ end;
 procedure LkPatch32(var ABuf: string; AOff: Integer; AVal: Int64);
 begin
   LkCopyInto(ABuf, AOff, LkLE(AVal, 4));
+end;
+
+{ Patch a 64-bit LE value at AOff. }
+procedure LkPatch64(var ABuf: string; AOff: Integer; AVal: Int64);
+begin
+  LkCopyInto(ABuf, AOff, LkLE(AVal, 8));
+end;
+
+{ Add a NUL-terminated string to a string table; return its offset. }
+function LkAddStr(var ATab: string; const AStr: string): Integer;
+begin
+  if AStr = '' then
+  begin
+    Result := 0;
+    Exit;
+  end;
+  Result := Length(ATab);
+  ATab := ATab + AStr + Chr(0);
 end;
 
 { ---- chmod binding ----------------------------------------------------- }
@@ -469,6 +615,7 @@ begin
   inherited Create();
   FTarget := ATarget;
   FOwnTarget := False;
+  FDynamic := False;
   FObjects := TList<TElfObjectFile>.Create();
   FOwned := TList<TElfObjectFile>.Create();
   FMerger := TSectionMerger.Create();
@@ -476,12 +623,38 @@ begin
   FSecAddr := TList<TMergedSection>.Create();
   FAddrOf := TList<Int64>.Create();
   FEntry := 0;
+  FPltEntries := TList<TPltEntry>.Create();
+  FGotSlots := TList<TGotSlot>.Create();
+  FRelaDyn := TList<TRelaDynEntry>.Create();
+  FDynSymNames := TList<string>.Create();
+  FDynStrTab := '';
+  FDynSymTab := '';
+  FHashTab := '';
+  FPltCode := '';
+  FGotData := '';
+  FRelaPlt := '';
+  FRelaDynData := '';
+  FDynamicData := '';
+  FInterpData := '';
+  FTlsSize := 0;
+  FTlsAlign := 0;
+  FTlsFileSize := 0;
 end;
 
 destructor TLinker.Destroy;
 var
   I: Integer;
 begin
+  for I := 0 to FPltEntries.Count - 1 do
+    FPltEntries.Get(I).Free();
+  FPltEntries.Free();
+  for I := 0 to FGotSlots.Count - 1 do
+    FGotSlots.Get(I).Free();
+  FGotSlots.Free();
+  for I := 0 to FRelaDyn.Count - 1 do
+    FRelaDyn.Get(I).Free();
+  FRelaDyn.Free();
+  FDynSymNames.Free();
   for I := 0 to FSymbols.Count - 1 do
     FSymbols.Get(I).Free();
   FSymbols.Free();
@@ -507,6 +680,42 @@ procedure TLinker.AddOwnedObject(AObj: TElfObjectFile);
 begin
   FOwned.Add(AObj);
   Self.AddObject(AObj);
+end;
+
+procedure TLinker.SetDynamic(AEnabled: Boolean);
+begin
+  FDynamic := AEnabled;
+end;
+
+procedure TLinker.AddCrtObject(const APath: string);
+var
+  Obj: TElfObjectFile;
+begin
+  Obj := ReadElfObjectFile(APath);
+  Self.AddOwnedObject(Obj);
+end;
+
+procedure TLinker.AddArchive(const APath: string);
+var
+  Members: TList<TArchiveMember>;
+  M: TArchiveMember;
+  Obj: TElfObjectFile;
+  I: Integer;
+begin
+  Members := TList<TArchiveMember>.Create();
+  try
+    ReadArchiveFile(APath, Members);
+    for I := 0 to Members.Count - 1 do
+    begin
+      M := Members.Get(I);
+      Obj := ParseElfObject(M.Data, APath + '(' + M.Name + ')');
+      Self.AddOwnedObject(Obj);
+    end;
+  finally
+    for I := 0 to Members.Count - 1 do
+      Members.Get(I).Free();
+    Members.Free();
+  end;
 end;
 
 { Virtual base address assigned to a merged section, or -1 if it was
@@ -765,6 +974,573 @@ begin
   Self.AddSynthSymbol('__TMC_END__', BssEnd);
 end;
 
+{ ---- Phase C: dynamic linking ----------------------------------------- }
+
+{ Scan all objects for undefined symbols that have no definition in
+  any object.  Each such symbol becomes a PLT entry (for function
+  calls via the dynamic linker).  Does not require BuildSymbols —
+  scans raw object symbol tables directly. }
+procedure TLinker.CollectExternals;
+var
+  Oi, Si, Di, Dsi: Integer;
+  Obj, DefObj: TElfObjectFile;
+  Sym, DefSym: TRdSymbol;
+  PE: TPltEntry;
+  Seen: TDictionary<string, Boolean>;
+  Dummy: Boolean;
+  Found: Boolean;
+begin
+  Seen := TDictionary<string, Boolean>.Create();
+  try
+    for Oi := 0 to FObjects.Count - 1 do
+    begin
+      Obj := FObjects.Get(Oi);
+      for Si := 0 to Obj.Symbols.Count - 1 do
+      begin
+        Sym := Obj.Symbols.Get(Si);
+        if Sym.Shndx <> SHN_UNDEF then Continue;
+        if Sym.Name = '' then Continue;
+        if Sym.Bind = STB_LOCAL then Continue;
+        if Seen.TryGetValue(Sym.Name, Dummy) then Continue;
+        Seen.Add(Sym.Name, True);
+
+        { Skip linker-synthesised symbols. }
+        if (Sym.Name = '_GLOBAL_OFFSET_TABLE_') or
+           (Sym.Name = '__bss_start') or
+           (Sym.Name = '_edata') or
+           (Sym.Name = '_end') or
+           (Sym.Name = '__TMC_END__') then
+          Continue;
+
+        { Check if any object defines this symbol. }
+        Found := False;
+        for Di := 0 to FObjects.Count - 1 do
+        begin
+          DefObj := FObjects.Get(Di);
+          for Dsi := 0 to DefObj.Symbols.Count - 1 do
+          begin
+            DefSym := DefObj.Symbols.Get(Dsi);
+            if (DefSym.Name = Sym.Name) and (DefSym.Shndx <> SHN_UNDEF)
+               and (DefSym.Shndx <> SHN_COMMON) then
+            begin
+              Found := True;
+              Break;
+            end;
+          end;
+          if Found then Break;
+        end;
+        if Found then Continue;
+
+        { Weak undefined symbols without a definition resolve to 0;
+          they do not need a PLT entry. }
+        if Sym.Bind = STB_WEAK then
+          Continue;
+
+        PE := TPltEntry.Create();
+        PE.Name := Sym.Name;
+        PE.DynSymIdx := 0;
+        PE.GotOffset := 0;
+        PE.PltOffset := 0;
+        FPltEntries.Add(PE);
+      end;
+    end;
+  finally
+    Seen.Free();
+  end;
+end;
+
+function TLinker.FindPltEntry(const AName: string): TPltEntry;
+var
+  I: Integer;
+begin
+  for I := 0 to FPltEntries.Count - 1 do
+    if FPltEntries.Get(I).Name = AName then
+    begin
+      Result := FPltEntries.Get(I);
+      Exit;
+    end;
+  Result := nil;
+end;
+
+function TLinker.FindOrCreateGotSlot(const AName: string): TGotSlot;
+var
+  I: Integer;
+  GS: TGotSlot;
+begin
+  for I := 0 to FGotSlots.Count - 1 do
+    if FGotSlots.Get(I).Name = AName then
+    begin
+      Result := FGotSlots.Get(I);
+      Exit;
+    end;
+  GS := TGotSlot.Create();
+  GS.Name := AName;
+  GS.GotOffset := 0;
+  GS.Value := 0;
+  FGotSlots.Add(GS);
+  Result := GS;
+end;
+
+{ Scan all objects for GOTPCREL/REX_GOTPCRELX relocations against symbols
+  that are NOT external (no PLT entry).  Each such symbol needs a GOT
+  slot so GOTPCREL can resolve through it.  Called after CollectExternals. }
+procedure TLinker.CollectGotSlots;
+var
+  Oi, Ri: Integer;
+  Obj: TElfObjectFile;
+  Rel: TRdReloc;
+  Sym: TRdSymbol;
+begin
+  for Oi := 0 to FObjects.Count - 1 do
+  begin
+    Obj := FObjects.Get(Oi);
+    for Ri := 0 to Obj.Relocs.Count - 1 do
+    begin
+      Rel := Obj.Relocs.Get(Ri);
+      if (Rel.RelocType <> R_X86_64_GOTPCREL) and
+         (Rel.RelocType <> R_X86_64_GOTPCRELX) and
+         (Rel.RelocType <> R_X86_64_REX_GOTPCRELX) then Continue;
+      Sym := Obj.Symbols.Get(Rel.SymIndex);
+      if Sym.Name = '' then Continue;
+      if Self.FindPltEntry(Sym.Name) <> nil then Continue;
+      Self.FindOrCreateGotSlot(Sym.Name);
+    end;
+  end;
+end;
+
+{ Count how many R_X86_64_64 relocations exist across all objects
+  (each becomes an R_X86_64_RELATIVE in .rela.dyn), plus non-PLT GOT
+  slots that will need RELATIVE entries.  Used to reserve space for
+  .rela.dyn before layout. }
+function TLinker.CountRelativeRelocs: Integer;
+var
+  Oi, Ri: Integer;
+  Obj: TElfObjectFile;
+  Rel: TRdReloc;
+begin
+  Result := 0;
+  for Oi := 0 to FObjects.Count - 1 do
+  begin
+    Obj := FObjects.Get(Oi);
+    for Ri := 0 to Obj.Relocs.Count - 1 do
+    begin
+      Rel := Obj.Relocs.Get(Ri);
+      if Rel.RelocType = R_X86_64_64 then
+        Result := Result + 1;
+    end;
+  end;
+  Result := Result + FGotSlots.Count;
+end;
+
+{ Build the dynamic linking tables: .dynsym, .dynstr, .hash, .plt,
+  .got, .rela.plt, .rela.dyn, .dynamic, .interp.
+
+  The PLT uses the x86-64 lazy binding scheme:
+    PLT[0] — resolver stub (pushes linkmap, jumps to _dl_runtime_resolve)
+    PLT[n] — per-symbol stub (pushes reloc index, jumps to PLT[0])
+  Each PLT entry has a corresponding GOT entry initialised to point
+  at the second instruction of the PLT stub (push + jmp).
+
+  GOT layout:
+    GOT[0] = .dynamic address (filled by ld.so)
+    GOT[1] = linkmap (filled by ld.so)
+    GOT[2] = _dl_runtime_resolve (filled by ld.so)
+    GOT[3..] = per-PLT-entry slots
+
+  This method is called after BuildSymbols and CollectExternals but
+  before LayoutDynamic, so it builds the data blobs that LayoutDynamic
+  then places at virtual addresses. }
+procedure TLinker.BuildDynamic;
+var
+  I: Integer;
+  PE: TPltEntry;
+  NameOff: Integer;
+  SymInfo: Int64;
+  NumBuckets, Bkt: Integer;
+  HashChain: TList<Integer>;
+  HashBuckets: TList<Integer>;
+  H, J: Integer;
+  RInfo: Int64;
+begin
+  FInterpData := '/lib64/ld-linux-x86-64.so.2' + Chr(0);
+
+  { .dynstr: NUL byte at [0], then 'libc.so.6' at [1]. }
+  FDynStrTab := Chr(0);
+  LkAddStr(FDynStrTab, 'libc.so.6');
+
+  { .dynsym: entry 0 is NULL, then one entry per external symbol. }
+  FDynSymTab := LkZeros(ELF64_SYM_SIZE);
+  FDynSymNames.Add('');
+
+  for I := 0 to FPltEntries.Count - 1 do
+  begin
+    PE := FPltEntries.Get(I);
+    PE.DynSymIdx := I + 1;
+    NameOff := LkAddStr(FDynStrTab, PE.Name);
+    FDynSymNames.Add(PE.Name);
+    SymInfo := (Int64(STB_GLOBAL) shl 4) or Int64(STT_FUNC);
+    FDynSymTab := FDynSymTab + LkLE(NameOff, 4);
+    FDynSymTab := FDynSymTab + Chr(Integer(SymInfo) and $FF);
+    FDynSymTab := FDynSymTab + Chr(0);
+    FDynSymTab := FDynSymTab + LkLE(SHN_UNDEF, 2);
+    FDynSymTab := FDynSymTab + LkLE(0, 8);
+    FDynSymTab := FDynSymTab + LkLE(0, 8);
+  end;
+
+  { SysV .hash: nbucket, nchain, buckets[], chains[].
+    Simple hash: sum of bytes mod nbucket. }
+  NumBuckets := FPltEntries.Count;
+  if NumBuckets < 1 then NumBuckets := 1;
+
+  HashBuckets := TList<Integer>.Create();
+  HashChain := TList<Integer>.Create();
+  try
+    for I := 0 to NumBuckets - 1 do
+      HashBuckets.Add(0);
+    for I := 0 to FDynSymNames.Count - 1 do
+      HashChain.Add(0);
+
+    for I := 1 to FDynSymNames.Count - 1 do
+    begin
+      H := 0;
+      for J := 0 to Length(FDynSymNames.Get(I)) - 1 do
+        H := ((H shl 4) + Ord(FDynSymNames.Get(I)[J])) and $0FFFFFFF;
+      Bkt := H mod NumBuckets;
+      HashChain.SetItem(I, HashBuckets.Get(Bkt));
+      HashBuckets.SetItem(Bkt, I);
+    end;
+
+    FHashTab := LkLE(NumBuckets, 4) + LkLE(FDynSymNames.Count, 4);
+    for I := 0 to NumBuckets - 1 do
+      FHashTab := FHashTab + LkLE(HashBuckets.Get(I), 4);
+    for I := 0 to FDynSymNames.Count - 1 do
+      FHashTab := FHashTab + LkLE(HashChain.Get(I), 4);
+  finally
+    HashBuckets.Free();
+    HashChain.Free();
+  end;
+
+  { .got: 3 reserved entries + 1 per PLT entry + 1 per non-PLT GOT slot. }
+  FGotData := LkZeros(8 * (3 + FPltEntries.Count + FGotSlots.Count));
+  for I := 0 to FGotSlots.Count - 1 do
+    FGotSlots.Get(I).GotOffset := (3 + FPltEntries.Count + I) * 8;
+
+  { .plt: header + one stub per entry.
+    PLT header (16 bytes):
+      pushq GOT[1](%rip)
+      jmpq  *GOT[2](%rip)
+      nop; nop; nop; nop
+    PLT[n] (16 bytes):
+      jmpq  *GOT[n+3](%rip)
+      pushq $reloc_index
+      jmpq  PLT[0]
+
+    The RIP-relative offsets are computed in LayoutDynamic after
+    addresses are assigned; we emit placeholder bytes here. }
+  FPltCode := LkZeros(PLT_HEADER_SIZE);
+  for I := 0 to FPltEntries.Count - 1 do
+  begin
+    PE := FPltEntries.Get(I);
+    PE.PltOffset := PLT_HEADER_SIZE + I * PLT_ENTRY_SIZE;
+    PE.GotOffset := (3 + I) * 8;
+    FPltCode := FPltCode + LkZeros(PLT_ENTRY_SIZE);
+  end;
+
+  { .rela.plt: one JUMP_SLOT per PLT entry. }
+  FRelaPlt := '';
+  for I := 0 to FPltEntries.Count - 1 do
+  begin
+    PE := FPltEntries.Get(I);
+    FRelaPlt := FRelaPlt + LkLE(0, 8);
+    RInfo := (Int64(PE.DynSymIdx) shl 32) or R_X86_64_JUMP_SLOT;
+    FRelaPlt := FRelaPlt + LkLE(RInfo, 8);
+    FRelaPlt := FRelaPlt + LkLE(0, 8);
+  end;
+
+  { .rela.dyn: R_X86_64_RELATIVE entries are collected during
+    ApplyRelocations (each R_X86_64_64 becomes one).  We serialise
+    them in LayoutDynamic after addresses are known.
+
+    Also add _GLOBAL_OFFSET_TABLE_ weak references. }
+
+  { .dynamic: built in LayoutDynamic once addresses are assigned. }
+end;
+
+{ Assign virtual addresses for a PIE (ET_DYN) executable.
+
+  Layout (page-aligned segments, 0-based for PIE):
+    PHDR + read-only headers   — PT_LOAD R
+    .interp                     — (inside read-only run)
+    .hash, .dynsym, .dynstr    — (inside read-only run)
+    .rela.dyn, .rela.plt       — (inside read-only run)
+    .text (+ merged .text)     — PT_LOAD R+X
+    .plt                       — (inside executable run)
+    .rodata                    — PT_LOAD R (after text)
+    .init_array, .fini_array   — PT_LOAD R+W (RELRO)
+    .dynamic                   — (inside RELRO)
+    .got                       — (inside RELRO)
+    .data                      — PT_LOAD R+W
+    .bss, .tbss                — (after data, NOBITS)
+
+  For simplicity the initial implementation uses a flat layout:
+  all read-only stuff on one page, executable on next, writable on next.
+  Addresses start at 0 (PIE). }
+procedure TLinker.LayoutDynamic;
+var
+  I, J: Integer;
+  M: TMergedSection;
+  Addr: Int64;
+  PhdrCount: Integer;
+  HdrBytes: Int64;
+  IsAlloc, IsExec, IsWrite: Boolean;
+  PE: TPltEntry;
+  GotRelOff: Int64;
+  PltRelOff: Int64;
+begin
+  { Phase C program-header count: PT_PHDR, PT_INTERP, PT_LOAD x4
+    (read-only, executable, relro, writable), PT_DYNAMIC, PT_TLS,
+    PT_GNU_STACK, PT_GNU_RELRO = 10 max.  Allocate generously. }
+  PhdrCount := 10;
+  HdrBytes := ELF64_EHDR_SIZE + Int64(PhdrCount) * 56;
+
+  { Read-only run: starts after headers. }
+  Addr := LkAlignUp(HdrBytes, 16);
+
+  { .interp }
+  FInterpAddr := Addr;
+  Addr := Addr + Length(FInterpData);
+  Addr := LkAlignUp(Addr, 8);
+
+  { .hash }
+  FHashAddr := Addr;
+  Addr := Addr + Length(FHashTab);
+  Addr := LkAlignUp(Addr, 8);
+
+  { .dynsym }
+  FDynSymAddr := Addr;
+  Addr := Addr + Length(FDynSymTab);
+  Addr := LkAlignUp(Addr, 8);
+
+  { .dynstr }
+  FDynStrAddr := Addr;
+  Addr := Addr + Length(FDynStrTab);
+  Addr := LkAlignUp(Addr, 8);
+
+  { .rela.dyn — reserve space for the pre-counted RELATIVE entries.
+    The actual data is serialised after ApplyRelocations has collected
+    the entries.  The count may overestimate (not every GOT slot ends
+    up needing a RELATIVE), but that is safe — the final data will be
+    <= the reservation and gets padded or fit within the reserved area. }
+  FRelaDynAddr := Addr;
+  FRelaDynData := '';
+  Addr := Addr + Int64(Self.CountRelativeRelocs()) * ELF64_RELA_SIZE;
+  Addr := LkAlignUp(Addr, 8);
+
+  { .rela.plt }
+  FRelaPltAddr := Addr;
+  Addr := Addr + Length(FRelaPlt);
+  Addr := LkAlignUp(Addr, 8);
+
+  { Read-only merged sections (.rodata, .eh_frame, .note.*, etc.)
+    go into the same RO segment as the linker metadata above. }
+  for I := 0 to FMerger.Merged.Count - 1 do
+  begin
+    M := FMerger.Merged.Get(I);
+    IsAlloc := (M.Flags and SHF_ALLOC) <> 0;
+    IsExec  := (M.Flags and SHF_EXECINSTR) <> 0;
+    IsWrite := (M.Flags and SHF_WRITE) <> 0;
+    if IsAlloc and (not IsExec) and (not IsWrite) and
+       ((M.Flags and SHF_TLS) = 0) then
+      Self.PlaceSection(M, Addr);
+  end;
+
+  { Align to page for executable run. }
+  Addr := LkAlignUp(Addr, FTarget.PageSize);
+
+  { Executable sections: .text, .init, .fini. }
+  for I := 0 to FMerger.Merged.Count - 1 do
+  begin
+    M := FMerger.Merged.Get(I);
+    IsAlloc := (M.Flags and SHF_ALLOC) <> 0;
+    IsExec  := (M.Flags and SHF_EXECINSTR) <> 0;
+    if IsAlloc and IsExec then
+      Self.PlaceSection(M, Addr);
+  end;
+
+  { .plt }
+  Addr := LkAlignUp(Addr, 16);
+  FPltAddr := Addr;
+  Addr := Addr + Length(FPltCode);
+
+  { Writable / RELRO run — align to page. }
+  Addr := LkAlignUp(Addr, FTarget.PageSize);
+
+  { .init_array }
+  FInitArrayAddr := Addr;
+  FInitArraySize := 0;
+  M := FMerger.FindMerged('.init_array');
+  if M <> nil then
+  begin
+    Self.PlaceSection(M, Addr);
+    FInitArraySize := M.Size;
+  end;
+
+  { .fini_array }
+  FFiniArrayAddr := Addr;
+  FFiniArraySize := 0;
+  M := FMerger.FindMerged('.fini_array');
+  if M <> nil then
+  begin
+    Self.PlaceSection(M, Addr);
+    FFiniArraySize := M.Size;
+  end;
+
+  { .dynamic — reserve space for up to DYN_MAX_ENTRIES entries (16 bytes each). }
+  Addr := LkAlignUp(Addr, 8);
+  FDynamicAddr := Addr;
+  Addr := Addr + DYN_MAX_ENTRIES * 16;
+
+  { .got }
+  Addr := LkAlignUp(Addr, 8);
+  FGotAddr := Addr;
+  Addr := Addr + Length(FGotData);
+
+  { GOT[0] = .dynamic address; patched by ld.so but we set it. }
+  LkPatch64(FGotData, 0, FDynamicAddr);
+
+  { Fix up PLT stubs now that addresses are known. }
+  if FPltEntries.Count > 0 then
+  begin
+    { PLT header: pushq GOT[1](%rip), jmpq *GOT[2](%rip), nop4 }
+    GotRelOff := (FGotAddr + 8) - (FPltAddr + 6);
+    LkCopyInto(FPltCode, 0, Chr($FF) + Chr($35));
+    LkPatch32(FPltCode, 2, GotRelOff);
+    GotRelOff := (FGotAddr + 16) - (FPltAddr + 12);
+    LkCopyInto(FPltCode, 6, Chr($FF) + Chr($25));
+    LkPatch32(FPltCode, 8, GotRelOff);
+    LkCopyInto(FPltCode, 12, Chr($0F) + Chr($1F) + Chr($40) + Chr(0));
+
+    for I := 0 to FPltEntries.Count - 1 do
+    begin
+      PE := FPltEntries.Get(I);
+      J := PE.PltOffset;
+      { jmpq *GOT[n+3](%rip) }
+      GotRelOff := (FGotAddr + PE.GotOffset) - (FPltAddr + J + 6);
+      LkCopyInto(FPltCode, J, Chr($FF) + Chr($25));
+      LkPatch32(FPltCode, J + 2, GotRelOff);
+      { pushq $reloc_index }
+      LkCopyInto(FPltCode, J + 6, Chr($68));
+      LkPatch32(FPltCode, J + 7, I);
+      { jmpq PLT[0] }
+      PltRelOff := -(J + 16);
+      LkCopyInto(FPltCode, J + 11, Chr($E9));
+      LkPatch32(FPltCode, J + 12, PltRelOff);
+
+      { Initialise GOT[n+3] to PLT[n]+6 (pushq instruction). }
+      LkPatch64(FGotData, PE.GotOffset, FPltAddr + J + 6);
+
+      { Fix up .rela.plt entry with GOT address. }
+      LkPatch64(FRelaPlt, I * ELF64_RELA_SIZE, FGotAddr + PE.GotOffset);
+
+      { Register the PLT address as a resolved symbol so
+        R_X86_64_PLT32 relocations against this name resolve. }
+      Self.AddSynthSymbol(PE.Name, FPltAddr + J);
+    end;
+  end;
+
+  { Non-PLT GOT slot values are filled in LinkToBytes after BuildSymbols. }
+
+  { _GLOBAL_OFFSET_TABLE_ → .got base }
+  Self.AddSynthSymbol('_GLOBAL_OFFSET_TABLE_', FGotAddr);
+
+  { Writable data sections. }
+  for I := 0 to FMerger.Merged.Count - 1 do
+  begin
+    M := FMerger.Merged.Get(I);
+    IsAlloc := (M.Flags and SHF_ALLOC) <> 0;
+    IsWrite := (M.Flags and SHF_WRITE) <> 0;
+    if not IsAlloc then Continue;
+    if not IsWrite then Continue;
+    if (M.Flags and SHF_TLS) <> 0 then Continue;
+    if M.Name = '.init_array' then Continue;
+    if M.Name = '.fini_array' then Continue;
+    if M.ShType <> SHT_NOBITS then
+      Self.PlaceSection(M, Addr);
+  end;
+  for I := 0 to FMerger.Merged.Count - 1 do
+  begin
+    M := FMerger.Merged.Get(I);
+    IsAlloc := (M.Flags and SHF_ALLOC) <> 0;
+    IsWrite := (M.Flags and SHF_WRITE) <> 0;
+    if not IsAlloc then Continue;
+    if not IsWrite then Continue;
+    if (M.Flags and SHF_TLS) <> 0 then Continue;
+    if M.Name = '.init_array' then Continue;
+    if M.Name = '.fini_array' then Continue;
+    if M.ShType = SHT_NOBITS then
+      Self.PlaceSection(M, Addr);
+  end;
+
+  { TLS sections (.tdata, .tbss). }
+  FTlsAddr := 0;
+  FTlsSize := 0;
+  FTlsAlign := 1;
+  FTlsFileSize := 0;
+  M := FMerger.FindMerged('.tdata');
+  if M <> nil then
+  begin
+    FTlsAddr := Addr;
+    Self.PlaceSection(M, Addr);
+    FTlsFileSize := M.Size;
+    FTlsSize := M.Size;
+    if M.Align > FTlsAlign then FTlsAlign := M.Align;
+  end;
+  M := FMerger.FindMerged('.tbss');
+  if M <> nil then
+  begin
+    if FTlsAddr = 0 then FTlsAddr := Addr;
+    Self.PlaceSection(M, Addr);
+    FTlsSize := FTlsSize + M.Size;
+    if M.Align > FTlsAlign then FTlsAlign := M.Align;
+  end;
+
+  { Build .dynamic section.  'libc.so.6' is at offset 1 in .dynstr. }
+  FDynamicData := '';
+  FDynamicData := FDynamicData + LkLE(DT_NEEDED, 8) + LkLE(1, 8);
+  FDynamicData := FDynamicData + LkLE(DT_HASH, 8) + LkLE(FHashAddr, 8);
+  FDynamicData := FDynamicData + LkLE(DT_STRTAB, 8) + LkLE(FDynStrAddr, 8);
+  FDynamicData := FDynamicData + LkLE(DT_SYMTAB, 8) + LkLE(FDynSymAddr, 8);
+  FDynamicData := FDynamicData + LkLE(DT_STRSZ, 8) + LkLE(Length(FDynStrTab), 8);
+  FDynamicData := FDynamicData + LkLE(DT_SYMENT, 8) + LkLE(ELF64_SYM_SIZE, 8);
+  FDynamicData := FDynamicData + LkLE(DT_PLTGOT, 8) + LkLE(FGotAddr, 8);
+  FDynamicData := FDynamicData + LkLE(DT_PLTRELSZ, 8) + LkLE(Length(FRelaPlt), 8);
+  FDynamicData := FDynamicData + LkLE(DT_PLTREL, 8) + LkLE(DT_RELA, 8);
+  FDynamicData := FDynamicData + LkLE(DT_JMPREL, 8) + LkLE(FRelaPltAddr, 8);
+  if Length(FRelaDynData) > 0 then
+  begin
+    FDynamicData := FDynamicData + LkLE(DT_RELA, 8) + LkLE(FRelaDynAddr, 8);
+    FDynamicData := FDynamicData + LkLE(DT_RELASZ, 8) + LkLE(Length(FRelaDynData), 8);
+    FDynamicData := FDynamicData + LkLE(DT_RELAENT, 8) + LkLE(ELF64_RELA_SIZE, 8);
+    FDynamicData := FDynamicData + LkLE(DT_RELACOUNT, 8) + LkLE(FRelaDyn.Count, 8);
+  end;
+  if FInitArraySize > 0 then
+  begin
+    FDynamicData := FDynamicData + LkLE(DT_INIT_ARRAY, 8) + LkLE(FInitArrayAddr, 8);
+    FDynamicData := FDynamicData + LkLE(DT_INIT_ARRAYSZ, 8) + LkLE(FInitArraySize, 8);
+  end;
+  if FFiniArraySize > 0 then
+  begin
+    FDynamicData := FDynamicData + LkLE(DT_FINI_ARRAY, 8) + LkLE(FFiniArrayAddr, 8);
+    FDynamicData := FDynamicData + LkLE(DT_FINI_ARRAYSZ, 8) + LkLE(FFiniArraySize, 8);
+  end;
+  FDynamicData := FDynamicData + LkLE(DT_DEBUG, 8) + LkLE(0, 8);
+  FDynamicData := FDynamicData + LkLE(DT_FLAGS_1, 8) + LkLE(DF_1_PIE, 8);
+  FDynamicData := FDynamicData + LkLE(DT_NULL, 8) + LkLE(0, 8);
+  { Pad to the reserved size. }
+  if Length(FDynamicData) < DYN_MAX_ENTRIES * 16 then
+    FDynamicData := FDynamicData + LkZeros(DYN_MAX_ENTRIES * 16 - Length(FDynamicData));
+end;
+
 { Resolve a relocation's symbol to its final virtual address.  A
   reference to a STB_LOCAL section/symbol resolves through that
   object's own section placement; a global reference goes through the
@@ -822,8 +1598,9 @@ begin
   raise ELinker.Create('undefined reference to `' + Sym.Name + '''');
 end;
 
-{ Patch the merged section bytes for every relocation.  Phase B
-  supports the intra-program PC-relative forms only. }
+{ Patch the merged section bytes for every relocation.  In static
+  mode (Phase B) only PC-relative forms are supported; in dynamic mode
+  (Phase C) absolute, GOT-relative and TLS relocations are handled. }
 procedure TLinker.ApplyRelocations;
 var
   Oi, Ri: Integer;
@@ -831,10 +1608,15 @@ var
   Rel: TRdReloc;
   M: TMergedSection;
   P: TSectionPlacement;
-  PAddr: Int64;     { virtual address of the patched bytes (P) }
-  PFileOff: Integer; { offset of the patched bytes within M.Data }
+  PAddr: Int64;
+  PFileOff: Integer;
   S, Val: Int64;
   Ctx: string;
+  Sym: TRdSymbol;
+  PE: TPltEntry;
+  GS: TGotSlot;
+  RE: TRelaDynEntry;
+  GotSlotAddr: Int64;
 begin
   for Oi := 0 to FObjects.Count - 1 do
   begin
@@ -843,40 +1625,82 @@ begin
     begin
       Rel := Obj.Relocs.Get(Ri);
       P := FMerger.PlacementOf(Oi, Rel.TargetSection);
-      if P = nil then Continue;   { reloc in a dropped section }
+      if P = nil then Continue;
       M := P.Merged;
       if Self.MergedAddr(M) < 0 then Continue;
 
       Ctx := Obj.SourceName;
       PFileOff := Integer(P.Offset + Rel.Offset);
       PAddr := Self.MergedAddr(M) + P.Offset + Rel.Offset;
-      S := Self.ResolveSymbolAddr(Obj, Rel.SymIndex, Ctx);
+
+      Sym := Obj.Symbols.Get(Rel.SymIndex);
 
       case Rel.RelocType of
         R_X86_64_NONE: ;
+
         R_X86_64_PC32, R_X86_64_PLT32:
           begin
-            { Intra-program PC-relative: S + A - P.  A PLT32 against an
-              internally-defined symbol relaxes to the same direct
-              computation (no PLT in Phase B). }
+            S := Self.ResolveSymbolAddr(Obj, Rel.SymIndex, Ctx);
             Val := S + Rel.Addend - PAddr;
             if M.ShType = SHT_NOBITS then
               raise ELinker.Create(Ctx
                 + ': relocation into a NOBITS section');
             LkPatch32(M.Data, PFileOff, Val and $FFFFFFFF);
           end;
+
         R_X86_64_64:
-          raise ELinker.Create(Ctx + ': R_X86_64_64 relocation against `'
-            + Obj.Symbols.Get(Rel.SymIndex).Name
-            + ''' needs dynamic linking (Phase C)');
+          begin
+            if not FDynamic then
+              raise ELinker.Create(Ctx + ': R_X86_64_64 relocation against `'
+                + Sym.Name + ''' needs dynamic linking');
+            S := Self.ResolveSymbolAddr(Obj, Rel.SymIndex, Ctx);
+            Val := S + Rel.Addend;
+            if M.ShType = SHT_NOBITS then
+              raise ELinker.Create(Ctx
+                + ': relocation into a NOBITS section');
+            LkPatch64(M.Data, PFileOff, Val);
+            RE := TRelaDynEntry.Create();
+            RE.VAddr := PAddr;
+            RE.Addend := Val;
+            FRelaDyn.Add(RE);
+          end;
+
         R_X86_64_32, R_X86_64_32S:
-          raise ELinker.Create(Ctx
-            + ': absolute 32-bit relocation is unsupported (Phase B is '
-            + 'PC-relative only)');
-        R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX,
+          begin
+            if not FDynamic then
+              raise ELinker.Create(Ctx
+                + ': absolute 32-bit relocation unsupported in static mode');
+            S := Self.ResolveSymbolAddr(Obj, Rel.SymIndex, Ctx);
+            Val := S + Rel.Addend;
+            LkPatch32(M.Data, PFileOff, Val and $FFFFFFFF);
+          end;
+
+        R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX:
+          begin
+            if not FDynamic then
+              raise ELinker.Create(Ctx
+                + ': GOT relocation needs dynamic linking');
+            PE := Self.FindPltEntry(Sym.Name);
+            if PE <> nil then
+              GotSlotAddr := FGotAddr + PE.GotOffset
+            else
+            begin
+              GS := Self.FindOrCreateGotSlot(Sym.Name);
+              GotSlotAddr := FGotAddr + GS.GotOffset;
+            end;
+            Val := GotSlotAddr + Rel.Addend - PAddr;
+            LkPatch32(M.Data, PFileOff, Val and $FFFFFFFF);
+          end;
+
         R_X86_64_TPOFF32:
-          raise ELinker.Create(Ctx
-            + ': GOT/TLS relocation needs dynamic linking (Phase C)');
+          begin
+            if not FDynamic then
+              raise ELinker.Create(Ctx
+                + ': TLS relocation needs dynamic linking');
+            S := Self.ResolveSymbolAddr(Obj, Rel.SymIndex, Ctx);
+            Val := S - FTlsAddr + Rel.Addend - FTlsSize;
+            LkPatch32(M.Data, PFileOff, Val and $FFFFFFFF);
+          end;
       else
         raise ELinker.Create(Ctx + ': unsupported relocation type '
           + IntToStr(Rel.RelocType));
@@ -1054,20 +1878,479 @@ begin
   Result := Buf;
 end;
 
+{ Emit a PIE (ET_DYN) executable with program headers for dynamic
+  linking: PT_PHDR, PT_INTERP, PT_LOAD (read-only, executable,
+  RELRO+writable, data+bss), PT_DYNAMIC, PT_TLS, PT_GNU_STACK,
+  PT_GNU_RELRO.  File layout mirrors virtual layout at base 0. }
+function TLinker.EmitDynExecutable(AEntry: Int64): string;
+var
+  Buf: string;
+  I: Integer;
+  M: TMergedSection;
+  A: Int64;
+  PhdrCount: Integer;
+  HdrBytes: Int64;
+  RoLo, RoHi: Int64;
+  ExecLo, ExecHi: Int64;
+  RelroLo, RelroHi: Int64;
+  DataLo, DataMemHi, DataFileHi: Int64;
+  ShStr: string;
+  ShStrOff: TList<Integer>;
+  SecCount, ShTabOff: Integer;
+  NamePos: Integer;
+  PhIdx: Integer;
+  HasTls: Boolean;
+begin
+  { Compute extents for each loadable segment.
+    RO: headers + linker metadata + .rodata + .eh_frame etc.
+    Exec: .text + .init + .fini + .plt
+    RELRO: .init_array + .fini_array + .dynamic + .got
+    Data: .data + .bss }
+  RoLo := 0;
+  RoHi := 0;
+  ExecLo := -1; ExecHi := 0;
+  RelroLo := -1; RelroHi := 0;
+  DataLo := -1; DataMemHi := 0; DataFileHi := 0;
+
+  for I := 0 to FSecAddr.Count - 1 do
+  begin
+    M := FSecAddr.Get(I);
+    A := FAddrOf.Get(I);
+    if (M.Flags and SHF_ALLOC) = 0 then Continue;
+
+    if (M.Flags and SHF_EXECINSTR) <> 0 then
+    begin
+      if ExecLo < 0 then ExecLo := A;
+      if A + M.Size > ExecHi then ExecHi := A + M.Size;
+    end
+    else if (M.Flags and SHF_WRITE) <> 0 then
+    begin
+      if (M.Name = '.init_array') or (M.Name = '.fini_array') then
+      begin
+        if RelroLo < 0 then RelroLo := A;
+        if A + M.Size > RelroHi then RelroHi := A + M.Size;
+      end
+      else if (M.Flags and SHF_TLS) = 0 then
+      begin
+        if DataLo < 0 then DataLo := A;
+        if A + M.Size > DataMemHi then DataMemHi := A + M.Size;
+        if (M.ShType <> SHT_NOBITS) and (A + M.Size > DataFileHi) then
+          DataFileHi := A + M.Size;
+      end;
+    end
+    else
+    begin
+      if A + M.Size > RoHi then RoHi := A + M.Size;
+    end;
+  end;
+
+  { Linker-generated read-only sections extend RoHi. }
+  if FRelaPltAddr + Length(FRelaPlt) > RoHi then
+    RoHi := FRelaPltAddr + Length(FRelaPlt);
+  if FRelaDynAddr + Int64(Self.CountRelativeRelocs()) * ELF64_RELA_SIZE > RoHi then
+    RoHi := FRelaDynAddr + Int64(Self.CountRelativeRelocs()) * ELF64_RELA_SIZE;
+
+  { .plt is part of the executable segment. }
+  if Length(FPltCode) > 0 then
+  begin
+    if (ExecLo < 0) or (FPltAddr < ExecLo) then ExecLo := FPltAddr;
+    if FPltAddr + Length(FPltCode) > ExecHi then
+      ExecHi := FPltAddr + Length(FPltCode);
+  end;
+
+  { .dynamic and .got are in the RELRO segment. }
+  if RelroLo < 0 then RelroLo := FDynamicAddr;
+  if FDynamicAddr < RelroLo then RelroLo := FDynamicAddr;
+  if FDynamicAddr + Length(FDynamicData) > RelroHi then
+    RelroHi := FDynamicAddr + Length(FDynamicData);
+  if FGotAddr + Length(FGotData) > RelroHi then
+    RelroHi := FGotAddr + Length(FGotData);
+
+  if ExecLo < 0 then ExecLo := 0;
+  if DataLo < 0 then begin DataLo := RelroHi; DataFileHi := RelroHi;
+    DataMemHi := RelroHi; end;
+
+  HasTls := FTlsSize > 0;
+
+  { Count program headers. }
+  PhdrCount := 4;   { PT_PHDR, PT_INTERP, PT_GNU_STACK, PT_NULL → at least }
+  PhdrCount := PhdrCount + 1; { PT_LOAD: read-only headers + metadata }
+  PhdrCount := PhdrCount + 1; { PT_LOAD: executable }
+  PhdrCount := PhdrCount + 1; { PT_LOAD: RELRO + writable }
+  PhdrCount := PhdrCount + 1; { PT_LOAD: data + bss }
+  PhdrCount := PhdrCount + 1; { PT_DYNAMIC }
+  PhdrCount := PhdrCount + 1; { PT_GNU_RELRO }
+  if HasTls then
+    PhdrCount := PhdrCount + 1;
+  HdrBytes := ELF64_EHDR_SIZE + Int64(PhdrCount) * 56;
+
+  { The read-only segment starts at file/vaddr 0, covering the ELF
+    header, program headers, and linker-generated read-only sections
+    (.interp, .hash, .dynsym, .dynstr, .rela.dyn, .rela.plt).
+    Then rodata sections follow. }
+
+  { ---- ELF header ---- }
+  Buf := '';
+  Buf := Buf + Chr($7F) + 'ELF';
+  Buf := Buf + Chr(ELFCLASS64) + Chr(ELFDATA2LSB) + Chr(EV_CURRENT)
+             + Chr(FTarget.OSABI);
+  Buf := Buf + LkZeros(8);
+  Buf := Buf + LkLE(ET_DYN, 2);
+  Buf := Buf + LkLE(FTarget.EMachine, 2);
+  Buf := Buf + LkLE(EV_CURRENT, 4);
+  Buf := Buf + LkLE(AEntry, 8);
+  Buf := Buf + LkLE(ELF64_EHDR_SIZE, 8);   { e_phoff }
+  Buf := Buf + LkLE(0, 8);                  { e_shoff (patched later) }
+  Buf := Buf + LkLE(0, 4);
+  Buf := Buf + LkLE(ELF64_EHDR_SIZE, 2);
+  Buf := Buf + LkLE(56, 2);
+  Buf := Buf + LkLE(PhdrCount, 2);
+  Buf := Buf + LkLE(ELF64_SHDR_SIZE, 2);
+  Buf := Buf + LkLE(0, 2);  { e_shnum patched later }
+  Buf := Buf + LkLE(0, 2);  { e_shstrndx patched later }
+
+  { ---- Program headers ---- }
+  PhIdx := 0;
+
+  { PT_PHDR — describes the program-header table itself. }
+  Buf := Buf + LkLE(PT_PHDR, 4) + LkLE(PF_R, 4);
+  Buf := Buf + LkLE(ELF64_EHDR_SIZE, 8);
+  Buf := Buf + LkLE(ELF64_EHDR_SIZE, 8);
+  Buf := Buf + LkLE(ELF64_EHDR_SIZE, 8);
+  Buf := Buf + LkLE(Int64(PhdrCount) * 56, 8);
+  Buf := Buf + LkLE(Int64(PhdrCount) * 56, 8);
+  Buf := Buf + LkLE(8, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_INTERP }
+  Buf := Buf + LkLE(PT_INTERP, 4) + LkLE(PF_R, 4);
+  Buf := Buf + LkLE(FInterpAddr, 8);
+  Buf := Buf + LkLE(FInterpAddr, 8);
+  Buf := Buf + LkLE(FInterpAddr, 8);
+  Buf := Buf + LkLE(Length(FInterpData), 8);
+  Buf := Buf + LkLE(Length(FInterpData), 8);
+  Buf := Buf + LkLE(1, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_LOAD #0 — read-only: headers + .interp + .hash + .dynsym +
+    .dynstr + .rela.dyn + .rela.plt + .rodata sections.
+    Covers file offset 0 to end of read-only range. }
+  Buf := Buf + LkLE(PT_LOAD, 4) + LkLE(PF_R, 4);
+  Buf := Buf + LkLE(0, 8);         { p_offset }
+  Buf := Buf + LkLE(0, 8);         { p_vaddr }
+  Buf := Buf + LkLE(0, 8);         { p_paddr }
+  Buf := Buf + LkLE(RoHi, 8);      { p_filesz }
+  Buf := Buf + LkLE(RoHi, 8);      { p_memsz }
+  Buf := Buf + LkLE(FTarget.PageSize, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_LOAD #1 — executable: .text + .plt (+ .init/.fini if present). }
+  Buf := Buf + LkLE(PT_LOAD, 4) + LkLE(PF_R or PF_X, 4);
+  Buf := Buf + LkLE(ExecLo, 8);
+  Buf := Buf + LkLE(ExecLo, 8);
+  Buf := Buf + LkLE(ExecLo, 8);
+  Buf := Buf + LkLE(ExecHi - ExecLo, 8);
+  Buf := Buf + LkLE(ExecHi - ExecLo, 8);
+  Buf := Buf + LkLE(FTarget.PageSize, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_LOAD #2 — RELRO + writable: .init_array, .fini_array,
+    .dynamic, .got. }
+  Buf := Buf + LkLE(PT_LOAD, 4) + LkLE(PF_R or PF_W, 4);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroHi - RelroLo, 8);
+  Buf := Buf + LkLE(RelroHi - RelroLo, 8);
+  Buf := Buf + LkLE(FTarget.PageSize, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_LOAD #3 — writable data + bss. }
+  if DataLo < DataMemHi then
+  begin
+    Buf := Buf + LkLE(PT_LOAD, 4) + LkLE(PF_R or PF_W, 4);
+    Buf := Buf + LkLE(DataLo, 8);
+    Buf := Buf + LkLE(DataLo, 8);
+    Buf := Buf + LkLE(DataLo, 8);
+    Buf := Buf + LkLE(DataFileHi - DataLo, 8);
+    Buf := Buf + LkLE(DataMemHi - DataLo, 8);
+    Buf := Buf + LkLE(FTarget.PageSize, 8);
+  end
+  else
+  begin
+    Buf := Buf + LkLE(PT_LOAD, 4) + LkLE(PF_R or PF_W, 4);
+    Buf := Buf + LkLE(RelroHi, 8);
+    Buf := Buf + LkLE(RelroHi, 8);
+    Buf := Buf + LkLE(RelroHi, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(FTarget.PageSize, 8);
+  end;
+  PhIdx := PhIdx + 1;
+
+  { PT_DYNAMIC }
+  Buf := Buf + LkLE(PT_DYNAMIC, 4) + LkLE(PF_R or PF_W, 4);
+  Buf := Buf + LkLE(FDynamicAddr, 8);
+  Buf := Buf + LkLE(FDynamicAddr, 8);
+  Buf := Buf + LkLE(FDynamicAddr, 8);
+  Buf := Buf + LkLE(Length(FDynamicData), 8);
+  Buf := Buf + LkLE(Length(FDynamicData), 8);
+  Buf := Buf + LkLE(8, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_TLS }
+  if HasTls then
+  begin
+    Buf := Buf + LkLE(PT_TLS, 4) + LkLE(PF_R, 4);
+    Buf := Buf + LkLE(FTlsAddr, 8);
+    Buf := Buf + LkLE(FTlsAddr, 8);
+    Buf := Buf + LkLE(FTlsAddr, 8);
+    Buf := Buf + LkLE(FTlsFileSize, 8);
+    Buf := Buf + LkLE(FTlsSize, 8);
+    Buf := Buf + LkLE(FTlsAlign, 8);
+    PhIdx := PhIdx + 1;
+  end;
+
+  { PT_GNU_STACK — non-executable stack. }
+  Buf := Buf + LkLE(PT_GNU_STACK, 4) + LkLE(PF_R or PF_W, 4);
+  Buf := Buf + LkLE(0, 8);
+  Buf := Buf + LkLE(0, 8);
+  Buf := Buf + LkLE(0, 8);
+  Buf := Buf + LkLE(0, 8);
+  Buf := Buf + LkLE(0, 8);
+  Buf := Buf + LkLE(16, 8);
+  PhIdx := PhIdx + 1;
+
+  { PT_GNU_RELRO — marks the RELRO region for mprotect after relocation. }
+  Buf := Buf + LkLE(PT_GNU_RELRO, 4) + LkLE(PF_R, 4);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroLo, 8);
+  Buf := Buf + LkLE(RelroHi - RelroLo, 8);
+  Buf := Buf + LkLE(RelroHi - RelroLo, 8);
+  Buf := Buf + LkLE(1, 8);
+  PhIdx := PhIdx + 1;
+
+  { ---- Section payloads ---- }
+  { Grow the image to cover all file-backed data, then copy everything
+    into place.  File offset = virtual address for a PIE at base 0. }
+  { Find the highest file-backed address. }
+  A := RoHi;
+  if ExecHi > A then A := ExecHi;
+  if RelroHi > A then A := RelroHi;
+  if DataFileHi > A then A := DataFileHi;
+  if Length(Buf) < Integer(A) then
+    Buf := Buf + LkZeros(Integer(A) - Length(Buf));
+
+  { Copy linker-generated sections. }
+  LkCopyInto(Buf, Integer(FInterpAddr), FInterpData);
+  LkCopyInto(Buf, Integer(FHashAddr), FHashTab);
+  LkCopyInto(Buf, Integer(FDynSymAddr), FDynSymTab);
+  LkCopyInto(Buf, Integer(FDynStrAddr), FDynStrTab);
+  if Length(FRelaDynData) > 0 then
+    LkCopyInto(Buf, Integer(FRelaDynAddr), FRelaDynData);
+  if Length(FRelaPlt) > 0 then
+    LkCopyInto(Buf, Integer(FRelaPltAddr), FRelaPlt);
+  if Length(FPltCode) > 0 then
+    LkCopyInto(Buf, Integer(FPltAddr), FPltCode);
+  LkCopyInto(Buf, Integer(FDynamicAddr), FDynamicData);
+  LkCopyInto(Buf, Integer(FGotAddr), FGotData);
+
+  { Copy merged sections at their virtual addresses. }
+  for I := 0 to FSecAddr.Count - 1 do
+  begin
+    M := FSecAddr.Get(I);
+    A := FAddrOf.Get(I);
+    if M.ShType = SHT_NOBITS then Continue;
+    if Length(M.Data) > 0 then
+      LkCopyInto(Buf, Integer(A), M.Data);
+  end;
+
+  { ---- Section header table (for readelf / objdump) ---- }
+  ShStr := Chr(0);
+  ShStrOff := TList<Integer>.Create();
+  try
+    for I := 0 to FSecAddr.Count - 1 do
+    begin
+      ShStrOff.Add(Length(ShStr));
+      ShStr := ShStr + FSecAddr.Get(I).Name + Chr(0);
+    end;
+    NamePos := Length(ShStr);
+    ShStr := ShStr + '.shstrtab' + Chr(0);
+
+    ShTabOff := Length(Buf);
+    Buf := Buf + ShStr;
+
+    SecCount := FSecAddr.Count + 2;
+    while (Length(Buf) and 7) <> 0 do Buf := Buf + Chr(0);
+
+    LkCopyInto(Buf, 40, LkLE(Length(Buf), 8));
+    LkCopyInto(Buf, 60, LkLE(SecCount, 2));
+    LkCopyInto(Buf, 62, LkLE(SecCount - 1, 2));
+
+    Buf := Buf + LkZeros(ELF64_SHDR_SIZE);
+
+    for I := 0 to FSecAddr.Count - 1 do
+    begin
+      M := FSecAddr.Get(I);
+      A := FAddrOf.Get(I);
+      Buf := Buf + LkLE(ShStrOff.Get(I), 4);
+      Buf := Buf + LkLE(M.ShType, 4);
+      Buf := Buf + LkLE(M.Flags, 8);
+      Buf := Buf + LkLE(A, 8);
+      if M.ShType = SHT_NOBITS then
+        Buf := Buf + LkLE(Integer(DataFileHi), 8)
+      else
+        Buf := Buf + LkLE(Integer(A), 8);
+      Buf := Buf + LkLE(M.Size, 8);
+      Buf := Buf + LkLE(0, 4);
+      Buf := Buf + LkLE(0, 4);
+      Buf := Buf + LkLE(M.Align, 8);
+      Buf := Buf + LkLE(0, 8);
+    end;
+
+    Buf := Buf + LkLE(NamePos, 4);
+    Buf := Buf + LkLE(SHT_STRTAB, 4);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(ShTabOff, 8);
+    Buf := Buf + LkLE(Length(ShStr), 8);
+    Buf := Buf + LkLE(0, 4);
+    Buf := Buf + LkLE(0, 4);
+    Buf := Buf + LkLE(1, 8);
+    Buf := Buf + LkLE(0, 8);
+  finally
+    ShStrOff.Free();
+  end;
+
+  Result := Buf;
+end;
+
 function TLinker.LinkToBytes(const AEntryName: string): string;
 var
   Sym: TLinkSymbol;
+  RE: TRelaDynEntry;
+  I: Integer;
 begin
-  Self.LayoutSections();
-  Self.BuildSymbols();
-  Self.DefineSynthSymbols();
-  Self.ApplyRelocations();
+  if FDynamic then
+  begin
+    { Phase C dynamic pipeline:
+      1. Collect external (undefined) symbols → PLT entries.
+      2. Collect GOTPCREL targets → non-PLT GOT slots.
+      3. Build the dynamic table blobs (.dynsym, .dynstr, .hash, etc.)
+      4. Layout all sections at virtual addresses (base 0, PIE).
+      5. Build global symbol table from laid-out sections.
+      6. Synthesise linker symbols (__bss_start, _GLOBAL_OFFSET_TABLE_ etc.)
+      7. Apply relocations (R_X86_64_64→RELATIVE, GOTPCREL, TPOFF32).
+      8. Re-serialise .rela.dyn with collected RELATIVE entries.
+      9. Rebuild .dynamic with final .rela.dyn addresses.
+     10. Emit the PIE executable. }
 
-  Sym := Self.FindSymbol(AEntryName);
-  if (Sym = nil) or (not Sym.Defined) or Sym.IsWeakSlot then
-    raise ELinker.Create('entry symbol not found: ' + AEntryName);
-  FEntry := Sym.Addr;
-  Result := Self.EmitExecutable(FEntry);
+    { Steps 1-2: scan object symbol tables for externals and GOT targets. }
+    Self.CollectExternals();
+    Self.CollectGotSlots();
+
+    { Step 3: build the dynamic table blobs. }
+    Self.BuildDynamic();
+
+    { Step 4: assign final virtual addresses (PIE, base 0). }
+    Self.LayoutDynamic();
+
+    { Step 5: build the global symbol table from laid-out sections. }
+    Self.BuildSymbols();
+
+    { Step 6: synthesise remaining symbols. }
+    Self.DefineSynthSymbols();
+
+    { Step 6b: fill non-PLT GOT slots with resolved symbol addresses.
+      These need RELATIVE entries so ld.so fixes them up at load time. }
+    for I := 0 to FGotSlots.Count - 1 do
+    begin
+      Sym := Self.FindSymbol(FGotSlots.Get(I).Name);
+      if (Sym <> nil) and Sym.Defined then
+        FGotSlots.Get(I).Value := Sym.Addr
+      else
+        FGotSlots.Get(I).Value := 0;
+      LkPatch64(FGotData, FGotSlots.Get(I).GotOffset,
+        FGotSlots.Get(I).Value);
+      if FGotSlots.Get(I).Value <> 0 then
+      begin
+        RE := TRelaDynEntry.Create();
+        RE.VAddr := FGotAddr + FGotSlots.Get(I).GotOffset;
+        RE.Addend := FGotSlots.Get(I).Value;
+        FRelaDyn.Add(RE);
+      end;
+    end;
+
+    { Step 7: apply relocations (collects R_X86_64_RELATIVE entries). }
+    Self.ApplyRelocations();
+
+    { Step 9: re-serialise .rela.dyn with the collected entries. }
+    FRelaDynData := '';
+    for I := 0 to FRelaDyn.Count - 1 do
+    begin
+      FRelaDynData := FRelaDynData + LkLE(FRelaDyn.Get(I).VAddr, 8);
+      FRelaDynData := FRelaDynData + LkLE(Int64(R_X86_64_RELATIVE), 8);
+      FRelaDynData := FRelaDynData + LkLE(FRelaDyn.Get(I).Addend, 8);
+    end;
+
+    { Update DT_RELA* in .dynamic if we now have entries. }
+    if Length(FRelaDynData) > 0 then
+    begin
+      { Rebuild the .dynamic section with correct .rela.dyn entries.
+        The addresses of other sections haven't changed. }
+      FDynamicData := '';
+      FDynamicData := FDynamicData + LkLE(DT_NEEDED, 8) + LkLE(1, 8);
+      FDynamicData := FDynamicData + LkLE(DT_HASH, 8) + LkLE(FHashAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_STRTAB, 8) + LkLE(FDynStrAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_SYMTAB, 8) + LkLE(FDynSymAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_STRSZ, 8) + LkLE(Length(FDynStrTab), 8);
+      FDynamicData := FDynamicData + LkLE(DT_SYMENT, 8) + LkLE(ELF64_SYM_SIZE, 8);
+      FDynamicData := FDynamicData + LkLE(DT_PLTGOT, 8) + LkLE(FGotAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_PLTRELSZ, 8) + LkLE(Length(FRelaPlt), 8);
+      FDynamicData := FDynamicData + LkLE(DT_PLTREL, 8) + LkLE(DT_RELA, 8);
+      FDynamicData := FDynamicData + LkLE(DT_JMPREL, 8) + LkLE(FRelaPltAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_RELA, 8) + LkLE(FRelaDynAddr, 8);
+      FDynamicData := FDynamicData + LkLE(DT_RELASZ, 8) + LkLE(Length(FRelaDynData), 8);
+      FDynamicData := FDynamicData + LkLE(DT_RELAENT, 8) + LkLE(ELF64_RELA_SIZE, 8);
+      FDynamicData := FDynamicData + LkLE(DT_RELACOUNT, 8) + LkLE(FRelaDyn.Count, 8);
+      if FInitArraySize > 0 then
+      begin
+        FDynamicData := FDynamicData + LkLE(DT_INIT_ARRAY, 8) + LkLE(FInitArrayAddr, 8);
+        FDynamicData := FDynamicData + LkLE(DT_INIT_ARRAYSZ, 8) + LkLE(FInitArraySize, 8);
+      end;
+      if FFiniArraySize > 0 then
+      begin
+        FDynamicData := FDynamicData + LkLE(DT_FINI_ARRAY, 8) + LkLE(FFiniArrayAddr, 8);
+        FDynamicData := FDynamicData + LkLE(DT_FINI_ARRAYSZ, 8) + LkLE(FFiniArraySize, 8);
+      end;
+      FDynamicData := FDynamicData + LkLE(DT_DEBUG, 8) + LkLE(0, 8);
+      FDynamicData := FDynamicData + LkLE(DT_FLAGS_1, 8) + LkLE(DF_1_PIE, 8);
+      FDynamicData := FDynamicData + LkLE(DT_NULL, 8) + LkLE(0, 8);
+      if Length(FDynamicData) < DYN_MAX_ENTRIES * 16 then
+        FDynamicData := FDynamicData + LkZeros(DYN_MAX_ENTRIES * 16 - Length(FDynamicData));
+    end;
+
+    Sym := Self.FindSymbol(AEntryName);
+    if (Sym = nil) or (not Sym.Defined) or Sym.IsWeakSlot then
+      raise ELinker.Create('entry symbol not found: ' + AEntryName);
+    FEntry := Sym.Addr;
+    Result := Self.EmitDynExecutable(FEntry);
+  end
+  else
+  begin
+    { Phase B static pipeline. }
+    Self.LayoutSections();
+    Self.BuildSymbols();
+    Self.DefineSynthSymbols();
+    Self.ApplyRelocations();
+
+    Sym := Self.FindSymbol(AEntryName);
+    if (Sym = nil) or (not Sym.Defined) or Sym.IsWeakSlot then
+      raise ELinker.Create('entry symbol not found: ' + AEntryName);
+    FEntry := Sym.Addr;
+    Result := Self.EmitExecutable(FEntry);
+  end;
 end;
 
 procedure TLinker.Link(const AEntryName, AOutputPath: string);

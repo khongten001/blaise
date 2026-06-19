@@ -76,6 +76,25 @@ type
     procedure TestRun_SyscallHelloWorld;
   end;
 
+  TDynLinkerTests = class(TTestCase)
+  private
+    function ProjectRoot: string;
+  published
+    procedure TestDyn_CollectsExternals;
+    procedure TestDyn_PieHeaderEmitted;
+  end;
+
+  TDynLinkerE2ETests = class(TTestCase)
+  private
+    FScratch: string;
+    function ProjectRoot: string;
+    function RunBin(const AExe: string; out AStdout: string): Integer;
+  protected
+    procedure SetUp; override;
+  published
+    procedure TestRun_DynHelloWorld;
+  end;
+
 implementation
 
 function TElfReaderTests.ProjectRoot: string;
@@ -876,10 +895,244 @@ begin
     'Hello, linker!' + Chr(10), Output);
 end;
 
+{ ---- TDynLinkerTests ---- }
+
+function TDynLinkerTests.ProjectRoot: string;
+var
+  Dir, Parent: string;
+  Steps: Integer;
+begin
+  Result := GetEnvironmentVariable('BLAISE_PROJECT_ROOT');
+  if Result <> '' then
+  begin
+    Result := IncludeTrailingPathDelimiter(Result);
+    Exit;
+  end;
+  Dir := GetCurrentDir();
+  for Steps := 0 to 5 do
+  begin
+    if DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'vendor/qbe') and
+       DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'runtime') then
+    begin
+      Result := IncludeTrailingPathDelimiter(Dir);
+      Exit;
+    end;
+    Parent := ExtractFileDir(Dir);
+    if (Parent = '') or (Parent = Dir) then Break;
+    Dir := Parent;
+  end;
+  Result := IncludeTrailingPathDelimiter(GetCurrentDir());
+end;
+
+procedure TDynLinkerTests.TestDyn_CollectsExternals;
+const
+  MainAsm =
+    '.text' + LineEnding +
+    '.globl main' + LineEnding +
+    'main:' + LineEnding +
+    '  callq write' + LineEnding +
+    '  xorl %eax, %eax' + LineEnding +
+    '  ret' + LineEnding;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  Bytes: string;
+begin
+  Lk := TLinker.Create();
+  try
+    Lk.SetDynamic(True);
+    Obj := ParseElfObject(AssembleToBytes(MainAsm), 'main.o');
+    Lk.AddOwnedObject(Obj);
+    Bytes := Lk.LinkToBytes('main');
+    AssertTrue('output should be non-empty', Length(Bytes) > 64);
+    { e_type at offset 16 must be ET_DYN (3). }
+    AssertEquals('e_type ET_DYN', 3,
+      (Ord(Bytes[16]) and $FF) or ((Ord(Bytes[17]) and $FF) shl 8));
+  finally
+    Lk.Free();
+  end;
+end;
+
+procedure TDynLinkerTests.TestDyn_PieHeaderEmitted;
+const
+  MainAsm =
+    '.text' + LineEnding +
+    '.globl main' + LineEnding +
+    'main:' + LineEnding +
+    '  xorl %eax, %eax' + LineEnding +
+    '  ret' + LineEnding;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  Bytes: string;
+  PhOff, PhCount, PhEntSz: Integer;
+  J, PType: Integer;
+  FoundInterp, FoundDynamic: Boolean;
+begin
+  Lk := TLinker.Create();
+  try
+    Lk.SetDynamic(True);
+    Obj := ParseElfObject(AssembleToBytes(MainAsm), 'main.o');
+    Lk.AddOwnedObject(Obj);
+    Bytes := Lk.LinkToBytes('main');
+
+    { Parse e_phoff (offset 32, 8 bytes LE), e_phentsize (54, 2 bytes),
+      e_phnum (56, 2 bytes). }
+    PhOff := Ord(Bytes[32]) or (Ord(Bytes[33]) shl 8) or
+             (Ord(Bytes[34]) shl 16) or (Ord(Bytes[35]) shl 24);
+    PhEntSz := Ord(Bytes[54]) or (Ord(Bytes[55]) shl 8);
+    PhCount := Ord(Bytes[56]) or (Ord(Bytes[57]) shl 8);
+    AssertTrue('should have at least 4 phdrs', PhCount >= 4);
+    AssertEquals('phdr entry size', 56, PhEntSz);
+
+    FoundInterp := False;
+    FoundDynamic := False;
+    for J := 0 to PhCount - 1 do
+    begin
+      PType := Ord(Bytes[PhOff + J * PhEntSz]) or
+               (Ord(Bytes[PhOff + J * PhEntSz + 1]) shl 8) or
+               (Ord(Bytes[PhOff + J * PhEntSz + 2]) shl 16) or
+               (Ord(Bytes[PhOff + J * PhEntSz + 3]) shl 24);
+      if PType = 3 then FoundInterp := True;    { PT_INTERP }
+      if PType = 2 then FoundDynamic := True;   { PT_DYNAMIC }
+    end;
+    AssertTrue('PT_INTERP present', FoundInterp);
+    AssertTrue('PT_DYNAMIC present', FoundDynamic);
+  finally
+    Lk.Free();
+  end;
+end;
+
+{ ---- TDynLinkerE2ETests ---- }
+
+function TDynLinkerE2ETests.ProjectRoot: string;
+var
+  Dir, Parent: string;
+  Steps: Integer;
+begin
+  Result := GetEnvironmentVariable('BLAISE_PROJECT_ROOT');
+  if Result <> '' then
+  begin
+    Result := IncludeTrailingPathDelimiter(Result);
+    Exit;
+  end;
+  Dir := GetCurrentDir();
+  for Steps := 0 to 5 do
+  begin
+    if DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'vendor/qbe') and
+       DirectoryExists(IncludeTrailingPathDelimiter(Dir) + 'runtime') then
+    begin
+      Result := IncludeTrailingPathDelimiter(Dir);
+      Exit;
+    end;
+    Parent := ExtractFileDir(Dir);
+    if (Parent = '') or (Parent = Dir) then Break;
+    Dir := Parent;
+  end;
+  Result := IncludeTrailingPathDelimiter(GetCurrentDir());
+end;
+
+procedure TDynLinkerE2ETests.SetUp;
+begin
+  inherited SetUp();
+  FScratch := ProjectRoot() + 'compiler/target/linker-e2e';
+  ForceDirectories(FScratch);
+end;
+
+function TDynLinkerE2ETests.RunBin(const AExe: string;
+  out AStdout: string): Integer;
+var
+  Proc:  TProcess;
+  Chunk: string;
+begin
+  Proc := TProcess.Create(nil);
+  try
+    Proc.Executable := AExe;
+    Proc.Execute();
+    AStdout := '';
+    repeat
+      Chunk := Proc.ReadOutput();
+      AStdout := AStdout + Chunk;
+    until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
+    Result := Proc.ExitCode;
+  finally
+    Proc.Free();
+  end;
+end;
+
+procedure TDynLinkerE2ETests.TestRun_DynHelloWorld;
+const
+  { A minimal main() that calls write(1, msg, 15) via PLT and returns 42.
+    Scrt1.o provides _start which calls __libc_start_main(main,...). }
+  MainAsm =
+    '.text' + LineEnding +
+    '.globl main' + LineEnding +
+    'main:' + LineEnding +
+    '  subq $8, %rsp' + LineEnding +
+    '  movl $1, %edi' + LineEnding +
+    '  leaq msg(%rip), %rsi' + LineEnding +
+    '  movl $16, %edx' + LineEnding +
+    '  callq write' + LineEnding +
+    '  movl $42, %eax' + LineEnding +
+    '  addq $8, %rsp' + LineEnding +
+    '  ret' + LineEnding +
+    '.section .rodata' + LineEnding +
+    'msg:' + LineEnding +
+    '  .ascii "Hello, dynlink!\n"' + LineEnding;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  BinPath, Output: string;
+  Rc: Integer;
+  Crt1, Crti, Crtn, CrtBegin, CrtEnd: string;
+begin
+  BinPath := FScratch + '/hello_dyn';
+
+  { Locate CRT objects. }
+  Crt1 := '/usr/lib/x86_64-linux-gnu/Scrt1.o';
+  Crti := '/usr/lib/x86_64-linux-gnu/crti.o';
+  Crtn := '/usr/lib/x86_64-linux-gnu/crtn.o';
+  CrtBegin := '/usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o';
+  CrtEnd := '/usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o';
+
+  if not FileExists(Crt1) then
+  begin
+    { Try GCC 14. }
+    CrtBegin := '/usr/lib/gcc/x86_64-linux-gnu/14/crtbeginS.o';
+    CrtEnd := '/usr/lib/gcc/x86_64-linux-gnu/14/crtendS.o';
+  end;
+
+  if not FileExists(Crt1) or not FileExists(CrtBegin) then
+    Exit;
+
+  Lk := TLinker.Create();
+  try
+    Lk.SetDynamic(True);
+    Lk.AddCrtObject(Crt1);
+    Lk.AddCrtObject(Crti);
+    Lk.AddCrtObject(CrtBegin);
+    Obj := ParseElfObject(AssembleToBytes(MainAsm), 'main.o');
+    Lk.AddOwnedObject(Obj);
+    Lk.AddCrtObject(CrtEnd);
+    Lk.AddCrtObject(Crtn);
+    Lk.Link('_start', BinPath);
+  finally
+    Lk.Free();
+  end;
+
+  AssertTrue('linked binary missing', FileExists(BinPath));
+  Rc := RunBin(BinPath, Output);
+  AssertEquals('exit code', 42, Rc);
+  AssertEquals('stdout', 'Hello, dynlink!' + Chr(10), Output);
+end;
+
 initialization
   RegisterTest(TElfReaderTests);
   RegisterTest(TSectionMergerTests);
   RegisterTest(TLinkerTests);
   RegisterTest(TLinkerE2ETests);
+  RegisterTest(TDynLinkerTests);
+  RegisterTest(TDynLinkerE2ETests);
 
 end.
