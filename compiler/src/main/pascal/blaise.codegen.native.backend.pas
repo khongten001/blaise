@@ -47,6 +47,7 @@ type
       TObject/TCustomAttribute system defs, which the program object provides —
       emitting them in each unit object would collide at link time. }
     FSeparateCompile: Boolean;
+    FFinalized: Boolean;
     { Assembly text is built append-only and read once at the end, so a
       TStringBuilder (single growable buffer, no per-line heap string and no
       O(N^2) final concat) is the right structure — the same approach the QBE
@@ -73,6 +74,11 @@ type
     { Emit a dependency unit's bodies + data (no $main) into the shared buffer
       for the whole-program multi-unit model. }
     procedure EmitUnit(AUnit: TUnit); virtual; abstract;
+    { Emit accumulated data (.data/.bss/.rodata) after all units have been
+      processed.  Called once from GenerateUnit or GetOutput — never from
+      EmitUnit itself, because in unit-mode the driver appends dep units
+      first and the data section must materialise only once at the end. }
+    procedure FinalizeEmit; virtual;
   public
     constructor Create(const ATarget: TTargetDesc); virtual;
     destructor Destroy; override;
@@ -106,6 +112,10 @@ implementation
 procedure TNativeBackend.SetDebugFacts(AFacts: TDbgFacts);
 begin
   { Default: backend does not collect debug facts. }
+end;
+
+procedure TNativeBackend.FinalizeEmit;
+begin
 end;
 
 constructor TNativeBackend.Create(const ATarget: TTargetDesc);
@@ -316,13 +326,10 @@ end;
 
 function TNativeBackend.GenerateUnit(AUnit: TUnit): string;
 begin
-  { Single-unit-in-isolation: emit just this unit's object (its globals, class
-    methods, procs, init section and class data) into a fresh buffer.  EmitUnit
-    is self-contained and prefers the unit's own symbol table when it was
-    analysed standalone (AUnit.SymbolTable <> nil). }
   FAsm.Clear();
   FSeparateCompile := True;
   Self.EmitUnit(AUnit);
+  Self.FinalizeEmit();
   Result := FAsm.ToString();
 end;
 
@@ -340,6 +347,8 @@ end;
 
 function TNativeBackend.GetOutput: string;
 begin
+  if FSeparateCompile and (not FFinalized) then
+    Self.FinalizeEmit();
   Result := FAsm.ToString();
 end;
 

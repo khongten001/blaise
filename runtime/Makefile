@@ -25,6 +25,7 @@ LIB         = $(OBJ_DIR)/blaise_rtl.a
 # driver finds it automatically next to itself.
 COMPILER_BIN = ../compiler/target
 BLAISE       = $(COMPILER_BIN)/blaise
+BLAISE_FLAGS =
 
 # Assembly sources — platform-specific, no C compiler needed.
 ASM_OBJS = $(OBJ_DIR)/blaise_setjmp_x86_64.o \
@@ -59,40 +60,40 @@ $(OBJ_DIR)/%.o: $(ASM_DIR)/%.s
 # --- Pascal unit rules (unit-as-top-level) ---
 $(OBJ_DIR)/blaise_mem.o: $(PAS_SRC_DIR)/blaise_mem.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_str.o: $(PAS_SRC_DIR)/blaise_str.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_set.o: $(PAS_SRC_DIR)/blaise_set.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_arc.o: $(PAS_SRC_DIR)/blaise_arc.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_weak.o: $(PAS_SRC_DIR)/blaise_weak.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_float.o: $(PAS_SRC_DIR)/blaise_float.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_thread.o: $(PAS_SRC_DIR)/blaise_thread.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/blaise_exc.o: $(PAS_SRC_DIR)/blaise_exc.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 $(OBJ_DIR)/rtl_platform_posix.o: $(PAS_SRC_DIR)/rtl.platform.posix.pas \
                                  $(PAS_SRC_DIR)/rtl.platform.pas
 	@mkdir -p $(OBJ_DIR)
-	$(BLAISE) --source $< --unit-path $(PAS_SRC_DIR) --output $@
+	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
 install: $(LIB)
 	@mkdir -p $(COMPILER_BIN)

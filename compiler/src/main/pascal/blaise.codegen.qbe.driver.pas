@@ -113,6 +113,7 @@ begin
   CG.SetDebugMode(AOpts.DebugMode);
   CG.SetOpdfMode(AOpts.OPDFEnabled);
   CG.SetExportAll(True);
+  CG.SetSuppressSystemDefs(True);
   Result := CG;
 end;
 

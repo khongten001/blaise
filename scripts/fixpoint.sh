@@ -45,7 +45,8 @@ echo "stage-1: $STAGE1_BIN"
 ABS_STAGE1=$(readlink -f "$STAGE1_BIN")
 
 echo "[1/5] rebuild + install runtime (BLAISE=$ABS_STAGE1)"
-( cd runtime && make BLAISE="$ABS_STAGE1" > /tmp/fp_rtl.log 2>&1 \
+( cd runtime && make clean > /tmp/fp_rtl.log 2>&1 \
+             && make BLAISE="$ABS_STAGE1" >> /tmp/fp_rtl.log 2>&1 \
              && make BLAISE="$ABS_STAGE1" install >> /tmp/fp_rtl.log 2>&1 ) || {
   if [ -f compiler/target/blaise_rtl.a ]; then
     echo "      stage-1 too old for runtime; using existing blaise_rtl.a"

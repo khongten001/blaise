@@ -150,7 +150,7 @@ begin
   AFront.EmitIR         := False;
   AFront.EmitAsm        := False;
   AFront.DumpAST        := False;
-  AFront.Backend        := bkQBE;
+  AFront.Backend        := bkNative;
   AFront.BackendExplicit := False;
   AFront.SkipDepCodegen := False;
   AFront.EmitIfaceDir   := '';
@@ -812,7 +812,10 @@ begin
         QBE for fixpoint / RTL Makefile compatibility; --emit-asm implies
         native); the per-backend construction details — class to
         instantiate, knobs to wire — live behind Driver.CreateCodeGen. }
-      CG := Driver.CreateCodeGen(Opts);
+      if IsUnitMode then
+        CG := Driver.CreateUnitCodeGen(Opts)
+      else
+        CG := Driver.CreateCodeGen(Opts);
       if IsUnitMode then
       begin
         { Unit-as-top-level: emit just the unit's bodies, no program wrapping, no @main. }

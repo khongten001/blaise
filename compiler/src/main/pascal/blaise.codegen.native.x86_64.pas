@@ -271,6 +271,7 @@ type
     { The AT&T operand addressing AName: "-N(%rbp)" for a frame local,
       "name(%rip)" for a global. }
     function VarOperand(const AName: string): string;
+    procedure EmitLeaqGlobal(const AName: string; const ADstReg: string);
     { Operands for the two halves of an interface fat pointer.  Locals occupy
       a contiguous 16-byte slot (obj at the slot base, itab 8 bytes above);
       globals are two separate .data labels, AName + '_obj'/'_itab'. }
@@ -352,8 +353,12 @@ type
 
     procedure EmitProgram(AProg: TProgram); override;
     procedure EmitUnit(AUnit: TUnit); override;
-    { Emit a standalone procedure/function definition. }
-    procedure EmitFunctionDef(ADecl: TMethodDecl);
+    procedure FinalizeEmit; override;
+    { Emit a standalone procedure/function definition.  AExported controls
+      whether the symbol gets .globl visibility (True by default).  In
+      monolithic compilation, implementation-section helpers pass False so
+      their labels stay local and do not collide with the RTL archive. }
+    procedure EmitFunctionDef(ADecl: TMethodDecl; AExported: Boolean);
     { Spill incoming arg register AIdx into a param slot at AType's width. }
     procedure EmitSpillArg(AIdx: Integer; const AOperand: string;
                            AType: TTypeDesc);
@@ -3273,7 +3278,7 @@ begin
   else if Self.IsLocal(AFA.RecordName) then
     Self.Emit(Format(#9'leaq %s, %s', [Self.VarOperand(AFA.RecordName), ADstReg]))
   else
-    Self.Emit(Format(#9'leaq %s(%%rip), %s', [AFA.RecordName, ADstReg]));
+    Self.EmitLeaqGlobal(AFA.RecordName, ADstReg);
   { Add the field offset to reach the fat pointer's obj slot. }
   if AFA.FieldInfo.Offset > 0 then
     Self.Emit(Format(#9'addq $%d, %s', [AFA.FieldInfo.Offset, ADstReg]));
@@ -3310,7 +3315,7 @@ begin
       Self.Emit(Format(#9'leaq %s, %%rcx',
         [Self.VarOperand(TIdentExpr(ASub.StrExpr).Name)]))
     else
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [TIdentExpr(ASub.StrExpr).Name]));
+      Self.EmitLeaqGlobal(TIdentExpr(ASub.StrExpr).Name, '%rcx');
   end
   else
     raise ENativeCodeGenError.Create(
@@ -3346,7 +3351,7 @@ begin
         if Decl.Body = nil then Continue;
         { Generic-method templates emit per instantiation, not as a template. }
         if Decl.TypeParams <> nil then Continue;
-        Self.EmitFunctionDef(Decl);
+        Self.EmitFunctionDef(Decl, True);
       end;
     end
     else if TD.Def is TRecordTypeDef then
@@ -3357,7 +3362,7 @@ begin
         Decl := TMethodDecl(RD.Methods.Items[J]);
         if Decl.Body = nil then Continue;
         if Decl.TypeParams <> nil then Continue;
-        Self.EmitFunctionDef(Decl);
+        Self.EmitFunctionDef(Decl, True);
       end;
     end;
   end;
@@ -3377,7 +3382,7 @@ begin
     begin
       Decl := TMethodDecl(GI.ClassDef.Methods.Items[J]);
       if Decl.Body = nil then Continue;
-      Self.EmitFunctionDef(Decl);
+      Self.EmitFunctionDef(Decl, True);
     end;
   end;
   FCurrentUnitName := SavedUnit;
@@ -3389,7 +3394,7 @@ begin
     begin
       Decl := TMethodDecl(GRI.RecordDef.Methods.Items[J]);
       if Decl.Body = nil then Continue;
-      Self.EmitFunctionDef(Decl);
+      Self.EmitFunctionDef(Decl, True);
     end;
   end;
 
@@ -3400,7 +3405,7 @@ begin
   begin
     GMI := TGenericMethodInstance(AGenericMethodInstances.Items[I]);
     if GMI.MethodDecl.Body <> nil then
-      Self.EmitFunctionDef(GMI.MethodDecl);
+      Self.EmitFunctionDef(GMI.MethodDecl, True);
   end;
 end;
 
@@ -3434,6 +3439,17 @@ begin
     Result := '%fs:' + AName + '@tpoff'
   else
     Result := AName + '(%rip)';
+end;
+
+procedure TX86_64Backend.EmitLeaqGlobal(const AName: string; const ADstReg: string);
+begin
+  if Self.IsThreadVarGlobal(AName) then
+  begin
+    Self.Emit(Format(#9'movq %%fs:0, %s', [ADstReg]));
+    Self.Emit(Format(#9'leaq %s@tpoff(%s), %s', [AName, ADstReg, ADstReg]));
+  end
+  else
+    Self.Emit(Format(#9'leaq %s(%%rip), %s', [AName, ADstReg]));
 end;
 
 function TX86_64Backend.LocalType(const AName: string): TTypeDesc;
@@ -3933,7 +3949,7 @@ begin
     else if Self.IsLocal(IE.Name) then
       Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(IE.Name)]))
     else
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [IE.Name]));
+      Self.EmitLeaqGlobal(IE.Name, '%rdx');
     Exit;
   end;
   if AExpr is TFieldAccessExpr then
@@ -3974,7 +3990,7 @@ begin
         address of the pointer slot instead of to the pointed-to record. }
       Self.EmitLocalRecordBase(FAE.RecordName, '%rdx')
     else
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [FAE.RecordName]));
+      Self.EmitLeaqGlobal(FAE.RecordName, '%rdx');
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
     Exit;
@@ -4237,19 +4253,9 @@ begin
     else
     begin
       if IsWide then
-      begin
-        if Self.IsLocal(IE.Name) then
-          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(IE.Name)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [IE.Name]));
-      end
+        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(IE.Name)]))
       else
-      begin
-        if Self.IsLocal(IE.Name) then
-          Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(IE.Name)]))
-        else
-          Self.Emit(Format(#9'movl %s(%%rip), %%eax', [IE.Name]));
-      end;
+        Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(IE.Name)]));
       if HasStep then
       begin
         if IsWide then
@@ -4277,25 +4283,21 @@ begin
         end;
       end;
       if IsWide then
-      begin
-        if Self.IsLocal(IE.Name) then
-          Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(IE.Name)]))
-        else
-          Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [IE.Name]));
-      end
+        Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(IE.Name)]))
       else
-      begin
-        if Self.IsLocal(IE.Name) then
-          Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(IE.Name)]))
-        else
-          Self.Emit(Format(#9'movl %%eax, %s(%%rip)', [IE.Name]));
-      end;
+        Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(IE.Name)]));
+
     end;
   end
   else if Arg0 is TFieldAccessExpr then
   begin
     FAE := TFieldAccessExpr(Arg0);
-    if FAE.IsImplicitSelf then
+    if FAE.Base <> nil then
+    begin
+      Self.EmitExprToEax(FAE.Base);
+      Self.Emit(#9'movq %rax, %rdx');
+    end
+    else if FAE.IsImplicitSelf then
     begin
       Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('Self')]));
       if (FAE.ImplicitBaseInfo <> nil) and (FAE.ImplicitBaseInfo.Offset > 0) then
@@ -4303,17 +4305,14 @@ begin
     end
     else if FAE.IsVarParam then
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FAE.RecordName]));
+      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]));
     end
     else
     begin
       if Self.IsLocal(FAE.RecordName) then
         Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rdx', [FAE.RecordName]));
+        Self.EmitLeaqGlobal(FAE.RecordName, '%rdx');
     end;
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
@@ -5061,7 +5060,7 @@ begin
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
           [NativeMangle(TIdentExpr(AExpr).ConstArraySymbol)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AExpr).Name]));
+        Self.EmitLeaqGlobal(TIdentExpr(AExpr).Name, '%rax');
       Exit;
     end;
     if TIdentExpr(AExpr).IsConstant then
@@ -7063,7 +7062,7 @@ begin
       if Self.IsLocal(FAE.RecordName) then
         Self.Emit(Format(#9'leaq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [FAE.RecordName]));
+        Self.EmitLeaqGlobal(FAE.RecordName, '%rdi');
     end
     else if FAE.IsVarParam then
     begin
@@ -7879,7 +7878,7 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [ACall.ObjectName]));
+          Self.EmitLeaqGlobal(ACall.ObjectName, '%rax');
       end
       else if ACall.IsVarParam then
       begin
@@ -7950,7 +7949,7 @@ begin
       pointer block starts at the Name_obj label. }
     Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax', [TIdentExpr(AArg).Name]))
   else if AArg is TIdentExpr then
-    Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [TIdentExpr(AArg).Name]))
+    Self.EmitLeaqGlobal(TIdentExpr(AArg).Name, '%rax')
   else if AArg is TFieldAccessExpr then
   begin
     { Record/class field as var argument (including fields of the sret
@@ -8130,8 +8129,7 @@ begin
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
           [NativeMangle(TIdentExpr(AArg).ConstArraySymbol)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-          [TIdentExpr(AArg).Name]));
+        Self.EmitLeaqGlobal(TIdentExpr(AArg).Name, '%rax');
       Self.Emit(#9'pushq %rax');
       Self.Emit(Format(#9'pushq $%d',
         [TStaticArrayTypeDesc(TIdentExpr(AArg).ResolvedType).HighBound -
@@ -10153,7 +10151,7 @@ begin
       if Self.IsLocal(Asgn.Name) then
         Self.Emit(Format(#9'leaq %s, %%rdi', [Self.VarOperand(Asgn.Name)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Asgn.Name]));
+        Self.EmitLeaqGlobal(Asgn.Name, '%rdi');
       { Source address: the cast argument (a TMethod record or another method ptr). }
       if TASTExpr(TFuncCallExpr(Asgn.Expr).Args.Items[0]) is TIdentExpr then
       begin
@@ -10454,7 +10452,7 @@ begin
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
         if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Asgn.Name]));
+        Self.EmitLeaqGlobal(Asgn.Name, '%rdi');
       end;
       Self.Emit(Format(#9'movq $%d, %%rdx', [Asgn.ResolvedLhsType.RawSize()]));
       Self.Emit(#9'callq memcpy');
@@ -11875,7 +11873,7 @@ begin
       if Self.IsLocal(SSA.ArrayName) then
         Self.Emit(Format(#9'leaq %s, %%rbx', [Self.VarOperand(SSA.ArrayName)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [SSA.ArrayName]));
+        Self.EmitLeaqGlobal(SSA.ArrayName, '%rbx');
       if SSA.IsVarParam then
         { var/out param: slot holds the caller variable's address; that is
           where the string pointer actually lives. }
@@ -12101,7 +12099,7 @@ begin
       else if Self.IsLocal(SSA.ArrayName) then
         Self.Emit(Format(#9'leaq %s, %%r14', [Self.VarOperand(SSA.ArrayName)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%r14', [SSA.ArrayName]));
+        Self.EmitLeaqGlobal(SSA.ArrayName, '%r14');
       Self.Emit(#9'addq %rax, %r14');          { %r14 = element address }
       Self.EmitInterfaceToFieldSlotsAt(SSA.ValueExpr, '%r14', 0, DAElemType);
       Self.Emit(#9'popq %r14');
@@ -12129,7 +12127,7 @@ begin
       else if Self.IsLocal(SSA.ArrayName) then
         Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [SSA.ArrayName]));
+        Self.EmitLeaqGlobal(SSA.ArrayName, '%rcx');
       Self.Emit(#9'addq %rcx, %rax');
       Self.Emit(#9'movq %rax, %rbx');
       Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%rbx');
@@ -12185,7 +12183,7 @@ begin
     else if Self.IsLocal(SSA.ArrayName) then
       Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
     else
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [SSA.ArrayName]));
+      Self.EmitLeaqGlobal(SSA.ArrayName, '%rcx');
     Self.Emit(#9'addq %rcx, %rax');
     Self.Emit(#9'movq %rax, %rcx');
     if IsFloatFamily(DAElemType) then
@@ -13864,7 +13862,7 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'leaq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [ACall.ObjectName]));
+          Self.EmitLeaqGlobal(ACall.ObjectName, '%rdi');
       end
       else if ACall.IsVarParam then
       begin
@@ -14606,7 +14604,7 @@ end;
   the body runs through the slots; a function returns its Result slot
   (64-bit-extended) in %rax/%eax.  M5 supports integer-family value
   parameters and integer-family/void return. }
-procedure TX86_64Backend.EmitFunctionDef(ADecl: TMethodDecl);
+procedure TX86_64Backend.EmitFunctionDef(ADecl: TMethodDecl; AExported: Boolean);
 var
   I, J:        Integer;
   P:           TMethodParam;
@@ -14632,7 +14630,7 @@ begin
       if NestedDecl.Body = nil then Continue;
       NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
       FDbgOuterDecl := ADecl;
-      Self.EmitFunctionDef(NestedDecl);
+      Self.EmitFunctionDef(NestedDecl, False);
     end;
     FDbgOuterDecl := SavedOuterDecl;
   end;
@@ -14689,7 +14687,8 @@ begin
   Self.DbgMarkParams(ADecl);
 
   Self.Emit('.text');
-  Self.Emit('.globl ' + Sym);
+  if AExported then
+    Self.Emit('.globl ' + Sym);
   Self.Emit(Sym + ':');
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
@@ -15205,13 +15204,13 @@ begin
     if Decl.TypeParams <> nil then Continue;       { generic templates: skip }
     if Decl.Body = nil then Continue;              { forward decls }
     if Decl.IsExternal then Continue;              { external: later }
-    Self.EmitFunctionDef(Decl);
+    Self.EmitFunctionDef(Decl, True);
   end;
 
   { Concrete generic function instances. }
   for I := 0 to AProg.GenericFuncInstances.Count - 1 do
     Self.EmitFunctionDef(
-      TGenericFuncInstance(AProg.GenericFuncInstances.Items[I]).MethodDecl);
+      TGenericFuncInstance(AProg.GenericFuncInstances.Items[I]).MethodDecl, True);
 
   { Pre-count try stmts in the program body so VarOperand resolves
     _exc_frame_N as globals (FFrame is nil in main, so the global path is
@@ -15294,6 +15293,7 @@ var
   ImplDecl:  TMethodDecl;
   VD:        TVarDecl;
   UnitSym:   TSymbolTable;
+  IntfNames: TStringList;
 begin
   FCurrentUnitName := AUnit.Name;
   FDbgSrcFile := AUnit.SourceFile;
@@ -15347,21 +15347,30 @@ begin
   { Standalone procedures/functions from the implementation block.  Skip class
     method stubs (OwnerTypeName <> '': their bodies were transferred to the
     class definition and emitted above), generic templates, forward decls, and
-    externals. }
-  for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
-  begin
-    ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
-    if ImplDecl.OwnerTypeName <> '' then Continue;
-    if ImplDecl.TypeParams <> nil then Continue;
-    if ImplDecl.Body = nil then Continue;
-    if ImplDecl.IsExternal then Continue;
-    Self.EmitFunctionDef(ImplDecl);
+    externals.  In monolithic mode, only interface-exported functions need
+    .globl — implementation-only helpers stay local to avoid collisions with
+    the same symbols in the RTL archive. }
+  IntfNames := TStringList.Create();
+  try
+    for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do
+      IntfNames.Add(TMethodDecl(AUnit.IntfBlock.ProcDecls.Items[I]).Name);
+    for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
+    begin
+      ImplDecl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
+      if ImplDecl.OwnerTypeName <> '' then Continue;
+      if ImplDecl.TypeParams <> nil then Continue;
+      if ImplDecl.Body = nil then Continue;
+      if ImplDecl.IsExternal then Continue;
+      Self.EmitFunctionDef(ImplDecl, IntfNames.IndexOf(ImplDecl.Name) >= 0);
+    end;
+  finally
+    IntfNames.Free();
   end;
 
   { Concrete generic function instances declared in this unit. }
   for I := 0 to AUnit.GenericFuncInstances.Count - 1 do
     Self.EmitFunctionDef(
-      TGenericFuncInstance(AUnit.GenericFuncInstances.Items[I]).MethodDecl);
+      TGenericFuncInstance(AUnit.GenericFuncInstances.Items[I]).MethodDecl, True);
 
   { Initialization section: emit as a function <Unit>_init that the program's
     $main calls before the program body.  (Finalization is not yet wired into
@@ -15405,13 +15414,13 @@ begin
   Self.Emit('.data');
   Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                          AUnit.GenericIntfInstances, UnitSym);
-  { Separate-compilation: emit this unit's string-literal blobs into its own
-    object.  The __sN labels are file-local, so each unit object carries the
-    literals its own code references — without this a unit method referencing a
-    string literal links with an undefined __sN.  In the whole-program (program)
-    path the literals are emitted once by EmitDataSection instead. }
-  if FSeparateCompile then
-    Self.EmitStrLitSection();
+end;
+
+procedure TX86_64Backend.FinalizeEmit;
+begin
+  if FFinalized then Exit;
+  FFinalized := True;
+  Self.EmitDataSection();
 end;
 
 end.

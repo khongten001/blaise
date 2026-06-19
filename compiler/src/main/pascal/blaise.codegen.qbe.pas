@@ -495,6 +495,7 @@ type
   public
     FDebugMode: Boolean;
     FExportAll: Boolean;
+    FSuppressSystemDefs: Boolean;
     FOpdfMode:  Boolean;
     constructor Create;
     destructor Destroy; override;
@@ -512,6 +513,7 @@ type
     procedure SetOpdfMode(AEnabled: Boolean);
     function  GetDebugFacts: TDbgFacts;
     procedure SetExportAll(AEnabled: Boolean);
+    procedure SetSuppressSystemDefs(AEnabled: Boolean);
     procedure AppendUnit(AUnit: TUnit);
     { Append program IR to existing output (companion to AppendUnit).
       Emits any remaining string literals and the $main function. }
@@ -13371,6 +13373,11 @@ begin
   FExportAll := AEnabled;
 end;
 
+procedure TCodeGenQBE.SetSuppressSystemDefs(AEnabled: Boolean);
+begin
+  FSuppressSystemDefs := AEnabled;
+end;
+
 procedure TCodeGenQBE.AppendUnit(AUnit: TUnit);
 var
   I, J, K, S:  Integer;
@@ -13481,10 +13488,10 @@ begin
           Emitted once per codegen pass when this unit declares any
           class.  In monolithic mode QBE emits these as local symbols
           (no .globl), so each .o gets its own private copy.  In
-          separate-compilation mode (FExportAll) they would collide
-          across per-unit .o files, so skip them here — the main
+          separate-compilation mode (FSuppressSystemDefs) they would
+          collide across per-unit .o files, so skip them here — the main
           program's AppendProgram emits the authoritative copies. }
-        if (not FExportAll) and (not FSystemDefsEmitted) and (FSymTable <> nil) then
+        if (not FSuppressSystemDefs) and (not FSystemDefsEmitted) and (FSymTable <> nil) then
           for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
           begin
             TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
@@ -13560,24 +13567,24 @@ begin
         { System-unit (TObject / TCustomAttribute) typeinfo + vtable.
           Emitted alongside the FieldCleanup stubs above, also gated
           on FSystemDefsEmitted.  Skipped in separate-compilation mode
-          (FExportAll) — the main program provides these. }
-        if (not FExportAll) and (not FSystemDefsEmitted) then
+          (FSuppressSystemDefs) — the main program provides these. }
+        if (not FSuppressSystemDefs) and (not FSystemDefsEmitted) then
           for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
           begin
             TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
             if TD.Def is TClassTypeDef then
             begin
-              EmitLine('data $typeinfo_TObject = { l 0, l 0, l ' +
+              EmitLine('export data $typeinfo_TObject = { l 0, l 0, l ' +
                        EmitClassNameRef('TObject') + ', l 0' +
                        ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
-              EmitLine('data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
+              EmitLine('export data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
                        EmitClassNameRef('TCustomAttribute') + ', l 0' +
                        ', l 8, l $_FieldCleanup_TCustomAttribute' +
                        ', l $vtable_TCustomAttribute, l 0 }');
               EmitLine('');
-              EmitLine('data $vtable_TObject = { l $typeinfo_TObject' +
+              EmitLine('export data $vtable_TObject = { l $typeinfo_TObject' +
                        ', l $TObject_Destroy, l $TObject_ToString }');
-              EmitLine('data $vtable_TCustomAttribute = { l $typeinfo_TCustomAttribute' +
+              EmitLine('export data $vtable_TCustomAttribute = { l $typeinfo_TCustomAttribute' +
                        ', l $TObject_Destroy, l $TObject_ToString }');
               EmitLine('');
               FSystemDefsEmitted := True;

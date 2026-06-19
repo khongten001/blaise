@@ -43,7 +43,6 @@ type
     FDebugMode: Boolean;
     FSeparateCompile: Boolean;
     FBackend:   TNativeBackend;
-    FOutput:    string;
     FDbgFacts:  TDbgFacts;   { owned; created by SetOpdfMode(True) }
     procedure EnsureBackend;
   public
@@ -103,7 +102,6 @@ begin
   FDebugMode := False;
   FSeparateCompile := False;
   FBackend   := nil;
-  FOutput    := '';
 end;
 
 destructor TCodeGenNative.Destroy;
@@ -158,7 +156,7 @@ begin
   FBackend.SetSymbolTable(FSymTable);
   FBackend.SetDebugMode(FDebugMode);
   FBackend.SetDebugFacts(FDbgFacts);
-  FOutput := FBackend.GenerateProgram(AProg);
+  FBackend.GenerateProgram(AProg);
 end;
 
 procedure TCodeGenNative.GenerateUnit(AUnit: TUnit);
@@ -167,7 +165,7 @@ begin
   FBackend.SetSymbolTable(FSymTable);
   FBackend.SetDebugMode(FDebugMode);
   FBackend.SetDebugFacts(FDbgFacts);
-  FOutput := FBackend.GenerateUnit(AUnit);
+  FBackend.GenerateUnit(AUnit);
 end;
 
 procedure TCodeGenNative.AppendUnit(AUnit: TUnit);
@@ -178,7 +176,6 @@ begin
   FBackend.SetSeparateCompile(FSeparateCompile);
   FBackend.SetDebugFacts(FDbgFacts);
   FBackend.AppendUnit(AUnit);
-  FOutput := FBackend.GetOutput();
 end;
 
 procedure TCodeGenNative.AppendProgram(AProg: TProgram);
@@ -188,12 +185,11 @@ begin
   FBackend.SetDebugMode(FDebugMode);
   FBackend.SetDebugFacts(FDbgFacts);
   FBackend.AppendProgram(AProg);
-  FOutput := FBackend.GetOutput();
 end;
 
 function TCodeGenNative.GetOutput: string;
 begin
-  Result := FOutput;
+  Result := FBackend.GetOutput();
 end;
 
 end.
