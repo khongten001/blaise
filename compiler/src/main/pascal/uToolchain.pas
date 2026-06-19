@@ -89,6 +89,12 @@ function ResolveAssembler: TTool;
 function ResolveLinker(const ATarget: TTargetDesc): TTool;
 function FindRTLArchive(const ATarget: TTargetDesc): string;
 
+{ Locate the system CRT startup objects needed for dynamic (PIE) linking.
+  Returns True when all five objects are found; on False the paths are empty
+  and the caller should fall back to the external linker. }
+function FindCrtObjects(out ACrt1, ACrti, ACrtn,
+  ACrtBeginS, ACrtEndS: string): Boolean;
+
 { Walks $PATH for the first file named ABaseName that exists.  Returns the
   absolute path on hit, '' on miss.  On Windows hosts also tries '.exe'. }
 function WhichInPath(const ABaseName: string): string;
@@ -329,6 +335,62 @@ begin
   Result := IncludeTrailingPathDelimiter(BinDir) + 'blaise_rtl.a';
   if FileExists(Result) then Exit;
   Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
+{ CRT object discovery                                                 }
+{ ------------------------------------------------------------------ }
+
+function FindCrtObjects(out ACrt1, ACrti, ACrtn,
+  ACrtBeginS, ACrtEndS: string): Boolean;
+const
+  CrtDirs: array[0..2] of string = (
+    '/usr/lib/x86_64-linux-gnu',
+    '/usr/lib64',
+    '/usr/lib'
+  );
+  GccVers: array[0..3] of string = ('14', '13', '12', '11');
+  GccBases: array[0..1] of string = (
+    '/usr/lib/gcc/x86_64-linux-gnu',
+    '/usr/lib/gcc/x86_64-redhat-linux'
+  );
+var
+  CrtDir, GccDir: string;
+  I, J: Integer;
+begin
+  ACrt1 := '';
+  ACrti := '';
+  ACrtn := '';
+  ACrtBeginS := '';
+  ACrtEndS := '';
+  Result := False;
+
+  for I := 0 to High(CrtDirs) do
+  begin
+    CrtDir := CrtDirs[I];
+    if FileExists(CrtDir + '/Scrt1.o') then
+    begin
+      ACrt1 := CrtDir + '/Scrt1.o';
+      ACrti := CrtDir + '/crti.o';
+      ACrtn := CrtDir + '/crtn.o';
+      Break;
+    end;
+  end;
+  if ACrt1 = '' then Exit;
+
+  for I := 0 to High(GccBases) do
+    for J := 0 to High(GccVers) do
+    begin
+      GccDir := GccBases[I] + '/' + GccVers[J];
+      if FileExists(GccDir + '/crtbeginS.o') then
+      begin
+        ACrtBeginS := GccDir + '/crtbeginS.o';
+        ACrtEndS := GccDir + '/crtendS.o';
+        Result := FileExists(ACrti) and FileExists(ACrtn)
+                  and FileExists(ACrtEndS);
+        Exit;
+      end;
+    end;
 end;
 
 { ------------------------------------------------------------------ }

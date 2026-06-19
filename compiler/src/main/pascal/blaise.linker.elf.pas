@@ -464,6 +464,8 @@ const
   ET_DYN  = 3;
   EM_386  = 3;
 
+  EV_CURRENT = 1;
+
   ELFOSABI_SYSV    = 0;
   ELFOSABI_FREEBSD = 9;
 
@@ -903,10 +905,12 @@ begin
       Existing := Self.FindSymbol(Sym.Name);
       if Existing <> nil then
       begin
-        { Both strong → duplicate.  Strong over weak → replace. }
+        { Strong over weak → replace.  Both strong → first definition wins
+          (matches ld behaviour when archive members re-export a symbol the
+          main object already provides). }
         if (Sym.Bind = STB_GLOBAL) and Existing.Defined
            and (not Existing.IsWeakSlot) then
-          raise ELinker.Create('duplicate symbol: ' + Sym.Name);
+          Continue;
         if Sym.Bind = STB_GLOBAL then
         begin
           Existing.Addr := Base + Sym.Value;
@@ -1297,10 +1301,12 @@ var
   GotRelOff: Int64;
   PltRelOff: Int64;
 begin
-  { Phase C program-header count: PT_PHDR, PT_INTERP, PT_LOAD x4
-    (read-only, executable, relro, writable), PT_DYNAMIC, PT_TLS,
-    PT_GNU_STACK, PT_GNU_RELRO = 10 max.  Allocate generously. }
-  PhdrCount := 10;
+  { Phase C program-header count: PT_PHDR, PT_INTERP, PT_LOAD x4,
+    PT_DYNAMIC, PT_TLS, PT_GNU_STACK, PT_GNU_RELRO = 11 max.
+    Always reserve space for PT_TLS — real Blaise programs use
+    threadvars (SHF_TLS sections), so the header slot is almost
+    always needed. }
+  PhdrCount := 11;
   HdrBytes := ELF64_EHDR_SIZE + Int64(PhdrCount) * 56;
 
   { Read-only run: starts after headers. }
@@ -1481,7 +1487,9 @@ begin
       Self.PlaceSection(M, Addr);
   end;
 
-  { TLS sections (.tdata, .tbss). }
+  { TLS sections (.tdata, .tbss).  PlaceSection aligns AAddr before
+    recording — FTlsAddr must be the aligned start, not the pre-align
+    cursor, so we read it back from MergedAddr after the first place. }
   FTlsAddr := 0;
   FTlsSize := 0;
   FTlsAlign := 1;
@@ -1489,8 +1497,8 @@ begin
   M := FMerger.FindMerged('.tdata');
   if M <> nil then
   begin
-    FTlsAddr := Addr;
     Self.PlaceSection(M, Addr);
+    FTlsAddr := Self.MergedAddr(M);
     FTlsFileSize := M.Size;
     FTlsSize := M.Size;
     if M.Align > FTlsAlign then FTlsAlign := M.Align;
@@ -1498,8 +1506,8 @@ begin
   M := FMerger.FindMerged('.tbss');
   if M <> nil then
   begin
-    if FTlsAddr = 0 then FTlsAddr := Addr;
     Self.PlaceSection(M, Addr);
+    if FTlsAddr = 0 then FTlsAddr := Self.MergedAddr(M);
     FTlsSize := FTlsSize + M.Size;
     if M.Align > FTlsAlign then FTlsAlign := M.Align;
   end;
@@ -1972,16 +1980,8 @@ begin
 
   HasTls := FTlsSize > 0;
 
-  { Count program headers. }
-  PhdrCount := 4;   { PT_PHDR, PT_INTERP, PT_GNU_STACK, PT_NULL → at least }
-  PhdrCount := PhdrCount + 1; { PT_LOAD: read-only headers + metadata }
-  PhdrCount := PhdrCount + 1; { PT_LOAD: executable }
-  PhdrCount := PhdrCount + 1; { PT_LOAD: RELRO + writable }
-  PhdrCount := PhdrCount + 1; { PT_LOAD: data + bss }
-  PhdrCount := PhdrCount + 1; { PT_DYNAMIC }
-  PhdrCount := PhdrCount + 1; { PT_GNU_RELRO }
-  if HasTls then
-    PhdrCount := PhdrCount + 1;
+  { Must match the PhdrCount used by LayoutDynamic so addresses agree. }
+  PhdrCount := 11;
   HdrBytes := ELF64_EHDR_SIZE + Int64(PhdrCount) * 56;
 
   { The read-only segment starts at file/vaddr 0, covering the ELF
@@ -2098,18 +2098,28 @@ begin
   Buf := Buf + LkLE(8, 8);
   PhIdx := PhIdx + 1;
 
-  { PT_TLS }
+  { PT_TLS — always emitted (slot reserved by LayoutDynamic); zero-sized
+    when there are no TLS sections. }
+  Buf := Buf + LkLE(PT_TLS, 4) + LkLE(PF_R, 4);
   if HasTls then
   begin
-    Buf := Buf + LkLE(PT_TLS, 4) + LkLE(PF_R, 4);
     Buf := Buf + LkLE(FTlsAddr, 8);
     Buf := Buf + LkLE(FTlsAddr, 8);
     Buf := Buf + LkLE(FTlsAddr, 8);
     Buf := Buf + LkLE(FTlsFileSize, 8);
     Buf := Buf + LkLE(FTlsSize, 8);
     Buf := Buf + LkLE(FTlsAlign, 8);
-    PhIdx := PhIdx + 1;
+  end
+  else
+  begin
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(0, 8);
+    Buf := Buf + LkLE(8, 8);
   end;
+  PhIdx := PhIdx + 1;
 
   { PT_GNU_STACK — non-executable stack. }
   Buf := Buf + LkLE(PT_GNU_STACK, 4) + LkLE(PF_R or PF_W, 4);

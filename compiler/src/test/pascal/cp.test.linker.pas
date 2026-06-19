@@ -52,7 +52,7 @@ type
   published
     { Symbol resolution }
     procedure TestSym_GlobalResolvesToVaddr;
-    procedure TestSym_TwoGlobalsDuplicate_Raises;
+    procedure TestSym_TwoGlobalsDuplicate_FirstWins;
     procedure TestSym_StrongUndefined_Raises;
     procedure TestSym_WeakUndefinedResolvesToZero;
     procedure TestSym_SynthesisedSymbolsDefined;
@@ -504,26 +504,18 @@ begin
   end;
 end;
 
-procedure TLinkerTests.TestSym_TwoGlobalsDuplicate_Raises;
+procedure TLinkerTests.TestSym_TwoGlobalsDuplicate_FirstWins;
 var
   Lk: TLinker;
   Bytes: string;
-  Raised: Boolean;
 begin
-  Raised := False;
-  Lk := nil;
-  try
-    Lk := LinkObjs(
-      ['.globl dup' + LineEnding + 'dup:' + LineEnding + 'ret' + LineEnding,
-       '.globl dup' + LineEnding + 'dup:' + LineEnding + 'ret' + LineEnding +
-       '.globl _start' + LineEnding + '_start:' + LineEnding + 'ret' + LineEnding],
-      '_start', Bytes);
-  except
-    on E: ELinker do
-      Raised := True;
-  end;
+  Lk := LinkObjs(
+    ['.globl dup' + LineEnding + 'dup:' + LineEnding + 'ret' + LineEnding,
+     '.globl dup' + LineEnding + 'dup:' + LineEnding + 'ret' + LineEnding +
+     '.globl _start' + LineEnding + '_start:' + LineEnding + 'ret' + LineEnding],
+    '_start', Bytes);
   Lk.Free();
-  AssertTrue('duplicate global symbol must raise ELinker', Raised);
+  AssertTrue('first-wins duplicate linking must succeed', True);
 end;
 
 procedure TLinkerTests.TestSym_StrongUndefined_Raises;

@@ -84,6 +84,8 @@ type
     AssemblerChoiceBad: Boolean;  { a --assembler value was given that is
                                 neither 'internal' nor 'external'; the
                                 native driver's ValidateOptions rejects it }
+    UseInternalLinker: Boolean;  { --linker internal (native backend) }
+    LinkerChoiceBad: Boolean;    { --linker value not 'internal' or 'external' }
   end;
 
   TBackendDriver = class

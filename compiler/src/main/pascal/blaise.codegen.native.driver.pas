@@ -60,11 +60,15 @@ type
     function SupportsIncremental: Boolean; override;
     function SupportsWarmCache: Boolean; override;
 
-    { --- Option contract: owns --assembler internal|external --- }
+    { --- Option contract: owns --assembler/--linker internal|external --- }
     function AcceptOption(const AFlag, ANextArg: string;
       AOpts: TBackendOpts): TOptionAccept; override;
     procedure DescribeOptions(ALines: TStringList); override;
     function ValidateOptions(AOpts: TBackendOpts): string; override;
+
+  private
+    function LinkViaInternalLinker(const AObjFile, AOutputFile: string;
+      AOpts: TBackendOpts; AExtraObjects: TStringList): string;
   end;
 
 implementation
@@ -72,7 +76,9 @@ implementation
 uses
   SysUtils, Classes,
   uToolchain,
-  blaise.assembler.x86_64;
+  blaise.assembler.x86_64,
+  blaise.elfreader,
+  blaise.linker.elf;
 
 function TNativeBackendDriver.Kind: TBackendKind;
 begin
@@ -175,6 +181,56 @@ begin
     Result := 'cc -c error (exit ' + IntToStr(ExitCode) + '): ' + Msg;
 end;
 
+function TNativeBackendDriver.LinkViaInternalLinker(
+  const AObjFile, AOutputFile: string;
+  AOpts: TBackendOpts; AExtraObjects: TStringList): string;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  TC: TToolchain;
+  Crt1, Crti, Crtn, CrtBeginS, CrtEndS: string;
+  I: Integer;
+begin
+  Result := '';
+  if not FindCrtObjects(Crt1, Crti, Crtn, CrtBeginS, CrtEndS) then
+    Exit('internal linker: CRT startup objects not found');
+
+  TC := ResolveToolchain(AOpts.Target);
+
+  Lk := TLinker.Create();
+  try
+    try
+      Lk.SetDynamic(True);
+      Lk.AddCrtObject(Crt1);
+      Lk.AddCrtObject(Crti);
+      Lk.AddCrtObject(CrtBeginS);
+
+      Obj := ReadElfObjectFile(AObjFile);
+      Lk.AddOwnedObject(Obj);
+
+      if AExtraObjects <> nil then
+        for I := 0 to AExtraObjects.Count - 1 do
+        begin
+          Obj := ReadElfObjectFile(AExtraObjects.Strings[I]);
+          Lk.AddOwnedObject(Obj);
+        end;
+
+      if TC.RTLPath <> '' then
+        Lk.AddArchive(TC.RTLPath);
+
+      Lk.AddCrtObject(CrtEndS);
+      Lk.AddCrtObject(Crtn);
+      Lk.Link('_start', AOutputFile);
+    except
+      on E: Exception do
+        Result := 'internal linker error [' + Exception(E).ClassName + ']: ' +
+          Exception(E).Message;
+    end;
+  finally
+    Lk.Free();
+  end;
+end;
+
 function TNativeBackendDriver.LinkProgram(const AIRFile, AOutputFile: string;
   AOpts: TBackendOpts; AExtraObjects: TStringList): string;
 var
@@ -202,14 +258,30 @@ begin
     finally
       AsmText.Free();
     end;
-    Result := Self.LinkViaToolchain(ObjFile, AOutputFile, AOpts, AExtraObjects);
+    if AOpts.UseInternalLinker then
+      Result := Self.LinkViaInternalLinker(ObjFile, AOutputFile, AOpts,
+        AExtraObjects)
+    else
+      Result := Self.LinkViaToolchain(ObjFile, AOutputFile, AOpts, AExtraObjects);
+    if Result = '' then
+      DeleteFile(ObjFile);
+  end
+  else if AOpts.UseInternalLinker then
+  begin
+    { External assembler + internal linker: assemble to .o via cc -c,
+      then link with the internal linker. }
+    ObjFile := ChangeFileExt(AOutputFile, '.o');
+    Result := Self.LowerToObject(AIRFile, ObjFile, AOpts);
+    if Result <> '' then Exit;
+    Result := Self.LinkViaInternalLinker(ObjFile, AOutputFile, AOpts,
+      AExtraObjects);
     if Result = '' then
       DeleteFile(ObjFile);
   end
   else
-    { External assembler: the cc driver assembles and links the .s in
-      one invocation.  The IR file is owned by the caller — no cleanup
-      here. }
+    { External assembler + external linker: the cc driver assembles and
+      links the .s in one invocation.  The IR file is owned by the
+      caller — no cleanup here. }
     Result := Self.LinkViaToolchain(AIRFile, AOutputFile, AOpts, AExtraObjects);
 end;
 
@@ -218,12 +290,15 @@ function TNativeBackendDriver.AcceptOption(const AFlag, ANextArg: string;
 begin
   if AFlag = '--assembler' then
   begin
-    { Accept the value here regardless of content; ValidateOptions
-      rejects an out-of-range value with the exact legacy message so the
-      user-facing diagnostic is unchanged.  internal sets UseInternalAsm;
-      anything else leaves it False (external default). }
     AOpts.UseInternalAsm := (ANextArg = 'internal');
     AOpts.AssemblerChoiceBad :=
+      (ANextArg <> 'internal') and (ANextArg <> 'external');
+    Result := oaConsumedValue;
+  end
+  else if AFlag = '--linker' then
+  begin
+    AOpts.UseInternalLinker := (ANextArg = 'internal');
+    AOpts.LinkerChoiceBad :=
       (ANextArg <> 'internal') and (ANextArg <> 'external');
     Result := oaConsumedValue;
   end
@@ -235,13 +310,17 @@ procedure TNativeBackendDriver.DescribeOptions(ALines: TStringList);
 begin
   ALines.Add(FormatFlagLine('--assembler <id>',
     'internal | external (default: external)'));
+  ALines.Add(FormatFlagLine('--linker <id>',
+    'internal | external (default: external)'));
 end;
 
 function TNativeBackendDriver.ValidateOptions(AOpts: TBackendOpts): string;
 begin
   Result := '';
   if AOpts.AssemblerChoiceBad then
-    Result := '--assembler must be ''internal'' or ''external''';
+    Result := '--assembler must be ''internal'' or ''external'''
+  else if AOpts.LinkerChoiceBad then
+    Result := '--linker must be ''internal'' or ''external''';
 end;
 
 initialization

@@ -58,7 +58,7 @@ const
   SHF_WRITE     = $1;
   SHF_ALLOC     = $2;
   SHF_EXECINSTR = $4;
-  SHF_TLS       = $200;
+  SHF_TLS       = $400;
 
   { Symbol binding / type }
   STB_LOCAL  = 0;
