@@ -10573,14 +10573,17 @@ begin
         FDynArgName := TIdentExpr(TASTExpr(PC.Args.Items[0])).Name;
         FDynElemSz :=
           TDynArrayTypeDesc(TASTExpr(PC.Args.Items[0]).ResolvedType).ElementType.RawSize();
-        { Load current data ptr into %rdi. }
+        { Evaluate the new-length expression FIRST.  It may itself emit a call
+          (e.g. SetLength(Result, Length(A)) lowers Length(A) to a
+          _DynArrayLength call) which clobbers %rdi, so the array pointer must
+          be loaded into %rdi only after this expression is fully evaluated. }
+        Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+        Self.Emit(#9'movl %eax, %esi');
+        { Load current data ptr into %rdi (after N is evaluated). }
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FDynArgName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FDynArgName]));
-        { New length into %esi. }
-        Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-        Self.Emit(#9'movl %eax, %esi');
         { Element size into %edx. }
         Self.Emit(Format(#9'movl $%d, %%edx', [FDynElemSz]));
         Self.Emit(#9'callq _DynArraySetLength');

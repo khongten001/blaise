@@ -37,6 +37,16 @@ type
     procedure TestRun_ChainedWrite_Int2D;
     procedure TestRun_ChainedWrite_String2D;
     procedure TestRun_ChainedWrite_Int3D;
+    { SetLength(dest, Length(src)) where the length sub-expression itself
+      emits a call (_DynArrayLength) — must not clobber the dest pointer
+      register before the resize call.  Regression for the native backend
+      Result-aliases-param bug: writes to Result[i] were lost because
+      SetLength resized the parameter, not Result. }
+    procedure TestRun_SetLengthResultFromParamLength;
+    procedure TestRun_DiffOfConstArrayParams;
+    procedure TestRun_SetLengthGlobalFromGlobalLength;
+    procedure TestRun_SetLengthLocalFromLocalLength;
+    procedure TestRun_SetLengthFromUserFuncCall;
   end;
 
 implementation
@@ -148,6 +158,93 @@ const
     end.
     ''';
 
+  { SetLength(Result, Length(A)) inside a dynarray-returning function whose
+    parameter is also a dynarray.  Stores a constant 7 — output must be 7,
+    not A[0] (=5).  This is the minimal native Result-aliases-param repro. }
+  SrcResultFromParamLen = '''
+    program Prg;
+    type TA = array of UInt32;
+    function F(const A, B: TA): TA;
+    var I: Integer;
+    begin
+      SetLength(Result, Length(A));
+      I := 0;
+      while I < Length(A) do begin Result[I] := 7; I := I + 1 end;
+    end;
+    var X, Y, Z: TA;
+    begin
+      SetLength(X, 1); X[0] := 5;
+      SetLength(Y, 1); Y[0] := 3;
+      Z := F(X, Y);
+      WriteLn(Z[0])
+    end.
+    ''';
+
+  { The original symptom: store the difference of two indexed const-array-param
+    loads.  Result[0] must be 2 (=5-3), not 5. }
+  SrcDiffConstParams = '''
+    program Prg;
+    type TA = array of UInt32;
+    function Diff(const A, B: TA): TA;
+    var I: Integer;
+    begin
+      SetLength(Result, Length(A));
+      I := 0;
+      while I < Length(A) do begin Result[I] := A[I] - B[I]; I := I + 1 end;
+    end;
+    var R, X, Y: TA;
+    begin
+      SetLength(X, 1); X[0] := 5;
+      SetLength(Y, 1); Y[0] := 3;
+      R := Diff(X, Y);
+      WriteLn(R[0])
+    end.
+    ''';
+
+  { Global-array target: SetLength(G, Length(H)) at program scope exercises
+    the global (%rip-relative) store-back path, not the local one. }
+  SrcGlobalFromGlobalLen = '''
+    program Prg;
+    var G, H: array of Integer; I: Integer;
+    begin
+      SetLength(H, 4);
+      for I := 0 to 3 do H[I] := I + 1;
+      SetLength(G, Length(H));
+      for I := 0 to High(G) do G[I] := 9;
+      for I := 0 to High(G) do Write(G[I]);
+      WriteLn
+    end.
+    ''';
+
+  { Two local arrays: SetLength(A, Length(B)) where B is a local — the length
+    call must not clobber A's pointer before the resize. }
+  SrcLocalFromLocalLen = '''
+    program Prg;
+    var A, B: array of Integer; I: Integer;
+    begin
+      SetLength(B, 3);
+      SetLength(A, Length(B));
+      for I := 0 to High(A) do A[I] := 8;
+      for I := 0 to High(A) do Write(A[I]);
+      WriteLn
+    end.
+    ''';
+
+  { Length expression is a user-function call (the most general rdi-clobber):
+    SetLength(A, Pick()) where Pick() returns an Integer via its own call. }
+  SrcFromUserFuncCall = '''
+    program Prg;
+    var A: array of Integer; I: Integer;
+    function Pick: Integer;
+    begin Result := 3 end;
+    begin
+      SetLength(A, Pick());
+      for I := 0 to High(A) do A[I] := 6;
+      for I := 0 to High(A) do Write(A[I]);
+      WriteLn
+    end.
+    ''';
+
 procedure TE2EDynArrayTests.TestRun_SetLengthFillSum;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
@@ -212,6 +309,36 @@ procedure TE2EDynArrayTests.TestRun_ChainedWrite_Int3D;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcChainedInt3D, '01234567' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_SetLengthResultFromParamLength;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcResultFromParamLen, '7' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_DiffOfConstArrayParams;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcDiffConstParams, '2' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_SetLengthGlobalFromGlobalLength;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcGlobalFromGlobalLen, '9999' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_SetLengthLocalFromLocalLength;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcLocalFromLocalLen, '888' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_SetLengthFromUserFuncCall;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcFromUserFuncCall, '666' + LE, 0);
 end;
 
 initialization
