@@ -30,6 +30,9 @@ type
     procedure TestSingleVarDecl;
     procedure TestMultipleVarDecls;
     procedure TestMultiNameVarDecl;
+    { Qualified type name 'UnitName.TypeName' is captured whole. }
+    procedure TestQualifiedTypeName;
+    procedure TestQualifiedTypeName_DottedUnit;
 
     { Statements }
     procedure TestEmptyBeginEnd;
@@ -168,6 +171,35 @@ begin
     AssertEquals('1 name', 1, Decl.Names.Count);
     AssertEquals('Name', 'x', Decl.Names.Strings[0]);
     AssertEquals('Type', 'Integer', Decl.TypeName);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TParserTests.TestQualifiedTypeName;
+var
+  Prog: TProgram;
+begin
+  Prog := ParseSource('program P; var x: System.Integer; begin end.');
+  try
+    AssertEquals('qualified type captured whole', 'System.Integer',
+      TVarDecl(Prog.Block.Decls.Items[0]).TypeName);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TParserTests.TestQualifiedTypeName_DottedUnit;
+var
+  Prog: TProgram;
+begin
+  { The unit qualifier may itself be dotted; the whole dotted path is
+    carried through to the type name. }
+  Prog := ParseSource('program P; var x: System.SysUtils.TFoo; begin end.');
+  try
+    AssertEquals('dotted-unit qualified type captured whole',
+      'System.SysUtils.TFoo',
+      TVarDecl(Prog.Block.Decls.Items[0]).TypeName);
   finally
     Prog.Free();
   end;

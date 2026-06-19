@@ -385,6 +385,17 @@ begin
       [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
   Result := FCurrent.Value;
   Advance();
+  { Qualified type name: 'UnitName.TypeName'.  The unit qualifier may itself
+    be dotted (e.g. System.SysUtils.TFormatSettings).  A type is always the
+    final identifier; the leading components name the (possibly dotted) unit.
+    Carry the full dotted form through — the semantic type resolver strips the
+    unit qualifier and resolves the tail via the uses chain. }
+  while Check(tkDot) and (PeekKind() = tkIdent) do
+  begin
+    Advance();  { consume '.' }
+    Result := Result + '.' + FCurrent.Value;
+    Advance();
+  end;
   if Check(tkLessThan) then
   begin
     Advance();  { consume '<' }

@@ -1932,15 +1932,53 @@ begin
   Result := Sym;
 end;
 
+{ For a plain dotted identifier path 'A.B.C' (every component an identifier,
+  single-dot separators) return the final component 'C'.  In a qualified type
+  reference 'UnitName.TypeName' the type is always that final identifier and
+  the leading components name the (possibly dotted) unit.  Returns '' when
+  AName is not such a path — e.g. the bracket/space/caret/angle-bracket forms
+  used to encode array, pointer, set and generic-instance types — leaving
+  those untouched for the on-demand resolver. }
+function UnitQualifierTail(const AName: string): string;
+var
+  I, LastDot: Integer;
+  B: Integer;
+begin
+  Result  := '';
+  LastDot := -1;
+  for I := 0 to Length(AName) - 1 do
+  begin
+    B := AName[I];
+    if B = Ord('.') then
+      LastDot := I
+    else if not (((B >= Ord('A')) and (B <= Ord('Z'))) or
+                 ((B >= Ord('a')) and (B <= Ord('z'))) or
+                 ((B >= Ord('0')) and (B <= Ord('9'))) or
+                 (B = Ord('_'))) then
+      Exit;  { contains a non-identifier byte — not a qualified name }
+  end;
+  if (LastDot >= 0) and (LastDot < Length(AName) - 1) then
+    Result := Copy(AName, LastDot + 1, MaxInt);
+end;
+
 function TSymbolTable.FindType(const AName: string): TTypeDesc;
 var
-  Sym: TSymbol;
+  Sym:  TSymbol;
+  Tail: string;
 begin
   Sym := Lookup(AName);  { honour uses-chain visibility }
   if (Sym <> nil) and (Sym.Kind = skType) then
-    Result := Sym.TypeDesc
-  else
-    Result := nil;
+    Exit(Sym.TypeDesc);
+  { Qualified type name 'UnitName.TypeName' — resolve by the final dotted
+    component through the same uses chain (the qualifier names a used unit). }
+  Tail := UnitQualifierTail(AName);
+  if Tail <> '' then
+  begin
+    Sym := Lookup(Tail);
+    if (Sym <> nil) and (Sym.Kind = skType) then
+      Exit(Sym.TypeDesc);
+  end;
+  Result := nil;
 end;
 
 function IsUnmangledUnit(const AUnitName: string): Boolean;

@@ -55,6 +55,8 @@ type
     { ------------------------------------------------------------------ }
     procedure TestSemantic_Unit_OK;
     procedure TestSemantic_Unit_WithType_OK;
+    { Qualified type name 'System.Integer' resolves to the builtin. }
+    procedure TestSemantic_Unit_QualifiedType_OK;
     procedure TestSemantic_Unit_ImplBodyUsesIntfType;
     procedure TestSemantic_Unit_SignatureMismatch_ParamCount_RaisesError;
     procedure TestSemantic_Unit_MissingImpl_RaisesError;
@@ -233,6 +235,23 @@ const
         end.
         ''';
 
+  { Qualified type names resolve by their final dotted component through the
+    uses chain.  'System.Integer' needs no cross-unit load — System is
+    implicit and Integer is builtin — so it self-containedly exercises the
+    qualifier-stripping type resolver. }
+  SrcUnitQualifiedType =
+    '''
+        unit QualT;
+        interface
+        function Twice(N: System.Integer): System.Integer;
+        implementation
+        function Twice(N: System.Integer): System.Integer;
+        begin
+          Result := N * 2
+        end;
+        end.
+        ''';
+
 { ------------------------------------------------------------------ }
 { Lexer tests                                                          }
 { ------------------------------------------------------------------ }
@@ -392,6 +411,11 @@ end;
 procedure TUnitTests.TestSemantic_Unit_WithType_OK;
 begin
   AnalyseUnit(SrcUnitWithType).Free();
+end;
+
+procedure TUnitTests.TestSemantic_Unit_QualifiedType_OK;
+begin
+  AnalyseUnit(SrcUnitQualifiedType).Free();
 end;
 
 procedure TUnitTests.TestSemantic_Unit_ImplBodyUsesIntfType;

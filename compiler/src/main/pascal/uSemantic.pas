@@ -2352,6 +2352,7 @@ var
   EnumDesc: TEnumTypeDesc;
   SAT: TStaticArrayTypeDesc;
   DAT: TDynArrayTypeDesc;
+  I, LtPos, DotPos: Integer;
 begin
   Result := FTable.FindType(AName);
   if Result <> nil then Exit;
@@ -2537,6 +2538,25 @@ begin
       SemanticError(Format(
         'Set base type ''%s'' must be an enumeration, Byte, or Boolean',
         [BaseType.Name]), 0, 0);
+    Exit;
+  end;
+  { Qualified type name 'UnitName.TypeName' — the unit qualifier may itself be
+    dotted (System.SysUtils.TFormatSettings).  A type is a single identifier,
+    so strip everything up to the final '.' that precedes any generic '<...>'
+    argument list and resolve the tail via the normal uses chain (the qualifier
+    names the unit, already loaded by the 'uses' clause).  A qualified generic
+    instance (Unit.TList<Integer>) reduces to the bare 'TList<Integer>', which
+    the generic branch above instantiates. }
+  LtPos := StrPos('<', AName);
+  if LtPos < 0 then
+    LtPos := Length(AName);
+  DotPos := -1;
+  for I := 0 to LtPos - 1 do
+    if StrAt(AName, I) = Ord('.') then
+      DotPos := I;
+  if DotPos >= 0 then
+  begin
+    Result := FindTypeOrInstantiate(StrCopyTail(AName, DotPos + 1));
     Exit;
   end;
   if StrPos('<', AName) >= 0 then
