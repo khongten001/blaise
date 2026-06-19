@@ -747,7 +747,7 @@ option for explicit selection.
 
 == Implementation Phases
 
-=== Phase A: ELF Reader + Archive Reader + Section Merge
+=== Phase A: ELF Reader + Archive Reader + Section Merge [IMPLEMENTED]
 
 * Implement `blaise.elfreader.pas` — parse ELF headers, section headers,
   symbol tables, relocation entries from `.o` files.
@@ -758,7 +758,7 @@ option for explicit selection.
   contents match.  Read `blaise_rtl.a` and verify all 11 members parse
   correctly (validates the long-name table handling).
 
-=== Phase B: Symbol Resolution + Static Relocations
+=== Phase B: Symbol Resolution + Static Relocations [IMPLEMENTED]
 
 * Build global symbol table from merged sections.
 * Define linker-synthesised symbols (`_GLOBAL_OFFSET_TABLE_`,
@@ -773,6 +773,37 @@ option for explicit selection.
   output or the `cc`-linked binary.  (Every Blaise program reaches libc
   through the RTL, so a truly standalone test needs a hand-written
   fixture that uses `SYS_exit` directly.)
+
+Implemented in `TLinker` (`blaise.linker.elf.pas`).  Layout assigns
+virtual addresses at a fixed base (`0x400000`) in two permission runs
+— an executable run (`.text` + `.rodata`, sharing the first page with
+the ELF header and program headers) and a writable run (`.data` +
+`.bss`) starting on a fresh page.  `BuildSymbols` enters every
+`STB_GLOBAL`/`STB_WEAK` definition (global-over-weak, two-globals =
+duplicate error); `DefineSynthSymbols` adds the five linker symbols;
+`ResolveSymbolAddr` handles local section-relative, absolute, resolved
+global, weak-undefined→0, and strong-undefined→error.  `ApplyRelocations`
+patches `R_X86_64_PC32`/`PLT32` as `S + A − P` and rejects the
+dynamic-only forms (`R_X86_64_64`, GOT/TLS) and absolute 32-bit symbol
+references with a diagnostic, deferring them to Phase C.  `EmitExecutable`
+writes the `ET_EXEC` image (ELF header, two `PT_LOAD` program headers,
+relocated section payloads, and a section-header table for tooling) and
+marks the file executable.
+
+Platform/architecture values that differ across the roadmap targets
+(`Is64`, `OSABI`, `EMachine`, `BaseAddr`, `PageSize`) are collected in
+`TLinkTarget` rather than hard-coded, so FreeBSD x86-64 (different
+`EI_OSABI`) and a future i386 ELF target are a new target record, and a
+PE/Mach-O container would be a sibling writer behind the same symbol/
+relocation core.
+
+Tests: `TLinkerTests` (symbol resolution — global/weak/duplicate/strong-
+undefined, synthesised symbols, `PC32` cross-object displacement, `R_X86_64_64`
+rejection, ELF-header/entry-point structure) and `TLinkerE2ETests`
+(`TestRun_SyscallHelloWorld` — a hand-written `write`+`exit` syscall
+object linked internally to an `ET_EXEC`, executed, and asserted on
+stdout and exit code).  `readelf -a` reports the output as a clean
+statically-linked x86-64 executable.
 
 === Phase C: Dynamic Linking + RTL + TLS
 
