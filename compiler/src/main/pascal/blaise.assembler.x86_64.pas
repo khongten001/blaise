@@ -162,6 +162,7 @@ type
     Scale:   Integer;      { 1, 2, 4, or 8 }
     Sym:     string;       { symbol name (for RIP-rel, labels, TLS) }
     SymDisp: Int64;        { addend to symbol (sym + N) }
+    TpOff:   Boolean;      { sym@tpoff — emit R_X86_64_TPOFF32 relocation }
   end;
 
   { Parsed line types }
@@ -384,12 +385,20 @@ begin
   { Register: %reg }
   if S[P]= Ord('%') then
   begin
-    { Check for TLS: %fs:sym@tpoff }
+    { Check for TLS: %fs:sym@tpoff or %fs:disp (numeric) }
     if (P + 2 < Length(S)) and (S[P + 1]= Ord('f')) and (S[P + 2]= Ord('s')) then
     begin
       if (P + 3 < Length(S)) and (S[P + 3]= Ord(':')) then
       begin
         P := P + 4;
+        if (P < Length(S)) and (IsDigit(S[P]) or (S[P]= Ord('-'))) then
+        begin
+          Result.Kind := opTLS;
+          Result.Sym := '';
+          Result.Disp := ParseInt(S, P);
+          AEnd := P;
+          Exit;
+        end;
         SymName := '';
         while (P < Length(S)) and (S[P]<> Ord('@')) and (S[P]<> Ord(' '))
               and (S[P]<> Ord(',')) and (S[P]<> 9) do
@@ -503,14 +512,35 @@ begin
     end;
   end;
 
-  { Symbol/label, possibly followed by +disp and/or (%rip) }
+  { Symbol/label, possibly followed by @tpoff, +disp and/or (%rip) }
   if IsAlpha(S[P]) or (S[P]= Ord('.')) or (S[P]= Ord('_')) then
   begin
     while (P < Length(S)) and (IsAlnum(S[P]) or (S[P]= Ord('.')) or (S[P]= Ord('_'))
-           or (S[P]= Ord('$')) or (S[P]= Ord('@'))) do
+           or (S[P]= Ord('$'))) do
     begin
       SymName := SymName + Chr(S[P]);
       P := P + 1;
+    end;
+    if (P < Length(S)) and (S[P]= Ord('@')) then
+    begin
+      if (P + 5 <= Length(S))
+         and (S[P + 1]= Ord('t')) and (S[P + 2]= Ord('p'))
+         and (S[P + 3]= Ord('o')) and (S[P + 4]= Ord('f'))
+         and (S[P + 5]= Ord('f'))
+         and ((P + 6 >= Length(S)) or not IsAlnum(S[P + 6])) then
+      begin
+        Result.TpOff := True;
+        P := P + 6;
+      end
+      else
+      begin
+        while (P < Length(S)) and (IsAlnum(S[P]) or (S[P]= Ord('.'))
+               or (S[P]= Ord('_')) or (S[P]= Ord('$')) or (S[P]= Ord('@'))) do
+        begin
+          SymName := SymName + Chr(S[P]);
+          P := P + 1;
+        end;
+      end;
     end;
 
     { Skip whitespace before +/- displacement }
@@ -1093,20 +1123,23 @@ begin
                 AOp.SymDisp - 4 - ACtx.ImmTail);
 end;
 
-{ Encode a TLS memory operand (%fs:sym@tpoff), emitting a relocation. }
+{ Encode a TLS memory operand (%fs:sym@tpoff or %fs:disp). }
 procedure EncodeTLSOperand(var ACB: TCodeBuf; var ACtx: TEncodeContext;
   const AOp: TOperand; AReg: Integer);
 var
   DispOff: Integer;
 begin
-  { The FS segment override is a legacy prefix and must precede the REX
-    prefix the caller has already emitted — prepend, don't append. }
   CBPrepend(ACB, $64);
   CBEmit(ACB, MakeModRM(0, AReg, 4));
   CBEmit(ACB, MakeSIB(1, 4, 5));
   DispOff := ACB.Len;
-  CBEmit32(ACB, 0);
-  AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertTPOFF32, 0);
+  if AOp.Sym <> '' then
+  begin
+    CBEmit32(ACB, 0);
+    AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertTPOFF32, 0);
+  end
+  else
+    CBEmit32(ACB, Integer(AOp.Disp));
 end;
 
 { Encode a memory or RIP-relative or TLS source/dest operand. }
@@ -1121,7 +1154,15 @@ begin
     opTLS:    EncodeTLSOperand(ACB, ACtx, AOp, AReg);
     opMem:
     begin
-      if AOp.Sym <> '' then
+      if AOp.TpOff and (AOp.Sym <> '') then
+      begin
+        Dummy := EmitModRMMem(ACB, AReg, AOp.Base, AOp.Index, AOp.Scale,
+                              $7FFFFFFF, DispOff);
+        CBPatch32(ACB, DispOff, 0);
+        AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertTPOFF32,
+                    AOp.SymDisp);
+      end
+      else if AOp.Sym <> '' then
       begin
         EncodeRipRelOperand(ACB, ACtx, AOp, AReg);
       end

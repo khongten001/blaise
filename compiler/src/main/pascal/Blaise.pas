@@ -61,7 +61,7 @@ begin
       if I > 0 then
         Result := Result + ' | ';
       Result := Result + Names.Strings[I];
-      if ParseBackendName(Names.Strings[I], K) and (K = bkQBE) then
+      if ParseBackendName(Names.Strings[I], K) and (K = bkNative) then
         Result := Result + ' (default)';
     end;
   finally
