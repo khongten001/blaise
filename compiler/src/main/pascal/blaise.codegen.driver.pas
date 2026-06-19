@@ -81,10 +81,12 @@ type
     OPDFEnabled: Boolean;     { OPDF code shaping }
     OPDFAsmFile: string;      { OPDF sidecar path, if any }
     UseInternalAsm: Boolean;  { --assembler internal (native backend) }
+    AssemblerExplicit: Boolean;  { True when user passed --assembler }
     AssemblerChoiceBad: Boolean;  { a --assembler value was given that is
                                 neither 'internal' nor 'external'; the
                                 native driver's ValidateOptions rejects it }
     UseInternalLinker: Boolean;  { --linker internal (native backend) }
+    LinkerExplicit: Boolean;     { True when user passed --linker }
     LinkerChoiceBad: Boolean;    { --linker value not 'internal' or 'external' }
   end;
 

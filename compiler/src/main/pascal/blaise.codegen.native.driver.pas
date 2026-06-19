@@ -291,6 +291,7 @@ begin
   if AFlag = '--assembler' then
   begin
     AOpts.UseInternalAsm := (ANextArg = 'internal');
+    AOpts.AssemblerExplicit := True;
     AOpts.AssemblerChoiceBad :=
       (ANextArg <> 'internal') and (ANextArg <> 'external');
     Result := oaConsumedValue;
@@ -298,6 +299,7 @@ begin
   else if AFlag = '--linker' then
   begin
     AOpts.UseInternalLinker := (ANextArg = 'internal');
+    AOpts.LinkerExplicit := True;
     AOpts.LinkerChoiceBad :=
       (ANextArg <> 'internal') and (ANextArg <> 'external');
     Result := oaConsumedValue;
@@ -309,9 +311,9 @@ end;
 procedure TNativeBackendDriver.DescribeOptions(ALines: TStringList);
 begin
   ALines.Add(FormatFlagLine('--assembler <id>',
-    'internal | external (default: external)'));
+    'internal | external (default: internal)'));
   ALines.Add(FormatFlagLine('--linker <id>',
-    'internal | external (default: external)'));
+    'internal | external (default: internal)'));
 end;
 
 function TNativeBackendDriver.ValidateOptions(AOpts: TBackendOpts): string;
@@ -321,6 +323,11 @@ begin
     Result := '--assembler must be ''internal'' or ''external'''
   else if AOpts.LinkerChoiceBad then
     Result := '--linker must be ''internal'' or ''external''';
+
+  if not AOpts.AssemblerExplicit then
+    AOpts.UseInternalAsm := True;
+  if not AOpts.LinkerExplicit then
+    AOpts.UseInternalLinker := True;
 end;
 
 initialization

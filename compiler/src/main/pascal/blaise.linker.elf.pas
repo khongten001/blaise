@@ -2369,6 +2369,8 @@ var
   FOut: TFileOutputStream;
 begin
   Bytes := Self.LinkToBytes(AEntryName);
+  if FileExists(AOutputPath) then
+    DeleteFile(AOutputPath);
   FOut := TFileOutputStream.Create(AOutputPath);
   try
     FOut.Write(PChar(Bytes), Length(Bytes));
