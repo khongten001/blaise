@@ -805,7 +805,7 @@ object linked internally to an `ET_EXEC`, executed, and asserted on
 stdout and exit code).  `readelf -a` reports the output as a clean
 statically-linked x86-64 executable.
 
-=== Phase C: Dynamic Linking + RTL + TLS
+=== Phase C: Dynamic Linking + RTL + TLS [IMPLEMENTED]
 
 This phase produces the first real runnable Blaise program.  It must
 include the RTL archive and TLS support because the RTL is required for
@@ -834,22 +834,56 @@ itself uses TLS (`blaise_mem.o` contains `.tdata` and `.tbss` with 26
   program using classes (exercises `.rela.dyn` for vtable pointers).
   Link a program using threadvars (exercises TLS).
 
-=== Phase D: Full Integration
+**Implementation notes:**
 
-* Wire `TInternalLinker` into the compiler driver behind `--linker
-  internal`.
-* Pass through OPDF debug sections (`.opdf.*`) from input objects into
-  the final executable.  The OPDF `.s` companion file is assembled by
-  the internal assembler into a `.o`, then its sections are merged.
-* Implement selective archive member inclusion (pull only members that
-  define symbols in the unresolved set, iterate until stable).
-* Run the full test suite with `--linker internal`, including the
-  native TestRunner.
-* Run fixpoint with `--linker internal`.
+* `SHF_TLS` was initially defined as `$200` (incorrect); fixed to the
+  correct ELF spec value `$400` in both `blaise.elfreader.pas` and
+  `blaise.elfwriter.pas`.  The wrong value caused `.tbss` sections to be
+  placed twice in the layout (once in the normal NOBITS loop that did not
+  recognise them as TLS, once in the explicit TLS placement), producing
+  doubled negative TPOFF32 offsets and segfaults at runtime.
+* `FTlsAddr` must be read from the post-alignment address
+  (`MergedAddr(M)` after `PlaceSection`), not from the pre-alignment
+  cursor, to avoid off-by-padding TPOFF values.
+* Duplicate global symbols use first-wins semantics (matching ld
+  behaviour for archive members), since the main program object and RTL
+  archive members may both define system runtime functions.
+* CRT object discovery (`FindCrtObjects` in `uToolchain.pas`) probes
+  Debian and RedHat layout paths with GCC versions 11–14.
+* `PhdrCount` is 11 in both `LayoutDynamic` and `EmitDynExecutable`:
+  PT_PHDR, PT_INTERP, PT_LOAD x4, PT_DYNAMIC, PT_TLS, PT_GNU_STACK,
+  PT_GNU_RELRO.  PT_TLS is always emitted (zero-sized when no TLS
+  sections) to keep header count stable.
+
+=== Phase D: Full Integration [IMPLEMENTED]
+
+* Wire `TLinker` into the compiler driver behind `--linker
+  internal` (`TNativeBackendDriver.LinkViaInternalLinker`).
+* `--linker internal` works with both `--assembler internal` and
+  `--assembler external`.
+* CRT startup objects are discovered automatically via
+  `FindCrtObjects`.
+* OPDF debug sections (`.opdf.*`) pass through from input objects into
+  the final executable.
+* Duplicate global symbols handled with first-wins semantics (matching
+  ld).
+* Full test suite (3536 tests) passes with `--linker internal`.
+* Self-compilation: the compiler can compile itself and produce a
+  working binary using `--backend native --assembler internal --linker
+  internal` — no external tools in the pipeline.
+* E2E tests in `TInternalLinkerE2ETests`: HelloWorld, StringOps,
+  ExceptionHandling, ClassAndVirtual.
+
+**Remaining Phase D items (not yet implemented):**
+
+* Selective archive member inclusion (pull only members that define
+  symbols in the unresolved set, iterate until stable).
+* Fixpoint verification with `--linker internal` (the binary is
+  structurally correct but the fixpoint scripts do not yet exercise
+  this path).
 * Differential validation: compile the existing e2e test corpus with
   both `--linker external` and `--linker internal`, compare stdout and
   exit codes.
-* Test: compile and run the compiler itself.
 
 === Phase E: Default and Polish
 
