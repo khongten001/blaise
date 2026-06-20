@@ -34,6 +34,8 @@ type
     procedure TestRexX_ExtendedIndexImmStore;
     procedure TestMovwImm16_TwoByteImmediate;
     procedure TestErrorMessage_HasLineNumber;
+    procedure TestMovqXmmToReg_SseEncoding;
+    procedure TestMovqRegToXmm_SseEncoding;
   end;
 
   { ---- ELF writer unit tests ---- }
@@ -94,6 +96,7 @@ type
     procedure TestNestedCalls;
     procedure TestClassVirtualCall;
     procedure TestFloatArithmetic;
+    procedure TestFormatFloatArg;
   end;
 
 implementation
@@ -254,6 +257,31 @@ begin
   end;
   AssertTrue('error must mention line 2, got: ' + Msg,
     Pos('line 2', Msg) >= 0);
+end;
+
+procedure TAsmEncodingTests.TestMovqXmmToReg_SseEncoding;
+var
+  Obj: string;
+begin
+  { movq %xmm0, %rax -> 66 48 0F 7E C0 (SSE MOVQ store-from-xmm).  This was
+    mis-encoded as the integer `mov %rax,%rax` (48 89 C0), silently dropping the
+    xmm value — the cause of float Format() args arriving as garbage.  (issue
+    #133 follow-up regression.) }
+  Obj := AssembleToBytes('movq %xmm0, %rax' + LineEnding);
+  AssertTrue('66 48 0F 7E C0 missing',
+    ContainsBytes(Obj, Chr($66) + Chr($48) + Chr($0F) + Chr($7E) + Chr($C0)));
+  AssertFalse('must NOT encode as integer mov %rax,%rax (48 89 C0)',
+    ContainsBytes(Obj, Chr($48) + Chr($89) + Chr($C0)));
+end;
+
+procedure TAsmEncodingTests.TestMovqRegToXmm_SseEncoding;
+var
+  Obj: string;
+begin
+  { movq %rax, %xmm0 -> 66 48 0F 6E C0 (SSE MOVQ load-into-xmm). }
+  Obj := AssembleToBytes('movq %rax, %xmm0' + LineEnding);
+  AssertTrue('66 48 0F 6E C0 missing',
+    ContainsBytes(Obj, Chr($66) + Chr($48) + Chr($0F) + Chr($6E) + Chr($C0)));
 end;
 
 { ---- ELF reader helpers ---- }
@@ -933,6 +961,32 @@ begin
   end;
   AssertEquals(0, EC);
   AssertEquals('ok' + LineEnding, Out_);
+end;
+
+procedure TInternalAsmE2ETests.TestFormatFloatArg;
+var
+  Out_: string;
+  EC: Integer;
+begin
+  { A float argument to Format() is boxed into the array-of-const via
+    `movq %xmm0, %rax` (raw IEEE-754 bits).  The internal assembler used to
+    mis-encode that as `mov %rax,%rax`, so the value was dropped and the float
+    printed as 0.0000.  This is the end-to-end guard for that fix; the e2e test
+    harness assembles native via cc, so only the internal-assembler suite
+    exercises this path.  (issue #133 follow-up regression.) }
+  if not CompileAndRun(
+    'program test_fmtfloat;' + LineEnding +
+    'uses sysutils;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(Format(''%.4f'', [1.25]))' + LineEnding +
+    'end.',
+    Out_, EC) then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  AssertEquals(0, EC);
+  AssertEquals('1.2500' + LineEnding, Out_);
 end;
 
 { ---- Registration ---- }

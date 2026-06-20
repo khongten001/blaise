@@ -963,6 +963,8 @@ function EncodeMovExtend(var ACB: TCodeBuf; var ACtx: TEncodeContext;
 
 function EncodeSSE(var ACB: TCodeBuf; var ACtx: TEncodeContext;
   const AMnem: string; const ASrc, ADst: TOperand): string; forward;
+function EncodeMovqXmm(var ACB: TCodeBuf; var ACtx: TEncodeContext;
+  const AMnem: string; const ASrc, ADst: TOperand): string; forward;
 
 { Returns True if the mnemonic is a conditional or unconditional branch }
 function IsBranch(const AMnem: string): Boolean;
@@ -1451,6 +1453,17 @@ begin
     else
       raise EAssembler.Create('movabsq: expected $imm64, %reg');
     Result := CB.Data;
+    Exit;
+  end;
+
+  { ---- movq/movd between an XMM register and a GP register/memory ----
+    `movq %xmm, %r64` and `movq %r64, %xmm` are SSE moves (66 [REX.W] 0F 7E/6E),
+    NOT the integer reg-reg mov.  Without this an `movq %xmm0, %rax` was encoded
+    as `mov %rax,%rax` (both operands read as GP reg 0), silently dropping the
+    xmm value — the cause of float args reaching Format() as garbage. }
+  if ((Mnem = 'movq') or (Mnem = 'movd')) and (Op1.IsXmm or Op2.IsXmm) then
+  begin
+    Result := EncodeMovqXmm(CB, ACtx, Mnem, Op1, Op2);
     Exit;
   end;
 
@@ -2236,6 +2249,35 @@ begin
   end;
 
   raise EAssembler.Create(AMnem + ': unsupported operand combination');
+end;
+
+{ Encode `movq`/`movd` moving between an XMM register and a GP register or
+  memory.  The XMM operand is always the ModRM.reg field:
+    xmm <- gp/mem :  66 [REX.W] 0F 6E /r   (load into xmm)
+    gp/mem <- xmm :  66 [REX.W] 0F 7E /r   (store from xmm)
+  REX.W is set for movq (64-bit), clear for movd (32-bit).  This is the path the
+  generic integer mov cannot encode (it would treat %xmm0 as %rax). }
+function EncodeMovqXmm(var ACB: TCodeBuf; var ACtx: TEncodeContext;
+  const AMnem: string; const ASrc, ADst: TOperand): string;
+var
+  NeedRexW: Boolean;
+begin
+  NeedRexW := (AMnem = 'movq');
+  if ADst.IsXmm and (ASrc.Kind = opReg) and not ASrc.IsXmm then
+    { gp -> xmm: opcode 6E, xmm is reg, gp is r/m. }
+    EmitSSERegReg(ACB, $66, NeedRexW, $6E, -1, ASrc.Reg, ADst.Reg)
+  else if ASrc.IsXmm and (ADst.Kind = opReg) and not ADst.IsXmm then
+    { xmm -> gp: opcode 7E, xmm is reg, gp is r/m. }
+    EmitSSERegReg(ACB, $66, NeedRexW, $7E, -1, ADst.Reg, ASrc.Reg)
+  else if ADst.IsXmm and IsMemLike(ASrc) then
+    { mem -> xmm: opcode 6E. }
+    EmitSSERegMem(ACB, ACtx, $66, NeedRexW, $6E, -1, ADst.Reg, ASrc)
+  else if ASrc.IsXmm and IsMemLike(ADst) then
+    { xmm -> mem: opcode 7E. }
+    EmitSSERegMem(ACB, ACtx, $66, NeedRexW, $7E, -1, ASrc.Reg, ADst)
+  else
+    raise EAssembler.Create(AMnem + ': unsupported xmm/gp operand combination');
+  Result := ACB.Data;
 end;
 
 { Re-raise an assembler error annotated with the source line number and
