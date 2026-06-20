@@ -25,7 +25,15 @@ LIB         = $(OBJ_DIR)/blaise_rtl.a
 # driver finds it automatically next to itself.
 COMPILER_BIN = ../compiler/target
 BLAISE       = $(COMPILER_BIN)/blaise
-BLAISE_FLAGS =
+# This Makefile IS a hand-managed separate-compilation system: it compiles each
+# RTL unit to its own object and archives an explicit object list.  The
+# compiler's own incremental mode (now the default) would, on top of that, write
+# per-dependency side-effect .o files next to each output and skip inlining a
+# used unit's bodies — but those side-effect objects are not in the archive's
+# object list, so a cross-unit symbol (e.g. typeinfo_TRtlPlatform, referenced by
+# the derived TRtlPlatformPosix in another unit) ends up undefined at link.
+# Force whole-program compilation per unit so every unit object is self-contained.
+BLAISE_FLAGS = --no-incremental
 
 # Assembly sources — platform-specific, no C compiler needed.
 ASM_OBJS = $(OBJ_DIR)/blaise_setjmp_x86_64.o \

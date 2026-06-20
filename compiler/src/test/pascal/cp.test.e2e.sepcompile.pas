@@ -49,6 +49,13 @@ type
     procedure TestDuplicateExternalAcrossUnits_Compiles;
     procedure TestNativeIncremental_MultiUnitClass_Compiles;
     procedure TestNativeNoIncremental_MultiUnitClass_Compiles;
+    { Regression: compiling a UNIT (unit-mode, top source is a `unit`) that
+      USES another unit, with the default incremental path, segfaulted — the
+      incremental worker setup read Prog.SymbolTable, but in unit-mode Prog is
+      nil (the table comes from the semantic pass).  This is the exact path the
+      runtime Makefile drives (every RTL unit is compiled `--source X.pas
+      --output X.o`), so it broke `make` in runtime/. }
+    procedure TestNativeIncremental_UnitUsesUnit_Compiles;
   end;
 
 implementation
@@ -577,6 +584,90 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_shapes_ni exit code', 0, Rc);
   AssertEquals('use_shapes_ni stdout', 'shape:box' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestNativeIncremental_UnitUsesUnit_Compiles;
+{ Compile a UNIT that uses another unit, in unit-mode (--source <unit>.pas
+  --output <unit>.o), via the default incremental path.  This is the runtime
+  Makefile's exact invocation and used to segfault (nil Prog.SymbolTable in the
+  incremental worker setup).  A program that uses the compiled unit must then
+  build and run, proving the per-unit object is correct. }
+const
+  BaseSrc =
+    '''
+    unit BaseU;
+    interface
+    type TFoo = record A: Integer; end;
+    function MakeFoo(N: Integer): TFoo;
+    implementation
+    function MakeFoo(N: Integer): TFoo;
+    begin Result.A := N end;
+    end.
+    ''';
+  DerivedSrc =
+    '''
+    unit DerivedU;
+    interface
+    uses BaseU;
+    function Doubled(N: Integer): Integer;
+    implementation
+    function Doubled(N: Integer): Integer;
+    var F: TFoo;
+    begin F := MakeFoo(N); Result := F.A * 2 end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseDerived;
+    uses DerivedU;
+    begin
+      WriteLn(Doubled(21))
+    end.
+    ''';
+var
+  BasePas, DerivedPas, DerivedObj, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  BasePas    := FScratch + '/BaseU.pas';
+  DerivedPas := FScratch + '/DerivedU.pas';
+  DerivedObj := FScratch + '/derivedu.o';
+  ProgPas    := FScratch + '/use_derived.pas';
+  ProgBin    := FScratch + '/use_derived';
+
+  WriteFile(BasePas, BaseSrc);
+  WriteFile(DerivedPas, DerivedSrc);
+  DeleteFile(DerivedObj);
+
+  { Unit-mode incremental compile: this is the call that crashed. }
+  Rc := RunBlaise(['--source', DerivedPas, '--output', DerivedObj,
+                   '--backend', 'native',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(DerivedU unit) exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('DerivedU.o exists', FileExists(DerivedObj));
+
+  { The emitted unit object must be usable: build + run a program over it. }
+  WriteFile(ProgPas, ProgSrc);
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'native',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(use_derived) exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_derived exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_derived exit code', 0, Rc);
+  AssertEquals('use_derived stdout', '42' + #10, Captured)
 end;
 
 initialization

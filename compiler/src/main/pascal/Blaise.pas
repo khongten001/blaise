@@ -789,7 +789,14 @@ begin
           Worker := TCompileWorker.Create(True);
           Worker.WorkUnit := TUnit(Units.Items[I]);
           Worker.Iface := TUnitInterface(UnitIfaces.Items[I]);
-          Worker.SymTable := Prog.SymbolTable;
+          { In unit-mode (the top source is a `unit`) Prog is nil — the symbol
+            table comes from the semantic pass, not a program node.  Using
+            Prog.SymbolTable there dereferences nil and crashes the incremental
+            worker setup. }
+          if Prog <> nil then
+            Worker.SymTable := Prog.SymbolTable
+          else
+            Worker.SymTable := Semantic.GetSymbolTable();
           Worker.OPath := UnitOPath;
           Worker.Driver := WorkerDriver;
           Worker.Opts := Opts;
