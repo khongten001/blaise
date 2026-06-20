@@ -1874,9 +1874,11 @@ var
   TempParams:       TStringList;
   TempConstraints:  TStringList;
   Constraint:       string;
+  IsForward:        Boolean;   { 'forward;' directive seen — no body follows }
 begin
   TempParams      := nil;
   TempConstraints := nil;
+  IsForward       := False;
   Result := TMethodDecl.Create();
   try
     Result.Line := FCurrent.Line;
@@ -2087,6 +2089,8 @@ begin
       begin
         if SameText(FCurrent.Value, 'inline') then
           Result.IsInline := True
+        else if SameText(FCurrent.Value, 'forward') then
+          IsForward := True
         else if SameText(FCurrent.Value, 'cdecl')    or
                 SameText(FCurrent.Value, 'stdcall')  or
                 SameText(FCurrent.Value, 'register') or
@@ -2103,8 +2107,13 @@ begin
       absent for class forward declarations, external declarations, etc.
       When ACanHaveNestedProcs is True (standalone proc context), a bare
       'procedure'/'function' keyword triggers body parsing so that a nested
-      sub-procedure declaration is parsed as part of the enclosing routine. }
-    if (not Result.IsExternal) and
+      sub-procedure declaration is parsed as part of the enclosing routine.
+      A 'forward;'-declared routine has NO body here — the following
+      'procedure'/'function' is the SEPARATE implementation, not a nested
+      proc.  Without this guard the forward decl swallowed the real
+      implementation (and everything up to the program's 'end.') as its body
+      (issue #130 bug2). }
+    if (not Result.IsExternal) and (not IsForward) and
        (Check(tkBegin) or Check(tkVar) or Check(tkType) or Check(tkConst) or
         (ACanHaveNestedProcs and (Check(tkProcedure) or Check(tkFunction)))) then
     begin

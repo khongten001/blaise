@@ -118,6 +118,10 @@ type
       standard integer type and carries no range checking. }
     procedure TestRun_Subrange_NamedType;
     procedure TestRun_Subrange_InRecordAndArray;
+
+    { forward; in a program decl section (issue #130 bug2): the forward decl
+      used to swallow the following implementation as a nested-proc body. }
+    procedure TestRun_Forward_MutualRecursion;
   end;
 
 implementation
@@ -1218,6 +1222,27 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '200 -7 250' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_Forward_MutualRecursion;
+const
+  { Mutually-recursive routines via a forward; declaration in the program's
+    decl section.  Asserts the recursion actually computes parity, not just
+    that it compiles. }
+  Src = '''
+    program P;
+    function IsEven(n: Integer): Boolean; forward;
+    function IsOdd(n: Integer): Boolean;
+    begin if n = 0 then Result := False else Result := IsEven(n - 1) end;
+    function IsEven(n: Integer): Boolean;
+    begin if n = 0 then Result := True else Result := IsOdd(n - 1) end;
+    begin
+      WriteLn(IsEven(10), ' ', IsEven(7), ' ', IsOdd(7), ' ', IsOdd(4))
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'True False True False' + LE, 0);
 end;
 
 initialization

@@ -59,6 +59,9 @@ type
     procedure TestSubrange_NegativeBounds_Parses;
     procedure TestSubrange_Descending_Error;
 
+    { forward; in a program declaration section (issue #130 bug2) }
+    procedure TestForward_InProgram_Parses;
+
     { Error cases }
     procedure TestError_MissingProgramKeyword;
     procedure TestError_MissingDot;
@@ -552,6 +555,30 @@ begin
     Fail('Expected EParseError for descending subrange');
   except
     on E: EParseError do ; { expected }
+  end;
+end;
+
+procedure TParserTests.TestForward_InProgram_Parses;
+var
+  Prog: TProgram;
+begin
+  { A forward; routine in a program's decl section, then its separate
+    implementation, must parse — the forward decl must NOT swallow the
+    implementation as a nested-proc body (issue #130 bug2). }
+  Prog := ParseSource(
+    'program P; ' +
+    'function F(n: Integer): Boolean; forward; ' +
+    'function F(n: Integer): Boolean; begin Result := n > 0 end; ' +
+    'begin WriteLn(F(5)) end.');
+  try
+    { Two ProcDecls: the forward (no body) and the implementation (with body). }
+    AssertEquals('two proc decls', 2, Prog.Block.ProcDecls.Count);
+    AssertTrue('forward decl has no body',
+      TMethodDecl(Prog.Block.ProcDecls.Items[0]).Body = nil);
+    AssertTrue('impl decl has a body',
+      TMethodDecl(Prog.Block.ProcDecls.Items[1]).Body <> nil);
+  finally
+    Prog.Free();
   end;
 end;
 
