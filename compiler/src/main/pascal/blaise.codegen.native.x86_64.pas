@@ -14004,6 +14004,7 @@ var
   RecvBufBytes: Integer;
   LSretAddr: string;
   LSretIndirect: Boolean;
+  UserSlots: Integer;
 begin
   MD := TMethodDecl(ACall.ResolvedMethod);
   if MD = nil then
@@ -14106,7 +14107,9 @@ begin
     end
     else
       Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('Self')]));
-    for I := ACall.Args.Count - 1 downto 0 do
+    { Pop one register per SLOT (interface args take two) into %rsi onwards;
+      Self occupies %rdi (slot index 0), so user slots start at index 1. }
+    for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArg64(I + 1));
     if MD.VTableSlot >= 0 then
     begin
@@ -14282,7 +14285,12 @@ begin
     Exit;
   end;
 
-  if ACall.Args.Count <= 4 then
+  { Register-path guard is on SLOTS, not logical args: an interface argument is
+    a fat pointer occupying TWO integer registers, so a 2-arg call can need more
+    registers than 2.  sret (%rdi) + Self (%rsi) consume two; the user args must
+    fit in the remaining four. }
+  UserSlots := Self.CountArgSlots(MD.Params);
+  if UserSlots + 2 <= 6 then
   begin
     Self.BeginCallArgs(MD.Params, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
@@ -14325,7 +14333,9 @@ begin
     else
       Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand('Self')]));
 
-    for I := ACall.Args.Count - 1 downto 0 do
+    { Pop one register per SLOT (interface args occupy two), into the integer
+      registers after %rdi (sret) and %rsi (Self): %rdx, %rcx, %r8, %r9. }
+    for I := UserSlots - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArg64(I + 2));
     { The saved dest sits just below the call frame's hoist region. }
     Self.Emit(Format(#9'movq %d(%%rsp), %%rdi', [Self.TopFrameTotal()]));

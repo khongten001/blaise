@@ -97,6 +97,17 @@ type
     procedure TestRun_ChainedRecvManyArgs;
     procedure TestRun_ChainedRecvDoubleChain;
     procedure TestRun_ChainedRecvManagedRecord_TDecimalLike;
+    { Regression: a record-returning method that takes an INTERFACE parameter.
+      An interface is a fat pointer (obj + itab) occupying TWO integer-register
+      slots, but the native sret/record call paths popped one register per
+      LOGICAL argument, so the interface's second slot was never loaded — the
+      args landed in the wrong registers and (sret case) the stack was left
+      unbalanced, crashing.  This is the root cause of the TDecimal.RoundTo /
+      Divide / SetScale native crash (they take a const IRoundingStrategy and
+      return a record).  Both backends. }
+    procedure TestRun_InterfaceArg_SretRecordReturn;
+    procedure TestRun_InterfaceArg_RegRecordReturn;
+    procedure TestRun_InterfaceArg_IntPlusInterface_RegReturn;
   end;
 
 implementation
@@ -758,6 +769,99 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '15' + LE + '25' + LE, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Record-returning method with an interface (fat-pointer) parameter   }
+{ ------------------------------------------------------------------ }
+
+procedure TE2ERecordReturnTests.TestRun_InterfaceArg_SretRecordReturn;
+const
+  { Managed field -> sret return; the interface param must occupy two arg
+    register slots (obj + itab). }
+  Src = '''
+    program P;
+    type
+      IThing = interface function Val: Integer; end;
+      TThing = class(TObject, IThing) function Val: Integer; end;
+      TR = record
+        V: Integer;
+        M: array of UInt32;
+        function Scale(N: Integer; const S: IThing): TR;
+      end;
+    function TThing.Val: Integer; begin Result := 7 end;
+    function TR.Scale(N: Integer; const S: IThing): TR;
+    begin SetLength(Result.M, 1); Result.V := Self.V * N + S.Val() end;
+    var A, R: TR; T: IThing;
+    begin
+      A.V := 10; T := TThing.Create;
+      R := A.Scale(2, T);
+      WriteLn(R.V)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '27' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_InterfaceArg_RegRecordReturn;
+const
+  { No managed field -> register-return record; same interface-slot accounting
+    applies on the register-return call path. }
+  Src = '''
+    program P;
+    type
+      IThing = interface function Val: Integer; end;
+      TThing = class(TObject, IThing) function Val: Integer; end;
+      TR = record
+        V: Integer;
+        function Scale(N: Integer; const S: IThing): TR;
+      end;
+    function TThing.Val: Integer; begin Result := 7 end;
+    function TR.Scale(N: Integer; const S: IThing): TR;
+    begin Result.V := Self.V * N + S.Val() end;
+    var A, R: TR; T: IThing;
+    begin
+      A.V := 10; T := TThing.Create;
+      R := A.Scale(2, T);
+      WriteLn(R.V)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '27' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_InterfaceArg_IntPlusInterface_RegReturn;
+const
+  { A scalar arg BEFORE the interface arg checks the register ordering:
+    N -> %rdx, obj(S) -> %rcx, itab(S) -> %r8. }
+  Src = '''
+    program P;
+    type
+      IThing = interface function Tag: Integer; end;
+      TThing = class(TObject, IThing)
+        FT: Integer;
+        function Tag: Integer;
+      end;
+      TR = record
+        V: Integer;
+        function Combine(N: Integer; const S: IThing): Integer;
+      end;
+    function TThing.Tag: Integer; begin Result := Self.FT end;
+    function TR.Combine(N: Integer; const S: IThing): Integer;
+    begin Result := Self.V + N * 100 + S.Tag() end;
+    var A: TR; T: TThing; N: Integer;
+    begin
+      A.V := 1;
+      T := TThing.Create; T.FT := 9;
+      N := A.Combine(2, T);
+      WriteLn(N)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '210' + LE, 0);
 end;
 
 initialization

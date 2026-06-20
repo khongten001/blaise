@@ -78,8 +78,7 @@ type
     procedure TestRun_Add_OverflowsInt64_Inflates;
     procedure TestRun_Multiply_BigProduct;
 
-    { --- Division + rounding (QBE-only: native Divide/RoundTo blocked by a
-          documented stack-corruption codegen bug; see bugs.txt) --- }
+    { --- Division + rounding (dual-backend) --- }
     procedure TestRun_Divide_ExactToScale;
     procedure TestRun_Divide_NonTerminating_HalfEven;
     procedure TestRun_Divide_BankersRoundsToEven;
@@ -90,9 +89,7 @@ type
     procedure TestRun_Divide_ByZero_Raises;
     procedure TestRun_Money_TaxThenRound;
 
-    { --- Float conversion + strip + out-conversions (QBE-only: native blocked
-          by the float-literal-to-managed-record-return and Divide/RoundTo
-          codegen bugs; see bugs.txt) --- }
+    { --- Float conversion + strip + out-conversions (dual-backend) --- }
     procedure TestRun_DecFromFloat_Safe;
     procedure TestRun_DecFromFloatExact_ShowsBinaryError;
     procedure TestRun_StripTrailingZeros_Fraction;
@@ -654,14 +651,14 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
-{ Division + rounding (QBE-only — see class note)                      }
+{ Division + rounding (dual-backend)                                   }
 { ------------------------------------------------------------------ }
 
 procedure TE2EDecimalTests.TestRun_Divide_ExactToScale;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, B, C: TDecimal;
@@ -679,7 +676,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 1/3 never terminates — must round at the target scale, never throw. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, B, C: TDecimal;
@@ -697,7 +694,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 2.5 -> 2 and 3.5 -> 4 under banker's rounding (ties to even). }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, One, C: TDecimal;
@@ -715,7 +712,7 @@ procedure TE2EDecimalTests.TestRun_Divide_HalfUp;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, One, C: TDecimal;
@@ -732,7 +729,7 @@ procedure TE2EDecimalTests.TestRun_RoundTo_HalfEven;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, C: TDecimal;
@@ -748,7 +745,7 @@ procedure TE2EDecimalTests.TestRun_RoundTo_IncreaseScaleIsExact;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, C: TDecimal;
@@ -765,7 +762,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { Inject a user IRoundingStrategy that always truncates: 2/3 @2 -> 0.66. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     type
@@ -792,7 +789,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { Division by zero raises EDivByZero -> non-zero exit. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, B, C: TDecimal;
@@ -809,7 +806,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 19.99 * 0.20 = 3.9980 exact; rounded to cents (banker's) = 4.00. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var Price, Rate, Tax, Rounded: TDecimal;
@@ -825,7 +822,7 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
-{ Float conversion + strip + out-conversions (QBE-only)               }
+{ Float conversion + strip + out-conversions (dual-backend)           }
 { ------------------------------------------------------------------ }
 
 procedure TE2EDecimalTests.TestRun_DecFromFloat_Safe;
@@ -833,7 +830,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { Safe conversion takes the shortest decimal: 0.1 stays 0.1 (the Java trap fix). }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A: TDecimal;
@@ -848,7 +845,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { The exact path exposes the binary tail — it must NOT equal a clean 0.1. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, Clean: TDecimal;
@@ -866,7 +863,7 @@ procedure TE2EDecimalTests.TestRun_StripTrailingZeros_Fraction;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, C: TDecimal;
@@ -881,7 +878,7 @@ var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 600 must stay 600 (never 6E+2) — integer-part zeros are not stripped. }
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A, C: TDecimal;
@@ -895,7 +892,7 @@ procedure TE2EDecimalTests.TestRun_ToInt64_TruncatesTowardZero;
 var Output: string; RCode: Integer;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertTrue('compile+run', CompileAndRunWithRTLQBEOnly(
+  AssertTrue('compile+run', CompileAndRunWithRTL(
     '''
     program P; uses Numerics.Decimal;
     var A: TDecimal;
