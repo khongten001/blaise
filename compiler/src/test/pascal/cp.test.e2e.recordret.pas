@@ -108,6 +108,14 @@ type
     procedure TestRun_InterfaceArg_SretRecordReturn;
     procedure TestRun_InterfaceArg_RegRecordReturn;
     procedure TestRun_InterfaceArg_IntPlusInterface_RegReturn;
+    { Regression: a FREE FUNCTION (not a method) returning a record by value
+      (sret) that takes an interface parameter.  EmitSretCall pushed one stack
+      slot per logical argument, so the interface's second fat-pointer slot
+      (itab) was never pushed/popped — the registers were misaligned and the
+      stack unbalanced, crashing.  The method path (EmitMethodSretCall) was
+      already fixed; this covers the free-function path.  Both backends. }
+    procedure TestRun_InterfaceArg_FreeFunc_SretReturn;
+    procedure TestRun_InterfaceArg_FreeFunc_IntThenInterface;
   end;
 
 implementation
@@ -862,6 +870,55 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '210' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_InterfaceArg_FreeFunc_SretReturn;
+const
+  Src = '''
+    program P;
+    type
+      IThing = interface function V: Integer; end;
+      TT = class(TObject, IThing) function V: Integer; end;
+      TR = record A: Integer; M: array of UInt32; end;
+    function TT.V: Integer; begin Result := 7 end;
+    function Mk(const S: IThing): TR;
+    begin SetLength(Result.M, 1); Result.A := S.V() end;
+    var R: TR; T: IThing;
+    begin
+      T := TT.Create;
+      R := Mk(T);
+      WriteLn(R.A)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '7' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_InterfaceArg_FreeFunc_IntThenInterface;
+const
+  { A scalar arg before the interface arg pins the register ordering for the
+    free-function sret path: N -> %rsi, obj(S) -> %rdx, itab(S) -> %rcx
+    (sret buffer is %rdi). }
+  Src = '''
+    program P;
+    type
+      IThing = interface function V: Integer; end;
+      TT = class(TObject, IThing) function V: Integer; end;
+      TR = record A: Integer; M: array of UInt32; end;
+    function TT.V: Integer; begin Result := 7 end;
+    function Mk(N: Integer; const S: IThing): TR;
+    begin SetLength(Result.M, 1); Result.A := N + S.V() end;
+    var R: TR; T: IThing;
+    begin
+      T := TT.Create;
+      R := Mk(5, T);
+      WriteLn(R.A)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '12' + LE, 0);
 end;
 
 initialization

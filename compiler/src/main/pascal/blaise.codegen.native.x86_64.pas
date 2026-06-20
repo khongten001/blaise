@@ -413,6 +413,8 @@ type
     procedure EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
                            AArgs: TObjectList; const ASretAddr: string;
                            ASretIsIndirect: Boolean);
+    { Integer-register slot count of an sret call's explicit args (interface = 2). }
+    function  SretUserSlots(ADecl: TMethodDecl; AArgs: TObjectList): Integer;
     { True when AExpr is a record-returning function or method call. }
     function  IsNativeRecordCall(AExpr: TASTExpr): Boolean;
     { Sret a record-returning call (function or method) into ADest. }
@@ -13734,6 +13736,33 @@ begin
   end;
 end;
 
+{ Number of integer-register SLOTS the explicit args of an sret free-function
+  call occupy, expanding interface params to two (obj + itab).  Used to pick the
+  register vs stack-spill path and to drive the pop loop. }
+function TX86_64Backend.SretUserSlots(ADecl: TMethodDecl;
+                                      AArgs: TObjectList): Integer;
+var
+  I: Integer;
+  PT: TTypeDesc;
+  IsVar: Boolean;
+begin
+  Result := 0;
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
+             TMethodParam(ADecl.Params.Items[I]).IsVarParam;
+    PT := nil;
+    if (ADecl <> nil) and (I < ADecl.Params.Count) then
+      PT := TMethodParam(ADecl.Params.Items[I]).ResolvedType;
+    if PT = nil then
+      PT := TASTExpr(AArgs.Items[I]).ResolvedType;
+    if (not IsVar) and (PT <> nil) and (PT.Kind = tyInterface) then
+      Inc(Result, 2)
+    else
+      Inc(Result);
+  end;
+end;
+
 procedure TX86_64Backend.EmitSretCall(const AFuncSym: string; ADecl: TMethodDecl;
                                       AArgs: TObjectList; const ASretAddr: string;
                                       ASretIsIndirect: Boolean);
@@ -13750,6 +13779,7 @@ var
   HasFloat: Boolean;
   ParamType: TTypeDesc;
   IntIdx, XmmIdx, SlotOff: Integer;
+  ArgPushed: Integer;
 begin
   { Check if the callee returns a small POD record via registers. }
   RC := rcSret;
@@ -13905,23 +13935,58 @@ begin
     CleanUp := AllocSz - (AArgs.Count + 1) * 8;
     Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, CleanUp, True);
   end
-  else if AArgs.Count <= 5 then
+  else if Self.SretUserSlots(ADecl, AArgs) <= 5 then
   begin
+    { Push each arg's register slot(s) — an interface arg is a fat pointer that
+      occupies TWO slots (obj then itab on top), so the push count is the SLOT
+      count, not the arg count.  ArgPushed tracks bytes pushed so far so the
+      hoisted-value reloads stay correct as %rsp moves. }
+    ArgPushed := 0;
     for I := 0 to AArgs.Count - 1 do
     begin
       Arg := TASTExpr(AArgs.Items[I]);
       IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
                TMethodParam(ADecl.Params.Items[I]).IsVarParam;
-      if HK.Get(I) >= akRecCall then
-        Self.Emit(Format(#9'movq %d(%%rsp), %%rax',
-          [HTotal - HD.Get(I) + I * 8]))
-      else if IsVar then
-        Self.EmitVarArgAddrToRax(Arg)
+      ParamType := nil;
+      if (ADecl <> nil) and (I < ADecl.Params.Count) then
+        ParamType := TMethodParam(ADecl.Params.Items[I]).ResolvedType;
+      if ParamType = nil then
+        ParamType := Arg.ResolvedType;
+      if (not IsVar) and (HK.Get(I) = akIntfConsume) then
+      begin
+        { Hoisted interface-returning-call arg: reload the saved 16-byte fat
+          pointer (obj, then itab) and push both slots (obj first, itab on top). }
+        Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [HTotal - HD.Get(I) + ArgPushed]));
+        Self.Emit(Format(#9'movq %d(%%rsp), %%rcx', [HTotal - HD.Get(I) + ArgPushed + 8]));
+        Self.Emit(#9'pushq %rax');
+        Self.Emit(#9'pushq %rcx');
+        ArgPushed := ArgPushed + 16;
+      end
+      else if HK.Get(I) >= akRecCall then
+      begin
+        Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [HTotal - HD.Get(I) + ArgPushed]));
+        Self.Emit(#9'pushq %rax');
+        ArgPushed := ArgPushed + 8;
+      end
+      else if (not IsVar) and (ParamType <> nil) and (ParamType.Kind = tyInterface) then
+      begin
+        { Direct interface arg (variable / field): push obj then itab. }
+        Self.EmitMethodArgPush(TMethodParam(ADecl.Params.Items[I]), Arg);
+        ArgPushed := ArgPushed + 16;
+      end
       else
-        Self.EmitExprToEax(Arg);
-      Self.Emit(#9'pushq %rax');
+      begin
+        if IsVar then
+          Self.EmitVarArgAddrToRax(Arg)
+        else
+          Self.EmitExprToEax(Arg);
+        Self.Emit(#9'pushq %rax');
+        ArgPushed := ArgPushed + 8;
+      end;
     end;
-    for I := AArgs.Count - 1 downto 0 do
+    { Pop one register per pushed SLOT into %rsi onwards (%rdi is the sret ptr,
+      loaded below).  ArgPushed/8 = total slots; topmost slot -> highest reg. }
+    for I := (ArgPushed div 8) - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArg64(I + 1));
     { The saved dest sits just below the hoist region. }
     Self.Emit(Format(#9'movq %d(%%rsp), %%rdi', [HTotal]));
@@ -13931,7 +13996,23 @@ begin
   else
   begin
     { >5 explicit args + sret: pre-allocate (Count+1) slots (sret = slot 0,
-      explicit args = slots 1..Count).  Evaluate, load regs, leave overflow. }
+      explicit args = slots 1..Count).  Evaluate, load regs, leave overflow.
+      This overflow path assumes one slot per logical arg; an interface arg
+      (two slots) is not yet handled here.  Fail loudly rather than silently
+      mis-place registers — the <=5-slot path above covers interface args. }
+    for I := 0 to AArgs.Count - 1 do
+    begin
+      ParamType := nil;
+      if (ADecl <> nil) and (I < ADecl.Params.Count) then
+        ParamType := TMethodParam(ADecl.Params.Items[I]).ResolvedType;
+      if ParamType = nil then
+        ParamType := TASTExpr(AArgs.Items[I]).ResolvedType;
+      IsVar := (ADecl <> nil) and (I < ADecl.Params.Count) and
+               TMethodParam(ADecl.Params.Items[I]).IsVarParam;
+      if (not IsVar) and (ParamType <> nil) and (ParamType.Kind = tyInterface) then
+        raise ENativeCodeGenError.Create('native backend: interface argument in ' +
+          'an sret call with more than 5 register slots is not yet supported');
+    end;
     AllocSz := (((AArgs.Count + 1) * 8 + 15) and (-16));
     Self.Emit(Format(#9'subq $%d, %%rsp', [AllocSz]));
     Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [AllocSz + HTotal]));
