@@ -1,11 +1,24 @@
 name: Rolling bootstrap & tests
 
 # Triggers:
-#   - push to master  : keep the -pre binary fresh on every commit
-#   - workflow_dispatch: manual run from the Actions UI (good for testing)
+#   - push to master       : keep the -pre binary fresh on every commit
+#   - push to ci/** , feature/**, bootstrap/**
+#                          : validate-only pre-flight for risky changes — does
+#                            the rolling bootstrap still succeed?  These runs do
+#                            NOT write the carry-forward cache or publish the
+#                            -pre artifact (see the master-only guards on those
+#                            steps), so a broken branch cannot affect master
+#                            consumers or other developers.  Use a throwaway
+#                            branch under one of these prefixes to prove a
+#                            change before merging it to master.
+#   - workflow_dispatch     : manual run from the Actions UI, against any ref
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - 'ci/**'
+      - 'feature/**'
+      - 'bootstrap/**'
   workflow_dispatch:
     inputs:
       force_full:
@@ -223,11 +236,13 @@ jobs:
       # --------------------------------------------------------------------
       # 9. Save the carry-forward cache for the next run: the -pre binary, its
       #    rtl, and a marker recording the HEAD SHA it was built at.
-      #    always() so we still cache a good binary even if tests later flake,
-      #    but only after a successful bootstrap (guarded by needs of step 7).
+      #    MASTER ONLY: the carry-forward cache is the resume anchor for master
+      #    runs.  A branch run must never overwrite it — otherwise a feature
+      #    branch's -pre binary would leak into the next master run and a broken
+      #    branch could poison master's bootstrap.  Branch runs are validate-only.
       # --------------------------------------------------------------------
       - name: Stage carry-forward cache
-        if: success()
+        if: ${{ success() && github.ref == 'refs/heads/master' }}
         run: |
           set -euo pipefail
           rm -rf .bootstrap-cache
@@ -238,7 +253,7 @@ jobs:
           echo "Marked cache at $(cat .bootstrap-cache/commit.sha)"
 
       - name: Save bootstrap cache
-        if: success()
+        if: ${{ success() && github.ref == 'refs/heads/master' }}
         uses: actions/cache/save@v5
         with:
           path: .bootstrap-cache
@@ -246,6 +261,10 @@ jobs:
 
       # --------------------------------------------------------------------
       # 10. Publish the -pre binary + rtl as downloadable workflow artifacts.
+      #     Runs on branches too (the name is keyed by commit SHA, so a branch
+      #     artifact never collides with master's and is handy for inspecting a
+      #     pre-flight build).  Unlike the cache, an artifact is pull-only — it
+      #     is never consumed by a later run, so it cannot affect master.
       # --------------------------------------------------------------------
       - name: Upload -pre binary artifact
         if: success()
