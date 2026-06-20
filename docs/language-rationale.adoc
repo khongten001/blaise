@@ -5046,7 +5046,13 @@ currency policy lives entirely in this wrapper.  Three rules define `TMoney`:
 
 * Each currency has a default minor-unit scale (JPY 0, USD 2, KWD 3, fallback 2).
   Every `TMoney` is normalised to its currency's scale on construction and after
-  every arithmetic operation, using banker's rounding (`rmHalfEven`).
+  every arithmetic operation.  The default rounding is banker's (`rmHalfEven`),
+  but it is not hard-wired: each constructor and rounding-sensitive operation has
+  overloads taking an explicit `TRoundingMode` or a custom `IRoundingStrategy`
+  (the same eight modes and extension point as `TDecimal`), so the rounding
+  policy is swappable per call — e.g. `rmHalfUp` for a jurisdiction that rounds
+  halves up, or an `IRoundingStrategy` implementing Swedish/Swiss 0.05 cash
+  rounding.
 
 * Arithmetic across different currencies (`Add`, `Subtract`, `Compare`) raises
   `EMoneyMismatch`.  There is no implicit conversion — exchange rates are a

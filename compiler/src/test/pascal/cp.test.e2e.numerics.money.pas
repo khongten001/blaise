@@ -64,6 +64,16 @@ type
     procedure TestRun_Equals_DifferentCurrency_False;
     procedure TestRun_IsZero_And_Sign;
 
+    { --- Configurable rounding (mode + custom strategy overloads) --- }
+    procedure TestRun_FromStr_RoundingMode_HalfUp;
+    procedure TestRun_FromStr_RoundingMode_Down;
+    procedure TestRun_FromStr_RoundingMode_Ceiling;
+    procedure TestRun_FromDecimal_RoundingMode;
+    procedure TestRun_Add_RoundingMode;
+    procedure TestRun_Multiply_RoundingMode_Ceiling;
+    procedure TestRun_FromStr_CustomStrategy_Truncates;
+    procedure TestRun_DefaultIsBankers;
+
     { --- Registry --- }
     procedure TestRun_CurrencyScale_Registry;
 
@@ -458,6 +468,153 @@ begin
     ''', Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('True -1 1', 'True -1 1', Trim(Output));
+end;
+
+{ ------------------------------------------------------------------ }
+{ Configurable rounding                                              }
+{ ------------------------------------------------------------------ }
+
+procedure TE2EMoneyTests.TestRun_FromStr_RoundingMode_HalfUp;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { rmHalfUp rounds the 1.005 tie up, unlike the banker's default (1.00). }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money;
+    begin WriteLn(MoneyFromStr('1.005', 'USD', rmHalfUp).AmountString()) end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('1.005 halfUp -> 1.01', '1.01', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_FromStr_RoundingMode_Down;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { rmDown truncates toward zero: 1.999 -> 1.99. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money;
+    begin WriteLn(MoneyFromStr('1.999', 'USD', rmDown).AmountString()) end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('1.999 down -> 1.99', '1.99', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_FromStr_RoundingMode_Ceiling;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { rmCeiling rounds toward +infinity: 1.991 -> 1.99? no — 1.991 -> 2.00 only at
+    scale 0; at scale 2 the third digit 1 rounds up to 1.992... use a clearer
+    case: 1.001 ceiling at 2dp -> 1.01. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money;
+    begin WriteLn(MoneyFromStr('1.001', 'USD', rmCeiling).AmountString()) end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('1.001 ceiling -> 1.01', '1.01', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_FromDecimal_RoundingMode;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money, Numerics.Decimal;
+    var M: TMoney;
+    begin
+      M := MoneyFromDecimal(DecFromStr('2.345'), 'USD', rmHalfUp);
+      WriteLn(M.AmountString())
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('2.345 halfUp -> 2.35', '2.35', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_Add_RoundingMode;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Two values whose common scale exceeds the currency scale; rmHalfUp on Add. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money, Numerics.Decimal;
+    var A, C: TMoney;
+    begin
+      A := MoneyFromDecimal(DecFromStr('1.004'), 'USD', rmDown);  { 1.00 }
+      C := A.Add(MoneyFromDecimal(DecFromStr('2.005'), 'USD', rmDown), rmHalfUp);
+      WriteLn(C.AmountString())
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  { A=1.00; the addend is normalised by rmDown to 2.00, so 1.00+2.00 = 3.00. }
+  AssertEquals('add @halfUp', '3.00', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_Multiply_RoundingMode_Ceiling;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 10.00 * 1.0851 = 10.851 -> ceiling at 2dp -> 10.86. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money, Numerics.Decimal;
+    var M: TMoney;
+    begin
+      M := MoneyFromStr('10.00', 'USD').Multiply(DecFromStr('1.0851'), rmCeiling);
+      WriteLn(M.AmountString())
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('mul @ceiling', '10.86', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_FromStr_CustomStrategy_Truncates;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { A custom IRoundingStrategy that always truncates (never increments). }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money, Numerics.Decimal;
+    type
+      TTrunc = class(TObject, IRoundingStrategy)
+        function RoundIncrement(Negative: Boolean; LastKeptDigit: Integer;
+          DiscardedCompareHalf: Integer; AnyDiscarded: Boolean): Boolean;
+      end;
+    function TTrunc.RoundIncrement(Negative: Boolean; LastKeptDigit: Integer;
+      DiscardedCompareHalf: Integer; AnyDiscarded: Boolean): Boolean;
+    begin Result := False end;
+    var M: TMoney; S: IRoundingStrategy;
+    begin
+      S := TTrunc.Create;
+      M := MoneyFromStr('9.999', 'USD', S);
+      WriteLn(M.AmountString())
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('custom truncate -> 9.99', '9.99', Trim(Output));
+end;
+
+procedure TE2EMoneyTests.TestRun_DefaultIsBankers;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { The no-mode overloads keep banker's: 2.5 and 3.5 at scale 0 -> 2 and 4. }
+  AssertTrue('compile+run', CompileAndRunWithRTL(
+    '''
+    program P; uses Numerics.Money;
+    begin
+      WriteLn(MoneyFromStr('2.5', 'JPY').AmountString(), ' ',
+              MoneyFromStr('3.5', 'JPY').AmountString())
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('banker default', '2 4', Trim(Output));
 end;
 
 { ------------------------------------------------------------------ }

@@ -26,10 +26,15 @@ unit Numerics.Money;
 
     - Each currency has a default minor-unit scale: JPY 0, USD 2, KWD 3, and a
       fallback of 2 for unknown codes.  Every TMoney is NORMALISED to its
-      currency's scale on construction and after every arithmetic operation,
-      using banker's rounding (rmHalfEven) — the recommended money default.
-      So MoneyFromStr('1.005', 'USD') stores 1.00, and a JPY amount never
-      carries a fraction.
+      currency's scale on construction and after every arithmetic operation.
+      The default rounding is banker's (rmHalfEven) — the recommended money
+      default — so MoneyFromStr('1.005', 'USD') stores 1.00 and a JPY amount
+      never carries a fraction.  Each constructor and rounding-sensitive
+      operation also has overloads taking an explicit TRoundingMode or a custom
+      IRoundingStrategy (the same eight modes + extension point as TDecimal), so
+      the rounding policy can be swapped per call — e.g. rmHalfUp for a
+      jurisdiction that rounds halves up, or an IRoundingStrategy implementing
+      Swedish/Swiss 0.05 cash rounding.
 
     - Mismatched-currency arithmetic RAISES EMoneyMismatch.  Add, Subtract and
       Compare across different currencies are programming errors, not silent
@@ -87,31 +92,43 @@ type
     function Sign: Integer;
 
     { Sum of Self and B.  Both must be the same currency; the result is in that
-      currency, normalised to its scale.
+      currency, normalised to its scale.  The no-mode form uses banker's
+      rounding (rmHalfEven); the others let the caller pick the rounding mode or
+      a custom strategy for the (rare) case where the addends' common scale
+      exceeds the currency scale.
       @param B the amount to add.
       @returns Self + B.
       @raises EMoneyMismatch if the currencies differ. }
-    function Add(const B: TMoney): TMoney;
+    function Add(const B: TMoney): TMoney; overload;
+    function Add(const B: TMoney; Mode: TRoundingMode): TMoney; overload;
+    function Add(const B: TMoney; const Strategy: IRoundingStrategy): TMoney; overload;
 
-    { Difference Self - B.  Both must be the same currency.
+    { Difference Self - B.  Both must be the same currency.  Rounding control as
+      for Add.
       @param B the amount to subtract.
       @returns Self - B.
       @raises EMoneyMismatch if the currencies differ. }
-    function Subtract(const B: TMoney): TMoney;
+    function Subtract(const B: TMoney): TMoney; overload;
+    function Subtract(const B: TMoney; Mode: TRoundingMode): TMoney; overload;
+    function Subtract(const B: TMoney; const Strategy: IRoundingStrategy): TMoney; overload;
 
-    { Arithmetic negation (-Self), same currency and scale.
+    { Arithmetic negation (-Self), same currency and scale.  Exact — no rounding.
       @returns the amount with opposite sign. }
     function Negate: TMoney;
 
     { Scales the amount by a dimensionless TDecimal factor (e.g. unit price *
-      quantity, or amount * tax-rate), re-normalising to the currency scale with
-      banker's rounding.  The currency is preserved.
+      quantity, or amount * tax-rate), re-normalising to the currency scale.
+      The no-mode form uses banker's rounding (rmHalfEven); the others take an
+      explicit rounding mode or custom strategy.  The currency is preserved.
       @param Factor the multiplier.
       @returns Self * Factor at the currency scale. }
-    function Multiply(const Factor: TDecimal): TMoney;
+    function Multiply(const Factor: TDecimal): TMoney; overload;
+    function Multiply(const Factor: TDecimal; Mode: TRoundingMode): TMoney; overload;
+    function Multiply(const Factor: TDecimal; const Strategy: IRoundingStrategy): TMoney; overload;
 
-    { Scales the amount by an integer quantity.  Exact (no rounding needed
-      beyond the existing scale).  The currency is preserved.
+    { Scales the amount by an integer quantity.  Exact at the currency scale (an
+      integer multiply introduces no new fraction digits), so no rounding mode is
+      needed.  The currency is preserved.
       @param Quantity the integer multiplier.
       @returns Self * Quantity. }
     function MultiplyInt(Quantity: Integer): TMoney;
@@ -145,22 +162,37 @@ type
 
 { Builds a TMoney from a decimal literal string and a currency code.  The
   amount is parsed exactly (see DecFromStr) then normalised to the currency's
-  default scale with banker's rounding.
+  default scale.  The no-mode form uses banker's rounding (rmHalfEven); the
+  others take an explicit rounding mode or a custom strategy.
   @param AAmount  the decimal literal (e.g. '19.99', '-0.005').
   @param ACurrency the ISO-4217 code (case-insensitive; stored upper-case).
+  @param Mode      the rounding mode (mode overload).
+  @param Strategy  the rounding strategy (strategy overload).
   @returns the money value.
   @raises EDecimalParse if AAmount is malformed. }
-function MoneyFromStr(const AAmount, ACurrency: string): TMoney;
+function MoneyFromStr(const AAmount, ACurrency: string): TMoney; overload;
+function MoneyFromStr(const AAmount, ACurrency: string;
+                      Mode: TRoundingMode): TMoney; overload;
+function MoneyFromStr(const AAmount, ACurrency: string;
+                      const Strategy: IRoundingStrategy): TMoney; overload;
 
-{ Builds a TMoney from an existing TDecimal amount and a currency code.  The
-  amount is normalised to the currency's default scale (banker's rounding).
+{ Builds a TMoney from an existing TDecimal amount and a currency code,
+  normalised to the currency's default scale (banker's rounding by default; the
+  mode/strategy overloads override it).
   @param AAmount  the decimal amount.
   @param ACurrency the ISO-4217 code (case-insensitive; stored upper-case).
+  @param Mode      the rounding mode (mode overload).
+  @param Strategy  the rounding strategy (strategy overload).
   @returns the money value. }
-function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string): TMoney;
+function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string): TMoney; overload;
+function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string;
+                          Mode: TRoundingMode): TMoney; overload;
+function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string;
+                          const Strategy: IRoundingStrategy): TMoney; overload;
 
 { Builds a TMoney from a whole-unit integer amount and a currency code
-  (e.g. MoneyFromInt(5, 'USD') = 5.00 USD).
+  (e.g. MoneyFromInt(5, 'USD') = 5.00 USD).  An integer is exact at any
+  currency scale, so no rounding mode is needed.
   @param AAmount  the whole-unit integer amount.
   @param ACurrency the ISO-4217 code (case-insensitive; stored upper-case).
   @returns the money value. }
@@ -206,18 +238,33 @@ begin
     Result := cDefaultScale;
 end;
 
-{ Normalises ADec to ACurrency's scale with banker's rounding and pairs it with
-  the upper-cased code.  Central constructor used by every public builder so the
-  invariant "FAmount is always at the currency scale" holds in one place. }
-function MakeMoney(const ADec: TDecimal; const ACurrency: string): TMoney;
+{ Normalises ADec to ACurrency's scale with the given rounding strategy and
+  pairs it with the upper-cased code.  Central constructor used by every public
+  builder so the invariant "FAmount is always at the currency scale" holds in
+  one place. }
+function MakeMoneyS(const ADec: TDecimal; const ACurrency: string;
+                    const AStrategy: IRoundingStrategy): TMoney;
 var
   Code: string;
   Norm: TDecimal;
 begin
   Code := UpperCase(ACurrency);
-  Norm := ADec.RoundTo(CurrencyScale(Code), rmHalfEven);
+  Norm := ADec.RoundTo(CurrencyScale(Code), AStrategy);
   Result.FAmount := Norm;
   Result.FCurrency := Code;
+end;
+
+{ As MakeMoneyS but selecting one of the eight standard rounding modes. }
+function MakeMoneyM(const ADec: TDecimal; const ACurrency: string;
+                    AMode: TRoundingMode): TMoney;
+begin
+  Result := MakeMoneyS(ADec, ACurrency, StandardRounding(AMode));
+end;
+
+{ Default normalisation: banker's rounding (rmHalfEven). }
+function MakeMoney(const ADec: TDecimal; const ACurrency: string): TMoney;
+begin
+  Result := MakeMoneyM(ADec, ACurrency, rmHalfEven);
 end;
 
 function MoneyFromStr(const AAmount, ACurrency: string): TMoney;
@@ -225,9 +272,33 @@ begin
   Result := MakeMoney(DecFromStr(AAmount), ACurrency);
 end;
 
+function MoneyFromStr(const AAmount, ACurrency: string;
+                      Mode: TRoundingMode): TMoney;
+begin
+  Result := MakeMoneyM(DecFromStr(AAmount), ACurrency, Mode);
+end;
+
+function MoneyFromStr(const AAmount, ACurrency: string;
+                      const Strategy: IRoundingStrategy): TMoney;
+begin
+  Result := MakeMoneyS(DecFromStr(AAmount), ACurrency, Strategy);
+end;
+
 function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string): TMoney;
 begin
   Result := MakeMoney(AAmount, ACurrency);
+end;
+
+function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string;
+                          Mode: TRoundingMode): TMoney;
+begin
+  Result := MakeMoneyM(AAmount, ACurrency, Mode);
+end;
+
+function MoneyFromDecimal(const AAmount: TDecimal; const ACurrency: string;
+                          const Strategy: IRoundingStrategy): TMoney;
+begin
+  Result := MakeMoneyS(AAmount, ACurrency, Strategy);
 end;
 
 function MoneyFromInt(AAmount: Integer; const ACurrency: string): TMoney;
@@ -269,22 +340,42 @@ begin
   Result := Self.FAmount.Sign();
 end;
 
-function TMoney.Add(const B: TMoney): TMoney;
+function TMoney.Add(const B: TMoney; const Strategy: IRoundingStrategy): TMoney;
 var
   Sum: TDecimal;
 begin
   RequireSameCurrency(Self, B, 'add');
   Sum := Self.FAmount.Add(B.FAmount);
-  Result := MakeMoney(Sum, Self.FCurrency);
+  Result := MakeMoneyS(Sum, Self.FCurrency, Strategy);
 end;
 
-function TMoney.Subtract(const B: TMoney): TMoney;
+function TMoney.Add(const B: TMoney; Mode: TRoundingMode): TMoney;
+begin
+  Result := Self.Add(B, StandardRounding(Mode));
+end;
+
+function TMoney.Add(const B: TMoney): TMoney;
+begin
+  Result := Self.Add(B, StandardRounding(rmHalfEven));
+end;
+
+function TMoney.Subtract(const B: TMoney; const Strategy: IRoundingStrategy): TMoney;
 var
   Diff: TDecimal;
 begin
   RequireSameCurrency(Self, B, 'subtract');
   Diff := Self.FAmount.Subtract(B.FAmount);
-  Result := MakeMoney(Diff, Self.FCurrency);
+  Result := MakeMoneyS(Diff, Self.FCurrency, Strategy);
+end;
+
+function TMoney.Subtract(const B: TMoney; Mode: TRoundingMode): TMoney;
+begin
+  Result := Self.Subtract(B, StandardRounding(Mode));
+end;
+
+function TMoney.Subtract(const B: TMoney): TMoney;
+begin
+  Result := Self.Subtract(B, StandardRounding(rmHalfEven));
 end;
 
 function TMoney.Negate: TMoney;
@@ -295,12 +386,22 @@ begin
   Result := MakeMoney(Neg, Self.FCurrency);
 end;
 
-function TMoney.Multiply(const Factor: TDecimal): TMoney;
+function TMoney.Multiply(const Factor: TDecimal; const Strategy: IRoundingStrategy): TMoney;
 var
   Prod: TDecimal;
 begin
   Prod := Self.FAmount.Multiply(Factor);
-  Result := MakeMoney(Prod, Self.FCurrency);
+  Result := MakeMoneyS(Prod, Self.FCurrency, Strategy);
+end;
+
+function TMoney.Multiply(const Factor: TDecimal; Mode: TRoundingMode): TMoney;
+begin
+  Result := Self.Multiply(Factor, StandardRounding(Mode));
+end;
+
+function TMoney.Multiply(const Factor: TDecimal): TMoney;
+begin
+  Result := Self.Multiply(Factor, StandardRounding(rmHalfEven));
 end;
 
 function TMoney.MultiplyInt(Quantity: Integer): TMoney;

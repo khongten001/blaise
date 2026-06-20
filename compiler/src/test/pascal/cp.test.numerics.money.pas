@@ -55,6 +55,13 @@ type
     procedure TestSemantic_IsZero_ReturnsBoolean_OK;
     procedure TestSemantic_Sign_ReturnsInteger_OK;
 
+    { --- Rounding overloads --- }
+    procedure TestSemantic_FromStr_RoundingMode_OK;
+    procedure TestSemantic_FromStr_Strategy_OK;
+    procedure TestSemantic_FromDecimal_RoundingMode_OK;
+    procedure TestSemantic_Add_RoundingMode_OK;
+    procedure TestSemantic_Multiply_Strategy_OK;
+
     { --- Type errors --- }
     procedure TestSemantic_FromStr_WrongArgType_Error;
     procedure TestSemantic_AssignMoneyToInt_Error;
@@ -300,6 +307,49 @@ begin
   SemanticOK(
     'program P; uses Numerics.Money; var A: TMoney; I: Integer; ' +
     'begin A := MoneyFromInt(1, ''USD''); I := A.Sign() end.');
+end;
+
+{ ------------------------------------------------------------------ }
+{ Rounding overloads                                                  }
+{ ------------------------------------------------------------------ }
+
+procedure TMoneyIRTests.TestSemantic_FromStr_RoundingMode_OK;
+begin
+  SemanticOK(
+    'program P; uses Numerics.Money, Numerics.Decimal; var M: TMoney; ' +
+    'begin M := MoneyFromStr(''1.005'', ''USD'', rmHalfUp) end.');
+end;
+
+procedure TMoneyIRTests.TestSemantic_FromStr_Strategy_OK;
+begin
+  SemanticOK(
+    'program P; uses Numerics.Money, Numerics.Decimal; ' +
+    'var M: TMoney; S: IRoundingStrategy; ' +
+    'begin S := StandardRounding(rmHalfUp); M := MoneyFromStr(''1.005'', ''USD'', S) end.');
+end;
+
+procedure TMoneyIRTests.TestSemantic_FromDecimal_RoundingMode_OK;
+begin
+  SemanticOK(
+    'program P; uses Numerics.Money, Numerics.Decimal; var M: TMoney; ' +
+    'begin M := MoneyFromDecimal(DecFromStr(''1.005''), ''USD'', rmCeiling) end.');
+end;
+
+procedure TMoneyIRTests.TestSemantic_Add_RoundingMode_OK;
+begin
+  SemanticOK(
+    'program P; uses Numerics.Money, Numerics.Decimal; var A, B, C: TMoney; ' +
+    'begin A := MoneyFromInt(1, ''USD''); B := MoneyFromInt(2, ''USD''); ' +
+    'C := A.Add(B, rmDown) end.');
+end;
+
+procedure TMoneyIRTests.TestSemantic_Multiply_Strategy_OK;
+begin
+  SemanticOK(
+    'program P; uses Numerics.Money, Numerics.Decimal; ' +
+    'var A, C: TMoney; S: IRoundingStrategy; ' +
+    'begin A := MoneyFromInt(1, ''USD''); S := StandardRounding(rmFloor); ' +
+    'C := A.Multiply(DecFromStr(''1.5''), S) end.');
 end;
 
 { ------------------------------------------------------------------ }
