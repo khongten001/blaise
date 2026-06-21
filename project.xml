@@ -25,10 +25,8 @@
         <define>DEBUG</define>
       </defines>
       <compilerOptions>
-        <option>-g</option>
-        <option>-gl</option>
-        <option>-Criot</option>
-        <option>-gh</option>
+        <option>--debug</option>
+        <option>--debug-opdf</option>
       </compilerOptions>
     </profile>
 
@@ -37,12 +35,6 @@
       <defines>
         <define>RELEASE</define>
       </defines>
-      <compilerOptions>
-        <option>-O2</option>
-        <option>-CX</option>
-        <option>-XX</option>
-        <option>-Xs</option>
-      </compilerOptions>
     </profile>
   </profiles>
 </project>
