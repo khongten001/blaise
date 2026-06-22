@@ -63,6 +63,13 @@ type
     procedure TestRun_ConstructorFloatArg_Variable_StoredCorrectly;
     procedure TestRun_MethodMixedIntFloatString_RegistersInterleave;
     procedure TestRun_MethodMultipleFloats_UseXmm0AndXmm1;
+    { >6-register-slot overflow path with float args: the integer args beyond
+      the 6 integer registers spill to the stack while floats still take xmm
+      registers, so the spill layout must classify by SysV class, not by
+      argument position. }
+    procedure TestRun_MethodOverflowFloatArgs_Pass;
+    procedure TestRun_ConstructorOverflowFloatArgs_Pass;
+    procedure TestRun_InheritedOverflowFloatArgs_Pass;
     procedure TestRun_MethodReadsProgramGlobal;
     procedure TestRun_VarParam_ClassFields_WritebackVisible;
     { Name-resolution priority for unqualified calls inside a class
@@ -1337,6 +1344,65 @@ begin
     begin x := TX.Create(); x.M(1.5, 9, 2.5, 3.5); end.
     ''',
     'a=1.5 i=9 b=2.5 c=3.5' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_MethodOverflowFloatArgs_Pass;
+begin
+  { 9 args (5 int register, 2 float xmm, 1 int spilled to stack) plus Self:
+    exercises the >6-slot overflow path with floats. i6 is the 6th integer arg
+    and must reach %r9, not the stack, since the two floats consumed xmm not
+    integer registers. }
+  AssertRunsOnAll(
+    '''
+    program ovm;
+    type TX = class
+      procedure M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    end;
+    procedure TX.M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    begin WriteLn(i1,' ',i2,' ',i3,' ',i4,' ',i5,' ',d1,' ',d2,' ',i6); end;
+    var x: TX;
+    begin x := TX.Create(); x.M(1,2,3,4,5, 6.5, 7.5, 8); end.
+    ''',
+    '1 2 3 4 5 6.5 7.5 8' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_ConstructorOverflowFloatArgs_Pass;
+begin
+  AssertRunsOnAll(
+    '''
+    program ovc;
+    type TN = class
+      R: Double;
+      constructor Create(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    end;
+    constructor TN.Create(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    begin R := d1 + d2 + i6; end;
+    var n: TN;
+    begin n := TN.Create(1,2,3,4,5, 6.5, 7.5, 8); WriteLn(n.R); end.
+    ''',
+    '22' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_InheritedOverflowFloatArgs_Pass;
+begin
+  AssertRunsOnAll(
+    '''
+    program ovi;
+    type
+      TBase = class
+        procedure M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64); virtual;
+      end;
+      TDer = class(TBase)
+        procedure M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64); override;
+      end;
+    procedure TBase.M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    begin WriteLn('base ',i1,' ',d1,' ',d2,' ',i6); end;
+    procedure TDer.M(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6: Int64);
+    begin inherited M(i1,i2,i3,i4,i5,d1,d2,i6); WriteLn('der ',d1,' ',d2); end;
+    var x: TDer;
+    begin x := TDer.Create(); x.M(1,2,3,4,5, 6.5, 7.5, 9); end.
+    ''',
+    'base 1 6.5 7.5 9' + LE + 'der 6.5 7.5' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_MethodReadsProgramGlobal;

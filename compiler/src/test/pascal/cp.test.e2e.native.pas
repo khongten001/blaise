@@ -78,6 +78,7 @@ type
     procedure TestRun_Native_SevenArgs;
     procedure TestRun_Native_EightArgs;
     procedure TestRun_Native_TenArgs;
+    procedure TestRun_Native_OverflowFloatArgs;
     { Regression: an implicit-Self method call in statement position with more
       argument slots than fit in registers (Self + 6 args = 7 > 6).  The
       statement-call fast path indexed SysVArgRegs64 past %r9, reading adjacent
@@ -881,6 +882,24 @@ const
     end.
     ''';
 
+  { Free-function call with more than 6 register slots AND interspersed float
+    args: i1..i5 fill 5 integer registers, d1/d2 take xmm0/xmm1, i6 is the 6th
+    integer arg (-> %r9), i7 overflows to the stack.  Regression: the native
+    backend's overflow relocation assumed exactly the first six contiguous
+    stack slots were register-bound, which is false once floats (which take xmm,
+    not integer registers) sit among them — it placed the overflow arg at the
+    wrong address and crashed the callee. }
+  SrcOverflowFloatArgs = '''
+    program Prg;
+    procedure P(i1,i2,i3,i4,i5: Int64; d1,d2: Double; i6,i7: Int64);
+    begin
+      WriteLn(i1,' ',i2,' ',i3,' ',i4,' ',i5,' ',d1,' ',d2,' ',i6,' ',i7)
+    end;
+    begin
+      P(1,2,3,4,5, 6.5, 7.5, 8, 9)
+    end.
+    ''';
+
   { Bare procedural-type (no 'of object'): assign a procedure to a variable
     and call through it.  WriteLn is not callable via a proc var in the test
     harness, so we use a user-defined Print procedure. }
@@ -1659,6 +1678,12 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   { 1+2+3+4+5+6+7+8+9+10 = 55 }
   AssertRunsOnAll(SrcTenArgs, '55' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_OverflowFloatArgs;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcOverflowFloatArgs, '1 2 3 4 5 6.5 7.5 8 9' + LE, 0);
 end;
 
 const
