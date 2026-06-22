@@ -238,24 +238,26 @@ end;
   (they live as direct-call symbols only). }
 procedure RegisterClassMethod(ART: TRecordTypeDesc; ASig: TRoutineSig);
 var
-  Slot:     Integer;
   ImplName: string;
 begin
-  if (not ASig.IsVirtual) and (not ASig.IsOverride) then Exit;
+  { Place every vtable-carrying method at its AUTHORITATIVE slot index,
+    taken from the exported .bif (ASig.VTableSlot).  The earlier append-only
+    approach assumed the .bif method order matched the source-side slot
+    order, which it does not: the exporter lists newly-introduced virtual
+    methods first and parent overrides last, and a non-virtual constructor
+    named 'Create' takes an implicit slot (metaclass dispatch) that the
+    append path skipped entirely.  Skipping it dropped Create's slot and
+    shifted every later virtual method down by one, so a Cls.Create call or
+    a descendant's virtual dispatch landed on the wrong method.  Honouring
+    VTableSlot directly reproduces the exact source-side layout regardless
+    of .bif ordering and is robust to import order.
+
+    VTableSlot < 0 means the method does not occupy a vtable slot (static /
+    non-dispatch), so there is nothing to place. }
+  if ASig.VTableSlot < 0 then Exit;
   if ASig.ResolvedQbeName = '' then Exit;
   ImplName := '$' + ASig.ResolvedQbeName;
-
-  if ASig.IsVirtual then
-    ART.AddVTableSlot(ASig.Name, ImplName)
-  else { IsOverride }
-  begin
-    Slot := ART.FindVTableSlot(ASig.Name);
-    if Slot >= 0 then
-      ART.OverrideVTableSlot(Slot, ImplName);
-    { If the slot wasn't found, the override targets a method only
-      reachable through a grand-parent we haven't fully copied —
-      treat as a no-op for now; class-level test will catch this. }
-  end;
+  ART.SetVTableSlotAt(ASig.VTableSlot, ASig.Name, ImplName);
 end;
 
 function ResolveParentClassByName(const AParentName: string;

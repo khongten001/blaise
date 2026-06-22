@@ -284,6 +284,12 @@ type
     function  FindVTableSlot(const AMethodName: string): Integer;
     function  AddVTableSlot(const AMethodName, AImplName: string): Integer;
     procedure OverrideVTableSlot(ASlot: Integer; const AImplName: string);
+    { Place a method at an explicit slot index, growing the table with
+      placeholder entries if necessary.  Used by the cached-unit importer,
+      which knows each method's authoritative slot from the .bif rather than
+      relying on registration order. }
+    procedure SetVTableSlotAt(ASlot: Integer;
+                              const AMethodName, AImplName: string);
     procedure CopyVTableFrom(AParent: TRecordTypeDesc);
 
     { Interface implements tracking }
@@ -940,6 +946,29 @@ end;
 function TRecordTypeDesc.ImplementsIntfAt(AIndex: Integer): TInterfaceTypeDesc;
 begin
   Result := TInterfaceTypeDesc(FImplements.Items[AIndex]);
+end;
+
+procedure TRecordTypeDesc.SetVTableSlotAt(ASlot: Integer;
+  const AMethodName, AImplName: string);
+var
+  E: TVTableEntry;
+begin
+  if ASlot < 0 then Exit;
+  if FVTable = nil then
+    FVTable := TObjectList.Create(True);
+  { Grow with placeholder slots so ASlot is a valid index.  Placeholders
+    carry an empty MethName so FindVTableSlot never matches them. }
+  while FVTable.Count <= ASlot do
+  begin
+    E      := TVTableEntry.Create();
+    E.Slot := FVTable.Count;
+    E.MethName := '';
+    E.ImplName := '';
+    FVTable.Add(E);
+  end;
+  E := TVTableEntry(FVTable.Items[ASlot]);
+  E.MethName := AMethodName;
+  E.ImplName := AImplName;
 end;
 
 procedure TRecordTypeDesc.CopyVTableFrom(AParent: TRecordTypeDesc);

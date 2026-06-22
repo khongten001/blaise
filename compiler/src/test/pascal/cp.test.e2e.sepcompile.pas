@@ -73,6 +73,18 @@ type
       (the compiler rebuilt itself incrementally into a populated cache and
       lost ~880 KB of impl-only-dependency code). }
     procedure TestIncrementalRebuild_ImplOnlyUses_LinksDependency;
+    { Regression: a non-virtual constructor named 'Create' receives an
+      implicit vtable slot (metaclass dispatch through a class-of
+      reference).  The source-side semantic pass added that slot, but the
+      cached-.bif importer (uSemanticImport.RegisterClassMethod) only added
+      slots for virtual/override methods — so a descendant class compiled
+      against a CACHED base unit built a vtable that omitted the Create slot
+      and shifted every later virtual method up.  A Cls.Create call then
+      dispatched through the wrong vtable slot (it hit the method that fell
+      into Create's old index), so the constructor body never ran and the
+      object's fields stayed nil.  This crashed the stdlib JSON test suite
+      when its TTestCase base came from target/units. }
+    procedure TestIncrementalRebuild_VirtualCtorVtableSlot;
   end;
 
 implementation
@@ -837,6 +849,104 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('build2 run exit code (impl-only dep must be linked)', 0, Rc);
   AssertEquals('build2 stdout', '43' + #10, Captured)
+end;
+
+{ Regression for the cached-unit virtual-constructor vtable-slot bug.
+
+  BaseU declares a class with a non-virtual constructor Create (which still
+  takes a vtable slot for class-of dispatch) FOLLOWED by a virtual method
+  Tag.  A descendant TDerived overrides Tag, and the program creates the
+  instance through a class-of reference (Cls.Create) so the constructor is
+  reached via the vtable.  Create sets FValue := 7; if the cached import
+  drops Create's vtable slot, Cls.Create dispatches into Tag's slot instead,
+  FValue stays 0, and the program prints '0' rather than '7'. }
+procedure TSepCompileTests.TestIncrementalRebuild_VirtualCtorVtableSlot;
+const
+  BaseSrc =
+    '''
+    unit BaseU;
+    interface
+    type
+      TBase = class(TObject)
+      private
+        FValue: Integer;
+      public
+        constructor Create;
+        function Tag: Integer; virtual;
+        property Value: Integer read FValue;
+      end;
+      TBaseClass = class of TBase;
+    implementation
+    constructor TBase.Create;
+    begin
+      inherited Create();
+      Self.FValue := 7
+    end;
+    function TBase.Tag: Integer;
+    begin
+      Result := 100
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseBase;
+    uses BaseU;
+    var
+      Cls: TBaseClass;
+      Obj: TBase;
+    begin
+      Cls := TBase;
+      Obj := Cls.Create();
+      WriteLn(Obj.Value)
+    end.
+    ''';
+var
+  BasePas, ProgPas, ProgBin, CacheDir, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  BasePas  := FScratch + '/BaseU.pas';
+  ProgPas  := FScratch + '/use_base.pas';
+  ProgBin  := FScratch + '/use_base';
+  CacheDir := FScratch + '/units-vctor';
+
+  WriteFile(BasePas, BaseSrc);
+  WriteFile(ProgPas, ProgSrc);
+  ForceDirectories(CacheDir);
+
+  { Build 1 (clean cache): BaseU is parsed from source.  Populates the
+    cache with BaseU's .o/.bif. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  AssertEquals('build1 stdout (ctor ran)', '7' + #10, Captured);
+
+  { Build 2 (populated cache): BaseU is loaded from its cached .bif.  The
+    importer must re-create the Create vtable slot so Cls.Create dispatches
+    to the constructor and FValue is set to 7. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_base exists after rebuild', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout (cached ctor slot)', '7' + #10, Captured)
 end;
 
 initialization
