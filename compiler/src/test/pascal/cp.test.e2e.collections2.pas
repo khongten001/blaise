@@ -25,6 +25,7 @@ type
     procedure TestRun_TObjectList_Delete;
     procedure TestRun_Collections_Valgrind;
     procedure TestRun_TwoDictInstancesInUnit_BothLink;
+    procedure TestRun_IntfFreeFunc_GenericReturn_Compiles;
   end;
 
 implementation
@@ -317,6 +318,50 @@ begin
     CompileAndRunWithUnit('twodicts', UnitSrc, DrvSrc, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('Ints(2) + Bools(1) = 3', '3' + #10, Output);
+end;
+
+{ Regression: a unit's INTERFACE-section free function (not a class method)
+  whose return type is a generic instantiation such as TList<string> used to
+  fail semantic analysis with "Unknown return type 'TList<string>'".  The
+  interface free-function path resolved the return type through a plain
+  FindType lookup, which never attempts generic instantiation, whereas the
+  class-method path goes through FindTypeOrInstantiate.  Switching the
+  free-function path to FindTypeOrInstantiate fixes it.  The same generic
+  return type as a class method, and as an impl-section free function, already
+  worked — those must keep working. }
+procedure TE2ECollections2Tests.TestRun_IntfFreeFunc_GenericReturn_Compiles;
+const
+  UnitSrc = '''
+    unit freefunc;
+    interface
+    uses Generics.Collections;
+    function MakeList: TList<string>;
+    implementation
+    function MakeList: TList<string>;
+    begin
+      Result := TList<string>.Create();
+      Result.Add('a');
+      Result.Add('b')
+    end;
+    end.
+    ''';
+  DrvSrc = '''
+    program P;
+    uses Generics.Collections, freefunc;
+    var L: TList<string>;
+    begin
+      L := MakeList();
+      WriteLn(L.Count);
+      L.Free()
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnit('freefunc', UnitSrc, DrvSrc, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  AssertEquals('list count', '2' + #10, Output);
 end;
 
 initialization

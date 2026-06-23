@@ -1177,7 +1177,7 @@ begin
 
       if MDecl.ReturnTypeName <> '' then
       begin
-        ParType := FTable.FindType(MDecl.ReturnTypeName);
+        ParType := FindTypeOrInstantiate(MDecl.ReturnTypeName);
         if ParType = nil then
           SemanticError(
             Format('Unknown return type ''%s'' for ''%s''',
@@ -1268,7 +1268,7 @@ begin
 
       if ImplDecl.ReturnTypeName <> '' then
       begin
-        ParType := FTable.FindType(ImplDecl.ReturnTypeName);
+        ParType := FindTypeOrInstantiate(ImplDecl.ReturnTypeName);
         if ParType = nil then
           SemanticError(
             Format('Unknown return type ''%s'' for ''%s''',
@@ -1500,7 +1500,7 @@ begin
 
     if MDecl.ReturnTypeName <> '' then
     begin
-      ParType := FTable.FindType(MDecl.ReturnTypeName);
+      ParType := FindTypeOrInstantiate(MDecl.ReturnTypeName);
       if ParType = nil then
         SemanticError(
           Format('Unknown return type ''%s'' for ''%s''',
@@ -1585,7 +1585,7 @@ begin
 
       if ImplDecl.ReturnTypeName <> '' then
       begin
-        ParType := FTable.FindType(ImplDecl.ReturnTypeName);
+        ParType := FindTypeOrInstantiate(ImplDecl.ReturnTypeName);
         if ParType = nil then
           SemanticError(
             Format('Unknown return type ''%s'' for ''%s''',
