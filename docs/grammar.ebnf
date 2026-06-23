@@ -652,8 +652,17 @@ TypeName
     | DynArrayType                (* dynamic array: array of T *)
     | SetType                     (* bit-set over an enum base type *)
     | CARET TypeName              (* pointer-to type: ^Integer, ^T, ^^T  *)
-    | IDENT LESS TypeArgList GREATER   (* generic instantiation: TList<Integer> *)
-    | IDENT                       (* simple type or built-in *)
+    | QualIdent LESS TypeArgList GREATER   (* generic instantiation: TList<Integer> *)
+    | QualIdent                   (* simple type, built-in, or UnitName.TypeName *)
+    ;
+
+(* A type may be written with a unit qualifier, e.g. SysUtils.TFormatSettings,
+ * and the qualifier may itself be dotted (System.SysUtils.TFormatSettings).
+ * The parser reads the full dotted path; a type is always named by its FINAL
+ * component, with the leading components naming a unit already brought in by
+ * the uses clause.  See language-rationale.adoc "Qualified type names". *)
+QualIdent
+    = IDENT { DOT IDENT }
     ;
 
 (* A static array may declare multiple dimensions either as a comma-separated
@@ -925,8 +934,20 @@ PointerWriteStmt
     ;
 
 FieldAssignment
-    = IDENT DOT IDENT [ LBRACKET Expr RBRACKET ] ASSIGN Expr
-    | LPAREN Expr RPAREN DOT IDENT ASSIGN Expr   (* parenthesised lvalue, e.g. (a as TB).FX := v *)
+    = IDENT DOT IDENT { Selector } ASSIGN Expr
+    | LPAREN Expr RPAREN DOT IDENT { Selector } ASSIGN Expr  (* parenthesised lvalue, e.g. (a as TB).FX := v *)
+    ;
+
+(* A Selector continues an l-value path after the first member: a further
+ * .Field, an [Index] subscript (indexed property or array-typed field
+ * element), or a .Method(...) call whose result is itself selected into.
+ * This covers chains such as  Self.FStack[0].Count := value  and
+ * r.A[0] := 10 — the subscript-then-field chain the parser added in
+ * baf5079.  See language-rationale.adoc "Chained l-value assignment". *)
+Selector
+    = DOT IDENT
+    | LBRACKET Expr RBRACKET
+    | DOT IDENT LPAREN [ ArgList ] RPAREN
     ;
 
 MethodCall

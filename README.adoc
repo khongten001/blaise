@@ -32,18 +32,20 @@ See link:docs/design.adoc[docs/design.adoc] for the full architecture and
 implementation plan.
 
 The result — A modern, cross-platform Object Pascal compiler targeting native code
-via two backends: https://c9x.me/compile/[QBE] (the default, production-proven
-backend) and a direct native x86-64 code generator (in active development,
-approaching feature parity). Single language mode, single string type,
-zero-GUID interfaces, reified generics, and first-class
-https://github.com/graemeg/opdebugger[OPDF] debug format support.
+via two backends: a direct native x86-64 code generator (the default since
+v0.12.0) and https://c9x.me/compile/[QBE] (now opt-in via `--backend qbe`).
+Single language mode, single string type, zero-GUID interfaces, reified
+generics, and first-class
+https://github.com/graemeg/opdebugger[OPDF] debug format support — including
+full source-level debugging of incrementally-compiled multi-unit programs.
 
 
 == 🚀 Project Status
 
 * **Self-Hosting:** Yes. Blaise bootstraps and recompiles itself with byte-for-byte fixpoint. FPC is no longer required — the entire toolchain runs on Blaise alone.
-* **Testing:** 3474 tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
-* **Backends:** Two code-generation backends — QBE (default, production) and a direct native x86-64 backend (in active development, approaching feature parity with QBE).
+* **Testing:** 3800+ tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
+* **Backends:** Two code-generation backends — a direct native x86-64 backend (the default since v0.12.0) and QBE (opt-in via `--backend qbe`). Both pass the full fixpoint and test suite.
+* **Standard library:** A growing opt-in stdlib — generics collections, JSON (DOM + parser + writer), SHA-1 and Base64, RFC 4122 GUIDs, TCP sockets, WebSockets, a minimal HTTP/1.1 server, and a `blaise.testing` unit-test framework.
 
 
 [cols="1,3,1", options="header"]
@@ -187,29 +189,30 @@ passed explicitly via the `BLAISE` make variable.
 
 [source,shell]
 ----
-# 0. Build the vendored QBE backend (once-off — not needed again unless
-#    you update vendor/qbe/)
-cd vendor/qbe && make && cd ../..
+# Resolve the newest release binary (substitute the path below for $RELEASE).
+RELEASE=$(ls -d releases/v*/ | sort -V | tail -1)blaise   # e.g. releases/v0.12.0/blaise
 
 # 1. Build the runtime using the release binary (BLAISE= avoids chicken-and-egg)
-cd runtime && make BLAISE=../releases/v0.7.0/blaise && make install && cd ..
+cd runtime && make BLAISE=../$RELEASE && make install && cd ..
 
-# 2. Compile the compiler using the latest release binary
-releases/v0.7.0/blaise \
+# 2. Compile the compiler using the release binary (native backend — the
+#    default since v0.12.0 — needs no external assembler or QBE)
+$RELEASE \
   --source compiler/src/main/pascal/Blaise.pas \
   --unit-path compiler/src/main/pascal \
   --unit-path runtime/src/main/pascal \
   --unit-path stdlib/src/main/pascal \
-  --emit-ir > /tmp/blaise.ssa
-
-# 3. Assemble and link
-vendor/qbe/qbe -o /tmp/blaise.s /tmp/blaise.ssa
-gcc -o compiler/target/blaise /tmp/blaise.s compiler/target/blaise_rtl.a
+  --output compiler/target/blaise
 ----
 
 Once `compiler/target/blaise` exists, subsequent RTL rebuilds (`make && make install`)
-work without the override. The QBE build in step 0 is a one-off and does not
-need to be repeated when rebuilding the compiler.
+work without the override.
+
+The native backend (default) emits and links a binary directly — no external
+tools.  To bootstrap via the opt-in QBE backend instead, build the vendored QBE
+once (`cd vendor/qbe && make`), add `--backend qbe --emit-ir > /tmp/blaise.ssa`
+to step 2, then `vendor/qbe/qbe -o /tmp/blaise.s /tmp/blaise.ssa` and
+`gcc -o compiler/target/blaise /tmp/blaise.s compiler/target/blaise_rtl.a`.
 
 === Bootstrap a development checkout
 
@@ -257,13 +260,13 @@ Once built, the compiler binary is at `compiler/target/blaise`.
 
 [source,shell]
 ----
-# Compile a single-file program (QBE backend — default)
-compiler/target/blaise --source Hello.pas --emit-ir > Hello.ssa
+# Compile a single-file program (native backend — default, no external tools)
+compiler/target/blaise --source Hello.pas --output Hello
+
+# Compile via the opt-in QBE backend (emits QBE IR, assembled + linked separately)
+compiler/target/blaise --source Hello.pas --backend qbe --emit-ir > Hello.ssa
 vendor/qbe/qbe -o Hello.s Hello.ssa
 gcc -o Hello Hello.s compiler/target/blaise_rtl.a
-
-# Compile via the native x86-64 backend (no QBE step)
-compiler/target/blaise --source Hello.pas --backend native --output Hello
 
 # Compile with unit search paths
 compiler/target/blaise --source MyApp.pas \

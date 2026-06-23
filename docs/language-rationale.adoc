@@ -5151,3 +5151,61 @@ interaction with type checking.
   no concrete use for it until the language stabilises; `BLAISE` alone serves
   the cross-compiler case.  CPU/OS symbols are added because portable source
   routinely keys on them.
+
+== Qualified Type Names — `UnitName.TypeName`
+
+=== Decision
+
+A type reference may be written with a unit qualifier, e.g.
+`SysUtils.TFormatSettings`, and the qualifier may itself be dotted, e.g.
+`System.SysUtils.TFormatSettings`. The parser reads the full dotted path;
+a type is always named by its *final* component, and the leading components
+name a unit already brought in by the `uses` clause. The qualifier is
+informational — it does not select between units at resolution time; the
+final identifier is resolved against the symbol table as usual.
+
+=== Rationale
+
+Object Pascal source in the wild routinely qualifies type names with their
+declaring unit, both for documentation and to disambiguate when two used
+units export the same name. Rejecting `SysUtils.TFormatSettings` as a parse
+error blocked porting otherwise-portable FPC/Delphi code for no language
+benefit. Accepting the qualifier and resolving by the final component matches
+how FPC and Delphi treat a unit-qualified type in the common (non-ambiguous)
+case, while keeping resolution simple.
+
+=== Alternatives considered
+
+* *Full unit-scoped resolution (the qualifier selects the unit).* Deferred.
+  It requires per-unit symbol scoping at the resolution site and only matters
+  when two used units export the same type name — rare, and the duplicate
+  case can be resolved today by ordering the `uses` clause. Resolving by the
+  final identifier covers the motivating real-world code without that
+  machinery, and can be tightened later without changing the syntax.
+
+== Chained L-value Assignment — `Self.F[i].Sub := value`
+
+=== Decision
+
+The left-hand side of an assignment may be a selector chain: after the first
+member, any sequence of `.Field`, `[Index]` (indexed-property or array-field
+element), and `.Method(...)` selectors, terminated by `:=`. For example
+`Self.FStack[0].Count := value`, `r.A[0] := 10`, and `obj.Items[i].Flag := True`.
+The bare implicit-`Self` field form (`A[0] := v` inside a method) follows the
+same rule.
+
+=== Rationale
+
+The earlier parser accepted a single `.Field` (optionally one subscript)
+before `:=` but rejected a *chain* — `Self.FStack[0].Count := value` failed
+because the `Ident.Ident[Index]` path unconditionally expected `]:=` after the
+subscript. That is a routine and idiomatic Object Pascal l-value; rejecting it
+forced awkward temporaries and surprised anyone porting normal code. The chain
+loop after the subscript makes the read and write l-value grammars symmetric:
+anything that can be read as a designator can be assigned to.
+
+=== Alternatives considered
+
+* *Require an intermediate variable (status quo).* Rejected — it is a
+  gratuitous restriction with no semantic justification; the read side already
+  supported the full chain, so write-side parity is the consistent choice.
