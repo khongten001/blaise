@@ -27,7 +27,8 @@ uses
   Sockets.Tests,
   WebSockets.Tests,
   HttpServer.Tests,
-  Guid.Tests;
+  Guid.Tests,
+  StrUtils.Tests;
 
 implementation
 

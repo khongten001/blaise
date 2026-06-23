@@ -24,6 +24,9 @@ unit StrUtils;
 
 interface
 
+uses
+  Generics.Collections;   { TList<String> for the Split/Join helpers }
+
 
 { ------------------------------------------------------------------ }
 { Containment                                                          }
@@ -130,6 +133,18 @@ function IsEmptyOrWhitespace(const S: string): Boolean;
 
 { Joins Parts with Sep between each element. }
 function JoinStr(const Sep: string; const Parts: array of string): string;
+
+{ Split S on a single delimiter byte, returning the pieces (one more piece
+  than there are delimiters; empty pieces are kept).  Caller owns the list. }
+function SplitChar(const S: string; ADelim: Byte): TList<String>;
+
+{ Split S into lines on LF, tolerating CRLF (a trailing CR is stripped from
+  each line).  Caller owns the list. }
+function SplitLines(const S: string): TList<String>;
+
+{ Join the items of AList with ASep between them (the list-valued inverse of
+  SplitChar; cf. JoinStr for an open array).  nil yields ''. }
+function JoinList(AList: TList<String>; const ASep: string): string;
 
 { ------------------------------------------------------------------ }
 { UTF-8 Codepoint operations                                           }
@@ -661,6 +676,74 @@ begin
     SB.Append(Parts[I]);
     if I < High(Parts) then
       SB.Append(Sep);
+  end;
+  Result := SB.ToString();
+  SB.Free();
+end;
+
+function SplitChar(const S: string; ADelim: Byte): TList<String>;
+var
+  I, N, Start: Integer;
+begin
+  Result := TList<String>.Create();
+  N := Length(S);
+  Start := 0;
+  I := 0;
+  while I < N do
+  begin
+    if Byte(S[I]) = ADelim then
+    begin
+      Result.Add(Copy(S, Start, I - Start));
+      Start := I + 1;
+    end;
+    I := I + 1;
+  end;
+  Result.Add(Copy(S, Start, N - Start));
+end;
+
+{ Copy S[AStart..AEnd) as a line, dropping one trailing CR so a CRLF line
+  yields the bare text. }
+function LineSlice(const S: string; AStart, AEnd: Integer): string;
+begin
+  if (AEnd > AStart) and (Byte(S[AEnd - 1]) = 13) then   { trailing CR }
+    Result := Copy(S, AStart, AEnd - AStart - 1)
+  else
+    Result := Copy(S, AStart, AEnd - AStart);
+end;
+
+function SplitLines(const S: string): TList<String>;
+var
+  I, N, Start: Integer;
+begin
+  Result := TList<String>.Create();
+  N := Length(S);
+  Start := 0;
+  I := 0;
+  while I < N do
+  begin
+    if Byte(S[I]) = 10 then   { LF }
+    begin
+      Result.Add(LineSlice(S, Start, I));
+      Start := I + 1;
+    end;
+    I := I + 1;
+  end;
+  Result.Add(LineSlice(S, Start, N));
+end;
+
+function JoinList(AList: TList<String>; const ASep: string): string;
+var
+  SB: TStringBuilder;
+  I: Integer;
+begin
+  if AList = nil then
+    Exit('');
+  SB := TStringBuilder.Create();
+  for I := 0 to AList.Count - 1 do
+  begin
+    if I > 0 then
+      SB.Append(ASep);
+    SB.Append(AList.Get(I));
   end;
   Result := SB.ToString();
   SB.Free();
