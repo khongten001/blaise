@@ -91,6 +91,11 @@ type
     procedure TestCodegen_Generic_TwoInstances_MethodCallsResolveToOwnInstance;
 
     { ------------------------------------------------------------------ }
+    { Type-alias type argument resolves to one canonical instantiation    }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_GenericInstantiatedWithAlias_Compiles;
+
+    { ------------------------------------------------------------------ }
     { Diamond operator: TFoo<> infers type args from LHS                  }
     { ------------------------------------------------------------------ }
     procedure TestParse_Diamond_SingleArg_Producessentinel;
@@ -979,6 +984,63 @@ begin
     Pos('call $TBox_Integer_SetValue', IntBody) > 0);
   AssertTrue('TBox_String_Init body calls $TBox_String_SetValue',
     Pos('call $TBox_String_SetValue', StrBody) > 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Type-alias type argument                                          }
+{ ------------------------------------------------------------------ }
+
+const
+  { Regression: a generic instantiated with a transparent type alias
+    (TIntAlias = Integer) must share ONE identity with the underlying-type
+    form, otherwise a generic method whose body both declares a nested
+    generic return type (TInner<T>) and constructs it (TInner<T>.Create())
+    sees two divergent instantiations.  Previously one path kept the alias
+    spelling (TInner<TIntAlias>) while the other resolved it (TInner<Integer>),
+    so the internal assignment 'Result := TInner<T>.Create()' failed with
+    "Type mismatch ... expected 'TInner<TIntAlias>' but got 'TInner<Integer>'".
+    The two instantiation paths must now agree. }
+  SrcGenericInstantiatedWithAlias =
+    '''
+        program Prg;
+        type
+          TIntAlias = Integer;
+          TInner<T> = class
+            FV: T;
+          end;
+          TOuter<T> = class
+            function Make: TInner<T>;
+            begin
+              Result := TInner<T>.Create()
+            end;
+          end;
+        var
+          O: TOuter<TIntAlias>;
+          N: TInner<TIntAlias>;
+        begin
+          O := TOuter<TIntAlias>.Create();
+          N := O.Make()
+        end.
+        ''';
+
+procedure TGenericsTests.TestSemantic_GenericInstantiatedWithAlias_Compiles;
+var
+  Prog:  TProgram;
+  Inner: TRecordTypeDesc;
+begin
+  { Analysing without a semantic error is the regression check — the buggy
+    compiler raised a type-mismatch in TOuter<T>.Make's body. }
+  Prog := AnalyseSrc(SrcGenericInstantiatedWithAlias);
+  try
+    { The alias and underlying-type forms must collapse onto one canonical
+      instantiation keyed by the underlying type name (Integer). }
+    Inner := TRecordTypeDesc(Prog.SymbolTable.FindType('TInner<Integer>'));
+    AssertNotNull('TInner<Integer> is the canonical instantiation', Inner);
+    AssertNull('no separate TInner<TIntAlias> instantiation exists',
+      Prog.SymbolTable.FindType('TInner<TIntAlias>'));
+  finally
+    Prog.Free();
+  end;
 end;
 
 { ------------------------------------------------------------------ }

@@ -151,6 +151,15 @@ type
       FindTypeOrInstantiate. Has no effect on names without '<'. }
     function  ResolveScopeBoundTypeParams(const ATypeName: string): string;
 
+    { Canonicalises the type arguments of a generic instantiation name by
+      resolving each argument through any alias chain to its underlying type's
+      canonical name.  'TList<TIntAlias>' (where TIntAlias = Integer) becomes
+      'TList<Integer>', so an instantiation using a transparent type alias and
+      one using the alias's underlying type share a single identity.  Has no
+      effect on names without '<' or on arguments that are unresolved type
+      parameters. }
+    function  CanonGenericArgs(const ATypeName: string): string;
+
     { Generic function instantiation: resolves 'Identity<Integer>' on demand. }
     function  InstantiateGenericFunc(const AInstName: string): TMethodDecl;
     { Generic method instantiation: resolves 'Pick<Integer>' on an owner class
@@ -2333,6 +2342,61 @@ begin
   Result := BasePart + '<' + OutArgs + '>';
 end;
 
+function TSemanticAnalyser.CanonGenericArgs(const ATypeName: string): string;
+var
+  BrOpen, BrClose, I: Integer;
+  BasePart, ArgsPart, OutArgs, Arg: string;
+  ArgList: TStringList;
+  ArgType: TTypeDesc;
+begin
+  Result  := ATypeName;
+  BrOpen  := StrPos('<', ATypeName);
+  if BrOpen < 0 then Exit;
+  BrClose  := Length(ATypeName);  { closing '>' is always the last char }
+  BasePart := StrHead(ATypeName, BrOpen);
+  ArgsPart := StrCopyFrom(ATypeName, BrOpen + 1, BrClose - BrOpen - 2);
+  ArgList  := TStringList.Create();
+  try
+    while ArgsPart <> '' do
+    begin
+      I := StrPos(',', ArgsPart);
+      if I >= 0 then
+      begin
+        ArgList.Add(Trim(StrHead(ArgsPart, I)));
+        ArgsPart := Trim(StrCopyTail(ArgsPart, I + 1));
+      end
+      else
+      begin
+        ArgList.Add(Trim(ArgsPart));
+        ArgsPart := '';
+      end;
+    end;
+    OutArgs := '';
+    for I := 0 to ArgList.Count - 1 do
+    begin
+      Arg := ArgList.Strings[I];
+      { Resolve the argument to its underlying type and use that type's
+        canonical name.  A transparent type alias (type TIntAlias = Integer)
+        shares the underlying type's descriptor, so its .Name is the
+        canonical 'Integer' — collapsing 'Foo<TIntAlias>' and 'Foo<Integer>'
+        onto one instantiation.  Leave the argument untouched when it does not
+        resolve (e.g. an in-scope generic type parameter T) so substitution
+        still applies later. }
+      ArgType := FindTypeOrInstantiate(Arg);
+      if (ArgType <> nil) and (ArgType.Name <> '') and
+         (not SameText(ArgType.Name, Arg)) then
+        Arg := ArgType.Name;
+      if OutArgs = '' then
+        OutArgs := Arg
+      else
+        OutArgs := OutArgs + ',' + Arg;
+    end;
+  finally
+    ArgList.Free();
+  end;
+  Result := BasePart + '<' + OutArgs + '>';
+end;
+
 function TSemanticAnalyser.SynthAnonEnum(const AMemberList: string): TEnumTypeDesc;
 { Synthesise (or reuse) an enum type from an inline member list encoded as
   '(a,b,c)'.  Members become skConstant symbols, exactly as a named enum's do.
@@ -2631,11 +2695,21 @@ begin
   end;
   if StrPos('<', AName) >= 0 then
   begin
-    Result := InstantiateGeneric(AName);
+    { Canonicalise type-alias arguments to their underlying type's name so a
+      generic instantiated with a transparent alias (Foo<TIntAlias>) shares one
+      identity with the underlying-type form (Foo<Integer>).  Re-check the
+      table under the canonical name before instantiating. }
+    CanonName := CanonGenericArgs(AName);
+    if not SameText(CanonName, AName) then
+    begin
+      Result := FTable.FindType(CanonName);
+      if Result <> nil then Exit;
+    end;
+    Result := InstantiateGeneric(CanonName);
     if Result = nil then
-      Result := InstantiateGenericRecord(AName);
+      Result := InstantiateGenericRecord(CanonName);
     if Result = nil then
-      Result := InstantiateGenericInterface(AName);
+      Result := InstantiateGenericInterface(CanonName);
   end;
 end;
 
