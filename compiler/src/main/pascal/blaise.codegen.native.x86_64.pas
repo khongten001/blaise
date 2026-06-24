@@ -504,6 +504,19 @@ type
     procedure EmitCallIndirect(const APtrOperand: string;
                                AProcType: TProceduralTypeDesc;
                                AArgs: TObjectList);
+    { Call a procedural-typed CLASS FIELD through a receiver
+      (Self.FFn(args)).  The function pointer lives at [instance + Offset],
+      which is not a %rbp/%rip-relative operand, so this cannot reuse
+      EmitCallIndirect/EmitMethodPtrCall.  Mirrors the interface-dispatch
+      shape instead: push args, then load the (call-free) receiver and the
+      field's code pointer.  AResultType nil = statement call (no result
+      narrowing).  Receiver shapes: a named var/global via AObjectName, a
+      var/out param (AIsVarParam), or a call-free AObjExpr (an identifier or
+      field access). }
+    procedure EmitProcFieldCall(AObjExpr: TASTExpr; const AObjectName: string;
+                                AIsVarParam: Boolean; AFieldInfo: TFieldInfo;
+                                AProcType: TProceduralTypeDesc;
+                                AArgs: TObjectList; AResultType: TTypeDesc);
     { Evaluate an integer expression; result left in %rax (64-bit-extended). }
     procedure EmitExprToEax(AExpr: TASTExpr);
     procedure EmitByteRhsToEax(AExpr: TASTExpr);
@@ -8105,6 +8118,17 @@ begin
     Exit;
   end;
 
+  { Procedural-typed field call used as an expression: Result := Self.FFn(S).
+    Dispatch through the (Code, Data) pair stored in the field; the result is
+    left in %rax. }
+  if ACall.IsProcFieldCall then
+  begin
+    Self.EmitProcFieldCall(ACall.ObjExpr, ACall.ObjectName, ACall.IsVarParam,
+      ACall.ProcFieldInfo, TProceduralTypeDesc(ACall.ResolvedProcType),
+      ACall.Args, ACall.ResolvedType);
+    Exit;
+  end;
+
   MD := TMethodDecl(ACall.ResolvedMethod);
   if MD = nil then
     raise ENativeCodeGenError.Create(
@@ -9085,6 +9109,16 @@ begin
       else
         Self.Emit(Format(#9'movq $0, %s(%%rip)', [ACall.ObjectName]));
     end;
+    Exit;
+  end;
+
+  { Procedural-typed field call as a statement: Self.FFn(args).  Dispatch
+    through the (Code, Data) pair stored in the field; no result is wanted. }
+  if ACall.IsProcFieldCall then
+  begin
+    Self.EmitProcFieldCall(ACall.ObjExpr, ACall.ObjectName, ACall.IsVarParam,
+      ACall.ProcFieldInfo, TProceduralTypeDesc(ACall.ResolvedProcType),
+      ACall.Args, nil);
     Exit;
   end;
 
@@ -14211,6 +14245,115 @@ begin
   end;
   HD.Free();
   HK.Free();
+end;
+
+{ Call a procedural-typed class field through a receiver — emits:
+    <push each arg>
+    movq <receiver>, %rax ; addq $Offset, %rax   ; %rax = field slot
+    movq 8(%rax), %rdi   (of object only: Data -> first arg)
+    movq (%rax), %r10    ; code pointer
+    popq <arg regs>      ; callq *%r10 }
+procedure TX86_64Backend.EmitProcFieldCall(AObjExpr: TASTExpr;
+  const AObjectName: string; AIsVarParam: Boolean; AFieldInfo: TFieldInfo;
+  AProcType: TProceduralTypeDesc; AArgs: TObjectList; AResultType: TTypeDesc);
+var
+  I:       Integer;
+  Arg:     TASTExpr;
+  IsVar:   Boolean;
+  IsMeth:  Boolean;
+  Slots:   Integer;
+  HD:      TList<Integer>;
+  HK:      TList<Integer>;
+  HTotal:  Integer;
+begin
+  IsMeth := (AProcType <> nil) and AProcType.IsMethodPtr;
+  { A method pointer consumes %rdi for the captured Data (Self), leaving five
+    argument registers; a plain function pointer leaves all six.  Anything
+    larger would need the stack-overflow argument strategy — fail loudly
+    rather than emit a silently wrong call. }
+  if IsMeth then Slots := AArgs.Count + 1 else Slots := AArgs.Count;
+  if Slots > 6 then
+    raise ENativeCodeGenError.Create(
+      'native backend: procedural-field call with >6 argument slots is not supported');
+
+  HD := TList<Integer>.Create();
+  HK := TList<Integer>.Create();
+  try
+    HTotal := Self.EmitArgHoist(nil, AProcType.Params, True, '', AArgs, HD, HK);
+    { Evaluate args left-to-right and push them.  var/out positions push the
+      argument's address; record-call/string args are reloaded from the hoist
+      region. }
+    for I := 0 to AArgs.Count - 1 do
+    begin
+      Arg := TASTExpr(AArgs.Items[I]);
+      IsVar := (I < AProcType.Params.Count) and
+               TProcParamInfo(AProcType.Params.Items[I]).IsVarParam;
+      if HK.Get(I) >= akRecCall then
+      begin
+        Self.Emit(Format(#9'movq %d(%%rsp), %%rax',
+          [HTotal - HD.Get(I) + I * 8]));
+        Self.Emit(#9'pushq %rax');
+      end
+      else if IsVar then
+      begin
+        Self.EmitVarArgAddrToRax(Arg);
+        Self.Emit(#9'pushq %rax');
+      end
+      else
+      begin
+        Self.EmitExprToEax(Arg);
+        Self.Emit(#9'pushq %rax');
+      end;
+    end;
+
+    { Load the receiver instance pointer into %rax.  This must be call-free so
+      it cannot clobber the already-pushed arguments. }
+    if AObjExpr <> nil then
+    begin
+      if (AObjExpr is TIdentExpr) or (AObjExpr is TFieldAccessExpr) then
+        Self.EmitExprToEax(AObjExpr)
+      else
+        raise ENativeCodeGenError.Create(
+          'native backend: unsupported receiver expression in procedural-field call');
+    end
+    else if AIsVarParam then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(AObjectName)]));
+      Self.Emit(#9'movq (%rax), %rax');
+    end
+    else
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(AObjectName)]));
+
+    { %rax now holds the instance pointer; advance to the field slot (the code
+      pointer for a plain function pointer, or the 16-byte (Code, Data) block
+      for a method pointer). }
+    if AFieldInfo.Offset > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rax', [AFieldInfo.Offset]));
+
+    if IsMeth then
+    begin
+      Self.Emit(#9'movq 8(%rax), %rdi');   { Data (Self) -> first argument }
+      Self.Emit(#9'movq (%rax), %r10');    { Code pointer }
+      for I := AArgs.Count - 1 downto 0 do
+        Self.Emit(#9'popq ' + SysVArg64(I + 1));
+    end
+    else
+    begin
+      Self.Emit(#9'movq (%rax), %r10');    { Code pointer }
+      for I := AArgs.Count - 1 downto 0 do
+        Self.Emit(#9'popq ' + SysVArg64(I));
+    end;
+    Self.Emit(#9'callq *%r10');
+    Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, 0, True);
+  finally
+    HD.Free();
+    HK.Free();
+  end;
+
+  { Normalise the (32-bit-ABI) return value to the field signature's return
+    width.  Statement calls pass nil and need no result. }
+  if AResultType <> nil then
+    Self.EmitNarrowToType(AResultType);
 end;
 
 procedure TX86_64Backend.EmitLocalRecordBase(const AName, AReg: string);

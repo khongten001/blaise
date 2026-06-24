@@ -6618,11 +6618,21 @@ begin
       for I := 0 to ACall.Args.Count - 1 do
       begin
         if ArgLine <> '' then ArgLine := ArgLine + ', ';
-        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-        QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
-        ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
-        ArgLine := ArgLine + Format('%s %s',
-          [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+        { var/out parameters are passed by reference — emit the argument's
+          l-value address, not its value. }
+        if TProcParamInfo(PT.Params.Items[I]).IsVarParam then
+        begin
+          ArgTemp := EmitLValueAddr(TASTExpr(ACall.Args.Items[I]));
+          ArgLine := ArgLine + Format('l %s', [ArgTemp]);
+        end
+        else
+        begin
+          ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+          QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
+          ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
+          ArgLine := ArgLine + Format('%s %s',
+            [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+        end;
       end;
       EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
       if ExprOwnsRef(ACall.ObjExpr) then
@@ -6811,11 +6821,21 @@ begin
     for I := 0 to ACall.Args.Count - 1 do
     begin
       if ArgLine <> '' then ArgLine := ArgLine + ', ';
-      ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
-      QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
-      ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
-      ArgLine := ArgLine + Format('%s %s',
-        [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+      { var/out parameters are passed by reference — emit the argument's
+        l-value address, not its value. }
+      if TProcParamInfo(PT.Params.Items[I]).IsVarParam then
+      begin
+        ArgTemp := EmitLValueAddr(TASTExpr(ACall.Args.Items[I]));
+        ArgLine := ArgLine + Format('l %s', [ArgTemp]);
+      end
+      else
+      begin
+        ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+        QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
+        ArgTemp := CoerceArg(ArgTemp, TASTExpr(ACall.Args.Items[I]), QType);
+        ArgLine := ArgLine + Format('%s %s',
+          [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+      end;
     end;
     EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
     Exit;
@@ -10770,14 +10790,30 @@ begin
       for I := 0 to MCallExpr.Args.Count - 1 do
       begin
         if ArgLine <> '' then ArgLine := ArgLine + ', ';
-        ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
-        QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
-        ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]), QType);
-        ArgLine := ArgLine + Format('%s %s',
-          [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+        { var/out parameters are passed by reference — emit the argument's
+          l-value address, not its value (otherwise the callee writes through
+          a garbage pointer). }
+        if TProcParamInfo(PT.Params.Items[I]).IsVarParam then
+        begin
+          ArgTemp := EmitLValueAddr(TASTExpr(MCallExpr.Args.Items[I]));
+          ArgLine := ArgLine + Format('l %s', [ArgTemp]);
+        end
+        else
+        begin
+          ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
+          QType   := QbeTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc);
+          ArgTemp := CoerceArg(ArgTemp, TASTExpr(MCallExpr.Args.Items[I]), QType);
+          ArgLine := ArgLine + Format('%s %s',
+            [QbeParamTypeOf(TProcParamInfo(PT.Params.Items[I]).TypeDesc), ArgTemp]);
+        end;
       end;
+      { Result width follows the field signature's return type. }
+      if PT.ReturnType <> nil then
+        QType := QbeTypeOf(PT.ReturnType)
+      else
+        QType := 'l';
       T := AllocTemp();
-      EmitLine(Format('  %s =l call %s(%s)', [T, FPtrTemp, ArgLine]));
+      EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FPtrTemp, ArgLine]));
       Exit(T);
     end;
 

@@ -10017,7 +10017,10 @@ begin
         AExpr.ResolvedProcType  := FldInfo.TypeDesc;
         AExpr.ResolvedClassType := RT;
         AExpr.ResolvedMethod    := nil;
-        AExpr.ResolvedType      := nil;
+        { Calling a function-pointer field yields the field signature's return
+          type — not nil — so the call can be used as an expression. }
+        AExpr.ResolvedType      := TProceduralTypeDesc(FldInfo.TypeDesc).ReturnType;
+        Result                  := AExpr.ResolvedType;
         Exit;
       end;
       SemanticError(
@@ -10113,7 +10116,9 @@ begin
           AExpr.ResolvedProcType  := FldInfo.TypeDesc;
           AExpr.ResolvedClassType := RT;
           AExpr.ResolvedMethod    := nil;
-          AExpr.ResolvedType      := nil;
+          { Function-pointer field call yields the signature's return type. }
+          AExpr.ResolvedType      := TProceduralTypeDesc(FldInfo.TypeDesc).ReturnType;
+          Result                  := AExpr.ResolvedType;
           Exit;
         end;
         SemanticError(
@@ -10345,7 +10350,9 @@ begin
         (ObjSym.Kind = skVarParameter) or
         ((ObjSym.Kind = skParameter) and (ObjSym.TypeDesc <> nil) and
          (ObjSym.TypeDesc.Kind in [tyRecord, tyStaticArray]));
-      AExpr.ResolvedType      := nil;
+      { Function-pointer field call yields the signature's return type. }
+      AExpr.ResolvedType      := TProceduralTypeDesc(FldInfo.TypeDesc).ReturnType;
+      Result                  := AExpr.ResolvedType;
       Exit;
     end;
     SemanticError(

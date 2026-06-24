@@ -47,6 +47,10 @@ type
     procedure TestCodegen_ProceduralVar_AllocatedAsPointer;
     procedure TestCodegen_AddrOfFunc_EmitsFunctionLabel;
     procedure TestCodegen_IndirectCall_UsesTempNotName;
+    { A procedural-typed class field called through a receiver as an
+      expression (Result := Self.FFn(S)) must type to the field's return
+      type and dispatch through the loaded pointer, not a direct call. }
+    procedure TestCodegen_ProcFieldCallExpr_IndirectNotDirect;
   end;
 
 implementation
@@ -546,6 +550,40 @@ begin
     temp was loaded from F. }
   AssertFalse('Indirect call must not be a direct call to $MyFn',
     IRContains(IR, 'call $MyFn('));
+end;
+
+procedure TProcTypesTests.TestCodegen_ProcFieldCallExpr_IndirectNotDirect;
+var
+  IR: string;
+begin
+  { Regression: this used to fail semantic analysis ("Expression has no value
+    type in assignment") because a procedural-field call used as an expression
+    was given a nil result type.  It must now compile and dispatch indirectly. }
+  IR := GenIR(
+    '''
+        program Test;
+        type
+          TFn = function(const S: string): Integer;
+          TBox = class
+            FFn: TFn;
+            function Run(const S: string): Integer;
+          end;
+        function TBox.Run(const S: string): Integer;
+        begin
+          Result := Self.FFn(S)
+        end;
+        var
+          B: TBox;
+        begin
+        end.
+        '''
+  );
+  { The only call in the program is the indirect dispatch through the field —
+    it must go through a temp (call %tmp(...)), never a direct named call. }
+  AssertTrue('Procedural-field call must dispatch through a temp',
+    IRContains(IR, 'call %'));
+  AssertFalse('Procedural-field call must not be a direct call to $FFn',
+    IRContains(IR, 'call $FFn('));
 end;
 
 initialization

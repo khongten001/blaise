@@ -42,6 +42,11 @@ type
     { Procedural types }
     procedure TestRun_ProcType_CallViaVariable;
     procedure TestRun_ProcType_OfObject_Dispatch;
+    { Procedural-typed class field called through a receiver (Self.FFn(...)). }
+    procedure TestRun_ProcFieldCall_ReturnValue;
+    procedure TestRun_ProcFieldCall_Statement;
+    procedure TestRun_ProcFieldCall_OutParam;
+    procedure TestRun_ProcFieldCall_MultiArg;
 
     { Default parameters }
     procedure TestRun_DefaultParam_OmitLast;
@@ -326,6 +331,98 @@ const
       M := @Obj.Print;
       M;
       Obj.Free()
+    end.
+    ''';
+
+  { Function-pointer class field called through a receiver, as an expression. }
+  SrcProcFieldReturn = '''
+    program Prg;
+    type
+      TFn = function(const S: string): Integer;
+      TBox = class
+        FFn: TFn;
+        function Run(const S: string): Integer;
+      end;
+    function Len2(const S: string): Integer;
+    begin Result := Length(S) end;
+    function TBox.Run(const S: string): Integer;
+    begin Result := Self.FFn(S) end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Len2;
+      WriteLn(IntToStr(B.Run('hello')));
+      B.Free()
+    end.
+    ''';
+
+  { Function-pointer class field called as a statement. }
+  SrcProcFieldStmt = '''
+    program Prg;
+    type
+      TFn = procedure(const S: string);
+      TBox = class
+        FFn: TFn;
+        procedure Run;
+      end;
+    procedure Hi(const S: string);
+    begin WriteLn(S) end;
+    procedure TBox.Run;
+    begin Self.FFn('hi') end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Hi;
+      B.Run();
+      B.Free()
+    end.
+    ''';
+
+  { Function-pointer class field with an out parameter — the argument must be
+    passed by reference so the callee writes back into the caller's variable. }
+  SrcProcFieldOut = '''
+    program Prg;
+    type
+      TFn = function(const S: string; out V: string): Boolean;
+      TBox = class
+        FFn: TFn;
+        function Run(const S: string): string;
+      end;
+    function Echo(const S: string; out V: string): Boolean;
+    begin V := S; Result := True end;
+    function TBox.Run(const S: string): string;
+    var V: string;
+    begin
+      if Self.FFn(S, V) then Result := V else Result := '?'
+    end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Echo;
+      WriteLn(B.Run('hi'));
+      B.Free()
+    end.
+    ''';
+
+  { Function-pointer class field with several value arguments. }
+  SrcProcFieldMultiArg = '''
+    program Prg;
+    type
+      TFn = function(A, B, C: Integer): Integer;
+      TBox = class
+        FFn: TFn;
+        function Run(X: Integer): Integer;
+      end;
+    function Sum3(A, B, C: Integer): Integer;
+    begin Result := A + B + C end;
+    function TBox.Run(X: Integer): Integer;
+    begin Result := Self.FFn(X, X + 1, X + 2) end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Sum3;
+      WriteLn(IntToStr(B.Run(10)));
+      B.Free()
     end.
     ''';
 
@@ -644,6 +741,30 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcProcTypeOfObject, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('55', '55' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcFieldCall_ReturnValue;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcProcFieldReturn, '5' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcFieldCall_Statement;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcProcFieldStmt, 'hi' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcFieldCall_OutParam;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcProcFieldOut, 'hi' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ProcFieldCall_MultiArg;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcProcFieldMultiArg, '33' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_DefaultParam_OmitLast;
