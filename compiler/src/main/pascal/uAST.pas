@@ -466,6 +466,10 @@ type
     IsIndirectCall:       Boolean; { set by uSemantic — Name is a procedural-typed variable }
     IndirectCallIsGlobal: Boolean; { set by uSemantic — when IsIndirectCall, variable is global }
     [Unretained] ResolvedProcType:     TObject; { TProceduralTypeDesc — not owned; valid when IsIndirectCall }
+    IsProcFieldCall:      Boolean; { set by uSemantic — unqualified Name is a
+                                     procedural-typed field of the current class
+                                     (implicit Self.Field), called as a statement }
+    [Unretained] ProcFieldInfo: TFieldInfo; { not owned — the procedural field, when IsProcFieldCall }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -489,6 +493,10 @@ type
     IsBuiltinHasClassAttr: Boolean; { set by uSemantic — HasClassAttribute builtin }
     HasClassAttrClass:     string;  { class name for arg 1 (class being queried) }
     HasClassAttrAttr:      string;  { attribute class name for arg 2 }
+    IsProcFieldCall:       Boolean; { set by uSemantic — unqualified Name is a
+                                      procedural-typed field of the current class
+                                      (implicit Self.Field), used as an expression }
+    [Unretained] ProcFieldInfo: TFieldInfo; { not owned — the procedural field, when IsProcFieldCall }
     constructor Create;
     destructor Destroy; override;
   end;

@@ -6365,6 +6365,14 @@ begin
       Self.Emit(#9'movq %xmm0, %rax');
       Exit;
     end;
+    { Unqualified call to a procedural-typed field of the current class
+      (implicit Self.Field) used as an expression. }
+    if FC.IsProcFieldCall then
+    begin
+      Self.EmitProcFieldCall(nil, 'Self', False, FC.ProcFieldInfo,
+        TProceduralTypeDesc(FC.ResolvedProcType), FC.Args, FC.ResolvedType);
+      Exit;
+    end;
     if FC.IsIndirectCall then
     begin
       { Bare function-pointer call: load the pointer from the variable slot
@@ -11547,6 +11555,14 @@ begin
       Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _ProcessFree');
+      Exit;
+    end;
+    { Unqualified call to a procedural-typed field of the current class
+      (implicit Self.Field) used as a statement. }
+    if PC.IsProcFieldCall then
+    begin
+      Self.EmitProcFieldCall(nil, 'Self', False, PC.ProcFieldInfo,
+        TProceduralTypeDesc(PC.ResolvedProcType), PC.Args, nil);
       Exit;
     end;
     if PC.IsIndirectCall then

@@ -326,6 +326,13 @@ type
     function  EmitInheritedCallExpr(ACall: TInheritedCallExpr): string;
     procedure EmitCaseStmt(AStmt: TCaseStmt);
     procedure EmitProcCall(ACall: TProcCall);
+    { Dispatch a call through a procedural-typed field of the current class
+      reached via implicit Self (an unqualified FFn(args) inside a method).
+      Loads Self, indexes the field, and calls through the stored pointer;
+      var/out arguments are passed by reference.  Returns the QBE result
+      temp, or '' for a procedure (no return value). }
+    function  EmitImplicitSelfProcFieldCall(AFieldInfo: TFieldInfo;
+                APT: TProceduralTypeDesc; AArgs: TObjectList): string;
     { Helper for string-mutator built-ins (Delete, SetLength).
       ARtlName is the RTL function (e.g. '_StringDelete') and
       AExtraArgCount is the number of trailing Integer args after the
@@ -8615,6 +8622,74 @@ begin
       TGenericFuncInstance(AProg.GenericFuncInstances.Items[I]).MethodDecl);
 end;
 
+function TCodeGenQBE.EmitImplicitSelfProcFieldCall(AFieldInfo: TFieldInfo;
+  APT: TProceduralTypeDesc; AArgs: TObjectList): string;
+var
+  SelfTemp: string;
+  SlotAddr: string;
+  FPtrTemp: string;
+  ArgTemp:  string;
+  DataTemp: string;
+  ArgLine:  string;
+  QType:    string;
+  T:        string;
+  I:        Integer;
+begin
+  { Self pointer from the implicit Self parameter slot. }
+  SelfTemp := AllocTemp();
+  EmitLine(Format('  %s =l loadl %%_var_Self', [SelfTemp]));
+  if AFieldInfo.Offset > 0 then
+  begin
+    SlotAddr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, %d', [SlotAddr, SelfTemp, AFieldInfo.Offset]));
+  end
+  else
+    SlotAddr := SelfTemp;
+  FPtrTemp := AllocTemp();
+  EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SlotAddr]));
+  { 'of object' field: Data (Self) sits at +8 and becomes the first arg. }
+  if APT.IsMethodPtr then
+  begin
+    ArgTemp := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ArgTemp, SlotAddr]));
+    DataTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [DataTemp, ArgTemp]));
+    ArgLine := Format('l %s', [DataTemp]);
+  end
+  else
+    ArgLine := '';
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    if ArgLine <> '' then ArgLine := ArgLine + ', ';
+    { var/out parameters pass the argument's l-value address by reference. }
+    if TProcParamInfo(APT.Params.Items[I]).IsVarParam then
+    begin
+      ArgTemp := EmitLValueAddr(TASTExpr(AArgs.Items[I]));
+      ArgLine := ArgLine + Format('l %s', [ArgTemp]);
+    end
+    else
+    begin
+      ArgTemp := EmitExpr(TASTExpr(AArgs.Items[I]));
+      QType   := QbeTypeOf(TProcParamInfo(APT.Params.Items[I]).TypeDesc);
+      ArgTemp := CoerceArg(ArgTemp, TASTExpr(AArgs.Items[I]), QType);
+      ArgLine := ArgLine + Format('%s %s',
+        [QbeParamTypeOf(TProcParamInfo(APT.Params.Items[I]).TypeDesc), ArgTemp]);
+    end;
+  end;
+  if APT.ReturnType <> nil then
+  begin
+    QType  := QbeTypeOf(APT.ReturnType);
+    T      := AllocTemp();
+    EmitLine(Format('  %s =%s call %s(%s)', [T, QType, FPtrTemp, ArgLine]));
+    Result := T;
+  end
+  else
+  begin
+    EmitLine(Format('  call %s(%s)', [FPtrTemp, ArgLine]));
+    Result := '';
+  end;
+end;
+
 procedure TCodeGenQBE.EmitProcCall(ACall: TProcCall);
 var
   UCaseName: string;
@@ -8635,6 +8710,15 @@ var
   CallTgt:   string;
 begin
   PMark := PendingReleaseMark();
+  { Unqualified call to a procedural-typed field of the current class
+    (implicit Self.Field) used as a statement. }
+  if ACall.IsProcFieldCall then
+  begin
+    EmitImplicitSelfProcFieldCall(ACall.ProcFieldInfo,
+      TProceduralTypeDesc(ACall.ResolvedProcType), ACall.Args);
+    FlushPendingReleases(PMark);
+    Exit;
+  end;
   { Indirect call through a procedural-typed variable: load the function
     pointer from the variable and call through it.  For 'of object' types
     the variable's slot is a 16-byte (Code, Data) block; load both halves
@@ -10443,6 +10527,12 @@ begin
         EmitLine(Format('  %s =w call $_ProcessExitCode(l %s)', [T, L]));
         Exit(T);
       end;
+
+      { Unqualified call to a procedural-typed field of the current class
+        (implicit Self.Field) used as an expression. }
+      if FC.IsProcFieldCall then
+        Exit(EmitImplicitSelfProcFieldCall(FC.ProcFieldInfo,
+          TProceduralTypeDesc(FC.ResolvedProcType), FC.Args));
 
       { Indirect call through a procedural-typed variable: F() / F(args)
         where F is declared 'var F: TProcType'.  Load the function pointer

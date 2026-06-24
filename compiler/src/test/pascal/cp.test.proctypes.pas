@@ -51,6 +51,9 @@ type
       expression (Result := Self.FFn(S)) must type to the field's return
       type and dispatch through the loaded pointer, not a direct call. }
     procedure TestCodegen_ProcFieldCallExpr_IndirectNotDirect;
+    { An unqualified procedural-field call via implicit Self (Result := FFn(S),
+      no 'Self.' prefix) must resolve and dispatch through Self's field. }
+    procedure TestCodegen_ImplicitSelfProcFieldCall_LoadsSelf;
   end;
 
 implementation
@@ -583,6 +586,40 @@ begin
   AssertTrue('Procedural-field call must dispatch through a temp',
     IRContains(IR, 'call %'));
   AssertFalse('Procedural-field call must not be a direct call to $FFn',
+    IRContains(IR, 'call $FFn('));
+end;
+
+procedure TProcTypesTests.TestCodegen_ImplicitSelfProcFieldCall_LoadsSelf;
+var
+  IR: string;
+begin
+  { Regression: an unqualified FFn(...) where FFn is a procedural field used
+    to fail with "Undeclared function".  It must now resolve as an implicit
+    Self.Field call: load Self, then dispatch through a temp. }
+  IR := GenIR(
+    '''
+        program Test;
+        type
+          TFn = function(const S: string): Integer;
+          TBox = class
+            FFn: TFn;
+            function Run(const S: string): Integer;
+          end;
+        function TBox.Run(const S: string): Integer;
+        begin
+          Result := FFn(S)
+        end;
+        var
+          B: TBox;
+        begin
+        end.
+        '''
+  );
+  AssertTrue('Implicit-Self field call must load Self',
+    IRContains(IR, 'loadl %_var_Self'));
+  AssertTrue('Implicit-Self field call must dispatch through a temp',
+    IRContains(IR, 'call %'));
+  AssertFalse('Implicit-Self field call must not be a direct call to $FFn',
     IRContains(IR, 'call $FFn('));
 end;
 

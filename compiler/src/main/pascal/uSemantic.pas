@@ -8717,6 +8717,7 @@ var
   I:       Integer;
   PT:      TProceduralTypeDesc;
   PPar:    TProcParamInfo;
+  FldInfo: TFieldInfo;
 begin
   { Resolution order matches Delphi/FPC:
       1. Local variables / parameters / var-parameters — a `var Run:
@@ -8765,6 +8766,38 @@ begin
       AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
       ACall.ResolvedDecl         := MDecl;
       ACall.IsImplicitSelfMethod := True;
+      Exit;
+    end;
+    { No method of that name — an unqualified procedural-typed field of the
+      current class (implicit Self.Field) dispatches through its stored
+      pointer, mirroring the explicit Self.Field() path. }
+    FldInfo := FCurrentClass.FindField(ACall.Name);
+    if (FldInfo <> nil) and (FldInfo.TypeDesc <> nil) and
+       (FldInfo.TypeDesc.Kind = tyProcedural) then
+    begin
+      PT := TProceduralTypeDesc(FldInfo.TypeDesc);
+      if ACall.Args.Count <> PT.Params.Count then
+        SemanticError(Format(
+          'Indirect call ''%s'' expects %d argument(s), got %d',
+          [ACall.Name, PT.Params.Count, ACall.Args.Count]),
+          ACall.Line, ACall.Col);
+      for I := 0 to ACall.Args.Count - 1 do
+      begin
+        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        PPar    := TProcParamInfo(PT.Params.Items[I]);
+        if PPar.IsVarParam and
+           not IsVarArgLValue(TASTExpr(ACall.Args.Items[I])) then
+          SemanticError(
+            Format('var argument %d of ''%s'' must be a variable',
+              [I + 1, ACall.Name]),
+            ACall.Line, ACall.Col);
+        CheckTypesMatch(PPar.TypeDesc, ArgType,
+          Format('argument %d of ''%s''', [I + 1, ACall.Name]),
+          ACall.Line, ACall.Col);
+      end;
+      ACall.IsProcFieldCall  := True;
+      ACall.ProcFieldInfo    := FldInfo;
+      ACall.ResolvedProcType := FldInfo.TypeDesc;
       Exit;
     end;
   end;
@@ -9019,6 +9052,7 @@ var
   I:       Integer;
   PT:      TProceduralTypeDesc;
   PPar:    TProcParamInfo;
+  FldInfo: TFieldInfo;
 begin
   { HasClassAttribute(AClass, AAttrClass): Boolean — runtime query of the custom
     attribute RTTI stored in slot 7 of the class's typeinfo.  Both arguments
@@ -9234,6 +9268,40 @@ begin
       AExpr.ResolvedDecl         := MDecl;
       AExpr.IsImplicitSelfMethod := True;
       Result := MDecl.ResolvedReturnType;
+      AExpr.ResolvedType := Result;
+      Exit;
+    end;
+    { No method of that name — an unqualified procedural-typed field of the
+      current class (implicit Self.Field) called as an expression dispatches
+      through its stored pointer and yields the signature's return type. }
+    FldInfo := FCurrentClass.FindField(AExpr.Name);
+    if (FldInfo <> nil) and (FldInfo.TypeDesc <> nil) and
+       (FldInfo.TypeDesc.Kind = tyProcedural) then
+    begin
+      PT := TProceduralTypeDesc(FldInfo.TypeDesc);
+      if AExpr.Args.Count <> PT.Params.Count then
+        SemanticError(Format(
+          'Indirect call ''%s'' expects %d argument(s), got %d',
+          [AExpr.Name, PT.Params.Count, AExpr.Args.Count]),
+          AExpr.Line, AExpr.Col);
+      for I := 0 to AExpr.Args.Count - 1 do
+      begin
+        ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        PPar    := TProcParamInfo(PT.Params.Items[I]);
+        if PPar.IsVarParam and
+           not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
+          SemanticError(
+            Format('var argument %d of ''%s'' must be a variable',
+              [I + 1, AExpr.Name]),
+            AExpr.Line, AExpr.Col);
+        CheckTypesMatch(PPar.TypeDesc, ArgType,
+          Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
+          AExpr.Line, AExpr.Col);
+      end;
+      AExpr.IsProcFieldCall  := True;
+      AExpr.ProcFieldInfo    := FldInfo;
+      AExpr.ResolvedProcType := FldInfo.TypeDesc;
+      Result := PT.ReturnType;
       AExpr.ResolvedType := Result;
       Exit;
     end;

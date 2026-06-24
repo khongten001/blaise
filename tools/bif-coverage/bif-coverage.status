@@ -214,6 +214,7 @@ TProcCall.Args  serialise
 TProcCall.IsImplicitSelfMethod  safe
 TProcCall.IsIndirectCall  safe
 TProcCall.IndirectCallIsGlobal  safe
+TProcCall.IsProcFieldCall  safe
 
 # TFuncCallExpr (uAST.pas:465)
 TFuncCallExpr.Name  serialise
@@ -224,6 +225,7 @@ TFuncCallExpr.IndirectCallIsGlobal  safe
 TFuncCallExpr.IsBuiltinHasClassAttr  safe
 TFuncCallExpr.HasClassAttrClass  safe
 TFuncCallExpr.HasClassAttrAttr  safe
+TFuncCallExpr.IsProcFieldCall  safe
 
 # TIndirectFuncCallExpr (uAST.pas:491)
 TIndirectFuncCallExpr.CalleeExpr  serialise

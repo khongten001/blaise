@@ -50,6 +50,10 @@ type
     { Method-pointer (of object) field: assign @Obj.Method into a field, then
       dispatch through it — exercises the 16-byte (Code, Data) field store. }
     procedure TestRun_MethodPtrField_AssignAndCall;
+    { Unqualified call to a procedural-typed field via implicit Self (FFn(...)
+      with no 'Self.' prefix), as an expression and as a statement. }
+    procedure TestRun_ImplicitSelfProcField_Expr;
+    procedure TestRun_ImplicitSelfProcField_Stmt;
 
     { Default parameters }
     procedure TestRun_DefaultParam_OmitLast;
@@ -458,6 +462,52 @@ const
     end.
     ''';
 
+  { Unqualified (implicit-Self) call to a procedural-typed field, as an
+    expression — FFn(...) with no 'Self.' prefix. }
+  SrcImplicitProcFieldExpr = '''
+    program Prg;
+    type
+      TFn = function(A, B, C: Integer): Integer;
+      TBox = class
+        FFn: TFn;
+        function Run(X: Integer): Integer;
+      end;
+    function Sum3(A, B, C: Integer): Integer;
+    begin Result := A + B + C end;
+    function TBox.Run(X: Integer): Integer;
+    begin Result := FFn(X, X + 1, X + 2) end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Sum3;
+      WriteLn(IntToStr(B.Run(10)));
+      B.Free()
+    end.
+    ''';
+
+  { Unqualified (implicit-Self) call to a procedural-typed field, as a
+    statement. }
+  SrcImplicitProcFieldStmt = '''
+    program Prg;
+    type
+      TFn = procedure(const S: string);
+      TBox = class
+        FFn: TFn;
+        procedure Run;
+      end;
+    procedure Hi(const S: string);
+    begin WriteLn(S) end;
+    procedure TBox.Run;
+    begin FFn('hi') end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FFn := @Hi;
+      B.Run();
+      B.Free()
+    end.
+    ''';
+
   SrcDefaultParam = '''
     program Prg;
     function Add(A: Integer; B: Integer = 10): Integer;
@@ -803,6 +853,18 @@ procedure TE2EMiscTests.TestRun_MethodPtrField_AssignAndCall;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcMethodPtrField, 'T:hello' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ImplicitSelfProcField_Expr;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcImplicitProcFieldExpr, '33' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ImplicitSelfProcField_Stmt;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcImplicitProcFieldStmt, 'hi' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_DefaultParam_OmitLast;
