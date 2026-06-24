@@ -33,7 +33,12 @@ BLAISE       = $(COMPILER_BIN)/blaise
 # object list, so a cross-unit symbol (e.g. typeinfo_TRtlPlatform, referenced by
 # the derived TRtlPlatformPosix in another unit) ends up undefined at link.
 # Force whole-program compilation per unit so every unit object is self-contained.
-BLAISE_FLAGS = --no-incremental
+#
+# --assembler internal: assemble each unit to its .o with Blaise's own in-process
+# assembler instead of `cc -c`, so building the RTL needs no external assembler.
+# (The hand-written .s files in $(ASM_DIR) still go through $(CC) until Blaise can
+# assemble a standalone .s; the Pascal units no longer touch gcc.)
+BLAISE_FLAGS = --no-incremental --assembler internal
 
 # Assembly sources — platform-specific, no C compiler needed.
 ASM_OBJS = $(OBJ_DIR)/blaise_start_x86_64.o \
