@@ -11524,6 +11524,15 @@ var
   DefProp:   TPropertyInfo;
   DefFA:     TFieldAccessExpr;
 begin
+  { Idempotency guard: this node rewrites itself in place on the default-property
+    and indexed-property paths (StrExpr is swapped for a synthesised field-access,
+    IndexExpr is cleared).  A second analysis of an already-resolved node would
+    re-walk the mutated children and recurse without bound — which happens when a
+    typecast operand is itself a default-property subscript, e.g.
+    TStringList(OL[0])[1] (the outer subscript re-analyses its typecast base,
+    which re-analyses the inner OL[0]).  Once resolved, return the cached type. }
+  if AExpr.ResolvedType <> nil then
+    Exit(AExpr.ResolvedType);
   StrType := AnalyseExpr(AExpr.StrExpr);
   { Indexed property read: Obj.Prop[I] where Prop is a method-backed indexed property }
   if AExpr.StrExpr is TFieldAccessExpr then
@@ -11623,6 +11632,7 @@ begin
       Format('String subscript index must be numeric, got ''%s''', [IdxType.Name]),
       AExpr.Line, AExpr.Col);
   Result := FTable.TypeInteger;
+  AExpr.ResolvedType := Result;
 end;
 
 function TSemanticAnalyser.AnalyseIndirectFuncCallExpr(AExpr: TIndirectFuncCallExpr): TTypeDesc;
