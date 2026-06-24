@@ -343,6 +343,15 @@ var
 begin
   Result := '';
   TC := ResolveToolchain(AOpts.Target);
+  { Every Blaise program needs blaise_rtl.a; an empty RTLPath means it was not
+    found beside the compiler binary or via $BLAISE_RTL.  Linking without it
+    yields a flood of undefined-reference errors from the external linker (or,
+    on the internal linker, a silently broken binary) — fail with a clear
+    message instead. }
+  if TC.RTLPath = '' then
+    Exit('runtime archive blaise_rtl.a not found '
+      + '(looked beside the compiler binary and in $BLAISE_RTL); '
+      + 'cannot link a Blaise program without the RTL');
   Args := TStringList.Create();
   try
     Args.Add('-o');
@@ -359,8 +368,7 @@ begin
     if AExtraObjects <> nil then
       for I := 0 to AExtraObjects.Count - 1 do
         Args.Add(AExtraObjects.Strings[I]);
-    if TC.RTLPath <> '' then
-      Args.Add(TC.RTLPath);
+    Args.Add(TC.RTLPath);
     Args.Add('-lm');       { math functions (sqrt, sin, cos, etc.) }
     Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
     ExitCode := RunProcess(Self.ToolPath('linker', AOpts.Target), Args, Msg);

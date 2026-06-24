@@ -197,6 +197,18 @@ begin
 
   TC := ResolveToolchain(AOpts.Target);
 
+  { Every Blaise program links blaise_rtl.a — the program entry emits
+    _SetArgs and the runtime supplies ARC, strings, exceptions, the platform
+    layer, etc.  An empty RTLPath means FindRTLArchive could not locate
+    blaise_rtl.a beside the compiler binary (or via BLAISE_RTL).  Linking
+    anyway is never correct: every RTL symbol becomes an undefined dynamic
+    import that silently links but dies at run time (e.g. `undefined symbol:
+    _SetArgs`).  Fail loudly instead of emitting a broken executable. }
+  if TC.RTLPath = '' then
+    Exit('internal linker: runtime archive blaise_rtl.a not found '
+      + '(looked beside the compiler binary and in $BLAISE_RTL); '
+      + 'cannot link a Blaise program without the RTL');
+
   Lk := TLinker.Create();
   try
     try
@@ -215,8 +227,7 @@ begin
           Lk.AddOwnedObject(Obj);
         end;
 
-      if TC.RTLPath <> '' then
-        Lk.AddArchive(TC.RTLPath);
+      Lk.AddArchive(TC.RTLPath);
 
       Lk.AddCrtObject(CrtEndS);
       Lk.AddCrtObject(Crtn);

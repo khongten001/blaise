@@ -264,10 +264,16 @@ for sha in "${COMMITS[@]}"; do
   fi
 
   # Carry this step's artifacts forward as the compiler for the next commit.
-  cp "$WT/_boot/blaise"        "$WT/_carry_blaise"
-  cp "$WT/_boot/blaise_rtl.a"  "$WT/_carry_rtl.a"
-  CUR_BIN="$WT/_carry_blaise"
-  CUR_RTL="$WT/_carry_rtl.a"
+  # FindRTLArchive (uToolchain.pas) looks for `blaise_rtl.a` BESIDE the compiler
+  # binary, so the carried RTL must sit next to the carried binary under that
+  # exact name — keep both in a dedicated _carry/ dir.  (A mismatched name left
+  # RTLPath empty, so the next step linked the compiler with NO runtime archive
+  # and silently produced a binary missing _SetArgs et al. — SMOKE_FAILED.)
+  mkdir -p "$WT/_carry"
+  cp "$WT/_boot/blaise"        "$WT/_carry/blaise"
+  cp "$WT/_boot/blaise_rtl.a"  "$WT/_carry/blaise_rtl.a"
+  CUR_BIN="$WT/_carry/blaise"
+  CUR_RTL="$WT/_carry/blaise_rtl.a"
 done
 
 echo

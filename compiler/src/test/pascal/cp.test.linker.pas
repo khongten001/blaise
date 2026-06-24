@@ -117,6 +117,7 @@ type
     procedure TestRun_StringOps;
     procedure TestRun_ExceptionHandling;
     procedure TestRun_ClassAndVirtual;
+    procedure TestLink_MissingRTL_FailsLoudly;
   end;
 
 implementation
@@ -1145,6 +1146,12 @@ end;
 
 { ---- TInternalLinkerE2ETests ---- }
 
+{ symlink(2): point the isolated-dir compiler name at the real binary so
+  CompilerBinDir() resolves to the isolated dir (no blaise_rtl.a beside it),
+  without copying ~3 MB.  Returns 0 on success. }
+function _test_symlink(ATarget, ALinkPath: PChar): Integer;
+  external name 'symlink';
+
 var
   GIntLinkSkipNoted: Boolean = False;
 
@@ -1385,6 +1392,66 @@ begin
   end;
   AssertEquals('exit code', 0, EC);
   AssertEquals('stdout', 'child' + LineEnding, Out_);
+end;
+
+{ Regression: when blaise_rtl.a cannot be found beside the compiler binary
+  (and BLAISE_RTL is unset), the compiler must REFUSE to link rather than
+  silently emit a binary with every RTL symbol left as an undefined dynamic
+  import — that broken-but-runnable binary dies at run time with
+  `undefined symbol: _SetArgs`.  A mismatched carried-RTL name in
+  rolling-bootstrap surfaced exactly this.  We reproduce by running a COPY of
+  the compiler from a scratch dir that has no blaise_rtl.a beside it. }
+procedure TInternalLinkerE2ETests.TestLink_MissingRTL_FailsLoudly;
+var
+  IsoDir, IsoCompiler, SrcFile, OutFile, CompOut: string;
+  Rc: Integer;
+begin
+  if not Self.CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+
+  FCounter := FCounter + 1;
+  IsoDir := FScratch + 'no_rtl_' + IntToStr(FCounter) + '/';
+  ForceDirectories(IsoDir);
+  IsoCompiler := IsoDir + 'blaise';
+  { Symlink the real compiler into the isolated dir — argv[0]'s dirname is the
+    isolated dir, which has NO blaise_rtl.a beside it, so FindRTLArchive
+    returns ''.  (A symlink avoids copying the multi-MB binary and the
+    byte-exactness pitfalls of a string round-trip.) }
+  if FileExists(IsoCompiler) then DeleteFile(IsoCompiler);
+  if _test_symlink(PChar(FCompiler), PChar(IsoCompiler)) <> 0 then
+  begin
+    Ignore('<symlink-unavailable>');
+    Exit;
+  end;
+
+  SrcFile := IsoDir + 'prog.pas';
+  OutFile := IsoDir + 'prog';
+  WriteFile(SrcFile,
+    'program test_no_rtl;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(6 * 7)' + LineEnding +
+    'end.');
+
+  { BLAISE_RTL is normally unset in the test environment; the isolated dir has
+    no blaise_rtl.a, so FindRTLArchive returns '' and the guard must fire. }
+  Rc := Self.RunProc(IsoCompiler, [
+    '--source', SrcFile,
+    '--unit-path', FRTLPath,
+    '--unit-path', FStdlibPath,
+    '--output', OutFile,
+    '--backend', 'native',
+    '--assembler', 'internal',
+    '--linker', 'internal'
+  ], CompOut);
+
+  AssertTrue('compiler must FAIL when RTL is unreachable (got rc=0)', Rc <> 0);
+  AssertTrue('error must name the missing RTL archive: ' + CompOut,
+    Pos('blaise_rtl.a', CompOut) >= 0);
+  AssertFalse('no output binary should be produced on RTL-missing failure',
+    FileExists(OutFile));
 end;
 
 initialization
