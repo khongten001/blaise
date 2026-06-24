@@ -49,7 +49,7 @@ unit uUnitInterfaceIO;
 interface
 
 uses
-  Classes, SysUtils, streams, strutils, uAST, uUnitInterface;
+  Classes, SysUtils, streams, strutils, uAST, uUnitInterface, uStrCompat;
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
@@ -1104,19 +1104,28 @@ end;
   uSemanticImport.ResolveRef. }
 procedure DecodeQualRef(const ASrc: string; var AUnit, AType: string);
 var
-  Dot: Integer;
+  I, LastDot: Integer;
 begin
-  { Blaise Pos and Copy are 0-based. }
-  Dot := Pos('.', ASrc);
-  if Dot < 0 then
+  { Blaise Pos and Copy are 0-based.  Split at the LAST '.', not the first:
+    the unit qualifier may itself be dotted (e.g. 'blaise.testing'), while a
+    type name never contains a dot.  Splitting at the first dot mangled a
+    qualified type from a dotted unit — 'blaise.testing.TTestCase' decoded to
+    unit='blaise', type='testing.TTestCase', so the bare type name was lost
+    and a cached parent class could not be relinked (warm --unit-cache
+    inherited-method resolution failure). }
+  LastDot := -1;
+  for I := 0 to Length(ASrc) - 1 do
+    if StrAt(ASrc, I) = Ord('.') then
+      LastDot := I;
+  if LastDot < 0 then
   begin
     AUnit := '';
     AType := ASrc;
   end
   else
   begin
-    AUnit := Copy(ASrc, 0, Dot);
-    AType := Copy(ASrc, Dot + 1, Length(ASrc) - Dot - 1);
+    AUnit := Copy(ASrc, 0, LastDot);
+    AType := Copy(ASrc, LastDot + 1, Length(ASrc) - LastDot - 1);
   end;
 end;
 

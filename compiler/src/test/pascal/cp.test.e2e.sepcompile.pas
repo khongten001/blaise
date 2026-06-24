@@ -85,6 +85,15 @@ type
       object's fields stayed nil.  This crashed the stdlib JSON test suite
       when its TTestCase base came from target/units. }
     procedure TestIncrementalRebuild_VirtualCtorVtableSlot;
+    { Regression (bugs.txt warm --unit-cache): a leaf class inherits a method
+      from a GRANDPARENT class that lives in a different cached unit.  On a
+      warm rebuild the leaf unit recompiles from source while its ancestors
+      load from cached .bif ifaces.  A cross-unit parent is serialised in the
+      .bif with its unit qualifier (e.g. `base.TBase`); the importer resolved
+      the parent with a bare Lookup that missed the qualified name, leaving the
+      intermediate class's Parent pointer nil — so the leaf's inherited-method
+      walk dead-ended and reported "Undeclared procedure". }
+    procedure TestIncrementalRebuild_QualifiedGrandparentMethod;
     procedure TestDebugOpdf_PerUnitSection_InDependencyObject;
   end;
 
@@ -850,6 +859,144 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('build2 run exit code (impl-only dep must be linked)', 0, Rc);
   AssertEquals('build2 stdout', '43' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_QualifiedGrandparentMethod;
+const
+  { Three-level chain mirroring TAssert->TTestCase->TE2ETestCase.  Greet is
+    defined on the grandparent TBase.  CRITICAL: the grandparent unit has a
+    DOTTED name (chain.base) — the trigger for this bug.  A cross-unit parent
+    is serialised in the .bif as `Unit.Type`; when the unit is dotted
+    (chain.base.TBase) the decoder must split at the LAST dot.  Splitting at
+    the first dot yielded type='base.TBase', so the cached parent could not be
+    relinked and the leaf's inherited-method walk dead-ended. }
+  BaseSrc =
+    '''
+    unit chain.base;
+    interface
+    type
+      TBase = class
+        function Greet: Integer;
+      end;
+    implementation
+    function TBase.Greet: Integer;
+    begin Result := 7 end;
+    end.
+    ''';
+  { TMid's parent TBase lives in the dotted unit chain.base, so chain.mid's
+    .bif serialises the parent qualified as `chain.base.TBase`. }
+  MidSrc =
+    '''
+    unit chain.mid;
+    interface
+    uses chain.base;
+    type
+      TMid = class(TBase)
+        function MidOnly: Integer;
+      end;
+    implementation
+    function TMid.MidOnly: Integer;
+    begin Result := 1 end;
+    end.
+    ''';
+  { Leaf unit: TLeaf inherits Greet from TBase via TMid (two cached units up).
+    The marker comment is edited between builds to force a recompile-from-
+    source of THIS unit while chain.base/chain.mid stay cached. }
+  LeafSrc =
+    '''
+    unit chain.leaf;
+    interface
+    uses chain.mid;
+    type
+      TLeaf = class(TMid)
+        function Run: Integer;
+      end;
+    implementation
+    { rev 1 }
+    function TLeaf.Run: Integer;
+    begin Result := Greet() + MidOnly() end;
+    end.
+    ''';
+  LeafSrc2 =
+    '''
+    unit chain.leaf;
+    interface
+    uses chain.mid;
+    type
+      TLeaf = class(TMid)
+        function Run: Integer;
+      end;
+    implementation
+    { rev 2 — edited to force recompile from source }
+    function TLeaf.Run: Integer;
+    begin Result := Greet() + MidOnly() end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseLeaf;
+    uses chain.leaf;
+    var L: TLeaf;
+    begin
+      L := TLeaf.Create();
+      WriteLn(L.Run());
+      L.Free()
+    end.
+    ''';
+var
+  BasePas, MidPas, LeafPas, ProgPas, ProgBin, CacheDir: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  BasePas  := FScratch + '/chain.base.pas';
+  MidPas   := FScratch + '/chain.mid.pas';
+  LeafPas  := FScratch + '/chain.leaf.pas';
+  ProgPas  := FScratch + '/use_leaf.pas';
+  ProgBin  := FScratch + '/use_leaf';
+  CacheDir := FScratch + '/units-qgp';
+
+  WriteFile(BasePas, BaseSrc);
+  WriteFile(MidPas, MidSrc);
+  WriteFile(LeafPas, LeafSrc);
+  WriteFile(ProgPas, ProgSrc);
+  ForceDirectories(CacheDir);
+
+  { Build 1 (clean cache): all units from source; populates the cache. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  AssertEquals('build1 stdout', '8' + #10, Captured);
+
+  { Edit the LEAF unit's content so build 2 recompiles it FROM SOURCE while
+    BaseU and MidU load from their cached .bif/.o.  The inherited Greet (on
+    the cached grandparent TBase) must still resolve through MidU's
+    qualified parent link. }
+  WriteFile(LeafPas, LeafSrc2);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code — grandparent method must resolve (out: '
+    + Captured + ')', 0, Rc);
+  AssertTrue('use_leaf exists after rebuild', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout', '8' + #10, Captured)
 end;
 
 { Regression for the cached-unit virtual-constructor vtable-slot bug.

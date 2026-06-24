@@ -263,14 +263,19 @@ end;
 function ResolveParentClassByName(const AParentName: string;
                                   ATable: TSymbolTable): TRecordTypeDesc;
 var
-  Sym: TSymbol;
+  TD: TTypeDesc;
 begin
   Result := nil;
   if AParentName = '' then Exit;
-  Sym := ATable.Lookup(AParentName);
-  if (Sym = nil) or (Sym.Kind <> skType) then Exit;
-  if Sym.TypeDesc is TRecordTypeDesc then
-    Result := TRecordTypeDesc(Sym.TypeDesc);
+  { Use FindType, not a bare Lookup: a cross-unit parent is serialised in the
+    .bif with its unit qualifier (e.g. `testing.TTestCase`), and FindType
+    strips the qualifier and resolves the tail through the uses chain.  A bare
+    Lookup of the qualified name returns nil, leaving the parent unlinked — the
+    warm-cache "Undeclared procedure 'Ignore'" bug (inherited method on a
+    grandparent in another cached unit could not be reached). }
+  TD := ATable.FindType(AParentName);
+  if TD is TRecordTypeDesc then
+    Result := TRecordTypeDesc(TD);
 end;
 
 { Build the comma-separated '1'/'0' var-flag string AddMethod expects.
