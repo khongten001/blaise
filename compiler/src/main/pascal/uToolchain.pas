@@ -89,6 +89,14 @@ function ResolveAssembler: TTool;
 function ResolveLinker(const ATarget: TTargetDesc): TTool;
 function FindRTLArchive(const ATarget: TTargetDesc): string;
 
+{ Directory containing the running compiler binary (ParamStr(0)). }
+function CompilerBinDir: string;
+
+{ RTL source directory (compiler/src/main/pascal), relative to the binary.
+  The driver builds the RTL objects from here when linking; overridable via
+  $BLAISE_RTL_SRC. }
+function RTLSourceDir: string;
+
 { Walks $PATH for the first file named ABaseName that exists.  Returns the
   absolute path on hit, '' on miss.  On Windows hosts also tries '.exe'. }
 function WhichInPath(const ABaseName: string): string;
@@ -317,6 +325,42 @@ end;
 function CompilerBinDir: string;
 begin
   Result := ExtractFilePath(ParamStr(0));
+end;
+
+function RTLDirHasUnits(const ADir: string): Boolean;
+begin
+  Result := (ADir <> '') and
+    FileExists(IncludeTrailingPathDelimiter(ADir) + 'runtime.arc.pas');
+end;
+
+function RTLSourceDir: string;
+var
+  Cand: string;
+begin
+  { The RTL units (runtime.*, rtl.platform.*) live in the compiler's own source
+    tree.  Resolve the directory robustly across the ways the compiler is run:
+
+      1. binary-relative: <bindir>/../src/main/pascal — the in-tree
+         compiler/target/blaise.
+      2. CWD-relative: compiler/src/main/pascal then src/main/pascal — the
+         binary may be copied elsewhere (e.g. /tmp during a fixpoint) but
+         invoked from the project root by the build.
+
+    The driver consults $BLAISE_RTL_SRC before calling this, for a fully
+    relocated binary (release) that ships its RTL source elsewhere. }
+  Cand := IncludeTrailingPathDelimiter(CompilerBinDir()) + '../src/main/pascal';
+  if RTLDirHasUnits(ExpandFileName(Cand)) then Exit(ExpandFileName(Cand));
+
+  Cand := 'compiler/src/main/pascal';
+  if RTLDirHasUnits(ExpandFileName(Cand)) then Exit(ExpandFileName(Cand));
+
+  Cand := 'src/main/pascal';
+  if RTLDirHasUnits(ExpandFileName(Cand)) then Exit(ExpandFileName(Cand));
+
+  { Fall back to the binary-relative path so callers get a meaningful "not
+    found" message naming a concrete location. }
+  Result := ExpandFileName(IncludeTrailingPathDelimiter(CompilerBinDir())
+    + '../src/main/pascal');
 end;
 
 function FindRTLArchive(const ATarget: TTargetDesc): string;

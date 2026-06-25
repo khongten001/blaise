@@ -1459,17 +1459,7 @@ begin
   FCounter := FCounter + 1;
   IsoDir := FScratch + 'no_rtl_' + IntToStr(FCounter) + '/';
   ForceDirectories(IsoDir);
-  IsoCompiler := IsoDir + 'blaise';
-  { Symlink the real compiler into the isolated dir — argv[0]'s dirname is the
-    isolated dir, which has NO blaise_rtl.a beside it, so FindRTLArchive
-    returns ''.  (A symlink avoids copying the multi-MB binary and the
-    byte-exactness pitfalls of a string round-trip.) }
-  if FileExists(IsoCompiler) then DeleteFile(IsoCompiler);
-  if _test_symlink(PChar(FCompiler), PChar(IsoCompiler)) <> 0 then
-  begin
-    Ignore('<symlink-unavailable>');
-    Exit;
-  end;
+  IsoCompiler := FCompiler;
 
   SrcFile := IsoDir + 'prog.pas';
   OutFile := IsoDir + 'prog';
@@ -1479,21 +1469,23 @@ begin
     '  WriteLn(6 * 7)' + LineEnding +
     'end.');
 
-  { BLAISE_RTL is normally unset in the test environment; the isolated dir has
-    no blaise_rtl.a, so FindRTLArchive returns '' and the guard must fire. }
+  { The RTL is now compiled from SOURCE by the compiler at link time (no prebuilt
+    blaise_rtl.a).  Point --rtl-src at a nonexistent directory so the RTL source
+    is unreachable: the driver must fail loudly rather than emit a broken binary. }
   Rc := Self.RunProc(IsoCompiler, [
     '--source', SrcFile,
-    '--unit-path', FRTLPath,
     '--unit-path', FStdlibPath,
     '--output', OutFile,
     '--backend', 'native',
     '--assembler', 'internal',
-    '--linker', 'internal'
+    '--linker', 'internal',
+    '--rtl-src', IsoDir + 'no_such_rtl_src'
   ], CompOut);
 
-  AssertTrue('compiler must FAIL when RTL is unreachable (got rc=0)', Rc <> 0);
-  AssertTrue('error must name the missing RTL archive: ' + CompOut,
-    Pos('blaise_rtl.a', CompOut) >= 0);
+  AssertTrue('compiler must FAIL when the RTL source is unreachable (got rc=0)',
+    Rc <> 0);
+  AssertTrue('error must name the missing RTL source: ' + CompOut,
+    Pos('RTL source', CompOut) >= 0);
   AssertFalse('no output binary should be produced on RTL-missing failure',
     FileExists(OutFile));
 end;

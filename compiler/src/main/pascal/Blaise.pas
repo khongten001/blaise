@@ -231,6 +231,11 @@ begin
       Inc(I);
       AFront.UnitCacheDir := ParamStr(I);
     end
+    else if (Arg = '--rtl-src') and (I < ParamCount()) then
+    begin
+      Inc(I);
+      AOpts.RTLSrcDir := ParamStr(I);
+    end
     else if Arg = '--emit-ir' then
       AFront.EmitIR := True
     else if Arg = '--emit-asm' then

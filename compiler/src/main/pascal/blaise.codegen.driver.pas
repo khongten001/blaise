@@ -88,6 +88,10 @@ type
     UseInternalLinker: Boolean;  { --linker internal (native backend) }
     LinkerExplicit: Boolean;     { True when user passed --linker }
     LinkerChoiceBad: Boolean;    { --linker value not 'internal' or 'external' }
+    RTLSrcDir: string;           { --rtl-src DIR: explicit RTL source directory.
+                                   Overrides the binary/CWD-relative lookup, for
+                                   a relocated/release binary whose RTL source
+                                   lives elsewhere (empty = use default lookup) }
   end;
 
   TBackendDriver = class

@@ -69,6 +69,13 @@ type
   private
     function LinkViaInternalLinker(const AObjFile, AOutputFile: string;
       AOpts: TBackendOpts; AExtraObjects: TStringList): string;
+    { Compile the implicit RTL units to a per-compiler object cache and return
+      their .o paths in AObjPaths (link order).  Each unit is (re)compiled only
+      when its cached .o is missing or older than the source.  Replaces the
+      pre-built blaise_rtl.a: the RTL is now built from source by the compiler
+      itself (docs/rtl-unification-plan.adoc).  '' on success, else an error. }
+    function EnsureRTLObjects(AOpts: TBackendOpts;
+      AObjPaths: TStringList): string;
   end;
 
 implementation
@@ -182,19 +189,90 @@ begin
     Result := 'cc -c error (exit ' + IntToStr(ExitCode) + '): ' + Msg;
 end;
 
+{ The implicit RTL units, in archive/link order.  The compiler emits calls to
+  their symbols (_SetArgs, _BlaiseGetMem, _start, ARC helpers, …) in every
+  program, so every program links them.  Names are the dotted-flat unit names;
+  the source files are <name>.pas in the RTL source directory. }
+const
+  RTL_UNITS: array[0..13] of string = (
+    'runtime.start', 'runtime.atomic', 'runtime.setjmp', 'runtime.utf8',
+    'runtime.mem', 'runtime.str', 'runtime.set', 'runtime.arc',
+    'runtime.weak', 'runtime.float', 'runtime.thread', 'runtime.exc',
+    'rtl.platform.layout.linux', 'rtl.platform.posix');
+
+function TNativeBackendDriver.EnsureRTLObjects(AOpts: TBackendOpts;
+  AObjPaths: TStringList): string;
+var
+  SrcDir, CacheDir, BlaiseBin: string;
+  SrcFile, ObjFile: string;
+  I, ExitCode: Integer;
+  Args: TStringList;
+  Msg: string;
+begin
+  Result := '';
+  { RTL source lives in the compiler's own source tree.  Resolution order:
+      1. --rtl-src DIR (AOpts.RTLSrcDir) — explicit, for a relocated binary;
+      2. $BLAISE_RTL_SRC;
+      3. binary/CWD-relative default (RTLSourceDir). }
+  if AOpts.RTLSrcDir <> '' then
+    SrcDir := ExpandFileName(AOpts.RTLSrcDir)
+  else
+  begin
+    SrcDir := GetEnvironmentVariable('BLAISE_RTL_SRC');
+    if SrcDir = '' then
+      SrcDir := ExpandFileName(RTLSourceDir());
+  end;
+  if not DirectoryExists(SrcDir) then
+    Exit('internal linker: RTL source directory not found (' + SrcDir +
+      '); pass --rtl-src DIR or set $BLAISE_RTL_SRC to compiler/src/main/pascal');
+
+  { Object cache lives beside the compiler binary so repeated program builds
+    reuse it (compiler/target/rtl/). }
+  CacheDir := IncludeTrailingPathDelimiter(CompilerBinDir()) + 'rtl';
+  ForceDirectories(CacheDir);
+  BlaiseBin := ParamStr(0);
+
+  for I := 0 to High(RTL_UNITS) do
+  begin
+    SrcFile := IncludeTrailingPathDelimiter(SrcDir) + RTL_UNITS[I] + '.pas';
+    ObjFile := IncludeTrailingPathDelimiter(CacheDir) + RTL_UNITS[I] + '.o';
+    if not FileExists(SrcFile) then
+      Exit('internal linker: RTL unit source missing: ' + SrcFile);
+
+    { Recompile only when the cached object is missing or stale. }
+    if (not FileExists(ObjFile)) or (FileAge(ObjFile) < FileAge(SrcFile)) then
+    begin
+      Args := TStringList.Create();
+      try
+        Args.Add('--no-incremental');
+        Args.Add('--assembler');   Args.Add('internal');
+        Args.Add('--source');      Args.Add(SrcFile);
+        Args.Add('--unit-path');   Args.Add(SrcDir);
+        Args.Add('--output');      Args.Add(ObjFile);
+        ExitCode := RunProcess(BlaiseBin, Args, Msg);
+      finally
+        Args.Free();
+      end;
+      if ExitCode <> 0 then
+        Exit('internal linker: failed to build RTL unit ' + RTL_UNITS[I] +
+          ' (exit ' + IntToStr(ExitCode) + '): ' + Msg);
+    end;
+    AObjPaths.Add(ObjFile);
+  end;
+end;
+
 function TNativeBackendDriver.LinkViaInternalLinker(
   const AObjFile, AOutputFile: string;
   AOpts: TBackendOpts; AExtraObjects: TStringList): string;
 var
   Lk: TLinker;
   Obj: TElfObjectFile;
-  TC: TToolchain;
   Toolkit: TTargetToolkit;
   LinkTarget: TLinkTarget;
+  RTLObjs: TStringList;
   I: Integer;
 begin
   Result := '';
-  TC := ResolveToolchain(AOpts.Target);
 
   { Build the linker with the resolved target's TLinkTarget so the emitted ELF
     carries the right EI_OSABI / machine / load base for AOpts.Target — without
@@ -206,49 +284,53 @@ begin
     Exit('internal linker: no toolkit registered for target ' +
       TargetName(AOpts.Target));
 
-  { Every Blaise program links blaise_rtl.a — the program entry emits
-    _SetArgs and the runtime supplies ARC, strings, exceptions, the platform
-    layer, etc.  An empty RTLPath means FindRTLArchive could not locate
-    blaise_rtl.a beside the compiler binary (or via BLAISE_RTL).  Linking
-    anyway is never correct: every RTL symbol becomes an undefined dynamic
-    import that silently links but dies at run time (e.g. `undefined symbol:
-    _SetArgs`).  Fail loudly instead of emitting a broken executable. }
-  if TC.RTLPath = '' then
-    Exit('internal linker: runtime archive blaise_rtl.a not found '
-      + '(looked beside the compiler binary and in $BLAISE_RTL); '
-      + 'cannot link a Blaise program without the RTL');
-
-  { TLinker.Create(ATarget) borrows the target — we own and free it here. }
-  LinkTarget := Toolkit.MakeLinkTarget();
-  Lk := TLinker.Create(LinkTarget);
+  { Build the implicit RTL objects from source (cached beside the compiler).
+    Every Blaise program emits calls to RTL symbols (_SetArgs, _BlaiseGetMem,
+    _start, ARC/string/exception helpers, …) as undefined externals; these
+    objects supply them.  Replaces the pre-built blaise_rtl.a — the RTL is now
+    compiled by the compiler itself. }
+  RTLObjs := TStringList.Create();
   try
+    Result := Self.EnsureRTLObjects(AOpts, RTLObjs);
+    if Result <> '' then Exit;
+
+    { TLinker.Create(ATarget) borrows the target — we own and free it here. }
+    LinkTarget := Toolkit.MakeLinkTarget();
+    Lk := TLinker.Create(LinkTarget);
     try
-      Lk.SetDynamic(True);
+      try
+        Lk.SetDynamic(True);
 
-      Obj := ReadElfObjectFile(AObjFile);
-      Lk.AddOwnedObject(Obj);
+        Obj := ReadElfObjectFile(AObjFile);
+        Lk.AddOwnedObject(Obj);
 
-      if AExtraObjects <> nil then
-        for I := 0 to AExtraObjects.Count - 1 do
+        if AExtraObjects <> nil then
+          for I := 0 to AExtraObjects.Count - 1 do
+          begin
+            Obj := ReadElfObjectFile(AExtraObjects.Strings[I]);
+            Lk.AddOwnedObject(Obj);
+          end;
+
+        { The RTL objects — including _start (runtime.start) and the implicit
+          runtime symbols — built from source above. }
+        for I := 0 to RTLObjs.Count - 1 do
         begin
-          Obj := ReadElfObjectFile(AExtraObjects.Strings[I]);
+          Obj := ReadElfObjectFile(RTLObjs.Strings[I]);
           Lk.AddOwnedObject(Obj);
         end;
 
-      { _start now lives in blaise_rtl.a (blaise_start_x86_64.s) — no system
-        Scrt1.o / crtbegin / crtend / crti / crtn needed.  AddArchive adds all
-        members unconditionally, so the entry symbol is always present. }
-      Lk.AddArchive(TC.RTLPath);
-
-      Lk.Link('_start', AOutputFile);
-    except
-      on E: Exception do
-        Result := 'internal linker error [' + Exception(E).ClassName + ']: ' +
-          Exception(E).Message;
+        Lk.Link('_start', AOutputFile);
+      except
+        on E: Exception do
+          Result := 'internal linker error [' + Exception(E).ClassName + ']: ' +
+            Exception(E).Message;
+      end;
+    finally
+      Lk.Free();
+      LinkTarget.Free();
     end;
   finally
-    Lk.Free();
-    LinkTarget.Free();
+    RTLObjs.Free();
   end;
 end;
 
