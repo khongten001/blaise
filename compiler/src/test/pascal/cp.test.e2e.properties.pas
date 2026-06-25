@@ -324,7 +324,7 @@ const
       end;
     constructor TOwner.Create;
     begin
-      inherited Create;
+      inherited Create();
       FVec := TVec.Create;
       FVec.Put(0, 3); FVec.Put(1, 4);
     end;
@@ -354,7 +354,7 @@ const
       end;
     constructor TOwner.Create;
     begin
-      inherited Create;
+      inherited Create();
       FVec := TVec.Create;
       FVec.Put(0, 5); FVec.Put(1, 4);
     end;
@@ -394,7 +394,7 @@ const
         constructor Create;
         property Vec: TVec read FVec;
       end;
-    constructor TOwner.Create; begin inherited Create; FVec := TVec.Create end;
+    constructor TOwner.Create; begin inherited Create(); FVec := TVec.Create end;
     var o: TOwner;
     begin
       o := TOwner.Create;
@@ -420,7 +420,7 @@ const
         constructor Create;
         property Vec: TVec read FVec;
       end;
-    constructor TOwner.Create; begin inherited Create; FVec := TVec.Create end;
+    constructor TOwner.Create; begin inherited Create(); FVec := TVec.Create end;
     var o: TOwner;
     begin
       o := TOwner.Create;
@@ -459,7 +459,7 @@ const
         procedure Fill;
         function Sum: Integer;
       end;
-    constructor TOwner.Create; begin inherited Create; FVec := TVec.Create end;
+    constructor TOwner.Create; begin inherited Create(); FVec := TVec.Create end;
     procedure TOwner.Fill; begin FVec[0] := 3; FVec[1] := 4; end;
     function TOwner.Sum: Integer; begin Result := FVec[0] + FVec[1]; end;
     var o: TOwner;

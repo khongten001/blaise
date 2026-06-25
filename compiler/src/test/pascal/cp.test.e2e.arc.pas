@@ -536,7 +536,7 @@ const
     destructor TThing.Destroy;
     begin
       WriteLn('destroyed');
-      inherited Destroy
+      inherited Destroy()
     end;
     var O: TThing;
     begin

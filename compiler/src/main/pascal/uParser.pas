@@ -3950,20 +3950,24 @@ begin
         [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
     Result.Name := FCurrent.Value;
     Advance();
-    if Check(tkLParen) then
+    { Mandatory parentheses: 'inherited Method' is a call and must carry ()
+      even with no arguments (see language-rationale.adoc, "Mandatory
+      parentheses on zero-argument calls"). }
+    if not Check(tkLParen) then
+      raise EParseError.Create(Format(
+        'Bare reference to ''%s'' requires () for a call at line %d col %d in %s',
+        [Result.Name, FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+    Advance();
+    if not Check(tkRParen) then
     begin
-      Advance();
-      if not Check(tkRParen) then
+      Result.Args.Add(ParseExpr());
+      while Check(tkComma) do
       begin
+        Advance();
         Result.Args.Add(ParseExpr());
-        while Check(tkComma) do
-        begin
-          Advance();
-          Result.Args.Add(ParseExpr());
-        end;
       end;
-      Expect(tkRParen);
     end;
+    Expect(tkRParen);
   except
     Result.Free();
     raise;
@@ -4563,20 +4567,24 @@ begin
             [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
         InhNode.Name := FCurrent.Value;
         Advance();
-        if Check(tkLParen) then
+        { Mandatory parentheses: 'inherited Method' is a call and must carry
+          () even with no arguments (see language-rationale.adoc, "Mandatory
+          parentheses on zero-argument calls"). }
+        if not Check(tkLParen) then
+          raise EParseError.Create(Format(
+            'Bare reference to ''%s'' requires () for a call at line %d col %d in %s',
+            [InhNode.Name, FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        Advance();
+        if not Check(tkRParen) then
         begin
-          Advance();
-          if not Check(tkRParen) then
+          InhNode.Args.Add(Self.ParseExpr());
+          while Check(tkComma) do
           begin
+            Advance();
             InhNode.Args.Add(Self.ParseExpr());
-            while Check(tkComma) do
-            begin
-              Advance();
-              InhNode.Args.Add(Self.ParseExpr());
-            end;
           end;
-          Expect(tkRParen);
         end;
+        Expect(tkRParen);
         Result := InhNode;
       end;
     tkAt:

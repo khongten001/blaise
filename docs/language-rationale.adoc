@@ -2207,11 +2207,19 @@ the parent's method slot, bypassing vtable dispatch (that is the whole
 point of `inherited`: reach the specific parent implementation, not
 re-dispatch to `Self`).  The only difference is what happens to the
 result: the statement form stores it into the current method's `Result`
-slot (so a bare `inherited F;` still sets `Result`), while the
-expression form yields the value to the surrounding expression.
+slot (so `inherited F();` still sets `Result`), while the expression
+form yields the value to the surrounding expression.
+
+Like every other call, an `inherited` call carries mandatory
+parentheses even with no arguments (see _Mandatory parentheses on
+zero-argument calls_): `inherited Create()`, never `inherited Create`.
+`inherited` is not an exception to that rule — it is an ordinary method
+call that happens to target the parent slot, so a bare `inherited
+Method` is rejected at parse time with the same _requires () for a
+call_ diagnostic as any other parenless call.
 
 The expression form was added because the statement-only form forced an
-awkward two-step (`inherited F; X := Result + 1;`) and could not be
+awkward two-step (`inherited F(); X := Result + 1;`) and could not be
 used inside a larger expression at all.  AST: `TInheritedCallExpr`
 (the sibling of `TInheritedCallStmt`); both resolve and lower through
 the same parent-method lookup and the same static-dispatch call
@@ -3917,6 +3925,9 @@ pattern and explains the removal.
 *Decision*: every function, procedure, method, and constructor call requires
 parentheses, even when there are no arguments.  `Obj.Free()`, `Create()`,
 `WriteLn()`, `Foo()` — never `Obj.Free`, `Create`, or `Foo` without `()`.
+This includes `inherited` calls (`inherited Create()`, not `inherited
+Create`) and constructor dispatch through a metaclass variable
+(`C.Create()`, not `C.Create`).
 
 The `@` (address-of) operator is the sole exception: `@Obj.Method` takes a
 method reference and does not invoke the method, so no `()` is written.

@@ -135,14 +135,14 @@ var
 
 constructor TASTClass.Create;
 begin
-  inherited Create;
+  inherited Create();
   Fields     := TList<String>.Create;
   FieldLines := TList<Integer>.Create;
 end;
 
 constructor TIOBlock.Create;
 begin
-  inherited Create;
+  inherited Create();
 end;
 
 function IsIdentStart(C: Integer): Boolean;

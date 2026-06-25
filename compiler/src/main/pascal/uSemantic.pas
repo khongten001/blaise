@@ -11227,6 +11227,27 @@ begin
     Exit;
   end;
 
+  { Metaclass variable: a bare 'C.Create' / 'C.Method' (no parens) reaching
+    field-access analysis is a constructor/method call written without the
+    mandatory parentheses — the parenthesised form is a TMethodCallExpr and
+    never lands here.  Emit the parens diagnostic rather than the misleading
+    'is not a record or class' error. }
+  if RecSym.TypeDesc.Kind = tyMetaClass then
+  begin
+    RT := TRecordTypeDesc(TMetaClassTypeDesc(RecSym.TypeDesc).BaseClass);
+    if (RT <> nil) and
+       (SameText(AAccess.FieldName, 'Create') or
+        (FindMethodDecl(RT.Name, AAccess.FieldName) <> nil)) then
+      SemanticError(
+        Format('Bare reference to ''%s'' requires () for a call',
+          [AAccess.FieldName]),
+        AAccess.Line, AAccess.Col);
+    SemanticError(
+      Format('Metaclass ''%s'' has no method ''%s''',
+        [RecSym.TypeDesc.Name, AAccess.FieldName]),
+      AAccess.Line, AAccess.Col);
+  end;
+
   if not (RecSym.TypeDesc.Kind in [tyRecord, tyClass]) then
     SemanticError(
       Format('''%s'' is not a record or class', [AAccess.RecordName]),

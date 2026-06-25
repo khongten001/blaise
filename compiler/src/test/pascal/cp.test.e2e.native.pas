@@ -3109,7 +3109,7 @@ const
     destructor TThing.Destroy;
     begin
       WriteLn('destroyed');
-      inherited Destroy
+      inherited Destroy()
     end;
     var O: TThing;
     begin
@@ -3438,7 +3438,7 @@ const
     destructor TVal.Destroy;
     begin
       WriteLn('destroyed');
-      inherited Destroy
+      inherited Destroy()
     end;
     var
       S: IVal;
@@ -3576,7 +3576,7 @@ const
     destructor TGreeter.Destroy;
     begin
       WriteLn('greeter-gone');
-      inherited Destroy
+      inherited Destroy()
     end;
     var
       H: THolder;
@@ -3611,7 +3611,7 @@ const
     destructor TInner.Destroy;
     begin
       WriteLn('inner-gone');
-      inherited Destroy
+      inherited Destroy()
     end;
     var H: THolder;
     begin

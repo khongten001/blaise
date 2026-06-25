@@ -162,7 +162,7 @@ end;
 destructor TJSONWriter.Destroy;
 begin
   FSB.Free();
-  inherited Destroy;
+  inherited Destroy();
 end;
 
 procedure TJSONWriter.NewlineIndent(ALevel: Integer);

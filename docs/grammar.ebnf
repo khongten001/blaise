@@ -1036,7 +1036,7 @@ Factor
     | ArrayLiteral
     | AddrOf
     | NOT Factor                                       (* Boolean or bitwise NOT *)
-    | INHERITED IDENT [ LPAREN [ ArgList ] RPAREN ]    (* inherited function call in expr position *)
+    | INHERITED IDENT LPAREN [ ArgList ] RPAREN        (* inherited function call in expr position; parens mandatory *)
     | "Supports" LPAREN Expr COMMA IDENT [ COMMA IDENT ] RPAREN  (* compiler intrinsic *)
     | IDENT DOT IDENT [ LBRACKET Expr RBRACKET ]      (* indexed property read *)
                LPAREN [ ArgList ] RPAREN               (* constructor/method call *)
