@@ -180,6 +180,7 @@ type
     NumOps:    Integer;
     RawLine:   string;     { original line text }
     LineNum:   Integer;
+    HasLock:   Boolean;    { a `lock` prefix preceded the mnemonic }
   end;
 
   { Internal assembler state for a single section }
@@ -706,6 +707,21 @@ begin
     Mnemonic := Mnemonic + Chr(S[P]);
     P := P + 1;
   end;
+
+  { `lock` prefix: record it and read the real mnemonic that follows. }
+  if Mnemonic = 'lock' then
+  begin
+    Result.HasLock := True;
+    while (P < Length(S)) and ((S[P] = Ord(' ')) or (S[P] = 9)) do
+      P := P + 1;
+    Mnemonic := '';
+    while (P < Length(S)) and (IsAlnum(S[P])) do
+    begin
+      Mnemonic := Mnemonic + Chr(S[P]);
+      P := P + 1;
+    end;
+  end;
+
   Result.Mnemonic := Mnemonic;
 
   { Skip whitespace }
@@ -1249,6 +1265,10 @@ begin
   Op1 := AParsed.Op1;
   Op2 := AParsed.Op2;
 
+  { ---- lock prefix (F0) — emitted ahead of the instruction it guards ---- }
+  if AParsed.HasLock then
+    CBEmit(CB, $F0);
+
   { ---- ret ---- }
   if Mnem = 'ret' then
   begin
@@ -1563,6 +1583,45 @@ begin
     end
     else
       raise EAssembler.Create(Mnem + ': unsupported operand');
+    Result := CB.Data;
+    Exit;
+  end;
+
+  { ---- negl / negq ---- (F7 /3, same group as notl/notq) }
+  if (Mnem = 'negl') or (Mnem = 'negq') then
+  begin
+    if Op1.Kind = opReg then
+    begin
+      EmitRexIfNeeded(CB, Mnem = 'negq', 0, Op1.Reg, False);
+      CBEmit(CB, $F7);
+      CBEmit(CB, MakeModRM(3, 3, Op1.Reg));
+    end
+    else
+      raise EAssembler.Create(Mnem + ': unsupported operand');
+    Result := CB.Data;
+    Exit;
+  end;
+
+  { ---- xaddl / xaddq ---- (0F C1 /r: xadd src-reg, r/m).  Atomic with the
+    lock prefix (emitted above).  src register is in the ModRM reg field. }
+  if (Mnem = 'xaddl') or (Mnem = 'xaddq') then
+  begin
+    if (Op1.Kind = opReg) and IsMemLike(Op2) then
+    begin
+      EmitRexForMem(CB, Mnem = 'xaddq', Op1.Reg, Op2, False);
+      CBEmit(CB, $0F);
+      CBEmit(CB, $C1);
+      EncodeMemOperand(CB, ACtx, Op2, Op1.Reg and 7);
+    end
+    else if (Op1.Kind = opReg) and (Op2.Kind = opReg) then
+    begin
+      EmitRexIfNeeded(CB, Mnem = 'xaddq', Op1.Reg, Op2.Reg, False);
+      CBEmit(CB, $0F);
+      CBEmit(CB, $C1);
+      CBEmit(CB, MakeModRM(3, Op1.Reg, Op2.Reg));
+    end
+    else
+      raise EAssembler.Create(Mnem + ': unsupported operand combination');
     Result := CB.Data;
     Exit;
   end;

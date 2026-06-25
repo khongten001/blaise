@@ -36,6 +36,8 @@ type
     procedure TestErrorMessage_HasLineNumber;
     procedure TestMovqXmmToReg_SseEncoding;
     procedure TestMovqRegToXmm_SseEncoding;
+    procedure TestNegl_F7Slash3;
+    procedure TestLockXaddl_AtomicEncoding;
   end;
 
   { ---- ELF writer unit tests ---- }
@@ -146,6 +148,28 @@ begin
   Obj := AssembleToBytes('movq (%rdi), %rax' + LineEnding);
   AssertTrue('48 8B 07 missing',
     ContainsBytes(Obj, Chr($48) + Chr($8B) + Chr($07)));
+end;
+
+procedure TAsmEncodingTests.TestNegl_F7Slash3;
+var
+  Obj: string;
+begin
+  { negl %esi -> f7 de  (F7 /3, reg=esi=6).  Verified vs `cc`. }
+  Obj := AssembleToBytes('negl %esi' + LineEnding);
+  AssertTrue('f7 de missing',
+    ContainsBytes(Obj, Chr($F7) + Chr($DE)));
+end;
+
+procedure TAsmEncodingTests.TestLockXaddl_AtomicEncoding;
+var
+  Obj: string;
+begin
+  { lock xaddl %eax, (%rdi) -> f0 0f c1 07.  The atomic RTL primitive
+    (_AtomicAddInt32).  f0 = lock prefix, 0f c1 = xadd, 07 = ModRM
+    (reg=eax=0, r/m=[rdi]).  Verified vs `cc`. }
+  Obj := AssembleToBytes('lock xaddl %eax, (%rdi)' + LineEnding);
+  AssertTrue('f0 0f c1 07 missing',
+    ContainsBytes(Obj, Chr($F0) + Chr($0F) + Chr($C1) + Chr($07)));
 end;
 
 procedure TAsmEncodingTests.TestQuadSymbol_EmitsReloc;
