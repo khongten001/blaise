@@ -27,7 +27,7 @@
   threadvar, giving each thread its own exception chain.
 }
 
-unit blaise_exc;
+unit runtime.exc;
 
 interface
 

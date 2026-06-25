@@ -31,7 +31,7 @@
   destruction -- no TOCTOU race.
 }
 
-unit blaise_arc;
+unit runtime.arc;
 
 interface
 

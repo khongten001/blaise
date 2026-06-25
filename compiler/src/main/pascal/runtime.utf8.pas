@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit blaise_utf8;
+unit runtime.utf8;
 
 // UTF-8 code-point counter — SIMD-accelerated (AVX2 with an SSE2 fallback and
 // a scalar tail), with a one-time CPUID probe for AVX2.

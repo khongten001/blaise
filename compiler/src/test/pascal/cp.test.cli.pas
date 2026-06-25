@@ -142,7 +142,7 @@ begin
     FCompiler := '/tmp/fp_blaise3';
   if not FileExists(FCompiler) then
     FCompiler := '/tmp/fp_blaise2';
-  FRTLPath := ProjectRoot() + 'runtime/src/main/pascal';
+  FRTLPath := ProjectRoot() + 'compiler/src/main/pascal';
   FStdlibPath := ProjectRoot() + 'stdlib/src/main/pascal';
   FRTL := ProjectRoot() + 'compiler/target/blaise_rtl.a';
   FScratch := ProjectRoot() + 'compiler/target/cli_scratch/';

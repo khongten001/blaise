@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit blaise_atomic;
+unit runtime.atomic;
 
 // Atomic 32-bit add/sub primitives used by ARC reference counting.
 //

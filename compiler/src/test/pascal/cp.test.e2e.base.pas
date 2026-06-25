@@ -189,7 +189,9 @@ begin
   FRTL := GetEnvironmentVariable('BLAISE_RTL');
   if FRTL = '' then
     FRTL := ProjectRoot() + 'runtime/target/blaise_rtl.a';
-  FRTLUnitPath := ProjectRoot() + 'runtime/src/main/pascal';
+  { RTL units (runtime.*, rtl.platform.*) now live in the compiler's own source
+    tree after the RTL-unification move; the old runtime/src/main/pascal is empty. }
+  FRTLUnitPath := ProjectRoot() + 'compiler/src/main/pascal';
   FStdlibUnitPath := ProjectRoot() + 'stdlib/src/main/pascal'
 end;
 

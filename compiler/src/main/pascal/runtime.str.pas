@@ -29,7 +29,7 @@
   RefCount = -1 marks immortal (statically-allocated string literals).
 }
 
-unit blaise_str;
+unit runtime.str;
 
 interface
 

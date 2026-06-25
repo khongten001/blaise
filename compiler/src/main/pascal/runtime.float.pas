@@ -24,7 +24,7 @@
     data_ptr +  0 : char data + NUL
 }
 
-unit blaise_float;
+unit runtime.float;
 
 interface
 

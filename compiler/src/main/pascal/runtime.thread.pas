@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit blaise_thread;
+unit runtime.thread;
 
 { POSIX thread primitives — direct bindings to pthread and sysconf.
   No C shim required; all functions use the standard C ABI which QBE

@@ -349,12 +349,12 @@ begin
     AssertTrue('expected several RTL members, got '
       + IntToStr(Members.Count), Members.Count >= 5);
     { A member whose name exceeds 15 chars exercises the GNU long-name (//)
-      table.  rtl_platform_layout_linux.o is the longest current RTL member. }
+      table.  rtl.platform.layout.linux.o is the longest current RTL member. }
     SawLongName := False;
     for I := 0 to Members.Count - 1 do
     begin
       M := Members.Get(I);
-      if M.Name = 'rtl_platform_layout_linux.o' then
+      if M.Name = 'rtl.platform.layout.linux.o' then
         SawLongName := True;
       { Every member must parse as a valid x86-64 relocatable object
         with at least its NULL section + one real section. }
@@ -366,7 +366,7 @@ begin
         Obj.Free();
       end;
     end;
-    AssertTrue('long-named member rtl_platform_layout_linux.o not found '
+    AssertTrue('long-named member rtl.platform.layout.linux.o not found '
       + '(GNU long-name table mishandled?)', SawLongName);
   finally
     for I := 0 to Members.Count - 1 do
@@ -1230,7 +1230,7 @@ procedure TInternalLinkerE2ETests.SetUp;
 begin
   inherited SetUp();
   FCompiler := ProjectRoot() + 'compiler/target/blaise';
-  FRTLPath := ProjectRoot() + 'runtime/src/main/pascal';
+  FRTLPath := ProjectRoot() + 'compiler/src/main/pascal';
   FStdlibPath := ProjectRoot() + 'stdlib/src/main/pascal';
   FScratch := ProjectRoot() + 'compiler/target/intlink_scratch/';
   ForceDirectories(FScratch);

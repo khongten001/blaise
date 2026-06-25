@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit blaise_setjmp;
+unit runtime.setjmp;
 
 // setjmp/longjmp for the exception runtime (try/except, try/finally).
 //

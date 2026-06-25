@@ -14,7 +14,7 @@
 program test_blaise_str;
 
 uses
-  blaise_str;
+  runtime.str;
 
 procedure _libc_puts(S: PChar); external name 'puts';
 

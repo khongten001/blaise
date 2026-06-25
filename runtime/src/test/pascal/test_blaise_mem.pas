@@ -25,7 +25,7 @@
 program test_blaise_mem;
 
 uses
-  punit, blaise_mem;
+  punit, runtime.mem;
 
 { ------------------------------------------------------------------ }
 { Test: basic GetMem returns non-nil                                   }

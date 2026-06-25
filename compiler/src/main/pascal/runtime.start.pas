@@ -6,7 +6,7 @@
   See LICENSE file in the project root for full license terms.
 }
 
-unit blaise_start;
+unit runtime.start;
 
 // Program entry point (x86_64, System V ABI, glibc-compatible).
 //

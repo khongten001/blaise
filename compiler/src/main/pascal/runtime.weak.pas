@@ -40,7 +40,7 @@
                                     runs and before the block is freed.
 }
 
-unit blaise_weak;
+unit runtime.weak;
 
 interface
 

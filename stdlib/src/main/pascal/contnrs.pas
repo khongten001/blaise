@@ -16,7 +16,7 @@ unit Contnrs;
 interface
 
 uses
-  blaise_arc;  { for _ClassRelease }
+  runtime.arc;  { for _ClassRelease }
 
 type
   { ------------------------------------------------------------------ }

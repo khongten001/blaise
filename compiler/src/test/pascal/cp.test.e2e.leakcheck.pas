@@ -71,7 +71,7 @@ const
   { A clean program: object is created and properly released by ARC at scope exit. }
   SrcNoLeak = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TBox = class
         Value: Integer;
@@ -92,7 +92,7 @@ const
     use-after-free.  With the fix it is freed exactly once: no leak, no crash. }
   SrcExceptionHandlerVar = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       Exception = class
         FMessage: string;
@@ -116,7 +116,7 @@ const
   { Constructor with args — must not double-AddRef; object must be clean after scope. }
   SrcConstructorWithArgs = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TBox = class
         Value: Integer;
@@ -137,7 +137,7 @@ const
   { Deliberately leaked: object assigned to a raw Pointer, bypassing ARC release. }
   SrcOneLeak = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TBox = class
         Value: Integer;
@@ -157,7 +157,7 @@ const
   { Two distinct classes leaked to verify count and class-name reporting. }
   SrcTwoLeaks = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TAlpha = class
         X: Integer;
@@ -182,7 +182,7 @@ const
   { Reference cycle: each object holds the other — both leak. }
   SrcCycleLeak = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TNode = class
         Other: TNode;
@@ -204,7 +204,7 @@ const
     line number where the leaking TBox.Create() call was made. }
   SrcLeakWithSite = '''
     program LeakSite;
-    uses blaise_arc;
+    uses runtime.arc;
     type
       TBox = class
         Value: Integer;
@@ -222,7 +222,7 @@ const
     Extra AddRef prevents scope-exit release from freeing it. }
   SrcStringLeak = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     var
       S: string;
     begin
@@ -235,7 +235,7 @@ const
   { Clean string usage: no leak expected — scope-exit ARC releases properly. }
   SrcStringClean = '''
     program P;
-    uses blaise_arc;
+    uses runtime.arc;
     var
       S: string;
     begin
@@ -297,7 +297,7 @@ const
     allocation site as 'generics.collections:<line>', not '<program>:<line>'. }
   SrcGenericAllocSite = '''
     program LeakGen;
-    uses blaise_arc, generics.collections;
+    uses runtime.arc, generics.collections;
     var
       L: TList<Integer>;
       E: TListEnumerator<Integer>;

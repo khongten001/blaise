@@ -181,11 +181,11 @@ begin
   Lines := TStringList.Create();
   Paths := TStringList.Create();
   try
-    Lines.Add('unit-path=../../runtime/src/main/pascal');
+    Lines.Add('unit-path=../../compiler/src/main/pascal');
     ParseConfigLines(Lines, '/data/devel/new-pascal-compiler/compiler/target/', Paths);
     AssertEquals('one path', 1, Paths.Count);
     AssertEquals('resolved',
-      '/data/devel/new-pascal-compiler/compiler/target/../../runtime/src/main/pascal',
+      '/data/devel/new-pascal-compiler/compiler/target/../../compiler/src/main/pascal',
       Paths.Strings[0]);
   finally
     Lines.Free();
