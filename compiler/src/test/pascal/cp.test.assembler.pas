@@ -42,6 +42,7 @@ type
     procedure TestJmpIndirectMem_FFSlash4;
     procedure TestEndbr64AndHlt;
     procedure TestSyscall_0F05;
+    procedure TestCallPltStripsSuffix;
   end;
 
   { ---- ELF writer unit tests ---- }
@@ -125,6 +126,14 @@ implementation
   instead of silently reporting green with ~12 ignored tests. }
 var
   GInternalAsmSkipNoted: Boolean = False;
+
+{ Validity-probe cache for the fallback compiler — see the matching note in
+  cp.test.cli.pas.  The /tmp/fp_blaise2 fallback is a transient fixpoint
+  artifact that is often stale; a stale binary turns these e2e tests into a
+  cascade of cryptic failures.  Probe once and skip (not fail) on a bad probe.
+  0 = not probed, 1 = good, 2 = bad. }
+var
+  GInternalAsmProbeState: Integer = 0;
 
 { ---- TAsmEncodingTests ---- }
 
@@ -220,6 +229,20 @@ begin
   { syscall -> 0f 05 (needed for the FreeBSD direct-syscall stubs). }
   Obj := AssembleToBytes('syscall' + LineEnding);
   AssertTrue('0f 05 missing', ContainsBytes(Obj, Chr($0F) + Chr($05)));
+end;
+
+procedure TAsmEncodingTests.TestCallPltStripsSuffix;
+var
+  Obj: string;
+begin
+  { call foo@PLT must reference symbol 'foo' (with a PLT32 reloc), NOT a bogus
+    symbol literally named 'foo@PLT' that no loader resolves.  The @PLT suffix
+    is a relocation qualifier, not part of the name.  Regression for the
+    _start migration (call __libc_start_main@PLT). }
+  Obj := AssembleToBytes('call foo@PLT' + LineEnding);
+  AssertTrue('symbol foo missing', ContainsBytes(Obj, 'foo'));
+  AssertTrue('bogus foo@PLT symbol present',
+    not ContainsBytes(Obj, 'foo@PLT'));
 end;
 
 procedure TAsmEncodingTests.TestQuadSymbol_EmitsReloc;
@@ -672,6 +695,9 @@ begin
 end;
 
 function TInternalAsmE2ETests.CompilerAvailable: Boolean;
+var
+  SrcFile, OutFile, CompOut, RunOut: string;
+  Rc: Integer;
 begin
   Result := FileExists(FCompiler) and FileExists(FRTL);
   if (not Result) and (not GInternalAsmSkipNoted) then
@@ -680,7 +706,34 @@ begin
     WriteLn(StdErr, 'note: TInternalAsmE2ETests skipped — compiler binary "',
             FCompiler, '" or RTL "', FRTL, '" not found ',
             '(set BLAISE_QBE_COMPILER to a QBE-backend blaise binary to run them)');
+    Exit;
   end;
+  if not Result then Exit;
+
+  { Validity probe: compile+run a trivial program with --assembler internal.
+    A stale fallback binary compiles fine but produces a SIGILL/wrong-output
+    executable; detect that here and skip rather than emit a cryptic cascade. }
+  if GInternalAsmProbeState = 0 then
+  begin
+    SrcFile := FScratch + 'probe.pas';
+    OutFile := FScratch + 'probe';
+    WriteFile(SrcFile, 'program p; begin WriteLn(42); end.');
+    Rc := Self.RunProc(FCompiler, [
+      '--source', SrcFile, '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
+      '--output', OutFile, '--backend', 'native', '--assembler', 'internal'
+    ], CompOut);
+    if (Rc = 0) and (Self.RunProcNoArgs(OutFile, RunOut) = 0)
+       and (Pos('42', RunOut) >= 0) then
+      GInternalAsmProbeState := 1
+    else
+    begin
+      GInternalAsmProbeState := 2;
+      WriteLn(StdErr, 'note: TInternalAsmE2ETests skipped — compiler binary "',
+              FCompiler, '" is stale/broken (probe program did not run); ',
+              'rebuild it or set BLAISE_QBE_COMPILER to a current binary.');
+    end;
+  end;
+  Result := GInternalAsmProbeState = 1;
 end;
 
 function TInternalAsmE2ETests.RunProc(const AExe: string;

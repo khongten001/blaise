@@ -543,12 +543,14 @@ begin
       end
       else
       begin
-        while (P < Length(S)) and (IsAlnum(S[P]) or (S[P]= Ord('.'))
-               or (S[P]= Ord('_')) or (S[P]= Ord('$')) or (S[P]= Ord('@'))) do
-        begin
-          SymName := SymName + Chr(S[P]);
+        { Any other @SUFFIX (e.g. @PLT, @GOTPCREL) is a relocation qualifier,
+          NOT part of the symbol name — consume and discard it.  @PLT just
+          selects the PLT32 relocation, which call/jmp already emit by default.
+          Appending it to the name would create a bogus symbol like
+          `__libc_start_main@PLT` that no loader resolves. }
+        P := P + 1;
+        while (P < Length(S)) and (IsAlnum(S[P]) or (S[P]= Ord('_'))) do
           P := P + 1;
-        end;
       end;
     end;
 

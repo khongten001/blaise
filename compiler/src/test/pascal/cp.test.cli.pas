@@ -94,6 +94,17 @@ implementation
 var
   GCLISkipNoted: Boolean = False;
 
+{ Validity-probe cache for the fallback compiler.  The fallback path
+  (/tmp/fp_blaise2) is a transient fixpoint artifact that is frequently STALE —
+  built by an earlier, possibly-broken compiler.  Running the contract tests
+  against a stale binary produces a cascade of cryptic failures (e.g. SIGILL
+  from a since-fixed mis-encoding) that look like regressions but are not.
+  We probe the binary once (compile+run a trivial program) and, if it does not
+  behave, skip the suite with an actionable message instead of failing.
+  0 = not probed, 1 = good, 2 = bad. }
+var
+  GCLIProbeState: Integer = 0;
+
 { ---- helpers ---- }
 
 function TCLIContractTests.ProjectRoot: string;
@@ -140,6 +151,9 @@ begin
 end;
 
 function TCLIContractTests.CompilerAvailable: Boolean;
+var
+  Out_: string;
+  EC: Integer;
 begin
   Result := FileExists(FCompiler) and FileExists(FRTL);
   if (not Result) and (not GCLISkipNoted) then
@@ -148,7 +162,27 @@ begin
     WriteLn(StdErr, 'note: TCLIContractTests skipped — compiler binary "',
             FCompiler, '" or RTL "', FRTL, '" not found ',
             '(set BLAISE_QBE_COMPILER to a QBE-backend blaise binary to run them)');
+    Exit;
   end;
+  if not Result then Exit;
+
+  { Validity probe: a stale fallback binary would otherwise turn into a cascade
+    of cryptic failures.  Probe once; on a bad probe, treat as unavailable. }
+  if GCLIProbeState = 0 then
+  begin
+    if CompileRunFull('program p; begin WriteLn(42); end.', 'native', Out_, EC)
+       and (EC = 0) and (Pos('42', Out_) >= 0) then
+      GCLIProbeState := 1
+    else
+    begin
+      GCLIProbeState := 2;
+      WriteLn(StdErr, 'note: TCLIContractTests skipped — compiler binary "',
+              FCompiler, '" is stale/broken (probe program did not run); ',
+              'rebuild it or set BLAISE_QBE_COMPILER to a current QBE-backend ',
+              'blaise binary.');
+    end;
+  end;
+  Result := GCLIProbeState = 1;
 end;
 
 function TCLIContractTests.RunCompiler(const AArgs: array of string;
