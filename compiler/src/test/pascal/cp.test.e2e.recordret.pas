@@ -133,6 +133,15 @@ type
       statement form (inherited M;). }
     procedure TestRun_InheritedRecordReturn_ManagedField;
     procedure TestRun_InheritedRecordReturn_StatementForm;
+    { Regression: reading the OFFSET-0 field of an sret function's own Result
+      mid-body (read-modify) after assigning Result from a record-returning
+      call.  The native offset-0 field-read shortcut loaded the Result slot
+      directly — but for an sret function that slot holds a POINTER to the
+      record, so the buffer pointer was read as the field value (garbage).
+      Offset>0 fields were fine (they always deref). Both backends.  (The fix
+      lives in the inline-asm commit; this test, from Andrew's parallel fix,
+      locks it in.) }
+    procedure TestRun_SretResult_ReadModifyOffsetZeroField;
   end;
 
 implementation
@@ -1064,6 +1073,35 @@ begin
   { `inherited Make(N);` with no explicit assignment sets the override's
     Result through the sret pointer. }
   AssertRunsOnAll(Src, '105' + LE + 'base' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_SretResult_ReadModifyOffsetZeroField;
+const
+  Src = '''
+    program P;
+    type TR = record A: Integer; S: string; B: Integer; end;
+    function Raw(N: Integer): TR;
+    begin
+      Result.A := N;
+      Result.S := 'hi';
+      Result.B := 20
+    end;
+    function Make(N: Integer): TR;
+    begin
+      Result := Raw(N);
+      Result.A := Result.A + 1
+    end;
+    var R: TR;
+    begin
+      R := Make(10);
+      WriteLn(R.A, ' ', R.S, ' ', R.B)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { The string field forces a genuine sret return (24 bytes); reading
+    Result.A (offset 0) mid-body must deref the Result pointer. }
+  AssertRunsOnAll(Src, '11 hi 20' + LE, 0);
 end;
 
 initialization
