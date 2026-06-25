@@ -81,6 +81,9 @@ type
     procedure TestDivByZeroCaught_Native;
     procedure TestModByZeroCaught_QBE;
     procedure TestModByZeroCaught_Native;
+    { ---- a bare --output (no directory part) must not anchor per-unit
+           .o/.bif artefacts at the filesystem root ---- }
+    procedure TestBareOutput_UnitArtefacts_NotWrittenToRoot;
   end;
 
 implementation
@@ -557,6 +560,58 @@ begin
   AssertTrue('compile+run', CompileRunFull(SrcModByZeroCaught, 'native', Out_, EC));
   AssertEquals('exit code 0', 0, EC);
   AssertTrue('mod by zero caught', Pos('mod caught', Out_) >= 0);
+end;
+
+procedure TCLIContractTests.TestBareOutput_UnitArtefacts_NotWrittenToRoot;
+var
+  UnitPath, ProgPath, Out_: string;
+  EC: Integer;
+begin
+  if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
+  { Regression: incremental compilation (default) compiles each used unit to
+    its own .o/.bif via a worker.  The worker's output directory was derived
+    from --output via IncludeTrailingPathDelimiter(ExtractFilePath(OutputFile)).
+    For a bare --output filename (no directory part) ExtractFilePath returns ''
+    and IncludeTrailingPathDelimiter('') yields '/', so the worker tried to
+    write '/<unit>.o.bif.tmp' at the filesystem root and failed with
+    'Cannot open file for writing: /<unit>.o.bif.tmp'.  The artefacts must land
+    in the current directory instead. }
+  UnitPath := FScratch + 'clidemo_unit.pas';
+  WriteFile(UnitPath,
+    'unit clidemo_unit;' + LineEnding +
+    'interface' + LineEnding +
+    'function Answer: Integer;' + LineEnding +
+    'implementation' + LineEnding +
+    'function Answer: Integer;' + LineEnding +
+    'begin' + LineEnding +
+    '  Result := 42' + LineEnding +
+    'end;' + LineEnding +
+    'end.');
+  ProgPath := WriteScratchSource(
+    'program cli_bareout;' + LineEnding +
+    'uses clidemo_unit;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(Answer())' + LineEnding +
+    'end.');
+  { Bare --output name (no '/') is the trigger; the unit is found via the
+    scratch --unit-path. }
+  EC := RunCompiler([
+    '--source', ProgPath,
+    '--unit-path', FScratch,
+    '--unit-path', FRTLPath,
+    '--unit-path', FStdlibPath,
+    '--output', 'cli_bareout_bin'
+  ], Out_);
+  { The bare output name resolves relative to the compiler's CWD (the test
+    runner's working directory): the program binary and the per-unit .o land
+    there.  Remove them so the working tree stays clean. }
+  if FileExists('cli_bareout_bin') then DeleteFile('cli_bareout_bin');
+  if FileExists('clidemo_unit.o') then DeleteFile('clidemo_unit.o');
+  AssertTrue('no root-path worker failure: ' + Out_,
+    Pos('Cannot open file for writing: /', Out_) < 0);
+  AssertTrue('no worker exception: ' + Out_,
+    Pos('Worker exception', Out_) < 0);
+  AssertEquals('bare --output compile exits 0: ' + Out_, 0, EC);
 end;
 
 { ---- Registration ---- }

@@ -498,6 +498,7 @@ var
   IRFile:   string;
   LinkErr:  string;      { Driver.LinkProgram result ('' on success) }
   UnitOPath:   string;   { per-dep .o output path in incremental mode }
+  UnitODir:    string;   { directory the per-dep .o/.bif files are written to }
   Workers:  TObjectList; { TCompileWorker threads for parallel incremental }
   Worker:   TCompileWorker;
 
@@ -825,17 +826,24 @@ begin
         WorkerDriver := GetDriver(bkQBE);
       Workers := TObjectList.Create(True);
       try
+        { Resolve the directory the per-unit .o/.bif artefacts go in.
+          Priority: an explicit --unit-cache, else the --output file's own
+          directory.  When neither yields a directory (e.g. --output is a
+          bare filename with no path component, or omitted entirely) the
+          artefacts are written to the current directory — never to the
+          filesystem root.  ExtractFilePath returns '' for a path with no
+          directory part; IncludeTrailingPathDelimiter('') would turn that
+          into '/', anchoring the unit objects at root, so only prepend a
+          delimiter when the directory is non-empty. }
+        if UnitCacheDir <> '' then
+          UnitODir := IncludeTrailingPathDelimiter(UnitCacheDir)
+        else if ExtractFilePath(OutputFile) <> '' then
+          UnitODir := IncludeTrailingPathDelimiter(ExtractFilePath(OutputFile))
+        else
+          UnitODir := '';
         for I := 0 to Units.Count - 1 do
         begin
-          UnitOPath := UnitCacheDir;
-          if UnitOPath <> '' then
-            UnitOPath := IncludeTrailingPathDelimiter(UnitOPath) +
-                         LowerCase(TUnit(Units.Items[I]).Name) + '.o'
-          else if OutputFile <> '' then
-            UnitOPath := IncludeTrailingPathDelimiter(ExtractFilePath(OutputFile)) +
-                         LowerCase(TUnit(Units.Items[I]).Name) + '.o'
-          else
-            UnitOPath := LowerCase(TUnit(Units.Items[I]).Name) + '.o';
+          UnitOPath := UnitODir + LowerCase(TUnit(Units.Items[I]).Name) + '.o';
 
           Worker := TCompileWorker.Create(True);
           Worker.WorkUnit := TUnit(Units.Items[I]);
