@@ -6843,6 +6843,10 @@ var
   L:            Integer;
   DupLocal:     Boolean;
 begin
+  { Inline-assembler block: opaque to the front end — its content is assembly,
+    not Pascal, so no statement/type/ARC analysis runs over it. }
+  if AStmt is TAsmStmt then
+    Exit;
   if AStmt is TForStmt then
   begin
     ForS := TForStmt(AStmt);

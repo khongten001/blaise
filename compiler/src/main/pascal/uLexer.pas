@@ -111,7 +111,12 @@ type
     tkDot,
     tkDotDot,        { .. — array bounds separator and case range }
     tkCaret,         { ^ — pointer dereference / pointer type prefix }
-    tkAt             { @ — address-of operator }
+    tkAt,            { @ — address-of operator }
+    tkAsmBlock       { whole 'asm' ... 'end' block; Value holds the verbatim
+                       assembly text (the front end never tokenises it).
+                       Appended at the enum's END so adding it shifts no
+                       existing ordinal (set-of-TTokenKind literals elsewhere
+                       depend on stable ordinals). }
   );
 
   TToken = record
@@ -137,6 +142,7 @@ type
     procedure SeedPredefines;
     procedure SkipToElseOrEndif;
     procedure SkipToEndif;
+    function ReadAsmBody: string;
   public
     constructor Create(const ASource: string; const AFilename: string = '');
     destructor Destroy; override;
@@ -224,6 +230,7 @@ begin
   else if AUpper = 'THREADVAR' then Result := tkThreadVar
   else if AUpper = 'BEGIN'   then Result := tkBegin
   else if AUpper = 'END'     then Result := tkEnd
+  else if AUpper = 'ASM'     then Result := tkAsmBlock
   else if AUpper = 'TYPE'    then Result := tkType
   else if AUpper = 'RECORD'  then Result := tkRecord
   else if AUpper = 'PACKED'  then Result := tkPacked
@@ -524,6 +531,42 @@ begin
   end;
 end;
 
+{ Called immediately after the 'asm' keyword token was produced (FTok.Token is
+  that keyword).  Drives the tokeniser forward to the matching 'end' keyword and
+  returns the verbatim source text between the two — assembly is not Pascal, so
+  nothing in the block is re-interpreted.  Only a standalone 'end' KEYWORD token
+  terminates the block (an 'end' inside an asm '#' line comment is a comment
+  token, never a keyword, so it is ignored).  The terminating 'end' token is
+  consumed; normal tokenising resumes after it. }
+function TLexer.ReadAsmBody: string;
+var
+  raw:        TFpgPasToken;
+  BlockStart: Integer;   { 1-based source index of the first char after 'asm' }
+  EndStart:   Integer;   { 1-based source index of the terminating 'end' }
+begin
+  { FTok.Token is the 'asm' keyword; the body begins right after it. }
+  BlockStart := FTok.Token.TextStart + FTok.Token.Len;
+  EndStart := -1;
+  while True do
+  begin
+    raw := FTok.NextToken();
+    if raw.Kind = fptkEOF then
+    begin
+      { Unterminated block: capture to end of source. }
+      EndStart := Length(FTok.Source) + 1;
+      Break;
+    end;
+    if (raw.Kind = fptkKeyword) and (FTok.TokenTextUpper() = 'END') then
+    begin
+      EndStart := FTok.Token.TextStart;
+      Break;
+    end;
+  end;
+  { Slice [BlockStart, EndStart) — Copy is 0-based, so subtract 1 from the
+    1-based start; length is EndStart - BlockStart. }
+  Result := Copy(FTok.Source, BlockStart - 1, EndStart - BlockStart);
+end;
+
 function TLexer.Next: TToken;
 var
   raw:  TFpgPasToken;
@@ -583,7 +626,14 @@ begin
       begin
         text := FTok.TokenTextUpper();
         Result.Kind  := MapKeyword(text);
-        Result.Value := FTok.TokenText();
+        if Result.Kind = tkAsmBlock then
+          { Capture the whole 'asm' ... 'end' block as verbatim text — its
+            content is GNU/AT&T assembly, not Pascal, so it must not be
+            tokenised.  ReadAsmBody drives the tokeniser to the matching
+            'end' and slices the raw source. }
+          Result.Value := Self.ReadAsmBody()
+        else
+          Result.Value := FTok.TokenText();
       end;
 
     fptkIdentifier:
@@ -737,6 +787,7 @@ begin
     tkOut:            Result := 'out';
     tkConstructor:    Result := 'constructor';
     tkDestructor:     Result := 'destructor';
+    tkAsmBlock:       Result := 'asm block';
     tkIdent:          Result := 'identifier';
     tkPlus:           Result := '+';
     tkMinus:          Result := '-';

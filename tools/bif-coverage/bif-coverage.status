@@ -112,6 +112,9 @@ TIfStmt.ElseStmt  serialise
 # TCompoundStmt (uAST.pas:243)
 TCompoundStmt.Stmts  serialise
 
+# TAsmStmt (uAST.pas:255)
+TAsmStmt.Code  serialise
+
 # TWhileStmt (uAST.pas:250)
 TWhileStmt.Condition  serialise
 TWhileStmt.Body  serialise

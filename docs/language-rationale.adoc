@@ -5209,3 +5209,62 @@ anything that can be read as a designator can be assigned to.
 * *Require an intermediate variable (status quo).* Rejected — it is a
   gratuitous restriction with no semantic justification; the read side already
   supported the full chain, so write-side parity is the consistent choice.
+
+== Inline Assembler — `asm … end` Routine Bodies
+
+=== Decision
+
+A routine body may be written as an inline-assembler block instead of a Pascal
+`begin … end` block:
+
+[source,pascal]
+----
+function GetSelf: Pointer; assembler; nostackframe;
+asm
+    movq %rdi, %rax
+    ret
+end;
+----
+
+The block content is verbatim GNU/AT&T assembly. The front end (lexer, parser,
+semantic pass) never interprets it — the lexer captures the whole `asm … end`
+as one opaque token, and the native backend emits the text verbatim into the
+assembly stream, where the existing internal (or external) assembler parses it.
+The `nostackframe` directive suppresses the compiler prologue/epilogue so the
+asm body owns the entire frame (it provides its own `ret`). Inline asm requires
+the native backend; the QBE backend rejects it with a diagnostic. `asm`
+routines mix freely with ordinary Pascal routines in a standard `.pas` unit
+(no `.inc` include mechanism is involved).
+
+=== Rationale
+
+The motivation is toolchain independence. The runtime's startup (`_start`),
+`setjmp`/`longjmp`, and atomic primitives are hand-written assembly. Shipping
+them as standalone `.s` files assembled by `cc -c` reintroduces a build-time gcc
+dependency, defeating the internal assembler/linker. Expressing them as `asm`
+bodies in Pascal units folds that assembly into Blaise's own pipeline — the same
+approach FPC takes (`rtl/linux/x86_64/si_c.inc`).
+
+The block is modelled as opaque text rather than a parsed instruction AST: the
+internal assembler already consumes GNU/AT&T text and the native backend already
+emits text, so the block needs only to reach the backend's stream verbatim.
+Parsing instructions into the AST would duplicate the assembler and couple the
+front end to one architecture's instruction set for no benefit. This keeps the
+architecture-specific knowledge at the backend/assembler edge (a ports-and-
+adapters boundary), so the portable core stays ignorant of x86-64 encoding. See
+docs/inline-asm-design.adoc for the full design and the design patterns applied.
+
+=== Alternatives considered
+
+* *A standalone `blaise --assemble file.s -o file.o` mode (Route A).* Reaches
+  "no gcc in the RTL build" too and is smaller, but leaves assembly outside the
+  language and keeps a parallel build path. Inline `asm` blocks fold the
+  assembly into ordinary units, matching FPC and removing the special-case
+  build directory. Route A remains a valid stepping stone but was not pursued.
+* *Parse instructions into a structured AST.* Rejected — duplicates the
+  assembler, couples the front end to x86-64, and provides nothing for the
+  text-to-text path.
+* *Reserve `asm` only contextually (keep it usable as an identifier).* Rejected
+  — `asm` is a reserved word in FPC/Delphi and in the grammar; the codebase had
+  a single local variable named `Asm` (renamed), and contextual keywording would
+  need parser state the lexer does not have.

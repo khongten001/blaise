@@ -65,6 +65,9 @@ type
       into an SSE (xmm) argument register per the System V ABI, not an integer
       register.  Asserts the call site emits movsd into %xmm0. }
     procedure TestMethodFloatArg_LoadedIntoXmm;
+    { Inline asm: a nostackframe asm-body function emits the verbatim block and
+      NO compiler prologue (no pushq %rbp / frame subq). }
+    procedure TestInlineAsm_VerbatimBody_NoPrologue;
   end;
 
 implementation
@@ -643,14 +646,40 @@ const
       end.
       ''';
 var
-  Asm: string;
+  AsmText: string;
 begin
-  Asm := GenAsm(Src);
+  AsmText := GenAsm(Src);
   { The Double argument must reach the SSE arg register, not an integer one. }
   AssertTrue('float method arg loaded into %xmm0',
-    Pos('movsd', Asm) >= 0);
+    Pos('movsd', AsmText) >= 0);
   AssertTrue('float method arg targets the SSE arg register',
-    Pos('%xmm0', Asm) >= 0);
+    Pos('%xmm0', AsmText) >= 0);
+end;
+
+procedure TNativeConstArgTests.TestInlineAsm_VerbatimBody_NoPrologue;
+const
+  Src = '''
+      program P;
+      function GetFortyTwo: Integer; assembler; nostackframe;
+      asm
+          movl $42, %eax
+          ret
+      end;
+      begin
+        WriteLn(GetFortyTwo())
+      end.
+      ''';
+var
+  AsmText: string;
+  Region:  string;
+begin
+  AsmText := GenAsm(Src);
+  Region := Self.FuncRegion(AsmText, 'GetFortyTwo');
+  { The verbatim asm instructions appear in the function body. }
+  AssertTrue('verbatim movl $42', Pos('movl $42, %eax', Region) >= 0);
+  AssertTrue('verbatim ret', Pos('ret', Region) >= 0);
+  { nostackframe: no compiler-emitted prologue inside the function. }
+  AssertTrue('no pushq %rbp prologue', Pos('pushq %rbp', Region) < 0);
 end;
 
 initialization

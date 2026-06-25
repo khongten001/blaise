@@ -2460,6 +2460,10 @@ var
 begin
   if AStmt = nil then
     raise ECodeGenError.Create('EmitStmt called with nil statement');
+  if AStmt is TAsmStmt then
+    raise ECodeGenError.Create(
+      'inline asm blocks require the native backend (--backend native); '
+      + 'the QBE backend cannot emit assembly');
   if AStmt is TTryFinallyStmt then
     EmitTryFinallyStmt(TTryFinallyStmt(AStmt))
   else if AStmt is TTryExceptStmt then

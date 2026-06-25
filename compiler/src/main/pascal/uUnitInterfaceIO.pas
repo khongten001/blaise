@@ -903,6 +903,9 @@ begin
     Result := EncodeLpstr('inh') +
               EncodeLpstr(TInheritedCallStmt(AStmt).Name) +
               EncodeExprList(TInheritedCallStmt(AStmt).Args)
+  else if AStmt is TAsmStmt then
+    Result := EncodeLpstr('asm') +
+              EncodeLpstr(TAsmStmt(AStmt).Code)
   else
     raise EIfaceFormatError.Create(
       'EncodeStmt: unhandled statement node ' + AStmt.ClassName);
@@ -1535,6 +1538,7 @@ var
   PCn:  TProcCall;
   MCSn: TMethodCallStmt;
   ICSn: TInheritedCallStmt;
+  ASMn: TAsmStmt;
   C, I: Integer;
   Body: TASTStmt;
 begin
@@ -1701,6 +1705,12 @@ begin
     ICSn.Name := ReadLpstrAt(AText, APos);
     ReadExprList(AText, APos, ICSn.Args);
     Result := ICSn;
+  end
+  else if Kind = 'asm' then
+  begin
+    ASMn := TAsmStmt.Create();
+    ASMn.Code := ReadLpstrAt(AText, APos);
+    Result := ASMn;
   end
   else
     raise EIfaceFormatError.Create(

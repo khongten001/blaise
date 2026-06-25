@@ -7322,10 +7322,13 @@ begin
         else
           Self.Emit(Format(#9'leaq %d(%%rcx), %%rax', [FAE.FieldInfo.Offset]));
       end
-      else if FAE.FieldInfo.Offset = 0 then
-        Self.EmitLoadVar(Self.VarOperand(FAE.RecordName), FAE.FieldInfo.TypeDesc)
       else
       begin
+        { Route through EmitLocalRecordBase for BOTH offset 0 and > 0: for the
+          sret-function Result the slot holds the caller-buffer POINTER, so the
+          field must be read indirectly (movq slot -> %rcx; load N(%rcx)).  The
+          old offset-0 fast path read the slot directly, which for sret Result
+          read the pointer value as the field (Result.K = const always false). }
         Self.EmitLocalRecordBase(FAE.RecordName, '%rcx');
         Self.EmitLoadVar(Format('%d(%%rcx)', [FAE.FieldInfo.Offset]),
           FAE.FieldInfo.TypeDesc);
@@ -10560,6 +10563,13 @@ var
   AliasBuf: Integer;
 begin
   Self.DbgStmtLabel(AStmt);
+  if AStmt is TAsmStmt then
+  begin
+    { Inline assembler: emit the verbatim block.  The internal/external
+      assembler parses it; the front end never did. }
+    Self.Emit(TAsmStmt(AStmt).Code);
+    Exit;
+  end;
   if AStmt is TAssignment then
   begin
     Asgn := TAssignment(AStmt);
@@ -15799,6 +15809,21 @@ begin
   if AExported then
     Self.Emit('.globl ' + Sym);
   Self.Emit(Sym + ':');
+  { nostackframe: the body is an inline-asm block that owns the entire frame
+    (prologue, args-from-registers, ret).  Emit no compiler prologue/epilogue,
+    no param spill, no ARC — just the verbatim block.  This is the null-object
+    frame strategy (see docs/inline-asm-design.adoc). }
+  if ADecl.NoStackFrame then
+  begin
+    if (ADecl.Body <> nil) then
+      for I := 0 to ADecl.Body.Stmts.Count - 1 do
+        Self.EmitStmt(TASTStmt(ADecl.Body.Stmts.Items[I]));
+    Self.DbgEndFunc();
+    Self.Emit('.type ' + Sym + ', @function');
+    FExitLabel    := '';
+    FCapturedVars := nil;
+    Exit;
+  end;
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
   if FFrameSize > 0 then

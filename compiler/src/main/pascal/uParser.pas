@@ -67,6 +67,7 @@ type
     procedure ParseUsesList(AList: TStringList);
     procedure ParseUses(AProg: TProgram);
     function  ParseBlock: TBlock;
+    function  ParseAsmBody: TBlock;
     procedure ParseTypeSection(ABlock: TBlock);
     procedure ParseTypeDecl(ABlock: TBlock);
     procedure ParseConstBlock(AList: TObjectList);
@@ -2098,6 +2099,7 @@ begin
                SameText(FCurrent.Value, 'static')      or
                SameText(FCurrent.Value, 'final')       or
                SameText(FCurrent.Value, 'assembler')   or
+               SameText(FCurrent.Value, 'nostackframe') or
                SameText(FCurrent.Value, 'forward')     or
                SameText(FCurrent.Value, 'deprecated')  or
                SameText(FCurrent.Value, 'platform')    or
@@ -2105,6 +2107,8 @@ begin
       begin
         if SameText(FCurrent.Value, 'inline') then
           Result.IsInline := True
+        else if SameText(FCurrent.Value, 'nostackframe') then
+          Result.NoStackFrame := True
         else if SameText(FCurrent.Value, 'forward') then
           IsForward := True
         else if SameText(FCurrent.Value, 'cdecl')    or
@@ -2129,7 +2133,16 @@ begin
       proc.  Without this guard the forward decl swallowed the real
       implementation (and everything up to the program's 'end.') as its body
       (issue #130 bug2). }
-    if (not Result.IsExternal) and (not IsForward) and
+    if (not Result.IsExternal) and (not IsForward) and Check(tkAsmBlock) then
+    begin
+      { Inline-assembler body: the lexer already captured the whole asm ... end
+        block as one tkAsmBlock token whose Value is the verbatim text.  Wrap it
+        in a TBlock holding a single TAsmStmt; semantic treats it as opaque and
+        codegen emits the text verbatim. }
+      Result.Body := Self.ParseAsmBody();
+      Expect(tkSemicolon);
+    end
+    else if (not Result.IsExternal) and (not IsForward) and
        (Check(tkBegin) or Check(tkVar) or Check(tkType) or Check(tkConst) or
         (ACanHaveNestedProcs and (Check(tkProcedure) or Check(tkFunction)))) then
     begin
@@ -2140,6 +2153,21 @@ begin
     Result.Free();
     raise;
   end;
+end;
+
+{ Build a TBlock whose sole statement is the TAsmStmt for the current
+  tkAsmBlock token, then consume that token. }
+function TParser.ParseAsmBody: TBlock;
+var
+  Stmt: TAsmStmt;
+begin
+  Result := TBlock.Create();
+  Stmt := TAsmStmt.Create();
+  Stmt.Line := FCurrent.Line;
+  Stmt.Col  := FCurrent.Col;
+  Stmt.Code := FCurrent.Value;
+  Result.Stmts.Add(Stmt);
+  Advance();   { consume the tkAsmBlock token }
 end;
 
 procedure TParser.ParseParamList(AParams: TObjectList);

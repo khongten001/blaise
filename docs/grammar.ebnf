@@ -369,7 +369,7 @@ MethodDecl
       [ COLON TypeName ]                  (* return type for functions *)
       SEMICOLON
       { MethodDirective SEMICOLON }
-      [ Block SEMICOLON ]                 (* body absent for forward, external, or abstract decls *)
+      [ ( Block | AsmBlock ) SEMICOLON ]  (* body absent for forward, external, or abstract decls *)
     ;
 
 MethodDirective
@@ -377,7 +377,17 @@ MethodDirective
     | OVERRIDE
     | ExternalDirective
     | "overload"                          (* required on every overload of a same-named proc/func/method *)
-    | IDENT                               (* inline, stdcall, cdecl, abstract, reintroduce, … *)
+    | "nostackframe"                      (* asm body owns the frame; no compiler prologue/epilogue *)
+    | IDENT                               (* inline, stdcall, cdecl, abstract, reintroduce, assembler, … *)
+    ;
+
+(* Inline-assembler body.  The lexer captures everything between ASM and the
+ * matching END as one opaque token (verbatim GNU/AT&T assembly text); the front
+ * end never tokenises the contents.  Used for the runtime's startup/setjmp/
+ * atomic routines.  Requires the native backend.  See
+ * docs/inline-asm-design.adoc. *)
+AsmBlock
+    = ASM (* verbatim assembly text *) END
     ;
 
 (* Calling-convention directives (cdecl, stdcall, register, pascal, safecall)

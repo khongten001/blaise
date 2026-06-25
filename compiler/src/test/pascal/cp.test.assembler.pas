@@ -106,6 +106,10 @@ type
       argc/argv forwarding and exit-code propagation through __libc_start_main. }
     procedure TestEntry_ExitCodePropagates;
     procedure TestEntry_ArgsForwarded;
+    { Inline assembler blocks (asm ... end): a nostackframe asm-body function is
+      assembled verbatim by the internal assembler and called from Pascal. }
+    procedure TestInlineAsm_ReturnsValue;
+    procedure TestInlineAsm_AddsTwoArgs;
   end;
 
 implementation
@@ -1075,6 +1079,59 @@ begin
   end;
   AssertEquals(0, EC);
   AssertEquals('2' + LineEnding + 'alpha' + LineEnding + 'beta' + LineEnding, Out_);
+end;
+
+procedure TInternalAsmE2ETests.TestInlineAsm_ReturnsValue;
+var
+  Out_: string;
+  EC: Integer;
+begin
+  { A nostackframe asm-body function returns 42 in %eax; the internal assembler
+    assembles the verbatim block, and Pascal calls it normally. }
+  if not CompileAndRun(
+    'program test_asmret;' + LineEnding +
+    'function GetFortyTwo: Integer; assembler; nostackframe;' + LineEnding +
+    'asm' + LineEnding +
+    '    movl $42, %eax' + LineEnding +
+    '    ret' + LineEnding +
+    'end;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(GetFortyTwo())' + LineEnding +
+    'end.',
+    Out_, EC) then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  AssertEquals(0, EC);
+  AssertEquals('42' + LineEnding, Out_);
+end;
+
+procedure TInternalAsmE2ETests.TestInlineAsm_AddsTwoArgs;
+var
+  Out_: string;
+  EC: Integer;
+begin
+  { Two integer args arrive in %edi/%esi (SysV); the asm body sums them.  Proves
+    a nostackframe asm function reads its parameters from the arg registers. }
+  if not CompileAndRun(
+    'program test_asmadd;' + LineEnding +
+    'function AddTwo(A, B: Integer): Integer; assembler; nostackframe;' + LineEnding +
+    'asm' + LineEnding +
+    '    movl %edi, %eax' + LineEnding +
+    '    addl %esi, %eax' + LineEnding +
+    '    ret' + LineEnding +
+    'end;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(AddTwo(40, 2))' + LineEnding +
+    'end.',
+    Out_, EC) then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  AssertEquals(0, EC);
+  AssertEquals('42' + LineEnding, Out_);
 end;
 
 { ---- Registration ---- }

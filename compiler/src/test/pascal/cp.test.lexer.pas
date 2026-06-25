@@ -44,6 +44,11 @@ type
     procedure TestKeywords_CaseInsensitive;
     procedure TestIdent_NotKeyword_Prefix;
 
+    { Inline assembler blocks — asm ... end captured as one raw-text token }
+    procedure TestAsmBlock_CapturesRawText;
+    procedure TestAsmBlock_EndMentionedInComment_NotTerminator;
+    procedure TestAsmBlock_FollowedByDecl_StopsAtEnd;
+
     { Identifiers }
     procedure TestIdent_Simple;
     procedure TestIdent_WithUnderscore;
@@ -311,6 +316,50 @@ begin
   tok := FLexer.Next();
   AssertEquals('Kind', Ord(tkIdent), Ord(tok.Kind));
   AssertEquals('Value', 'beginning', tok.Value);
+end;
+
+{ Inline assembler blocks }
+
+procedure TLexerTests.TestAsmBlock_CapturesRawText;
+var
+  tok: TToken;
+begin
+  { An asm ... end block is returned as ONE tkAsmBlock token whose Value is
+    the verbatim text between (exclusive) the asm keyword and the end keyword. }
+  SetLexer('asm' + #10 + '  movl %eax, %ebx' + #10 + '  ret' + #10 + 'end');
+  tok := FLexer.Next();
+  AssertEquals('Kind', Ord(tkAsmBlock), Ord(tok.Kind));
+  AssertTrue('has movl', Pos('movl %eax, %ebx', tok.Value) >= 0);
+  AssertTrue('has ret', Pos('ret', tok.Value) >= 0);
+  AssertTrue('no trailing end keyword captured', Pos('end', tok.Value) < 0);
+end;
+
+procedure TLexerTests.TestAsmBlock_EndMentionedInComment_NotTerminator;
+var
+  tok: TToken;
+begin
+  { 'end' appearing inside a # line comment must NOT terminate the block —
+    only a standalone end keyword does. }
+  SetLexer('asm' + #10 + '  ret  # this ends the block' + #10 + 'end');
+  tok := FLexer.Next();
+  AssertEquals('Kind', Ord(tkAsmBlock), Ord(tok.Kind));
+  AssertTrue('comment text preserved', Pos('this ends the block', tok.Value) >= 0);
+  AssertTrue('has ret', Pos('ret', tok.Value) >= 0);
+end;
+
+procedure TLexerTests.TestAsmBlock_FollowedByDecl_StopsAtEnd;
+var
+  tok: TToken;
+begin
+  { After the block's end, normal tokenising resumes — the trailing ';' and the
+    next token are produced as usual. }
+  SetLexer('asm' + #10 + '  ret' + #10 + 'end; begin');
+  tok := FLexer.Next();
+  AssertEquals('asm block', Ord(tkAsmBlock), Ord(tok.Kind));
+  tok := FLexer.Next();
+  AssertEquals('semicolon after end', Ord(tkSemicolon), Ord(tok.Kind));
+  tok := FLexer.Next();
+  AssertEquals('begin resumes', Ord(tkBegin), Ord(tok.Kind));
 end;
 
 { Identifiers }

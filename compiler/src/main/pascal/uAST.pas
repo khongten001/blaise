@@ -247,6 +247,14 @@ type
     destructor Destroy; override;
   end;
 
+  { An inline-assembler block: the verbatim text of one `asm` ... `end` body.
+    The front end never interprets Code — it is GNU/AT&T assembly handed to the
+    backend's assembler verbatim (see docs/inline-asm-design.adoc). }
+  TAsmStmt = class(TASTStmt)
+  public
+    Code: string;   { verbatim assembly text between asm and end }
+  end;
+
   TWhileStmt = class(TASTStmt)
   public
     Condition: TASTExpr;  { owned }
@@ -806,6 +814,9 @@ type
                                        consumed by codegen for cross-unit references. }
     IsExternal:         Boolean;     { declared with 'external' directive — no body }
     ExternalName:       string;      { C symbol name from 'external name ''c_foo'''; empty = use Pascal name }
+    NoStackFrame:       Boolean;     { declared 'nostackframe' — body is an asm
+                                       block that owns the whole frame; codegen
+                                       emits no compiler prologue/epilogue }
     IsRecordMethod:     Boolean;     { set by uSemantic — owner type is a record (not a class) }
     VTableSlot:         Integer;     { -1 = static; >=0 = vtable index (set by uSemantic) }
     TypeParams:         TStringList; { non-nil = generic function template; owns param names }
