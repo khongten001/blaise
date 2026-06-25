@@ -88,7 +88,7 @@ end;
 const
   REG_COUNT = 66;
 
-  RegNames: array[0..65] of string = (
+  RegNames: array[0..89] of string = (
     'rax', 'rcx', 'rdx', 'rbx', 'rsp', 'rbp', 'rsi', 'rdi',
     'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
     'eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
@@ -97,10 +97,13 @@ const
     'al', 'cl', 'dl', 'bl', 'spl', 'bpl', 'sil', 'dil',
     'r8b', 'r9b', 'r10b', 'r11b',
     'xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4', 'xmm5', 'xmm6', 'xmm7',
-    'ah', 'ch', 'dh', 'bh'
+    'ah', 'ch', 'dh', 'bh',
+    'xmm8', 'xmm9', 'xmm10', 'xmm11', 'xmm12', 'xmm13', 'xmm14', 'xmm15',
+    'ymm0', 'ymm1', 'ymm2', 'ymm3', 'ymm4', 'ymm5', 'ymm6', 'ymm7',
+    'ymm8', 'ymm9', 'ymm10', 'ymm11', 'ymm12', 'ymm13', 'ymm14', 'ymm15'
   );
 
-  RegCodes: array[0..65] of Integer = (
+  RegCodes: array[0..89] of Integer = (
     0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
     0, 1, 2, 3, 4, 5, 6, 7,
@@ -109,10 +112,13 @@ const
     0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11,
     0, 1, 2, 3, 4, 5, 6, 7,
-    4, 5, 6, 7
+    4, 5, 6, 7,
+    8, 9, 10, 11, 12, 13, 14, 15,
+    0, 1, 2, 3, 4, 5, 6, 7,
+    8, 9, 10, 11, 12, 13, 14, 15
   );
 
-  RegWidths: array[0..65] of Integer = (
+  RegWidths: array[0..89] of Integer = (
     64, 64, 64, 64, 64, 64, 64, 64,
     64, 64, 64, 64, 64, 64, 64, 64,
     32, 32, 32, 32, 32, 32, 32, 32,
@@ -121,10 +127,13 @@ const
     8, 8, 8, 8, 8, 8, 8, 8,
     8, 8, 8, 8,
     128, 128, 128, 128, 128, 128, 128, 128,
-    8, 8, 8, 8
+    8, 8, 8, 8,
+    128, 128, 128, 128, 128, 128, 128, 128,
+    256, 256, 256, 256, 256, 256, 256, 256,
+    256, 256, 256, 256, 256, 256, 256, 256
   );
 
-  RegIsXmm: array[0..65] of Integer = (
+  RegIsXmm: array[0..89] of Integer = (
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
@@ -133,7 +142,10 @@ const
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1,
-    0, 0, 0, 0
+    0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1
   );
 
 type
@@ -177,7 +189,7 @@ type
   TParsedLine = record
     Kind:      TLineKind;
     Mnemonic:  string;     { instruction mnemonic or directive name }
-    Op1, Op2:  TOperand;   { up to two operands }
+    Op1, Op2, Op3: TOperand; { up to three operands (Op3 for VEX/imm forms) }
     NumOps:    Integer;
     RawLine:   string;     { original line text }
     LineNum:   Integer;
@@ -305,7 +317,7 @@ var
   I: Integer;
 begin
   I := 0;
-  while I < 66 do
+  while I <= High(RegNames) do
   begin
     if RegNames[I] = AName then
     begin
@@ -483,10 +495,12 @@ begin
         end
         else
           Result.Kind := opMem;
-        { Check for index,scale }
+        { Check for index,scale.  GNU as allows whitespace after the commas,
+          e.g. `(%rdi, %rdx)` and `(%rdi, %rdx, 4)`. }
         if (P < Length(S)) and (S[P]= Ord(',')) then
         begin
           P := P + 1;
+          while (P < Length(S)) and ((S[P]= Ord(' ')) or (S[P]= 9)) do P := P + 1;
           if (P < Length(S)) and (S[P]= Ord('%')) then
           begin
             P := P + 1;
@@ -498,9 +512,11 @@ begin
             end;
             LookupReg(RegName, Result.Index, IdxW, IdxXmm);
           end;
+          while (P < Length(S)) and ((S[P]= Ord(' ')) or (S[P]= 9)) do P := P + 1;
           if (P < Length(S)) and (S[P]= Ord(',')) then
           begin
             P := P + 1;
+            while (P < Length(S)) and ((S[P]= Ord(' ')) or (S[P]= 9)) do P := P + 1;
             Result.Scale := Integer(ParseInt(S, P));
           end;
         end;
@@ -645,6 +661,7 @@ begin
   Result.LineNum := ALineNum;
   Result.Op1.Kind := opNone;
   Result.Op2.Kind := opNone;
+  Result.Op3.Kind := opNone;
 
   S := TrimStr(ALine);
   if (Length(S) = 0) or (S[0]= Ord('#')) then Exit;
@@ -759,6 +776,22 @@ begin
     Result.Op2 := TmpOp;
     if Result.Op2.Kind <> opNone then
       Result.NumOps := 2;
+    P := OpEnd;
+
+    { Third operand (VEX 3-operand forms, e.g. vpaddb %ymm2,%ymm3,%ymm3, and
+      imm-prefixed forms like pshufd $0x0E,%xmm3,%xmm3). }
+    while (P < Length(S)) and ((S[P]= Ord(' ')) or (S[P]= 9)) do
+      P := P + 1;
+    if (P < Length(S)) and (S[P]= Ord(',')) then
+    begin
+      P := P + 1;
+      while (P < Length(S)) and ((S[P]= Ord(' ')) or (S[P]= 9)) do
+        P := P + 1;
+      TmpOp := ParseOperand(S, P, OpEnd);
+      Result.Op3 := TmpOp;
+      if Result.Op3.Kind <> opNone then
+        Result.NumOps := 3;
+    end;
   end;
 end;
 
@@ -991,6 +1024,10 @@ function EncodeSSE(var ACB: TCodeBuf; var ACtx: TEncodeContext;
   const AMnem: string; const ASrc, ADst: TOperand): string; forward;
 function EncodeMovqXmm(var ACB: TCodeBuf; var ACtx: TEncodeContext;
   const AMnem: string; const ASrc, ADst: TOperand): string; forward;
+{ VEX/AVX encoder.  AOp1/AOp2/AOp3 are the parsed operands in AT&T order
+  (AOp1 = first / source-or-immediate ... AOp3 = destination). }
+function EncodeVEX(var ACB: TCodeBuf; var ACtx: TEncodeContext;
+  const AMnem: string; const AOp1, AOp2, AOp3: TOperand): string; forward;
 
 { Returns True if the mnemonic is a conditional or unconditional branch }
 function IsBranch(const AMnem: string): Boolean;
@@ -1300,7 +1337,7 @@ function EncodeInstruction(var ACtx: TEncodeContext;
 var
   CB: TCodeBuf;
   Mnem: string;
-  Op1, Op2: TOperand;
+  Op1, Op2, Op3: TOperand;
   DispOff: Integer;
   Dummy: Boolean;
   TargetOff: Integer;
@@ -1312,6 +1349,7 @@ begin
   ACtx.ImmTail := 0;
   Op1 := AParsed.Op1;
   Op2 := AParsed.Op2;
+  Op3 := AParsed.Op3;
   { Accept unsuffixed AT&T mnemonics (mov/lea/xor/…) by inferring the size. }
   Mnem := NormalizeMnemonic(AParsed.Mnemonic, Op1, Op2);
 
@@ -1347,6 +1385,14 @@ begin
   if Mnem = 'syscall' then
   begin
     CBEmit(CB, $0F); CBEmit(CB, $05);
+    Result := CB.Data;
+    Exit;
+  end;
+
+  { ---- cpuid ---- 0F A2 }
+  if Mnem = 'cpuid' then
+  begin
+    CBEmit(CB, $0F); CBEmit(CB, $A2);
     Result := CB.Data;
     Exit;
   end;
@@ -1743,9 +1789,39 @@ begin
      or (Mnem = 'cvtsd2ss') or (Mnem = 'cvtss2sd')
      or (Mnem = 'cvtsi2sdq') or (Mnem = 'cvtsi2ssq')
      or (Mnem = 'cvtsd2si') or (Mnem = 'cvtss2si')
-     or (Mnem = 'cvttsd2si') or (Mnem = 'cvttss2si') then
+     or (Mnem = 'cvttsd2si') or (Mnem = 'cvttss2si')
+     or (Mnem = 'pxor') or (Mnem = 'movdqa') or (Mnem = 'movdqu')
+     or (Mnem = 'paddb') or (Mnem = 'pcmpgtb') or (Mnem = 'pcmpeqb')
+     or (Mnem = 'psadbw') or (Mnem = 'pabsb') then
   begin
     Result := EncodeSSE(CB, ACtx, Mnem, Op1, Op2);
+    Exit;
+  end;
+
+  { ---- pshufd $imm8, xmm/m, xmm  (66 0F 70 /r ib) ---- }
+  if Mnem = 'pshufd' then
+  begin
+    if (Op1.Kind = opImm) and (Op2.Kind = opReg) and (Op3.Kind = opReg) then
+    begin
+      EmitSSERegReg(CB, $66, False, $70, -1, Op2.Reg, Op3.Reg);
+      CBEmit(CB, Integer(Op1.Imm) and $FF);
+    end
+    else
+      raise EAssembler.Create('pshufd: unsupported operands');
+    Result := CB.Data;
+    Exit;
+  end;
+
+  { ---- AVX/AVX2 (VEX-encoded) ---- }
+  if (Mnem = 'vzeroupper')
+     or (Mnem = 'vpxor') or (Mnem = 'vpaddb') or (Mnem = 'vpaddw')
+     or (Mnem = 'vpaddq') or (Mnem = 'vpcmpeqb') or (Mnem = 'vpcmpgtb')
+     or (Mnem = 'vpsadbw') or (Mnem = 'vpabsb')
+     or (Mnem = 'vmovdqa') or (Mnem = 'vmovdqu') or (Mnem = 'vmovd')
+     or (Mnem = 'vpsllw') or (Mnem = 'vpsrlw') or (Mnem = 'vpshufd')
+     or (Mnem = 'vextracti128') then
+  begin
+    Result := EncodeVEX(CB, ACtx, Mnem, Op1, Op2, Op3);
     Exit;
   end;
 
@@ -2274,6 +2350,92 @@ begin
   raise EAssembler.Create(AMnem + ': not implemented');
 end;
 
+{ ---- VEX (AVX/AVX2) helpers ----------------------------------------- }
+
+{ pp (mandatory-prefix) field: 0=none, 1=66, 2=F3, 3=F2. }
+function VexPP(APrefix: Integer): Integer;
+begin
+  case APrefix of
+    $66: Result := 1;
+    $F3: Result := 2;
+    $F2: Result := 3;
+  else
+    Result := 0;
+  end;
+end;
+
+{ Emit a VEX-encoded instruction.  AMap is the opcode map (1 = 0F, 2 = 0F38,
+  3 = 0F3A).  ADstReg goes in ModRM.reg, ARmReg/ARmMem in ModRM.r/m, AVvvv is
+  the non-destructive source register (the VEX.vvvv field; pass 15 / unused for
+  two-operand forms).  AL256 selects the 256-bit (ymm) form (VEX.L).  AW is
+  VEX.W.  The 2-byte form (C5) is used when X=B=0, map=1 and W=0; otherwise the
+  3-byte form (C4) is required. }
+procedure EmitVexRR(var ACB: TCodeBuf; APrefix, AMap: Integer;
+  AW, AL256: Boolean; AOpcode, ADstReg, AVvvv, ARmReg: Integer);
+var
+  R, X, B, PP, Byte2, Byte3: Integer;
+begin
+  R := Ord(ADstReg >= 8);   { ModRM.reg extension }
+  X := 0;
+  B := Ord(ARmReg >= 8);    { ModRM.r/m extension }
+  PP := VexPP(APrefix);
+
+  if (AMap = 1) and (not AW) and (X = 0) and (B = 0) then
+  begin
+    { 2-byte VEX (C5).  Byte2 = ~R<<7 | ~vvvv<<3 | L<<2 | pp }
+    Byte2 := ((1 - R) shl 7) or (((not AVvvv) and $0F) shl 3)
+             or (Ord(AL256) shl 2) or PP;
+    CBEmit(ACB, $C5);
+    CBEmit(ACB, Byte2 and $FF);
+  end
+  else
+  begin
+    { 3-byte VEX (C4).  Byte2 = ~R<<7|~X<<6|~B<<5|map ; Byte3 = W<<7|~vvvv<<3|L<<2|pp }
+    Byte2 := ((1 - R) shl 7) or ((1 - X) shl 6) or ((1 - B) shl 5) or (AMap and $1F);
+    Byte3 := (Ord(AW) shl 7) or (((not AVvvv) and $0F) shl 3)
+             or (Ord(AL256) shl 2) or PP;
+    CBEmit(ACB, $C4);
+    CBEmit(ACB, Byte2 and $FF);
+    CBEmit(ACB, Byte3 and $FF);
+  end;
+  CBEmit(ACB, AOpcode);
+  CBEmit(ACB, MakeModRM(3, ADstReg, ARmReg));
+end;
+
+{ As EmitVexRR but the r/m operand is memory. }
+procedure EmitVexRM(var ACB: TCodeBuf; var ACtx: TEncodeContext;
+  APrefix, AMap: Integer; AW, AL256: Boolean;
+  AOpcode, ADstReg, AVvvv: Integer; const AMem: TOperand);
+var
+  R, X, B, PP, Byte2, Byte3, BaseReg: Integer;
+begin
+  BaseReg := AMem.Base;
+  if BaseReg < 0 then BaseReg := 0;
+  R := Ord(ADstReg >= 8);
+  X := Ord(AMem.Index >= 8);
+  B := Ord(BaseReg >= 8);
+  PP := VexPP(APrefix);
+
+  if (AMap = 1) and (not AW) and (X = 0) and (B = 0) then
+  begin
+    Byte2 := ((1 - R) shl 7) or (((not AVvvv) and $0F) shl 3)
+             or (Ord(AL256) shl 2) or PP;
+    CBEmit(ACB, $C5);
+    CBEmit(ACB, Byte2 and $FF);
+  end
+  else
+  begin
+    Byte2 := ((1 - R) shl 7) or ((1 - X) shl 6) or ((1 - B) shl 5) or (AMap and $1F);
+    Byte3 := (Ord(AW) shl 7) or (((not AVvvv) and $0F) shl 3)
+             or (Ord(AL256) shl 2) or PP;
+    CBEmit(ACB, $C4);
+    CBEmit(ACB, Byte2 and $FF);
+    CBEmit(ACB, Byte3 and $FF);
+  end;
+  CBEmit(ACB, AOpcode);
+  EncodeMemOperand(ACB, ACtx, AMem, ADstReg and 7);
+end;
+
 { ---- SSE/FP helpers -------------------------------------------------- }
 
 procedure EmitSSERegReg(var ACB: TCodeBuf; APrefix: Integer;
@@ -2350,6 +2512,16 @@ begin
   else if AMnem = 'cvtss2si' then begin Prefix := $F3; Opcode1 := $2D; NeedRexW := True; end
   else if AMnem = 'cvttsd2si' then begin Prefix := $F2; Opcode1 := $2C; NeedRexW := True; end
   else if AMnem = 'cvttss2si' then begin Prefix := $F3; Opcode1 := $2C; NeedRexW := True; end
+  { ---- SSE2 packed-integer (128-bit xmm) ---- }
+  else if AMnem = 'pxor'    then begin Prefix := $66; Opcode1 := $EF; end
+  else if AMnem = 'movdqa'  then begin Prefix := $66; Opcode1 := $6F; end
+  else if AMnem = 'movdqu'  then begin Prefix := $F3; Opcode1 := $6F; end
+  else if AMnem = 'paddb'   then begin Prefix := $66; Opcode1 := $FC; end
+  else if AMnem = 'pcmpgtb' then begin Prefix := $66; Opcode1 := $64; end
+  else if AMnem = 'pcmpeqb' then begin Prefix := $66; Opcode1 := $74; end
+  else if AMnem = 'psadbw'  then begin Prefix := $66; Opcode1 := $F6; end
+  { 3-byte 0F 38 map. }
+  else if AMnem = 'pabsb'   then begin Prefix := $66; Opcode1 := $38; Opcode2 := $1C; end
   else
     raise EAssembler.Create('SSE: unhandled mnemonic: ' + AMnem);
 
@@ -2399,6 +2571,129 @@ begin
   end;
 
   raise EAssembler.Create(AMnem + ': unsupported operand combination');
+end;
+
+{ ---- VEX/AVX2 instruction encoder ----------------------------------- }
+
+function EncodeVEX(var ACB: TCodeBuf; var ACtx: TEncodeContext;
+  const AMnem: string; const AOp1, AOp2, AOp3: TOperand): string;
+var
+  Prefix, Map, Opc: Integer;
+  W, L: Boolean;
+  ShiftSub: Integer;   { /n in ModRM.reg for the imm-shift forms, else -1 }
+begin
+  { vzeroupper: C5 F8 77, no operands (vvvv=1111, L=0, pp=0). }
+  if AMnem = 'vzeroupper' then
+  begin
+    CBEmit(ACB, $C5); CBEmit(ACB, $F8); CBEmit(ACB, $77);
+    Result := ACB.Data;
+    Exit;
+  end;
+
+  { VEX.L: 256-bit (ymm) vs 128-bit (xmm), taken from a vector register
+    operand's width (ymm = 256).  Prefer the destination (last operand); fall
+    back to an earlier vector operand. }
+  if (AOp3.Kind = opReg) and (AOp3.RegW = 256) then L := True
+  else if (AOp3.Kind = opReg) and (AOp3.RegW = 128) then L := False
+  else if (AOp2.Kind = opReg) and (AOp2.RegW = 256) then L := True
+  else if (AOp1.Kind = opReg) and (AOp1.RegW = 256) then L := True
+  else L := False;
+
+  Prefix := 0; Map := 1; W := False; ShiftSub := -1; Opc := 0;
+
+  if AMnem = 'vpxor'    then begin Prefix := $66; Opc := $EF; end
+  else if AMnem = 'vpaddb'   then begin Prefix := $66; Opc := $FC; end
+  else if AMnem = 'vpaddw'   then begin Prefix := $66; Opc := $FD; end
+  else if AMnem = 'vpaddq'   then begin Prefix := $66; Opc := $D4; end
+  else if AMnem = 'vpcmpeqb' then begin Prefix := $66; Opc := $74; end
+  else if AMnem = 'vpcmpgtb' then begin Prefix := $66; Opc := $64; end
+  else if AMnem = 'vpsadbw'  then begin Prefix := $66; Opc := $F6; end
+  else if AMnem = 'vpabsb'   then begin Prefix := $66; Map := 2; Opc := $1C; end
+  else if AMnem = 'vmovdqa'  then begin Prefix := $66; Opc := $6F; end
+  else if AMnem = 'vmovdqu'  then begin Prefix := $F3; Opc := $6F; end
+  else if AMnem = 'vpsllw'   then begin Prefix := $66; Opc := $71; ShiftSub := 6; end
+  else if AMnem = 'vpsrlw'   then begin Prefix := $66; Opc := $71; ShiftSub := 2; end
+  else if AMnem = 'vpshufd'  then begin Prefix := $66; Opc := $70; end
+  else if AMnem = 'vextracti128' then begin Prefix := $66; Map := 3; Opc := $39; end
+  else if AMnem = 'vmovd' then
+  begin
+    { vmovd %xmm, %r32 : 66 VEX.128.0F.W0 7E /r — gp reg in r/m, xmm in reg. }
+    EmitVexRR(ACB, $66, 1, False, False, $7E, AOp1.Reg, 0, AOp2.Reg);
+    Result := ACB.Data;
+    Exit;
+  end
+  else
+    raise EAssembler.Create('VEX: unhandled mnemonic: ' + AMnem);
+
+  { Imm-shift forms: vpsllw $imm, src, dst.  ModRM.reg = /ShiftSub, r/m = src,
+    vvvv = dst; imm8 trails. }
+  if ShiftSub >= 0 then
+  begin
+    if (AOp1.Kind = opImm) and (AOp2.Kind = opReg) and (AOp3.Kind = opReg) then
+    begin
+      EmitVexRR(ACB, Prefix, Map, W, L, Opc, ShiftSub, AOp3.Reg, AOp2.Reg);
+      CBEmit(ACB, Integer(AOp1.Imm) and $FF);
+    end
+    else
+      raise EAssembler.Create(AMnem + ': bad shift operands');
+    Result := ACB.Data;
+    Exit;
+  end;
+
+  { Imm + 2 regs (no vvvv): vpshufd $imm,%src,%dst ; vextracti128 $imm,%src,%dst.
+    ModRM.reg = src(reg field holds the operand being read), r/m = dst, imm8
+    trails, vvvv unused (1111).  Note for vextracti128 the ENCODING reg/rm
+    direction is reversed vs vpshufd (it stores ymm-src in reg, xmm-dst in rm),
+    and VEX.L=1 always (it operates on a 256-bit source despite the xmm dst). }
+  if AMnem = 'vpshufd' then
+  begin
+    if (AOp1.Kind = opImm) and (AOp2.Kind = opReg) and (AOp3.Kind = opReg) then
+    begin
+      EmitVexRR(ACB, Prefix, Map, W, L, Opc, AOp3.Reg, 0, AOp2.Reg);
+      CBEmit(ACB, Integer(AOp1.Imm) and $FF);
+    end
+    else
+      raise EAssembler.Create(AMnem + ': bad operands');
+    Result := ACB.Data;
+    Exit;
+  end;
+
+  if AMnem = 'vextracti128' then
+  begin
+    if (AOp1.Kind = opImm) and (AOp2.Kind = opReg) and (AOp3.Kind = opReg) then
+    begin
+      { ymm src is in ModRM.reg, xmm dst in r/m; L=1 (256-bit source). }
+      EmitVexRR(ACB, Prefix, Map, W, True, Opc, AOp2.Reg, 0, AOp3.Reg);
+      CBEmit(ACB, Integer(AOp1.Imm) and $FF);
+    end
+    else
+      raise EAssembler.Create(AMnem + ': bad operands');
+    Result := ACB.Data;
+    Exit;
+  end;
+
+  { Two-operand (no vvvv): vpabsb %src,%dst ; vmovdqa/vmovdqu %src/mem,%dst. }
+  if AOp3.Kind = opNone then
+  begin
+    if (AOp1.Kind = opReg) and (AOp2.Kind = opReg) then
+      EmitVexRR(ACB, Prefix, Map, W, L, Opc, AOp2.Reg, 0, AOp1.Reg)
+    else if IsMemLike(AOp1) and (AOp2.Kind = opReg) then
+      EmitVexRM(ACB, ACtx, Prefix, Map, W, L, Opc, AOp2.Reg, 0, AOp1)
+    else
+      raise EAssembler.Create(AMnem + ': bad 2-operand form');
+    Result := ACB.Data;
+    Exit;
+  end;
+
+  { Three-operand: vpaddb %src2,%src1,%dst.  ModRM.reg = dst, vvvv = src1,
+    r/m = src2 (reg or mem). }
+  if (AOp1.Kind = opReg) and (AOp2.Kind = opReg) and (AOp3.Kind = opReg) then
+    EmitVexRR(ACB, Prefix, Map, W, L, Opc, AOp3.Reg, AOp2.Reg, AOp1.Reg)
+  else if IsMemLike(AOp1) and (AOp2.Kind = opReg) and (AOp3.Kind = opReg) then
+    EmitVexRM(ACB, ACtx, Prefix, Map, W, L, Opc, AOp3.Reg, AOp2.Reg, AOp1)
+  else
+    raise EAssembler.Create(AMnem + ': bad 3-operand form');
+  Result := ACB.Data;
 end;
 
 { Encode `movq`/`movd` moving between an XMM register and a GP register or
@@ -2459,6 +2754,7 @@ var
   FVal: Single;
   DataOp: TOperand;
   OpEnd: Integer;
+  Count, Size, FillVal, J: Integer;
 begin
   Dir := AParsed.Mnemonic;
   Args := TrimStr(AParsed.RawLine);
@@ -2483,6 +2779,8 @@ begin
       ASection := eskTbss
     else if StartsWithStr(Args, '.note.GNU-stack') then
       Exit
+    else if StartsWithStr(Args, '.data') then
+      ASection := eskData
     else if StartsWithStr(Args, '.bss') then
       ASection := eskBss
     else if StartsWithStr(Args, '.opdf') then
@@ -2577,6 +2875,34 @@ begin
       Val := ParseInt(Args, P);
       AWriter.AppendWord(ASection, Integer(Val));
     end;
+    Exit;
+  end;
+
+  { .fill <count>, <size>, <value> — emit <count> copies of a <size>-byte
+    little-endian <value>.  Used for SIMD threshold constant blocks
+    (e.g. `.fill 32, 1, 0xBF`).  size/value default to 1/0 if omitted (GNU as),
+    but the RTL always supplies all three. }
+  if Dir = '.fill' then
+  begin
+    P := 0;
+    Len := Length(Args);
+    while (P < Len) and ((Args[P] = Ord(' ')) or (Args[P] = Ord(#9))) do P := P + 1;
+    Val := ParseInt(Args, P);              { count }
+    Count := Integer(Val);
+    Size := 1; FillVal := 0;
+    while (P < Len) and ((Args[P] = Ord(' ')) or (Args[P] = Ord(#9)) or
+                         (Args[P] = Ord(','))) do P := P + 1;
+    if P < Len then
+    begin
+      Size := Integer(ParseInt(Args, P));  { size }
+      while (P < Len) and ((Args[P] = Ord(' ')) or (Args[P] = Ord(#9)) or
+                           (Args[P] = Ord(','))) do P := P + 1;
+      if P < Len then
+        FillVal := Integer(ParseInt(Args, P));  { value }
+    end;
+    for I := 0 to Count - 1 do
+      for J := 0 to Size - 1 do
+        AWriter.AppendByte(ASection, (FillVal shr (J * 8)) and $FF);
     Exit;
   end;
 

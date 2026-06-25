@@ -43,6 +43,11 @@ type
     procedure TestEndbr64AndHlt;
     procedure TestSyscall_0F05;
     procedure TestCallPltStripsSuffix;
+    procedure TestSse2_PxorAndPabsb;
+    procedure TestVex_Vpxor2byte;
+    procedure TestVex_Vpabsb3byte;
+    procedure TestVex_VextractI128;
+    procedure TestSibWhitespaceTolerated;
   end;
 
   { ---- ELF writer unit tests ---- }
@@ -243,6 +248,65 @@ begin
   AssertTrue('symbol foo missing', ContainsBytes(Obj, 'foo'));
   AssertTrue('bogus foo@PLT symbol present',
     not ContainsBytes(Obj, 'foo@PLT'));
+end;
+
+procedure TAsmEncodingTests.TestSse2_PxorAndPabsb;
+var
+  Obj: string;
+begin
+  { pxor %xmm3,%xmm3 -> 66 0f ef db ; pabsb is a 3-byte 0F38 op:
+    pabsb %xmm2,%xmm2 -> 66 0f 38 1c d2.  Verified vs cc. }
+  Obj := AssembleToBytes('pxor %xmm3, %xmm3' + LineEnding);
+  AssertTrue('66 0f ef db missing',
+    ContainsBytes(Obj, Chr($66) + Chr($0F) + Chr($EF) + Chr($DB)));
+  Obj := AssembleToBytes('pabsb %xmm2, %xmm2' + LineEnding);
+  AssertTrue('66 0f 38 1c d2 missing',
+    ContainsBytes(Obj, Chr($66) + Chr($0F) + Chr($38) + Chr($1C) + Chr($D2)));
+end;
+
+procedure TAsmEncodingTests.TestVex_Vpxor2byte;
+var
+  Obj: string;
+begin
+  { vpxor %ymm3,%ymm3,%ymm3 -> c5 e5 ef db (2-byte VEX).  Verified vs cc. }
+  Obj := AssembleToBytes('vpxor %ymm3, %ymm3, %ymm3' + LineEnding);
+  AssertTrue('c5 e5 ef db missing',
+    ContainsBytes(Obj, Chr($C5) + Chr($E5) + Chr($EF) + Chr($DB)));
+end;
+
+procedure TAsmEncodingTests.TestVex_Vpabsb3byte;
+var
+  Obj: string;
+begin
+  { vpabsb %ymm2,%ymm2 -> c4 e2 7d 1c d2 (3-byte VEX, 0F38 map).  Verified vs cc. }
+  Obj := AssembleToBytes('vpabsb %ymm2, %ymm2' + LineEnding);
+  AssertTrue('c4 e2 7d 1c d2 missing',
+    ContainsBytes(Obj, Chr($C4) + Chr($E2) + Chr($7D) + Chr($1C) + Chr($D2)));
+end;
+
+procedure TAsmEncodingTests.TestVex_VextractI128;
+var
+  Obj: string;
+begin
+  { vextracti128 $1,%ymm3,%xmm4 -> c4 e3 7d 39 dc 01 (L=1 despite xmm dst).
+    Verified vs cc. }
+  Obj := AssembleToBytes('vextracti128 $1, %ymm3, %xmm4' + LineEnding);
+  AssertTrue('c4 e3 7d 39 dc 01 missing',
+    ContainsBytes(Obj, Chr($C4) + Chr($E3) + Chr($7D) + Chr($39) + Chr($DC) + Chr($01)));
+end;
+
+procedure TAsmEncodingTests.TestSibWhitespaceTolerated;
+var
+  A, B: string;
+begin
+  { GNU as allows whitespace after the SIB comma: `(%rdi, %rdx)` must encode
+    identically to `(%rdi,%rdx)` (movdqu -> f3 0f 6f 04 17). }
+  A := AssembleToBytes('movdqu (%rdi,%rdx), %xmm0' + LineEnding);
+  B := AssembleToBytes('movdqu (%rdi, %rdx), %xmm0' + LineEnding);
+  AssertTrue('f3 0f 6f 04 17 missing (no space)',
+    ContainsBytes(A, Chr($F3) + Chr($0F) + Chr($6F) + Chr($04) + Chr($17)));
+  AssertTrue('f3 0f 6f 04 17 missing (with space)',
+    ContainsBytes(B, Chr($F3) + Chr($0F) + Chr($6F) + Chr($04) + Chr($17)));
 end;
 
 procedure TAsmEncodingTests.TestQuadSymbol_EmitsReloc;
