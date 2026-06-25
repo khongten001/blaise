@@ -74,6 +74,12 @@ type
     procedure SetUp; override;
   published
     procedure TestRun_SyscallHelloWorld;
+    { Linking with the FreeBSD target stamps EI_OSABI = 9 (ELFOSABI_FREEBSD)
+      in the ELF header and keeps the static ET_EXEC / _start shape.  The
+      FreeBSD binary cannot execute on the Linux test host (different syscall
+      numbers), so this asserts the emitted header shape only — the structural
+      check the cross-compile lane relies on. }
+    procedure TestLink_FreeBSDTarget_StampsOSABI;
   end;
 
   TDynLinkerTests = class(TTestCase)
@@ -910,6 +916,42 @@ begin
   AssertEquals('exit code from internally-linked binary', 7, Rc);
   AssertEquals('stdout from internally-linked binary',
     'Hello, linker!' + Chr(10), Output);
+end;
+
+procedure TLinkerE2ETests.TestLink_FreeBSDTarget_StampsOSABI;
+const
+  FixtureAsm =
+    '.text' + LineEnding +
+    '.globl _start' + LineEnding +
+    '_start:' + LineEnding +
+    '  movq $1, %rax' + LineEnding +
+    '  movq $1, %rdi' + LineEnding +
+    '  movq $60, %rax' + LineEnding +
+    '  movq $0, %rdi' + LineEnding +
+    '  .byte 15' + LineEnding + '  .byte 5' + LineEnding;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  BinPath, Bytes: string;
+begin
+  BinPath := FScratch + '/freebsd_osabi';
+  { Build the linker with the FreeBSD link target (OSABI = 9). }
+  Lk := TLinker.Create(FreeBSDX86_64Target());
+  try
+    Obj := ParseElfObject(AssembleToBytes(FixtureAsm), 'fb.o');
+    Lk.AddOwnedObject(Obj);
+    Lk.Link('_start', BinPath);
+  finally
+    Lk.Free();
+  end;
+
+  AssertTrue('linked FreeBSD binary missing', FileExists(BinPath));
+  Bytes := ReadFile(BinPath);
+  AssertTrue('output too small to be an ELF', Length(Bytes) >= 8);
+  { ELF magic 0x7F 'E' 'L' 'F' at [0..3]; EI_OSABI is byte [7]. }
+  AssertEquals('ELF magic byte 0', $7F, OrdAt(Bytes, 0));
+  AssertEquals('EI_CLASS = ELFCLASS64', 2, OrdAt(Bytes, 4));
+  AssertEquals('EI_OSABI = ELFOSABI_FREEBSD (9)', 9, OrdAt(Bytes, 7));
 end;
 
 { ---- TDynLinkerTests ---- }

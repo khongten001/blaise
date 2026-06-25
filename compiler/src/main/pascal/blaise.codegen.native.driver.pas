@@ -76,6 +76,7 @@ implementation
 uses
   SysUtils, Classes,
   uToolchain,
+  blaise.codegen.toolkit,
   blaise.assembler.x86_64,
   blaise.elfreader,
   blaise.linker.elf;
@@ -188,10 +189,22 @@ var
   Lk: TLinker;
   Obj: TElfObjectFile;
   TC: TToolchain;
+  Toolkit: TTargetToolkit;
+  LinkTarget: TLinkTarget;
   I: Integer;
 begin
   Result := '';
   TC := ResolveToolchain(AOpts.Target);
+
+  { Build the linker with the resolved target's TLinkTarget so the emitted ELF
+    carries the right EI_OSABI / machine / load base for AOpts.Target — without
+    this the internal linker always produced a Linux-shaped ELF regardless of
+    --target.  The toolkit is the single source of per-target link facts
+    (docs/native-target-architecture.adoc). }
+  Toolkit := ResolveToolkit(AOpts.Target);
+  if Toolkit = nil then
+    Exit('internal linker: no toolkit registered for target ' +
+      TargetName(AOpts.Target));
 
   { Every Blaise program links blaise_rtl.a — the program entry emits
     _SetArgs and the runtime supplies ARC, strings, exceptions, the platform
@@ -205,7 +218,9 @@ begin
       + '(looked beside the compiler binary and in $BLAISE_RTL); '
       + 'cannot link a Blaise program without the RTL');
 
-  Lk := TLinker.Create();
+  { TLinker.Create(ATarget) borrows the target — we own and free it here. }
+  LinkTarget := Toolkit.MakeLinkTarget();
+  Lk := TLinker.Create(LinkTarget);
   try
     try
       Lk.SetDynamic(True);
@@ -233,6 +248,7 @@ begin
     end;
   finally
     Lk.Free();
+    LinkTarget.Free();
   end;
 end;
 
