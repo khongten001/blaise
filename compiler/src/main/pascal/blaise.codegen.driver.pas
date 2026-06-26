@@ -504,6 +504,7 @@ begin
     Units.Add('runtime.cstub');
     Units.Add('runtime.libc.linux');
     Units.Add('runtime.libc2.linux');
+    Units.Add('runtime.thread.static.linux');
   end;
 
   for I := 0 to Units.Count - 1 do
