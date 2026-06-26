@@ -491,6 +491,7 @@ type
       records, static arrays, etc.).  An '' result tells the type-decl
       emitter to fall back to the opaque size form. }
     function  QbeAggFieldType(AType: TTypeDesc): string;
+    function  AggPadBytes(ACount: Integer): string;
     function  FlattenRecordToAggLetters(ARec: TRecordTypeDesc): string;
     { Registers ARec for FFI-aggregate type emission and returns the QBE
       type reference ':_ffi_<Name>' to splice into a call or declare. }
@@ -1107,22 +1108,73 @@ begin
   Result := ':_ffi_' + ARec.Name;
 end;
 
+{ Emit ACount `b` (byte) padding entries — used to align a field to its true
+  record offset so the QBE aggregate type's field offsets match Blaise's record
+  layout exactly (else QBE packs the struct smaller and a by-value param read at
+  a Blaise offset lands past the struct in caller garbage). }
+function TCodeGenQBE.AggPadBytes(ACount: Integer): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to ACount do
+  begin
+    if Result <> '' then Result := Result + ', ';
+    Result := Result + 'b';
+  end;
+end;
+
+{ Build the QBE aggregate field list for a record, inserting explicit byte
+  padding so each scalar field sits at its real `TFieldInfo.Offset`.  Nested
+  records and other non-scalar fields are emitted as their whole byte span (the
+  by-value ABI only needs correct size + field positions, and the inner shape is
+  never read through this type).  The tail is padded to TotalSize so the struct's
+  size matches Blaise's. }
 function TCodeGenQBE.FlattenRecordToAggLetters(ARec: TRecordTypeDesc): string;
 var
-  I:   Integer;
-  F:   TFieldInfo;
-  Sub: string;
+  I:    Integer;
+  F:    TFieldInfo;
+  Sub:  string;
+  Off:  Integer;
+  Letter: string;
+  FSize:  Integer;
 begin
   Result := '';
   if ARec = nil then Exit;
+  Off := 0;
   for I := 0 to ARec.Fields.Count - 1 do
   begin
     F := TFieldInfo(ARec.Fields.Items[I]);
-    if F.TypeDesc.Kind = tyRecord then
-      Sub := Self.FlattenRecordToAggLetters(TRecordTypeDesc(F.TypeDesc))
+    { Pad up to this field's real offset. }
+    if F.Offset > Off then
+    begin
+      Sub := AggPadBytes(F.Offset - Off);
+      if Result <> '' then Result := Result + ', ';
+      Result := Result + Sub;
+      Off := F.Offset;
+    end;
+    Letter := QbeAggFieldType(F.TypeDesc);
+    if Letter <> '' then
+    begin
+      if Result <> '' then Result := Result + ', ';
+      Result := Result + Letter;
+      Off := Off + F.TypeDesc.RawSize();
+    end
     else
-      Sub := QbeAggFieldType(F.TypeDesc);
-    if Sub = '' then Exit('');
+    begin
+      { Nested record / static array / set — emit its whole span as bytes. }
+      FSize := F.TypeDesc.RawSize();
+      if FSize <= 0 then Exit('');
+      Sub := AggPadBytes(FSize);
+      if Result <> '' then Result := Result + ', ';
+      Result := Result + Sub;
+      Off := Off + FSize;
+    end;
+  end;
+  { Tail padding so the aggregate size matches the Pascal record's TotalSize. }
+  if ARec.TotalSize() > Off then
+  begin
+    Sub := AggPadBytes(ARec.TotalSize() - Off);
     if Result <> '' then Result := Result + ', ';
     Result := Result + Sub;
   end;

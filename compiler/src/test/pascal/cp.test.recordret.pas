@@ -716,9 +716,9 @@ begin
         begin
         end.
         ''');
-  { 16 bytes, all-float — rcSSE2 with aggregate [ s, d ]. }
+  { 16 bytes, all-float — rcSSE2 with aggregate [ s, 4B pad, d ]. }
   AssertContains('function :_ffi_TM $MakeIt', IR);
-  AssertContains('type :_ffi_TM = align 8 { s, d }', IR);
+  AssertContains('type :_ffi_TM = align 8 { s, b, b, b, b, d }', IR);
 end;
 
 procedure TRecordReturnTests.TestCodegen_IntegerPlusDouble_UsesIntSSE;
@@ -742,7 +742,7 @@ begin
     Eightbyte 1 = Double -> SSE class.
     QBE returns in (rax, xmm0). }
   AssertContains('function :_ffi_TM $MakeIt', IR);
-  AssertContains('type :_ffi_TM = align 8 { w, d }', IR);
+  AssertContains('type :_ffi_TM = align 8 { w, b, b, b, b, d }', IR);
   AssertContains('=:_ffi_TM call $MakeIt', IR);
   AssertContains('call $memcpy(', IR);
 end;
