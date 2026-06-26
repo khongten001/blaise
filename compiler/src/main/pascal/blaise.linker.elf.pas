@@ -898,6 +898,12 @@ begin
     FTlsSize := FTlsSize + M.Size;
     if M.Align > FTlsAlign then FTlsAlign := M.Align;
   end;
+  { Variant-II TLS: the thread pointer sits at the ALIGNED end of the block, and
+    TPOFF32 is computed as (sym - FTlsAddr - FTlsSize).  The freestanding _start
+    places TP at AlignUp(memsz, align); align FTlsSize to match so both agree even
+    when the raw section sum is not a multiple of FTlsAlign (else every threadvar
+    read is off by the alignment padding). }
+  FTlsSize := LkAlignUp(FTlsSize, FTlsAlign);
 end;
 
 function TLinker.FindSymbol(const AName: string): TLinkSymbol;
@@ -1565,6 +1571,9 @@ begin
     FTlsSize := FTlsSize + M.Size;
     if M.Align > FTlsAlign then FTlsAlign := M.Align;
   end;
+  { TP sits at the aligned end of the TLS block (variant II); align FTlsSize so
+    TPOFF32 (sym - FTlsAddr - FTlsSize) matches the aligned thread pointer. }
+  FTlsSize := LkAlignUp(FTlsSize, FTlsAlign);
 
   { Build .dynamic section.  'libc.so.6' is at offset 1 in .dynstr. }
   FDynamicData := '';

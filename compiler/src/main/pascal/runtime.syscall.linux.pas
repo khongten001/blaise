@@ -54,6 +54,7 @@ function rmdir(Path: PChar): Integer;
 function unlink(Path: PChar): Integer;
 function rename(OldPath, NewPath: PChar): Integer;
 function chdir(Path: PChar): Integer;
+function chmod(Path: PChar; Mode: Integer): Integer;
 
 { Process. }
 function getpid: Integer;
@@ -128,6 +129,7 @@ const
   SYS_getpid        = 39;
   SYS_rename        = 82;
   SYS_mkdir         = 83;
+  SYS_chmod         = 90;
   SYS_rmdir         = 84;
   SYS_unlink        = 87;
   SYS_chdir         = 80;
@@ -209,6 +211,14 @@ function mkdir(Path: PChar; Mode: Integer): Integer;
   assembler; nostackframe;
 asm
     movq $83, %rax       { SYS_mkdir }
+    syscall
+    ret
+end;
+
+function chmod(Path: PChar; Mode: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $90, %rax       { SYS_chmod }
     syscall
     ret
 end;
