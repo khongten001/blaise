@@ -80,6 +80,11 @@ type
       numbers), so this asserts the emitted header shape only — the structural
       check the cross-compile lane relies on. }
     procedure TestLink_FreeBSDTarget_StampsOSABI;
+    { Step 3: linking the freestanding FreeBSD _start with the FreeBSD target
+      yields a static ET_EXEC whose entry point is _start and which has no
+      PT_INTERP — the Strategy-B shape a cross-compiled FreeBSD binary needs.
+      Asserts header shape only (it cannot run on the Linux host). }
+    procedure TestLink_FreeBSDStart_StaticExecShape;
   end;
 
   TDynLinkerTests = class(TTestCase)
@@ -1015,6 +1020,74 @@ begin
   AssertEquals('ELF magic byte 0', $7F, OrdAt(Bytes, 0));
   AssertEquals('EI_CLASS = ELFCLASS64', 2, OrdAt(Bytes, 4));
   AssertEquals('EI_OSABI = ELFOSABI_FREEBSD (9)', 9, OrdAt(Bytes, 7));
+end;
+
+procedure TLinkerE2ETests.TestLink_FreeBSDStart_StaticExecShape;
+const
+  { A self-contained FreeBSD _start: capture the stack, then exit(0) via
+    SYS_exit = 1.  Mirrors runtime.start.static.freebsd's entry shape without
+    pulling in main/_SetArgs, so it links with no undefined symbols. }
+  FixtureAsm =
+    '.text' + LineEnding +
+    '.globl _start' + LineEnding +
+    '_start:' + LineEnding +
+    '  endbr64' + LineEnding +
+    '  xorl %ebp, %ebp' + LineEnding +
+    '  movq %rsp, %rdi' + LineEnding +
+    '  xorl %edi, %edi' + LineEnding +
+    '  movq $1, %rax' + LineEnding +       { SYS_exit }
+    '  syscall' + LineEnding +
+    '  hlt' + LineEnding;
+var
+  Lk: TLinker;
+  Obj: TElfObjectFile;
+  Bytes: string;
+  Entry, StartAddr: Int64;
+  PhOff, PhEntSz, PhCount, J, PType: Integer;
+  FoundInterp: Boolean;
+begin
+  { LinkToBytes returns the binary in memory — ReadFile would truncate at the
+    first NUL, which an ELF header hits at byte 8. }
+  Lk := TLinker.Create(FreeBSDX86_64Target());
+  try
+    Obj := ParseElfObject(AssembleToBytes(FixtureAsm), 'fbstart.o');
+    Lk.AddOwnedObject(Obj);
+    Bytes := Lk.LinkToBytes('_start');
+    StartAddr := Lk.AddrOfSymbol('_start');
+  finally
+    Lk.Free();
+  end;
+
+  AssertTrue('output too small to be an ELF', Length(Bytes) >= 64);
+
+  { e_type at offset 16 must be ET_EXEC (2) — a static, non-PIE executable. }
+  AssertEquals('e_type ET_EXEC', 2, OrdAt(Bytes, 16) or (OrdAt(Bytes, 17) shl 8));
+  { EI_OSABI byte 7 = ELFOSABI_FREEBSD. }
+  AssertEquals('EI_OSABI FreeBSD', 9, OrdAt(Bytes, 7));
+
+  { e_entry (offset 24, 8 bytes LE) must equal the address of _start. }
+  Entry := Int64(OrdAt(Bytes, 24)) or (Int64(OrdAt(Bytes, 25)) shl 8) or
+           (Int64(OrdAt(Bytes, 26)) shl 16) or (Int64(OrdAt(Bytes, 27)) shl 24) or
+           (Int64(OrdAt(Bytes, 28)) shl 32) or (Int64(OrdAt(Bytes, 29)) shl 40) or
+           (Int64(OrdAt(Bytes, 30)) shl 48) or (Int64(OrdAt(Bytes, 31)) shl 56);
+  AssertEquals('entry point is _start', StartAddr, Entry);
+
+  { No PT_INTERP (type 3) among the program headers — a freestanding binary has
+    no dynamic loader. }
+  PhOff := OrdAt(Bytes, 32) or (OrdAt(Bytes, 33) shl 8) or
+           (OrdAt(Bytes, 34) shl 16) or (OrdAt(Bytes, 35) shl 24);
+  PhEntSz := OrdAt(Bytes, 54) or (OrdAt(Bytes, 55) shl 8);
+  PhCount := OrdAt(Bytes, 56) or (OrdAt(Bytes, 57) shl 8);
+  FoundInterp := False;
+  for J := 0 to PhCount - 1 do
+  begin
+    PType := OrdAt(Bytes, PhOff + J * PhEntSz) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 1) shl 8) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 2) shl 16) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 3) shl 24);
+    if PType = 3 then FoundInterp := True;
+  end;
+  AssertTrue('static ET_EXEC must have no PT_INTERP', not FoundInterp);
 end;
 
 { ---- TDynLinkerTests ---- }

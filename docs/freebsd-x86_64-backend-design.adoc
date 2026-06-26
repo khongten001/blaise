@@ -368,6 +368,19 @@ emulation lane).
 
 === Step 3 — Freestanding `_start` entry stub
 
+NOTE: Done.  `runtime.start.static.freebsd.pas` (the FreeBSD sibling of
+`runtime.start.static.linux`) provides `_start`: it captures `%rsp`, aligns the
+stack, calls the Pascal `_BlaiseStartC` which parses `argc`/`argv`/`envp`,
+captures `environ`, calls `main`, and exits via the FreeBSD `exit` syscall.  The
+minimum syscall primitives it needs (`_exit`, `write`, the `environ` global) are
+in `runtime.syscall.freebsd.pas` (`SYS_exit` = 1, `SYS_write` = 4); the rest of
+the leaf grows there in Step 4.  Step 3 deliberately omits TLS setup — a trivial
+program performs no threadvar access — so the auxv `PT_TLS` walk (whose FreeBSD
+`AT_*` tags differ from Linux) arrives with the threads work in Step 4, exactly
+as it did on Linux.  Test `TLinkerE2ETests.TestLink_FreeBSDStart_StaticExecShape`
+links the `_start` fixture with the FreeBSD target and asserts the static
+`ET_EXEC` shape: `e_type` = ET_EXEC, entry == `_start`, no `PT_INTERP`.
+
 * The FreeBSD kernel-stub object provides `_start` (not `__libc_start_main`):
   read `argc` at `[%rsp]`, `argv` at `[%rsp+8]`, align the stack, call
   `_SetArgs`, run the body, then `exit` via syscall.  The linker's static
