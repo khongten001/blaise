@@ -19,12 +19,11 @@ unit runtime.start.static.linux;
 //
 // On entry the kernel hands us the initial process stack (System V AMD64,
 // "Initial Process Stack"):
-//   (%rsp)      = argc
-//   8(%rsp)     = argv[0], argv[1], … then a NULL, then envp, then auxv.
-// %rsp is 16-byte aligned at the kernel's `_start` only AFTER we account for the
-// implicit return address a normal `call` would have pushed — i.e. on entry
-// (%rsp) points at argc and the ABI's "16-byte aligned at call site" means after
-// our own alignment the stack is correct for the `call main`.
+//   (%rsp)              = argc
+//   8(%rsp)             = argv[0] … argv[argc-1], then a NULL,
+//   8+(argc+1)*8(%rsp)  = envp[0] … then a NULL, then auxv.
+// So envp = &argv[argc+1] = %rsp + (argc+2)*8.  We capture it into the global
+// `environ` (which getenv/execvp read) before calling main.
 //
 // main expects C-`main(argc, argv)` register layout: argc in %edi, argv in %rsi.
 
@@ -40,6 +39,8 @@ asm
     xor  %ebp, %ebp            { clear frame pointer — outermost frame }
     movq (%rsp), %rdi          { %rdi = argc }
     leaq 8(%rsp), %rsi         { %rsi = &argv[0] }
+    leaq 16(%rsp,%rdi,8), %rax { environ = &argv[argc+1] = %rsp+16+argc*8 }
+    movq %rax, environ(%rip)
     andq $0xfffffffffffffff0, %rsp   { 16-byte align before the call }
     call main
     xorl %edi, %edi           { main terminates via exit; guard with exit_group(0) }

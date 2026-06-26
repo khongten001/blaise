@@ -64,10 +64,33 @@ function pipe(Fds: Pointer): Integer;
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
              Offset: Int64): Pointer;
 function munmap(Addr: Pointer; Length: Int64): Integer;
+{ mremap(old, oldsz, newsz, flags, newaddr) — 5 args; raw syscall. }
+function mremap(OldAddr: Pointer; OldSize, NewSize: Int64; Flags: Integer;
+               NewAddr: Pointer): Pointer;
 
 { Time. }
 function nanosleep(Req, Rem: Pointer): Integer;
 function clock_gettime(ClockId: Integer; Ts: Pointer): Integer;
+
+{ Process control + raw primitives the higher-level wrappers (runtime.libc.linux)
+  build on.  These are the bare syscalls; the libc-shaped versions (execvp with
+  PATH search, waitpid, system, …) live in the wrapper unit. }
+function fork: Integer;
+function execve(Path: PChar; Argv, Envp: Pointer): Integer;
+function wait4(Pid: Integer; Status: Pointer; Options: Integer;
+               Rusage: Pointer): Integer;
+function sched_getaffinity(Pid: Integer; CpuSetSize: Int64;
+                           Mask: Pointer): Integer;
+function getrandom(Buf: Pointer; Count: Int64; Flags: Integer): Int64;
+function arch_prctl(Code: Integer; Addr: Pointer): Integer;
+function kill(Pid, Sig: Integer): Integer;
+{ Raw time(2): returns seconds since the epoch; if T is non-nil it is also
+  written there.  The kernel syscall handles the out-param itself. }
+function sys_time(T: Pointer): Int64;
+{ Raw getcwd(2): fills Buf (up to Size), returns the length INCLUDING the NUL on
+  success or -errno.  (libc's getcwd returns the buffer pointer — the wrapper in
+  runtime.libc.linux adapts that.) }
+function sys_getcwd(Buf: PChar; Size: Int64): Int64;
 
 { Process exit — exit_group(2), terminates all threads.  Neither runs atexit
   handlers (that lives in the atexit-registry leaf, a later step); for now the
@@ -101,6 +124,16 @@ const
   SYS_chdir         = 80;
   SYS_clock_gettime = 228;
   SYS_exit_group    = 231;
+  SYS_mremap        = 25;
+  SYS_fork          = 57;
+  SYS_execve        = 59;
+  SYS_wait4         = 61;
+  SYS_kill          = 62;
+  SYS_getcwd        = 79;
+  SYS_sched_getaffinity = 204;
+  SYS_arch_prctl    = 158;
+  SYS_time          = 201;
+  SYS_getrandom     = 318;
 { The asm bodies use literal immediates (the assembler needs a literal, not a
   symbol); the const block above documents the number-to-name mapping. }
 
@@ -258,6 +291,93 @@ function clock_gettime(ClockId: Integer; Ts: Pointer): Integer;
   assembler; nostackframe;
 asm
     movq $228, %rax      { SYS_clock_gettime }
+    syscall
+    ret
+end;
+
+{ mremap has 5 args; arg4 (Flags) arrives in %rcx -> move to %r10. }
+function mremap(OldAddr: Pointer; OldSize, NewSize: Int64; Flags: Integer;
+               NewAddr: Pointer): Pointer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $25, %rax       { SYS_mremap }
+    syscall
+    ret
+end;
+
+function fork: Integer;
+  assembler; nostackframe;
+asm
+    movq $57, %rax       { SYS_fork }
+    syscall
+    ret
+end;
+
+function execve(Path: PChar; Argv, Envp: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $59, %rax       { SYS_execve }
+    syscall
+    ret
+end;
+
+{ wait4 has 4 args; arg4 (Rusage) arrives in %rcx -> move to %r10. }
+function wait4(Pid: Integer; Status: Pointer; Options: Integer;
+               Rusage: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $61, %rax       { SYS_wait4 }
+    syscall
+    ret
+end;
+
+function sched_getaffinity(Pid: Integer; CpuSetSize: Int64;
+                           Mask: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $204, %rax      { SYS_sched_getaffinity }
+    syscall
+    ret
+end;
+
+function getrandom(Buf: Pointer; Count: Int64; Flags: Integer): Int64;
+  assembler; nostackframe;
+asm
+    movq $318, %rax      { SYS_getrandom }
+    syscall
+    ret
+end;
+
+function arch_prctl(Code: Integer; Addr: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $158, %rax      { SYS_arch_prctl }
+    syscall
+    ret
+end;
+
+function kill(Pid, Sig: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $62, %rax       { SYS_kill }
+    syscall
+    ret
+end;
+
+function sys_time(T: Pointer): Int64;
+  assembler; nostackframe;
+asm
+    movq $201, %rax      { SYS_time }
+    syscall
+    ret
+end;
+
+function sys_getcwd(Buf: PChar; Size: Int64): Int64;
+  assembler; nostackframe;
+asm
+    movq $79, %rax       { SYS_getcwd }
     syscall
     ret
 end;

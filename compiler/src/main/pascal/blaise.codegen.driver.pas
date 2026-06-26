@@ -502,6 +502,7 @@ begin
   begin
     Units.Add('runtime.syscall.linux');
     Units.Add('runtime.cstub');
+    Units.Add('runtime.libc.linux');
   end;
 
   for I := 0 to Units.Count - 1 do
