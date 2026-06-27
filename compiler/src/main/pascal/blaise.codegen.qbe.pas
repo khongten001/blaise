@@ -460,6 +460,19 @@ type
     { Release every ARC-managed field of a record at AAddr in-line (no copy).
       Used before overwriting a record slot to prevent reference leaks. }
     procedure EmitRecordReleaseFields(ARec: TRecordTypeDesc; const AAddr: string);
+    { Release one ARC-managed value of type AType whose storage is at AAddr.
+      AAddr points AT the slot (string/class/intf/dynarray) or AT the inline
+      aggregate (record/static array).  Recurses for records and nested static
+      arrays so every managed leaf is released exactly once. }
+    procedure EmitManagedReleaseAt(AType: TTypeDesc; const AAddr: string;
+                                   AZero: Boolean);
+    { Release every managed element of a static array whose inline storage
+      starts at AAddr.  Loops AType.LowBound..HighBound, releasing each element
+      via EmitManagedReleaseAt.  When AZero is set (exception path) each scalar
+      managed slot is zeroed after release so an outer handler's cleanup is a
+      safe no-op. }
+    procedure EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
+                                          const AAddr: string; AZero: Boolean);
     { Mirror of EmitRecordReleaseFields: AddRef every ARC-managed field of a
       record at AAddr.  Used in the by-value record param prologue so the
       callee owns retains on managed-field contents, balancing the matching
@@ -2390,6 +2403,27 @@ begin
       end;
       Continue;
     end
+    else if (Decl.ResolvedType.Kind = tyStaticArray)
+      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType <> nil)
+      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType.Kind = tyInterface) then
+    begin
+      { Static-array-of-INTERFACE local (array[0..N] of IFoo): release each
+        fat-pointer element's obj slot at scope exit.  VarRef gives the inline
+        storage base.
+
+        Scope: ONLY interface elements — kept in lockstep with the native
+        backend.  Static-array-of-class/string/record locals are excluded
+        because the element store's unconditional retain plus manual `.Free`/
+        aliasing in the owning code would double-free; reconciling that is
+        tracked separately. }
+      for J := 0 to Decl.Names.Count - 1 do
+      begin
+        VarName := Decl.Names.Strings[J];
+        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
+          VarRef(VarName, Decl.IsGlobal), False);
+      end;
+      Continue;
+    end
     else
       Continue;
     for J := 0 to Decl.Names.Count - 1 do
@@ -2470,6 +2504,21 @@ begin
         VarName := Decl.Names.Strings[J];
         EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal));
+      end;
+      Continue;
+    end
+    else if (Decl.ResolvedType.Kind = tyStaticArray)
+      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType <> nil)
+      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType.Kind = tyInterface) then
+    begin
+      { Static-array-of-interface local on exception path: release each element's
+        obj slot and zero it so an outer handler's cleanup is a safe no-op.
+        (Same interface-only scope as the normal path.) }
+      for J := 0 to Decl.Names.Count - 1 do
+      begin
+        VarName := Decl.Names.Strings[J];
+        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
+          VarRef(VarName, Decl.IsGlobal), True);
       end;
       Continue;
     end
@@ -5805,6 +5854,13 @@ begin
       EmitRecordReleaseFields(TRecordTypeDesc(F.TypeDesc), FldAddr);
       Continue;
     end;
+    { NOTE: a static-array-of-managed FIELD is intentionally NOT released here.
+      EmitRecordReleaseFields must stay symmetric with EmitRecordAddRefFields /
+      EmitRecordCopy, neither of which retains static-array elements; releasing
+      them here without a matching retain over-releases on every record copy /
+      by-value param pass and corrupts the heap.  Static-array element ARC is
+      handled only for scope-exit LOCALS (the bug-#4 case).  Records with such
+      fields remain a separate, latent concern. }
     if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
             or (F.TypeDesc.Kind = tyDynArray)
             or (F.TypeDesc.Kind = tyInterface)) then Continue;
@@ -5826,6 +5882,63 @@ begin
         For an interface field the itab slot lives at +8 and is static rodata,
         so no extra release is needed. }
       EmitLine(Format('  call $_ClassRelease(l %s)', [ValT]));
+  end;
+end;
+
+procedure TCodeGenQBE.EmitManagedReleaseAt(AType: TTypeDesc; const AAddr: string;
+  AZero: Boolean);
+var
+  ValT: string;
+begin
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+  begin
+    { Records are released field-by-field; the per-field scalar zeroing inside
+      EmitRecordReleaseFields is not parameterised, so the AZero contract here
+      is satisfied for the leaf scalars it touches. }
+    EmitRecordReleaseFields(TRecordTypeDesc(AType), AAddr);
+    Exit;
+  end;
+  if AType.Kind = tyStaticArray then
+  begin
+    EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(AType), AAddr, AZero);
+    Exit;
+  end;
+  if not (AType.IsString() or (AType.Kind = tyClass)
+          or (AType.Kind = tyDynArray) or (AType.Kind = tyInterface)) then
+    Exit;
+  ValT := AllocTemp();
+  EmitLine(Format('  %s =l loadl %s', [ValT, AAddr]));
+  if AType.IsString() then
+    EmitLine(Format('  call $_StringRelease(l %s)', [ValT]))
+  else if AType.Kind = tyDynArray then
+    EmitLine(Format('  call $_DynArrayRelease(l %s)', [ValT]))
+  else
+    { tyClass and tyInterface both release the obj slot via _ClassRelease;
+      an interface's itab slot at +8 is static rodata, no release needed. }
+    EmitLine(Format('  call $_ClassRelease(l %s)', [ValT]));
+  if AZero then
+    EmitLine(Format('  storel 0, %s', [AAddr]));
+end;
+
+procedure TCodeGenQBE.EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
+  const AAddr: string; AZero: Boolean);
+var
+  I, ElemSize: Integer;
+  ElemAddr:    string;
+begin
+  if (AType = nil) or (AType.ElementType = nil) then Exit;
+  ElemSize := AType.ElementType.RawSize();
+  for I := 0 to AType.HighBound - AType.LowBound do
+  begin
+    if I = 0 then
+      ElemAddr := AAddr
+    else
+    begin
+      ElemAddr := AllocTemp();
+      EmitLine(Format('  %s =l add %s, %d', [ElemAddr, AAddr, I * ElemSize]));
+    end;
+    EmitManagedReleaseAt(AType.ElementType, ElemAddr, AZero);
   end;
 end;
 

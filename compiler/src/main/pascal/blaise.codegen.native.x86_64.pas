@@ -253,6 +253,19 @@ type
       scope-exit cleanup. }
     procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
                                       const ABaseReg: string);
+    { Release one ARC-managed value of type AType whose storage is at the address
+      in callee-saved ABaseReg.  Scalars (string/class/intf/dynarray) are
+      released directly; records recurse via EmitRecordFieldReleases; static
+      arrays recurse element-by-element via EmitStaticArrayReleaseElems.  When
+      AZero is set the scalar managed slot is zeroed after release (exception
+      path).  ABaseReg must survive callq. }
+    procedure EmitManagedReleaseAt(AType: TTypeDesc; const ABaseReg: string;
+                                   AZero: Boolean);
+    { Release every managed element of a static array whose inline storage starts
+      at the address in callee-saved ABaseReg.  Loops the element count,
+      releasing each via EmitManagedReleaseAt. }
+    procedure EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
+                                          const ABaseReg: string; AZero: Boolean);
     procedure EmitRecordFieldRetains(ART: TRecordTypeDesc;
                                      const ABaseReg: string);
     { Emit all class/record method definitions for the given type decls plus
@@ -1868,6 +1881,13 @@ begin
       Self.Emit(#9'popq %r14');
       Continue;
     end;
+    { NOTE: a static-array-of-managed FIELD is intentionally NOT released here.
+      EmitRecordFieldReleases must stay symmetric with EmitRecordFieldRetains /
+      EmitRecordCopy, neither of which retains static-array elements; releasing
+      them here without a matching retain over-releases on every record copy /
+      by-value param pass and corrupts the heap.  Static-array element ARC is
+      handled only for scope-exit LOCALS (the bug-#4 case).  Records with such
+      fields remain a separate, latent concern. }
     if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
             or (F.TypeDesc.Kind = tyDynArray)
             or (F.TypeDesc.Kind = tyInterface)) then
@@ -1901,6 +1921,64 @@ begin
     else
       Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
   end;
+end;
+
+procedure TX86_64Backend.EmitManagedReleaseAt(AType: TTypeDesc;
+  const ABaseReg: string; AZero: Boolean);
+begin
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+  begin
+    Self.EmitRecordFieldReleases(TRecordTypeDesc(AType), ABaseReg);
+    Exit;
+  end;
+  if AType.Kind = tyStaticArray then
+  begin
+    Self.EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(AType), ABaseReg, AZero);
+    Exit;
+  end;
+  if not (AType.IsString() or (AType.Kind = tyClass)
+          or (AType.Kind = tyDynArray) or (AType.Kind = tyInterface)) then
+    Exit;
+  { Load the element's obj/data pointer (interface: obj slot at +0). }
+  Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
+  if AType.IsString() then
+    Self.Emit(#9'callq _StringRelease')
+  else if AType.Kind = tyDynArray then
+    Self.Emit(#9'callq _DynArrayRelease')
+  else
+    { tyClass and tyInterface both release the obj slot via _ClassRelease; an
+      interface's itab slot at +8 is static rodata and needs no release. }
+    Self.Emit(#9'callq _ClassRelease');
+  if AZero then
+    Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
+end;
+
+procedure TX86_64Backend.EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
+  const ABaseReg: string; AZero: Boolean);
+var
+  I, ElemSize: Integer;
+begin
+  if (AType = nil) or (AType.ElementType = nil) then Exit;
+  ElemSize := AType.ElementType.RawSize();
+  { Hold the array base in callee-saved %r15 and recompute each element address
+    into %r14.  Both are saved/restored as a PAIR (even push count) so the
+    stack stays 16-byte aligned at the per-element release callq.  Keeping the
+    base in %r15 (not advancing %r14 in place) keeps the addressing correct
+    under nested static arrays, whose recursive call reuses %r14. }
+  Self.Emit(#9'pushq %r15');
+  Self.Emit(#9'pushq %r14');
+  Self.Emit(Format(#9'movq %s, %%r15', [ABaseReg]));
+  for I := 0 to AType.HighBound - AType.LowBound do
+  begin
+    if I * ElemSize > 0 then
+      Self.Emit(Format(#9'leaq %d(%%r15), %%r14', [I * ElemSize]))
+    else
+      Self.Emit(#9'movq %r15, %r14');
+    Self.EmitManagedReleaseAt(AType.ElementType, '%r14', AZero);
+  end;
+  Self.Emit(#9'popq %r14');
+  Self.Emit(#9'popq %r15');
 end;
 
 procedure TX86_64Backend.EmitRecordFieldRetains(ART: TRecordTypeDesc;
@@ -16463,6 +16541,32 @@ begin
             [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
           Self.EmitRecordFieldReleases(
             TRecordTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType), '%rbx');
+          Self.Emit(#9'popq %rbx');
+        end
+      { Static-array-of-INTERFACE locals (array[0..N] of IFoo): release each
+        fat-pointer element's obj slot at scope exit.  The inline storage base
+        goes into %rbx (callee-saved).
+
+        Scope: ONLY interface elements.  The interface element store routes
+        through EmitInterfaceToFieldSlotsAt, whose retain/release is balanced by
+        this scope-exit release.  Static-array-of-CLASS/STRING/record locals are
+        deliberately excluded: the existing element store retains unconditionally
+        while `.Free`/aliasing in the owning code (e.g. the ELF writer's
+        `RelaBuf: array[0..5] of TByteBuf`) already manages those lifetimes, so a
+        blanket scope-exit release double-frees and corrupts the heap.  Closing
+        that gap requires reconciling the element store's ARC with the manual
+        management first; it is tracked separately. }
+      else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyStaticArray)
+        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType <> nil)
+        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType.Kind = tyInterface) then
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+        begin
+          Self.Emit(#9'pushq %rbx');
+          Self.Emit(Format(#9'leaq %s, %%rbx',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          Self.EmitStaticArrayReleaseElems(
+            TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType),
+            '%rbx', False);
           Self.Emit(#9'popq %rbx');
         end;
     end;
