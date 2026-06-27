@@ -13759,12 +13759,38 @@ var
   E:            TVTableEntry;
   GII:          TGenericInterfaceInstance;
   SavedUnit:    string;
+  AllTD:        TObjectList;   { interface + implementation type decls, so a
+                                class declared in the implementation section
+                                gets its method bodies / typeinfo / vtable /
+                                _FieldCleanup / interface defs emitted too. }
+  SavedDOU:     string;        { prior FSymTable.DefineOwningUnit, restored at end }
 begin
   { No clears — output and string literal table accumulate across calls.
     Counter resets are safe: QBE temps and block labels are function-scoped. }
   FTempCount  := 0;
   FLabelCount := 0;
   FCurrentUnitName := AUnit.Name;
+
+  { Establish THIS unit as the symbol-table viewing context so resolving the
+    unit's own implementation-section (IsImplPrivate) types — for ClassUnitPrefix
+    mangling and the typeinfo/vtable/_FieldCleanup emission loops below — is not
+    suppressed by the cross-unit-leak guard in TSymbolTable.Lookup.  Restored at
+    the end. }
+  SavedDOU := '';
+  if FSymTable <> nil then
+  begin
+    SavedDOU := FSymTable.DefineOwningUnit;
+    FSymTable.DefineOwningUnit := AUnit.Name;
+  end;
+
+  { Combined type-decl list (interface first, then implementation) — borrowed
+    slots, not owned.  Every per-type emission loop below iterates this so
+    impl-section classes are emitted identically to interface ones. }
+  AllTD := TObjectList.Create(False);
+  for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+    AllTD.Add(AUnit.IntfBlock.TypeDecls.Items[I]);
+  for I := 0 to AUnit.ImplBlock.TypeDecls.Count - 1 do
+    AllTD.Add(AUnit.ImplBlock.TypeDecls.Items[I]);
 
   CollectThreadVarNames(AUnit.IntfBlock);
   CollectThreadVarNames(AUnit.ImplBlock);
@@ -13794,9 +13820,9 @@ begin
         { Class and record method bodies from interface type declarations.
           After LinkClassMethodImpls the definition's TMethodDecl nodes
           hold the bodies and parameter types are resolved by AnalyseMethodBodies. }
-        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        for I := 0 to AllTD.Count - 1 do
         begin
-          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          TD := TTypeDecl(AllTD.Items[I]);
           if TD.Def is TClassTypeDef then
           begin
             CD := TClassTypeDef(TD.Def);
@@ -13821,9 +13847,9 @@ begin
         { Field cleanup functions — emitted here (inside redirect) because they
           are function bodies, not data.  Requires FSymTable to look up TRecordTypeDesc. }
         if FSymTable <> nil then
-          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          for I := 0 to AllTD.Count - 1 do
           begin
-            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            TD := TTypeDecl(AllTD.Items[I]);
             if not (TD.Def is TClassTypeDef) then Continue;
             TDesc := FSymTable.FindType(TD.Name);
             if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -13839,9 +13865,9 @@ begin
           collide across per-unit .o files, so skip them here — the main
           program's AppendProgram emits the authoritative copies. }
         if (not FSuppressSystemDefs) and (not FSystemDefsEmitted) and (FSymTable <> nil) then
-          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          for I := 0 to AllTD.Count - 1 do
           begin
-            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            TD := TTypeDecl(AllTD.Items[I]);
             if TD.Def is TClassTypeDef then
             begin
               EmitLine('function $_FieldCleanup_TObject(l %self) {');
@@ -13904,9 +13930,9 @@ begin
       if FSymTable <> nil then
       begin
         { Interface typeinfo blocks }
-        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        for I := 0 to AllTD.Count - 1 do
         begin
-          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          TD := TTypeDecl(AllTD.Items[I]);
           if TD.Def is TInterfaceTypeDef then
             EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymName(TD.Name) + ' = { l 0 }');
         end;
@@ -13916,9 +13942,9 @@ begin
           on FSystemDefsEmitted.  Skipped in separate-compilation mode
           (FSuppressSystemDefs) — the main program provides these. }
         if (not FSuppressSystemDefs) and (not FSystemDefsEmitted) then
-          for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+          for I := 0 to AllTD.Count - 1 do
           begin
-            TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+            TD := TTypeDecl(AllTD.Items[I]);
             if TD.Def is TClassTypeDef then
             begin
               EmitLine('export data $typeinfo_TObject = { l 0, l 0, l ' +
@@ -13940,9 +13966,9 @@ begin
           end;
 
         { Class typeinfo blocks — full 8-slot layout matching EmitTypeInfoDefs }
-        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        for I := 0 to AllTD.Count - 1 do
         begin
-          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
           CD := TClassTypeDef(TD.Def);
           TDesc := FSymTable.FindType(TD.Name);
@@ -14005,9 +14031,9 @@ begin
           so the abstract class's vtable links even when no subclass
           overrides the method.  Matches EmitVTableDefs behaviour for
           program-level classes. }
-        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        for I := 0 to AllTD.Count - 1 do
         begin
-          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
           TDesc := FSymTable.FindType(TD.Name);
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -14128,9 +14154,9 @@ begin
         end;
 
         { Interface itab and impllist blocks for implementing classes }
-        for I := 0 to AUnit.IntfBlock.TypeDecls.Count - 1 do
+        for I := 0 to AllTD.Count - 1 do
         begin
-          TD := TTypeDecl(AUnit.IntfBlock.TypeDecls.Items[I]);
+          TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
           TDesc := FSymTable.FindType(TD.Name);
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
@@ -14220,6 +14246,9 @@ begin
   finally
     IntfNames.Free();
   end;
+  AllTD.Free();
+  if FSymTable <> nil then
+    FSymTable.DefineOwningUnit := SavedDOU;
 end;
 
 procedure TCodeGenQBE.NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);

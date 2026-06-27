@@ -49,6 +49,18 @@ type
     procedure TestDuplicateExternalAcrossUnits_Compiles;
     procedure TestNativeIncremental_MultiUnitClass_Compiles;
     procedure TestNativeNoIncremental_MultiUnitClass_Compiles;
+    { Regression: a class declared in a unit's IMPLEMENTATION section (not its
+      interface) was rejected at compile and never had its method bodies /
+      typeinfo / vtable / _FieldCleanup emitted — both backends' unit-emission
+      loops only walked IntfBlock.TypeDecls.  The fix registers impl-section
+      types unit-private, analyses their method bodies, and emits them
+      alongside IntfBlock ones. }
+    procedure TestNativeImplSectionClass_Compiles;
+    procedure TestQBEImplSectionClass_Compiles;
+    { Regression: a class declared in unit A's IMPLEMENTATION section must NOT
+      be visible to an unrelated unit B that never `uses` A — it previously
+      leaked through the flat global scope. }
+    procedure TestImplSectionClass_DoesNotLeakCrossUnit;
     { Regression: compiling a UNIT (unit-mode, top source is a `unit`) that
       USES another unit, with the default incremental path, segfaulted — the
       incremental worker setup read Prog.SymbolTable, but in unit-mode Prog is
@@ -623,6 +635,221 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_shapes_ni exit code', 0, Rc);
   AssertEquals('use_shapes_ni stdout', 'shape:box' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestNativeImplSectionClass_Compiles;
+{ A class declared entirely in a unit's IMPLEMENTATION section, used by an
+  interface-exported routine of that unit.  The unit object must emit the
+  class's method bodies, typeinfo, vtable and _FieldCleanup so the call site
+  links.  Native default (incremental) path. }
+const
+  UnitSrc =
+    '''
+    unit ImplCls;
+    interface
+    function MakeAndGet: Integer;
+    implementation
+    type
+      TFoo = class
+        FX: Integer;
+        constructor Create(AX: Integer);
+        function GetX: Integer;
+      end;
+    constructor TFoo.Create(AX: Integer);
+    begin FX := AX end;
+    function TFoo.GetX: Integer;
+    begin Result := FX end;
+    function MakeAndGet: Integer;
+    var F: TFoo;
+    begin
+      F := TFoo.Create(7);
+      Result := F.GetX();
+      F.Free()
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseImplCls;
+    uses ImplCls;
+    begin
+      WriteLn(MakeAndGet())
+    end.
+    ''';
+var
+  UnitPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitPas := FScratch + '/ImplCls.pas';
+  ProgPas := FScratch + '/use_implcls.pas';
+  ProgBin := FScratch + '/use_implcls';
+
+  WriteFile(UnitPas, UnitSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'native',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(use_implcls) exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_implcls exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_implcls exit code', 0, Rc);
+  AssertEquals('use_implcls stdout', '7' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestQBEImplSectionClass_Compiles;
+{ Same as TestNativeImplSectionClass_Compiles but forces the QBE backend —
+  the QBE unit-emission loop (AppendUnit) must also walk ImplBlock classes. }
+const
+  UnitSrc =
+    '''
+    unit ImplClsQ;
+    interface
+    function MakeAndGet: Integer;
+    implementation
+    type
+      TFoo = class
+        FX: Integer;
+        constructor Create(AX: Integer);
+        function GetX: Integer;
+      end;
+    constructor TFoo.Create(AX: Integer);
+    begin FX := AX end;
+    function TFoo.GetX: Integer;
+    begin Result := FX end;
+    function MakeAndGet: Integer;
+    var F: TFoo;
+    begin
+      F := TFoo.Create(7);
+      Result := F.GetX();
+      F.Free()
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseImplClsQ;
+    uses ImplClsQ;
+    begin
+      WriteLn(MakeAndGet())
+    end.
+    ''';
+var
+  UnitPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitPas := FScratch + '/ImplClsQ.pas';
+  ProgPas := FScratch + '/use_implclsq.pas';
+  ProgBin := FScratch + '/use_implclsq';
+
+  WriteFile(UnitPas, UnitSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'qbe',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(use_implclsq) exit code (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_implclsq exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_implclsq exit code', 0, Rc);
+  AssertEquals('use_implclsq stdout', '7' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestImplSectionClass_DoesNotLeakCrossUnit;
+{ A class declared in unit A's IMPLEMENTATION section is private to A.  A second
+  unit B that never `uses` A must NOT see it — referencing it must be a compile
+  error, not a silent success via the flat global scope.  (Both A and B sit on
+  the same unit path, so before the fix B resolved A's impl class by leak.) }
+const
+  UnitASrc =
+    '''
+    unit LeakA;
+    interface
+    procedure Noop;
+    implementation
+    type
+      TPrivate = class
+        V: Integer;
+      end;
+    procedure Noop; begin end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit LeakB;
+    interface
+    function Use: Integer;
+    implementation
+    function Use: Integer;
+    var X: TPrivate;       // LeakB does NOT use LeakA — must be unknown
+    begin
+      X := TPrivate.Create();
+      Result := X.V;
+      X.Free()
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseLeak;
+    uses LeakA, LeakB;
+    begin
+      WriteLn(Use())
+    end.
+    ''';
+var
+  UnitAPas, UnitBPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitAPas := FScratch + '/LeakA.pas';
+  UnitBPas := FScratch + '/LeakB.pas';
+  ProgPas  := FScratch + '/use_leak.pas';
+  ProgBin  := FScratch + '/use_leak';
+
+  WriteFile(UnitAPas, UnitASrc);
+  WriteFile(UnitBPas, UnitBSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'native',
+                   '--unit-path', FScratch], Captured);
+  AssertTrue('compile must FAIL (impl-section class is unit-private), out: '
+             + Captured, Rc <> 0);
+  AssertTrue('error names the unknown type TPrivate, out: ' + Captured,
+             Pos('TPrivate', Captured) >= 0)
 end;
 
 procedure TSepCompileTests.TestNativeIncremental_UnitUsesUnit_Compiles;

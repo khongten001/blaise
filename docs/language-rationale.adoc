@@ -5279,3 +5279,57 @@ docs/inline-asm-design.adoc for the full design and the design patterns applied.
   — `asm` is a reserved word in FPC/Delphi and in the grammar; the codebase had
   a single local variable named `Asm` (renamed), and contextual keywording would
   need parser state the lexer does not have.
+
+== Implementation-section Declarations are Unit-private
+
+=== Decision
+
+A type, class, constant, or routine declared in a unit's `implementation`
+section is visible only inside that unit. It is never visible to a unit or
+program that `uses` the declaring unit, even when both sit on the same unit
+path. Only `interface`-section declarations are exported.
+
+Cross-unit visibility otherwise follows the standard Pascal transitive rule:
+a unit A sees a name from unit C when A `uses` B and B's *interface* section
+`uses` C. Implementation-section `uses` of B are private to B.
+
+=== Rationale
+
+This is the long-standing Pascal/Delphi/FPC contract — the `implementation`
+section is a unit's private body. Honouring it keeps a unit's internal helper
+types from becoming an accidental part of its public surface, so an unrelated
+unit cannot come to depend on them and the author stays free to rename or
+remove them.
+
+Mechanically, the compiler interns every unit's symbols into one shared symbol
+table. An implementation-section symbol is tagged unit-private (`IsImplPrivate`)
+at registration; `TSymbolTable.Lookup` suppresses such a symbol whenever the
+unit currently being analysed is not its owner. The flat-table fallback that
+previously returned any globally-interned symbol — and so leaked
+implementation-section declarations into unrelated units — no longer applies to
+unit-private symbols.
+
+A class declared in the implementation section keeps its symbol reachable at
+code generation (its type metadata — typeinfo, vtable, `_FieldCleanup` — is
+emitted under the owning unit's mangling prefix, identical to an
+interface-section class) by establishing the emitted unit as the symbol-table
+viewing context during code generation. Without that, the suppression would
+also hide the class from its own backend and the unit-qualified symbol names at
+the reference and definition sites would disagree.
+
+=== Alternatives considered
+
+* *Keep the flat-table leak (status quo before this change).* Rejected — it
+  made every interned declaration, including private implementation-section
+  ones, silently visible to every other unit on the path. That is neither the
+  Pascal contract nor sound: it let a class declared in one unit's
+  implementation section resolve inside an unrelated unit that never used it.
+* *Suppress all cross-unit symbols not reachable through `uses` (interface
+  symbols included), enforcing strict Delphi visibility everywhere.* A larger
+  correctness improvement, but it surfaces every pre-existing missing-`uses`
+  in the tree at once (each its own fix). Deferred; only the
+  implementation-section leak — the concrete defect — is closed here.
+* *Give code generation a dedicated per-unit symbol table instead of a viewing
+  context.* Heavier plumbing for the same effect; the analyser already owns one
+  shared table that carries every unit's symbols, so scoping the *view* to the
+  emitted unit is the smaller, sufficient change.

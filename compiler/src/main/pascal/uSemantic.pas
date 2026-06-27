@@ -1637,6 +1637,34 @@ begin
     end;
   end;
 
+  { Register impl-section TYPE declarations BEFORE linking class method bodies,
+    so a class declared in the implementation section has its methods registered
+    in FMethodGroups when LinkClassMethodImpls looks them up (otherwise every
+    impl-section class method reports "not declared in class").
+
+    These are registered in the GLOBAL scope (not the pushed impl scope below)
+    so the type symbols survive to codegen — EmitClassSection / EmitUnit walk
+    the AST TypeDecls but ClassUnitPrefix's symbol Lookup must still find the
+    class to derive its unit-qualified _FieldCleanup/vtable/typeinfo names.
+    Marking them IsImplPrivate (DefineImplPrivate context) keeps them visible
+    only to THIS unit: Lookup suppresses them while any other unit is analysed,
+    so they do not leak into unrelated units through the flat global scope.
+    The unit's own bodies still resolve them via layer 3 (owner = current
+    unit); code generation resolves them by setting the emitted unit as the
+    table's viewing context.
+
+    Only TYPES are hoisted.  Impl-section consts stay in the pushed scope below
+    (layer-1 visible to the unit's own bodies, never global, so they never need
+    suppression); LinkClassMethodImpls needs only the types.  An impl-section
+    type that sizes itself on an impl-section const is not currently supported
+    and would report "Unknown type" — no codebase unit relies on it. }
+  FTable.DefineImplPrivate := True;
+  try
+    AnalyseTypeDecls(AUnit.ImplBlock);
+  finally
+    FTable.DefineImplPrivate := False;
+  end;
+
   { Link class method bodies from ImplBlock to the class type method decls
     registered by AnalyseTypeDecls.  Generic-class linking happened earlier
     so instances can clone bodies at instantiation time. }
@@ -1645,13 +1673,14 @@ begin
   { --- Implementation section -------------------------------------------
     Push a scope so impl-only standalone symbols don't leak globally.
     Class method bodies are analysed inside this scope so they can call
-    impl-only helpers (e.g. TStringList.SetText -> SplitIntoList). }
+    impl-only helpers (e.g. TStringList.SetText -> SplitIntoList).
+    (Impl-section type decls were already processed above.) }
   FTable.PushScope();
   try
-    { Register impl-section global variables — marked IsGlobal so codegen
-      emits them as data-segment slots rather than stack allocations. }
+    { Register impl-section consts + global variables.  Consts stay in this
+      pushed scope (layer-1 visible to the unit's own bodies); globals are
+      marked IsGlobal so codegen emits them as data-segment slots. }
     AnalyseConstDecls(AUnit.ImplBlock);
-    AnalyseTypeDecls(AUnit.ImplBlock);
     AnalyseArrayConstDecls(AUnit.ImplBlock);
     for I := 0 to AUnit.ImplBlock.Decls.Count - 1 do
     begin
@@ -1781,8 +1810,13 @@ begin
       end;
     end;
 
-    { Analyse class method bodies — impl-only helpers now visible above }
+    { Analyse class method bodies — impl-only helpers now visible above.
+      ImplBlock is analysed too so a class declared in the implementation
+      section has its method bodies type-checked (otherwise field/param
+      references inside them carry no ResolvedType and codegen aborts with
+      "no resolved type"). }
     AnalyseMethodBodies(AUnit.IntfBlock);
+    AnalyseMethodBodies(AUnit.ImplBlock);
 
     { Verify every interface declaration has a matching implementation }
     for I := 0 to AUnit.IntfBlock.ProcDecls.Count - 1 do

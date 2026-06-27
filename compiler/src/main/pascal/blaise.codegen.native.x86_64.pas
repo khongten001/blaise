@@ -16763,9 +16763,24 @@ var
   VD:        TVarDecl;
   UnitSym:   TSymbolTable;
   IntfNames: TStringList;
+  EmptyGen:  TObjectList;   { empty generic-instance list for the ImplBlock
+                             second-pass calls (generics are per-unit and were
+                             emitted once with the IntfBlock pass — never
+                             duplicate them). }
+  SavedDOU:  string;        { prior FSymTable.DefineOwningUnit, restored at end }
 begin
   FCurrentUnitName := AUnit.Name;
   FDbgSrcFile := AUnit.SourceFile;
+  { Establish THIS unit as the symbol-table viewing context so that resolving
+    the unit's own implementation-section (IsImplPrivate) types — for
+    ClassSymName mangling and EmitClassSection's FindType — is not suppressed
+    by the cross-unit-leak guard in TSymbolTable.Lookup.  Restored at end. }
+  SavedDOU := '';
+  if FSymTable <> nil then
+  begin
+    SavedDOU := FSymTable.DefineOwningUnit;
+    FSymTable.DefineOwningUnit := AUnit.Name;
+  end;
   { Register the unit's global variables (interface + implementation sections)
     as data slots, mirroring EmitProgram's program-global registration. }
   for I := 0 to AUnit.IntfBlock.Decls.Count - 1 do
@@ -16803,11 +16818,17 @@ begin
       end;
   end;
 
+  EmptyGen := TObjectList.Create(False);   { not owned — borrowed slots only }
+
   { Class / record method bodies declared in the interface block, plus any
     generic class/record instances declared in this unit.  After
     LinkClassMethodImpls the definition's TMethodDecl nodes hold the bodies. }
   Self.EmitClassMethods(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                         AUnit.GenericRecordInstances, AUnit.GenericMethodInstances);
+  { Classes/records declared in the IMPLEMENTATION section: their method bodies
+    are emitted too (generics already covered by the IntfBlock pass above, so
+    pass empty generic lists to avoid re-emitting them). }
+  Self.EmitClassMethods(AUnit.ImplBlock.TypeDecls, EmptyGen, EmptyGen, EmptyGen);
 
   { Array-typed constants from both interface and implementation blocks. }
   Self.EmitArrayConstData(AUnit.IntfBlock, '');
@@ -16878,10 +16899,18 @@ begin
     UnitSym := FSymTable;
   Self.EmitClassSection(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                         UnitSym);
+  { Impl-section classes' typeinfo / vtable / _FieldCleanup (generics already
+    emitted above — empty list here). }
+  Self.EmitClassSection(AUnit.ImplBlock.TypeDecls, EmptyGen, UnitSym);
   { Interface data: typeinfo tokens, itabs, impllists. }
   Self.Emit('.data');
   Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,
                          AUnit.GenericIntfInstances, UnitSym);
+  Self.EmitInterfaceDefs(AUnit.ImplBlock.TypeDecls, EmptyGen, EmptyGen, UnitSym);
+
+  EmptyGen.Free();
+  if FSymTable <> nil then
+    FSymTable.DefineOwningUnit := SavedDOU;
 end;
 
 procedure TX86_64Backend.NoteDepInitUnit(const AUnitName: string;

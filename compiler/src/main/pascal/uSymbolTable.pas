@@ -383,6 +383,14 @@ type
                                 symbols owned by the unit being analysed.  Read
                                 by per-unit visibility and by unit-prefix
                                 mangling on cross-unit references. }
+    IsImplPrivate: Boolean;   { true for a symbol declared in the IMPLEMENTATION
+                                section of its owning unit.  Such a symbol is
+                                visible only inside that unit — never to a used
+                                unit (it is not in the unit's interface) — so
+                                Lookup suppresses it whenever the viewing unit is
+                                not the owner.  Prevents an impl-section class/
+                                type from leaking into an unrelated unit through
+                                the flat global scope. }
     constructor Create(const AName: string; AKind: TSymbolKind; AType: TTypeDesc);
     destructor Destroy; override;
   end;
@@ -494,6 +502,11 @@ type
                                        so semantic-side Define sites don't
                                        each need to thread the unit name. }
 
+    FDefineImplPrivate: Boolean;     { when True, Define()/DefineGlobal() mark the
+                                       symbol IsImplPrivate.  Set by the analyser
+                                       around impl-section type/const registration
+                                       so those symbols stay unit-private. }
+
     function GetCurrentScope: TScope;
     function GetScopeDepth: Integer;
     function NewType(AKind: TTypeKind; const AName: string): TTypeDesc;
@@ -520,6 +533,12 @@ type
       explicit value.  Empty string clears the context. }
     property DefineOwningUnit: string read FDefineOwningUnit
                                        write FDefineOwningUnit;
+
+    { Impl-private context.  When True, Define()/DefineGlobal() mark the symbol
+      IsImplPrivate so it stays visible only to its owning unit.  Set by the
+      analyser around implementation-section type/const registration. }
+    property DefineImplPrivate: Boolean read FDefineImplPrivate
+                                         write FDefineImplPrivate;
 
     { Hook into the analyser's uses-chain lookup.  When non-nil,
       Lookup() consults the chain after pushed scopes and before the
@@ -1849,6 +1868,8 @@ function TSymbolTable.DefineGlobal(ASymbol: TSymbol): Boolean;
 begin
   if (ASymbol.OwningUnit = '') and (FDefineOwningUnit <> '') then
     ASymbol.OwningUnit := FDefineOwningUnit;
+  if FDefineImplPrivate then
+    ASymbol.IsImplPrivate := True;
   Result := TScope(FScopeStack.Items[0]).Define(ASymbol);
 end;
 
@@ -1888,6 +1909,8 @@ begin
   if (ASymbol.OwningUnit = '') and (FDefineOwningUnit <> '')
      and (FScopeStack.Count = 1) then
     ASymbol.OwningUnit := FDefineOwningUnit;
+  if FDefineImplPrivate and (FScopeStack.Count = 1) then
+    ASymbol.IsImplPrivate := True;
   Result := CurrentScope.Define(ASymbol);
 end;
 
@@ -1957,7 +1980,26 @@ begin
   end;
 
   { Layer 6 — whatever the global walk produced earlier (builtins, or
-    flat-merged residue not yet caught above). }
+    flat-merged residue not yet caught above).
+
+    Suppress one specific leak: an IMPLEMENTATION-section symbol of unit A is
+    private to A and must never resolve while a DIFFERENT unit B is being
+    analysed.  Without this, a class declared in A's implementation section
+    leaks into an unrelated B through the flat global scope (the root blocker
+    for "classes in unit implementation section").  Interface symbols are left
+    untouched here so existing transitive-visibility behaviour is unchanged.
+
+    The check only runs while a unit/program is being analysed
+    (FDefineOwningUnit <> '') and the chain walker is not mid-callback; outside
+    analysis (some codegen-side lookups clear FDefineOwningUnit) the residue is
+    returned unchanged so unit-prefix mangling still resolves owned symbols. }
+  if (Sym <> nil) and Sym.IsImplPrivate and (FDefineOwningUnit <> '')
+     and not FBypassUsesChain
+     and not SameText(Sym.OwningUnit, FDefineOwningUnit) then
+  begin
+    Result := nil;
+    Exit;
+  end;
   Result := Sym;
 end;
 
