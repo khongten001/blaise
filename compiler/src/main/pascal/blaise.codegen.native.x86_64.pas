@@ -709,6 +709,15 @@ type
       its xmm register instead of being mis-passed in an integer register. }
     procedure EmitPopMethodArgsToRegs(AParams, AArgs: TObjectList;
       AIntBase: Integer);
+    { Append one SysV slot-class entry per logical argument to AList (1 = float
+      eightbyte → xmm, 0 = integer/pointer eightbyte → integer register).  Open
+      arrays and by-value interfaces occupy two integer slots; a by-value
+      Double/Single occupies one xmm slot; everything else is one integer slot.
+      The receiver/Self slot is NOT added here — callers prepend it as needed.
+      Shared by EmitPopMethodArgsToRegs and EmitMethodOverflowLoad so the
+      classification stays single-sourced. }
+    procedure BuildArgSlotClasses(AParams, AArgs: TObjectList;
+      AList: TList<Integer>);
     { Emit the call for a method whose receiver (Self) is already in %rdi:
       a vtable dispatch when AMD is virtual (VTableSlot >= 0) so the call
       respects polymorphism, otherwise a static callq to AStaticSym.  Used by
@@ -8830,49 +8839,57 @@ begin
     Self.Emit(#9'callq ' + AStaticSym);
 end;
 
-procedure TX86_64Backend.EmitPopMethodArgsToRegs(AParams, AArgs: TObjectList;
-  AIntBase: Integer);
+procedure TX86_64Backend.BuildArgSlotClasses(AParams, AArgs: TObjectList;
+  AList: TList<Integer>);
 var
-  I, NParams, IntIdx, XmmIdx: Integer;
+  I, NParams: Integer;
   P: TMethodParam;
   PT: TTypeDesc;
-  IsFloatSlot: TList<Integer>;  { 1 = float (xmm) slot, 0 = integer slot,
-                                  in stack-slot order (slot 0 pushed first) }
-  Dest: TStringList;            { target register per slot, parallel to above }
-  Slots: Integer;
 begin
   { Determine the param backing each logical arg.  AParams may be nil (no
     declared params): then every arg is a plain integer slot. }
   NParams := 0;
   if AParams <> nil then NParams := AParams.Count;
 
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    P := nil;
+    if I < NParams then P := TMethodParam(AParams.Items[I]);
+    PT := nil;
+    if P <> nil then PT := P.ResolvedType;
+    if (PT = nil) and (TASTExpr(AArgs.Items[I]).ResolvedType <> nil) then
+      PT := TASTExpr(AArgs.Items[I]).ResolvedType;
+    if (P <> nil) and P.IsOpenArray then
+    begin
+      AList.Add(0);  AList.Add(0);   { ptr + high }
+    end
+    else if (PT <> nil) and (PT.Kind = tyInterface) and
+            ((P = nil) or not P.IsVarParam) then
+    begin
+      AList.Add(0);  AList.Add(0);   { obj + itab }
+    end
+    else if IsFloatFamily(PT) and ((P = nil) or
+            (not P.IsVarParam and not P.IsOpenArray)) then
+      AList.Add(1)                   { float scalar -> xmm }
+    else
+      AList.Add(0);                  { integer/ptr scalar }
+  end;
+end;
+
+procedure TX86_64Backend.EmitPopMethodArgsToRegs(AParams, AArgs: TObjectList;
+  AIntBase: Integer);
+var
+  I, IntIdx, XmmIdx: Integer;
+  IsFloatSlot: TList<Integer>;  { 1 = float (xmm) slot, 0 = integer slot,
+                                  in stack-slot order (slot 0 pushed first) }
+  Dest: TStringList;            { target register per slot, parallel to above }
+  Slots: Integer;
+begin
   IsFloatSlot := TList<Integer>.Create();
   Dest := TStringList.Create();
   try
     { Forward pass: one entry per stack slot, in push order (slot 0 first). }
-    for I := 0 to AArgs.Count - 1 do
-    begin
-      P := nil;
-      if I < NParams then P := TMethodParam(AParams.Items[I]);
-      PT := nil;
-      if P <> nil then PT := P.ResolvedType;
-      if (PT = nil) and (TASTExpr(AArgs.Items[I]).ResolvedType <> nil) then
-        PT := TASTExpr(AArgs.Items[I]).ResolvedType;
-      if (P <> nil) and P.IsOpenArray then
-      begin
-        IsFloatSlot.Add(0);  IsFloatSlot.Add(0);   { ptr + high }
-      end
-      else if (PT <> nil) and (PT.Kind = tyInterface) and
-              ((P = nil) or not P.IsVarParam) then
-      begin
-        IsFloatSlot.Add(0);  IsFloatSlot.Add(0);   { obj + itab }
-      end
-      else if IsFloatFamily(PT) and ((P = nil) or
-              (not P.IsVarParam and not P.IsOpenArray)) then
-        IsFloatSlot.Add(1)                          { float scalar -> xmm }
-      else
-        IsFloatSlot.Add(0);                         { integer/ptr scalar }
-    end;
+    Self.BuildArgSlotClasses(AParams, AArgs, IsFloatSlot);
 
     { Assign a register to each slot in forward order: integers consume the
       SysV integer registers from AIntBase, floats consume xmm0.. — the two
@@ -8966,40 +8983,17 @@ end;
 function TX86_64Backend.EmitMethodOverflowLoad(AParams, AArgs: TObjectList;
   AAllocSz: Integer): Integer;
 var
-  I, NParams, IntIdx, XmmIdx, SlotOff: Integer;
-  P: TMethodParam;
-  PT: TTypeDesc;
+  I, IntIdx, XmmIdx, SlotOff: Integer;
   IsFloatSlot: TList<Integer>;   { per flat slot (slot 0 = Self): 1 = xmm }
   OverflowOffs: TList<Integer>;  { source offsets of integer-overflow slots }
   RK, RSrc, RDst, OverflowBytes: Integer;
 begin
-  NParams := 0;
-  if AParams <> nil then NParams := AParams.Count;
-
   IsFloatSlot := TList<Integer>.Create();
   OverflowOffs := TList<Integer>.Create();
   try
-    { Slot 0 = Self/receiver — always integer. }
+    { Slot 0 = Self/receiver — always integer.  The per-arg slots follow. }
     IsFloatSlot.Add(0);
-    for I := 0 to AArgs.Count - 1 do
-    begin
-      P := nil;
-      if I < NParams then P := TMethodParam(AParams.Items[I]);
-      PT := nil;
-      if P <> nil then PT := P.ResolvedType;
-      if (PT = nil) and (TASTExpr(AArgs.Items[I]).ResolvedType <> nil) then
-        PT := TASTExpr(AArgs.Items[I]).ResolvedType;
-      if (P <> nil) and P.IsOpenArray then
-      begin IsFloatSlot.Add(0); IsFloatSlot.Add(0); end
-      else if (PT <> nil) and (PT.Kind = tyInterface) and
-              ((P = nil) or not P.IsVarParam) then
-      begin IsFloatSlot.Add(0); IsFloatSlot.Add(0); end
-      else if IsFloatFamily(PT) and ((P = nil) or
-              (not P.IsVarParam and not P.IsOpenArray)) then
-        IsFloatSlot.Add(1)
-      else
-        IsFloatSlot.Add(0);
-    end;
+    Self.BuildArgSlotClasses(AParams, AArgs, IsFloatSlot);
 
     { Load register-bound slots; record integer-overflow slot offsets.  Self is
       integer register 0 (%rdi); arg integers continue from index 1. }
