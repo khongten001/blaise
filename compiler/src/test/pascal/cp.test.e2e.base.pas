@@ -107,6 +107,10 @@ type
     procedure AssertRunsOnOne(ABackend: TBackend; const AName, ASrc,
                             AExpectedOut: string; AExpectedCode: Integer);
     function  RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
+    { Native-backend twin of RunUnderValgrind: compile ASrc with the NATIVE
+      codegen, link, and run under valgrind.  Needed to detect native-only
+      use-after-free/leak bugs that the QBE-only RunUnderValgrind cannot see. }
+    function  RunUnderValgrindNative(const ASrc: string; out ALog: string): Boolean;
     function  CompileAndRunWithRTL(const ASrc: string;
                                    out AStdout: string;
                                    out AExitCode: Integer): Boolean; overload;
@@ -540,6 +544,53 @@ begin
 
   Rc := RunProc('valgrind',
     ['--error-exitcode=99', '--leak-check=full', '--quiet', BinFile], ALog);
+  Result := Rc = 0
+end;
+
+function TE2ETestCase.RunUnderValgrindNative(const ASrc: string; out ALog: string): Boolean;
+var
+  Lexer:    TLexer;
+  Parser:   TParser;
+  Prog:     TProgram;
+  Semantic: TSemanticAnalyser;
+  NCG:      TCodeGenNative;
+  CG:       ICodeGen;
+  Asm_:     string;
+  AsmFile:  string;
+  BinFile:  string;
+  ToolOut:  string;
+  Rc:       Integer;
+begin
+  Result := False;
+  ALog   := '';
+  Inc(FCounter);
+  AsmFile := FScratch + '/vgn' + IntToStr(FCounter) + '.s';
+  BinFile := FScratch + '/vgn' + IntToStr(FCounter);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil; CG := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
+    Semantic.Analyse(Prog);
+    NCG      := TCodeGenNative.Create();
+    NCG.SetTarget(HostTarget());
+    CG       := NCG;            { ARC-managed; released at scope exit }
+    CG.Generate(Prog);
+    Asm_     := CG.GetOutput()
+  finally
+    Semantic.Free(); Prog.Free(); Parser.Free(); Lexer.Free()
+  end;
+
+  WriteFile(AsmFile, Asm_);
+  Rc := LinkWithRTL(AsmFile, BinFile, ToolOut);
+  if Rc <> 0 then begin ALog := 'cc failed: ' + ToolOut; Exit end;
+
+  { --error-exitcode=99: any invalid read/write (the use-after-free) makes
+    valgrind exit non-zero even when the program does not itself crash. }
+  Rc := RunProc('valgrind',
+    ['--error-exitcode=99', '--leak-check=no', '--quiet', BinFile], ALog);
   Result := Rc = 0
 end;
 

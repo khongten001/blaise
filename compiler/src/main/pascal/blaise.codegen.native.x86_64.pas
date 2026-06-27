@@ -7352,6 +7352,25 @@ begin
       Self.EmitLoadVar('(%rcx)', FAE.FieldInfo.TypeDesc);
     if NativeExprOwnsRef(FAE.Base) then
     begin
+      { The loaded field value is borrowed from the transient base we are about
+        to release.  If that value is itself a managed class reference, it
+        aliases INTO the transient's owned object graph: releasing the transient
+        runs _FieldCleanup on it, which releases (and frees) the very object the
+        loaded pointer designates — leaving the result dangling for the rest of
+        the chain (e.g. MakeIt().A.B.Method(): freeing the MakeIt() transient
+        frees A, whose cleanup frees B, before B's method runs).  Pin the result
+        with an AddRef first so the cleanup's matching release nets out and the
+        object survives the chain.  This intentionally leaks +1 on the result
+        (the same deep-chain transient leak the QBE backend has — see bugs.txt);
+        a crash is the worse failure, so correctness wins until the chain gains
+        a deferred-release mechanism. }
+      if FAE.FieldInfo.TypeDesc.Kind in [tyClass, tyInterface] then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'pushq %rax');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.Emit(#9'popq %rax');
+      end;
       Self.Emit(#9'popq %rdi');
       Self.Emit(#9'pushq %rax');
       Self.Emit(#9'callq _ClassRelease');
