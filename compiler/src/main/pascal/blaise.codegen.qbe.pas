@@ -13382,43 +13382,10 @@ begin
 end;
 
 function TCodeGenQBE.QBEMangle(const AName: string): string;
-var
-  I: Integer;
-  C: Integer;
-  Clean: Boolean;
 begin
-  { Fast path: the overwhelming majority of names contain none of the
-    mangled characters — return the input unchanged instead of rebuilding
-    it with one concat (and its ARC churn) per character. }
-  Clean := True;
-  for I := 0 to Length(AName) - 1 do
-  begin
-    C := StrAt(AName, I);
-    if (C = 60) or (C = 62) or (C = 44) or (C = 36) or (C = 64) or
-       (C = 94) or (C = 32) then
-    begin
-      Clean := False;
-      break;
-    end;
-  end;
-  if Clean then
-    Exit(AName);
-  Result := '';
-  for I := 0 to Length(AName) - 1 do
-  begin
-    C := StrAt(AName, I);
-    case C of
-      60:  Result := Result + '_';    { '<' }
-      62:  ;                          { '>' — skip }
-      44:  Result := Result + '_';    { ',' }
-      32:  Result := Result + '_';    { ' ' — e.g. 'class of T' }
-      36:  Result := Result + '_D_';  { '$' — overload delimiter }
-      64:  Result := Result + '_V_';  { '@' — var-param prefix }
-      94:  Result := Result + '_P_';  { '^' — pointer prefix }
-    else
-      Result := Result + Chr(C);
-    end;
-  end;
+  { Delegates to the shared backend-neutral mangler in blaise.codegen
+    (formerly a per-character twin of the native backend's NativeMangle). }
+  Result := CodegenMangle(AName);
 end;
 
 function TCodeGenQBE.MethodEmitName(AMDecl: TMethodDecl;

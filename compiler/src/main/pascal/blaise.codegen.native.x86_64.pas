@@ -1670,25 +1670,10 @@ end;
 { Mangle a name for use as an assembly label: replace characters that are
   invalid in label names with underscores, matching QBE backend's QBEMangle. }
 function NativeMangle(const AName: string): string;
-var
-  I, C: Integer;
 begin
-  Result := '';
-  for I := 0 to Length(AName) - 1 do
-  begin
-    C := Ord(AName[I]);
-    case C of
-      60: Result := Result + '_';    { '<' }
-      62: ;                          { '>' — skip }
-      44: Result := Result + '_';    { ',' }
-      32: Result := Result + '_';    { ' ' — e.g. 'class of T' }
-      36: Result := Result + '_D_';  { '$' }
-      64: Result := Result + '_V_';  { '@' }
-      94: Result := Result + '_P_';  { '^' }
-    else
-      Result := Result + Chr(C);
-    end;
-  end;
+  { Delegates to the shared backend-neutral mangler in blaise.codegen
+    (formerly a per-character twin of the QBE backend's QBEMangle). }
+  Result := CodegenMangle(AName);
 end;
 
 function TX86_64Backend.ClassSymName(const AClassName: string): string;

@@ -27,7 +27,7 @@ unit blaise.codegen;
 interface
 
 uses
-  uAST, uSymbolTable, uDebugFacts, blaise.codegen.target;
+  uAST, uSymbolTable, uDebugFacts, blaise.codegen.target, uStrCompat;
 
 type
   TRecReturnClass = (
@@ -132,6 +132,13 @@ function RecretClassify(ARec: TRecordTypeDesc;
   is single-sourced here and both backends call it (formerly the byte-identical
   twins ExprOwnsRef / NativeExprOwnsRef). }
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
+
+{ Mangle a Blaise symbol name into an assembler-legal identifier, shared by
+  both backends (formerly QBEMangle / NativeMangle).  Replaces the generic/
+  overload metacharacters '<' ',' ' ' -> '_', drops '>', and maps the type-code
+  sigils '$' '@' '^' to '_D_' '_V_' '_P_'.  A clean name (no metacharacter) is
+  returned unchanged via a fast pre-scan that avoids per-character concat. }
+function CodegenMangle(const AName: string): string;
 
 implementation
 
@@ -354,6 +361,45 @@ begin
        (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead <> nil) and
        (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead.ReadMethod <> '') then
       Result := True;
+  end;
+end;
+
+function CodegenMangle(const AName: string): string;
+var
+  I, C: Integer;
+  Clean: Boolean;
+begin
+  { Fast path: the overwhelming majority of names contain none of the mangled
+    characters — return the input unchanged instead of rebuilding it with one
+    concat (and its ARC churn) per character. }
+  Clean := True;
+  for I := 0 to Length(AName) - 1 do
+  begin
+    C := StrAt(AName, I);
+    if (C = 60) or (C = 62) or (C = 44) or (C = 36) or (C = 64) or
+       (C = 94) or (C = 32) then
+    begin
+      Clean := False;
+      break;
+    end;
+  end;
+  if Clean then
+    Exit(AName);
+  Result := '';
+  for I := 0 to Length(AName) - 1 do
+  begin
+    C := StrAt(AName, I);
+    case C of
+      60:  Result := Result + '_';    { '<' }
+      62:  ;                          { '>' — skip }
+      44:  Result := Result + '_';    { ',' }
+      32:  Result := Result + '_';    { ' ' — e.g. 'class of T' }
+      36:  Result := Result + '_D_';  { '$' — overload delimiter }
+      64:  Result := Result + '_V_';  { '@' — var-param prefix }
+      94:  Result := Result + '_P_';  { '^' — pointer prefix }
+    else
+      Result := Result + Chr(C);
+    end;
   end;
 end;
 
