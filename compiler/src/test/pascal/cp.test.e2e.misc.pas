@@ -81,6 +81,17 @@ type
 
     { Nested procedures }
     procedure TestRun_NestedProc_MutatesCapturedVar;
+    { Nested proc captures an outer VAR RECORD PARAMETER (read + write through
+      the var-param fields).  Previously the nested proc emitted the parameter
+      as a global symbol reference and the program failed to link / ran wrong. }
+    procedure TestRun_NestedProc_CapturesVarRecordParam;
+    { Nested proc captures an outer plain LOCAL record (field read + write). }
+    procedure TestRun_NestedProc_CapturesLocalRecord;
+    { Nested proc captures an outer VAR ARRAY PARAMETER (element read + write).
+      The captured var-param array slot is reached through the _cap_ pointer
+      with one extra dereference; without it the element address resolved to a
+      global symbol and the writes/reads hit the wrong storage. }
+    procedure TestRun_NestedProc_CapturesVarArrayParam;
 
     { Diamond operator: TFoo<> infers type args from LHS }
     procedure TestRun_Diamond_SingleArg_WorksAtRuntime;
@@ -994,6 +1005,85 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('x=5, inner mutates to 15, outer sees 15',
     '5' + LE + '15' + LE + '15' + LE, Output);
+end;
+
+procedure TE2EMiscTests.TestRun_NestedProc_CapturesVarRecordParam;
+const
+  Src =
+    '''
+        program Prg;
+        type TRec = record A, B: Integer; end;
+        procedure Outer(var R: TRec);
+          procedure Inner;
+          var Sum: Integer;
+          begin
+            Sum := R.A + R.B;
+            R.A := Sum;
+            R.B := Sum * 2
+          end;
+        begin
+          Inner
+        end;
+        var Rec: TRec;
+        begin
+          Rec.A := 3; Rec.B := 4;
+          Outer(Rec);
+          WriteLn(IntToStr(Rec.A), ' ', IntToStr(Rec.B))
+        end.
+        ''';
+begin
+  AssertRunsOnAll(Src, '7 14' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_NestedProc_CapturesLocalRecord;
+const
+  Src =
+    '''
+        program Prg;
+        type TRec = record A, B: Integer; end;
+        procedure Outer;
+        var R: TRec;
+          procedure Inner;
+          begin
+            R.A := R.A + 10;
+            R.B := R.B + 20
+          end;
+        begin
+          R.A := 1; R.B := 2;
+          Inner;
+          WriteLn(IntToStr(R.A), ' ', IntToStr(R.B))
+        end;
+        begin
+          Outer
+        end.
+        ''';
+begin
+  AssertRunsOnAll(Src, '11 22' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_NestedProc_CapturesVarArrayParam;
+const
+  Src =
+    '''
+        program Prg;
+        type TArr = array[0..2] of Integer;
+        procedure Outer(var A: TArr);
+          procedure Inner;
+          begin
+            A[0] := 10; A[1] := 20; A[2] := A[0] + A[1]
+          end;
+        begin
+          Inner
+        end;
+        var Ar: TArr;
+        begin
+          Ar[0] := 0; Ar[1] := 0; Ar[2] := 0;
+          Outer(Ar);
+          WriteLn(IntToStr(Ar[0]), ' ', IntToStr(Ar[1]), ' ', IntToStr(Ar[2]))
+        end.
+        ''';
+begin
+  AssertRunsOnAll(Src, '10 20 30' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_Diamond_SingleArg_WorksAtRuntime;

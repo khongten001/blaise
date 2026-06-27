@@ -239,7 +239,11 @@ type
     procedure AnalyseStandaloneDecls(ABlock: TBlock);
     procedure AnalyseStandaloneBodies(ABlock: TBlock);
     procedure AnalyseStandaloneDecl(ADecl: TMethodDecl);
-    procedure CollectCaptures(ADecl: TMethodDecl; AOuterBlock: TBlock);
+    procedure CollectCaptures(ADecl: TMethodDecl; AOuterDecl: TMethodDecl);
+    { Add AName to ADecl.CapturedVars if it names an enclosing variable
+      (member of AOuterVars) not already recorded. }
+    procedure MaybeCaptureName(ADecl: TMethodDecl; AOuterVars: TStringList;
+                               const AName: string);
     { Inlining: after bodies are analysed, mark each TMethodDecl whose body
       qualifies for codegen-side inlining.  Conservative: primitive params
       + return + locals only; no try/loops/raise/nested defs; small body.
@@ -6275,7 +6279,7 @@ begin
       { After analysing the body, determine which outer-scope variables are
         captured by any nested proc declared inside this one. }
       if ADecl.EnclosingDecl <> nil then
-        CollectCaptures(ADecl, ADecl.EnclosingDecl.Body);
+        CollectCaptures(ADecl, ADecl.EnclosingDecl);
     end;
   finally
     Dec(FScopeDepth);
@@ -6302,11 +6306,24 @@ begin
   end;
 end;
 
-procedure TSemanticAnalyser.CollectCaptures(ADecl: TMethodDecl; AOuterBlock: TBlock);
-{ Walk ADecl's body statements/expressions to find all TIdentExpr nodes whose
-  name matches a variable declared in AOuterBlock (the enclosing proc's locals).
-  Each such variable is "captured": ADecl will receive an implicit hidden
-  var-by-pointer parameter, and the call site will pass the variable's address. }
+procedure TSemanticAnalyser.MaybeCaptureName(ADecl: TMethodDecl;
+  AOuterVars: TStringList; const AName: string);
+begin
+  if AName = '' then Exit;
+  if AOuterVars.IndexOf(AName) < 0 then Exit;
+  if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.IndexOf(AName) >= 0) then
+    Exit;
+  if ADecl.CapturedVars = nil then
+    ADecl.CapturedVars := TStringList.Create();
+  ADecl.CapturedVars.Add(AName);
+end;
+
+procedure TSemanticAnalyser.CollectCaptures(ADecl: TMethodDecl; AOuterDecl: TMethodDecl);
+{ Walk ADecl's body statements/expressions to find every reference to a variable
+  belonging to the enclosing proc AOuterDecl — its locals AND its parameters
+  (a `var` record parameter captured by a nested proc is the case that broke
+  before).  Each such name is "captured": ADecl receives an implicit hidden
+  var-by-pointer parameter, and the call site passes the variable's address. }
 var
   OuterVars: TStringList;
   I, J:      Integer;
@@ -6318,21 +6335,31 @@ var
   CurStmt:   TASTStmt;
 begin
   if ADecl.Body = nil then Exit;
+  if AOuterDecl = nil then Exit;
 
   OuterVars := TStringList.Create();
   TodoExprs := TObjectList.Create(False);
   TodoStmts := TObjectList.Create(False);
   try
-    { Build set of outer-block local variable names }
-    for I := 0 to AOuterBlock.Decls.Count - 1 do
-    begin
-      VDecl := TVarDecl(AOuterBlock.Decls.Items[I]);
-      for J := 0 to VDecl.Names.Count - 1 do
+    { Build the set of enclosing names: the outer proc's local var decls ... }
+    if AOuterDecl.Body <> nil then
+      for I := 0 to AOuterDecl.Body.Decls.Count - 1 do
       begin
-        VName := VDecl.Names.Strings[J];
-        if OuterVars.IndexOf(VName) < 0 then
-          OuterVars.Add(VName);
+        VDecl := TVarDecl(AOuterDecl.Body.Decls.Items[I]);
+        for J := 0 to VDecl.Names.Count - 1 do
+        begin
+          VName := VDecl.Names.Strings[J];
+          if OuterVars.IndexOf(VName) < 0 then
+            OuterVars.Add(VName);
+        end;
       end;
+    { ... and the outer proc's PARAMETERS (value, var, out — all capturable;
+      a captured var-param carries a pointer, handled by codegen). }
+    for I := 0 to AOuterDecl.Params.Count - 1 do
+    begin
+      VName := TMethodParam(AOuterDecl.Params.Items[I]).ParamName;
+      if OuterVars.IndexOf(VName) < 0 then
+        OuterVars.Add(VName);
     end;
     if OuterVars.Count = 0 then Exit;
 
@@ -6354,18 +6381,29 @@ begin
         begin
           { LHS name — check if it's an outer var (direct assign) }
           if TAssignment(CurStmt).ImplicitSelfField = nil then
-          begin
-            VName := TAssignment(CurStmt).Name;
-            if (OuterVars.IndexOf(VName) >= 0) and
-               ((ADecl.CapturedVars = nil) or
-                (ADecl.CapturedVars.IndexOf(VName) < 0)) then
-            begin
-              if ADecl.CapturedVars = nil then
-                ADecl.CapturedVars := TStringList.Create();
-              ADecl.CapturedVars.Add(VName);
-            end;
-          end;
+            MaybeCaptureName(ADecl, OuterVars, TAssignment(CurStmt).Name);
           TodoExprs.Add(TAssignment(CurStmt).Expr);
+        end
+        else if CurStmt is TFieldAssignment then
+        begin
+          { 'R.Field := ...' — the receiver R may be an outer var/var-param.
+            (Implicit-Self writes have RecordName naming a field of Self, not an
+            outer var; those resolve through Self, never captured.) }
+          if not TFieldAssignment(CurStmt).IsImplicitSelf then
+            MaybeCaptureName(ADecl, OuterVars, TFieldAssignment(CurStmt).RecordName);
+          TodoExprs.Add(TFieldAssignment(CurStmt).ObjExpr);
+          TodoExprs.Add(TFieldAssignment(CurStmt).PropIndexExpr);
+          TodoExprs.Add(TFieldAssignment(CurStmt).Expr);
+        end
+        else if CurStmt is TStaticSubscriptAssign then
+        begin
+          { 'A[i] := ...' — the array A may be an outer var/var-param.
+            (Implicit-Self array writes resolve through Self.) }
+          if not TStaticSubscriptAssign(CurStmt).IsImplicitSelf then
+            MaybeCaptureName(ADecl, OuterVars, TStaticSubscriptAssign(CurStmt).ArrayName);
+          TodoExprs.Add(TStaticSubscriptAssign(CurStmt).BaseExpr);
+          TodoExprs.Add(TStaticSubscriptAssign(CurStmt).IndexExpr);
+          TodoExprs.Add(TStaticSubscriptAssign(CurStmt).ValueExpr);
         end
         else if CurStmt is TProcCall then
         begin
@@ -6415,16 +6453,22 @@ begin
         if CurExpr = nil then Continue;
 
         if CurExpr is TIdentExpr then
+          MaybeCaptureName(ADecl, OuterVars, TIdentExpr(CurExpr).Name)
+        else if CurExpr is TFieldAccessExpr then
         begin
-          VName := TIdentExpr(CurExpr).Name;
-          if (OuterVars.IndexOf(VName) >= 0) and
-             ((ADecl.CapturedVars = nil) or
-              (ADecl.CapturedVars.IndexOf(VName) < 0)) then
-          begin
-            if ADecl.CapturedVars = nil then
-              ADecl.CapturedVars := TStringList.Create();
-            ADecl.CapturedVars.Add(VName);
-          end;
+          { 'R.Field' read — the base R may be an outer var/var-param.  When the
+            base is a sub-expression (chain), descend; when it is a bare name,
+            capture it. }
+          if TFieldAccessExpr(CurExpr).Base <> nil then
+            TodoExprs.Add(TFieldAccessExpr(CurExpr).Base)
+          else
+            MaybeCaptureName(ADecl, OuterVars, TFieldAccessExpr(CurExpr).RecordName);
+          TodoExprs.Add(TFieldAccessExpr(CurExpr).PropIndexExpr);
+        end
+        else if CurExpr is TStringSubscriptExpr then
+        begin
+          TodoExprs.Add(TStringSubscriptExpr(CurExpr).StrExpr);
+          TodoExprs.Add(TStringSubscriptExpr(CurExpr).IndexExpr);
         end
         else if CurExpr is TBinaryExpr then
         begin

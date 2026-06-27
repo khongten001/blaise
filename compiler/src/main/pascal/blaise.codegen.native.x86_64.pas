@@ -278,6 +278,10 @@ type
     { True when AName is a captured outer-scope variable in the current
       nested function (accessed via an implicit pointer param). }
     function IsCaptured(const AName: string): Boolean;
+    { Load a variable's base (address or stored value) into ADstReg, handling
+      local / global / nested-captured variables uniformly. }
+    procedure EmitVarBaseToReg(const AName: string; AWantAddress: Boolean;
+                               const ADstReg: string);
     { True when AName is a slot in the current function frame. }
     function IsLocal(const AName: string): Boolean;
     { The AT&T operand addressing AName: "-N(%rbp)" for a frame local,
@@ -3643,6 +3647,43 @@ begin
   Result := (FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0);
 end;
 
+procedure TX86_64Backend.EmitVarBaseToReg(const AName: string;
+  AWantAddress: Boolean; const ADstReg: string);
+{ Load the base of the variable AName into ADstReg, handling locals, globals
+  and variables CAPTURED from an enclosing proc uniformly.
+
+  AWantAddress = True  -> ADstReg receives the ADDRESS of the variable's own
+                          storage (what `leaq` / EmitVarAddr would give for a
+                          local; the record base for a plain-record variable).
+  AWantAddress = False -> ADstReg receives the VALUE stored in the variable
+                          (one dereference; e.g. the pointer held by a
+                          var-param or class slot).
+
+  A captured variable is reached through its hidden `_cap_<Name>` pointer slot,
+  which holds the ADDRESS of the enclosing variable's storage — exactly the
+  AWantAddress=True result.  For AWantAddress=False one further load yields the
+  stored value, mirroring the local case. }
+begin
+  if Self.IsCaptured(AName) then
+  begin
+    Self.Emit(Format(#9'movq %s, %s',
+      [Self.VarOperand('_cap_' + AName), ADstReg]));
+    if not AWantAddress then
+      Self.Emit(Format(#9'movq (%s), %s', [ADstReg, ADstReg]));
+  end
+  { sret Result: its slot holds the caller's record buffer POINTER, so the
+    "address of the record" is the stored value, not a leaq of the slot.
+    (A captured name is never Result, so this follows the capture branch.) }
+  else if FSretFunc and SameText(AName, 'Result') then
+    Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand('Result'), ADstReg]))
+  else if AWantAddress then
+    Self.EmitVarAddr(AName, ADstReg)
+  else if Self.IsLocal(AName) then
+    Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AName), ADstReg]))
+  else
+    Self.Emit(Format(#9'movq %s(%%rip), %s', [AName, ADstReg]));
+end;
+
 function TX86_64Backend.IsLocal(const AName: string): Boolean;
 begin
   Result := (FFrame <> nil) and FFrame.ContainsKey(AName);
@@ -4223,23 +4264,20 @@ begin
     else if FAE.IsClassAccess or FAE.IsVarParam then
     begin
       { Class variable / var-param: the slot holds a POINTER — load it. }
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rdx');
       if FAE.IsClassAccess and FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rdx), %rdx');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      { The slot IS the record for an ordinary local, but holds a POINTER for
-        the sret-function Result — EmitLocalRecordBase loads vs leaq-s
-        accordingly.  Without this, SetLength(Result.DynField, N) and other
-        l-value field slots in an sret function added the field offset to the
-        address of the pointer slot instead of to the pointed-to record. }
-      Self.EmitLocalRecordBase(FAE.RecordName, '%rdx')
     else
-      Self.EmitLeaqGlobal(FAE.RecordName, '%rdx');
+      { Plain value record: take the address of its storage.  For an ordinary
+        local the slot IS the record; for the sret Result the slot holds the
+        buffer POINTER; for a nested-captured record the _cap_ slot holds the
+        record's address — EmitVarBaseToReg(AWantAddress=True) handles all
+        three.  Without this, SetLength(Result.DynField, N) and other l-value
+        field slots in an sret function added the field offset to the address
+        of the pointer slot instead of to the pointed-to record. }
+      Self.EmitVarBaseToReg(FAE.RecordName, True, '%rdx');
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
     Exit;
@@ -4613,7 +4651,7 @@ begin
     end
     else
     begin
-      Self.EmitVarAddr(FAE.RecordName, '%rdx');
+      Self.EmitVarBaseToReg(FAE.RecordName, True, '%rdx');
     end;
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
@@ -5368,6 +5406,14 @@ begin
     begin
       if FSretFunc and (TIdentExpr(AExpr).Name = 'Result') then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
+      else if Self.IsCaptured(TIdentExpr(AExpr).Name) then
+        { Captured outer record/static-array: the _cap_ slot holds the address
+          of the enclosing variable's storage.  For a captured plain local that
+          IS the aggregate address (AWantAddress=True); for a captured var/out
+          param the enclosing slot holds the caller's pointer, so one extra
+          dereference (AWantAddress=False) yields the aggregate address. }
+        Self.EmitVarBaseToReg(TIdentExpr(AExpr).Name,
+          TIdentExpr(AExpr).ParamMode = pmNone, '%rax')
       else if Self.IsLocal(TIdentExpr(AExpr).Name) and
               (TIdentExpr(AExpr).ParamMode <> pmNone) then
         { Any param mode: the slot holds the record/array ADDRESS (value
@@ -7041,10 +7087,7 @@ begin
       if NativeExprOwnsRef(FAE.Base) then
         Self.Emit(#9'pushq %rax');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
-    else
-      Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+    else Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
     Self.Emit(#9'movq (%rax), %rax');
     Self.Emit(#9'movq (%rax), %rax');
     Self.Emit(#9'movq 16(%rax), %rax');
@@ -7069,10 +7112,7 @@ begin
       if NativeExprOwnsRef(FAE.Base) then
         Self.Emit(#9'pushq %rax');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
-    else
-      Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+    else Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
     Self.Emit(#9'movq (%rax), %rax');
     Self.Emit(#9'movq (%rax), %rax');
     if (FAE.Base <> nil) and NativeExprOwnsRef(FAE.Base) then
@@ -7111,10 +7151,7 @@ begin
     end
     else
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rdi');
       if FAE.IsClassAccess and FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rdi), %rdi');
@@ -7172,18 +7209,12 @@ begin
     end
     else if FAE.IsClassAccess or FAE.IsVarParam then
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
       if FAE.IsClassAccess and FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rcx), %rcx');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
-    else
-      Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
+    else Self.EmitVarBaseToReg(FAE.RecordName, True, '%rcx');
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
     Self.Emit(#9'movq (%rcx), %rcx');      { string data pointer }
@@ -7222,18 +7253,12 @@ begin
     begin
       { Class variable / var-param: the slot holds a POINTER to the object
         or record — load it. }
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
       if FAE.IsClassAccess and FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rcx), %rcx');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
-    else
-      Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
+    else Self.EmitVarBaseToReg(FAE.RecordName, True, '%rcx');
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
     if FAE.FieldInfo.TypeDesc.Kind = tyDynArray then
@@ -7376,10 +7401,7 @@ begin
     end
     else if FAE.IsClassAccess then
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
       if FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rcx), %rcx');
@@ -7392,10 +7414,7 @@ begin
     end
     else if FAE.IsVarParam then
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
       if (IsJumboSet(FAE.FieldInfo.TypeDesc) or
          (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray])) then
         Self.Emit(Format(#9'leaq %d(%%rcx), %%rax', [FAE.FieldInfo.Offset]))
@@ -7403,53 +7422,35 @@ begin
         Self.EmitLoadVar(Format('%d(%%rcx)', [FAE.FieldInfo.Offset]),
           FAE.FieldInfo.TypeDesc);
     end
-    else if Self.IsLocal(FAE.RecordName) then
-    begin
-      if (IsJumboSet(FAE.FieldInfo.TypeDesc) or
-         (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray])) then
-      begin
-        Self.EmitLocalRecordBase(FAE.RecordName, '%rcx');
-        if FAE.FieldInfo.Offset = 0 then
-          Self.Emit(#9'movq %rcx, %rax')
-        else
-          Self.Emit(Format(#9'leaq %d(%%rcx), %%rax', [FAE.FieldInfo.Offset]));
-      end
-      else
-      begin
-        { Route through EmitLocalRecordBase for BOTH offset 0 and > 0: for the
-          sret-function Result the slot holds the caller-buffer POINTER, so the
-          field must be read indirectly (movq slot -> %rcx; load N(%rcx)).  The
-          old offset-0 fast path read the slot directly, which for sret Result
-          read the pointer value as the field (Result.K = const always false). }
-        Self.EmitLocalRecordBase(FAE.RecordName, '%rcx');
-        Self.EmitLoadVar(Format('%d(%%rcx)', [FAE.FieldInfo.Offset]),
-          FAE.FieldInfo.TypeDesc);
-      end;
-    end
+    else if (not Self.IsCaptured(FAE.RecordName)) and
+            (not (FSretFunc and SameText(FAE.RecordName, 'Result'))) and
+            (not Self.IsLocal(FAE.RecordName)) and
+            (FAE.FieldInfo.Offset = 0) and
+            (not (IsJumboSet(FAE.FieldInfo.TypeDesc) or
+                  (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray]))) and
+            (not Self.IsThreadVarGlobal(FAE.RecordName)) then
+      { Non-threadvar offset-0 fast path: read the field directly off the
+        PC-relative global.  Only applies to a genuine global (not local, not
+        captured, not sret Result, not threadvar). }
+      Self.EmitLoadVar(FAE.RecordName + '(%rip)', FAE.FieldInfo.TypeDesc)
     else
     begin
+      { Compute the record base into %rcx, handling local / global / sret-Result
+        / nested-captured uniformly, then read or address the field.  Aggregate
+        fields (record/static array/jumbo set) yield an ADDRESS in %rax; scalar
+        fields are loaded by value. }
+      Self.EmitVarBaseToReg(FAE.RecordName, True, '%rcx');
       if (IsJumboSet(FAE.FieldInfo.TypeDesc) or
          (FAE.FieldInfo.TypeDesc.Kind in [tyRecord, tyStaticArray])) then
       begin
-        Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
         if FAE.FieldInfo.Offset = 0 then
           Self.Emit(#9'movq %rcx, %rax')
         else
           Self.Emit(Format(#9'leaq %d(%%rcx), %%rax', [FAE.FieldInfo.Offset]));
       end
-      else if (FAE.FieldInfo.Offset = 0) and
-              (not Self.IsThreadVarGlobal(FAE.RecordName)) then
-        { Non-threadvar offset-0 fast path: read the field directly off the
-          PC-relative global.  threadvars must not use this — the slot is
-          TLS-resident, so fall through to EmitLeaqGlobal (which emits the
-          %fs:0 + @tpoff sequence) and an indirect load. }
-        Self.EmitLoadVar(FAE.RecordName + '(%rip)', FAE.FieldInfo.TypeDesc)
       else
-      begin
-        Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
         Self.EmitLoadVar(Format('%d(%%rcx)', [FAE.FieldInfo.Offset]),
           FAE.FieldInfo.TypeDesc);
-      end;
     end;
     Exit;
   end;
@@ -7476,7 +7477,7 @@ begin
       Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
     else if MD.IsRecordMethod then
     begin
-      Self.EmitVarAddr(FAE.RecordName, '%rdi');
+      Self.EmitVarBaseToReg(FAE.RecordName, True, '%rdi');
     end
     else if FAE.IsVarParam then
     begin
@@ -7485,10 +7486,7 @@ begin
     end
     else
     begin
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rdi');
     end;
     if MD.VTableSlot >= 0 then
     begin
@@ -7634,10 +7632,7 @@ begin
       end
       else if FAE.IsClassAccess then
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+        Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
         if FAE.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
@@ -7646,10 +7641,7 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
       else
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
-        else
-          Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
+        Self.EmitVarBaseToReg(FAE.RecordName, True, '%rcx');
       end;
       if FAE.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
@@ -7711,10 +7703,7 @@ begin
       end
       else if FAE.IsClassAccess then
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FAE.RecordName]));
+        Self.EmitVarBaseToReg(FAE.RecordName, False, '%rcx');
         if FAE.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
@@ -7723,10 +7712,7 @@ begin
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FAE.RecordName)]))
       else
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.EmitLocalRecordBase(FAE.RecordName, '%rcx')
-        else
-          Self.EmitLeaqGlobal(FAE.RecordName, '%rcx');
+        Self.EmitVarBaseToReg(FAE.RecordName, True, '%rcx');
       end;
       if (FAE.FieldInfo <> nil) and (FAE.FieldInfo.Offset > 0) then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FAE.FieldInfo.Offset]));
@@ -8426,18 +8412,12 @@ begin
     begin
       { The slot holds a POINTER (sret Result, class instance, var-param
         record) — load it. }
-      if Self.IsLocal(FAE.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+      Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
       if FAE.IsClassAccess and FAE.IsVarParam then
         { var-param class: slot -> caller var -> instance }
         Self.Emit(#9'movq (%rax), %rax');
     end
-    else if Self.IsLocal(FAE.RecordName) then
-      Self.EmitLocalRecordBase(FAE.RecordName, '%rax')
-    else
-      Self.EmitLeaqGlobal(FAE.RecordName, '%rax');
+    else Self.EmitVarBaseToReg(FAE.RecordName, True, '%rax');
     if FAE.FieldInfo.Offset > 0 then
       Self.Emit(Format(#9'addq $%d, %%rax', [FAE.FieldInfo.Offset]));
   end
@@ -10852,10 +10832,7 @@ begin
       end
       else
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+        Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
         Self.Emit(#9'movq %rax, 8(%rcx)');
       end;
       Exit;
@@ -11934,10 +11911,7 @@ begin
       end
       else
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rdi');
         if FA.IsClassAccess and FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rdi), %rdi');
@@ -11999,16 +11973,13 @@ begin
       end
       else if FA.IsClassAccess or FA.IsVarParam then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rdx');
         if FA.IsClassAccess and FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rdx), %rdx');
       end
       else
-        Self.EmitVarAddr(FA.RecordName, '%rdx');
+        Self.EmitVarBaseToReg(FA.RecordName, True, '%rdx');
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rdx', [FA.FieldInfo.Offset]));
       if FA.FieldInfo.TypeDesc.Kind = tyDynArray then
@@ -12084,25 +12055,16 @@ begin
       end
       else if FA.IsClassAccess then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if FA.IsVarParam then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
       end
-      else if Self.IsLocal(FA.RecordName) then
-        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
-      else
-        Self.EmitLeaqGlobal(FA.RecordName, '%rcx');
+      else Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       Self.EmitInterfaceToFieldSlotsAt(FA.Expr, '%rcx', FA.FieldInfo.Offset,
         FA.FieldInfo.TypeDesc);
       Exit;
@@ -12140,25 +12102,16 @@ begin
       end
       else if FA.IsClassAccess then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
       end
       else if FA.IsVarParam then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
       end
-      else if Self.IsLocal(FA.RecordName) then
-        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
-      else
-        Self.EmitLeaqGlobal(FA.RecordName, '%rcx');
+      else Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FA.FieldInfo.Offset]));
       { Store the code pointer at offset 0. }
@@ -12175,10 +12128,7 @@ begin
       end
       else
       begin
-        if Self.IsLocal(FAE.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(FAE.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [FAE.RecordName]));
+        Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
         Self.Emit(#9'movq %rax, 8(%rcx)');
       end;
       Exit;
@@ -12210,24 +12160,18 @@ begin
       end
       else if FA.IsClassAccess then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rbx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rbx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rbx), %rbx');
       end
       else if FA.IsVarParam then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rbx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rbx');
       end
       else
       begin
-        Self.EmitVarAddr(FA.RecordName, '%rbx');
+        Self.EmitVarBaseToReg(FA.RecordName, True, '%rbx');
       end;
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
@@ -12261,17 +12205,14 @@ begin
       end
       else if FA.IsClassAccess then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rbx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rbx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rbx), %rbx');
       end
       else
       begin
-        Self.EmitVarAddr(FA.RecordName, '%rbx');
+        Self.EmitVarBaseToReg(FA.RecordName, True, '%rbx');
       end;
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
@@ -12316,10 +12257,7 @@ begin
       begin
         Self.Emit(#9'subq $8, %rsp');
         Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
@@ -12330,19 +12268,13 @@ begin
       begin
         Self.Emit(#9'subq $8, %rsp');
         Self.EmitStoreFloat('(%rsp)', FA.FieldInfo.TypeDesc);
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         Self.EmitLoadFloat('(%rsp)', FA.FieldInfo.TypeDesc);
         Self.Emit(#9'addq $8, %rsp');
       end
       else
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
-        else
-          Self.EmitLeaqGlobal(FA.RecordName, '%rcx');
+        Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       end;
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FA.FieldInfo.Offset]));
@@ -12375,18 +12307,12 @@ begin
       end
       else if FA.IsClassAccess or FA.IsVarParam then
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         if FA.IsClassAccess and FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
       end
-      else if Self.IsLocal(FA.RecordName) then
-        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
-      else
-        Self.EmitLeaqGlobal(FA.RecordName, '%rcx');
+      else Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FA.FieldInfo.Offset]));
       Self.Emit(#9'pushq %rbx');
@@ -12511,10 +12437,7 @@ begin
       end
       else
       begin
-        if Self.IsLocal(FA.RecordName) then
-          Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
         if FA.IsVarParam then
           { var-param class: slot -> caller var -> instance }
           Self.Emit(#9'movq (%rcx), %rcx');
@@ -12601,10 +12524,7 @@ begin
     else if FA.IsVarParam then
     begin
       Self.Emit(#9'pushq %rax');
-      if Self.IsLocal(FA.RecordName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(FA.RecordName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [FA.RecordName]));
+      Self.EmitVarBaseToReg(FA.RecordName, False, '%rcx');
       if FA.FieldInfo.TypeDesc.IsString() then
       begin
         if not NativeExprOwnsRef(FA.Expr) then
@@ -12659,10 +12579,7 @@ begin
     else
     begin
       Self.Emit(#9'pushq %rax');
-      if Self.IsLocal(FA.RecordName) then
-        Self.EmitLocalRecordBase(FA.RecordName, '%rcx')
-      else
-        Self.EmitLeaqGlobal(FA.RecordName, '%rcx');
+      Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       if FA.FieldInfo.TypeDesc.IsString() then
       begin
         if not NativeExprOwnsRef(FA.Expr) then
@@ -12741,10 +12658,7 @@ begin
       end
       else
       begin
-        if Self.IsLocal(SSA.ArrayName) then
-          Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(SSA.ArrayName)]))
-        else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [SSA.ArrayName]));
+        Self.EmitVarBaseToReg(SSA.ArrayName, False, '%rdi');
         if SSA.IsVarParam then
           Self.Emit(#9'movq (%rdi), %rdi');      { var-param: slot -> instance }
       end;
@@ -12773,7 +12687,7 @@ begin
       Self.Emit(#9'pushq %rbx');                  { preserve %rbx }
       Self.Emit(#9'subq $8, %rsp');               { align to 16 }
       { %rbx := address of the slot holding the data pointer. }
-      Self.EmitVarAddr(SSA.ArrayName, '%rbx');
+      Self.EmitVarBaseToReg(SSA.ArrayName, True, '%rbx');
       if SSA.IsVarParam then
         { var/out param: slot holds the caller variable's address; that is
           where the string pointer actually lives. }
@@ -12798,10 +12712,7 @@ begin
       Self.EmitByteRhsToEax(SSA.ValueExpr);
       Self.Emit(#9'pushq %rax');
       Self.EmitExprToEax(SSA.IndexExpr);
-      if Self.IsLocal(SSA.ArrayName) then
-        Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
-      else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
+      Self.EmitVarBaseToReg(SSA.ArrayName, False, '%rcx');
       if SSA.IsVarParam then
         { var/out param: slot -> caller var -> char pointer. }
         Self.Emit(#9'movq (%rcx), %rcx');
@@ -13004,11 +12915,15 @@ begin
         if SSA.ImplicitFieldInfo.Offset > 0 then
           Self.Emit(Format(#9'addq $%d, %%r14', [SSA.ImplicitFieldInfo.Offset]));
       end
-      else if SSA.IsVarParam or
-              (FSretFunc and SameText(SSA.ArrayName, 'Result')) then
+      else if SSA.IsVarParam then
+        { var-param array: the slot holds the array POINTER (AWantAddress=False).
+          For a captured var-param the _cap_ slot holds the address of that
+          pointer slot, so EmitVarBaseToReg(False) loads it and derefs once. }
+        Self.EmitVarBaseToReg(SSA.ArrayName, False, '%r14')
+      else if FSretFunc and SameText(SSA.ArrayName, 'Result') then
         Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand(SSA.ArrayName)]))
       else
-        Self.EmitVarAddr(SSA.ArrayName, '%r14');
+        Self.EmitVarBaseToReg(SSA.ArrayName, True, '%r14');
       Self.Emit(#9'addq %rax, %r14');          { %r14 = element address }
       Self.EmitInterfaceToFieldSlotsAt(SSA.ValueExpr, '%r14', 0, DAElemType);
       Self.Emit(#9'popq %r14');
@@ -13030,11 +12945,12 @@ begin
         if SSA.ImplicitFieldInfo.Offset > 0 then
           Self.Emit(Format(#9'addq $%d, %%rcx', [SSA.ImplicitFieldInfo.Offset]));
       end
-      else if SSA.IsVarParam or
-              (FSretFunc and SameText(SSA.ArrayName, 'Result')) then
+      else if SSA.IsVarParam then
+        Self.EmitVarBaseToReg(SSA.ArrayName, False, '%rcx')
+      else if FSretFunc and SameText(SSA.ArrayName, 'Result') then
         Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
       else
-        Self.EmitVarAddr(SSA.ArrayName, '%rcx');
+        Self.EmitVarBaseToReg(SSA.ArrayName, True, '%rcx');
       Self.Emit(#9'addq %rcx, %rax');
       Self.Emit(#9'movq %rax, %rbx');
       Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%rbx');
@@ -13084,11 +13000,12 @@ begin
       if SSA.ImplicitFieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [SSA.ImplicitFieldInfo.Offset]));
     end
-    else if SSA.IsVarParam or
-            (FSretFunc and SameText(SSA.ArrayName, 'Result')) then
+    else if SSA.IsVarParam then
+      Self.EmitVarBaseToReg(SSA.ArrayName, False, '%rcx')
+    else if FSretFunc and SameText(SSA.ArrayName, 'Result') then
       Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(SSA.ArrayName)]))
     else
-      Self.EmitVarAddr(SSA.ArrayName, '%rcx');
+      Self.EmitVarBaseToReg(SSA.ArrayName, True, '%rcx');
     Self.Emit(#9'addq %rcx, %rax');
     Self.Emit(#9'movq %rax, %rcx');
     if IsFloatFamily(DAElemType) then
@@ -14582,25 +14499,16 @@ begin
   end
   else if AFA.IsClassAccess then
   begin
-    if Self.IsLocal(AFA.RecordName) then
-      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
-    else
-      Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
+    Self.EmitVarBaseToReg(AFA.RecordName, False, '%rcx');
     if AFA.IsVarParam then
       { var-param class: slot -> caller var -> instance }
       Self.Emit(#9'movq (%rcx), %rcx');
   end
   else if AFA.IsVarParam then
   begin
-    if Self.IsLocal(AFA.RecordName) then
-      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(AFA.RecordName)]))
-    else
-      Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [AFA.RecordName]));
+    Self.EmitVarBaseToReg(AFA.RecordName, False, '%rcx');
   end
-  else if Self.IsLocal(AFA.RecordName) then
-    Self.EmitLocalRecordBase(AFA.RecordName, '%rcx')
-  else
-    Self.EmitLeaqGlobal(AFA.RecordName, '%rcx');
+  else Self.EmitVarBaseToReg(AFA.RecordName, True, '%rcx');
   if AFA.FieldInfo.Offset > 0 then
     Self.Emit(Format(#9'addq $%d, %%rcx', [AFA.FieldInfo.Offset]));
 end;

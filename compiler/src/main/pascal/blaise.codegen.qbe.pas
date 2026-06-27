@@ -4862,6 +4862,13 @@ begin
     else
       Result := '$' + AName;
   end
+  { A variable captured from an enclosing proc is reached through the hidden
+    %_cap_<Name> pointer parameter, which holds the address of the enclosing
+    slot — exactly what %_var_<Name> would be in the owning frame.  All the
+    deref logic keyed off the AST flags (IsVarParam, IsClassAccess) then applies
+    unchanged, just rooted at %_cap_ instead of %_var_. }
+  else if IsCaptured(AName) then
+    Result := '%_cap_' + AName
   else
     Result := '%_var_' + AName;
 end;
@@ -12304,8 +12311,14 @@ begin
       if (AExpr.ResolvedType <> nil) and
          IsAggregateAddrType(AExpr.ResolvedType) then
       begin
-        { Aggregate: %_cap_Name is the storage address — return directly. }
-        EmitLine(Format('  %s =l copy %%_cap_%s', [T, TIdentExpr(AExpr).Name]));
+        { Aggregate: %_cap_Name holds the address of the enclosing variable's
+          storage.  For a captured plain local that IS the aggregate address.
+          For a captured var/out param the enclosing slot holds the caller's
+          pointer, so one extra load yields the aggregate address. }
+        if TIdentExpr(AExpr).ParamMode <> pmNone then
+          EmitLine(Format('  %s =l loadl %%_cap_%s', [T, TIdentExpr(AExpr).Name]))
+        else
+          EmitLine(Format('  %s =l copy %%_cap_%s', [T, TIdentExpr(AExpr).Name]));
         Exit(T);
       end;
       case QType of
