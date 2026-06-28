@@ -27,6 +27,16 @@ uses
 type
   ESemanticError = class(Exception);
 
+  { One entry in the enum-member reverse index: the enum type a member
+    belongs to, the member's ordinal value, and a monotonic declaration
+    rank (higher = declared later, wins the context-free ambiguity
+    fallback).  Owned by TSemanticAnalyser.FEnumMemberRefs. }
+  TEnumMemberRef = class
+    EnumDesc: TEnumTypeDesc;
+    Ordinal:  Int64;
+    Order:    Integer;
+  end;
+
   TSemanticAnalyser = class(TUsesChainProvider)
   private
     FTable:                TSymbolTable;
@@ -108,6 +118,21 @@ type
                                            source order.  Lookup walks this list right-to-left
                                            ("last in uses wins"); System is the final fallback.
                                            Empty during pure import phases. }
+    FEnumMemberIndex:      TStringList;  { owned (case-insensitive, dupAccept) — reverse
+                                           index of enum member names.  Strings[I] is a
+                                           member name, Objects[I] a TEnumMemberRef giving
+                                           its enum type + ordinal + declaration order.
+                                           A name may appear more than once (the same
+                                           member name in several enums); resolution
+                                           picks by context, uniqueness, or last-wins.
+                                           Replaces the old bare skConstant registration
+                                           — enum members are no longer flat globals. }
+    FEnumMemberRefs:       TObjectList;  { owns the TEnumMemberRef holders pointed at by
+                                           FEnumMemberIndex.Objects (TStringList does not
+                                           own its Objects). }
+    FEnumOrderCounter:     Integer;      { monotonic rank stamped on each member as it is
+                                           registered; higher = declared later = wins the
+                                           context-free ambiguity fallback. }
 
     { Add ADecl to FProcIndex under key AName, auto-tagging
       ADecl.OwningUnit from FCurrentUnitName if not already set.
@@ -468,6 +493,78 @@ type
       the chain without going through the flat global. }
     function FindUnitSymbol(const AUnitName, ASymName: string): TSymbol;
 
+    { Record one enum member in the reverse index (FEnumMemberIndex).
+      Called once per member as its enum type is analysed.  Enum members
+      are NOT registered as bare global symbols any more — a bare member
+      name resolves through ResolveEnumMember instead. }
+    procedure RegisterEnumMember(const AName: string;
+                                 AEnum: TEnumTypeDesc; AOrdinal: Int64);
+
+    { Resolve a bare enum member name to (enum type, ordinal).  Cascade:
+      AExpectedType (an enum, or set-of-enum) names the enum -> that one;
+      else a single candidate -> that one; else the latest-declared
+      candidate (last-wins).  Returns nil when no enum has the member.
+      AExpectedType may be nil (no context, e.g. Ord/const-fold). }
+    function ResolveEnumMember(const AName: string;
+                               AExpectedType: TTypeDesc): TEnumMemberRef;
+
+    { Context-directed resolution of a bare enum-member identifier.  If AExpr
+      is an unresolved TIdentExpr that is not a normal symbol and names a
+      member of (or compatible with) AExpectedType, mark it constant in place
+      and return True; the caller then reads AExpr.ResolvedType and must NOT
+      call AnalyseExpr on it again.  Returns False for anything else, leaving
+      AExpr untouched for the normal expression path. }
+    function TryResolveBareEnumIdent(AExpr: TASTExpr;
+                                     AExpectedType: TTypeDesc): Boolean;
+
+    { Analyse AExpr, first giving a bare enum-member identifier the chance to
+      resolve against AExpectedType (the known target/element/parameter type).
+      Returns the expression's resolved type.  Use this anywhere an expression
+      is analysed into a context whose enum type is already known. }
+    function AnalyseExprHinted(AExpr: TASTExpr;
+                              AExpectedType: TTypeDesc): TTypeDesc;
+
+    { How many enums declare a member of this name.  >1 means a bare,
+      context-free reference is ambiguous and must be qualified. }
+    function EnumMemberCandidateCount(const AName: string): Integer;
+
+    { Comma-separated names of every enum that declares a member AName, in
+      declaration order — used to spell out an ambiguity in diagnostics. }
+    function EnumMemberOwners(const AName: string): string;
+
+    { Enum hint for a bare member passed as call argument APos to a routine
+      named AName with AArity actuals.  Walks the overload candidates and,
+      among those whose parameter at APos is an enum (or set-of-enum) that
+      actually declares AMember, returns that enum when exactly one distinct
+      enum qualifies — so a bare shared member is steered to the only enum the
+      call could accept.  Returns nil when zero or several enums qualify (the
+      arg then falls to the context-free last-wins path). }
+    { The enum a single parameter would accept for a bare member: the param's
+      enum (or set-of-enum base) when it declares AMember and the decl can take
+      AArity actuals; nil otherwise. }
+    function EnumOfParamAccepting(ADecl: TMethodDecl; AArity, APos: Integer;
+                                 const AMember: string): TTypeDesc;
+    function EnumArgHint(const AName: string; AArity, APos: Integer;
+                         const AMember: string): TTypeDesc;
+    { Like EnumArgHint but walks the method overload set up the inheritance
+      chain of ATypeName (mirrors ResolveMethodOverload's candidate walk). }
+    function EnumMethodArgHint(const ATypeName, AMethodName: string;
+                               AArity, APos: Integer;
+                               const AMember: string): TTypeDesc;
+    { True if AArg is a bare identifier that names an enum member and is not a
+      real symbol — i.e. a candidate for context-directed enum resolution. }
+    function BareEnumArgCandidate(AArg: TASTExpr): Boolean;
+
+    { Pre-pass over a call's actuals: pin any bare, context-free enum-member
+      argument to the enum its target routine expects at that position, before
+      the args are analysed bottom-up.  Lets Foo(meVal) reach the meVal of
+      Foo's parameter enum even when meVal is shared by several enums, and
+      keeps the no-warning path for an otherwise-ambiguous bare member. }
+    procedure HintBareEnumArgs(const AName: string; AArgs: TObjectList);
+    { As HintBareEnumArgs, for a method call on a receiver of type ATypeName. }
+    procedure HintBareEnumMethodArgs(const ATypeName, AMethodName: string;
+                                     AArgs: TObjectList);
+
     { Reserve a module name in the current scope (issue #84).  Defines
       an skModule marker so any same-scope declaration of that name
       fails the normal duplicate check, matching FPC/Delphi.  A failed
@@ -620,6 +717,11 @@ begin
   FMethodGroups         := TStringList.Create();
   FMethodGroups.CaseSensitive := False;
   FGroupKeepAlive       := TObjectList.Create(False);
+  FEnumMemberIndex      := TStringList.Create();
+  FEnumMemberIndex.CaseSensitive := False;
+  FEnumMemberIndex.Duplicates    := dupAccept;
+  FEnumMemberRefs       := TObjectList.Create(True);  { owns the holders }
+  FEnumOrderCounter     := 0;
   FGenericFuncTemplates := TStringList.Create();
   FGenericFuncTemplates.CaseSensitive := False;
   FGenericMethodTemplates := TStringList.Create();
@@ -652,6 +754,8 @@ begin
   { Releasing the keep-alive releases every group list; the group string
     lists themselves only hold raw pointers. }
   FGroupKeepAlive.Free();
+  FEnumMemberRefs.Free();    { frees the holders }
+  FEnumMemberIndex.Free();
   FProcGroups.Free();
   FMethodGroups.Free();
   FProcIndex.Free();
@@ -666,6 +770,264 @@ begin
     raise ESemanticError.Create(Format('%s at line %d col %d in %s', [AMsg, ALine, ACol, FCurrentUnitName]))
   else
     raise ESemanticError.Create(Format('%s at line %d col %d', [AMsg, ALine, ACol]));
+end;
+
+procedure TSemanticAnalyser.RegisterEnumMember(const AName: string;
+                                               AEnum: TEnumTypeDesc; AOrdinal: Int64);
+var
+  Ref: TEnumMemberRef;
+begin
+  Ref          := TEnumMemberRef.Create();
+  Ref.EnumDesc := AEnum;
+  Ref.Ordinal  := AOrdinal;
+  Inc(FEnumOrderCounter);
+  Ref.Order    := FEnumOrderCounter;
+  FEnumMemberRefs.Add(Ref);                  { owns Ref }
+  FEnumMemberIndex.AddObject(AName, Ref);    { non-owning view, dupAccept }
+end;
+
+function TSemanticAnalyser.ResolveEnumMember(const AName: string;
+                                             AExpectedType: TTypeDesc): TEnumMemberRef;
+var
+  I:        Integer;
+  Ref:      TEnumMemberRef;
+  Best:     TEnumMemberRef;
+  Count:    Integer;
+  WantEnum: TEnumTypeDesc;
+begin
+  Result := nil;
+  { An expected set-of-enum context narrows to its element enum. }
+  WantEnum := nil;
+  if AExpectedType <> nil then
+  begin
+    if AExpectedType is TEnumTypeDesc then
+      WantEnum := TEnumTypeDesc(AExpectedType)
+    else if (AExpectedType is TSetTypeDesc) and
+            (TSetTypeDesc(AExpectedType).BaseType is TEnumTypeDesc) then
+      WantEnum := TEnumTypeDesc(TSetTypeDesc(AExpectedType).BaseType);
+  end;
+
+  Best  := nil;
+  Count := 0;
+  for I := 0 to FEnumMemberIndex.Count - 1 do
+  begin
+    if not SameText(FEnumMemberIndex.Strings[I], AName) then Continue;
+    Ref := TEnumMemberRef(FEnumMemberIndex.Objects[I]);
+    { Context hit: an enum the caller asked for wins outright. }
+    if (WantEnum <> nil) and (Ref.EnumDesc = WantEnum) then
+      Exit(Ref);
+    Inc(Count);
+    { Track the latest-declared candidate for the context-free fallback. }
+    if (Best = nil) or (Ref.Order > Best.Order) then
+      Best := Ref;
+  end;
+
+  if Count = 0 then Exit(nil);   { no enum has this member }
+  { One candidate -> unambiguous; many -> last-declared wins. }
+  Result := Best;
+end;
+
+function TSemanticAnalyser.TryResolveBareEnumIdent(AExpr: TASTExpr;
+                                                   AExpectedType: TTypeDesc): Boolean;
+var
+  Ref: TEnumMemberRef;
+begin
+  Result := False;
+  if not (AExpr is TIdentExpr) then Exit;
+  { Already resolved (e.g. a set range expanded into constant members). }
+  if TIdentExpr(AExpr).IsConstant then Exit;
+  { A real symbol of that name always wins — do not shadow it with an enum. }
+  if FTable.Lookup(TIdentExpr(AExpr).Name) <> nil then Exit;
+  Ref := ResolveEnumMember(TIdentExpr(AExpr).Name, AExpectedType);
+  if Ref = nil then Exit;
+  TIdentExpr(AExpr).IsConstant   := True;
+  TIdentExpr(AExpr).ConstValue   := Ref.Ordinal;
+  TIdentExpr(AExpr).ResolvedType := Ref.EnumDesc;
+  AExpr.ResolvedType             := Ref.EnumDesc;
+  Result := True;
+end;
+
+function TSemanticAnalyser.AnalyseExprHinted(AExpr: TASTExpr;
+                                            AExpectedType: TTypeDesc): TTypeDesc;
+begin
+  if TryResolveBareEnumIdent(AExpr, AExpectedType) then
+    Result := AExpr.ResolvedType
+  else
+    Result := AnalyseExpr(AExpr);
+end;
+
+function TSemanticAnalyser.EnumMemberCandidateCount(const AName: string): Integer;
+var
+  I: Integer;
+begin
+  Result := 0;
+  for I := 0 to FEnumMemberIndex.Count - 1 do
+    if SameText(FEnumMemberIndex.Strings[I], AName) then
+      Inc(Result);
+end;
+
+function TSemanticAnalyser.EnumMemberOwners(const AName: string): string;
+var
+  I:   Integer;
+  Ref: TEnumMemberRef;
+begin
+  Result := '';
+  for I := 0 to FEnumMemberIndex.Count - 1 do
+    if SameText(FEnumMemberIndex.Strings[I], AName) then
+    begin
+      Ref := TEnumMemberRef(FEnumMemberIndex.Objects[I]);
+      if Result <> '' then
+        Result := Result + ', ';
+      Result := Result + Ref.EnumDesc.Name;
+    end;
+end;
+
+function TSemanticAnalyser.EnumOfParamAccepting(ADecl: TMethodDecl;
+  AArity, APos: Integer; const AMember: string): TTypeDesc;
+var
+  Par:  TMethodParam;
+  PT:   TTypeDesc;
+  Enum: TEnumTypeDesc;
+  M:    Integer;
+begin
+  Result := nil;
+  if (ADecl = nil) or (APos < 0) or (APos >= ADecl.Params.Count) then Exit;
+  { An overload that cannot take this many actuals is not a candidate. }
+  if ADecl.Params.Count < AArity then Exit;
+  Par := TMethodParam(ADecl.Params.Items[APos]);
+  PT  := Par.ResolvedType;
+  if PT = nil then Exit;
+  if PT is TEnumTypeDesc then
+    Enum := TEnumTypeDesc(PT)
+  else if (PT is TSetTypeDesc) and
+          (TSetTypeDesc(PT).BaseType is TEnumTypeDesc) then
+    Enum := TEnumTypeDesc(TSetTypeDesc(PT).BaseType)
+  else
+    Exit;
+  { Only an enum that actually declares the bare member can accept it. }
+  for M := 0 to Enum.Members.Count - 1 do
+    if SameText(Enum.Members.Strings[M], AMember) then
+      Exit(Enum);
+end;
+
+function TSemanticAnalyser.EnumArgHint(const AName: string;
+  AArity, APos: Integer; const AMember: string): TTypeDesc;
+var
+  I:     Integer;
+  Enum:  TTypeDesc;
+  Found: TTypeDesc;
+begin
+  Result := nil;
+  Found  := nil;
+  for I := 0 to FProcIndex.Count - 1 do
+  begin
+    if not SameText(FProcIndex.Strings[I], AName) then Continue;
+    Enum := EnumOfParamAccepting(TMethodDecl(FProcIndex.Objects[I]),
+      AArity, APos, AMember);
+    if Enum = nil then Continue;
+    if Found = nil then
+      Found := Enum
+    else if Found <> Enum then
+      Exit(nil);   { several enums could accept it — not a unique hint }
+  end;
+  Result := Found;
+end;
+
+function TSemanticAnalyser.EnumMethodArgHint(const ATypeName, AMethodName: string;
+  AArity, APos: Integer; const AMember: string): TTypeDesc;
+var
+  CurrName: string;
+  Sym:      TSymbol;
+  RT:       TRecordTypeDesc;
+  Grp:      TObjectList;
+  K:        Integer;
+  Cand:     TMethodDecl;
+  Enum:     TTypeDesc;
+  Found:    TTypeDesc;
+  SawHiding: Boolean;
+begin
+  Result   := nil;
+  Found    := nil;
+  CurrName := ATypeName;
+  { Walk the inheritance chain exactly as ResolveMethodOverload does: a
+    non-`overload` method at a level hides inherited same-named methods. }
+  while CurrName <> '' do
+  begin
+    Grp := GroupOf(FMethodGroups, CurrName + '.' + AMethodName);
+    SawHiding := False;
+    if Grp <> nil then
+      for K := 0 to Grp.Count - 1 do
+      begin
+        Cand := TMethodDecl(Grp.Items[K]);
+        if not Cand.IsOverload then SawHiding := True;
+        Enum := EnumOfParamAccepting(Cand, AArity, APos, AMember);
+        if Enum <> nil then
+        begin
+          if Found = nil then
+            Found := Enum
+          else if Found <> Enum then
+            Exit(nil);
+        end;
+      end;
+    if SawHiding then Break;
+    Sym := FTable.Lookup(CurrName);
+    if (Sym <> nil) and (Sym.TypeDesc is TRecordTypeDesc) then
+    begin
+      RT := TRecordTypeDesc(Sym.TypeDesc);
+      if RT.Parent <> nil then CurrName := RT.Parent.Name else Break;
+    end
+    else
+      Break;
+  end;
+  Result := Found;
+end;
+
+function TSemanticAnalyser.BareEnumArgCandidate(AArg: TASTExpr): Boolean;
+begin
+  Result := False;
+  if not (AArg is TIdentExpr) then Exit;
+  if TIdentExpr(AArg).IsConstant then Exit;
+  { A real symbol of that name always wins. }
+  if FTable.Lookup(TIdentExpr(AArg).Name) <> nil then Exit;
+  { Only worth steering when the name is a known enum member. }
+  Result := EnumMemberCandidateCount(TIdentExpr(AArg).Name) > 0;
+end;
+
+procedure TSemanticAnalyser.HintBareEnumArgs(const AName: string;
+  AArgs: TObjectList);
+var
+  I:    Integer;
+  Arg:  TASTExpr;
+  Hint: TTypeDesc;
+begin
+  if AArgs = nil then Exit;
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if not BareEnumArgCandidate(Arg) then Continue;
+    Hint := EnumArgHint(AName, AArgs.Count, I, TIdentExpr(Arg).Name);
+    if Hint <> nil then
+      TryResolveBareEnumIdent(Arg, Hint);
+  end;
+end;
+
+procedure TSemanticAnalyser.HintBareEnumMethodArgs(const ATypeName,
+  AMethodName: string; AArgs: TObjectList);
+var
+  I:    Integer;
+  Arg:  TASTExpr;
+  Hint: TTypeDesc;
+begin
+  if AArgs = nil then Exit;
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if not BareEnumArgCandidate(Arg) then Continue;
+    Hint := EnumMethodArgHint(ATypeName, AMethodName, AArgs.Count, I,
+      TIdentExpr(Arg).Name);
+    if Hint <> nil then
+      TryResolveBareEnumIdent(Arg, Hint);
+  end;
 end;
 
 function TSemanticAnalyser.AttrMatches(const AAttrName, ACanonical: string): Boolean;
@@ -2692,10 +3054,10 @@ function TSemanticAnalyser.SynthAnonEnum(const AMemberList: string): TEnumTypeDe
 var
   Inner:   string;
   Members: TStringList;
-  ExistSym: TSymbol;
   EnumName: string;
-  MSym:    TSymbol;
-  K, CPos: Integer;
+  Cand:    TEnumTypeDesc;
+  Matches: Boolean;
+  K, CPos, IxI: Integer;
 begin
   { Strip the surrounding parentheses and split on commas. }
   Inner := AMemberList;
@@ -2723,19 +3085,25 @@ begin
       SemanticError(Format(
         'Anonymous enumeration has %d members; set types support at most 256',
         [Members.Count]), 0, 0);
-    { Reuse an already-synthesised identical enum: if the first member is a
-      defined enum constant whose enum has exactly these members, return it. }
-    ExistSym := FTable.Lookup(Members.Strings[0]);
-    if (ExistSym <> nil) and (ExistSym.Kind = skConstant) and
-       (ExistSym.TypeDesc <> nil) and (ExistSym.TypeDesc.Kind = tyEnum) and
-       (TEnumTypeDesc(ExistSym.TypeDesc).Members.Count = Members.Count) then
+    { Reuse an already-synthesised identical enum: scan the reverse index for an
+      enum (named or anonymous) whose member list matches exactly, so the same
+      inline `set of (a,b,c)` written twice yields one compatible set type.
+      Sharing a member name with an unrelated enum is no longer a collision. }
+    for IxI := 0 to FEnumMemberIndex.Count - 1 do
     begin
-      Result := TEnumTypeDesc(ExistSym.TypeDesc);
+      if not SameText(FEnumMemberIndex.Strings[IxI], Members.Strings[0]) then
+        Continue;
+      Cand := TEnumMemberRef(FEnumMemberIndex.Objects[IxI]).EnumDesc;
+      if Cand.Members.Count <> Members.Count then Continue;
+      Matches := True;
       for K := 0 to Members.Count - 1 do
-        if not SameText(Result.Members.Strings[K], Members.Strings[K]) then
-          SemanticError(Format('Duplicate identifier ''%s''',
-            [Members.Strings[K]]), 0, 0);
-      Exit;
+        if not SameText(Cand.Members.Strings[K], Members.Strings[K]) then
+        begin
+          Matches := False;
+          Break;
+        end;
+      if Matches then
+        Exit(Cand);
     end;
     Inc(FAnonEnumCounter);
     EnumName := Format('$anonenum_%d', [FAnonEnumCounter]);
@@ -2743,14 +3111,7 @@ begin
     for K := 0 to Members.Count - 1 do
     begin
       Result.Members.Add(Members.Strings[K]);
-      MSym            := TSymbol.Create(Members.Strings[K], skConstant, Result);
-      MSym.ConstValue := K;
-      if not FTable.Define(MSym) then
-      begin
-        MSym.Free();
-        SemanticError(Format('Duplicate identifier ''%s''',
-          [Members.Strings[K]]), 0, 0);
-      end;
+      RegisterEnumMember(Members.Strings[K], Result, K);
     end;
     FTable.DefineGlobal(TSymbol.Create(EnumName, skType, Result));
   finally
@@ -4228,9 +4589,10 @@ end;
 function TSemanticAnalyser.EvalConstIntExpr(AExpr: TASTExpr;
                                             ALine, ACol: Integer): Int64;
 var
-  Bin:    TBinaryExpr;
-  IdSym:  TSymbol;
-  L, R:   Int64;
+  Bin:     TBinaryExpr;
+  IdSym:   TSymbol;
+  EnumRef: TEnumMemberRef;
+  L, R:    Int64;
 begin
   Result := 0;
   if AExpr = nil then Exit;
@@ -4246,6 +4608,23 @@ begin
     IdSym := FTable.Lookup(TIdentExpr(AExpr).Name);
     if (IdSym = nil) or (IdSym.Kind <> skConstant) then
     begin
+      { Bare enum member used in a constant expression (e.g. an array
+        bound or set range).  No type context here: a member declared by a
+        single enum resolves; one shared by several is ambiguous and must be
+        qualified (TEnum.Member). }
+      EnumRef := ResolveEnumMember(TIdentExpr(AExpr).Name, nil);
+      if EnumRef <> nil then
+      begin
+        if EnumMemberCandidateCount(TIdentExpr(AExpr).Name) > 1 then
+          SemanticError(Format(
+            'cannot determine which enum ''%s'' refers to: it is declared by ' +
+            '%s, and there is no type context here to choose. Qualify it as ' +
+            '<EnumType>.%s',
+            [TIdentExpr(AExpr).Name, EnumMemberOwners(TIdentExpr(AExpr).Name),
+             TIdentExpr(AExpr).Name]),
+            ALine, ACol);
+        Exit(EnumRef.Ordinal);
+      end;
       SemanticError(Format(
         'Constant expression references ''%s'', which is not a constant',
         [TIdentExpr(AExpr).Name]), ALine, ACol);
@@ -4507,7 +4886,8 @@ function TSemanticAnalyser.ResolveConstArrayElem(const AElem: string;
   enum members, and named integer/boolean constants — to their ordinal value.
   Numeric and float literals (and already-folded integers) pass through. }
 var
-  Sym: TSymbol;
+  Sym:     TSymbol;
+  EnumRef: TEnumMemberRef;
 begin
   Result := AElem;
   if AElem = '' then Exit;
@@ -4530,11 +4910,15 @@ begin
   { Boolean literals. }
   if SameText(AElem, 'True') then Exit('1');
   if SameText(AElem, 'False') then Exit('0');
-  { Named constant or enum member — both are skConstant symbols carrying their
-    ordinal/value in ConstValue. }
+  { Named constant carrying its value in ConstValue. }
   Sym := FTable.Lookup(AElem);
   if (Sym <> nil) and (Sym.Kind = skConstant) then
     Exit(IntToStr(Sym.ConstValue));
+  { Bare enum member (no longer a global symbol) — resolve via the reverse
+    index, using the array's element type as context when it is an enum. }
+  EnumRef := ResolveEnumMember(AElem, AElemType);
+  if EnumRef <> nil then
+    Exit(IntToStr(EnumRef.Ordinal));
   { Unresolved identifier in a numeric/boolean/enum array — a real error;
     leaving it would emit an undefined symbol reference at link time. }
   SemanticError(Format(
@@ -4550,28 +4934,32 @@ function TSemanticAnalyser.ResolveSetMemberOrd(const AMember: string;
   type then comes from the declared TypeName, e.g. set of Byte). }
 var
   Sym: TSymbol;
+  Ref: TEnumMemberRef;
 begin
   if IsPlainInt(AMember) then
     Exit(Integer(StrToInt(AMember)));
+  { A named integer/ordinal constant (enum members are no longer symbols). }
   Sym := FTable.Lookup(AMember);
-  if (Sym = nil) or (Sym.Kind <> skConstant) then
+  if (Sym <> nil) and (Sym.Kind = skConstant) then
+    Exit(Integer(Sym.ConstValue));
+  { Bare enum member via the reverse index.  The first enum member seen pins
+    the set's base enum; later members resolve against it (so an ambiguous
+    name follows the set), and a member outside it is a genuine mix error. }
+  Ref := ResolveEnumMember(AMember, AEnumDesc);
+  if Ref = nil then
   begin
     SemanticError(Format(
       'Set constant ''%s'' member ''%s'' is not a constant value',
       [ACD.Name, AMember]), ACD.Line, ACD.Col);
     Exit(0);
   end;
-  { Enum member: pin / check the shared base enum. }
-  if (Sym.TypeDesc <> nil) and (Sym.TypeDesc.Kind = tyEnum) then
-  begin
-    if AEnumDesc = nil then
-      AEnumDesc := TEnumTypeDesc(Sym.TypeDesc)
-    else if Sym.TypeDesc <> AEnumDesc then
-      SemanticError(Format(
-        'Set constant ''%s'' mixes members of ''%s'' and ''%s''',
-        [ACD.Name, AEnumDesc.Name, Sym.TypeDesc.Name]), ACD.Line, ACD.Col);
-  end;
-  Result := Integer(Sym.ConstValue);
+  if AEnumDesc = nil then
+    AEnumDesc := Ref.EnumDesc
+  else if Ref.EnumDesc <> AEnumDesc then
+    SemanticError(Format(
+      'Set constant ''%s'' mixes members of ''%s'' and ''%s''',
+      [ACD.Name, AEnumDesc.Name, Ref.EnumDesc.Name]), ACD.Line, ACD.Col);
+  Result := Integer(Ref.Ordinal);
 end;
 
 procedure TSemanticAnalyser.AnalyseSetConstDecl(ACD: TConstDecl);
@@ -5036,7 +5424,6 @@ var
   Resolved:   string;
   BaseSym:    TSymbol;
   MName:      string;
-  MSym:       TSymbol;
   Slot:       Integer;
   CD:         TConstDecl;
   AliasDef:   TTypeAliasDef;
@@ -5159,17 +5546,18 @@ begin
     end
     else if TD.Def is TEnumTypeDef then
     begin
-      { Enum type: register the type AND each member as a skConstant }
+      { Enum type: register the type, and record each member in the reverse
+        index keyed by name.  Members are NOT registered as bare global
+        skConstants — a bare member name resolves through ResolveEnumMember
+        (by context type, uniqueness, or last-wins), so two enums in scope
+        may legitimately share a member name without colliding. }
       EnumDef  := TEnumTypeDef(TD.Def);
       EnumDesc := FTable.NewEnumType(TD.Name);
       for K := 0 to EnumDef.Members.Count - 1 do
       begin
-        MName           := EnumDef.Members.Strings[K];
+        MName := EnumDef.Members.Strings[K];
         EnumDesc.Members.Add(MName);
-        MSym            := TSymbol.Create(MName, skConstant, EnumDesc);
-        MSym.ConstValue := EnumDef.OrdinalAt(K);
-        if not FTable.Define(MSym) then
-          MSym.Free();
+        RegisterEnumMember(MName, EnumDesc, EnumDef.OrdinalAt(K));
       end;
       Sym := TSymbol.Create(TD.Name, skType, EnumDesc);
       if not FTable.Define(Sym) then
@@ -7284,10 +7672,17 @@ begin
         Format('Loop variable ''%s'' must be an ordinal type, got ''%s''',
           [ForS.VarName, VarSym.TypeDesc.Name]),
         ForS.Line, ForS.Col);
-    StartType := AnalyseExpr(ForS.StartExpr);
+    { A bare enum-member bound is steered to the loop variable's enum. }
+    if TryResolveBareEnumIdent(ForS.StartExpr, VarSym.TypeDesc) then
+      StartType := ForS.StartExpr.ResolvedType
+    else
+      StartType := AnalyseExpr(ForS.StartExpr);
     CheckTypesMatch(VarSym.TypeDesc, StartType,
       'for-loop start expression', ForS.Line, ForS.Col);
-    EndType := AnalyseExpr(ForS.EndExpr);
+    if TryResolveBareEnumIdent(ForS.EndExpr, VarSym.TypeDesc) then
+      EndType := ForS.EndExpr.ResolvedType
+    else
+      EndType := AnalyseExpr(ForS.EndExpr);
     CheckTypesMatch(VarSym.TypeDesc, EndType,
       'for-loop end expression', ForS.Line, ForS.Col);
     Inc(FLoopDepth);
@@ -7838,6 +8233,7 @@ begin
       ACall.ResolvedMethod    := nil;
       Exit;
     end;
+    HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
       AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
@@ -7936,6 +8332,7 @@ begin
         ACall.ResolvedMethod    := nil;
         Exit;
       end;
+      HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
         AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
       MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
@@ -7969,6 +8366,7 @@ begin
      (SameText(ACall.Name, 'Create') or (StrPos('Create', ACall.Name) = 0)) then
   begin
     RT := TRecordTypeDesc(TMetaClassTypeDesc(ObjSym.TypeDesc).BaseClass);
+    HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
       AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
@@ -8027,6 +8425,7 @@ begin
     Exit;
   end;
 
+  HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
   for I := 0 to ACall.Args.Count - 1 do
     AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
 
@@ -8119,7 +8518,11 @@ begin
       AAssign.ImplicitSelfField := FldInfo;
       AAssign.ResolvedLhsType   := FldInfo.TypeDesc;
       ResolveDiamond(AAssign.Expr, FldInfo.TypeDesc);
-      ExprType := AnalyseExpr(AAssign.Expr);
+      { Bare enum member on the RHS resolves against the field's type. }
+      if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
+        ExprType := AAssign.Expr.ResolvedType
+      else
+        ExprType := AnalyseExpr(AAssign.Expr);
       CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
       Exit;
     end;
@@ -8173,7 +8576,12 @@ begin
       'Empty set literal ''[]'' cannot be assigned to non-set variable ''%s'' of type ''%s''',
       [AAssign.Name, VarSym.TypeDesc.Name]), AAssign.Line, AAssign.Col);
 
-  ExprType := AnalyseExpr(AAssign.Expr);
+  { Bare enum member on the RHS resolves against the variable's type, so a
+    member name shared by several enums picks the one the LHS expects. }
+  if TryResolveBareEnumIdent(AAssign.Expr, VarSym.TypeDesc) then
+    ExprType := AAssign.Expr.ResolvedType
+  else
+    ExprType := AnalyseExpr(AAssign.Expr);
   CheckTypesMatch(VarSym.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
 end;
 
@@ -8630,7 +9038,10 @@ begin
     AAssign.IntfWriteDesc := IntfDesc;
     AAssign.IsGlobal      := RecSym.IsGlobal;
     AAssign.IsVarParam    := RecSym.Kind = skVarParameter;
-    ExprType := AnalyseExpr(AAssign.Expr);
+    if TryResolveBareEnumIdent(AAssign.Expr, PropInfo.TypeDesc) then
+      ExprType := AAssign.Expr.ResolvedType
+    else
+      ExprType := AnalyseExpr(AAssign.Expr);
     CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
       AAssign.Line, AAssign.Col);
     Exit;
@@ -8717,7 +9128,10 @@ begin
       TSetTypeDesc(FldInfo.TypeDesc));
     Exit;
   end;
-  ExprType := AnalyseExpr(AAssign.Expr);
+  if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
+    ExprType := AAssign.Expr.ResolvedType
+  else
+    ExprType := AnalyseExpr(AAssign.Expr);
   CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
     AAssign.Line, AAssign.Col);
 end;
@@ -8988,7 +9402,7 @@ function TSemanticAnalyser.SetLiteralBaseEnum(AExpr: TArrayLiteralExpr): TTypeDe
 var
   I:    Integer;
   Elem: TASTExpr;
-  Sym:  TSymbol;
+  Ref:  TEnumMemberRef;
 begin
   Result := nil;
   if AExpr.Elements.Count = 0 then Exit;
@@ -8996,18 +9410,15 @@ begin
   begin
     Elem := TASTExpr(AExpr.Elements.Items[I]);
     if not (Elem is TIdentExpr) then
-    begin
       Exit(nil);
-    end;
-    Sym := FTable.Lookup(TIdentExpr(Elem).Name);
-    if (Sym = nil) or (Sym.Kind <> skConstant) or (Sym.TypeDesc = nil) or
-       (Sym.TypeDesc.Kind <> tyEnum) then
-    begin
+    { Resolve each element against the enum pinned by the first one, so a
+      member name shared by several enums follows the rest of the literal. }
+    Ref := ResolveEnumMember(TIdentExpr(Elem).Name, Result);
+    if Ref = nil then
       Exit(nil);
-    end;
     if Result = nil then
-      Result := Sym.TypeDesc
-    else if Sym.TypeDesc <> Result then
+      Result := Ref.EnumDesc
+    else if Ref.EnumDesc <> Result then
     begin
       Result := nil;   { mixed enums — not a clean set constructor }
       Exit;
@@ -9322,6 +9733,7 @@ begin
     if MDecl <> nil then
     begin
       { Analyse args first so overload resolution can score by type. }
+      HintBareEnumMethodArgs(FCurrentClass.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
         AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
       { Use overload resolution so the correct variant is chosen when
@@ -9367,8 +9779,8 @@ begin
           ACall.Line, ACall.Col);
       for I := 0 to ACall.Args.Count - 1 do
       begin
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
         PPar    := TProcParamInfo(PT.Params.Items[I]);
+        ArgType := AnalyseExprHinted(TASTExpr(ACall.Args.Items[I]), PPar.TypeDesc);
         if PPar.IsVarParam and
            not IsVarArgLValue(TASTExpr(ACall.Args.Items[I])) then
           SemanticError(
@@ -9412,8 +9824,8 @@ begin
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
     begin
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
       PPar    := TProcParamInfo(PT.Params.Items[I]);
+      ArgType := AnalyseExprHinted(TASTExpr(ACall.Args.Items[I]), PPar.TypeDesc);
       { Var-param actual must be an L-value; check before the type match
         so the diagnostic matches the regular-call path. }
       if PPar.IsVarParam and
@@ -9460,6 +9872,9 @@ begin
   Idx := FProcIndex.IndexOf(ACall.Name);
   if Idx >= 0 then
   begin
+    { Steer a bare shared enum member to the enum this proc expects before
+      bottom-up analysis pins it by last-wins. }
+    HintBareEnumArgs(ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
       AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
 
@@ -9828,6 +10243,7 @@ begin
     if MDecl <> nil then
     begin
       { Analyse args first so overload resolution can score by type. }
+      HintBareEnumMethodArgs(FCurrentClass.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
         AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
       MDecl := ResolveMethodOverload(FCurrentClass.Name, AExpr.Name,
@@ -9870,8 +10286,8 @@ begin
           AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.Args.Count - 1 do
       begin
-        ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
         PPar    := TProcParamInfo(PT.Params.Items[I]);
+        ArgType := AnalyseExprHinted(TASTExpr(AExpr.Args.Items[I]), PPar.TypeDesc);
         if PPar.IsVarParam and
            not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
           SemanticError(
@@ -9932,8 +10348,8 @@ begin
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
     begin
-      ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
       PPar    := TProcParamInfo(PT.Params.Items[I]);
+      ArgType := AnalyseExprHinted(TASTExpr(AExpr.Args.Items[I]), PPar.TypeDesc);
       if PPar.IsVarParam and
          not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
         SemanticError(
@@ -10570,7 +10986,10 @@ begin
       Format('Cannot find declaration for function ''%s''', [AExpr.Name]),
       AExpr.Line, AExpr.Col);
 
-  { Phase B: analyse args first, then score overloads by argument type. }
+  { Phase B: analyse args first, then score overloads by argument type.
+    A bare shared enum member is first steered to the enum the target expects
+    at its position, so the right ordinal is pinned before bottom-up analysis. }
+  HintBareEnumArgs(AExpr.Name, AExpr.Args);
   for I := 0 to AExpr.Args.Count - 1 do
     AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
 
@@ -10641,6 +11060,7 @@ begin
     end;
     RT := TRecordTypeDesc(ObjType);
     { Analyse args first so overload resolution can score by type. }
+    HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     { Built-in TObject.ToString: virtual dispatch via vtable slot 1.
@@ -10753,6 +11173,7 @@ begin
       end;
       RT := TRecordTypeDesc(ObjType);
       { Analyse args first so overload resolution can score by type. }
+      HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
         AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
       MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
@@ -10859,6 +11280,7 @@ begin
       SemanticError(
         Format('Cannot instantiate abstract class ''%s''', [ObjSym.Name]),
         AExpr.Line, AExpr.Col);
+    HintBareEnumMethodArgs(ObjSym.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     { Try to find a user-defined constructor method for type checking.
@@ -10909,6 +11331,7 @@ begin
      (SameText(AExpr.Name, 'Create') or (StrPos('Create', AExpr.Name) = 0)) then
   begin
     RT := TRecordTypeDesc(TMetaClassTypeDesc(ObjSym.TypeDesc).BaseClass);
+    HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, AExpr.Name,
@@ -11081,6 +11504,7 @@ var
   Sym:       TSymbol;
   FldInfo:   TFieldInfo;
   PropInfo:  TPropertyInfo;
+  EnumRef:   TEnumMemberRef;
 begin
   if AExpr is TNilLiteral then
     Result := FTable.TypeNil
@@ -11098,6 +11522,12 @@ begin
     Result := FTable.TypeString
   else if AExpr is TIdentExpr then
   begin
+    { Already resolved to a constant (e.g. a bare enum member pinned in place
+      by a context-directed site such as an assignment, case label or 'in'
+      operand).  Re-returning the type keeps resolution idempotent and avoids
+      a spurious second ambiguity warning. }
+    if TIdentExpr(AExpr).IsConstant and (AExpr.ResolvedType <> nil) then
+      Exit(AExpr.ResolvedType);
     { Resolution order (matches AnalyseProcCall / AnalyseFuncCall):
       local vars/params > implicit Self.member > unit-level.  Without
       this priority, a bare identifier inside a method binds to the
@@ -11158,9 +11588,34 @@ begin
       end;
     end;
     if Sym = nil then
+    begin
+      { Not a normal symbol — try a bare enum member.  No expected-type
+        context flows into the generic expression path, so this resolves a
+        member declared by a single enum directly; a member shared by several
+        enums is ambiguous here and is rejected — qualify it (TEnum.Member).
+        Context-sensitive sites (assignment, case, call args, set elements,
+        for bounds) inject a hint before reaching here. }
+      EnumRef := ResolveEnumMember(TIdentExpr(AExpr).Name, nil);
+      if EnumRef <> nil then
+      begin
+        if EnumMemberCandidateCount(TIdentExpr(AExpr).Name) > 1 then
+          SemanticError(Format(
+            'cannot determine which enum ''%s'' refers to: it is declared by ' +
+            '%s, and there is no type context here to choose. Qualify it as ' +
+            '<EnumType>.%s',
+            [TIdentExpr(AExpr).Name, EnumMemberOwners(TIdentExpr(AExpr).Name),
+             TIdentExpr(AExpr).Name]),
+            AExpr.Line, AExpr.Col);
+        TIdentExpr(AExpr).IsConstant := True;
+        TIdentExpr(AExpr).ConstValue := EnumRef.Ordinal;
+        Result := EnumRef.EnumDesc;
+        AExpr.ResolvedType := Result;
+        Exit;
+      end;
       SemanticError(
         Format('Undeclared identifier ''%s''', [TIdentExpr(AExpr).Name]),
         AExpr.Line, AExpr.Col);
+    end;
     { Var-params and value-record/array params are both passed by reference at
       the QBE ABI level: the local slot holds a pointer, not the aggregate
       bytes.  Codegen must dereference the slot before reading fields. }
@@ -12023,8 +12478,25 @@ var
   LType, RType: TTypeDesc;
   TmpSet: TSetTypeDesc;
 begin
-  LType := AnalyseExpr(ABin.Left);
-  RType := AnalyseExpr(ABin.Right);
+  { Set membership with a bare enum-member left operand and a real set (not a
+    literal) on the right: the set's element type disambiguates the member, so
+    resolve the right first and pin the left against it.  Done before the eager
+    analysis below, which would otherwise pick a context-free last-wins
+    candidate (and warn) for a shared member name. }
+  if (ABin.Op = boIn) and (ABin.Left is TIdentExpr) and
+     not TIdentExpr(ABin.Left).IsConstant and
+     not (ABin.Right is TArrayLiteralExpr) then
+  begin
+    RType := AnalyseExpr(ABin.Right);
+    if (RType <> nil) and (RType.Kind = tySet) then
+      TryResolveBareEnumIdent(ABin.Left, TSetTypeDesc(RType).BaseType);
+    LType := AnalyseExpr(ABin.Left);
+  end
+  else
+  begin
+    LType := AnalyseExpr(ABin.Left);
+    RType := AnalyseExpr(ABin.Right);
+  end;
 
   { Set membership: elem in SetVar — left is base enum, right is set type }
   if ABin.Op = boIn then
@@ -12733,14 +13205,24 @@ begin
         if AStmt.IsStringCase then
           SemanticError('case range labels are not allowed for a string selector',
             AStmt.Line, AStmt.Col);
-        ValType := AnalyseExpr(TSetRangeExpr(Branch.Values.Items[J]).LowExpr);
+        if not TryResolveBareEnumIdent(TSetRangeExpr(Branch.Values.Items[J]).LowExpr, SelType) then
+          ValType := AnalyseExpr(TSetRangeExpr(Branch.Values.Items[J]).LowExpr)
+        else
+          ValType := TSetRangeExpr(Branch.Values.Items[J]).LowExpr.ResolvedType;
         CheckTypesMatch(SelType, ValType, 'case range low', AStmt.Line, AStmt.Col);
-        ValType := AnalyseExpr(TSetRangeExpr(Branch.Values.Items[J]).HighExpr);
+        if not TryResolveBareEnumIdent(TSetRangeExpr(Branch.Values.Items[J]).HighExpr, SelType) then
+          ValType := AnalyseExpr(TSetRangeExpr(Branch.Values.Items[J]).HighExpr)
+        else
+          ValType := TSetRangeExpr(Branch.Values.Items[J]).HighExpr.ResolvedType;
         CheckTypesMatch(SelType, ValType, 'case range high', AStmt.Line, AStmt.Col);
       end
       else
       begin
-        ValType := AnalyseExpr(TASTExpr(Branch.Values.Items[J]));
+        { A bare enum member label resolves against the selector's type. }
+        if TryResolveBareEnumIdent(TASTExpr(Branch.Values.Items[J]), SelType) then
+          ValType := TASTExpr(Branch.Values.Items[J]).ResolvedType
+        else
+          ValType := AnalyseExpr(TASTExpr(Branch.Values.Items[J]));
         CheckTypesMatch(SelType, ValType, 'case value', AStmt.Line, AStmt.Col);
       end;
     end;
@@ -12765,7 +13247,7 @@ begin
       'Cannot write through untyped ''Pointer'' — use a typed pointer (e.g. ^Integer)',
       AStmt.Line, AStmt.Col);
   AStmt.BaseTy := TPointerTypeDesc(PtrType).BaseType;
-  ValType := AnalyseExpr(AStmt.ValExpr);
+  ValType := AnalyseExprHinted(AStmt.ValExpr, AStmt.BaseTy);
   CheckTypesMatch(AStmt.BaseTy, ValType, 'pointer write', AStmt.Line, AStmt.Col);
 end;
 
@@ -12798,7 +13280,7 @@ begin
     IdxType := AnalyseExpr(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
-    ValType := AnalyseExpr(AStmt.ValueExpr);
+    ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
     CheckTypesMatch(ElemT, ValType,
       Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
     Exit;
@@ -12825,7 +13307,7 @@ begin
         IdxType := AnalyseExpr(AStmt.IndexExpr);
         if not IdxType.IsNumeric() then
           SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
-        ValType := AnalyseExpr(AStmt.ValueExpr);
+        ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
         CheckTypesMatch(ElemT, ValType,
           Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
         Exit;
@@ -12849,7 +13331,7 @@ begin
           if DefProp.IndexTypeDesc <> nil then
             CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
               AStmt.Line, AStmt.Col);
-          ValType := AnalyseExpr(AStmt.ValueExpr);
+          ValType := AnalyseExprHinted(AStmt.ValueExpr, DefProp.TypeDesc);
           CheckTypesMatch(DefProp.TypeDesc, ValType, 'default property assignment',
             AStmt.Line, AStmt.Col);
           Exit;
@@ -12879,7 +13361,7 @@ begin
       if (DefProp.IndexTypeDesc <> nil) then
         CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
           AStmt.Line, AStmt.Col);
-      ValType := AnalyseExpr(AStmt.ValueExpr);
+      ValType := AnalyseExprHinted(AStmt.ValueExpr, DefProp.TypeDesc);
       CheckTypesMatch(DefProp.TypeDesc, ValType, 'default property assignment',
         AStmt.Line, AStmt.Col);
       Exit;
@@ -12933,7 +13415,8 @@ begin
     IdxType := AnalyseExpr(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('Dynamic array index must be numeric', AStmt.Line, AStmt.Col);
-    ValType := AnalyseExpr(AStmt.ValueExpr);
+    ValType := AnalyseExprHinted(AStmt.ValueExpr,
+      TDynArrayTypeDesc(Sym.TypeDesc).ElementType);
     CheckTypesMatch(TDynArrayTypeDesc(Sym.TypeDesc).ElementType, ValType,
       Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
     Exit;
@@ -12955,7 +13438,8 @@ begin
     IdxType := AnalyseExpr(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('Open array index must be numeric', AStmt.Line, AStmt.Col);
-    ValType := AnalyseExpr(AStmt.ValueExpr);
+    ValType := AnalyseExprHinted(AStmt.ValueExpr,
+      TOpenArrayTypeDesc(Sym.TypeDesc).ElementType);
     CheckTypesMatch(TOpenArrayTypeDesc(Sym.TypeDesc).ElementType, ValType,
       Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
     Exit;
@@ -12971,7 +13455,7 @@ begin
   IdxType := AnalyseExpr(AStmt.IndexExpr);
   if not IdxType.IsNumeric() then
     SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
-  ValType := AnalyseExpr(AStmt.ValueExpr);
+  ValType := AnalyseExprHinted(AStmt.ValueExpr, ArrType.ElementType);
   CheckTypesMatch(ArrType.ElementType, ValType,
     Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
 end;
@@ -13047,9 +13531,13 @@ function TSemanticAnalyser.SetRangeBoundOrdinal(ABound: TASTExpr;
   base enum.  Rejects non-constant and wrong-type bounds.  Issue #105. }
 var
   BType: TTypeDesc;
-  Sym:   TSymbol;
 begin
-  BType := AnalyseExpr(ABound);
+  { Resolve a bare enum-member bound against the base enum so a member name
+    shared by several enums binds to this set's enum, not last-wins. }
+  if TryResolveBareEnumIdent(ABound, ABaseEnum) then
+    BType := ABound.ResolvedType
+  else
+    BType := AnalyseExpr(ABound);
   if BType <> ABaseEnum then
     SemanticError(
       Format('Set range %s bound has type ''%s''; expected ''%s''',
@@ -13057,15 +13545,10 @@ begin
       ABound.Line, ABound.Col);
   if not ((ABound is TIdentExpr) and TIdentExpr(ABound).IsConstant) then
     SemanticError(
-      Format('Set range %s bound must be a constant', [AWhich]),
-      ABound.Line, ABound.Col);
-  Sym := FTable.Lookup(TIdentExpr(ABound).Name);
-  if (Sym = nil) or (Sym.Kind <> skConstant) then
-    SemanticError(
       Format('Set range %s bound ''%s'' is not a constant',
         [AWhich, TIdentExpr(ABound).Name]),
       ABound.Line, ABound.Col);
-  Result := Sym.ConstValue;
+  Result := TIdentExpr(ABound).ConstValue;
 end;
 
 procedure TSemanticAnalyser.ExpandSetRanges(AExpr: TArrayLiteralExpr;
@@ -13228,7 +13711,12 @@ begin
     ExpandSetRanges(AExpr, nil);
   for I := 0 to AExpr.Elements.Count - 1 do
   begin
-    ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
+    { A bare enum member element resolves against the set's element type, so a
+      member name shared by several enums picks this set's enum. }
+    if TryResolveBareEnumIdent(TASTExpr(AExpr.Elements.Items[I]), ASetType.BaseType) then
+      ElemType := TASTExpr(AExpr.Elements.Items[I]).ResolvedType
+    else
+      ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
     if IsOrdBase then
     begin
       if (not ElemType.IsNumeric()) and (ElemType <> ASetType.BaseType) then

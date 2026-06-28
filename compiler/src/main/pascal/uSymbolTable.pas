@@ -135,8 +135,9 @@ type
   end;
 
   { Enum type descriptor.  Members are ordered; ordinal values are 0..N-1.
-    Stored as QBE 'w' (same as Integer).  Each member is also registered in
-    the symbol table as a skConstant with this type descriptor. }
+    Stored as QBE 'w' (same as Integer).  Members are NOT registered as bare
+    global skConstants; a bare member name resolves through the semantic
+    analyser's type-keyed reverse index (see ResolveEnumMember). }
   TEnumTypeDesc = class(TTypeDesc)
   public
     Members: TStringList;  { owned — ordered member names }
