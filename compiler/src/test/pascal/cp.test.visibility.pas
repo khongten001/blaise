@@ -82,6 +82,11 @@ type
     { strict composes with static }
     procedure TestSem_StrictPrivateStaticVar_OwnMethod_OK;
     procedure TestSem_StrictPrivateStaticVar_CrossType_Rejected;
+    { bare (unqualified) static-var access is visibility-checked too }
+    procedure TestSem_StrictPrivateStaticVar_BareFromOtherType_Rejected;
+    procedure TestSem_StrictPrivateStaticVar_FromProgramBody_Rejected;
+    procedure TestSem_PrivateStaticVar_FromUnitInit_OK;
+    procedure TestSem_PublicStaticVar_QualifiedRead_CrossType_OK;
 
     { property visibility }
     procedure TestSem_PrivateProperty_CrossType_OK;
@@ -712,6 +717,97 @@ begin
   { A strict-private static var is reachable only from TS's own methods; a
     qualified TS.FInst from another type must be rejected. }
   AnalyseExpectReject(Src, 'not accessible');
+end;
+
+procedure TVisibilitySemTests.TestSem_StrictPrivateStaticVar_BareFromOtherType_Rejected;
+const
+  { The BARE (unqualified) form resolves to the same shared global; it must be
+    visibility-checked too, not just the qualified TS.FInst form. }
+  Src =
+    '''
+        program P;
+        type
+          TS = class
+          strict private static var
+            FInst: Integer;
+          end;
+          TOther = class
+          public
+            procedure Poke;
+          end;
+        procedure TOther.Poke;
+        begin
+          FInst := 1;
+        end;
+        begin end.
+        ''';
+begin
+  AnalyseExpectReject(Src, 'not accessible');
+end;
+
+procedure TVisibilitySemTests.TestSem_StrictPrivateStaticVar_FromProgramBody_Rejected;
+const
+  { The program body is not a method of TS, so a strict-private static var is
+    out of reach (mirrors the unit initialization-section rule). }
+  Src =
+    '''
+        program P;
+        type
+          TS = class
+          strict private static var
+            FInst: Integer;
+          end;
+        begin
+          FInst := 1;
+        end.
+        ''';
+begin
+  AnalyseExpectReject(Src, 'not accessible');
+end;
+
+procedure TVisibilitySemTests.TestSem_PrivateStaticVar_FromUnitInit_OK;
+const
+  { A NON-strict private static var is unit-scoped, so the program body (same
+    scope as a unit's initialization section) may write it. }
+  Src =
+    '''
+        program P;
+        type
+          TS = class
+          private static var
+            FInst: Integer;
+          end;
+        begin
+          FInst := 7;
+        end.
+        ''';
+begin
+  AnalyseExpectOK(Src);
+end;
+
+procedure TVisibilitySemTests.TestSem_PublicStaticVar_QualifiedRead_CrossType_OK;
+const
+  { A public static var is readable through the qualified form from anywhere. }
+  Src =
+    '''
+        program P;
+        type
+          TS = class
+          public static var
+            GVal: Integer;
+          end;
+          TUser = class
+          public
+            function R: Integer;
+          end;
+        function TUser.R: Integer;
+        begin
+          Result := TS.GVal;
+        end;
+        begin end.
+        ''';
+begin
+  AnalyseExpectOK(Src);
 end;
 
 procedure TVisibilitySemTests.TestSem_PrivateProperty_CrossType_OK;

@@ -64,6 +64,15 @@ type
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
+    FCurrentMethodOwner:   TRecordTypeDesc;  { declaring type of the method body
+                                               currently being analysed — set for
+                                               BOTH instance and STATIC methods.
+                                               Unlike FCurrentClass (nil inside a
+                                               static body so implicit-Self refs
+                                               fail), this is used only by member-
+                                               visibility checks so a strict-private
+                                               member is reachable from its own
+                                               type's static methods too. }
     { Type-parameter names in scope while analysing an instantiated generic
       body (T, K, V, ...).  These are registered as skType aliases (T=Integer)
       so the body resolves, but they are NOT user-declared types, so a local
@@ -535,6 +544,16 @@ type
                                    const ADeclaringUnit, ADeclaringType: string;
                                    const AMemberName: string;
                                    ALine, ACol: Integer);
+
+    { Visibility enforcement for a STATIC (class-level) variable access.  Like
+      AssertMemberVisibleV but treats the current method's declaring type as the
+      "from" class even inside a static method (FCurrentClass is nil there), so a
+      strict-private static var stays reachable from its own type's static
+      methods. }
+    procedure AssertStaticVarVisible(AVisibility: TMemberVisibility;
+                                     const ADeclaringUnit, ADeclaringType: string;
+                                     const AMemberName: string;
+                                     ALine, ACol: Integer);
 
     { Qualified instance/class method-call visibility enforcement.  AMDecl is
       the resolved TMethodDecl (via ResolveMethodOverload or FindMethodDecl);
@@ -2152,6 +2171,28 @@ procedure TSemanticAnalyser.AssertMemberVisibleV(AVisibility: TMemberVisibility;
 begin
   if not MemberVisibleTo(AVisibility, ADeclaringUnit, ADeclaringType,
                          FCurrentUnitName, FCurrentClass) then
+    SemanticError(
+      Format('''%s'' is not accessible from here', [AMemberName]),
+      ALine, ACol);
+end;
+
+procedure TSemanticAnalyser.AssertStaticVarVisible(AVisibility: TMemberVisibility;
+                                                   const ADeclaringUnit, ADeclaringType: string;
+                                                   const AMemberName: string;
+                                                   ALine, ACol: Integer);
+var
+  FromClass: TRecordTypeDesc;
+begin
+  { Static-var access uses the declaring type of the CURRENT METHOD as the
+    "from" class, so a strict-private static var is reachable from its own
+    type's STATIC methods too (those leave FCurrentClass nil to suppress
+    implicit Self, but FCurrentMethodOwner still names the owner). }
+  if FCurrentClass <> nil then
+    FromClass := FCurrentClass
+  else
+    FromClass := FCurrentMethodOwner;
+  if not MemberVisibleTo(AVisibility, ADeclaringUnit, ADeclaringType,
+                         FCurrentUnitName, FromClass) then
     SemanticError(
       Format('''%s'' is not accessible from here', [AMemberName]),
       ALine, ACol);
@@ -6022,6 +6063,7 @@ var
   Par:        TMethodParam;
   Sym:        TSymbol;
   SavedClass: TRecordTypeDesc;
+  SavedMethodOwner: TRecordTypeDesc;
   TKey:       string;
 begin
   { Generic method (method-level <T>): its params/body reference the method's
@@ -6038,6 +6080,7 @@ begin
     Exit;
   end;
   SavedClass    := FCurrentClass;
+  SavedMethodOwner := FCurrentMethodOwner;
   { A STATIC (class-level) method has no instance receiver.  Leave FCurrentClass
     at its saved value (do NOT bind it to AClassType) so that an implicit
     instance-member reference inside the body resolves as an undeclared
@@ -6046,6 +6089,10 @@ begin
     global symbols. }
   if not AMethod.IsStatic then
     FCurrentClass := AClassType;
+  { Visibility context: the declaring type of THIS method body, set for static
+    and instance methods alike, so a strict-private member is reachable from its
+    own type's methods regardless of static-ness. }
+  FCurrentMethodOwner := AClassType;
   FTable.PushScope();
   Inc(FScopeDepth);
   try
@@ -6104,6 +6151,7 @@ begin
     Dec(FScopeDepth);
     FTable.PopScope();
     FCurrentClass := SavedClass;
+    FCurrentMethodOwner := SavedMethodOwner;
   end;
 end;
 
@@ -8090,9 +8138,17 @@ begin
   AAssign.Name            := VarSym.Name;  { normalise to declared casing }
   { Static (class-level) var: the assignment target is the single shared global
     emitted under the mangled GlobalEmitName, so the LHS name must be that label
-    (matches the read path in AnalyseIdentExpr). }
+    (matches the read path in AnalyseIdentExpr).  Enforce member visibility on
+    the bare form too: a strict-private static var is reachable only from its
+    declaring type's own methods, so writing it from another type, or from the
+    unit initialization/finalization section (FCurrentClass = nil), is rejected. }
   if VarSym.IsClassVar and (VarSym.GlobalEmitName <> '') then
+  begin
+    AssertStaticVarVisible(VarSym.Visibility, VarSym.OwningUnit,
+                           VarSym.OwnerTypeName, VarSym.Name,
+                         AAssign.Line, AAssign.Col);
     AAssign.Name := VarSym.GlobalEmitName;
+  end;
   AAssign.IsVarParam      := (VarSym.Kind = skVarParameter);
   AAssign.ResolvedLhsType := VarSym.TypeDesc;
   AAssign.IsWeakLhs       := VarSym.IsWeak;
@@ -8530,8 +8586,8 @@ begin
     VarSym := FTable.Lookup(AAssign.RecordName + '.' + AAssign.FieldName);
     if (VarSym <> nil) and (VarSym.Kind = skVariable) and VarSym.IsClassVar then
     begin
-      AssertMemberVisibleV(VarSym.Visibility, VarSym.OwningUnit,
-                           VarSym.OwnerTypeName, AAssign.FieldName,
+      AssertStaticVarVisible(VarSym.Visibility, VarSym.OwningUnit,
+                             VarSym.OwnerTypeName, AAssign.FieldName,
                            AAssign.Line, AAssign.Col);
       SemanticError(Format(
         'Qualified write to static var ''%s.%s'' is not yet supported; assign ' +
@@ -11104,9 +11160,17 @@ begin
     { A static (class-level) variable resolves to a single shared global whose
       emit label is the mangled GlobalEmitName, distinct from the lookup key
       ('FInstance' or 'TFoo.FInstance' both reach the one slot).  Rewrite the
-      node's emitted name to that label so codegen lowers $TFoo_FInstance. }
+      node's emitted name to that label so codegen lowers $TFoo_FInstance.
+      Enforce member visibility on the bare form: a strict-private static var is
+      reachable only from its declaring type's own methods (FCurrentClass = the
+      declaring type), not from another type or the unit init/final section. }
     if Sym.IsClassVar and (Sym.GlobalEmitName <> '') then
+    begin
+      AssertStaticVarVisible(Sym.Visibility, Sym.OwningUnit,
+                             Sym.OwnerTypeName, Sym.Name,
+                           AExpr.Line, AExpr.Col);
       TIdentExpr(AExpr).Name := Sym.GlobalEmitName;
+    end;
     if Sym.Kind = skVarParameter then
       TIdentExpr(AExpr).ParamMode := pmVar
     else if (Sym.Kind = skParameter) and (Sym.TypeDesc <> nil) and
@@ -11592,9 +11656,14 @@ begin
       end;
       { Static (class-level) variable read: TypeName.StaticVar.  The qualified
         symbol carries the mangled GlobalEmitName; rewrite the access to a plain
-        global read of that label (codegen lowers it like a global ident). }
+        global read of that label (codegen lowers it like a global ident).
+        Enforce member visibility — a strict/private static var read through the
+        qualified form from a context that may not see it is rejected. }
       if (Sym <> nil) and (Sym.Kind = skVariable) and Sym.IsClassVar then
       begin
+        AssertStaticVarVisible(Sym.Visibility, Sym.OwningUnit,
+                               Sym.OwnerTypeName, AAccess.FieldName,
+                             AAccess.Line, AAccess.Col);
         AAccess.IsClassVarRead := True;
         AAccess.IsGlobal       := True;
         AAccess.ClassVarEmitName := Sym.GlobalEmitName;
