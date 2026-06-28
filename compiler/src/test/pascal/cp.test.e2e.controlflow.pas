@@ -24,6 +24,8 @@ type
     procedure TestRun_For_Upward_PrintsRange;
     procedure TestRun_For_Downto_PrintsRange;
     procedure TestRun_While_PrintsRange;
+    procedure TestRun_For_EmptyBody_NoCrash;
+    procedure TestRun_While_EmptyBody_NoCrash;
     procedure TestRun_Repeat_PrintsRange;
     procedure TestRun_For_BreakExitsEarly;
     procedure TestRun_For_ContinueSkipsIteration;
@@ -102,6 +104,29 @@ const
         WriteLn(I);
         I := I + 1
       end
+    end.
+    ''';
+
+  { Empty loop body — `for ... do;` / `while ... do;` parse to a nil body.
+    Regression for issue #150: the native backend segfaulted (nil.ClassName in
+    the unsupported-statement fallback) and the QBE backend rejected it; both
+    must now treat the empty body as a valid no-op. }
+  SrcForEmptyBody = '''
+    program P;
+    var I: Integer;
+    begin
+      for I := 0 to 9 do;
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcWhileEmptyBody = '''
+    program P;
+    var I: Integer;
+    begin
+      I := 0;
+      while I < 0 do;
+      WriteLn('done')
     end.
     ''';
 
@@ -200,6 +225,20 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcWhile, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1 2 3', '1' + LE + '2' + LE + '3' + LE, Output);
+end;
+
+procedure TE2EControlFlowTests.TestRun_For_EmptyBody_NoCrash;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Issue #150: an empty `for` body must compile + run as a no-op on both
+    backends (native previously segfaulted the compiler). }
+  AssertRunsOnAll(SrcForEmptyBody, 'done' + LE, 0);
+end;
+
+procedure TE2EControlFlowTests.TestRun_While_EmptyBody_NoCrash;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcWhileEmptyBody, 'done' + LE, 0);
 end;
 
 procedure TE2EControlFlowTests.TestRun_Repeat_PrintsRange;

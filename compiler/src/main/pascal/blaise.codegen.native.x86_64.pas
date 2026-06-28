@@ -10811,6 +10811,12 @@ var
   PCHTotal: Integer;
   AliasBuf: Integer;
 begin
+  { An empty statement (e.g. the body of `for x := 0 to N do;`) parses to a nil
+    statement — the parser's convention for "no statement here".  It is a valid,
+    do-nothing body, so emit nothing.  Without this guard the unsupported-
+    statement fallback at the tail dereferences AStmt.ClassName and segfaults. }
+  if AStmt = nil then
+    Exit;
   Self.DbgStmtLabel(AStmt);
   if AStmt is TAsmStmt then
   begin

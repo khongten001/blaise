@@ -2572,8 +2572,11 @@ procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 var
   DeadLbl: string;
 begin
+  { An empty statement (e.g. the body of `for x := 0 to N do;`) parses to a nil
+    statement — the parser's convention for "no statement here".  It is a valid,
+    do-nothing body, so emit nothing rather than rejecting it. }
   if AStmt = nil then
-    raise ECodeGenError.Create('EmitStmt called with nil statement');
+    Exit;
   if AStmt is TAsmStmt then
     raise ECodeGenError.Create(
       'inline asm blocks require the native backend (--backend native); '
