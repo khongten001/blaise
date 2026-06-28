@@ -69,6 +69,11 @@ type
     procedure TestOPDF_Constant_Real;
     procedure TestOPDF_UnitDir_Present;
     procedure TestOPDF_UnitDir_UnitCount;
+    { recRuntimeHelper — RTL release routines the debugger injects to free a
+      +1 transient an injected property getter returns. }
+    procedure TestOPDF_RuntimeHelper_StringRelease;
+    procedure TestOPDF_RuntimeHelper_DynArrayRelease;
+    procedure TestOPDF_RuntimeHelper_KindOrdinals;
   end;
 
 implementation
@@ -708,6 +713,38 @@ var
 begin
   IR := GenOPDF('program P; begin end.');
   AssertTrue('unit count is 1', Contains(IR, '.int  1  # UnitCount'));
+end;
+
+procedure TOPDFTests.TestOPDF_RuntimeHelper_StringRelease;
+var
+  IR: string;
+begin
+  IR := GenOPDF('program P; begin end.');
+  AssertTrue('recRuntimeHelper comment for _StringRelease',
+    Contains(IR, '# recRuntimeHelper: _StringRelease'));
+  AssertTrue('_StringRelease address quad (linker-resolved)',
+    Contains(IR, '.quad _StringRelease  # Address (linker-resolved)'));
+end;
+
+procedure TOPDFTests.TestOPDF_RuntimeHelper_DynArrayRelease;
+var
+  IR: string;
+begin
+  IR := GenOPDF('program P; begin end.');
+  AssertTrue('recRuntimeHelper comment for _DynArrayRelease',
+    Contains(IR, '# recRuntimeHelper: _DynArrayRelease'));
+  AssertTrue('_DynArrayRelease address quad (linker-resolved)',
+    Contains(IR, '.quad _DynArrayRelease  # Address (linker-resolved)'));
+end;
+
+procedure TOPDFTests.TestOPDF_RuntimeHelper_KindOrdinals;
+var
+  IR: string;
+begin
+  { Kind ordinals must match opdf_types.TRuntimeHelperKind: string=0, dynarray=1 }
+  IR := GenOPDF('program P; begin end.');
+  AssertTrue('rhkStringRelease kind byte = 0', Contains(IR, '.byte 0  # Kind'));
+  AssertTrue('rhkDynArrayRelease kind byte = 1', Contains(IR, '.byte 1  # Kind'));
 end;
 
 procedure TOPDFTests.TestOPDF_MethodScope_Emitted;

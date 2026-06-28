@@ -63,6 +63,8 @@ type
     procedure EmitLocalVars(ABlock: TBlock; AScopeID: Integer);
     procedure EmitFunctionScope_Main(AScopeID, ADeclIdx: Integer);
     procedure EmitUnitDirectory;
+    procedure EmitRuntimeHelper(AKind: Integer; const ASymbol: string);
+    procedure EmitRuntimeHelpers;
     procedure EmitPointer(AType: TPointerTypeDesc);
     procedure EmitArray(AType: TTypeDesc);
     procedure EmitSet(AType: TSetTypeDesc);
@@ -129,6 +131,11 @@ const
   REC_SET       = 18;
   REC_UNITDIR   = 19;
   REC_CONSTANT  = 20;
+  REC_RUNTIMEHELPER = 25;
+
+  { TRuntimeHelperKind ordinals (mirror opdf_types.TRuntimeHelperKind) }
+  RHK_STRING_RELEASE   = 0;
+  RHK_DYNARRAY_RELEASE = 1;
 
   SK_INTEGER = 0;
   SK_BOOLEAN = 1;
@@ -651,6 +658,28 @@ begin
     L('    .quad 0  # HighPC (last function)');
   L('    .word ' + IntToStr(ADeclIdx) + '  # DeclIndex');
   EmitStrField(FuncName);
+end;
+
+procedure TOPDFEmitter.EmitRuntimeHelper(AKind: Integer; const ASymbol: string);
+begin
+  { recRuntimeHelper: 1-byte kind + 8-byte linker-resolved RTL entry-point
+    address.  Lets the debugger inject a call to the RTL release routine for a
+    +1 transient an injected property getter returns — see uDebugOPDF rationale
+    and opdf-specification.adoc (recRuntimeHelper = 25). }
+  L('');
+  L('    # recRuntimeHelper: ' + ASymbol);
+  EmitRecHdr(REC_RUNTIMEHELPER, 9);
+  L('    .byte ' + IntToStr(AKind) + '  # Kind');
+  L('    .quad ' + ASymbol + '  # Address (linker-resolved)');
+end;
+
+procedure TOPDFEmitter.EmitRuntimeHelpers;
+begin
+  { Emitted once per binary (program object only).  The RTL release routines
+    are global symbols the linker resolves; the addresses land in the same
+    image as the OPDF section, so the ASLR slide applies uniformly. }
+  EmitRuntimeHelper(RHK_STRING_RELEASE,   '_StringRelease');
+  EmitRuntimeHelper(RHK_DYNARRAY_RELEASE, '_DynArrayRelease');
 end;
 
 procedure TOPDFEmitter.EmitParameters(AMethod: TMethodDecl);
@@ -1600,6 +1629,10 @@ begin
   EmitAllTypes();
   EmitGlobalVars();
   EmitConstants();
+  { recRuntimeHelper records are emitted ONLY by the program object (one set
+    per binary) — the RTL release routines are global symbols, not per-unit. }
+  if FProgram <> nil then
+    EmitRuntimeHelpers();
   EmitFunctionScopes();
   PatchTotalRecords();
   PatchUnitDirRecordCount();
