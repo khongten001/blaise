@@ -896,7 +896,13 @@ begin
     Sym.ConstString := Entry.Decl.StrVal;
     Sym.OwningUnit  := AIface.Name;
     if not ATable.Define(Sym) then
-      Sym.Free();  { duplicate — silently skip }
+    begin
+      { EXPERIMENT (last-wins): on a duplicate name, detach the slot the
+        table already holds (kept alive via the per-unit cache for
+        qualified access) and store this later unit's symbol instead. }
+      ATable.ExtractLocal(Entry.Decl.Name);
+      ATable.Define(Sym);
+    end;
   end;
 end;
 

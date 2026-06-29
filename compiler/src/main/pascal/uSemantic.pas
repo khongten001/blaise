@@ -5180,17 +5180,17 @@ begin
     Sym.ConstString  := CD.StrVal;
     if not FTable.Define(Sym) then
     begin
-      Sym.Free();
       { A module-name marker blocking the Define is always a hard error
-        (issue #84) — without this check the const would be silently
-        dropped by the cross-unit shadowing tolerance below. }
+        (issue #84). }
       RefSym := FTable.CurrentScope.LookupLocal(CD.Name);
       if (RefSym <> nil) and (RefSym.Kind = skModule) then
+      begin
+        Sym.Free();
         SemanticError(Format('Duplicate identifier ''%s''', [CD.Name]),
           CD.Line, CD.Col);
-      { Only error for same-block duplicates.  Cross-unit const shadowing
-        (e.g. a unit redefining a system.pas constant) is silently accepted,
-        matching FPC behaviour and preserving the existing test coverage. }
+      end;
+      { Same-block duplicate (the unit declares the name twice itself) is a
+        hard error. }
       IsSameBlockDup := False;
       for J := 0 to I - 1 do
         if SameText(TConstDecl(ABlock.ConstDecls.Items[J]).Name, CD.Name) then
@@ -5199,7 +5199,17 @@ begin
           Break;
         end;
       if IsSameBlockDup then
+      begin
+        Sym.Free();
         SemanticError(Format('Duplicate identifier ''%s''', [CD.Name]), CD.Line, CD.Col);
+      end;
+      { Cross-unit collision: last-in-uses wins.  Detach the prior unit's
+        const — kept alive via the per-unit cache for qualified access
+        (Unit.Const) — and install this unit's const as the flat winner.
+        Mirrors RegisterConsts on the prebuilt-import path so source-loaded
+        and prebuilt deps behave identically. }
+      FTable.ExtractLocal(CD.Name);
+      FTable.Define(Sym);
     end;
   end;
 end;

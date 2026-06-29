@@ -33,6 +33,11 @@ type
     procedure TestRun_QualifiedSystem_CallExprAndStmt;
     procedure TestRun_QualifiedUnit_CallAndVar;
     procedure TestRun_DottedQualifiedUnit_CallAndVar;
+    { Cross-unit const shadowing: two used units export the same const name;
+      the unit later in the `uses` clause wins (last-in-uses), and reversing
+      the order flips the winner. }
+    procedure TestRun_CrossUnitConst_LastWins;
+    procedure TestRun_CrossUnitConst_LastWins_Reversed;
   end;
 
 implementation
@@ -185,6 +190,60 @@ begin
     CompileAndRunWithUnit('My.Pkg', UnitSrc, DrvSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('Add3(10) = 13', '13' + LE, Output);
+end;
+
+const
+  UA_Const = '''
+    unit ua;
+    interface
+    const Foo = 100;
+    implementation
+    end.
+    ''';
+  UB_Const = '''
+    unit ub;
+    interface
+    const Foo = 200;
+    implementation
+    end.
+    ''';
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitConst_LastWins;
+const
+  DrvSrc = '''
+    program P;
+    uses ua, ub;
+    begin
+      WriteLn(Foo)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Both ua and ub export `Foo`; ub is later in `uses`, so bare Foo = 200. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UA_Const, UB_Const, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (ub) wins', '200' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitConst_LastWins_Reversed;
+const
+  DrvSrc = '''
+    program P;
+    uses ub, ua;
+    begin
+      WriteLn(Foo)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Reversed `uses` order: ua is now later, so bare Foo = 100. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UA_Const, UB_Const, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (ua) wins', '100' + LE, Output);
 end;
 
 initialization

@@ -146,6 +146,15 @@ type
     function  CompileAndRunWithUnitNative(const AUnitName, AUnitSrc, ASrc: string;
                                    out AStdout: string;
                                    out AExitCode: Integer): Boolean;
+    { Two-written-units compile+run (QBE).  Writes both units to the scratch
+      dir (filename derived from each `unit <name>;` header) so the program's
+      `uses` clause resolves them, then lowers + links + runs.  Needed for
+      cross-unit tests (two units exporting the same name: last-wins shadowing,
+      unit-qualified disambiguation).  Kept at 5 params (Self+5 = 6 register
+      slots) so the stage-1 native ABI does not overflow. }
+    function  CompileAndRunWithUnits(const AUnit1Src, AUnit2Src, ASrc: string;
+                                     out AStdout: string;
+                                     out AExitCode: Integer): Boolean;
   end;
 
 implementation
@@ -878,6 +887,93 @@ begin
     Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
     if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end
   end;
+  Rc := LinkWithRTL(AsmFile, BinFile, ToolOut);
+  if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
+  AExitCode := RunProcNoArgs(BinFile, AStdout);
+  Result := True
+end;
+
+{ Extract the unit name from a 'unit <name>;' header so the source can be
+  written to the matching <name>.pas the unit loader expects.  Strings are
+  byte-indexed (S[i] returns a Byte); Pos is 0-based and returns -1 when the
+  substring is absent. }
+function UnitNameOf(const ASrc: string): string;
+var
+  P, Q: Integer;
+begin
+  P := Pos('unit ', ASrc);
+  if P < 0 then begin Result := ''; Exit; end;
+  P := P + 5;                  { skip past 'unit ' }
+  Q := P;
+  while (Q < Length(ASrc)) and (ASrc[Q] <> Ord(';')) and (ASrc[Q] <> Ord(' '))
+        and (ASrc[Q] <> 10) and (ASrc[Q] <> 13) do
+    Q := Q + 1;
+  Result := Copy(ASrc, P, Q - P);
+end;
+
+function TE2ETestCase.CompileAndRunWithUnits(const AUnit1Src, AUnit2Src,
+                                             ASrc: string;
+                                             out AStdout: string;
+                                             out AExitCode: Integer): Boolean;
+var
+  Lexer:       TLexer;
+  Parser:      TParser;
+  Prog:        TProgram;
+  Semantic:    TSemanticAnalyser;
+  QCG:         TCodeGenQBE;
+  CG:          ICodeGen;
+  Loader:      TUnitLoader;
+  Units:       TObjectList;
+  SearchPaths: TStringList;
+  Emitted:     string;
+  IRFile, AsmFile, BinFile, ToolOut: string;
+  Rc, I:       Integer;
+begin
+  Result := False;
+  Inc(FCounter);
+  IRFile   := FScratch + '/t' + IntToStr(FCounter) + '.ssa';
+  AsmFile  := FScratch + '/t' + IntToStr(FCounter) + '.s';
+  BinFile  := FScratch + '/t' + IntToStr(FCounter);
+
+  { Write both user units to the scratch dir so the loader resolves them.
+    Filenames are derived from each unit's own `unit <name>;` header. }
+  WriteFile(FScratch + '/' + UnitNameOf(AUnit1Src) + '.pas', AUnit1Src);
+  WriteFile(FScratch + '/' + UnitNameOf(AUnit2Src) + '.pas', AUnit2Src);
+
+  Lexer := nil; Parser := nil; Prog := nil; Semantic := nil;
+  QCG := nil; CG := nil;
+  Loader := nil; Units := nil; SearchPaths := nil;
+  try
+    Lexer    := TLexer.Create(ASrc);
+    Parser   := TParser.Create(Lexer);
+    Prog     := Parser.Parse();
+    Semantic := TSemanticAnalyser.Create();
+    SearchPaths := TStringList.Create();
+    SearchPaths.Add(FScratch);
+    SearchPaths.Add(FRTLUnitPath);
+    SearchPaths.Add(FStdlibUnitPath);
+    Loader := TUnitLoader.Create(SearchPaths);
+    Units  := Loader.LoadAll(Prog.UsedUnits);
+    for I := 0 to Units.Count - 1 do
+      Semantic.AnalyseUnitForExport(TUnit(Units.Items[I]));
+    Semantic.Analyse(Prog);
+    QCG := TCodeGenQBE.Create();
+    CG  := QCG;
+    CG.SetSymbolTable(Prog.SymbolTable);
+    for I := 0 to Units.Count - 1 do
+      CG.AppendUnit(TUnit(Units.Items[I]));
+    CG.AppendProgram(Prog);
+    Emitted := CG.GetOutput()
+  finally
+    QCG.Free();
+    Semantic.Free();
+    Units.Free(); Loader.Free(); SearchPaths.Free();
+    Prog.Free(); Parser.Free(); Lexer.Free()
+  end;
+
+  WriteFile(IRFile, Emitted);
+  Rc := RunProc(FQBE, ['-o', AsmFile, IRFile], ToolOut);
+  if Rc <> 0 then begin AStdout := 'qbe failed: ' + ToolOut; AExitCode := Rc; Exit end;
   Rc := LinkWithRTL(AsmFile, BinFile, ToolOut);
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProcNoArgs(BinFile, AStdout);

@@ -470,6 +470,13 @@ type
       references through every Register* helper. }
     function SymbolCount: Integer;
     function SymbolAt(AIdx: Integer): TSymbol;
+    { Detach a directly-defined symbol from this scope WITHOUT freeing
+      it (FSymbols owns, so Extract not Remove).  Returns the detached
+      symbol, or nil if not present.  Caller takes responsibility for
+      the object's lifetime — used so a duplicate import can hand the
+      flat-scope slot to a later unit while a per-unit cache keeps the
+      original alive. }
+    function ExtractLocal(const AName: string): TSymbol;
   end;
 
   { ------------------------------------------------------------------ }
@@ -595,6 +602,9 @@ type
     function Define(ASymbol: TSymbol): Boolean;
     { Define in global (outermost) scope regardless of current push depth. }
     function DefineGlobal(ASymbol: TSymbol): Boolean;
+    { Detach a symbol from the current scope without freeing it (see
+      TScope.ExtractLocal).  Returns the detached symbol or nil. }
+    function ExtractLocal(const AName: string): TSymbol;
     function Lookup(const AName: string): TSymbol;
 
     { Auto-OwningUnit context.  When set, Define()/DefineGlobal() will
@@ -1352,6 +1362,17 @@ begin
   Result := True;
 end;
 
+function TScope.ExtractLocal(const AName: string): TSymbol;
+var
+  Idx: Integer;
+begin
+  Result := nil;
+  if not FKeys.Find(AName, Idx) then Exit;
+  Result := TSymbol(FKeys.Objects[Idx]);
+  FKeys.Delete(Idx);              { free the name }
+  FSymbols.Extract(Result);       { detach without freeing }
+end;
+
 function TScope.LookupLocal(const AName: string): TSymbol;
 var
   Idx: Integer;
@@ -1984,6 +2005,11 @@ begin
   if FDefineImplPrivate and (FScopeStack.Count = 1) then
     ASymbol.IsImplPrivate := True;
   Result := CurrentScope.Define(ASymbol);
+end;
+
+function TSymbolTable.ExtractLocal(const AName: string): TSymbol;
+begin
+  Result := CurrentScope.ExtractLocal(AName);
 end;
 
 function TSymbolTable.Lookup(const AName: string): TSymbol;
