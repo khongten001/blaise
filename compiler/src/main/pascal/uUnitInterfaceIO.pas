@@ -820,6 +820,7 @@ begin
     Result := EncodeLpstr('mcall') +
               EncodeLpstr(TMethodCallExpr(AE).ObjectName) +
               EncodeLpstr(TMethodCallExpr(AE).Name) +
+              EncodeLpstr(TMethodCallExpr(AE).QualifierUnit) +
               EncodeExpr(TMethodCallExpr(AE).ObjExpr) +
               EncodeExprList(TMethodCallExpr(AE).Args)
   else if AE is TIndirectFuncCallExpr then
@@ -830,6 +831,7 @@ begin
     Result := EncodeLpstr('field') +
               EncodeLpstr(TFieldAccessExpr(AE).RecordName) +
               EncodeLpstr(TFieldAccessExpr(AE).FieldName) +
+              EncodeLpstr(TFieldAccessExpr(AE).QualifierUnit) +
               EncodeExpr(TFieldAccessExpr(AE).Base) +
               EncodeExpr(TFieldAccessExpr(AE).PropIndexExpr)
   else if AE is TDerefExpr then
@@ -1522,9 +1524,10 @@ begin
   else if Kind = 'mcall' then
   begin
     MCE := TMethodCallExpr.Create();
-    MCE.ObjectName := ReadLpstrAt(AText, APos);
-    MCE.Name       := ReadLpstrAt(AText, APos);
-    MCE.ObjExpr    := ReadExpr(AText, APos);
+    MCE.ObjectName    := ReadLpstrAt(AText, APos);
+    MCE.Name          := ReadLpstrAt(AText, APos);
+    MCE.QualifierUnit := ReadLpstrAt(AText, APos);
+    MCE.ObjExpr       := ReadExpr(AText, APos);
     ReadExprList(AText, APos, MCE.Args);
     Result := MCE;
   end
@@ -1540,6 +1543,7 @@ begin
     FA := TFieldAccessExpr.Create();
     FA.RecordName    := ReadLpstrAt(AText, APos);
     FA.FieldName     := ReadLpstrAt(AText, APos);
+    FA.QualifierUnit := ReadLpstrAt(AText, APos);
     FA.Base          := ReadExpr(AText, APos);
     FA.PropIndexExpr := ReadExpr(AText, APos);
     Result := FA;

@@ -68,6 +68,11 @@ type
       class (distinct vtable/dispatch), independent of the bare last-wins
       winner, so both behaviours are observable side by side. }
     procedure TestRun_CrossUnitType_QualifiedDisambig;
+    { Unit-qualified ENUM member 'Unit.TEnum.Member' (field-access form) binds
+      the enum type to that specific unit's exports via directed lookup, so it
+      reaches members the bare/last-wins enum type does not — independent of
+      `uses` order. }
+    procedure TestRun_CrossUnitEnum_QualifiedMember;
   end;
 
 implementation
@@ -564,6 +569,45 @@ begin
     CompileAndRunWithUnits(TCA_Type, TCB_Type, DrvSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('tca.TShape then tcb.TShape', '3' + LE + '4' + LE, Output);
+end;
+
+const
+  EA_Enum = '''
+    unit ea;
+    interface
+    type TPalette = (paOne, paTwo, paThree);
+    implementation
+    end.
+    ''';
+  EB_Enum = '''
+    unit eb;
+    interface
+    type TPalette = (paZero, paOne);
+    implementation
+    end.
+    ''';
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitEnum_QualifiedMember;
+const
+  { ea.TPalette.paThree exists only in ea (ordinal 2); eb.TPalette.paZero only
+    in eb (ordinal 0).  A flat/last-wins enum-type lookup would resolve one of
+    them to the other unit's TPalette and fail "no member"; the qualifier picks
+    each unit's own enum. }
+  DrvSrc = '''
+    program P;
+    uses ea, eb;
+    begin
+      WriteLn(Ord(ea.TPalette.paThree));
+      WriteLn(Ord(eb.TPalette.paZero))
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(EA_Enum, EB_Enum, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('ea.paThree=2, eb.paZero=0', '2' + LE + '0' + LE, Output);
 end;
 
 initialization

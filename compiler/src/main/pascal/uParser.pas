@@ -5115,6 +5115,7 @@ begin
             FldNode.Col        := Col;
             FldNode.RecordName := Name;
             FldNode.FieldName  := SecondName;
+            FldNode.QualifierUnit := QualUnit;
             Result := FldNode;
             { Indexed property read: Ident.Prop[idx] }
             if Check(tkLBracket) then

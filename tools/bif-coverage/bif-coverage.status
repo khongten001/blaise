@@ -42,10 +42,13 @@ TIdentExpr.IsImplicitSelf  safe
 TIdentExpr.IsImplicitSelfMethod  safe
 TIdentExpr.IsMetaclassRef  safe
 TIdentExpr.ConstArraySymbol  safe
+TIdentExpr.QualifierUnit  serialise
+TIdentExpr.ResolvedOwnerUnit  safe
 
 # TFieldAccessExpr (uAST.pas:118)
 TFieldAccessExpr.RecordName  serialise
 TFieldAccessExpr.FieldName  serialise
+TFieldAccessExpr.QualifierUnit  serialise
 TFieldAccessExpr.Base  serialise
 TFieldAccessExpr.FieldInfo  safe
 TFieldAccessExpr.IsConstant  safe
@@ -107,6 +110,7 @@ TAssignment.IsGlobal  safe
 TAssignment.IsThreadVar  safe
 TAssignment.IsWeakLhs  safe
 TAssignment.ImplicitSelfField  safe
+TAssignment.ResolvedOwnerUnit  safe
 
 # TIfStmt (uAST.pas:238)
 TIfStmt.Condition  serialise
@@ -265,6 +269,7 @@ TInheritedCallStmt.Args  serialise
 # TMethodCallExpr (uAST.pas:881)
 TMethodCallExpr.ObjectName  serialise
 TMethodCallExpr.Name  serialise
+TMethodCallExpr.QualifierUnit  serialise
 TMethodCallExpr.Args  serialise
 TMethodCallExpr.ObjExpr  serialise
 TMethodCallExpr.IsConstructorCall  safe

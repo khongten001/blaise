@@ -136,6 +136,12 @@ type
   public
     RecordName:        string;         { used when Base = nil (leaf access) }
     FieldName:         string;
+    QualifierUnit:     string;         { set by the parser — non-empty when the
+                                         base type was written unit-qualified, e.g.
+                                         'Unit.TEnum.Member' or 'Unit.TFoo.StaticVar'.
+                                         uSemantic resolves RecordName against this
+                                         specific unit's exports (directed lookup)
+                                         instead of the flat last-wins winner. }
     Base:              TASTExpr;       { owned — when non-nil, chained access (e.g. A.B.C) }
     FieldInfo:         TFieldInfo;    { set by uSemantic — nil for constructor calls }
     IsConstant:        Boolean;       { set by uSemantic — TypeName.ConstName resolves to a class constant }

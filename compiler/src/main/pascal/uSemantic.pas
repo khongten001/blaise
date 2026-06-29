@@ -12288,7 +12288,15 @@ begin
     Exit;
   end;
 
-  RecSym := FTable.Lookup(AAccess.RecordName);
+  { A unit-qualified base type 'Unit.TEnum.Member' / 'Unit.TFoo.StaticVar'
+    resolves the base against that specific unit's exports (directed lookup), so
+    it binds to the named unit rather than the flat cross-unit last-wins winner.
+    Falls back to the normal lookup on a miss. }
+  RecSym := nil;
+  if AAccess.QualifierUnit <> '' then
+    RecSym := ResolveQualified(AAccess.QualifierUnit, AAccess.RecordName);
+  if RecSym = nil then
+    RecSym := FTable.Lookup(AAccess.RecordName);
   { If the name contains '<' and wasn't found, resolve scope-bound type params
     (e.g. 'TGenEnum<T>' → 'TGenEnum<Integer>' when T=Integer is in scope)
     and update AAccess.RecordName so codegen sees the concrete instantiation. }
