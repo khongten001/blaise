@@ -736,8 +736,8 @@ var
   IR: string;
 begin
   IR := GenUnitIR(SrcUnitIntfGenericVar);
-  AssertTrue('global data slot for G emitted',
-    Pos('data $G', IR) > 0);
+  AssertTrue('global data slot for G emitted (unit-prefix mangled)',
+    Pos('data $U_G', IR) > 0);
   AssertTrue('typeinfo for TBox_Integer emitted',
     Pos('$typeinfo_TBox_Integer', IR) > 0);
 end;

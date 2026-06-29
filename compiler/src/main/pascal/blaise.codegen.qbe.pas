@@ -157,6 +157,10 @@ type
     FInlineResultTemps:  TStringList;  { one temp per frame }
     FInlineEndLabels:    TStringList;  { one label per frame }
     FInlineResultQTypes: TStringList;  { one QBE type per frame }
+    FInlineSrcUnits:     TStringList;  { OwningUnit of the inlined body per frame —
+                                         so a global referenced inside a foreign
+                                         inline body is mangled with ITS unit, not
+                                         the consumer's (see GlobalVarUnitPrefix) }
     FInlineDepth:        Integer;      { active inline depth; cap to prevent runaway }
 
     function  ExportPrefix(): string;
@@ -241,7 +245,7 @@ type
     function  InlineResultTemp(): string;
     function  InlineEndLabel(): string;
     function  InlineResultQType(): string;
-    procedure PushInlineFrame(const AParamCsv, ATempCsv, AResultTemp,
+    procedure PushInlineFrame(const ASrcUnit, AParamCsv, ATempCsv, AResultTemp,
                               AEndLabel, AResultQType: string);
     procedure PopInlineFrame;
     function  InsideInlineFrame(): Boolean;
@@ -528,6 +532,7 @@ type
       for the class's TSymbol.OwningUnit, then applies the same
       allowlist semantics as uSemantic.MangleUnitPrefix. }
     function  ClassUnitPrefix(const AClassName: string): string;
+    function  GlobalVarUnitPrefix(const AName: string): string;
     { Compute the QBE call target for a property accessor.  When AVSlot >= 0
       the accessor is virtual: emit the vptr+slot loads and return the
       function-pointer temp.  Otherwise return the static mangled symbol
@@ -706,6 +711,7 @@ begin
   FInlineResultTemps  := TStringList.Create();
   FInlineEndLabels    := TStringList.Create();
   FInlineResultQTypes := TStringList.Create();
+  FInlineSrcUnits     := TStringList.Create();
   FInlineDepth        := 0;
   FTempCount       := 0;
   FStrLitsEmitted  := 0;
@@ -732,6 +738,7 @@ begin
   FInlineResultTemps.Free();
   FInlineEndLabels.Free();
   FInlineResultQTypes.Free();
+  FInlineSrcUnits.Free();
   FOutput.Free();
   FStrLits.Free();
   inherited Destroy();
@@ -1482,7 +1489,7 @@ begin
   end;
 end;
 
-procedure TCodeGenQBE.PushInlineFrame(const AParamCsv, ATempCsv,
+procedure TCodeGenQBE.PushInlineFrame(const ASrcUnit, AParamCsv, ATempCsv,
                                        AResultTemp, AEndLabel,
                                        AResultQType: string);
 begin
@@ -1491,6 +1498,7 @@ begin
   FInlineResultTemps.Add(AResultTemp);
   FInlineEndLabels.Add(AEndLabel);
   FInlineResultQTypes.Add(AResultQType);
+  FInlineSrcUnits.Add(ASrcUnit);
   Inc(FInlineDepth);
 end;
 
@@ -1502,6 +1510,7 @@ begin
   FInlineResultTemps.Delete(FInlineDepth - 1);
   FInlineEndLabels.Delete(FInlineDepth - 1);
   FInlineResultQTypes.Delete(FInlineDepth - 1);
+  FInlineSrcUnits.Delete(FInlineDepth - 1);
   Dec(FInlineDepth);
 end;
 
@@ -1622,7 +1631,8 @@ begin
     ArgTemps.Free();
   end;
 
-  PushInlineFrame(ParamCsv, TempCsv, ResultTemp, EndLabel, ResultQType);
+  PushInlineFrame(Callee.OwningUnit, ParamCsv, TempCsv, ResultTemp, EndLabel,
+                  ResultQType);
   try
     { Emit the callee body's statements.  EmitStmt / EmitExpr consult the
       inline frame stack to remap parameter ident reads and to redirect
@@ -1999,7 +2009,13 @@ begin
     begin
       VarName := Decl.Names.Strings[J];
       if Decl.IsThreadVar then
-        FThreadVarNames.Add(VarName);
+        FThreadVarNames.Add(VarName);   { keyed on the bare name — VarRef's
+                                          threadvar test sees the bare ident }
+      { Mangle the emitted symbol with the owning unit (here always the unit
+        being compiled) so same-named globals across units don't collide; VarRef
+        applies the identical prefix at every reference.  Bare name kept above
+        for the threadvar lookup key. }
+      VarName := GlobalVarUnitPrefix(VarName) + VarName;
       { Initialised global: emit the folded value into the data section instead
         of a zero slot.  threadvars cannot carry a non-zero static initialiser
         (they live in .tbss), so the parser/semantic restrict initialisers to
@@ -5078,14 +5094,62 @@ begin
   end;
 end;
 
+{ Unit-prefix for a module-scope global VARIABLE symbol, so same-named globals in
+  different units (e.g. GRegistry in two units) don't collide at link.  The owning
+  unit is resolved in priority order:
+    1. the symbol table — covers imported and own-INTERFACE globals (OwningUnit);
+    2. the inlined body's source unit — a global referenced inside a foreign
+       inline body belongs to THAT unit, but is impl-private there so it is not in
+       the consumer's table (codegen has no impl-private symbols, same reason an
+       impl-section class gets no vtable);
+    3. the unit currently being compiled — own impl-private globals.
+  The CANONICAL MangleUnitPrefix allowlist (System, rtl.*, runtime.*, blaise_*
+  stay bare — RTL globals are referenced unmangled) and the program-scope
+  exclusion (program-scope symbols are unprefixed — see uSemantic.CurrentUnitPrefix)
+  then map the owner to a prefix.  Definition (EmitGlobalVarData) and every
+  reference (VarRef) run the identical resolution, so they always agree. }
+function TCodeGenQBE.GlobalVarUnitPrefix(const AName: string): string;
+var
+  Sym:   TSymbol;
+  Owner: string;
+begin
+  Result := '';
+  if FSymTable <> nil then
+  begin
+    Sym := FSymTable.Lookup(AName);
+    if (Sym <> nil) and (Sym.OwningUnit <> '') then
+      Owner := Sym.OwningUnit
+    else if FInlineDepth > 0 then
+      Owner := FInlineSrcUnits.Strings[FInlineDepth - 1]
+    else
+      Owner := FCurrentUnitName;
+  end
+  else if FInlineDepth > 0 then
+    Owner := FInlineSrcUnits.Strings[FInlineDepth - 1]
+  else
+    Owner := FCurrentUnitName;
+  if Owner = '' then Exit;
+  if (FProgramName <> '') and SameText(Owner, FProgramName) then Exit;
+  Result := MangleUnitPrefix(Owner);
+  { Idempotence guard: a static class-var (e.g. RegModU.TReg.FCount) is emitted
+    under its already unit+class-qualified symbol RegModU_TReg_FCount.  Such a
+    name is passed here verbatim and Lookup does not find it, so Owner falls back
+    to the current unit and the prefix would be applied a SECOND time
+    (RegModU_RegModU_TReg_FCount), breaking the def/ref match at link.  If AName
+    already starts with the prefix, it is carried — don't re-prefix it. }
+  if (Result <> '') and (Length(AName) >= Length(Result)) and
+     SameText(Copy(AName, 0, Length(Result)), Result) then
+    Result := '';
+end;
+
 function TCodeGenQBE.VarRef(const AName: string; AIsGlobal: Boolean): string;
 begin
   if AIsGlobal then
   begin
     if FThreadVarNames.IndexOf(AName) >= 0 then
-      Result := 'thread $' + AName
+      Result := 'thread $' + GlobalVarUnitPrefix(AName) + AName
     else
-      Result := '$' + AName;
+      Result := '$' + GlobalVarUnitPrefix(AName) + AName;
   end
   { A variable captured from an enclosing proc is reached through the hidden
     %_cap_<Name> pointer parameter, which holds the address of the enclosing

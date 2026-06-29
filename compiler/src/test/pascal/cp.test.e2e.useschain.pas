@@ -45,6 +45,10 @@ type
     { Unit-qualified ancestor in a class declaration: class(Unit.TParent)
       binds to that unit's type so inheritance works across units. }
     procedure TestRun_QualifiedInheritance;
+    { Two units each declare an impl-private global of the SAME name; with
+      unit-prefix mangling on module-scope globals they no longer collide at
+      link, so a program using both links and runs. }
+    procedure TestRun_SameNamedGlobals_NoLinkCollision;
   end;
 
 implementation
@@ -317,6 +321,53 @@ begin
     CompileAndRunWithUnit('ua', UnitSrc, DrvSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('inherited Base + 1', '42' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_SameNamedGlobals_NoLinkCollision;
+const
+  UnitOne = '''
+    unit uone;
+    interface
+    function GetOne: Integer;
+    implementation
+    var G: Integer;
+    function GetOne: Integer;
+    begin
+      G := 11;
+      Result := G
+    end;
+    end.
+    ''';
+  UnitTwo = '''
+    unit utwo;
+    interface
+    function GetTwo: Integer;
+    implementation
+    var G: Integer;
+    function GetTwo: Integer;
+    begin
+      G := 22;
+      Result := G
+    end;
+    end.
+    ''';
+  DrvSrc = '''
+    program P;
+    uses uone, utwo;
+    begin
+      WriteLn(GetOne() + GetTwo())
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Both units emit a global named G; without unit-prefix mangling the two
+    '$G' definitions collide at link.  Mangling makes them distinct, so the
+    program links and prints 11 + 22 = 33. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UnitOne, UnitTwo, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('GetOne + GetTwo', '33' + LE, Output);
 end;
 
 initialization
