@@ -61,6 +61,7 @@ type
     procedure TestOPDF_Set_RecType;
     procedure TestOPDF_Set_SizeInBytes;
     procedure TestOPDF_Property_RecType;
+    procedure TestOPDF_Property_MethodBacked_LayoutIntact;
     procedure TestOPDF_Interface_RecType;
     procedure TestOPDF_Constant_OrdRecord;
     procedure TestOPDF_Constant_OrdValue;
@@ -609,6 +610,47 @@ begin
         begin end.
         ''');
   AssertTrue('recProperty comment', Contains(IR, '# recProperty: Val'));
+end;
+
+procedure TOPDFTests.TestOPDF_Property_MethodBacked_LayoutIntact;
+{ Regression for the recProperty corruption (bugs.txt, opdebugger #10/#13 era):
+  a method-backed property must emit a COMPLETE, correctly-sized recProperty so
+  the reader (which reads SizeOf(TDefProperty)=32 fixed bytes then the three
+  length-prefixed strings) does not overshoot into the next record.  The fixed
+  payload is 32 bytes (4 ClassTypeID + 4 PropTypeID + 1 ReadType + 1 WriteType +
+  8 ReadAddr + 8 WriteAddr + 2+2+2 length words); RecSize = 32 + len(getterSym) +
+  len(setterSym) + len(name).  For TGadget.Val read GetVal write SetVal:
+  getterSym = "TGadget_GetVal" (14), setterSym = "TGadget_SetVal" (14),
+  name = "Val" (3) -> RecSize = 32 + 14 + 14 + 3 = 63. }
+var
+  IR: string;
+begin
+  IR := GenOPDF(
+    '''
+        program P;
+        type TGadget = class
+          FVal: Integer;
+          function GetVal: Integer;
+          procedure SetVal(AValue: Integer);
+          property Val: Integer read GetVal write SetVal;
+        end;
+        function TGadget.GetVal: Integer;
+        begin Result := FVal; end;
+        procedure TGadget.SetVal(AValue: Integer);
+        begin FVal := AValue; end;
+        begin end.
+        ''');
+  AssertTrue('recProperty comment', Contains(IR, '# recProperty: Val'));
+  { RecSize must match the fixed payload (32) + the three string lengths. }
+  AssertTrue('recProperty RecSize is 63', Contains(IR, '.int  63  # RecSize'));
+  { The getter/setter symbol names and the property name must be present as the
+    three trailing strings (the fields the corruption garbled). }
+  AssertTrue('getter method symbol string', Contains(IR, '.ascii "TGadget_GetVal"'));
+  AssertTrue('setter method symbol string', Contains(IR, '.ascii "TGadget_SetVal"'));
+  { The length words must match the actual symbol lengths. }
+  AssertTrue('ReadMethodNameLen = 14', Contains(IR, '.word 14  # ReadMethodNameLen'));
+  AssertTrue('WriteMethodNameLen = 14', Contains(IR, '.word 14  # WriteMethodNameLen'));
+  AssertTrue('NameLen = 3', Contains(IR, '.word 3  # NameLen'));
 end;
 
 procedure TOPDFTests.TestOPDF_Interface_RecType;
