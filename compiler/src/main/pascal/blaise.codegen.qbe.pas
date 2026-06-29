@@ -386,8 +386,19 @@ type
     function  EmitInstancePtr(AExpr: TASTExpr): string;
     function  FieldPtr(const ARecordVar: string; AOffset: Integer; AIsGlobal: Boolean = False): string;
     { Returns the QBE address token for a variable: '$Name' for globals,
-      '%_var_Name' for locals. }
-    function  VarRef(const AName: string; AIsGlobal: Boolean): string;
+      '%_var_Name' for locals.  The AOwner overload mangles a global's
+      storage symbol with an explicit owning unit (from the resolved
+      symbol's OwningUnit) rather than re-looking-up the bare name, so a
+      reference to a cross-unit last-wins var reaches the correct slot.
+      AOwner = '' falls back to the bare-name resolution. }
+    function  VarRef(const AName: string; AIsGlobal: Boolean): string; overload;
+    function  VarRef(const AName: string; AIsGlobal: Boolean;
+                     const AOwner: string): string; overload;
+    { Owning unit to mangle a global-var reference with: the semantic-stamped
+      ResolvedOwnerUnit, falling back to the explicit QualifierUnit (the latter
+      survives .bif round-trips for an inlined qualified reference where the
+      former, deliberately not serialised, is absent). }
+    function  IdentVarOwner(AIdent: TIdentExpr): string;
     { Returns a QBE temp (or address token) that holds the address to pass as a
       var-param actual argument.  When the actual argument is itself a var param
       its local slot contains a pointer — emit loadl to obtain the original
@@ -533,6 +544,12 @@ type
       allowlist semantics as uSemantic.MangleUnitPrefix. }
     function  ClassUnitPrefix(const AClassName: string): string;
     function  GlobalVarUnitPrefix(const AName: string): string;
+    { Map an owning unit to its global-var mangle prefix (program-scope and
+      the RTL allowlist stay bare).  The shared core of GlobalVarUnitPrefix
+      (name-based owner resolution) and the AOwner VarRef overload, so a
+      definition site (keyed on the unit being compiled) and a reference
+      site (keyed on the resolved symbol's owner) always agree. }
+    function  MangleGlobalOwner(const AOwner: string): string;
     { Compute the QBE call target for a property accessor.  When AVSlot >= 0
       the accessor is virtual: emit the vptr+slot loads and return the
       function-pointer temp.  Otherwise return the static mangled symbol
@@ -2011,11 +2028,14 @@ begin
       if Decl.IsThreadVar then
         FThreadVarNames.Add(VarName);   { keyed on the bare name — VarRef's
                                           threadvar test sees the bare ident }
-      { Mangle the emitted symbol with the owning unit (here always the unit
-        being compiled) so same-named globals across units don't collide; VarRef
-        applies the identical prefix at every reference.  Bare name kept above
-        for the threadvar lookup key. }
-      VarName := GlobalVarUnitPrefix(VarName) + VarName;
+      { Mangle the emitted symbol with the unit currently being compiled so
+        same-named globals across units don't collide; VarRef applies the
+        identical prefix (via the resolved symbol's owner) at every reference.
+        Keyed on FCurrentUnitName, not a name re-lookup, so a cross-unit
+        last-wins loser still defines its own slot (the flat table holds only
+        the winner after extraction).  Bare name kept above for the threadvar
+        lookup key. }
+      VarName := MangleGlobalOwner(FCurrentUnitName) + VarName;
       { Initialised global: emit the folded value into the data section instead
         of a zero slot.  threadvars cannot carry a non-zero static initialiser
         (they live in .tbss), so the parser/semantic restrict initialisers to
@@ -4613,14 +4633,14 @@ begin
       whole bitmap into the destination slot. }
     ValTemp := EmitExpr(AAssign.Expr);
     EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
-      [VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp,
+      [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp,
        TSetTypeDesc(AAssign.ResolvedLhsType).RawSize()]));
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyStaticArray) and
           IsRecordCall(AAssign.Expr) then
   begin
-    EmitRecordCallSret(AAssign.Expr, VarRef(AAssign.Name, AAssign.IsGlobal));
+    EmitRecordCallSret(AAssign.Expr, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit));
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyRecord) then
@@ -4642,21 +4662,21 @@ begin
       EmitLine(Format('  call $memset(l %s, w 0, l %d)',
         [SretBuf, ClassRT.TotalSize()]));
       EmitRecordCallSret(AAssign.Expr, SretBuf);
-      EmitRecordReleaseFields(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal));
+      EmitRecordReleaseFields(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit));
       EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), SretBuf, ClassRT.TotalSize()]));
+        [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), SretBuf, ClassRT.TotalSize()]));
     end
     else if IsRecordCall(AAssign.Expr) then
     begin
-      EmitRecordReleaseFields(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal));
+      EmitRecordReleaseFields(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit));
       EmitLine(Format('  call $memset(l %s, w 0, l %d)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal), ClassRT.TotalSize()]));
-      EmitRecordCallSret(AAssign.Expr, VarRef(AAssign.Name, AAssign.IsGlobal));
+        [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ClassRT.TotalSize()]));
+      EmitRecordCallSret(AAssign.Expr, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit));
     end
     else
     begin
       ValTemp := EmitExpr(AAssign.Expr);
-      EmitRecordCopy(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp);
+      EmitRecordCopy(ClassRT, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp);
     end;
   end
   else if (AAssign.ResolvedLhsType <> nil) and
@@ -4668,7 +4688,7 @@ begin
       another method-pointer var or a TMethod record (same layout). }
     ValTemp := EmitExpr(AAssign.Expr);
     EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
-      [VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp]));
+      [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp]));
   end
   else if AAssign.Expr.ResolvedType.IsString() then
   begin
@@ -4677,7 +4697,7 @@ begin
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
     else
-      EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     ValTemp := EmitExpr(AAssign.Expr);
     if not ExprOwnsRef(AAssign.Expr) then
       EmitLine(Format('  call $_StringAddRef(l %s)', [ValTemp]));
@@ -4685,7 +4705,7 @@ begin
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
     else
-      EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyDynArray) then
@@ -4697,7 +4717,7 @@ begin
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
     else
-      EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     ValTemp := EmitExpr(AAssign.Expr);
     if not ExprOwnsRef(AAssign.Expr) then
       EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValTemp]));
@@ -4705,7 +4725,7 @@ begin
     if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
     else
-      EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+      EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyClass) and
@@ -4713,19 +4733,19 @@ begin
   begin
     if AAssign.IsWeakLhs then
       EmitLine(Format('  call $_WeakClear(l %s)',
-        [VarRef(AAssign.Name, AAssign.IsGlobal)]))
+        [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]))
     else
     begin
       OldTemp := AllocTemp();
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
       else
-        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =l copy 0', [AAssign.Name]))
       else
-        EmitLine(Format('  storel 0, %s', [VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  storel 0, %s', [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     end;
   end
   else if AAssign.IsWeakLhs and (AAssign.Expr.ResolvedType.Kind = tyClass) then
@@ -4736,7 +4756,7 @@ begin
       any prior registration for this slot. }
     ValTemp := EmitExpr(AAssign.Expr);
     EmitLine(Format('  call $_WeakAssign(l %s, l %s)',
-      [VarRef(AAssign.Name, AAssign.IsGlobal), ValTemp]));
+      [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp]));
   end
   else if AAssign.Expr.ResolvedType.Kind = tyClass then
   begin
@@ -4758,7 +4778,7 @@ begin
       if not ExprOwnsRef(AAssign.Expr) then
         EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
       EmitLine(Format('  storel %s, %s',
-        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       MarkArcSlotWritten(AAssign.Name);
     end
     else
@@ -4767,7 +4787,7 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
       else
-        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       ValTemp := EmitExpr(AAssign.Expr);
       if not ExprOwnsRef(AAssign.Expr) then
         EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
@@ -4775,7 +4795,7 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
       else
-        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       MarkArcSlotWritten(AAssign.Name);
     end;
   end
@@ -4797,7 +4817,7 @@ begin
       ValTemp := EmitExpr(AAssign.Expr);
       EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
       EmitLine(Format('  storel %s, %s',
-        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       MarkArcSlotWritten(AAssign.Name);
     end
     else
@@ -4806,14 +4826,14 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %s =l copy %%_var_%s', [OldTemp, AAssign.Name]))
       else
-        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  %s =l loadl %s', [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       ValTemp := EmitExpr(AAssign.Expr);
       EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
       else
-        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       MarkArcSlotWritten(AAssign.Name);
     end;
   end
@@ -4851,7 +4871,7 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =d copy %s', [AAssign.Name, ValTemp]))
       else
-        EmitLine(Format('  stored %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  stored %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     end
     else if (AAssign.ResolvedLhsType <> nil) and
             (AAssign.ResolvedLhsType.Kind = tySingle) then
@@ -4883,7 +4903,7 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =s copy %s', [AAssign.Name, ValTemp]))
       else
-        EmitLine(Format('  stores %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  stores %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     end
     else if (AAssign.ResolvedLhsType <> nil) and
             (QbeTypeOf(AAssign.ResolvedLhsType) = 'l') then
@@ -4898,7 +4918,7 @@ begin
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
         EmitLine(Format('  %%_var_%s =l copy %s', [AAssign.Name, ValTemp]))
       else
-        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  storel %s, %s', [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
     end
     else
     begin
@@ -4916,7 +4936,7 @@ begin
           's': StoreInstr := 'stores';
         else   StoreInstr := 'storel';
         end;
-        EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal)]));
+        EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
       end;
     end;
   end;
@@ -4954,7 +4974,7 @@ begin
     if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyClass) then
     begin
       Loaded := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal, IdentVarOwner(Id))]));
       if Id.ParamMode <> pmNone then
       begin
         { var-param class ident: slot -> caller var -> instance. }
@@ -4969,11 +4989,11 @@ begin
       { Var-record param: dereference the param slot to get the actual record
         address. }
       Loaded := AllocTemp();
-      EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal)]));
+      EmitLine(Format('  %s =l loadl %s', [Loaded, VarRef(Id.Name, Id.IsGlobal, IdentVarOwner(Id))]));
       Result := Loaded;
     end
     else
-      Result := VarRef(Id.Name, Id.IsGlobal);  { inline record }
+      Result := VarRef(Id.Name, Id.IsGlobal, IdentVarOwner(Id));  { inline record }
     Exit;
   end;
 
@@ -5128,28 +5148,52 @@ begin
     Owner := FInlineSrcUnits.Strings[FInlineDepth - 1]
   else
     Owner := FCurrentUnitName;
-  if Owner = '' then Exit;
-  if (FProgramName <> '') and SameText(Owner, FProgramName) then Exit;
-  Result := MangleUnitPrefix(Owner);
-  { Idempotence guard: a static class-var (e.g. RegModU.TReg.FCount) is emitted
-    under its already unit+class-qualified symbol RegModU_TReg_FCount.  Such a
-    name is passed here verbatim and Lookup does not find it, so Owner falls back
-    to the current unit and the prefix would be applied a SECOND time
-    (RegModU_RegModU_TReg_FCount), breaking the def/ref match at link.  If AName
-    already starts with the prefix, it is carried — don't re-prefix it. }
-  if (Result <> '') and (Length(AName) >= Length(Result)) and
-     SameText(Copy(AName, 0, Length(Result)), Result) then
-    Result := '';
+  Result := MangleGlobalOwner(Owner);
+end;
+
+function TCodeGenQBE.MangleGlobalOwner(const AOwner: string): string;
+begin
+  Result := '';
+  if AOwner = '' then Exit;
+  { Sentinel: the global's name is ALREADY a fully-mangled symbol (e.g. a static
+    class var's ClassVarEmitName, which master computes as
+    CurrentUnitPrefix()+Class+'_'+Field — its class qualifier is more
+    comprehensive than the module-var prefix, so use it verbatim and add no
+    further prefix). }
+  if AOwner = PreMangledGlobalOwner then Exit;
+  if (FProgramName <> '') and SameText(AOwner, FProgramName) then Exit;
+  Result := MangleUnitPrefix(AOwner);
 end;
 
 function TCodeGenQBE.VarRef(const AName: string; AIsGlobal: Boolean): string;
+  overload;
+begin
+  Result := VarRef(AName, AIsGlobal, '');
+end;
+
+function TCodeGenQBE.IdentVarOwner(AIdent: TIdentExpr): string;
+begin
+  Result := AIdent.ResolvedOwnerUnit;
+  if Result = '' then Result := AIdent.QualifierUnit;
+end;
+
+function TCodeGenQBE.VarRef(const AName: string; AIsGlobal: Boolean;
+  const AOwner: string): string; overload;
+var
+  Prefix: string;
 begin
   if AIsGlobal then
   begin
-    if FThreadVarNames.IndexOf(AName) >= 0 then
-      Result := 'thread $' + GlobalVarUnitPrefix(AName) + AName
+    { An explicit owner (the resolved symbol's OwningUnit) mangles directly;
+      otherwise fall back to resolving the owner from the bare name. }
+    if AOwner <> '' then
+      Prefix := MangleGlobalOwner(AOwner)
     else
-      Result := '$' + GlobalVarUnitPrefix(AName) + AName;
+      Prefix := GlobalVarUnitPrefix(AName);
+    if FThreadVarNames.IndexOf(AName) >= 0 then
+      Result := 'thread $' + Prefix + AName
+    else
+      Result := '$' + Prefix + AName;
   end
   { A variable captured from an enclosing proc is reached through the hidden
     %_cap_<Name> pointer parameter, which holds the address of the enclosing
@@ -5180,7 +5224,7 @@ begin
     { Interface variable: the fat pointer lives in one contiguous 16-byte
       block (locals: one alloc; globals: one 16-byte data item) whose base
       is the _obj slot — that base IS the var-arg address. }
-    Result := VarRef(AIdent.Name, AIdent.IsGlobal) + '_obj';
+    Result := VarRef(AIdent.Name, AIdent.IsGlobal, IdentVarOwner(AIdent)) + '_obj';
   end
   else if AIdent.IsImplicitSelf then
   begin
@@ -5197,7 +5241,7 @@ begin
       Result := SelfT;
   end
   else
-    Result := VarRef(AIdent.Name, AIdent.IsGlobal);
+    Result := VarRef(AIdent.Name, AIdent.IsGlobal, IdentVarOwner(AIdent));
 end;
 
 function TCodeGenQBE.EmitLValueAddr(AExpr: TASTExpr): string;
@@ -6470,6 +6514,9 @@ begin
     try
       CVStore.Name            := AAssign.ClassVarEmitName;
       CVStore.IsGlobal        := True;
+      { ClassVarEmitName is already the fully-mangled static-var symbol; flag it
+        so VarRef's module-var unit-prefixing does not double-apply. }
+      CVStore.ResolvedOwnerUnit := PreMangledGlobalOwner;
       CVStore.ResolvedLhsType := AAssign.ClassVarLhsType;
       CVStore.Expr            := AAssign.Expr;
       EmitAssignment(CVStore);
@@ -13088,7 +13135,7 @@ begin
       { Jumbo set value param: the QBE backend spills it into a local inline
         bitmap slot (value semantics), so %_var_X IS the bitmap address —
         return it directly without a load. }
-      Exit(VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal));
+      Exit(VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr))));
     end
     else if (TIdentExpr(AExpr).ParamMode <> pmNone) and
             (AExpr.ResolvedType <> nil) and
@@ -13120,7 +13167,7 @@ begin
             IsAggregateAddrType(AExpr.ResolvedType) then
     begin
       { Aggregate variable — return its storage address directly (no load). }
-      Exit(VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal));
+      Exit(VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr))));
     end
     else if (AExpr.ResolvedType <> nil) and
             (AExpr.ResolvedType.Kind = tyInterface) then
@@ -13145,14 +13192,14 @@ begin
       QType := QbeTypeOf(AExpr.ResolvedType);
       case QType of
         'w': EmitLine(Format('  %s =w loadw %s',
-               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr)))]));
         'd': EmitLine(Format('  %s =d loadd %s',
-               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr)))]));
         's': EmitLine(Format('  %s =s loads %s',
-               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+               [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr)))]));
       else
         EmitLine(Format('  %s =l loadl %s',
-          [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal)]));
+          [T, VarRef(TIdentExpr(AExpr).Name, TIdentExpr(AExpr).IsGlobal, IdentVarOwner(TIdentExpr(AExpr)))]));
       end;
     end;
     Result := T;

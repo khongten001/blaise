@@ -122,6 +122,14 @@ type
                                       resolves the name against this specific unit's
                                       exports (per-unit cache) instead of the uses chain,
                                       so a same-named const in another unit can't shadow it. }
+    ResolvedOwnerUnit: string;      { set by uSemantic — for a module-scope global var,
+                                      the owning unit of the symbol actually resolved (the
+                                      uses-chain last-wins winner for a bare ref, or the
+                                      named unit for a qualified ref).  Codegen mangles the
+                                      global's storage symbol with this owner so two used
+                                      units exporting the same var name reference distinct
+                                      slots.  Not serialised — recomputed at analysis time;
+                                      empty falls back to the bare-name resolution. }
   end;
 
   TFieldAccessExpr = class(TASTExpr)
@@ -247,6 +255,10 @@ type
                                    _WeakAssign in place of the strong
                                    addref/release pattern. }
     ImplicitSelfField: TObject;  { TFieldInfo — non-nil when LHS is bare field (implicit Self) }
+    ResolvedOwnerUnit: string;   { set by uSemantic — owning unit of a module-scope global
+                                   var target; codegen mangles the store address with it so
+                                   same-named cross-unit globals write distinct slots.  See
+                                   the matching field on TIdentExpr. }
     destructor Destroy; override;
   end;
 

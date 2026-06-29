@@ -49,6 +49,15 @@ type
       unit-prefix mangling on module-scope globals they no longer collide at
       link, so a program using both links and runs. }
     procedure TestRun_SameNamedGlobals_NoLinkCollision;
+    { Cross-unit interface VAR shadowing: two used units export the same var
+      name; the unit later in `uses` wins a bare reference (last-in-uses), and
+      reversing the order flips the winner — mirrors the const last-wins rule. }
+    procedure TestRun_CrossUnitVar_LastWins;
+    procedure TestRun_CrossUnitVar_LastWins_Reversed;
+    { Unit-qualified VAR disambiguation: 'Unit.V' references that specific
+      unit's own slot (distinct storage), independent of the bare last-wins
+      winner, so both values are readable side by side. }
+    procedure TestRun_CrossUnitVar_QualifiedDisambig;
   end;
 
 implementation
@@ -368,6 +377,82 @@ begin
     CompileAndRunWithUnits(UnitOne, UnitTwo, DrvSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('GetOne + GetTwo', '33' + LE, Output);
+end;
+
+const
+  UVA_Var = '''
+    unit uva;
+    interface
+    var V: Integer = 7;
+    implementation
+    end.
+    ''';
+  UVB_Var = '''
+    unit uvb;
+    interface
+    var V: Integer = 9;
+    implementation
+    end.
+    ''';
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitVar_LastWins;
+const
+  DrvSrc = '''
+    program P;
+    uses uva, uvb;
+    begin
+      WriteLn(V)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Both uva and uvb export `V`; uvb is later in `uses`, so bare V = 9.
+    The shadowed uva.V keeps its own slot (no link collision). }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UVA_Var, UVB_Var, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (uvb) wins', '9' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitVar_LastWins_Reversed;
+const
+  DrvSrc = '''
+    program P;
+    uses uvb, uva;
+    begin
+      WriteLn(V)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Reversed `uses` order: uva is now later, so bare V = 7. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UVA_Var, UVB_Var, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (uva) wins', '7' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitVar_QualifiedDisambig;
+const
+  DrvSrc = '''
+    program P;
+    uses uva, uvb;
+    begin
+      WriteLn(uva.V);
+      WriteLn(uvb.V)
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Qualified references pick each unit's own slot (uva.V = 7, uvb.V = 9)
+    regardless of the bare last-wins rule — distinct storage per unit. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(UVA_Var, UVB_Var, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('uva.V then uvb.V', '7' + LE + '9' + LE, Output);
 end;
 
 initialization

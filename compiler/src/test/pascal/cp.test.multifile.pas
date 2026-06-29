@@ -56,6 +56,10 @@ type
     { ------------------------------------------------------------------ }
     procedure TestCodegen_TwoFileCompile_UnitFuncExported;
     procedure TestCodegen_TwoFileCompile_MainPresent;
+    { Two used units export the same global var name; a qualified reference
+      'Unit.V' must emit each unit's own owner-prefixed storage symbol so the
+      two refer to distinct slots rather than colliding on a bare '$V'. }
+    procedure TestCodegen_CrossUnitQualifiedVar_DistinctSymbols;
   end;
 
 implementation
@@ -730,6 +734,67 @@ begin
     SA.Free();
     Prog.Free();
     U.Free();
+  end;
+end;
+
+procedure TMultifileTests.TestCodegen_CrossUnitQualifiedVar_DistinctSymbols;
+const
+  UnitA =
+    '''
+        unit uva;
+        interface
+        var V: Integer = 7;
+        implementation
+        end.
+        ''';
+  UnitB =
+    '''
+        unit uvb;
+        interface
+        var V: Integer = 9;
+        implementation
+        end.
+        ''';
+  ProgSrc =
+    '''
+        program TestP;
+        uses uva, uvb;
+        var r: Integer;
+        begin
+          r := uva.V;
+          r := uvb.V
+        end.
+        ''';
+var
+  UA, UB: TUnit;
+  Prog:   TProgram;
+  SA:     TSemanticAnalyser;
+  CG:     TCodeGenQBE;
+  IR:     string;
+begin
+  UA   := ParseUnitSrc(UnitA);
+  UB   := ParseUnitSrc(UnitB);
+  Prog := ParseProg(ProgSrc);
+  SA   := TSemanticAnalyser.Create();
+  CG   := TCodeGenQBE.Create();
+  try
+    SA.AnalyseUnitForExport(UA);
+    SA.AnalyseUnitForExport(UB);
+    SA.Analyse(Prog);
+    CG.AppendUnit(UA);
+    CG.AppendUnit(UB);
+    CG.AppendProgram(Prog);
+    IR := CG.GetOutput();
+    { Each unit defines its own owner-prefixed slot, and the qualified loads
+      reference both — proving the two same-named vars do not collapse. }
+    AssertTrue('uva.V slot referenced', Pos('$uva_V', IR) > 0);
+    AssertTrue('uvb.V slot referenced', Pos('$uvb_V', IR) > 0);
+  finally
+    CG.Free();
+    SA.Free();
+    Prog.Free();
+    UB.Free();
+    UA.Free();
   end;
 end;
 

@@ -504,6 +504,15 @@ type
       harvested into the cache. }
     function ResolveQualified(const AUnit, AName: string): TSymbol;
 
+    { Define a module-scope global (interface var) with cross-unit
+      last-in-uses-wins semantics, mirroring AnalyseConstDecls.  On a
+      clean Define the symbol is registered in the per-unit cache; on a
+      cross-unit collision the prior unit's symbol is detached (kept alive
+      in the per-unit cache so a qualified Unit.Var reference still reaches
+      it) and this unit's symbol is installed as the flat winner.  Same-unit
+      redeclaration and module-name markers stay hard errors. }
+    procedure DefineGlobalLastWins(ASym: TSymbol; ALine, ACol: Integer);
+
     { Record one enum member in the reverse index (FEnumMemberIndex).
       Called once per member as its enum type is analysed.  Enum members
       are NOT registered as bare global symbols any more — a bare member
@@ -1991,12 +2000,7 @@ begin
       Sym := TSymbol.Create(VDecl.Names.Strings[J], skVariable, ParType);
       Sym.IsGlobal    := True;
       Sym.IsThreadVar := VDecl.IsThreadVar;
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate identifier ''%s''',
-          [VDecl.Names.Strings[J]]), VDecl.Line, VDecl.Col);
-      end;
+      DefineGlobalLastWins(Sym, VDecl.Line, VDecl.Col);
     end;
   end;
 
@@ -5270,6 +5274,44 @@ begin
     if Sym.OwningUnit <> '' then
       RegisterUnitSymbol(Sym.OwningUnit, Sym);
   end;
+end;
+
+procedure TSemanticAnalyser.DefineGlobalLastWins(ASym: TSymbol;
+  ALine, ACol: Integer);
+var
+  RefSym: TSymbol;
+  Prev:   TSymbol;
+begin
+  if not FTable.Define(ASym) then
+  begin
+    RefSym := FTable.CurrentScope.LookupLocal(ASym.Name);
+    { A module-name marker (issue #84), a non-unit symbol (builtin /
+      program-scope, OwningUnit = ''), or a same-unit redeclaration
+      blocking the Define is a hard error — only a genuine cross-unit
+      collision (two used units exporting the same name) gets last-wins. }
+    if (RefSym = nil) or (RefSym.Kind = skModule) or
+       (RefSym.OwningUnit = '') or
+       SameText(RefSym.OwningUnit, ASym.OwningUnit) then
+    begin
+      ASym.Free();
+      SemanticError(Format('Duplicate identifier ''%s''', [ASym.Name]),
+        ALine, ACol);
+      Exit;
+    end;
+    { Cross-unit collision: last-in-uses wins.  Detach the prior unit's
+      var and stash it in the per-unit cache so a qualified reference
+      (Unit.Var) can still reach the shadowed slot; install this unit's
+      var as the flat winner.  Mirrors AnalyseConstDecls and RegisterVars. }
+    Prev := FTable.ExtractLocal(ASym.Name);
+    if (Prev <> nil) and (Prev.OwningUnit <> '') then
+      RegisterUnitSymbol(Prev.OwningUnit, Prev);
+    FTable.Define(ASym);
+  end;
+  { Register every interface var in the per-unit cache keyed by its owning
+    unit, so a qualified reference resolves against the declaring unit's own
+    slot regardless of which unit won the bare (flat) slot. }
+  if ASym.OwningUnit <> '' then
+    RegisterUnitSymbol(ASym.OwningUnit, ASym);
 end;
 
 function TSemanticAnalyser.NewArrayConstLabel(const AName: string): string;
@@ -8629,6 +8671,18 @@ begin
   AAssign.IsWeakLhs       := VarSym.IsWeak;
   AAssign.IsGlobal        := VarSym.IsGlobal;
   AAssign.IsThreadVar     := VarSym.IsThreadVar;
+  { Owning unit of a module-scope global target, so the store address is
+    mangled with the unit that won resolution — keeps a bare write to a
+    cross-unit last-wins var hitting the same slot a bare read sees.  A static
+    class/record var's name is its already fully-mangled GlobalEmitName, so flag
+    it pre-mangled to keep codegen's module-var prefixing from double-applying. }
+  if VarSym.IsGlobal and (VarSym.Kind = skVariable) then
+  begin
+    if VarSym.IsClassVar then
+      AAssign.ResolvedOwnerUnit := PreMangledGlobalOwner
+    else
+      AAssign.ResolvedOwnerUnit := VarSym.OwningUnit;
+  end;
 
   ResolveDiamond(AAssign.Expr, VarSym.TypeDesc);
 
@@ -11742,6 +11796,22 @@ begin
       TIdentExpr(AExpr).ParamMode := pmNone;
     TIdentExpr(AExpr).IsGlobal    := Sym.IsGlobal;
     TIdentExpr(AExpr).IsThreadVar := Sym.IsThreadVar;
+    { Record the owning unit of a module-scope global so codegen mangles
+      the storage symbol with the unit that actually won resolution (the
+      uses-chain last-wins winner for a bare ref, the named unit for a
+      qualified ref).  Without this, two used units exporting the same var
+      name both resolve to one slot. }
+    if Sym.IsGlobal and (Sym.Kind = skVariable) then
+    begin
+      { A static class/record var's Name was rewritten above to its already
+        fully-mangled GlobalEmitName (Unit_Class_Field); flag it so codegen's
+        module-var prefixing does not double-apply.  Plain module globals carry
+        their owning unit for owner-based mangling. }
+      if Sym.IsClassVar then
+        TIdentExpr(AExpr).ResolvedOwnerUnit := PreMangledGlobalOwner
+      else
+        TIdentExpr(AExpr).ResolvedOwnerUnit := Sym.OwningUnit;
+    end;
     if Sym.Kind = skConstant then
     begin
       TIdentExpr(AExpr).IsConstant  := True;

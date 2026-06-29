@@ -711,6 +711,14 @@ function IsUnmangledUnit(const AUnitName: string): Boolean;
   agree on the QBE global name. }
 function MangleUnitPrefix(const AUnitName: string): string;
 
+const
+  { Sentinel owning-unit value meaning "this global's emit name is ALREADY a
+    fully-mangled symbol — codegen must add no further unit prefix".  Used for
+    static class/record vars, whose label (Unit_Class_Field) is class-qualified
+    and complete; the module-var prefixing must not double-apply.  The leading
+    control byte can never collide with a real unit name. }
+  PreMangledGlobalOwner = #1'premangled';
+
 implementation
 
 uses

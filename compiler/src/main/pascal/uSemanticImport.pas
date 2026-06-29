@@ -928,7 +928,14 @@ begin
     Sym.IsThreadVar := Entry.IsThreadVar;
     Sym.OwningUnit  := AIface.Name;
     if not ATable.Define(Sym) then
-      Sym.Free();
+    begin
+      { Cross-unit collision (last-wins): detach the slot the table already
+        holds — kept alive via the per-unit cache (RegisterUnitIface) for
+        qualified access — and store this later unit's symbol instead.
+        Mirrors RegisterConsts and the source-path DefineGlobalLastWins. }
+      ATable.ExtractLocal(Entry.Name);
+      ATable.Define(Sym);
+    end;
   end;
 end;
 
