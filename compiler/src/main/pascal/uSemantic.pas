@@ -94,6 +94,13 @@ type
     FArrayConstCounter:    Integer;      { counter for generating unique array-const data labels }
     FAnonEnumCounter:      Integer;      { counter for unique anonymous-enum type names (inline 'set of (a,b,c)') }
     FCurrentUnitName:      string;       { name of the unit/program currently being analysed }
+    FMethodOwnerHint:      string;       { receiver owning-unit hint for the NEXT
+                                           ResolveMethodOverload call, consumed and
+                                           cleared at its start.  Disambiguates a
+                                           method on a cross-unit same-named type to
+                                           the receiver's actual unit.  A field, not
+                                           a parameter, to keep ResolveMethodOverload
+                                           within the 6-register call ABI. }
     FCurrentEnclosingDecl: TMethodDecl;  { the innermost standalone proc/func currently being analysed;
                                            nil at program level.  Used to set EnclosingDecl on nested procs. }
     FUnitIfaces:           TStringList;  { owned list (case-insensitive) — keys are unit
@@ -512,6 +519,15 @@ type
       it) and this unit's symbol is installed as the flat winner.  Same-unit
       redeclaration and module-name markers stay hard errors. }
     procedure DefineGlobalLastWins(ASym: TSymbol; ALine, ACol: Integer);
+
+    { Define a type name with the same cross-unit last-found-wins rule as
+      DefineGlobalLastWins: a collision against a type owned by a DIFFERENT
+      used unit detaches the prior type (kept in the per-unit cache so a
+      qualified Unit.Type reference still reaches it) and installs this unit's
+      type as the flat winner; a same-unit redeclaration or a non-unit/module
+      collision stays the hard 'Duplicate type name' error. }
+    procedure DefineTypeLastWins(ASym: TSymbol; ATypeDecl: TTypeDecl;
+                                 ALine, ACol: Integer);
 
     { Record one enum member in the reverse index (FEnumMemberIndex).
       Called once per member as its enum type is analysed.  Enum members
@@ -2657,9 +2673,16 @@ begin
     Match := nil;
     Grp   := GroupOf(FMethodGroups, Key);
     if Grp <> nil then
+    begin
+      { Prefer a declaration owned by the unit whose impl body this is: with
+        cross-unit type last-wins the group can also hold a same-named method
+        on another used unit's same-named type. }
       for K := 0 to Grp.Count - 1 do
       begin
         CD := TMethodDecl(Grp.Items[K]);
+        if (CD.OwningUnit <> '') and (FCurrentUnitName <> '') and
+           not SameText(CD.OwningUnit, FCurrentUnitName) then
+          Continue;
         if CD.IsOverload then
         begin
           if MangleParamSig(CD) = ImplSig then
@@ -2675,6 +2698,28 @@ begin
           Break;
         end;
       end;
+      { Fallback: no declaration is owned by the current unit — e.g. a generic
+        instance whose template (and method decls) live in another unit.  Match
+        by signature regardless of owner, preserving the pre-last-wins behaviour. }
+      if Match = nil then
+        for K := 0 to Grp.Count - 1 do
+        begin
+          CD := TMethodDecl(Grp.Items[K]);
+          if CD.IsOverload then
+          begin
+            if MangleParamSig(CD) = ImplSig then
+            begin
+              Match := CD;
+              Break;
+            end;
+          end
+          else
+          begin
+            Match := CD;
+            Break;
+          end;
+        end;
+    end;
     if Match = nil then
       SemanticError(
         Format('Method ''%s'' is not declared in class ''%s''',
@@ -3179,6 +3224,24 @@ var
   DAT: TDynArrayTypeDesc;
   I, LtPos, DotPos: Integer;
 begin
+  { Unit-qualified type 'Unit.TypeName' — resolve against that specific unit's
+    own exports FIRST, before the flat FindType below (which strips the
+    qualifier and binds the tail through the uses chain, i.e. to the cross-unit
+    last-wins winner).  Only short-circuits on a directed hit; a miss (the
+    common single-definition case, or a dotted stdlib qualifier the per-unit
+    cache has not harvested) falls through to the existing resolution. }
+  LtPos := StrPos('<', AName);
+  if LtPos < 0 then LtPos := Length(AName);
+  DotPos := -1;
+  for I := 0 to LtPos - 1 do
+    if StrAt(AName, I) = Ord('.') then DotPos := I;
+  if DotPos >= 0 then
+  begin
+    Sym := ResolveQualified(Copy(AName, 0, DotPos),
+                            StrCopyTail(AName, DotPos + 1));
+    if (Sym <> nil) and (Sym.Kind = skType) and (Sym.TypeDesc <> nil) then
+      Exit(Sym.TypeDesc);
+  end;
   Result := FTable.FindType(AName);
   if Result <> nil then Exit;
   { Dynamic array: 'array of TypeName' — create on demand.  Key cache by
@@ -5314,6 +5377,47 @@ begin
     RegisterUnitSymbol(ASym.OwningUnit, ASym);
 end;
 
+procedure TSemanticAnalyser.DefineTypeLastWins(ASym: TSymbol;
+  ATypeDecl: TTypeDecl; ALine, ACol: Integer);
+var
+  RefSym: TSymbol;
+  Prev:   TSymbol;
+  AName:  string;
+begin
+  AName := ATypeDecl.Name;
+  { Record the descriptor created for THIS decl so codegen can emit this unit's
+    own type even after a same-named type from another used unit wins the flat
+    slot (extracted below). }
+  ATypeDecl.ResolvedDesc := ASym.TypeDesc;
+  if not FTable.Define(ASym) then
+  begin
+    RefSym := FTable.CurrentScope.LookupLocal(AName);
+    { Only a genuine cross-unit collision (two used units exporting the same
+      type name) gets last-wins; a module marker, a non-unit symbol, or a
+      same-unit redeclaration stays a hard error. }
+    if (RefSym = nil) or (RefSym.Kind = skModule) or
+       (RefSym.OwningUnit = '') or
+       SameText(RefSym.OwningUnit, ASym.OwningUnit) then
+    begin
+      ASym.Free();
+      SemanticError(Format('Duplicate type name ''%s''', [AName]), ALine, ACol);
+      Exit;
+    end;
+    { Detach the prior unit's type and stash it in the per-unit cache so a
+      qualified reference (Unit.Type) still resolves against it; install this
+      unit's type as the flat winner. }
+    Prev := FTable.ExtractLocal(AName);
+    if (Prev <> nil) and (Prev.OwningUnit <> '') then
+      RegisterUnitSymbol(Prev.OwningUnit, Prev);
+    FTable.Define(ASym);
+  end;
+  { Register every type in the per-unit cache keyed by its owning unit, so a
+    qualified reference resolves against the declaring unit regardless of which
+    unit won the bare (flat) slot. }
+  if ASym.OwningUnit <> '' then
+    RegisterUnitSymbol(ASym.OwningUnit, ASym);
+end;
+
 function TSemanticAnalyser.NewArrayConstLabel(const AName: string): string;
 begin
   Inc(FArrayConstCounter);
@@ -5647,11 +5751,7 @@ begin
       end;
       IntfDesc := FTable.NewInterfaceType(TD.Name);
       Sym      := TSymbol.Create(TD.Name, skType, IntfDesc);
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-      end;
+      DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
       Continue;
     end
     else if TD.Def is TEnumTypeDef then
@@ -5670,11 +5770,7 @@ begin
         RegisterEnumMember(MName, EnumDesc, EnumDef.OrdinalAt(K));
       end;
       Sym := TSymbol.Create(TD.Name, skType, EnumDesc);
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-      end;
+      DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
       Continue;
     end
     else if TD.Def is TSetTypeDef then
@@ -5689,12 +5785,7 @@ begin
         SetDesc := FTable.NewOrdinalSetType(TD.Name, SetSubDesc.BaseType,
                                             SetSubDesc.BitCount);
         Sym := TSymbol.Create(TD.Name, skType, SetDesc);
-        if not FTable.Define(Sym) then
-        begin
-          Sym.Free();
-          SemanticError(Format('Duplicate type name ''%s''', [TD.Name]),
-            TD.Line, TD.Col);
-        end;
+        DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
         Continue;
       end;
       BaseSym  := FTable.Lookup(SetDef.BaseTypeName);
@@ -5724,11 +5815,7 @@ begin
         SetDesc := nil;
       end;
       Sym := TSymbol.Create(TD.Name, skType, SetDesc);
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-      end;
+      DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
       Continue;
     end
     else if TD.Def is TProceduralTypeDef then
@@ -5737,11 +5824,7 @@ begin
         resolution happens in pass 2. }
       Sym := TSymbol.Create(TD.Name, skType,
                             FTable.NewProceduralType(TD.Name));
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-      end;
+      DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
       Continue;
     end
     else if TD.Def is TTypeAliasDef then
@@ -5798,11 +5881,7 @@ begin
         end;
       end;
       Sym := TSymbol.Create(TD.Name, skType, AliasDesc);
-      if not FTable.Define(Sym) then
-      begin
-        Sym.Free();
-        SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-      end;
+      DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
       Continue;
     end
     else
@@ -5812,11 +5891,7 @@ begin
       Continue;
     end;
     Sym := TSymbol.Create(TD.Name, skType, RT);
-    if not FTable.Define(Sym) then
-    begin
-      Sym.Free();
-      SemanticError(Format('Duplicate type name ''%s''', [TD.Name]), TD.Line, TD.Col);
-    end;
+    DefineTypeLastWins(Sym, TD, TD.Line, TD.Col);
   end;
 
   { Pass 2 — resolve parent, fields, and method signatures for each type. }
@@ -6282,11 +6357,20 @@ begin
           existing FMethodIndex entries for this (TypeName.Name) — if
           any sibling has IsOverload=False or the new MDecl lacks
           IsOverload, this is a duplicate-identifier error. }
+        if (MDecl.OwningUnit = '') and (FCurrentUnitName <> '') then
+          MDecl.OwningUnit := FCurrentUnitName;
         Key := TD.Name + '.' + MDecl.Name;
         Grp := GroupOf(FMethodGroups, Key);
         if Grp <> nil then
           for K := 0 to Grp.Count - 1 do
           begin
+            { A same-named method on a same-named type owned by a DIFFERENT
+              used unit is a distinct method (it carries its own unit-prefixed
+              ResolvedQbeName), not a missing-overload duplicate — the two
+              types coexist under cross-unit last-wins. }
+            if not SameText(TMethodDecl(Grp.Items[K]).OwningUnit,
+                            MDecl.OwningUnit) then
+              Continue;
             if (not MDecl.IsOverload) or
                (not TMethodDecl(Grp.Items[K]).IsOverload) then
               SemanticError(
@@ -6661,10 +6745,12 @@ function TSemanticAnalyser.FindMethodDecl(
   const ATypeName, AMethodName: string): TMethodDecl;
 var
   CurrName: string;
-  Idx:      Integer;
+  Idx, K:   Integer;
   Key:      string;
   Sym:      TSymbol;
   RT:       TRecordTypeDesc;
+  OwnerUnit: string;
+  Grp:      TObjectList;
 begin
   CurrName := ATypeName;
   while CurrName <> '' do
@@ -6679,6 +6765,24 @@ begin
         lookups, where the access is legitimate regardless of the member's
         declared visibility.  Enforcement happens at the user-written call /
         member-access sites (EnforceMethodVisible / AssertMemberVisibleV). }
+      { Cross-unit last-wins: two used units may export a same-named type, so
+        the group holds both their methods under one key.  FMethodIndex returns
+        the first-registered, which may belong to the OTHER unit; bind instead
+        to the method on the type that actually resolved (its owning unit). }
+      OwnerUnit := '';
+      Sym := FTable.Lookup(CurrName);
+      if Sym <> nil then OwnerUnit := Sym.OwningUnit;
+      if (OwnerUnit <> '') and not SameText(Result.OwningUnit, OwnerUnit) then
+      begin
+        Grp := GroupOf(FMethodGroups, Key);
+        if Grp <> nil then
+          for K := 0 to Grp.Count - 1 do
+            if SameText(TMethodDecl(Grp.Items[K]).OwningUnit, OwnerUnit) then
+            begin
+              Result := TMethodDecl(Grp.Items[K]);
+              Break;
+            end;
+      end;
       Exit;
     end;
     { Walk to parent }
@@ -6746,6 +6850,7 @@ var
   Sym:         TSymbol;
   RT:          TRecordTypeDesc;
   Key:         string;
+  OwnerHint:   string;
   Cand:        TMethodDecl;
   Grp:         TObjectList;
   ArityMatch:  TObjectList;
@@ -6764,6 +6869,9 @@ var
   SawHiding:   Boolean;
 begin
   Result    := nil;
+  { Consume the one-shot receiver owner hint set by the caller. }
+  OwnerHint := FMethodOwnerHint;
+  FMethodOwnerHint := '';
   if AArgs <> nil then Arity := AArgs.Count else Arity := -1;
   TotalCnt  := 0;
   ArityMatch := TObjectList.Create(False);
@@ -6777,8 +6885,16 @@ begin
       if Grp <> nil then
         for K := 0 to Grp.Count - 1 do
         begin
-          Inc(TotalCnt);
           Cand := TMethodDecl(Grp.Items[K]);
+          { Cross-unit last-wins: at the receiver's OWN type level the group can
+            also hold a same-named method on another used unit's same-named type.
+            Bind to the receiver's actual unit (the hint) — a name re-lookup
+            would pick the flat-table winner instead. }
+          if (OwnerHint <> '') and SameText(CurrName, ATypeName) and
+             (Cand.OwningUnit <> '') and
+             not SameText(Cand.OwningUnit, OwnerHint) then
+            Continue;
+          Inc(TotalCnt);
           { A method declared WITHOUT `overload` hides all inherited methods of
             the same name — once seen at this (more-derived) level, the parent
             chain is not consulted.  Methods WITH `overload` merge with the
@@ -11202,8 +11318,9 @@ begin
       AExpr.ResolvedType := Result;
       Exit;
     end;
-    MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
-      AExpr.Line, AExpr.Col);
+    FMethodOwnerHint := RT.OwningUnit;
+      MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
+        AExpr.Line, AExpr.Col);
     if MDecl = nil then
     begin
       FldInfo := RT.FindField(AExpr.Name);
@@ -11233,7 +11350,15 @@ begin
     Exit;
   end;
 
-  ObjSym := FTable.Lookup(AExpr.ObjectName);
+  { A unit-qualified receiver type 'Unit.Type.Method' resolves against that
+    specific unit's exports (directed lookup), so a constructor on a cross-unit
+    same-named type binds to the named unit rather than the flat last-wins
+    winner.  Falls back to the normal lookup on a miss. }
+  ObjSym := nil;
+  if AExpr.QualifierUnit <> '' then
+    ObjSym := ResolveQualified(AExpr.QualifierUnit, AExpr.ObjectName);
+  if ObjSym = nil then
+    ObjSym := FTable.Lookup(AExpr.ObjectName);
   { If the name contains '<' and wasn't found, resolve scope-bound type params
     (e.g. 'TListEnumerator<T>' → 'TListEnumerator<Integer>' when T=Integer is
     in scope) and trigger on-demand instantiation.  Mirrors the field-access
@@ -11302,8 +11427,9 @@ begin
       HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
         AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
-      MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
-        AExpr.Line, AExpr.Col);
+      FMethodOwnerHint := RT.OwningUnit;
+        MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
+          AExpr.Line, AExpr.Col);
       if MDecl = nil then
       begin
         FldInfo := RT.FindField(AExpr.Name);
@@ -11547,8 +11673,9 @@ begin
     AExpr.ResolvedType := Result;
     Exit;
   end;
-  MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
-    AExpr.Line, AExpr.Col);
+  FMethodOwnerHint := RT.OwningUnit;
+    MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
+      AExpr.Line, AExpr.Col);
   if MDecl = nil then
     MDecl := FindMethodDecl(RT.Name, AExpr.Name);
   { Built-in TObject.ToString: virtual dispatch yielding string.

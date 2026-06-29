@@ -543,6 +543,20 @@ type
       for the class's TSymbol.OwningUnit, then applies the same
       allowlist semantics as uSemantic.MangleUnitPrefix. }
     function  ClassUnitPrefix(const AClassName: string): string;
+    { Owner-string core of ClassUnitPrefix (allowlist + dot-collapse), shared
+      by the name-based and descriptor-based forms. }
+    function  ClassUnitPrefixOwner(const AOwner: string): string;
+    { Descriptor-based prefix/symbol — mangle by the type's own OwningUnit so a
+      cross-unit same-named type emits and is referenced under its own symbols,
+      not the flat-table winner's. }
+    function  ClassUnitPrefixOf(ADesc: TTypeDesc): string;
+    function  ClassSymNameOf(ADesc: TTypeDesc): string;
+    { Owner-correct class-symbol suffix for an AST type decl, via its attached
+      ResolvedDesc (name-based fallback for descriptor-less decls). }
+    function  ClassSymNameForDecl(ATypeDecl: TTypeDecl): string;
+    { Emit the $__cn_ class-name string for a type DEFINITION, keyed on the
+      emitting unit (cross-unit last-wins safe); returns the inline ref. }
+    function  EmitClassNameRefForDecl(ATypeDecl: TTypeDecl): string;
     function  GlobalVarUnitPrefix(const AName: string): string;
     { Map an owning unit to its global-var mangle prefix (program-scope and
       the RTL allowlist stay bare).  The shared core of GlobalVarUnitPrefix
@@ -6989,7 +7003,7 @@ begin
             begin
               ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
               ItabName := '$itab_' +
-                ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+                ClassSymNameOf(TASTExpr(ACall.Args.Items[I]).ResolvedType)
                 + '_' + QBEMangle(Par.ResolvedType.Name);
               ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ItabName]);
             end
@@ -7501,7 +7515,7 @@ begin
         begin
           ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
           ItabName := '$itab_' +
-            ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+            ClassSymNameOf(TASTExpr(ACall.Args.Items[I]).ResolvedType)
             + '_' + QBEMangle(Par.ResolvedType.Name);
           ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ItabName]);
         end
@@ -7685,7 +7699,7 @@ begin
       begin
         ArgTemp  := EmitExpr(TASTExpr(AArgs.Items[I]));
         ArgTemp2 := '$itab_' +
-          ClassSymName(QBEMangle(TASTExpr(AArgs.Items[I]).ResolvedType.Name))
+          ClassSymNameOf(TASTExpr(AArgs.Items[I]).ResolvedType)
           + '_' + QBEMangle(Par.ResolvedType.Name);
         Result := Result + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
       end
@@ -8234,7 +8248,8 @@ begin
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := TTypeDesc(TD.ResolvedDesc);
+    if TDesc = nil then TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     CD := TClassTypeDef(TD.Def);
@@ -8248,12 +8263,12 @@ begin
       if StrPos('<', RT.Parent.Name) >= 0 then
         ParentStr := '$typeinfo_' + QBEMangle(RT.Parent.Name)
       else
-        ParentStr := '$typeinfo_' + ClassSymName(RT.Parent.Name);
+        ParentStr := '$typeinfo_' + ClassSymNameOf(RT.Parent);
     end
     else
       ParentStr := '0';
     if RT.ImplementsCount() > 0 then
-      ImplStr := '$impllist_' + ClassSymName(TD.Name)
+      ImplStr := '$impllist_' + ClassSymNameForDecl(TD)
     else
       ImplStr := '0';
 
@@ -8265,7 +8280,7 @@ begin
         Inc(PubCount);
     if PubCount > 0 then
     begin
-      MethLine := 'data $methods_' + ClassSymName(TD.Name) + ' = { l ' + IntToStr(PubCount);
+      MethLine := 'data $methods_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(PubCount);
       for J := 0 to CD.Methods.Count - 1 do
       begin
         MD := TMethodDecl(CD.Methods.Items[J]);
@@ -8276,30 +8291,30 @@ begin
       end;
       MethLine := MethLine + ' }';
       EmitLine(MethLine);
-      MethStr := '$methods_' + ClassSymName(TD.Name);
+      MethStr := '$methods_' + ClassSymNameForDecl(TD);
     end
     else
       MethStr := '0';
 
     if RT.ClassAttributeCount() > 0 then
     begin
-      AttrsLine := 'data $attrs_' + ClassSymName(TD.Name) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
+      AttrsLine := 'data $attrs_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
       for J := 0 to RT.ClassAttributeCount() - 1 do
         AttrsLine := AttrsLine + ', l $typeinfo_' + ClassSymName(RT.ClassAttributeAt(J));
       AttrsLine := AttrsLine + ' }';
       EmitLine(AttrsLine);
-      AttrsStr := '$attrs_' + ClassSymName(TD.Name);
+      AttrsStr := '$attrs_' + ClassSymNameForDecl(TD);
     end
     else
       AttrsStr := '0';
 
-    EmitLine('data $typeinfo_' + ClassSymName(TD.Name) +
+    EmitLine('data $typeinfo_' + ClassSymNameForDecl(TD) +
              ' = { l ' + ParentStr + ', l ' + ImplStr +
-             ', l ' + EmitClassNameRef(TD.Name) +
+             ', l ' + EmitClassNameRefForDecl(TD) +
              ', l ' + MethStr +
              ', l ' + IntToStr(RT.TotalSize()) +
-             ', l $_FieldCleanup_' + ClassSymName(TD.Name) +
-             ', l $vtable_' + ClassSymName(TD.Name) +
+             ', l $_FieldCleanup_' + ClassSymNameForDecl(TD) +
+             ', l $vtable_' + ClassSymNameForDecl(TD) +
              ', l ' + AttrsStr + ' }');
   end;
 
@@ -8359,7 +8374,8 @@ begin
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := TTypeDesc(TD.ResolvedDesc);
+    if TDesc = nil then TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     if not RT.HasVTable() then Continue;
@@ -8367,8 +8383,8 @@ begin
       vtable is exported so the separately-assembled .opdf section can reference
       it (the OPDF class record stores each class's VMTAddress); otherwise it
       stays a local symbol, keeping non-debug output unchanged. }
-    Line := VTableDataPrefix() + '$vtable_' + ClassSymName(TD.Name) +
-            ' = { l $typeinfo_' + ClassSymName(TD.Name);
+    Line := VTableDataPrefix() + '$vtable_' + ClassSymNameForDecl(TD) +
+            ' = { l $typeinfo_' + ClassSymNameForDecl(TD);
     for S := 0 to RT.VTableCount() - 1 do
     begin
       E := RT.VTableEntryAt(S);
@@ -8498,7 +8514,7 @@ begin
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TInterfaceTypeDef) then Continue;
-    EmitLine('data $typeinfo_' + ClassSymName(TD.Name) + ' = { l 0 }');
+    EmitLine('data $typeinfo_' + ClassSymNameForDecl(TD) + ' = { l 0 }');
   end;
 
   { Typeinfo blocks for generic interface instantiations }
@@ -8513,7 +8529,8 @@ begin
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := TTypeDesc(TD.ResolvedDesc);
+    if TDesc = nil then TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     ClassRT := TRecordTypeDesc(TDesc);
     { Skip only when neither this class NOR any ancestor implements an
@@ -8560,7 +8577,7 @@ begin
       begin
         IntfDesc   := TInterfaceTypeDesc(EmitIntfs.Items[J]);
         IntfMangle := QBEMangle(IntfDesc.Name);
-        ItabLine   := 'data $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle + ' = {';
+        ItabLine   := 'data $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle + ' = {';
         for K := 0 to IntfDesc.MethodCount() - 1 do
         begin
           MethName := IntfDesc.MethodName(K);
@@ -8588,17 +8605,17 @@ begin
 
       { One impllist per class: NULL-terminated (typeinfo_intf, itab) pairs.
         Includes ancestor interfaces so _GetItab(obj, typeinfo_IBase) resolves. }
-      ImplLine := 'data $impllist_' + ClassSymName(TD.Name) + ' = {';
+      ImplLine := 'data $impllist_' + ClassSymNameForDecl(TD) + ' = {';
       for J := 0 to EmitIntfs.Count - 1 do
       begin
         IntfDesc   := TInterfaceTypeDesc(EmitIntfs.Items[J]);
         IntfMangle := QBEMangle(IntfDesc.Name);
         if J = 0 then
           ImplLine := ImplLine + ' l $typeinfo_' + IntfTypeInfoName(IntfDesc.Name) +
-                                 ', l $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle
+                                 ', l $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle
         else
           ImplLine := ImplLine + ', l $typeinfo_' + IntfTypeInfoName(IntfDesc.Name) +
-                                 ', l $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle;
+                                 ', l $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle;
       end;
       ImplLine := ImplLine + ', l 0 }';
       EmitLine(ImplLine);
@@ -8813,10 +8830,11 @@ begin
   begin
     TD := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
-    TDesc := AProg.SymbolTable.FindType(TD.Name);
+    TDesc := TTypeDesc(TD.ResolvedDesc);
+    if TDesc = nil then TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    EmitFieldCleanupFn(ClassSymName(TD.Name), RT);
+    EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT);
   end;
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
@@ -9492,7 +9510,7 @@ begin
             begin
               ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
               ArgTemp2 := '$itab_' +
-                ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+                ClassSymNameOf(TASTExpr(ACall.Args.Items[I]).ResolvedType)
                 + '_' + QBEMangle(Par.ResolvedType.Name);
               ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ArgTemp2]);
             end
@@ -9572,7 +9590,7 @@ begin
           begin
             ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[I]));
             ArgTemp2 := '$itab_' +
-              ClassSymName(QBEMangle(TASTExpr(ACall.Args.Items[I]).ResolvedType.Name))
+              ClassSymNameOf(TASTExpr(ACall.Args.Items[I]).ResolvedType)
               + '_' + QBEMangle(Par.ResolvedType.Name);
             ArgLine := ArgLine + Format('l %s, l %s', [ArgTemp, ArgTemp2]);
           end
@@ -11730,16 +11748,16 @@ begin
       else
       begin
         EmitLine(Format('  %s =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)',
-          [SelfTemp, RT.TotalSize(), ClassSymName(QBEMangle(RT.Name))]));
+          [SelfTemp, RT.TotalSize(), ClassSymNameOf(RT)]));
         if RT.HasVTable() then
           EmitLine(Format('  storel $vtable_%s, %s',
-            [ClassSymName(QBEMangle(RT.Name)), SelfTemp]));
+            [ClassSymNameOf(RT), SelfTemp]));
       end;
       if FDebugMode then
       begin
         L := AllocTemp();
         EmitLine(Format('  %s =l add $typeinfo_%s, 16',
-          [L, ClassSymName(QBEMangle(RT.Name))]));
+          [L, ClassSymNameOf(RT)]));
         R := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [R, L]));
         EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s, l %s, l %d)',
@@ -11775,7 +11793,7 @@ begin
               begin
                 ArgTemp := EmitExpr(TASTExpr(MCallExpr.Args.Items[I]));
                 ItabName := '$itab_' +
-                  ClassSymName(QBEMangle(TASTExpr(MCallExpr.Args.Items[I]).ResolvedType.Name))
+                  ClassSymNameOf(TASTExpr(MCallExpr.Args.Items[I]).ResolvedType)
                   + '_' + QBEMangle(Par.ResolvedType.Name);
                 ArgLine := ArgLine + Format(', l %s, l %s', [ArgTemp, ItabName]);
               end
@@ -12650,16 +12668,16 @@ begin
       T := AllocTemp();
       EmitLine(Format('  %s =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)',
         [T, TRecordTypeDesc(FldAccess.ResolvedType).TotalSize(),
-         ClassSymName(QBEMangle(FldAccess.ResolvedType.Name))]));
+         ClassSymNameOf(FldAccess.ResolvedType)]));
       { Store vtable pointer at offset 0 if this class has virtual methods }
       if TRecordTypeDesc(FldAccess.ResolvedType).HasVTable() then
         EmitLine(Format('  storel $vtable_%s, %s',
-          [ClassSymName(QBEMangle(FldAccess.ResolvedType.Name)), T]));
+          [ClassSymNameOf(FldAccess.ResolvedType), T]));
       if FDebugMode then
       begin
         L := AllocTemp();
         EmitLine(Format('  %s =l add $typeinfo_%s, 16',
-          [L, ClassSymName(QBEMangle(FldAccess.ResolvedType.Name))]));
+          [L, ClassSymNameOf(FldAccess.ResolvedType)]));
         R := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [R, L]));
         EmitLine(Format('  call $_LeakTrackerRegister(l %s, l %s, l %s, l %d)',
@@ -14236,34 +14254,88 @@ begin
   end;
 end;
 
+function TCodeGenQBE.ClassUnitPrefixOwner(const AOwner: string): string;
+var
+  I: Integer;
+  Ch: string;
+begin
+  Result := '';
+  { Allowlist mirrors uSemantic.IsUnmangledUnit. }
+  if AOwner = '' then Exit;
+  { Program-scope classes keep bare names: uSemantic.CurrentUnitPrefix gives
+    program-scope methods unprefixed ResolvedQbeNames, so reference sites
+    (itabs, property setter calls) must not add a prefix either. }
+  if (FProgramName <> '') and SameText(AOwner, FProgramName) then Exit;
+  if SameText(AOwner, 'System') then Exit;
+  if (Length(AOwner) >= 4) and SameText(Copy(AOwner, 0, 4), 'rtl.') then Exit;
+  if (Length(AOwner) >= 7) and SameText(Copy(AOwner, 0, 7), 'blaise_') then Exit;
+  for I := 0 to Length(AOwner) - 1 do
+  begin
+    Ch := Copy(AOwner, I, 1);
+    if Ch = '.' then Result := Result + '_'
+    else                Result := Result + Ch;
+  end;
+  Result := Result + '_';
+end;
+
 function TCodeGenQBE.ClassUnitPrefix(const AClassName: string): string;
 var
   Sym: TSymbol;
-  Owner: string;
-  I: Integer;
-  Ch: string;
 begin
   Result := '';
   if FSymTable = nil then Exit;
   Sym := FSymTable.Lookup(AClassName);
   if Sym = nil then Exit;
-  Owner := Sym.OwningUnit;
-  { Allowlist mirrors uSemantic.IsUnmangledUnit. }
-  if Owner = '' then Exit;
-  { Program-scope classes keep bare names: uSemantic.CurrentUnitPrefix gives
-    program-scope methods unprefixed ResolvedQbeNames, so reference sites
-    (itabs, property setter calls) must not add a prefix either. }
-  if (FProgramName <> '') and SameText(Owner, FProgramName) then Exit;
-  if SameText(Owner, 'System') then Exit;
-  if (Length(Owner) >= 4) and SameText(Copy(Owner, 0, 4), 'rtl.') then Exit;
-  if (Length(Owner) >= 7) and SameText(Copy(Owner, 0, 7), 'blaise_') then Exit;
-  for I := 0 to Length(Owner) - 1 do
-  begin
-    Ch := Copy(Owner, I, 1);
-    if Ch = '.' then Result := Result + '_'
-    else                Result := Result + Ch;
-  end;
-  Result := Result + '_';
+  Result := ClassUnitPrefixOwner(Sym.OwningUnit);
+end;
+
+function TCodeGenQBE.ClassUnitPrefixOf(ADesc: TTypeDesc): string;
+begin
+  { Mangle by the descriptor's own OwningUnit — correct even when a same-named
+    type from another used unit won the flat slot (a name re-lookup would
+    return the other unit's owner).  Generic instances are emitted under their
+    QBEMangle'd name with no unit prefix (see EmitTypeInfoDefs), so never prefix
+    one — keep parity with the name-based reference form. }
+  if (ADesc = nil) or (StrPos('<', ADesc.Name) >= 0) then
+    Result := ''
+  else
+    Result := ClassUnitPrefixOwner(ADesc.OwningUnit);
+end;
+
+function TCodeGenQBE.ClassSymNameOf(ADesc: TTypeDesc): string;
+begin
+  { QBEMangle the name to match ClassSymNameForDecl and the name-based
+    ClassSymName(QBEMangle(...)) reference form, so a qualified reference to a
+    cross-unit type resolves to the same symbol that type's definition emits. }
+  if ADesc = nil then
+    Result := ''
+  else
+    Result := ClassUnitPrefixOf(ADesc) + QBEMangle(ADesc.Name);
+end;
+
+function TCodeGenQBE.ClassSymNameForDecl(ATypeDecl: TTypeDecl): string;
+begin
+  { A type's definition is always emitted under its own unit's codegen pass, so
+    key the symbol on the unit currently being emitted (FCurrentUnitName).  This
+    is authoritative even when two used units share one descriptor for a
+    same-named type, or in separate compilation where a name re-lookup would
+    mis-mangle the loser as the flat-table winner.  QBEMangle matches the
+    reference-site form ClassSymName(QBEMangle(...)). }
+  Result := ClassUnitPrefixOwner(FCurrentUnitName) + QBEMangle(ATypeDecl.Name);
+end;
+
+function TCodeGenQBE.EmitClassNameRefForDecl(ATypeDecl: TTypeDecl): string;
+var
+  Sym: string;
+begin
+  { Like EmitClassNameRef but keyed on the emitting unit (cross-unit last-wins
+    safe), so two used units exporting a same-named class emit distinct $__cn_
+    string blobs instead of colliding on the flat-table winner's symbol. }
+  Sym := ClassSymNameForDecl(ATypeDecl);
+  EmitLine(Format('%sdata $__cn_%s = { w -1, w %d, w %d, b "%s", b 0 }',
+    [ExportPrefix(), Sym, Length(ATypeDecl.Name), Length(ATypeDecl.Name),
+     ATypeDecl.Name]));
+  Result := '$__cn_' + Sym + ' + 12';
 end;
 
 function TCodeGenQBE.PropAccessorTarget(const AOwnerType, AMethod: string;
@@ -14657,10 +14729,11 @@ begin
           begin
             TD := TTypeDecl(AllTD.Items[I]);
             if not (TD.Def is TClassTypeDef) then Continue;
-            TDesc := FSymTable.FindType(TD.Name);
+            TDesc := TTypeDesc(TD.ResolvedDesc);
+            if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
             if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
             RT := TRecordTypeDesc(TDesc);
-            EmitFieldCleanupFn(ClassSymName(TD.Name), RT);
+            EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT);
           end;
 
         { System-unit (TObject / TCustomAttribute) FieldCleanup stubs.
@@ -14745,7 +14818,7 @@ begin
         begin
           TD := TTypeDecl(AllTD.Items[I]);
           if TD.Def is TInterfaceTypeDef then
-            EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymName(TD.Name) + ' = { l 0 }');
+            EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymNameForDecl(TD) + ' = { l 0 }');
         end;
 
         { System-unit (TObject / TCustomAttribute) typeinfo + vtable.
@@ -14782,15 +14855,16 @@ begin
           TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
           CD := TClassTypeDef(TD.Def);
-          TDesc := FSymTable.FindType(TD.Name);
+          TDesc := TTypeDesc(TD.ResolvedDesc);
+          if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
           RT := TRecordTypeDesc(TDesc);
           if RT.Parent <> nil then
-            ParentStr := '$typeinfo_' + ClassSymName(RT.Parent.Name)
+            ParentStr := '$typeinfo_' + ClassSymNameOf(RT.Parent)
           else
             ParentStr := '0';
           if RT.ImplementsCount() > 0 then
-            ImplStr := '$impllist_' + ClassSymName(TD.Name)
+            ImplStr := '$impllist_' + ClassSymNameForDecl(TD)
           else
             ImplStr := '0';
 
@@ -14800,7 +14874,7 @@ begin
               Inc(PubCount);
           if PubCount > 0 then
           begin
-            MethLine := ExportPrefix() + 'data $methods_' + ClassSymName(TD.Name) + ' = { l ' + IntToStr(PubCount);
+            MethLine := ExportPrefix() + 'data $methods_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(PubCount);
             for J := 0 to CD.Methods.Count - 1 do
             begin
               MDecl := TMethodDecl(CD.Methods.Items[J]);
@@ -14811,30 +14885,30 @@ begin
             end;
             MethLine := MethLine + ' }';
             EmitLine(MethLine);
-            MethStr := '$methods_' + ClassSymName(TD.Name);
+            MethStr := '$methods_' + ClassSymNameForDecl(TD);
           end
           else
             MethStr := '0';
 
           if RT.ClassAttributeCount() > 0 then
           begin
-            AttrsLine := ExportPrefix() + 'data $attrs_' + ClassSymName(TD.Name) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
+            AttrsLine := ExportPrefix() + 'data $attrs_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
             for J := 0 to RT.ClassAttributeCount() - 1 do
               AttrsLine := AttrsLine + ', l $typeinfo_' + ClassSymName(RT.ClassAttributeAt(J));
             AttrsLine := AttrsLine + ' }';
             EmitLine(AttrsLine);
-            AttrsStr := '$attrs_' + ClassSymName(TD.Name);
+            AttrsStr := '$attrs_' + ClassSymNameForDecl(TD);
           end
           else
             AttrsStr := '0';
 
-          EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymName(TD.Name) +
+          EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymNameForDecl(TD) +
                    ' = { l ' + ParentStr + ', l ' + ImplStr +
-                   ', l ' + EmitClassNameRef(TD.Name) +
+                   ', l ' + EmitClassNameRefForDecl(TD) +
                    ', l ' + MethStr +
                    ', l ' + IntToStr(RT.TotalSize()) +
-                   ', l $_FieldCleanup_' + ClassSymName(TD.Name) +
-                   ', l $vtable_' + ClassSymName(TD.Name) +
+                   ', l $_FieldCleanup_' + ClassSymNameForDecl(TD) +
+                   ', l $vtable_' + ClassSymNameForDecl(TD) +
                    ', l ' + AttrsStr + ' }');
         end;
 
@@ -14846,12 +14920,13 @@ begin
         begin
           TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
-          TDesc := FSymTable.FindType(TD.Name);
+          TDesc := TTypeDesc(TD.ResolvedDesc);
+          if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
           RT := TRecordTypeDesc(TDesc);
           if not RT.HasVTable() then Continue;
-          VLine := ExportPrefix() + 'data $vtable_' + ClassSymName(TD.Name) +
-                   ' = { l $typeinfo_' + ClassSymName(TD.Name);
+          VLine := ExportPrefix() + 'data $vtable_' + ClassSymNameForDecl(TD) +
+                   ' = { l $typeinfo_' + ClassSymNameForDecl(TD);
           for S := 0 to RT.VTableCount() - 1 do
           begin
             E := RT.VTableEntryAt(S);
@@ -14969,7 +15044,8 @@ begin
         begin
           TD := TTypeDecl(AllTD.Items[I]);
           if not (TD.Def is TClassTypeDef) then Continue;
-          TDesc := FSymTable.FindType(TD.Name);
+          TDesc := TTypeDesc(TD.ResolvedDesc);
+          if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
           ClassRT := TRecordTypeDesc(TDesc);
           if ClassRT.ImplementsCount() = 0 then Continue;
@@ -14977,7 +15053,7 @@ begin
           begin
             IntfDesc   := ClassRT.ImplementsIntfAt(J);
             IntfMangle := QBEMangle(IntfDesc.Name);
-            ItabLine   := ExportPrefix() + 'data $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle + ' = {';
+            ItabLine   := ExportPrefix() + 'data $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle + ' = {';
             for K := 0 to IntfDesc.MethodCount() - 1 do
             begin
               MethName := IntfDesc.MethodName(K);
@@ -14985,7 +15061,7 @@ begin
                  ClassRT.VTableEntryAt(ClassRT.FindVTableSlot(MethName)).IsAbstract then
                 ItabRef := '$_AbstractMethodError'
               else
-                ItabRef := '$' + ClassSymName(TD.Name) + '_' + MethName;
+                ItabRef := '$' + ClassSymNameForDecl(TD) + '_' + MethName;
               if K = 0 then
                 ItabLine := ItabLine + ' l ' + ItabRef
               else
@@ -14994,17 +15070,17 @@ begin
             ItabLine := ItabLine + ' }';
             EmitLine(ItabLine);
           end;
-          ImplLine := ExportPrefix() + 'data $impllist_' + ClassSymName(TD.Name) + ' = {';
+          ImplLine := ExportPrefix() + 'data $impllist_' + ClassSymNameForDecl(TD) + ' = {';
           for J := 0 to ClassRT.ImplementsCount() - 1 do
           begin
             IntfDesc   := ClassRT.ImplementsIntfAt(J);
             IntfMangle := QBEMangle(IntfDesc.Name);
             if J = 0 then
               ImplLine := ImplLine + ' l $typeinfo_' + IntfTypeInfoName(IntfDesc.Name) +
-                                     ', l $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle
+                                     ', l $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle
             else
               ImplLine := ImplLine + ', l $typeinfo_' + IntfTypeInfoName(IntfDesc.Name) +
-                                     ', l $itab_' + ClassSymName(TD.Name) + '_' + IntfMangle;
+                                     ', l $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle;
           end;
           ImplLine := ImplLine + ', l 0 }';
           EmitLine(ImplLine);

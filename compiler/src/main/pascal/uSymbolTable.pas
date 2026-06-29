@@ -73,6 +73,12 @@ type
   public
     Kind: TTypeKind;
     Name: string;
+    { Name of the unit that declared this named type (empty for builtins and
+      program-scope types).  Set by TSymbolTable.Define when the type symbol is
+      registered.  Codegen mangles the type's storage symbols (typeinfo,
+      vtable, _FieldCleanup, itab) with this owner so two used units exporting a
+      same-named type emit distinct, non-colliding symbols. }
+    OwningUnit: string;
     function IsNumeric: Boolean;
     function IsFloat: Boolean;
     function IsString: Boolean;
@@ -2012,6 +2018,12 @@ begin
     ASymbol.OwningUnit := FDefineOwningUnit;
   if FDefineImplPrivate and (FScopeStack.Count = 1) then
     ASymbol.IsImplPrivate := True;
+  { Propagate the owning unit onto the type descriptor so codegen can mangle a
+    type's storage symbols by the declaring unit even after a same-named type
+    from another used unit wins the flat slot (cross-unit type last-wins). }
+  if (ASymbol.Kind = skType) and (ASymbol.TypeDesc <> nil)
+     and (ASymbol.TypeDesc.OwningUnit = '') and (ASymbol.OwningUnit <> '') then
+    ASymbol.TypeDesc.OwningUnit := ASymbol.OwningUnit;
   Result := CurrentScope.Define(ASymbol);
 end;
 

@@ -60,6 +60,10 @@ type
       'Unit.V' must emit each unit's own owner-prefixed storage symbol so the
       two refer to distinct slots rather than colliding on a bare '$V'. }
     procedure TestCodegen_CrossUnitQualifiedVar_DistinctSymbols;
+    { Two used units export a class of the same name; each unit's codegen pass
+      must emit its type's storage symbols (typeinfo/vtable/__cn) keyed on its
+      own unit, so the two coexist instead of colliding on the flat winner. }
+    procedure TestCodegen_CrossUnitType_DistinctSymbols;
   end;
 
 implementation
@@ -789,6 +793,85 @@ begin
       reference both — proving the two same-named vars do not collapse. }
     AssertTrue('uva.V slot referenced', Pos('$uva_V', IR) > 0);
     AssertTrue('uvb.V slot referenced', Pos('$uvb_V', IR) > 0);
+  finally
+    CG.Free();
+    SA.Free();
+    Prog.Free();
+    UB.Free();
+    UA.Free();
+  end;
+end;
+
+procedure TMultifileTests.TestCodegen_CrossUnitType_DistinctSymbols;
+const
+  UnitA =
+    '''
+        unit tca;
+        interface
+        type
+          TShape = class
+            function Sides: Integer;
+          end;
+        implementation
+        function TShape.Sides: Integer;
+        begin
+          Result := 3
+        end;
+        end.
+        ''';
+  UnitB =
+    '''
+        unit tcb;
+        interface
+        type
+          TShape = class
+            function Sides: Integer;
+          end;
+        implementation
+        function TShape.Sides: Integer;
+        begin
+          Result := 4
+        end;
+        end.
+        ''';
+  ProgSrc =
+    '''
+        program TestP;
+        uses tca, tcb;
+        var S: TShape;
+        begin
+          S := TShape.Create()
+        end.
+        ''';
+var
+  UA, UB: TUnit;
+  Prog:   TProgram;
+  SA:     TSemanticAnalyser;
+  CG:     TCodeGenQBE;
+  IR:     string;
+begin
+  UA   := ParseUnitSrc(UnitA);
+  UB   := ParseUnitSrc(UnitB);
+  Prog := ParseProg(ProgSrc);
+  SA   := TSemanticAnalyser.Create();
+  CG   := TCodeGenQBE.Create();
+  try
+    SA.AnalyseUnitForExport(UA);
+    SA.AnalyseUnitForExport(UB);
+    SA.Analyse(Prog);
+    CG.SetSymbolTable(Prog.SymbolTable);
+    CG.AppendUnit(UA);
+    CG.AppendUnit(UB);
+    CG.AppendProgram(Prog);
+    IR := CG.GetOutput();
+    { Each unit emits its own owner-prefixed type symbols — no collision on a
+      single bare/winner symbol, and both class-name string blobs are distinct. }
+    AssertTrue('tca typeinfo', Pos('typeinfo_tca_TShape', IR) > 0);
+    AssertTrue('tcb typeinfo', Pos('typeinfo_tcb_TShape', IR) > 0);
+    AssertTrue('tca vtable',   Pos('vtable_tca_TShape', IR) > 0);
+    AssertTrue('tcb vtable',   Pos('vtable_tcb_TShape', IR) > 0);
+    AssertTrue('tca classname', Pos('__cn_tca_TShape', IR) > 0);
+    AssertTrue('tcb classname', Pos('__cn_tcb_TShape', IR) > 0);
   finally
     CG.Free();
     SA.Free();

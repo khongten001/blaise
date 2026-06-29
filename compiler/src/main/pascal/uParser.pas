@@ -5093,6 +5093,7 @@ begin
             MCallNode.Col        := Col;
             MCallNode.ObjectName := Name;
             MCallNode.Name       := SecondName;
+            MCallNode.QualifierUnit := QualUnit;
             Advance();
             if not Check(tkRParen) then
             begin

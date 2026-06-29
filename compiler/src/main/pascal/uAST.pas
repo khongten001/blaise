@@ -925,6 +925,10 @@ type
   public
     ObjectName:        string;
     Name:              string;     { method name }
+    QualifierUnit:     string;     { set by the parser — unit of a qualified
+                                     receiver type 'Unit.Type.Method(...)', so a
+                                     constructor on a cross-unit same-named type
+                                     resolves against that specific unit. }
     Args:              TObjectList; { owned TASTExpr }
     ObjExpr:           TASTExpr;   { owned — receiver expression when ObjectName = '' }
     [Unretained] ResolvedClassType:  TTypeDesc;   { not owned; set by uSemantic }
@@ -1082,6 +1086,12 @@ type
   public
     Name: string;
     Def:  TASTTypeDef;  { owned }
+    [Unretained] ResolvedDesc: TObject;  { TTypeDesc — set by uSemantic to the
+                                           descriptor created for THIS decl.  Lets
+                                           codegen emit a unit's own type even when
+                                           a same-named type from another used unit
+                                           won the flat-table slot (FindType by name
+                                           would return the other unit's desc). }
     destructor Destroy; override;
   end;
 

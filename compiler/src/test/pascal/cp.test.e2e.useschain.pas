@@ -58,6 +58,16 @@ type
       unit's own slot (distinct storage), independent of the bare last-wins
       winner, so both values are readable side by side. }
     procedure TestRun_CrossUnitVar_QualifiedDisambig;
+    { Cross-unit TYPE shadowing: two used units export a class of the same name;
+      they coexist (no 'Duplicate type name' error, no link collision) and a
+      bare reference binds to the unit later in `uses` (last-in-uses wins),
+      flipping when the order is reversed — mirrors the const/var rule. }
+    procedure TestRun_CrossUnitType_LastWins;
+    procedure TestRun_CrossUnitType_LastWins_Reversed;
+    { Unit-qualified TYPE disambiguation: 'Unit.TShape' binds to that unit's own
+      class (distinct vtable/dispatch), independent of the bare last-wins
+      winner, so both behaviours are observable side by side. }
+    procedure TestRun_CrossUnitType_QualifiedDisambig;
   end;
 
 implementation
@@ -453,6 +463,107 @@ begin
     CompileAndRunWithUnits(UVA_Var, UVB_Var, DrvSrc, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('uva.V then uvb.V', '7' + LE + '9' + LE, Output);
+end;
+
+const
+  TCA_Type = '''
+    unit tca;
+    interface
+    type
+      TShape = class
+        function Sides: Integer;
+      end;
+    implementation
+    function TShape.Sides: Integer;
+    begin
+      Result := 3
+    end;
+    end.
+    ''';
+  TCB_Type = '''
+    unit tcb;
+    interface
+    type
+      TShape = class
+        function Sides: Integer;
+      end;
+    implementation
+    function TShape.Sides: Integer;
+    begin
+      Result := 4
+    end;
+    end.
+    ''';
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitType_LastWins;
+const
+  DrvSrc = '''
+    program P;
+    uses tca, tcb;
+    var S: TShape;
+    begin
+      S := TShape.Create();
+      WriteLn(S.Sides())
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Both tca and tcb export class `TShape`; tcb is later in `uses`, so bare
+    TShape binds to tcb (Sides = 4).  The two types coexist with distinct
+    code symbols — no duplicate-identifier error and no link collision. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(TCA_Type, TCB_Type, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (tcb) wins', '4' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitType_LastWins_Reversed;
+const
+  DrvSrc = '''
+    program P;
+    uses tcb, tca;
+    var S: TShape;
+    begin
+      S := TShape.Create();
+      WriteLn(S.Sides())
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Reversed `uses` order: tca is now later, so bare TShape binds to tca
+    (Sides = 3). }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(TCA_Type, TCB_Type, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('last-in-uses (tca) wins', '3' + LE, Output);
+end;
+
+procedure TE2EUsesChainTests.TestRun_CrossUnitType_QualifiedDisambig;
+const
+  DrvSrc = '''
+    program P;
+    uses tca, tcb;
+    var
+      A: tca.TShape;
+      B: tcb.TShape;
+    begin
+      A := tca.TShape.Create();
+      B := tcb.TShape.Create();
+      WriteLn(A.Sides());
+      WriteLn(B.Sides())
+    end.
+    ''';
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Qualified references bind each variable to its own unit's class, so
+    A.Sides = 3 (tca) and B.Sides = 4 (tcb) regardless of last-wins. }
+  AssertTrue('compile+link+run',
+    CompileAndRunWithUnits(TCA_Type, TCB_Type, DrvSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('tca.TShape then tcb.TShape', '3' + LE + '4' + LE, Output);
 end;
 
 initialization

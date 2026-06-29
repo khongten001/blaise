@@ -280,6 +280,12 @@ type
       unit prefix when the type is defined in a non-system unit.  Mirrors the
       QBE backend's ClassSymName logic. }
     function ClassSymName(const AClassName: string): string;
+    { Allowlist + dot-collapse owner→prefix core, shared by ClassSymName (name
+      based) and ClassSymNameForDecl (emitting-unit based). }
+    function ClassOwnerPrefix(const AOwner: string): string;
+    { Owner-correct class-symbol suffix for a type DEFINITION, keyed on the unit
+      currently being emitted (cross-unit last-wins safe). }
+    function ClassSymNameForDecl(ATypeDecl: TTypeDecl): string;
     { Emit a property accessor (getter/setter) call.  The receiver instance
       must already be in %rdi.  When AVSlot >= 0 the accessor is virtual and
       the call dispatches through the vtable so an overridden accessor is
@@ -1790,39 +1796,51 @@ begin
   Result := CodegenMangle(AName);
 end;
 
+function TX86_64Backend.ClassOwnerPrefix(const AOwner: string): string;
+var
+  I: Integer;
+  Ch: string;
+begin
+  Result := '';
+  { Program-scope classes keep bare names — see the QBE backend's
+    ClassUnitPrefix and uSemantic.CurrentUnitPrefix. }
+  if (AOwner <> '') and
+     not ((FProgramName <> '') and SameText(AOwner, FProgramName)) and
+     not SameText(AOwner, 'System') and
+     not ((Length(AOwner) >= 4) and SameText(Copy(AOwner, 0, 4), 'rtl.')) and
+     not ((Length(AOwner) >= 7) and SameText(Copy(AOwner, 0, 7), 'blaise_')) then
+  begin
+    for I := 0 to Length(AOwner) - 1 do
+    begin
+      Ch := Copy(AOwner, I, 1);
+      if Ch = '.' then Result := Result + '_'
+      else              Result := Result + Ch;
+    end;
+    Result := Result + '_';
+  end;
+end;
+
 function TX86_64Backend.ClassSymName(const AClassName: string): string;
 var
   Sym: TSymbol;
-  Owner: string;
-  I: Integer;
-  Ch: string;
 begin
   Result := '';
   if FSymTable <> nil then
   begin
     Sym := FSymTable.Lookup(AClassName);
     if Sym <> nil then
-    begin
-      Owner := Sym.OwningUnit;
-      { Program-scope classes keep bare names — see the QBE backend's
-        ClassUnitPrefix and uSemantic.CurrentUnitPrefix. }
-      if (Owner <> '') and
-         not ((FProgramName <> '') and SameText(Owner, FProgramName)) and
-         not SameText(Owner, 'System') and
-         not ((Length(Owner) >= 4) and SameText(Copy(Owner, 0, 4), 'rtl.')) and
-         not ((Length(Owner) >= 7) and SameText(Copy(Owner, 0, 7), 'blaise_')) then
-      begin
-        for I := 0 to Length(Owner) - 1 do
-        begin
-          Ch := Copy(Owner, I, 1);
-          if Ch = '.' then Result := Result + '_'
-          else              Result := Result + Ch;
-        end;
-        Result := Result + '_';
-      end;
-    end;
+      Result := ClassOwnerPrefix(Sym.OwningUnit);
   end;
   Result := Result + NativeMangle(AClassName);
+end;
+
+function TX86_64Backend.ClassSymNameForDecl(ATypeDecl: TTypeDecl): string;
+begin
+  { A type's definition is emitted under its own unit's codegen pass, so key the
+    symbol on the unit currently being emitted (FCurrentUnitName) rather than a
+    flat-table name re-lookup — which would mis-mangle a cross-unit last-wins
+    loser as the winner.  Mirrors the QBE backend's ClassSymNameForDecl. }
+  Result := ClassOwnerPrefix(FCurrentUnitName) + NativeMangle(ATypeDecl.Name);
 end;
 
 procedure TX86_64Backend.EmitPropAccessorCallNative(
@@ -2177,7 +2195,7 @@ begin
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     CD := TClassTypeDef(TD.Def);
-    CSym := Self.ClassSymName(TD.Name);
+    CSym := Self.ClassSymNameForDecl(TD);
 
     { Class-name string blob — the symbol uses the unit-prefixed name so
       __cn_ matches the typeinfo class-name reference, but the content is
@@ -2260,7 +2278,7 @@ begin
     TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    CSym := Self.ClassSymName(TD.Name);
+    CSym := Self.ClassSymNameForDecl(TD);
 
     if RT.Parent <> nil then
       ParentStr := 'typeinfo_' + Self.ClassSymName(RT.Parent.Name)
@@ -2357,7 +2375,7 @@ begin
     TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    Self.EmitFieldCleanupFn(Self.ClassSymName(TD.Name), RT);
+    Self.EmitFieldCleanupFn(Self.ClassSymNameForDecl(TD), RT);
   end;
   { Field cleanup for generic class instances. }
   for I := 0 to AGenericInstances.Count - 1 do
@@ -2394,7 +2412,7 @@ begin
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
     if not RT.HasVTable() then Continue;
-    CSym := Self.ClassSymName(TD.Name);
+    CSym := Self.ClassSymNameForDecl(TD);
 
     Self.Emit('.balign 8');
     Self.Emit('.globl vtable_' + CSym);
@@ -2951,7 +2969,7 @@ begin
   begin
     TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TInterfaceTypeDef) then Continue;
-    CSym := Self.ClassSymName(TD.Name);
+    CSym := Self.ClassSymNameForDecl(TD);
     Self.Emit('.balign 8');
     Self.Emit('.globl typeinfo_' + CSym);
     Self.Emit('typeinfo_' + CSym + ':');
@@ -2979,7 +2997,7 @@ begin
     { Skip only when neither this class NOR any ancestor implements an interface
       — a descendant inherits its parent's interfaces (issue #130 bug3). }
     if not Self.ClassOrAncestorImplements(ClassRT) then Continue;
-    CSym := Self.ClassSymName(TD.Name);
+    CSym := Self.ClassSymNameForDecl(TD);
 
     { Collect each implemented interface PLUS every ancestor on its parent
       chain so a class instance can narrow directly to a base interface (an
