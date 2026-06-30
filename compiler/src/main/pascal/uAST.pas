@@ -751,6 +751,14 @@ type
   TTypeAliasDef = class(TASTTypeDef)
   public
     TypeName: string;
+    { When the RHS was a named integer subrange (type TIdx = lo..hi;) the alias
+      target is the narrowest fitting standard integer type (in TypeName), but
+      the original lo..hi bounds are retained here as compile-time metadata so
+      the array-index resolver can fold array[TIdx] -> array[lo..hi].  The value
+      still behaves as its underlying int (unchecked); only the bounds are kept. }
+    IsSubrange: Boolean;
+    SubrangeLow: Int64;
+    SubrangeHigh: Int64;
   end;
 
   { Set type definition: type TOptions = set of TEnum; }
@@ -2542,6 +2550,9 @@ begin
   begin
     TA := TTypeAliasDef.Create();
     TA.TypeName := TTypeAliasDef(ASrc).TypeName;
+    TA.IsSubrange := TTypeAliasDef(ASrc).IsSubrange;
+    TA.SubrangeLow := TTypeAliasDef(ASrc).SubrangeLow;
+    TA.SubrangeHigh := TTypeAliasDef(ASrc).SubrangeHigh;
     Result := TA;
   end
   else if ASrc is TSetTypeDef then

@@ -3288,9 +3288,26 @@ begin
         Result := SAT;
       end;
     end
+    else if (IdxTD <> nil) and IdxTD.IsSubrange and (BaseType <> nil) then
+    begin
+      { Named integer subrange index (type TIdx = lo..hi; array[TIdx] of T):
+        the subrange supplies the index range; fold to array[lo..hi] of T,
+        exactly parallel to the enum branch's array[0..N-1]. }
+      LVal := IdxTD.SubrangeLow;
+      HVal := IdxTD.SubrangeHigh;
+      CanonName := Format('array[%d..%d] of %s', [LVal, HVal, BaseType.Name]);
+      Result    := FTable.FindType(CanonName);
+      if Result = nil then
+      begin
+        SAT := FTable.NewStaticArrayType(BaseType, LVal, HVal);
+        Sym := TSymbol.Create(CanonName, skType, SAT);
+        FTable.DefineGlobal(Sym);
+        Result := SAT;
+      end;
+    end
     else if IdxTD = nil then
       SemanticError(Format('Unknown index type ''%s''', [IdxName]), 0, 0)
-    else if IdxTD.Kind <> tyEnum then
+    else if (IdxTD.Kind <> tyEnum) and (not IdxTD.IsSubrange) then
       SemanticError(Format('''%s'' is not an enumeration type', [IdxName]), 0, 0);
     Exit;
   end;
@@ -5859,6 +5876,26 @@ begin
             TD.Line, TD.Col);
           Continue;
         end;
+      end
+      else if AliasDef.IsSubrange then
+      begin
+        { Named integer subrange: type TIdx = lo..hi;  AliasName is the
+          narrowest fitting standard integer type (e.g. 'Byte').  Create a
+          DISTINCT descriptor that copies the underlying int's Kind (so layout,
+          QBE type, IsNumeric/IsOrdinal and assignment all treat it as that
+          int), but carries IsSubrange + the lo..hi bounds so the array-index
+          resolver can fold array[TIdx] -> array[lo..hi]. }
+        BaseSym := FTable.Lookup(AliasName);
+        if (BaseSym = nil) or (BaseSym.Kind <> skType) or (BaseSym.TypeDesc = nil) then
+        begin
+          SemanticError(Format('Unknown base type ''%s'' for subrange', [AliasName]),
+            TD.Line, TD.Col);
+          Continue;
+        end;
+        AliasDesc := FTable.NewType(BaseSym.TypeDesc.Kind, TD.Name);
+        AliasDesc.IsSubrange := True;
+        AliasDesc.SubrangeLow := AliasDef.SubrangeLow;
+        AliasDesc.SubrangeHigh := AliasDef.SubrangeHigh;
       end
       else
       begin

@@ -83,7 +83,7 @@ type
     function  CheckUnitNamePart: Boolean;
     function  ParseTypeName: string;  { reads Ident optionally followed by '<' ArgList '>' }
     function  SubrangeAhead: Boolean; { current token starts an integer-literal subrange: IntLit.. or -IntLit.. }
-    function  ParseIntegerSubrangeBaseType: string; { parse lo..hi, return narrowest fitting standard integer type }
+    function  ParseIntegerSubrangeBaseType(out ALo, AHi: Int64): string; { parse lo..hi, return narrowest fitting standard integer type and the bounds }
     function  ReadConstBoundText: string;  { read an array bound: literal, ident, or expr }
     function  ParseAnonEnumName: string;  { parse '(a,b,c)' → encoded member-list string }
 
@@ -656,7 +656,7 @@ begin
     Result := False;
 end;
 
-function TParser.ParseIntegerSubrangeBaseType: string;
+function TParser.ParseIntegerSubrangeBaseType(out ALo, AHi: Int64): string;
 var
   Lo, Hi: Int64;
   Neg: Boolean;
@@ -689,6 +689,8 @@ begin
     raise EParseError.Create(Format(
       'Subrange %d..%d is descending at line %d col %d in %s',
       [Lo, Hi, FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  ALo := Lo;
+  AHi := Hi;
   { Pick the narrowest standard type covering [Lo, Hi]. }
   if Lo >= 0 then
   begin
@@ -929,6 +931,8 @@ var
   IsGeneric:        Boolean;
   Constraint:       string;
   ClassAttrs:       TStringList;
+  SubLo:            Int64;
+  SubHi:            Int64;
 begin
   ClassAttrs := TStringList.Create();
   try
@@ -1099,7 +1103,10 @@ begin
           record/array layout correct (TByte is byte-sized) while the value
           behaves as an ordinary integer. }
         AD := TTypeAliasDef.Create();
-        AD.TypeName := Self.ParseIntegerSubrangeBaseType();
+        AD.TypeName := Self.ParseIntegerSubrangeBaseType(SubLo, SubHi);
+        AD.IsSubrange := True;
+        AD.SubrangeLow := SubLo;
+        AD.SubrangeHigh := SubHi;
         TD.Def := AD;
       end
       else if Check(tkArray) or Check(tkCaret) or Check(tkIdent) then

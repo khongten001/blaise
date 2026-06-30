@@ -53,7 +53,15 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 7;  { v7 (this cycle): external-library link dependencies now
+  IFACE_VERSION = 8;  { v8 (this cycle): named integer subranges now round-trip.
+                          A `type TIdx = lo..hi;` alias carries IsSubrange + the
+                          lo..hi bounds so `array[TIdx] of T` folds to
+                          `array[lo..hi] of T` across separate compilation.  The
+                          'alias' TYPE entry grew three trailing fields
+                          (IsSubrange bool + SubrangeLow + SubrangeHigh, each an
+                          lpstr) after TypeName, so v7 readers must reject these
+                          .bif and recompile.
+                        v7: external-library link dependencies now
                           round-trip.  TUnitInterface.LinkLibs is serialised in
                           the META block (one EncodeStringList after
                           ImplUsedUnits, before HasInitialization) so a unit's
@@ -632,7 +640,10 @@ begin
       else if Kind = 'alias' then
         SB.AppendLine(EncodeLpstr('alias') +
                EncodeLpstr(E.Name) +
-               EncodeLpstr(TTypeAliasDef(E.Def).TypeName))
+               EncodeLpstr(TTypeAliasDef(E.Def).TypeName) +
+               EncodeBool(TTypeAliasDef(E.Def).IsSubrange) +
+               EncodeLpstr(IntToStr(TTypeAliasDef(E.Def).SubrangeLow)) +
+               EncodeLpstr(IntToStr(TTypeAliasDef(E.Def).SubrangeHigh)))
       else if Kind = 'record' then
         SB.AppendLine(EncodeLpstr('record') +
                EncodeLpstr(E.Name) +
@@ -2318,6 +2329,9 @@ begin
       Payload := ReadLpstrAt(AText, APos);
       AliasDef := TTypeAliasDef.Create();
       AliasDef.TypeName := Payload;
+      AliasDef.IsSubrange := ReadLpstrAt(AText, APos) = '1';
+      AliasDef.SubrangeLow := ReadInt64At(AText, APos);
+      AliasDef.SubrangeHigh := ReadInt64At(AText, APos);
       Entry.Def := AliasDef;
     end
     else if Kind = 'record' then

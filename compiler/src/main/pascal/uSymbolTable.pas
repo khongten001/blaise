@@ -79,6 +79,15 @@ type
       vtable, _FieldCleanup, itab) with this owner so two used units exporting a
       same-named type emit distinct, non-colliding symbols. }
     OwningUnit: string;
+    { True when this descriptor was created for a NAMED integer subrange
+      (type TIdx = lo..hi;).  Layout/Kind/RawSize remain those of the narrowest
+      fitting standard integer type — the value behaves as an ordinary unchecked
+      int — but the lo..hi bounds are retained as compile-time metadata so the
+      array-index resolver can fold array[TIdx] -> array[lo..hi].  No other path
+      (codegen, IsNumeric/IsOrdinal, assignment compatibility) consults these. }
+    IsSubrange: Boolean;
+    SubrangeLow: Int64;
+    SubrangeHigh: Int64;
     function IsNumeric: Boolean;
     function IsFloat: Boolean;
     function IsString: Boolean;

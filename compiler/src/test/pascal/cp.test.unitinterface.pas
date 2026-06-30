@@ -234,6 +234,9 @@ type
     procedure TestRoundTrip_LinkLibsPreserved;
     { Int const round-trips. }
     procedure TestRoundTrip_IntConstPreserved;
+    { Named integer subrange alias round-trips its IsSubrange + lo..hi bounds,
+      so array[OtherUnit.TSub] still folds across separate compilation. }
+    procedure TestRoundTrip_NamedSubrangeAlias_BoundsPreserved;
     { String const round-trips, even with newlines + colons in the value. }
     procedure TestRoundTrip_StringConstWithAwkwardChars;
     { Empty interface round-trips (zero consts). }
@@ -2695,12 +2698,13 @@ begin
   Iface := TUnitInterface.Create('U');
   try
     Buf := WriteUnitInterface(Iface);
-    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 7 since
-      TUnitInterface.LinkLibs (external-library link deps) was added to the
-      META block (on top of v6's `overload` directive, v5's member Visibility,
-      v4's TRoutineSig.IsStatic, and v3's static-member facts). }
+    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 8 since
+      named integer subranges (IsSubrange + lo..hi bounds on the 'alias' TYPE
+      entry) were added (on top of v7's LinkLibs, v6's `overload` directive,
+      v5's member Visibility, v4's TRoutineSig.IsStatic, and v3's static-member
+      facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 7', Buf) = 0);
+      Pos('BLAISE-IFACE 8', Buf) = 0);
   finally
     Iface.Free();
   end;
@@ -2769,6 +2773,40 @@ begin
     end;
   finally
     Src.Free();
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_NamedSubrangeAlias_BoundsPreserved;
+const
+  SRC =
+    'unit TestU;'                            + #10 +
+    'interface'                              + #10 +
+    'type TIdx = 2..4;'                      + #10 +
+    'implementation'                         + #10 +
+    'end.'                                   + #10;
+var
+  SrcIface, Dst: TUnitInterface;
+  E:        TTypeEntry;
+  AD:       TTypeAliasDef;
+  Buf:      string;
+begin
+  SrcIface := ParseAndExport(SRC);
+  try
+    Buf := WriteUnitInterface(SrcIface);
+    Dst := ReadUnitInterface(Buf);
+    try
+      E := Dst.FindType('TIdx');
+      AssertTrue('TIdx present', E <> nil);
+      AssertTrue('is alias def', E.Def is TTypeAliasDef);
+      AD := TTypeAliasDef(E.Def);
+      AssertEquals('IsSubrange',   True, AD.IsSubrange);
+      AssertEquals('SubrangeLow',  Int64(2), AD.SubrangeLow);
+      AssertEquals('SubrangeHigh', Int64(4), AD.SubrangeHigh);
+    finally
+      Dst.Free();
+    end;
+  finally
+    SrcIface.Free();
   end;
 end;
 
