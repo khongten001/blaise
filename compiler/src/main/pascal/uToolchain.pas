@@ -36,7 +36,13 @@ type
   { Variant of a tool, determining the CLI syntax callers emit. }
   TToolKind = (
     tkUnknown,        { resolver couldn't classify }
-    tkAs,             { as -o OUT IN.s — GNU assembler }
+    tkGnuAs,          { as -o OUT IN.s — GNU assembler.  Named tkGnuAs (not the
+                        bare tkAs) so it does not collide with uLexer's
+                        TTokenKind.tkAs: a bare `tkAs` here is ambiguous and
+                        bare-member resolution is cross-unit order-fragile,
+                        which could bind it to TTokenKind.tkAs (ordinal 40) —
+                        out of range for this 4-member enum, sending downstream
+                        Kind-indexing off the end into a layout-sensitive crash. }
     tkCCDriver,       { cc / gcc / clang-as-driver — GNU link line }
     tkQBE             { qbe -o OUT IN.ssa }
   );
@@ -307,7 +313,7 @@ end;
 function ResolveAssembler: TTool;
 begin
   Result.Path := ResolveToolPath('BLAISE_AS', 'as', '');
-  Result.Kind := tkAs;
+  Result.Kind := tkGnuAs;
 end;
 
 function ResolveLinker(const ATarget: TTargetDesc): TTool;
