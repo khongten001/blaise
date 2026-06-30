@@ -55,7 +55,12 @@ type
     FUsedUnits:  TStringList; { unit names from every 'uses' clause, plus implicit
                                 'System'.  Consulted purely as a syntactic name list
                                 to recognise 'UnitName.Symbol' — no symbol lookup. }
+    FLinkLibs:   TObjectList; { non-owning ref to the current TUnit/TProgram.LinkLibs;
+                                external 'lib' decls append a TLinkLibDecl here as they
+                                are parsed (any section). nil outside a unit/program. }
 
+    { Record a 'link library X' dependency on the unit/program being parsed. }
+    procedure AddLinkLib(const ALibName: string; ALine, ACol: Integer);
     function  IsUsedUnit(const AName: string): Boolean;
     function  IsUnitPrefix(const AName: string): Boolean;
     { Unbounded lookahead, exposed as scalar accessors (0 = FCurrent).  A
@@ -261,6 +266,20 @@ begin
 end;
 
 { Case-insensitive membership test against the parsed 'uses' names. }
+{ Append a 'link library ALibName' dependency to the unit/program being parsed.
+  Duplicates are tolerated — the exporter dedupes when building the .bif set. }
+procedure TParser.AddLinkLib(const ALibName: string; ALine, ACol: Integer);
+var
+  LL: TLinkLibDecl;
+begin
+  if (FLinkLibs = nil) or (ALibName = '') then Exit;
+  LL := TLinkLibDecl.Create();
+  LL.LibName := ALibName;
+  LL.Line := ALine;
+  LL.Col  := ACol;
+  FLinkLibs.Add(LL);
+end;
+
 function TParser.IsUsedUnit(const AName: string): Boolean;
 var
   I: Integer;
@@ -754,6 +773,7 @@ end;
 function TParser.ParseProgram: TProgram;
 begin
   Result := TProgram.Create();
+  FLinkLibs := Result.LinkLibs;   { collect external 'lib' deps into the program }
   try
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
@@ -2505,6 +2525,15 @@ begin
       begin
         Result.IsExternal := True;
         Advance();
+        { optional: a library name string — external 'c' name 'malloc'.
+          Records a unit-level link dependency (works for implementation
+          imports too, so the private routine's library still propagates). }
+        if Check(tkStringLit) then
+        begin
+          Result.ExternalLib := FCurrent.Value;
+          AddLinkLib(FCurrent.Value, FCurrent.Line, FCurrent.Col);
+          Advance();
+        end;
         { optional: name 'c_symbol' }
         if Check(tkIdent) and SameText(FCurrent.Value, 'name') then
         begin
@@ -4471,6 +4500,14 @@ begin
       begin
         Result.IsExternal := True;
         Advance();
+        { optional library name — external 'c' name 'malloc' (records a
+          unit-level link dependency). }
+        if Check(tkStringLit) then
+        begin
+          Result.ExternalLib := FCurrent.Value;
+          AddLinkLib(FCurrent.Value, FCurrent.Line, FCurrent.Col);
+          Advance();
+        end;
         if Check(tkIdent) and SameText(FCurrent.Value, 'name') then
         begin
           Advance();
@@ -4523,6 +4560,7 @@ var
   InitStmt: TASTStmt;
 begin
   Result := TUnit.Create();
+  FLinkLibs := Result.LinkLibs;   { collect external 'lib' deps into the unit }
   try
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;

@@ -314,6 +314,7 @@ TUnitInterface.SourceModTime  serialise
 TUnitInterface.CompilerId  serialise
 TUnitInterface.UsedUnits  serialise
 TUnitInterface.ImplUsedUnits  serialise
+TUnitInterface.LinkLibs  serialise
 TUnitInterface.HasInitialization  serialise
 
 # TMethodParam (uAST.pas:798)

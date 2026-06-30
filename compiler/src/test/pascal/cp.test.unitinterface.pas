@@ -230,6 +230,8 @@ type
     procedure TestWrite_StartsWithMagicAndVersion;
     { Unit name round-trips. }
     procedure TestRoundTrip_UnitNamePreserved;
+    { External-library link deps (LinkLibs) round-trip via the META block. }
+    procedure TestRoundTrip_LinkLibsPreserved;
     { Int const round-trips. }
     procedure TestRoundTrip_IntConstPreserved;
     { String const round-trips, even with newlines + colons in the value. }
@@ -2693,12 +2695,12 @@ begin
   Iface := TUnitInterface.Create('U');
   try
     Buf := WriteUnitInterface(Iface);
-    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 6 since the
-      `overload` directive (TRoutineSig.IsOverload + TMethodDecl.IsOverload) was
-      added to the method encoded layouts (on top of v5's member Visibility,
+    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 7 since
+      TUnitInterface.LinkLibs (external-library link deps) was added to the
+      META block (on top of v6's `overload` directive, v5's member Visibility,
       v4's TRoutineSig.IsStatic, and v3's static-member facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 6', Buf) = 0);
+      Pos('BLAISE-IFACE 7', Buf) = 0);
   finally
     Iface.Free();
   end;
@@ -2715,6 +2717,29 @@ begin
     Dst := ReadUnitInterface(Buf);
     try
       AssertEquals('unit name', 'MyUnit', Dst.Name);
+    finally
+      Dst.Free();
+    end;
+  finally
+    Src.Free();
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_LinkLibsPreserved;
+var
+  Src, Dst: TUnitInterface;
+  Buf:      string;
+begin
+  Src := TUnitInterface.Create('MyUnit');
+  try
+    Src.LinkLibs.Add('c');
+    Src.LinkLibs.Add('m');
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      AssertEquals('link-lib count', 2, Dst.LinkLibs.Count);
+      AssertEquals('first lib',  'c', Dst.LinkLibs.Strings[0]);
+      AssertEquals('second lib', 'm', Dst.LinkLibs.Strings[1]);
     finally
       Dst.Free();
     end;

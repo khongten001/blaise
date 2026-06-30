@@ -204,6 +204,14 @@ type
                                     that loads this unit from its cached .bif
                                     still pulls in (and links) impl-only
                                     dependencies. }
+    LinkLibs:        TStringList; { owned — bare library names this unit must be
+                                    linked against (deduped), hoisted from every
+                                    'external ''lib''' decl, interface OR
+                                    implementation.  An implementation-private
+                                    import keeps its symbol out of the .bif but
+                                    its library still propagates here, so a
+                                    downstream program links it (-l<name> /
+                                    <name>.dll). }
     HasInitialization: Boolean;   { unit has a non-empty initialization
                                     section.  An incremental rebuild loads this
                                     unit from its cached .bif and must still
@@ -402,6 +410,7 @@ begin
   Name      := AName;
   UsedUnits := TStringList.Create();
   ImplUsedUnits := TStringList.Create();
+  LinkLibs  := TStringList.Create();
 
   Types         := TObjectList.Create(True);
   Consts        := TObjectList.Create(True);
@@ -432,6 +441,7 @@ begin
   Consts.Free();
   Types.Free();
 
+  LinkLibs.Free();
   ImplUsedUnits.Free();
   UsedUnits.Free();
   inherited Destroy();

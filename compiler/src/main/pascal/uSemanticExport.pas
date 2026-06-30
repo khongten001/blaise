@@ -481,6 +481,13 @@ begin
   if AUnit.ImplUsedUnits <> nil then
     for I := 0 to AUnit.ImplUsedUnits.Count - 1 do
       AIface.ImplUsedUnits.Add(AUnit.ImplUsedUnits.Strings[I]);
+  { Link libraries — hoisted from every 'external ''lib''' decl (interface or
+    implementation), deduped.  Carries the unit's link dependencies into the
+    .bif even when the importing routine is implementation-private. }
+  if AUnit.LinkLibs <> nil then
+    for I := 0 to AUnit.LinkLibs.Count - 1 do
+      if AIface.LinkLibs.IndexOf(TLinkLibDecl(AUnit.LinkLibs.Items[I]).LibName) < 0 then
+        AIface.LinkLibs.Add(TLinkLibDecl(AUnit.LinkLibs.Items[I]).LibName);
   AIface.HasInitialization :=
     (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0);
 end;

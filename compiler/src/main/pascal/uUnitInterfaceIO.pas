@@ -53,7 +53,14 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 6;  { v6 (this cycle): the `overload` directive now round-trips.
+  IFACE_VERSION = 7;  { v7 (this cycle): external-library link dependencies now
+                          round-trip.  TUnitInterface.LinkLibs is serialised in
+                          the META block (one EncodeStringList after
+                          ImplUsedUnits, before HasInitialization) so a unit's
+                          `external 'lib' name '...'` declarations propagate the
+                          libraries to link.  The META layout grew, so v6 readers
+                          must reject these .bif and recompile.
+                        v6: the `overload` directive now round-trips.
                           TRoutineSig.IsOverload added to EncodeMethodSig/
                           ReadMethodSig (one extra byte after IsStatic) and
                           TMethodDecl.IsOverload added to EncodeMethodDecl/
@@ -735,6 +742,7 @@ begin
            EncodeInt64(AIface.SourceModTime) +
            EncodeStringList(AIface.UsedUnits) +
            EncodeStringList(AIface.ImplUsedUnits) +
+           EncodeStringList(AIface.LinkLibs) +
            EncodeBool(AIface.HasInitialization));
     SB.AppendLine('END');
     Result := SB.ToString();
@@ -2120,6 +2128,9 @@ begin
   C := DecodeCount(AText, APos);
   for I := 1 to C do
     AIface.ImplUsedUnits.Add(ReadLpstrAt(AText, APos));
+  C := DecodeCount(AText, APos);
+  for I := 1 to C do
+    AIface.LinkLibs.Add(ReadLpstrAt(AText, APos));
   AIface.HasInitialization := ReadLpstrAt(AText, APos) = '1';
   if ReadTag(AText, APos) <> 'END' then
     raise EIfaceFormatError.Create('META block: missing END marker');

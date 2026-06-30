@@ -863,6 +863,7 @@ type
                                        consumed by codegen for cross-unit references. }
     IsExternal:         Boolean;     { declared with 'external' directive — no body }
     ExternalName:       string;      { C symbol name from 'external name ''c_foo'''; empty = use Pascal name }
+    ExternalLib:        string;      { library from 'external ''c'' name ''malloc'''; bare name, link layer expands per platform. Also recorded unit-level in LinkLibs. }
     NoStackFrame:       Boolean;     { declared 'nostackframe' — body is an asm
                                        block that owns the whole frame; codegen
                                        emits no compiler prologue/epilogue }
@@ -1067,6 +1068,19 @@ type
     destructor Destroy; override;
   end;
 
+  { A library this compilation unit must be linked against — collected by the
+    parser from every 'external ''lib''' declaration (interface OR
+    implementation).  Hoisted to the unit level so an implementation-private
+    import still records its link dependency: the private routine stays out of
+    the .bif, but the library it needs is serialised via
+    TUnitInterface.LinkLibs and propagates to any program that uses the unit.
+    LibName is the bare name ('c', 'kernel32') — the link layer expands it per
+    platform (-l<name> on ELF, <name>.dll on PE). }
+  TLinkLibDecl = class(TASTNode)
+  public
+    LibName: string;
+  end;
+
   { ------------------------------------------------------------------ }
   {  Block and Program                                                  }
   { ------------------------------------------------------------------ }
@@ -1082,6 +1096,7 @@ type
     GenericMethodInstances: TObjectList;    { owned TGenericMethodInstance — populated by uSemantic }
     GenericIntfInstances:   TObjectList;    { owned TGenericInterfaceInstance — populated by uSemantic }
     GenericRecordInstances: TObjectList;    { owned TGenericRecordInstance — populated by uSemantic }
+    LinkLibs:               TObjectList;    { owned TLinkLibDecl — libraries to link, collected by the parser }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1105,6 +1120,7 @@ type
     GenericMethodInstances: TObjectList;
     GenericIntfInstances:   TObjectList;
     GenericRecordInstances: TObjectList;
+    LinkLibs:               TObjectList; { owned TLinkLibDecl — libraries to link, collected by the parser }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1811,6 +1827,7 @@ begin
   GenericMethodInstances := TObjectList.Create(True);
   GenericIntfInstances   := TObjectList.Create(True);
   GenericRecordInstances := TObjectList.Create(True);
+  LinkLibs               := TObjectList.Create(True);
 end;
 
 destructor TConstDecl.Destroy;
@@ -1841,6 +1858,7 @@ begin
   GenericMethodInstances := TObjectList.Create(True);
   GenericIntfInstances   := TObjectList.Create(True);
   GenericRecordInstances := TObjectList.Create(True);
+  LinkLibs               := TObjectList.Create(True);
 end;
 
 destructor TUnit.Destroy;
@@ -2437,6 +2455,7 @@ begin
   Result.IsPublished    := ASrc.IsPublished;
   Result.IsExternal     := ASrc.IsExternal;
   Result.ExternalName   := ASrc.ExternalName;
+  Result.ExternalLib    := ASrc.ExternalLib;
   Result.CallingConv    := ASrc.CallingConv;
   Result.IsRecordMethod := ASrc.IsRecordMethod;
   { Static (class-level) methods take no implicit Self.  Dropping this in the
