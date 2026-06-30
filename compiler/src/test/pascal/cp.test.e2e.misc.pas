@@ -50,6 +50,10 @@ type
     { Method-pointer (of object) field: assign @Obj.Method into a field, then
       dispatch through it — exercises the 16-byte (Code, Data) field store. }
     procedure TestRun_MethodPtrField_AssignAndCall;
+    { Capturing @Obj.VirtualMethod must bind the receiver's dynamic override,
+      not the statically-resolved declared-type method. }
+    procedure TestRun_MethodPtrVirtualCapture_Var;
+    procedure TestRun_MethodPtrVirtualCapture_Field;
     { Unqualified call to a procedural-typed field via implicit Self (FFn(...)
       with no 'Self.' prefix), as an expression and as a statement. }
     procedure TestRun_ImplicitSelfProcField_Expr;
@@ -473,6 +477,63 @@ const
     end.
     ''';
 
+  { Method-pointer capture of a VIRTUAL method through a base-typed variable:
+    A is declared TAnimal but holds a TDog, so @A.Speak must capture TDog's
+    override (print 'dog'), resolving the Code half through A's vtable rather
+    than freezing the declared type's TAnimal.Speak. }
+  SrcMethodPtrVirtualCaptureVar = '''
+    program Prg;
+    type
+      TSpeak = procedure of object;
+      TAnimal = class
+        procedure Speak; virtual;
+      end;
+      TDog = class(TAnimal)
+        procedure Speak; override;
+      end;
+    procedure TAnimal.Speak;
+    begin WriteLn('animal') end;
+    procedure TDog.Speak;
+    begin WriteLn('dog') end;
+    var A: TAnimal; M: TSpeak;
+    begin
+      A := TDog.Create();
+      M := @A.Speak;
+      M();
+      A.Free()
+    end.
+    ''';
+
+  { Same dynamic-dispatch capture, but stored into a class FIELD rather than a
+    local variable — exercises the field-destination assignment path. }
+  SrcMethodPtrVirtualCaptureField = '''
+    program Prg;
+    type
+      TSpeak = procedure of object;
+      TAnimal = class
+        procedure Speak; virtual;
+      end;
+      TDog = class(TAnimal)
+        procedure Speak; override;
+      end;
+      TBox = class
+        M: TSpeak;
+      end;
+    procedure TAnimal.Speak;
+    begin WriteLn('animal') end;
+    procedure TDog.Speak;
+    begin WriteLn('dog') end;
+    var A: TAnimal; B: TBox;
+    begin
+      A := TDog.Create();
+      B := TBox.Create();
+      B.M := @A.Speak;
+      B.M();
+      B.Free();
+      A.Free()
+    end.
+    ''';
+
   { Unqualified (implicit-Self) call to a procedural-typed field, as an
     expression — FFn(...) with no 'Self.' prefix. }
   SrcImplicitProcFieldExpr = '''
@@ -864,6 +925,18 @@ procedure TE2EMiscTests.TestRun_MethodPtrField_AssignAndCall;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcMethodPtrField, 'T:hello' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_MethodPtrVirtualCapture_Var;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcMethodPtrVirtualCaptureVar, 'dog' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_MethodPtrVirtualCapture_Field;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcMethodPtrVirtualCaptureField, 'dog' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ImplicitSelfProcField_Expr;

@@ -15062,6 +15062,9 @@ var
   Adj:     string;
   Offset:  string;
   ElemPtr: string;
+  VTblTemp: string;
+  SlotPtr:  string;
+  FPtrTemp: string;
 begin
   if AExpr.Expr is TStringSubscriptExpr then
   begin
@@ -15230,7 +15233,8 @@ begin
   { @Obj.MethodName — method-pointer construction.  The semantic pass set
     IsMethodPtr on the TFieldAccessExpr's ResolvedType when it detected this
     pattern.  Allocate a 16-byte block [code_ptr, data_ptr] on the stack,
-    store the static method address and the object pointer, return the block. }
+    store the code pointer (vtable-resolved for a virtual/override method,
+    the static label otherwise) and the object pointer, return the block. }
   if (AExpr.Expr is TFieldAccessExpr) and
      (TFieldAccessExpr(AExpr.Expr).ResolvedType <> nil) and
      (TFieldAccessExpr(AExpr.Expr).ResolvedType.Kind = tyProcedural) and
@@ -15242,10 +15246,8 @@ begin
     EmitLine(Format('  %s =l alloc8 16', [MBlock]));
     DataSlot := AllocTemp();
     EmitLine(Format('  %s =l add %s, 8', [DataSlot, MBlock]));
-    { Store code pointer at offset 0 }
-    EmitLine(Format('  storel $%s, %s',
-      [MethodEmitName(MD, MD.OwnerTypeName, FldExpr.FieldName), MBlock]));
-    { Load and store the object pointer at offset 8.
+    { Compute the object (data) pointer first — a virtual method reads its
+      code pointer from THIS instance's vtable.
       Simple form: @VarName.Method — FldExpr.Base is nil; load via RecordName.
       Chained form: @Expr.Method — FldExpr.Base is set; use EmitInstancePtr. }
     if FldExpr.Base <> nil then
@@ -15255,6 +15257,26 @@ begin
       ObjPtr := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [ObjPtr, VarRef(FldExpr.RecordName, FldExpr.IsGlobal)]));
     end;
+    { Store the code pointer at offset 0.  A virtual/override method must be
+      resolved through the instance's vtable so @Obj.M captures the dynamic
+      type's override — matching a direct Obj.M() call — instead of freezing
+      the static address of the declared type.  Slot 0 of the vtable is
+      typeinfo, so method N is at offset (N+1)*8 (mirrors EmitMethodCall). }
+    if MD.VTableSlot >= 0 then
+    begin
+      VTblTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [VTblTemp, ObjPtr]));
+      SlotPtr  := AllocTemp();
+      EmitLine(Format('  %s =l add %s, %d',
+        [SlotPtr, VTblTemp, (MD.VTableSlot + 1) * 8]));
+      FPtrTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SlotPtr]));
+      EmitLine(Format('  storel %s, %s', [FPtrTemp, MBlock]));
+    end
+    else
+      EmitLine(Format('  storel $%s, %s',
+        [MethodEmitName(MD, MD.OwnerTypeName, FldExpr.FieldName), MBlock]));
+    { Store the object pointer at offset 8. }
     EmitLine(Format('  storel %s, %s', [ObjPtr, DataSlot]));
     Exit(MBlock);
   end;

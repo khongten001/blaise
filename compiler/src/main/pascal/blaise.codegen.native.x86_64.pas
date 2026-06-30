@@ -2107,6 +2107,18 @@ begin
   begin
     TD := TTypeDecl(ATypeDecls.Items[I]);
     if not (TD.Def is TClassTypeDef) then Continue;
+    { Re-assert the viewing context before EVERY FindType.  Resolving a prior
+      class in this loop (its parent/field/method types via ClassSymName ->
+      Lookup -> the uses-chain walk) can leave FSymTable.DefineOwningUnit
+      pointing at a dependency unit.  If it has drifted, FindType for one of THIS
+      unit's own implementation-section (IsImplPrivate) classes is suppressed by
+      Lookup's cross-unit-leak guard and returns nil — so the class is skipped
+      and its typeinfo / vtable / _FieldCleanup are NEVER emitted, leaving a
+      dangling reference the linker binds to garbage (an out-of-range metaclass
+      crash, e.g. via RegisterTest).  Pin DOU to the unit being emitted so an
+      owned impl-private class always resolves. }
+    if (ASymTable <> nil) and (FCurrentUnitName <> '') then
+      ASymTable.DefineOwningUnit := FCurrentUnitName;
     TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
@@ -11126,11 +11138,8 @@ begin
         Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(Asgn.Name)]))
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [Asgn.Name]));
-      { Store code pointer at offset 0 }
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-        [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
-      Self.Emit(#9'movq %rax, (%rcx)');
-      { Store object pointer at offset 8 }
+      { Store object pointer at offset 8 first — a virtual method reads its
+        code pointer from THIS instance's vtable. }
       if FAE.Base <> nil then
       begin
         Self.Emit(#9'pushq %rcx');
@@ -11143,6 +11152,21 @@ begin
         Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
         Self.Emit(#9'movq %rax, 8(%rcx)');
       end;
+      { Store code pointer at offset 0.  A virtual/override method must be
+        resolved through the instance's vtable so @Obj.M captures the dynamic
+        type's override — matching a direct Obj.M() call — instead of freezing
+        the static address.  Slot 0 of the vtable is typeinfo, so method N is
+        at offset (N+1)*8 (mirrors the dispatch in the call path). }
+      if MD.VTableSlot >= 0 then
+      begin
+        Self.Emit(#9'movq 8(%rcx), %rax');     { obj  = data slot }
+        Self.Emit(#9'movq (%rax), %rax');      { vptr = obj[0] }
+        Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+      end
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
+      Self.Emit(#9'movq %rax, (%rcx)');
       Exit;
     end;
     { Method-pointer (of-object) assignment from a TMethod/TAddProc cast:
@@ -12476,11 +12500,8 @@ begin
       else Self.EmitVarBaseToReg(FA.RecordName, True, '%rcx');
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rcx', [FA.FieldInfo.Offset]));
-      { Store the code pointer at offset 0. }
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-        [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
-      Self.Emit(#9'movq %rax, (%rcx)');
-      { Store the captured object pointer at offset 8. }
+      { Store the captured object pointer at offset 8 first — a virtual method
+        reads its code pointer from THIS instance's vtable. }
       if FAE.Base <> nil then
       begin
         Self.Emit(#9'pushq %rcx');
@@ -12493,6 +12514,21 @@ begin
         Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
         Self.Emit(#9'movq %rax, 8(%rcx)');
       end;
+      { Store the code pointer at offset 0.  A virtual/override method must be
+        resolved through the instance's vtable so @Obj.M captures the dynamic
+        type's override — matching a direct Obj.M() call — instead of freezing
+        the static address.  Slot 0 of the vtable is typeinfo, so method N is
+        at offset (N+1)*8. }
+      if MD.VTableSlot >= 0 then
+      begin
+        Self.Emit(#9'movq 8(%rcx), %rax');     { obj  = data slot }
+        Self.Emit(#9'movq (%rax), %rax');      { vptr = obj[0] }
+        Self.Emit(Format(#9'movq %d(%%rax), %%rax', [(MD.VTableSlot + 1) * 8]));
+      end
+      else
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+          [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
+      Self.Emit(#9'movq %rax, (%rcx)');
       Exit;
     end;
     { Field := MethodCall() where the method returns a record via sret.

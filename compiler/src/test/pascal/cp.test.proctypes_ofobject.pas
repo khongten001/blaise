@@ -55,6 +55,7 @@ type
     procedure TestCodegen_MethodPtrField_RecordTotalSizeIncludes16;
 
     procedure TestCodegen_MethodPtrField_DirectCall_LoadsCodeAndData;
+    procedure TestCodegen_MethodPtrVirtualCapture_LoadsFromVTable;
 
     { End-to-end }
     procedure TestE2E_MethodPtr_NoArgs;
@@ -686,6 +687,43 @@ begin
     StrPos('call %', IR) >= 0);
   AssertFalse('IR does not static-dispatch $THolder_Handler',
     StrPos('$THolder_Handler', IR) >= 0);
+end;
+
+procedure TProcTypesOfObjectTests.TestCodegen_MethodPtrVirtualCapture_LoadsFromVTable;
+const
+  Src =
+    '''
+        program P;
+        type
+          TSpeak = procedure of object;
+          TAnimal = class(TObject)
+            procedure Speak; virtual;
+          end;
+          TDog = class(TAnimal)
+            procedure Speak; override;
+          end;
+        procedure TAnimal.Speak;
+        begin WriteLn('animal') end;
+        procedure TDog.Speak;
+        begin WriteLn('dog') end;
+        var A: TAnimal; M: TSpeak;
+        begin
+          A := TDog.Create();
+          M := @A.Speak;
+          M();
+          A.Free()
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  { Capturing @A.Speak where Speak is virtual must read the Code half from
+    the receiver's vtable, not freeze the statically-resolved declared-type
+    address.  The buggy codegen stored the static label '$TAnimal_Speak'
+    into the (Code, Data) block; the fix loads the slot through the instance
+    vptr, so that static store must be absent. }
+  AssertFalse('virtual capture must not store the static method address',
+    StrPos('storel $TAnimal_Speak', IR) >= 0);
 end;
 
 procedure TProcTypesOfObjectTests.TestE2E_MethodPtrField_DirectCall_StmtForm;
