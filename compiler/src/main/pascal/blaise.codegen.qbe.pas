@@ -427,6 +427,14 @@ type
                                        ARetType: TRecordTypeDesc;
                                        const ADestAddr: string);
     function  ClassifyRecordReturn(ARec: TRecordTypeDesc): TRecReturnClass;
+    { Lazily-built canonical 16-byte [Code; Data] record for method pointers. }
+    function  MethodPtrReturnRec(): TRecordTypeDesc;
+    { The record descriptor governing AType's by-aggregate return ABI: AType
+      itself for a real record, the canonical method-pointer record for an
+      'of object' procedural type, else nil. }
+    function  AggRetRec(AType: TTypeDesc): TRecordTypeDesc;
+    { Record descriptor for an already-aggregate record-return call site. }
+    function  SretRetRec(AType: TTypeDesc): TRecordTypeDesc;
     function  IsRecordManagedClean(ARec: TRecordTypeDesc): Boolean;
     function  IsRecordAllIntegerLeaves(ARec: TRecordTypeDesc): Boolean;
     function  IsRecordAllFloatLeaves(ARec: TRecordTypeDesc): Boolean;
@@ -571,6 +579,14 @@ type
   end;
 
 implementation
+
+var
+  { Process-wide singleton method-pointer return record + its shared Pointer
+    leaf type; built lazily by TCodeGenQBE.MethodPtrReturnRec and reused by
+    every codegen instance.  Never mutated after creation; intentionally not
+    freed (a single process-lifetime constant). }
+  GMethodPtrRec:  TRecordTypeDesc;
+  GMethodPtrLeaf: TTypeDesc;
 
 { -----------------------------------------------------------------------
   TIRBuffer
@@ -5475,6 +5491,65 @@ begin
   Result := RecretClassify(ARec, GTarget);
 end;
 
+{ True for an 'of object' method-pointer type — a 16-byte [Code; Data]
+  aggregate returned by the same ABI as a two-pointer record. }
+function IsMethodPtrType(AType: TTypeDesc): Boolean;
+begin
+  Result := (AType <> nil) and (AType.Kind = tyProcedural)
+            and TProceduralTypeDesc(AType).IsMethodPtr;
+end;
+
+{ A method pointer is a 16-byte aggregate [Code; Data] of two raw pointers —
+  ABI-identical to `record Code, Data: Pointer end`.  Returning a canonical
+  record descriptor for it lets the whole record-return path (classify,
+  signature, prologue/epilogue, call site) handle method-pointer returns
+  uniformly: two integer eightbytes -> rcInt2 on SysV (rax:rdx), aggregate on
+  Win64.  Built once and cached in a unit-level singleton (the descriptor is a
+  process-wide constant shared by every TCodeGenQBE instance; it is never
+  mutated after creation, and a deliberate process-lifetime leak avoids adding
+  ARC/teardown state to the codegen object).  The two fields share one
+  untyped-Pointer leaf (referenced, not owned by the record). }
+function TCodeGenQBE.MethodPtrReturnRec(): TRecordTypeDesc;
+begin
+  if GMethodPtrRec = nil then
+  begin
+    GMethodPtrLeaf      := TTypeDesc.Create();
+    GMethodPtrLeaf.Kind := tyPointer;
+    GMethodPtrLeaf.Name := 'Pointer';
+    GMethodPtrRec := TRecordTypeDesc.Create('_BlaiseMethodPtr', tyRecord);
+    GMethodPtrRec.AddField('Code', GMethodPtrLeaf);
+    GMethodPtrRec.AddField('Data', GMethodPtrLeaf);
+  end;
+  Result := GMethodPtrRec;
+end;
+
+function TCodeGenQBE.AggRetRec(AType: TTypeDesc): TRecordTypeDesc;
+begin
+  if AType = nil then
+    Result := nil
+  else if AType.Kind = tyRecord then
+    Result := TRecordTypeDesc(AType)
+  else if (AType.Kind = tyProcedural) and
+          TProceduralTypeDesc(AType).IsMethodPtr then
+    Result := MethodPtrReturnRec()
+  else
+    Result := nil;
+end;
+
+{ Record descriptor for a record-return CALL SITE, where the return type is
+  already known to be aggregate (record, static array, jumbo set, or method
+  pointer).  Substitutes the canonical method-pointer record for an 'of object'
+  type; otherwise reinterprets the type as a record descriptor exactly as the
+  call site did before — EmitRecordReturnCallSite re-checks the kind and routes
+  static-array/jumbo-set returns through their own sret branch. }
+function TCodeGenQBE.SretRetRec(AType: TTypeDesc): TRecordTypeDesc;
+begin
+  if IsMethodPtrType(AType) then
+    Result := MethodPtrReturnRec()
+  else
+    Result := TRecordTypeDesc(AType);
+end;
+
 procedure TCodeGenQBE.EmitRecordReturnSignature(var ASig: string;
   AClass: TRecReturnClass);
 begin
@@ -5837,7 +5912,7 @@ begin
   begin
     FCallExpr := TFuncCallExpr(AExpr);
     MDecl := TMethodDecl(FCallExpr.ResolvedDecl);
-    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
+    RetType := SretRetRec(MDecl.ResolvedReturnType);
     if FCallExpr.IsImplicitSelfMethod then
     begin
       SelfTemp := AllocTemp();
@@ -5896,7 +5971,7 @@ begin
       Exit;
     end;
     MDecl := TMethodDecl(MCallExpr.ResolvedMethod);
-    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
+    RetType := SretRetRec(MDecl.ResolvedReturnType);
     { Static (class-level) record-returning function: TypeName.Make(args).
       No Self — the visible args begin with the first user parameter.  (A record
       factory is the canonical case; the user opted records into requiring an
@@ -5987,7 +6062,7 @@ begin
       Exit;
     end;
     MDecl := TMethodDecl(FldAccess.ResolvedMethod);
-    RetType := TRecordTypeDesc(MDecl.ResolvedReturnType);
+    RetType := SretRetRec(MDecl.ResolvedReturnType);
     if FldAccess.IsImplicitSelf then
     begin
       SelfTemp := AllocTemp();
@@ -6031,7 +6106,7 @@ begin
       parent's symbol, marshal Self + args, and let the callee write straight
       into ASretAddr (the assignment's destination slot — no temp, no copy). }
     MDecl    := TMethodDecl(TInheritedCallExpr(AExpr).ResolvedMethod);
-    RetType  := TRecordTypeDesc(MDecl.ResolvedReturnType);
+    RetType  := SretRetRec(MDecl.ResolvedReturnType);
     VisArgs  := InheritedArgLine(MDecl, TInheritedCallExpr(AExpr).Args);
     FuncName := '$' + MethodEmitName(MDecl, MDecl.OwnerTypeName,
                   TInheritedCallExpr(AExpr).Name);
@@ -7719,6 +7794,7 @@ var
   SavedExitLbl:  string;
   ValTemp:       string;
   RC:            TRecReturnClass;
+  RetRec:        TRecordTypeDesc;
 begin
   if AMethod.ResolvedQbeName <> '' then
     FuncName := '$' + QBEMangle(AMethod.ResolvedQbeName)
@@ -7726,12 +7802,18 @@ begin
     FuncName := '$' + QBEMangle(ATypeName + '_' + AMethod.Name);
   IsFunc   := AMethod.ResolvedReturnType <> nil;
 
+  { RetRec drives the by-aggregate return ABI for both real records and
+    method pointers (the latter via a synthetic two-pointer record). }
+  if IsFunc then RetRec := AggRetRec(AMethod.ResolvedReturnType)
+  else RetRec := nil;
   RC := rcSret;
-  if IsFunc and (AMethod.ResolvedReturnType.Kind = tyRecord) then
-    RC := Self.ClassifyRecordReturn(TRecordTypeDesc(AMethod.ResolvedReturnType));
+  if RetRec <> nil then
+    RC := Self.ClassifyRecordReturn(RetRec);
 
   { A STATIC (class-level) method takes no implicit Self.  Its signature starts
-    empty (or with just the sret pointer for aggregate returns). }
+    empty (or with just the sret pointer for aggregate returns).  RetRec drives
+    the by-aggregate return for both real records and method pointers (synthetic
+    two-pointer record), so gate on RetRec rather than Kind = tyRecord. }
   if AMethod.IsStatic then
   begin
     Sig := '';
@@ -7739,7 +7821,7 @@ begin
        ((AMethod.ResolvedReturnType.Kind = tySet) and
         TSetTypeDesc(AMethod.ResolvedReturnType).IsJumbo())) then
       Sig := 'l %_par__sret'
-    else if IsFunc and (AMethod.ResolvedReturnType.Kind = tyRecord) then
+    else if RetRec <> nil then
       { Sig is '' here, so EmitRecordReturnSignature yields just the sret ptr. }
       EmitRecordReturnSignature(Sig, RC);
   end
@@ -7750,7 +7832,7 @@ begin
        ((AMethod.ResolvedReturnType.Kind = tySet) and
         TSetTypeDesc(AMethod.ResolvedReturnType).IsJumbo())) then
       Sig := 'l %_par__sret, l %_par_Self'
-    else if IsFunc and (AMethod.ResolvedReturnType.Kind = tyRecord) then
+    else if RetRec <> nil then
       EmitRecordReturnSignature(Sig, RC);
   end;
   for I := 0 to AMethod.Params.Count - 1 do
@@ -7786,10 +7868,9 @@ begin
        ((AMethod.ResolvedReturnType.Kind = tySet) and
         TSetTypeDesc(AMethod.ResolvedReturnType).IsJumbo()) then
       EmitLine(Format('%sfunction %s(%s) {', [ExportPrefix(), FuncName, Sig]))
-    else if AMethod.ResolvedReturnType.Kind = tyRecord then
+    else if RetRec <> nil then
     begin
-      RetDeclType := EmitRecordReturnDeclType(
-        TRecordTypeDesc(AMethod.ResolvedReturnType), RC);
+      RetDeclType := EmitRecordReturnDeclType(RetRec, RC);
       if RetDeclType = '' then
         EmitLine(Format('%sfunction %s(%s) {', [ExportPrefix(), FuncName, Sig]))
       else
@@ -7849,8 +7930,8 @@ begin
   { For function methods, allocate/alias a zero-initialised Result slot }
   if IsFunc then
   begin
-    if AMethod.ResolvedReturnType.Kind = tyRecord then
-      EmitRecordReturnPrologue(TRecordTypeDesc(AMethod.ResolvedReturnType), RC)
+    if RetRec <> nil then
+      EmitRecordReturnPrologue(RetRec, RC)
     else if AMethod.ResolvedReturnType.Kind = tyStaticArray then
     begin
       EmitLine('  %_var_Result =l copy %_par__sret');
@@ -7938,8 +8019,8 @@ begin
 
   if IsFunc then
   begin
-    if AMethod.ResolvedReturnType.Kind = tyRecord then
-      EmitRecordReturnEpilogue(TRecordTypeDesc(AMethod.ResolvedReturnType), RC)
+    if RetRec <> nil then
+      EmitRecordReturnEpilogue(RetRec, RC)
     else if (AMethod.ResolvedReturnType.Kind in [tyInterface, tyStaticArray]) or
             ((AMethod.ResolvedReturnType.Kind = tySet) and
              TSetTypeDesc(AMethod.ResolvedReturnType).IsJumbo()) then
@@ -8719,6 +8800,7 @@ var
   CapName:         string;
   NestedFuncName:  string;
   RC:              TRecReturnClass;
+  RetRec:          TRecordTypeDesc;
 begin
   if ADecl.IsExternal then Exit;  { no body to emit for external declarations }
   if ADecl.Body = nil then Exit;  { forward declaration — impl appears elsewhere }
@@ -8749,9 +8831,13 @@ begin
   else
     FuncName := '$' + QBEMangle(ADecl.Name);
   IsFunc   := ADecl.ResolvedReturnType <> nil;
+  { RetRec drives the by-aggregate return ABI for both real records and
+    method pointers (the latter via a synthetic two-pointer record). }
+  if IsFunc then RetRec := AggRetRec(ADecl.ResolvedReturnType)
+  else RetRec := nil;
   RC := rcSret;
-  if IsFunc and (ADecl.ResolvedReturnType.Kind = tyRecord) then
-    RC := Self.ClassifyRecordReturn(TRecordTypeDesc(ADecl.ResolvedReturnType));
+  if RetRec <> nil then
+    RC := Self.ClassifyRecordReturn(RetRec);
   if AExported or FExportAll or FOpdfMode then Prefix := 'export ' else Prefix := '';
 
   { Captured outer-scope variables are prepended as implicit pointer params.
@@ -8798,11 +8884,10 @@ begin
       else Sig := 'l %_par__sret';
       EmitLine(Format('%sfunction %s(%s) {', [Prefix, FuncName, Sig]));
     end
-    else if ADecl.ResolvedReturnType.Kind = tyRecord then
+    else if RetRec <> nil then
     begin
       EmitRecordReturnSignature(Sig, RC);
-      RetDeclType := EmitRecordReturnDeclType(
-        TRecordTypeDesc(ADecl.ResolvedReturnType), RC);
+      RetDeclType := EmitRecordReturnDeclType(RetRec, RC);
       if RetDeclType = '' then
         EmitLine(Format('%sfunction %s(%s) {', [Prefix, FuncName, Sig]))
       else
@@ -8945,8 +9030,8 @@ begin
 
   if IsFunc then
   begin
-    if ADecl.ResolvedReturnType.Kind = tyRecord then
-      EmitRecordReturnPrologue(TRecordTypeDesc(ADecl.ResolvedReturnType), RC)
+    if RetRec <> nil then
+      EmitRecordReturnPrologue(RetRec, RC)
     else if ADecl.ResolvedReturnType.Kind = tyStaticArray then
     begin
       EmitLine('  %_var_Result =l copy %_par__sret');
@@ -9043,8 +9128,8 @@ begin
 
   if IsFunc then
   begin
-    if ADecl.ResolvedReturnType.Kind = tyRecord then
-      EmitRecordReturnEpilogue(TRecordTypeDesc(ADecl.ResolvedReturnType), RC)
+    if RetRec <> nil then
+      EmitRecordReturnEpilogue(RetRec, RC)
     else if (ADecl.ResolvedReturnType.Kind in [tyInterface, tyStaticArray]) or
             ((ADecl.ResolvedReturnType.Kind = tySet) and
              TSetTypeDesc(ADecl.ResolvedReturnType).IsJumbo()) then
@@ -11187,6 +11272,16 @@ begin
         EmitRecordCallSret(AExpr, SretBuf);
         Exit(SretBuf);
       end;
+      { Method-pointer return — a 16-byte [Code; Data] aggregate routed
+        through the record-return ABI; the buffer address is the result. }
+      if IsMethodPtrType(MDecl.ResolvedReturnType) then
+      begin
+        SretBuf := AllocTemp();
+        EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+        EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
+        EmitRecordCallSret(AExpr, SretBuf);
+        Exit(SretBuf);
+      end;
       { sret: jumbo-set-returning function — caller allocates a zero-init
         bitmap buffer and passes its address as the hidden first parameter. }
       if (MDecl.ResolvedReturnType.Kind = tySet) and
@@ -11697,6 +11792,16 @@ begin
     end;
     { sret: interface-returning method }
     if MDecl.ResolvedReturnType.Kind = tyInterface then
+    begin
+      SretBuf := AllocTemp();
+      EmitLine(Format('  %s =l alloc8 16', [SretBuf]));
+      EmitLine(Format('  call $memset(l %s, w 0, l 16)', [SretBuf]));
+      EmitRecordCallSret(AExpr, SretBuf);
+      Exit(SretBuf);
+    end;
+    { Method-pointer return — a 16-byte [Code; Data] aggregate routed
+      through the record-return ABI; the buffer address is the result. }
+    if IsMethodPtrType(MDecl.ResolvedReturnType) then
     begin
       SretBuf := AllocTemp();
       EmitLine(Format('  %s =l alloc8 16', [SretBuf]));

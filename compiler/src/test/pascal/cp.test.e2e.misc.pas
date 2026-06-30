@@ -54,6 +54,8 @@ type
       not the statically-resolved declared-type method. }
     procedure TestRun_MethodPtrVirtualCapture_Var;
     procedure TestRun_MethodPtrVirtualCapture_Field;
+    procedure TestRun_MethodPtrReturn;
+    procedure TestRun_MethodPtrReturn_ReadsSelf;
     { Unqualified call to a procedural-typed field via implicit Self (FFn(...)
       with no 'Self.' prefix), as an expression and as a statement. }
     procedure TestRun_ImplicitSelfProcField_Expr;
@@ -534,6 +536,78 @@ const
     end.
     ''';
 
+  { A method returning a 'function ... of object' value.  The return is a
+    16-byte (Code, Data) aggregate; it must travel back by the two-register/
+    sret record-return ABI rather than a scalar that drops the Data half.
+    Op(3, 4) invokes the captured method pointer and must print 7. }
+  SrcMethodPtrReturn = '''
+    program Prg;
+    type TBinOp = function(X, Y: Integer): Integer of object;
+    type
+      TCalc = class
+        function Add(X, Y: Integer): Integer;
+        function GetOp: TBinOp;
+      end;
+    function TCalc.Add(X, Y: Integer): Integer;
+    begin Result := X + Y end;
+    function TCalc.GetOp: TBinOp;
+    begin Result := @Self.Add end;
+    var C: TCalc; Op: TBinOp;
+    begin
+      C := TCalc.Create();
+      Op := C.GetOp();
+      WriteLn(Op(3, 4));
+      C.Free()
+    end.
+    ''';
+
+  { Method pointer whose RETURNED method READS an instance field (Self.Base).
+    A method ptr is a 16-byte [Code; Data] aggregate; if a backend returns only
+    the Code half the Data (Self) pointer is lost and the invoked method
+    dereferences garbage — which it only observes when it actually uses Self.
+    SrcMethodPtrReturn's Add(X,Y)=X+Y never touches Self, so it cannot catch
+    that defect; this one does, on every backend.  Also exercises a field
+    destination (Self.FStored), a free-function method-ptr return, and an
+    immediate invoke of the returned pointer (C.GetFn()(9)). }
+  SrcMethodPtrReturnSelf = '''
+    program Prg;
+    type TFn = function(X: Integer): Integer of object;
+    type
+      TCalc = class
+        Base: Integer;
+        FStored: TFn;
+        function AddBase(X: Integer): Integer;
+        function GetFn: TFn;
+        procedure StoreFn;
+        function CallStored(X: Integer): Integer;
+      end;
+    function TCalc.AddBase(X: Integer): Integer;
+    begin Result := Self.Base + X end;
+    function TCalc.GetFn: TFn;
+    begin Result := @Self.AddBase end;
+    procedure TCalc.StoreFn;
+    begin Self.FStored := Self.GetFn() end;
+    function TCalc.CallStored(X: Integer): Integer;
+    begin Result := Self.FStored(X) end;
+    var GC: TCalc;
+    function GetGlobalFn: TFn;
+    begin Result := @GC.AddBase end;
+    var C: TCalc; F: TFn;
+    begin
+      C := TCalc.Create();
+      C.Base := 100;
+      F := C.GetFn();
+      WriteLn(F(7));
+      C.StoreFn();
+      WriteLn(C.CallStored(5));
+      GC := C;
+      F := GetGlobalFn();
+      WriteLn(F(3));
+      WriteLn(C.GetFn()(9));
+      C.Free()
+    end.
+    ''';
+
   { Unqualified (implicit-Self) call to a procedural-typed field, as an
     expression — FFn(...) with no 'Self.' prefix. }
   SrcImplicitProcFieldExpr = '''
@@ -937,6 +1011,21 @@ procedure TE2EMiscTests.TestRun_MethodPtrVirtualCapture_Field;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcMethodPtrVirtualCaptureField, 'dog' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_MethodPtrReturn;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcMethodPtrReturn, '7' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_MethodPtrReturn_ReadsSelf;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 107, 105, 103, 109 — each line proves the Data (Self) half of the returned
+    16-byte method pointer survived: AddBase reads Self.Base (100). }
+  AssertRunsOnAll(SrcMethodPtrReturnSelf,
+    '107' + LE + '105' + LE + '103' + LE + '109' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_ImplicitSelfProcField_Expr;

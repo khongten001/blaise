@@ -813,6 +813,60 @@ const
   SysVArgRegs16: array[0..5] of string =
     ('%di', '%si', '%dx', '%cx', '%r8w', '%r9w');
 
+var
+  { Process-wide singleton method-pointer return record + its shared Pointer
+    leaf type; built lazily by MethodPtrReturnRec and reused by every codegen
+    instance.  A `function ... of object` value is a 16-byte [Code; Data]
+    aggregate that is ABI-identical to `record Code, Data: Pointer end` — two
+    integer eightbytes classify as rcInt2 (rax:rdx) on SysV.  Never mutated
+    after creation; intentionally not freed (a single process-lifetime
+    constant), mirroring the QBE backend's GMethodPtrRec.  The native names are
+    distinct (GNative*) so the two backend units do not collide on the emitted
+    global symbol when both are linked into the self-hosting compiler. }
+  GNativeMethodPtrRec:  TRecordTypeDesc;
+  GNativeMethodPtrLeaf: TTypeDesc;
+
+{ True for an 'of object' method-pointer type — a 16-byte [Code; Data]
+  aggregate returned by the same ABI as a two-pointer record. }
+function IsMethodPtrType(AType: TTypeDesc): Boolean;
+begin
+  Result := (AType <> nil) and (AType.Kind = tyProcedural)
+            and TProceduralTypeDesc(AType).IsMethodPtr;
+end;
+
+{ Lazily-built canonical 16-byte [Code; Data] record for method pointers.
+  Returning a canonical record descriptor lets the whole record-return path
+  (classify, prologue/epilogue, call-site capture) handle method-pointer
+  returns uniformly.  Built once and cached in a unit-level singleton. }
+function MethodPtrReturnRec(): TRecordTypeDesc;
+begin
+  if GNativeMethodPtrRec = nil then
+  begin
+    GNativeMethodPtrLeaf      := TTypeDesc.Create();
+    GNativeMethodPtrLeaf.Kind := tyPointer;
+    GNativeMethodPtrLeaf.Name := 'Pointer';
+    GNativeMethodPtrRec := TRecordTypeDesc.Create('_BlaiseMethodPtr', tyRecord);
+    GNativeMethodPtrRec.AddField('Code', GNativeMethodPtrLeaf);
+    GNativeMethodPtrRec.AddField('Data', GNativeMethodPtrLeaf);
+  end;
+  Result := GNativeMethodPtrRec;
+end;
+
+{ The record descriptor governing AType's by-aggregate return ABI: AType itself
+  for a real record, the canonical method-pointer record for an 'of object'
+  procedural type, else nil.  Mirrors TCodeGenQBE.AggRetRec. }
+function AggRetRec(AType: TTypeDesc): TRecordTypeDesc;
+begin
+  if AType = nil then
+    Result := nil
+  else if AType.Kind = tyRecord then
+    Result := TRecordTypeDesc(AType)
+  else if IsMethodPtrType(AType) then
+    Result := MethodPtrReturnRec()
+  else
+    Result := nil;
+end;
+
 constructor TOALCallFrame.Create;
 begin
   inherited Create();
@@ -4013,6 +4067,14 @@ begin
     begin
       FRecRetClass := ClassifyRecordReturn(
         TRecordTypeDesc(ADecl.ResolvedReturnType));
+      FSretFunc := FRecRetClass = rcSret;
+    end
+    else if IsMethodPtrType(ADecl.ResolvedReturnType) then
+    begin
+      { A method pointer is a 16-byte [Code; Data] aggregate — two integer
+        eightbytes -> rcInt2 (rax:rdx) on SysV.  Route it through the same
+        record-return machinery as a real two-pointer record. }
+      FRecRetClass := ClassifyRecordReturn(MethodPtrReturnRec());
       FSretFunc := FRecRetClass = rcSret;
     end;
   end;
@@ -8044,6 +8106,30 @@ begin
     dispatch via callq *%r10. }
   if AExpr is TIndirectFuncCallExpr then
   begin
+    { Method-pointer callee ('of object'): the callee yields a 16-byte
+      [Code; Data] block, not a bare function pointer.  Materialise the callee
+      value into a stack buffer (it may itself be a method-ptr-returning call,
+      e.g. Obj.GetFn()(args)) and dispatch through EmitMethodPtrCall, which
+      loads Code into %r10 and Data (Self) into %rdi. }
+    if (TIndirectFuncCallExpr(AExpr).ResolvedProcType <> nil) and
+       TProceduralTypeDesc(
+         TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsMethodPtr then
+    begin
+      { Materialise the callee's 16-byte [Code; Data] block into a stack buffer
+        and carry its address in callee-saved %rbx — EmitMethodPtrCall reads its
+        operand AFTER pushing args (which moves %rsp), so a %rsp-relative operand
+        would drift; %rbx survives the arg push/pop. }
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(#9'subq $16, %rsp');
+      Self.EmitRecordCallSretAt(TIndirectFuncCallExpr(AExpr).CalleeExpr, '(%rsp)');
+      Self.Emit(#9'movq %rsp, %rbx');
+      Self.EmitMethodPtrCall('(%rbx)',
+        TProceduralTypeDesc(TIndirectFuncCallExpr(AExpr).ResolvedProcType),
+        TIndirectFuncCallExpr(AExpr).Args);
+      Self.Emit(#9'addq $16, %rsp');
+      Self.Emit(#9'popq %rbx');
+      Exit;
+    end;
     Self.EmitExprToEax(TIndirectFuncCallExpr(AExpr).CalleeExpr);
     Self.Emit(#9'pushq %rax');
     for SetI := 0 to TIndirectFuncCallExpr(AExpr).Args.Count - 1 do
@@ -11198,6 +11284,59 @@ begin
       Self.Emit(#9'callq memcpy');
       Exit;
     end;
+    { Method-ptr-returning call assignment: LHS is an 'of object' method pointer
+      and RHS is a function/method call returning one.  A method pointer is a
+      16-byte [Code; Data] aggregate returned via the record-return ABI (rcInt2,
+      rax:rdx on SysV) — route it through the same sret helpers as a two-pointer
+      record so BOTH halves are captured into the 16-byte destination slot. }
+    if (Asgn.ResolvedLhsType <> nil) and
+       IsMethodPtrType(Asgn.ResolvedLhsType) and
+       (Asgn.Expr is TFuncCallExpr) and
+       (TFuncCallExpr(Asgn.Expr).ResolvedDecl <> nil) and
+       IsMethodPtrType(
+         TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType) then
+    begin
+      if FSretFunc and SameText(Asgn.Name, 'Result') then
+        Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
+          Self.VarOperand('Result'), True)
+      else if Asgn.IsVarParam then
+        Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), True)
+      else if Self.IsLocal(Asgn.Name) then
+        Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), False)
+      else
+      begin
+        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
+          Asgn.Name + '(%rip)', False);
+      end;
+      Exit;
+    end;
+    if (Asgn.ResolvedLhsType <> nil) and
+       IsMethodPtrType(Asgn.ResolvedLhsType) and
+       (Asgn.Expr is TMethodCallExpr) and
+       (TMethodCallExpr(Asgn.Expr).ResolvedMethod <> nil) and
+       IsMethodPtrType(
+         TMethodDecl(TMethodCallExpr(Asgn.Expr).ResolvedMethod).ResolvedReturnType) then
+    begin
+      if FSretFunc and SameText(Asgn.Name, 'Result') then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand('Result'), True)
+      else if Asgn.IsVarParam then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), True)
+      else if Self.IsLocal(Asgn.Name) then
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Self.VarOperand(Asgn.Name), False)
+      else
+      begin
+        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
+          Asgn.Name + '(%rip)', False);
+      end;
+      Exit;
+    end;
     { sret assignment: LHS is a record (or jumbo set) variable; RHS is a
       record/jumbo-set-returning call.  Pass the destination buffer address as
       the hidden first arg (%rdi). }
@@ -12531,14 +12670,18 @@ begin
       Self.Emit(#9'movq %rax, (%rcx)');
       Exit;
     end;
-    { Field := MethodCall() where the method returns a record via sret.
-      Compute the field address into %rbx (callee-saved), release managed
-      fields of the old record, then call with %rbx as the sret destination. }
-    if (FA.FieldInfo.TypeDesc.Kind = tyRecord) and
+    { Field := MethodCall() where the method returns a record (or method ptr)
+      via the aggregate-return ABI.  Compute the field address into %rbx
+      (callee-saved), release managed fields of the old record (none for a
+      method ptr), then call with %rbx as the destination.  A method-ptr field
+      is a 16-byte [Code; Data] slot captured via rcInt2 by EmitMethodSretCall. }
+    if ((FA.FieldInfo.TypeDesc.Kind = tyRecord) or
+        IsMethodPtrType(FA.FieldInfo.TypeDesc)) and
        (FA.Expr is TMethodCallExpr) and
        (TMethodCallExpr(FA.Expr).ResolvedMethod <> nil) and
        (TMethodDecl(TMethodCallExpr(FA.Expr).ResolvedMethod).ResolvedReturnType <> nil) and
-       (TMethodDecl(TMethodCallExpr(FA.Expr).ResolvedMethod).ResolvedReturnType.Kind = tyRecord) then
+       ((TMethodDecl(TMethodCallExpr(FA.Expr).ResolvedMethod).ResolvedReturnType.Kind = tyRecord) or
+        IsMethodPtrType(TMethodDecl(TMethodCallExpr(FA.Expr).ResolvedMethod).ResolvedReturnType)) then
     begin
       Self.Emit(#9'pushq %rbx');
       if FA.ObjExpr <> nil then
@@ -12573,17 +12716,20 @@ begin
       end;
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
+      if FA.FieldInfo.TypeDesc.Kind = tyRecord then
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
       Self.EmitMethodSretCall(TMethodCallExpr(FA.Expr), '(%rbx)', False);
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
-    { Field := FuncCall() where the function returns a record via sret. }
-    if (FA.FieldInfo.TypeDesc.Kind = tyRecord) and
+    { Field := FuncCall() where the function returns a record (or method ptr). }
+    if ((FA.FieldInfo.TypeDesc.Kind = tyRecord) or
+        IsMethodPtrType(FA.FieldInfo.TypeDesc)) and
        (FA.Expr is TFuncCallExpr) and
        (TFuncCallExpr(FA.Expr).ResolvedDecl <> nil) and
        (TMethodDecl(TFuncCallExpr(FA.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
-       (TMethodDecl(TFuncCallExpr(FA.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
+       ((TMethodDecl(TFuncCallExpr(FA.Expr).ResolvedDecl).ResolvedReturnType.Kind = tyRecord) or
+        IsMethodPtrType(TMethodDecl(TFuncCallExpr(FA.Expr).ResolvedDecl).ResolvedReturnType)) then
     begin
       Self.Emit(#9'pushq %rbx');
       if FA.ObjExpr <> nil then
@@ -12614,7 +12760,8 @@ begin
       end;
       if FA.FieldInfo.Offset > 0 then
         Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
+      if FA.FieldInfo.TypeDesc.Kind = tyRecord then
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
       Self.EmitFuncCallSret(TFuncCallExpr(FA.Expr), '(%rbx)', False);
       Self.Emit(#9'popq %rbx');
       Exit;
@@ -15078,6 +15225,7 @@ var
   AllocSz:  Integer;
   CleanUp:  Integer;
   RC:       TRecReturnClass;
+  RetRec:   TRecordTypeDesc;
   HD:       TList<Integer>;
   HK:       TList<Integer>;
   HTotal:   Integer;
@@ -15086,11 +15234,13 @@ var
   IntIdx, XmmIdx, SlotOff: Integer;
   ArgPushed: Integer;
 begin
-  { Check if the callee returns a small POD record via registers. }
+  { Check if the callee returns a small POD record (or method pointer) via
+    registers.  RetRec is the real record or the canonical method-ptr record. }
   RC := rcSret;
-  if (ADecl <> nil) and (ADecl.ResolvedReturnType <> nil) and
-     (ADecl.ResolvedReturnType.Kind = tyRecord) then
-    RC := ClassifyRecordReturn(TRecordTypeDesc(ADecl.ResolvedReturnType));
+  RetRec := nil;
+  if ADecl <> nil then RetRec := AggRetRec(ADecl.ResolvedReturnType);
+  if RetRec <> nil then
+    RC := ClassifyRecordReturn(RetRec);
   if RC <> rcSret then
   begin
     { Reg-return: zero the dest buffer, call without hidden sret param,
@@ -15101,12 +15251,10 @@ begin
       Self.Emit(Format(#9'leaq %s, %%r10', [ASretAddr]));
     Self.Emit(#9'movq %r10, %rdi');
     Self.Emit(#9'xorl %esi, %esi');
-    Self.Emit(Format(#9'movq $%d, %%rdx',
-      [TRecordTypeDesc(ADecl.ResolvedReturnType).TotalSize()]));
+    Self.Emit(Format(#9'movq $%d, %%rdx', [RetRec.TotalSize()]));
     Self.Emit(#9'callq memset');
     Self.EmitCall(AFuncSym, ADecl, AArgs);
-    Self.EmitRecordRegReturnCapture(ASretAddr,
-      TRecordTypeDesc(ADecl.ResolvedReturnType), RC, ASretIsIndirect);
+    Self.EmitRecordRegReturnCapture(ASretAddr, RetRec, RC, ASretIsIndirect);
     Exit;
   end;
   { Save the destination address on the stack, below the hoist region:
@@ -15382,6 +15530,7 @@ var
   AllocSz:  Integer;
   CleanUp:  Integer;
   RC:       TRecReturnClass;
+  RetRec:   TRecordTypeDesc;
   HD:       TList<Integer>;
   HK:       TList<Integer>;
   HTotal:   Integer;
@@ -15452,11 +15601,12 @@ begin
   end;
 
   { Check for register-return: no hidden sret param, Self goes in %rdi,
-    args in %rsi onwards. }
+    args in %rsi onwards.  RetRec is the real record or the canonical
+    method-ptr record (a method pointer is a 16-byte [Code; Data] rcInt2). }
   RC := rcSret;
-  if (MD.ResolvedReturnType <> nil) and
-     (MD.ResolvedReturnType.Kind = tyRecord) then
-    RC := ClassifyRecordReturn(TRecordTypeDesc(MD.ResolvedReturnType));
+  RetRec := AggRetRec(MD.ResolvedReturnType);
+  if RetRec <> nil then
+    RC := ClassifyRecordReturn(RetRec);
   if RC <> rcSret then
   begin
     if LSretIndirect then
@@ -15465,8 +15615,7 @@ begin
       Self.Emit(Format(#9'leaq %s, %%r10', [LSretAddr]));
     Self.Emit(#9'movq %r10, %rdi');
     Self.Emit(#9'xorl %esi, %esi');
-    Self.Emit(Format(#9'movq $%d, %%rdx',
-      [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
+    Self.Emit(Format(#9'movq $%d, %%rdx', [RetRec.TotalSize()]));
     Self.Emit(#9'callq memset');
     Self.BeginCallArgs(MD.Params, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
@@ -15517,8 +15666,7 @@ begin
     else
       Self.Emit(#9'callq ' + Sym);
     Self.EndCallArgs();
-    Self.EmitRecordRegReturnCapture(LSretAddr,
-      TRecordTypeDesc(MD.ResolvedReturnType), RC, LSretIndirect);
+    Self.EmitRecordRegReturnCapture(LSretAddr, RetRec, RC, LSretIndirect);
     Self.EmitMethodSretRecvCleanup(RecvBufBytes);
     Exit;
   end;
@@ -16894,6 +17042,15 @@ begin
         Self.Emit(#9'xorpd %xmm0, %xmm0');
       Self.EmitStoreFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
     end
+    else if IsMethodPtrType(ADecl.ResolvedReturnType) then
+    begin
+      { Method-ptr Result is a 16-byte [Code; Data] slot — zero BOTH halves so
+        the Data (Self) half is defined even if the body never assigns it. }
+      Self.Emit(#9'xorl %eax, %eax');
+      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand('Result')]));
+      Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand('Result')]));
+      Self.Emit(#9'movq %rax, 8(%rcx)');
+    end
     else
     begin
       Self.Emit(#9'xorl %eax, %eax');
@@ -17206,6 +17363,10 @@ begin
     if (ADecl.ResolvedReturnType.Kind = tyRecord) and (FRecRetClass <> rcSret) then
       Self.EmitRecordReturnEpilogue(
         TRecordTypeDesc(ADecl.ResolvedReturnType), FRecRetClass)
+    else if IsMethodPtrType(ADecl.ResolvedReturnType) and (FRecRetClass <> rcSret) then
+      { Method-ptr return: load both halves of the 16-byte Result slot into the
+        return registers (rax:rdx for rcInt2) via the canonical record. }
+      Self.EmitRecordReturnEpilogue(MethodPtrReturnRec(), FRecRetClass)
     else if IsFloatFamily(ADecl.ResolvedReturnType) then
       Self.EmitLoadFloat(Self.VarOperand('Result'), ADecl.ResolvedReturnType)
     else

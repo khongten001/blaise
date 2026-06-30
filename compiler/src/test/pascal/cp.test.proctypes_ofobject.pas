@@ -56,6 +56,7 @@ type
 
     procedure TestCodegen_MethodPtrField_DirectCall_LoadsCodeAndData;
     procedure TestCodegen_MethodPtrVirtualCapture_LoadsFromVTable;
+    procedure TestCodegen_MethodPtrReturn_UsesAggregateABI;
 
     { End-to-end }
     procedure TestE2E_MethodPtr_NoArgs;
@@ -724,6 +725,43 @@ begin
     vptr, so that static store must be absent. }
   AssertFalse('virtual capture must not store the static method address',
     StrPos('storel $TAnimal_Speak', IR) >= 0);
+end;
+
+procedure TProcTypesOfObjectTests.TestCodegen_MethodPtrReturn_UsesAggregateABI;
+const
+  Src =
+    '''
+        program P;
+        type TBinOp = function(X, Y: Integer): Integer of object;
+        type
+          TCalc = class(TObject)
+            function Add(X, Y: Integer): Integer;
+            function GetOp: TBinOp;
+          end;
+        function TCalc.Add(X, Y: Integer): Integer;
+        begin Result := X + Y end;
+        function TCalc.GetOp: TBinOp;
+        begin Result := @Self.Add end;
+        var C: TCalc; Op: TBinOp;
+        begin
+          C := TCalc.Create();
+          Op := C.GetOp();
+          WriteLn(Op(3, 4));
+          C.Free()
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  { A 'function ... of object' is a 16-byte (Code, Data) aggregate.  The
+    return must go through the two-register/sret record-return ABI, not a
+    scalar 'l' that drops the Data half.  The fix routes it through a
+    synthetic two-pointer record, so the callee's Result slot is 16 bytes
+    and the function is declared with the aggregate return type. }
+  AssertTrue('method-ptr-returning function allocates a 16-byte Result slot',
+    StrPos('%_var_Result =l alloc8 16', IR) >= 0);
+  AssertTrue('method-ptr return is routed through the aggregate return ABI',
+    StrPos('_ffi__BlaiseMethodPtr', IR) >= 0);
 end;
 
 procedure TProcTypesOfObjectTests.TestE2E_MethodPtrField_DirectCall_StmtForm;
