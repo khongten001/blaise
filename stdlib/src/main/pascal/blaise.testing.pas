@@ -205,7 +205,7 @@ implementation
   ----------------------------------------------------------------------- }
 
 var
-  GRegistry: TList<TTestCaseClass>;  { registered test-case classes }
+  GTestRegistry: TList<TTestCaseClass>;  { registered test-case classes }
 
 { -----------------------------------------------------------------------
   TTest
@@ -655,22 +655,22 @@ end;
 
 procedure RegisterTest(ATestClass: TTestCaseClass);
 begin
-  if GRegistry = nil then
-    GRegistry := TList<TTestCaseClass>.Create();
-  GRegistry.Add(ATestClass);
+  if GTestRegistry = nil then
+    GTestRegistry := TList<TTestCaseClass>.Create();
+  GTestRegistry.Add(ATestClass);
 end;
 
 function GetRegisteredTestCount: Integer;
 begin
-  if GRegistry = nil then
+  if GTestRegistry = nil then
     Result := 0
   else
-    Result := GRegistry.Count;
+    Result := GTestRegistry.Count;
 end;
 
 function GetRegisteredTest(AIndex: Integer): TTestCaseClass;
 begin
-  Result := GRegistry.Get(AIndex);
+  Result := GTestRegistry.Get(AIndex);
 end;
 
 end.
