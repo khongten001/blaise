@@ -28,12 +28,13 @@ unit rtl.platform.posix;
 interface
 
 uses
-  rtl.platform,
-  { The concrete TPlatformLayout for this archive's target.  This is the ONE
-    per-target wire in the otherwise OS-agnostic POSIX unit: the Linux RTL
-    archive composes the Linux layout, the FreeBSD archive its own.  Its
-    initialization assigns GPlatformLayout. }
-  rtl.platform.layout.linux;
+  rtl.platform;
+  { NOTE: the concrete TPlatformLayout adapter (rtl.platform.layout.<os>) is
+    deliberately NOT imported here.  It is selected and linked by the driver
+    for the runtime --target (BuildRTLUnitList), and its GPlatformLayout
+    assignment runs via the bare `_BlaisePlatformInit` symbol that `main` calls
+    at startup — a link-time swap, not a compile-time `uses`.  Importing a
+    concrete layout would hard-wire one OS into this shared POSIX unit. }
 
 type
   TRtlPlatformPosix = class(TRtlPlatform)
@@ -147,6 +148,13 @@ type
 { Memory }
 function  _BlaiseGetMem(Size: Integer): Pointer; external name '_BlaiseGetMem';
 procedure _BlaiseFreeMem(Ptr: Pointer);          external name '_BlaiseFreeMem';
+{ Bootstrap fallback for GPlatformLayout: defined WEAK by the linked target's
+  concrete layout unit (rtl.platform.layout.<os>).  The current codegen assigns
+  GPlatformLayout by calling that unit's init directly from main, so this call
+  is redundant then (idempotent).  It only matters for a binary built by an
+  older codegen that does not yet emit the direct main-call — there it is the
+  sole path that initialises the layout. }
+procedure _BlaisePlatformInit;                    external name '_BlaisePlatformInit';
 
 { String ARC }
 function  _IntToStr(N: Integer): Pointer;   external name '_IntToStr';
@@ -1149,8 +1157,13 @@ procedure _SetArgs(Argc: Integer; Argv: Pointer);
 begin
   GArgC := Argc;
   GArgV := TPCharArray(Argv);
-  if GPlatformLayout = nil then
-    GPlatformLayout := TPlatformLayoutLinuxX86_64.Create();
+  { GPlatformLayout is assigned by the target's concrete layout unit
+    (rtl.platform.layout.<os>).  The current codegen calls that unit's init
+    directly from main (by-name, for the compile-time --target); this weak
+    _BlaisePlatformInit call is the bootstrap fallback for an older codegen that
+    does not.  Idempotent.  This shared POSIX unit references no concrete layout
+    class, so it stays OS-agnostic. }
+  _BlaisePlatformInit();
   if GRtlPlatform = nil then
     GRtlPlatform := TRtlPlatformPosix.Create();
 end;

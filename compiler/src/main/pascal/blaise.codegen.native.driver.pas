@@ -240,8 +240,10 @@ begin
       try
         { --static: freestanding non-PIE ET_EXEC, no libc/PT_INTERP (the kernel
           leaf supplies open/read/write/... + _start).  Default: dynamic PIE
-          linked against libc. }
-        Lk.SetDynamic(not AOpts.Static);
+          linked against libc.  A freestanding target (FreeBSD, Strategy B) has
+          no libc to link against, so it is ALWAYS static regardless of the
+          --static flag — the kernel leaf is the only libc it gets. }
+        Lk.SetDynamic(not (AOpts.Static or TargetIsFreestanding(AOpts.Target)));
 
         Obj := ReadElfObjectFile(AObjFile);
         Lk.AddOwnedObject(Obj);

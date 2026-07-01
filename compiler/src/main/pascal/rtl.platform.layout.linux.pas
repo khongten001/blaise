@@ -107,8 +107,30 @@ begin
   Result := P^;
 end;
 
-initialization
+{ Assign GPlatformLayout to this target's layout, once.  Called both from this
+  unit's initialization (rtl.platform.layout.linux_init, which main invokes
+  by-name for a Linux --target) and from the weak _BlaisePlatformInit trampoline
+  below. }
+procedure AssignLayoutLinux;
+begin
   if GPlatformLayout = nil then
     GPlatformLayout := TPlatformLayoutLinuxX86_64.Create();
+end;
+
+{ Bootstrap fallback: a binary built by a codegen that does not yet emit main's
+  direct, strong, by-name call to rtl.platform.layout.<os>_init reaches the
+  layout through _SetArgs -> _BlaisePlatformInit instead.  Emitted WEAK so that
+  every concrete layout unit can define it without a duplicate-symbol link error
+  when more than one is linked (e.g. a test that imports a non-host layout): the
+  linker keeps the first-seen weak, which is the host layout BuildRTLUnitList
+  links first.  A tiny asm trampoline that tail-calls AssignLayout. }
+procedure _BlaisePlatformInit; assembler; nostackframe;
+asm
+    .weak _BlaisePlatformInit
+    jmp AssignLayoutLinux
+end;
+
+initialization
+  AssignLayoutLinux();
 
 end.

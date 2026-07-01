@@ -1024,6 +1024,13 @@ begin
   { RTL one-time setup the per-unit init dispatch below misses for archive
     units (e.g. blaise_weak's WeakMutex — see _BlaiseInit). }
   EmitLine('  call $_BlaiseInit()');
+  { Assign GPlatformLayout for the compile-time --target by calling the host
+    layout unit's init BY NAME (rtl.platform.layout.<os>_init).  The layout unit
+    is linked by the driver (BuildRTLUnitList) but not imported by posix, so it
+    is not in the per-unit init dispatch below; calling it here — first, before
+    any other unit init — makes the target's layout win deterministically even
+    if a unit (e.g. a test) imported a non-host layout whose init also runs. }
+  EmitLine('  call $' + PlatformLayoutInitSym(GTarget) + '()');
   { Call initialization sections of imported units in order }
   for I := 0 to FUnitInitNames.Count - 1 do
     EmitLine('  call $' + FUnitInitNames.Strings[I] + '_init()');

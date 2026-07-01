@@ -117,8 +117,27 @@ begin
   Result := P^;
 end;
 
-initialization
+{ Assign GPlatformLayout to the FreeBSD layout, once.  Called from this unit's
+  initialization (rtl.platform.layout.freebsd_init, which main invokes by-name
+  for a FreeBSD --target) and from the weak _BlaisePlatformInit trampoline.  The
+  nil-guard keeps it a no-op on a host build that merely imports this unit (e.g.
+  cp.test.platformlayout.freebsd), so it never clobbers the host layout. }
+procedure AssignLayoutFreeBSD;
+begin
   if GPlatformLayout = nil then
     GPlatformLayout := TPlatformLayoutFreeBSDX86_64.Create();
+end;
+
+{ Weak bootstrap-fallback trampoline — see the twin in rtl.platform.layout.linux
+  for the full rationale.  Defined WEAK so the linker keeps the first-seen (host)
+  layout's copy when both units are linked. }
+procedure _BlaisePlatformInit; assembler; nostackframe;
+asm
+    .weak _BlaisePlatformInit
+    jmp AssignLayoutFreeBSD
+end;
+
+initialization
+  AssignLayoutFreeBSD();
 
 end.

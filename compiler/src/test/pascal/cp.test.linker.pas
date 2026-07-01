@@ -146,6 +146,12 @@ type
     procedure TestRun_ExceptionHandling;
     procedure TestRun_ClassAndVirtual;
     procedure TestLink_MissingRTL_FailsLoudly;
+    { Step 6: a full compiler-CLI cross-compile with --target freebsd-x86_64
+      selects the FreeBSD RTL adapter set (BuildRTLUnitList) and emits a static,
+      freestanding FreeBSD ET_EXEC — EI_OSABI = 9, no PT_INTERP, entry _start —
+      with no external tools.  The binary cannot run on the Linux host, so this
+      asserts the emitted ELF shape only. }
+    procedure TestCompile_FreeBSDTarget_EmitsStaticFreeBSDExe;
   end;
 
 implementation
@@ -1885,6 +1891,74 @@ begin
     Pos('RTL source', CompOut) >= 0);
   AssertFalse('no output binary should be produced on RTL-missing failure',
     FileExists(OutFile));
+end;
+
+procedure TInternalLinkerE2ETests.TestCompile_FreeBSDTarget_EmitsStaticFreeBSDExe;
+var
+  SrcFile, OutFile, CompOut, Bytes: string;
+  Rc, PhOff, PhEntSz, PhCount, J, PType: Integer;
+  FoundInterp: Boolean;
+begin
+  if not Self.CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+
+  FCounter := FCounter + 1;
+  SrcFile := FScratch + 'test_fbsd_' + IntToStr(FCounter) + '.pas';
+  OutFile := FScratch + 'test_fbsd_' + IntToStr(FCounter);
+  WriteFile(SrcFile,
+    'program test_fbsd;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(''Hello'')' + LineEnding +
+    'end.');
+
+  { Full compiler-CLI cross-compile.  --target freebsd-x86_64 must select the
+    FreeBSD RTL adapter set and drive the static, freestanding link with no
+    external tools (internal assembler + linker). }
+  Rc := Self.RunProc(FCompiler, [
+    '--source', SrcFile,
+    '--unit-path', FRTLPath,
+    '--unit-path', FStdlibPath,
+    '--output', OutFile,
+    '--backend', 'native',
+    '--assembler', 'internal',
+    '--linker', 'internal',
+    '--target', 'freebsd-x86_64'
+  ], CompOut);
+  if Rc <> 0 then
+    Fail('--target freebsd-x86_64 compile failed (rc=' + IntToStr(Rc) + '): ' +
+         CompOut);
+  AssertTrue('FreeBSD binary was produced', FileExists(OutFile));
+
+  { The FreeBSD binary cannot run on the Linux host — assert its ELF shape.
+    ReadWholeFile is NUL-safe (unlike the RTL ReadFile, which stops at the
+    first NUL — an ELF header hits one at byte 8). }
+  Bytes := ReadWholeFile(OutFile);
+  AssertTrue('output too small to be an ELF', Length(Bytes) >= 64);
+
+  { EI_OSABI byte 7 = ELFOSABI_FREEBSD (9). }
+  AssertEquals('EI_OSABI FreeBSD', 9, OrdAt(Bytes, 7));
+  { e_type at offset 16 = ET_EXEC (2) — static, non-PIE. }
+  AssertEquals('e_type ET_EXEC', 2, OrdAt(Bytes, 16) or (OrdAt(Bytes, 17) shl 8));
+
+  { No PT_INTERP (program-header type 3): a freestanding binary has no dynamic
+    loader. }
+  PhOff := OrdAt(Bytes, 32) or (OrdAt(Bytes, 33) shl 8) or
+           (OrdAt(Bytes, 34) shl 16) or (OrdAt(Bytes, 35) shl 24);
+  PhEntSz := OrdAt(Bytes, 54) or (OrdAt(Bytes, 55) shl 8);
+  PhCount := OrdAt(Bytes, 56) or (OrdAt(Bytes, 57) shl 8);
+  FoundInterp := False;
+  for J := 0 to PhCount - 1 do
+  begin
+    PType := OrdAt(Bytes, PhOff + J * PhEntSz) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 1) shl 8) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 2) shl 16) or
+             (OrdAt(Bytes, PhOff + J * PhEntSz + 3) shl 24);
+    if PType = 3 then FoundInterp := True;
+  end;
+  AssertFalse('freestanding FreeBSD exe must have no PT_INTERP', FoundInterp);
 end;
 
 initialization

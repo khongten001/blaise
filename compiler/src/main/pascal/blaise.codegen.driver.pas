@@ -553,11 +553,13 @@ begin
   BlaiseBin := ParamStr(0);
 
   { The unit list to build/link, in leaf-first order.  Selection is driven off
-    the target (AOpts.Target.OS) and link mode (AOpts.Static): the platform
-    layout adapter follows the target, and a --static link swaps in the
-    freestanding per-OS kernel leaf (start / syscall / libc shims / thread) in
-    place of libc.  See BuildRTLUnitList. }
-  Units := BuildRTLUnitList(AOpts.Static, AOpts.Target.OS);
+    the target (AOpts.Target.OS) and link mode: the platform layout adapter
+    follows the target, and a static link swaps in the freestanding per-OS
+    kernel leaf (start / syscall / libc shims / thread) in place of libc.  A
+    freestanding target (FreeBSD, Strategy B) has no libc, so it is static
+    regardless of the --static flag.  See BuildRTLUnitList. }
+  Units := BuildRTLUnitList(
+    AOpts.Static or TargetIsFreestanding(AOpts.Target), AOpts.Target.OS);
 
   for I := 0 to Units.Count - 1 do
   begin

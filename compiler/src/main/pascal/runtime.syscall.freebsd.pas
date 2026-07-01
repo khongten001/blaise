@@ -111,6 +111,13 @@ function getrandom(Buf: Pointer; Count: Int64; Flags: Integer): Int64;
   wrapper in the posix layer adapts that to libc's buffer-pointer contract. }
 function sys_getcwd(Buf: PChar; Size: Int64): Int64;
 
+{ Raw __sysctl(2) — SYS 202.  FreeBSD's structured kernel-state query; the
+  freestanding sysconf (runtime.libc.freebsd) reads hw.ncpu through it since
+  FreeBSD has no sched_getaffinity.  6-arg syscall (arg4 %rcx -> %r10); returns
+  0 on success or -errno (CF-translated). }
+function sysctl(Name: Pointer; NameLen: Integer; OldP: Pointer;
+                OldLenP: Pointer; NewP: Pointer; NewLen: Int64): Integer;
+
 { Threads + TLS (Step 4c) — the FreeBSD primitives runtime.thread.static.freebsd
   and runtime.start.static.freebsd build on.  These have no Linux equivalents
   (Linux uses clone/futex/arch_prctl); the numbers are FreeBSD-specific. }
@@ -174,6 +181,7 @@ const
   SYS_mkdir         = 136;
   SYS_rmdir         = 137;
   SYS_getcwd        = 326;   { __getcwd }
+  SYS_sysctl        = 202;   { __sysctl (hw.ncpu for sysconf) }
   SYS_getrandom     = 563;
   SYS_clock_gettime = 232;
   SYS_nanosleep     = 240;
@@ -501,6 +509,21 @@ asm
     jae  .Lok_getcwd
     negq %rax
 .Lok_getcwd:
+    ret
+end;
+
+{ __sysctl(name, namelen, oldp, oldlenp, newp, newlen) — 6 args; SYS 202.  arg4
+  (oldlenp) arrives in %rcx and must move to %r10 (syscall clobbers %rcx). }
+function sysctl(Name: Pointer; NameLen: Integer; OldP: Pointer;
+                OldLenP: Pointer; NewP: Pointer; NewLen: Int64): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $202, %rax          { SYS___sysctl }
+    syscall
+    jae  .Lok_sysctl
+    negq %rax
+.Lok_sysctl:
     ret
 end;
 
