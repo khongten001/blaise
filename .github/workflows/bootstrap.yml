@@ -274,3 +274,79 @@ jobs:
             ${{ steps.pre.outputs.dir }}/blaise_rtl.a
           retention-days: 30
           if-no-files-found: error
+
+  # ======================================================================
+  # FreeBSD cross-compile verification under emulation
+  # (docs/freebsd-x86_64-backend-design.adoc Step 8).
+  #
+  # The bootstrap job's TestRunner already runs the HOST-side static ELF
+  # checks (EI_OSABI / ET_EXEC / no PT_INTERP via
+  # TInternalLinkerE2ETests.TestCompile_FreeBSDTarget_EmitsStaticFreeBSDExe).
+  # Those cannot catch a wrong FreeBSD struct-stat offset or syscall number —
+  # only running the binary on a real FreeBSD kernel does.  This job
+  # cross-compiles the fixtures on the Linux runner, then boots a FreeBSD VM
+  # (vmactions/freebsd-vm) and executes them there.
+  #
+  # The FreeBSD output is a static, freestanding raw-syscall ET_EXEC (no libc,
+  # no rtld), so the VM needs no extra packages to run it.
+  # ======================================================================
+  freebsd-crosscheck:
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The RTL is compiled from source by the -pre binary, so the compiler
+      # needs no prebuilt blaise_rtl.a beside it — only the checked-out RTL
+      # source (present after checkout).  Pull the -pre binary the bootstrap
+      # job just built and published.
+      - name: Download -pre binary
+        uses: actions/download-artifact@v7
+        with:
+          name: blaise-pre-${{ github.sha }}
+          path: .pre
+
+      - name: Cross-compile FreeBSD fixtures (Linux host)
+        run: |
+          set -euo pipefail
+          chmod +x .pre/blaise
+          BLAISE="$PWD/.pre/blaise" scripts/freebsd-crosscheck-build.sh
+          echo "Cross-built FreeBSD binaries:"
+          ls -l target/freebsd-crosscheck
+
+      # Boot a FreeBSD VM and run the cross-compiled binaries there.  The
+      # workspace is rsync-mounted into the VM, so target/freebsd-crosscheck/*
+      # is available inside.  release pinned to a 14.x line: the struct-stat
+      # offsets in rtl.platform.layout.freebsd are verified against FreeBSD 14
+      # (stable since FreeBSD 12).  Bump when 15.x is validated.
+      - name: Run FreeBSD binaries under emulation
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          copyback: false
+          run: |
+            set -e
+            cd target/freebsd-crosscheck
+            echo "=== uname ==="
+            uname -a
+
+            echo "=== hello ==="
+            OUT="$(./hello)"
+            echo "$OUT"
+            [ "$OUT" = "Hello" ] || { echo "FAIL: hello output '$OUT' != 'Hello'"; exit 1; }
+
+            echo "=== fileio ==="
+            OUT="$(./fileio)"
+            echo "$OUT"
+            # Flatten to a single line (newlines -> '|') so the compare stays a
+            # one-line shell string inside this YAML block scalar.
+            GOT="$(printf '%s' "$OUT" | tr '\n' '|')"
+            [ "$GOT" = "file-io-ok|exists-ok|done" ] || {
+              echo "FAIL: fileio output '$GOT' != 'file-io-ok|exists-ok|done'"
+              exit 1
+            }
+
+            echo "FREEBSD_EMULATION_OK"
