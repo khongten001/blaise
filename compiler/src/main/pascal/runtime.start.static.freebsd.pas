@@ -14,7 +14,7 @@ unit runtime.start.static.freebsd;
 // The FreeBSD sibling of runtime.start.static.linux.  A tiny asm trampoline
 // captures the initial stack pointer and tail-calls the Pascal _BlaiseStartC,
 // which:
-//   1. parses argc / argv / envp / the auxv (the kernel's initial stack);
+//   1. parses argc / argv / envp (the kernel's initial stack);
 //   2. sets up the static TLS block and the thread pointer (%fs) — required
 //      before any threadvar (%fs-relative) access, which a static binary's
 //      kernel does NOT do for us;
@@ -28,12 +28,14 @@ unit runtime.start.static.freebsd;
 // (FreeBSD additionally passes an rtld cleanup pointer in %rdx for dynamic
 // binaries; it is 0 for a static ET_EXEC and we ignore it.)
 //
-// The ELF auxv PT_TLS walk is PORTABLE: the AT_* tags (AT_PHDR=3, AT_PHENT=4,
-// AT_PHNUM=5, AT_NULL=0) and PT_TLS=7 are identical on FreeBSD 14 (elf_common.h)
-// and Linux, and x86-64 TLS is variant II on both.  The ONE FreeBSD difference
-// is how the %fs base is installed: Linux uses arch_prctl(ARCH_SET_FS, tp);
-// FreeBSD uses sysarch(AMD64_SET_FSBASE, &tp) — note it takes a POINTER to the
-// base value, not the value itself.
+// TLS setup locates PT_TLS via the program headers, which SetupTLS reads
+// DIRECTLY from this binary's own ELF header at the fixed non-PIE load base
+// ($400000) rather than via the kernel auxv AT_PHDR entry — a non-PIE ET_EXEC
+// always maps its header there, so this is exact and needs no auxv (identical
+// on Linux and FreeBSD).  x86-64 TLS is variant II on both.  The ONE FreeBSD
+// difference is how the %fs base is installed: Linux uses arch_prctl(
+// ARCH_SET_FS, tp); FreeBSD uses sysarch(AMD64_SET_FSBASE, &tp) — note it takes
+// a POINTER to the base value, not the value itself.
 //
 // x86-64 TLS (variant II): the thread pointer points at the TCB, which sits
 // ABOVE the TLS block; threadvars are at negative offsets from the TP.  %fs:0
@@ -85,11 +87,16 @@ const
                                 FreeBSD 14 x86/include/sysarch.h) }
   PROT_RW      = 3;          { PROT_READ or PROT_WRITE }
   MAP_PRIVANON = $1002;      { FreeBSD MAP_PRIVATE ($0002) or MAP_ANON ($1000) }
-  AT_NULL      = 0;
-  AT_PHDR      = 3;
-  AT_PHENT     = 4;
-  AT_PHNUM     = 5;
   PT_TLS       = 7;
+
+{ Our own ELF image.  A non-PIE ET_EXEC is mapped at this fixed base (the
+  linker's TLinkTarget.BaseAddr), so the ELF header — and through e_phoff the
+  program-header table — is readable at compile-time-known addresses without
+  the kernel auxv. }
+  ELF_LOAD_BASE = $400000;
+  EH_PHOFF      = $20;   { e_phoff     (u64) — file offset of the phdr table }
+  EH_PHENTSIZE  = $36;   { e_phentsize (u16) }
+  EH_PHNUM      = $38;   { e_phnum     (u16) }
 
 { ELF64 Phdr field offsets. }
   PH_TYPE   = 0;    { p_type   (u32) }
@@ -116,14 +123,23 @@ begin
   sysarch(AMD64_SET_FSBASE, @Base);
 end;
 
-{ Walk the auxv for PT_TLS via AT_PHDR/AT_PHENT/AT_PHNUM, then build the static
-  TLS block and set the thread pointer.  Auxv is an array of (Int64 tag, Int64
-  val) pairs terminated by AT_NULL.  No-op when the program has no TLS. }
-procedure SetupTLS(Auxv: Pointer);
+{ Locate the program headers, find PT_TLS, then build the static TLS block and
+  set the thread pointer.  No-op when the program has no TLS.
+
+  We read the program-header table DIRECTLY from this binary's own ELF header,
+  which sits at the fixed non-PIE load base (ELF_LOAD_BASE = $400000, the
+  linker's TLinkTarget.BaseAddr): e_phoff at header offset 0x20, e_phentsize at
+  0x36, e_phnum at 0x38.  A non-PIE ET_EXEC always maps its own ELF header at
+  the fixed base (the first PT_LOAD covers file offset 0), so reading e_phoff
+  there is exact and needs no kernel auxv — simpler and more self-contained than
+  walking the auxv for AT_PHDR (which FreeBSD does supply, but relying on it
+  couples startup to the auxv layout for no benefit on a non-PIE image). }
+procedure SetupTLS;
 var
-  P: PInt64;
   PhdrAddr, PhEnt, PhNum: Int64;
-  I, Tag, Val: Int64;
+  EhEPhOff: PInt64;
+  EhEPhEnt, EhEPhNum: ^Word;
+  I: Int64;
   Ph: PChar;
   TlsVaddr, TlsFileSz, TlsMemSz, TlsAlign: Int64;
   PType: ^Integer;
@@ -133,20 +149,16 @@ var
   Src, Dst: PChar;
   TpSlot: PPointer;
 begin
-  PhdrAddr := 0; PhEnt := 56; PhNum := 0;
-  P := PInt64(Auxv);
-  while True do
-  begin
-    Tag := P^;
-    P := PInt64(Pointer(PChar(P) + 8));
-    Val := P^;
-    P := PInt64(Pointer(PChar(P) + 8));
-    if Tag = AT_NULL then Break;
-    if Tag = AT_PHDR  then PhdrAddr := Val;
-    if Tag = AT_PHENT then PhEnt := Val;
-    if Tag = AT_PHNUM then PhNum := Val;
-  end;
-  if PhdrAddr = 0 then Exit;
+  { Read e_phoff / e_phentsize / e_phnum from our own ELF header at the load
+    base.  e_phoff is a file offset; the first PT_LOAD maps file offset 0 to the
+    load base, so the phdr table is at base + e_phoff. }
+  EhEPhOff := PInt64(Pointer(ELF_LOAD_BASE + EH_PHOFF));
+  EhEPhEnt := Pointer(ELF_LOAD_BASE + EH_PHENTSIZE);
+  EhEPhNum := Pointer(ELF_LOAD_BASE + EH_PHNUM);
+  PhdrAddr := ELF_LOAD_BASE + EhEPhOff^;
+  PhEnt    := EhEPhEnt^;
+  PhNum    := EhEPhNum^;
+  if (PhdrAddr = 0) or (PhEnt = 0) or (PhNum = 0) then Exit;
 
   { Find PT_TLS among the program headers. }
   TlsVaddr := 0; TlsFileSz := 0; TlsMemSz := 0; TlsAlign := 8;
@@ -259,8 +271,7 @@ end;
 procedure _BlaiseStartC(SP: Pointer);
 var
   Argc: Int64;
-  Argv, Envp, Auxv: Pointer;
-  I: Int64;
+  Argv, Envp: Pointer;
   Ret: Integer;
 begin
   Argc := PInt64(SP)^;
@@ -268,14 +279,12 @@ begin
   { envp = &argv[argc+1] }
   Envp := Pointer(PChar(Argv) + (Argc + 1) * 8);
   environ := Envp;
-  { auxv follows envp's NULL terminator. }
-  Auxv := Envp;
-  I := 0;
-  while PPointer(Pointer(PChar(Auxv) + I * 8))^ <> nil do
-    I := I + 1;
-  Auxv := Pointer(PChar(Auxv) + (I + 1) * 8);
 
-  SetupTLS(Auxv);
+  { TLS is set up by reading our own ELF program headers directly from this
+    binary's ELF header at the fixed non-PIE load base (see SetupTLS).  A
+    non-PIE ET_EXEC always maps its own header there, so this is exact and
+    needs no kernel auxv. }
+  SetupTLS();
 
   Ret := MainTrampoline(Integer(Argc), Argv);
   _exit(Ret);

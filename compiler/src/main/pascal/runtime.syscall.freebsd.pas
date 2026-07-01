@@ -388,11 +388,25 @@ asm
 end;
 
 { mmap has 6 args; arg4 (Flags) arrives in %rcx (C ABI) but the kernel wants it
-  in %r10.  Move it before the syscall. }
+  in %r10.  Move it before the syscall.
+
+  Flag translation: the shared allocator (runtime.mem) and other callers pass
+  the LINUX MAP_ANONYMOUS bit (0x20); FreeBSD's MAP_ANON is 0x1000.  Without
+  MAP_ANON the kernel treats the mapping as file-backed on fd -1 and fails with
+  EBADF (then the caller derefs the -errno result and SIGSEGVs).  So if the
+  Linux anon bit is set, clear it and set FreeBSD's — keeping runtime.mem
+  OS-agnostic (it uses one canonical, Linux-shaped flag set; the per-OS leaf
+  reconciles it). 0x1000 already set (e.g. from runtime.start.static.freebsd)
+  passes through untouched. }
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
              Offset: Int64): Pointer;
   assembler; nostackframe;
 asm
+    testl $0x20, %ecx        { Linux MAP_ANONYMOUS present? }
+    jz   .Lnoanon_mmap
+    andl $0xffffffdf, %ecx   { clear 0x20 }
+    orl  $0x1000, %ecx       { set FreeBSD MAP_ANON }
+.Lnoanon_mmap:
     movq %rcx, %r10
     movq $477, %rax          { SYS_mmap (ino64) }
     syscall

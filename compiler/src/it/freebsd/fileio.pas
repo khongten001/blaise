@@ -9,7 +9,11 @@
       done
 
   A wrong FreeBSD st_size / st_mode offset (they differ from Linux — see
-  rtl.platform.layout.freebsd) would make ReadFile or FileExists misbehave. }
+  rtl.platform.layout.freebsd) would make ReadFile or FileExists misbehave.
+  This also guards the memory manager's mmap path: WriteFile/ReadFile allocate,
+  and runtime.mem passes the Linux MAP_ANONYMOUS bit which the FreeBSD mmap leaf
+  must translate to MAP_ANON — without the translation the first allocation
+  fails with EBADF and the program SIGSEGVs (regression caught here). }
 program fileio;
 uses sysutils;
 var
