@@ -30,6 +30,10 @@ type
     procedure TestOPDF_Primitive_Double_SubKindFloat;
     procedure TestOPDF_Primitive_Single_SubKindFloat;
     procedure TestOPDF_AnsiStr_Record;
+    { A string constant whose value contains a double-quote, newline or
+      backslash must be C-escaped in the recConstant `.ascii` line, else the
+      literal closes early and the assembler sees a garbage mnemonic. }
+    procedure TestOPDF_StringConst_SpecialChars_Escaped;
     procedure TestOPDF_GlobalVar_QuadLabel;
     procedure TestOPDF_GlobalVar_RecType;
     procedure TestOPDF_Enum_RecType;
@@ -222,6 +226,41 @@ begin
   IR := GenOPDF('program P; begin end.');
   AssertTrue('recUtf8Str present', Contains(IR, '# recUtf8Str'));
   AssertTrue('Utf8String name emitted', Contains(IR, '.ascii "Utf8String"'));
+end;
+
+procedure TOPDFTests.TestOPDF_StringConst_SpecialChars_Escaped;
+var
+  IR: string;
+begin
+  { A string const whose value is a single double-quote must be emitted as
+    `.ascii "\""`, NOT `.ascii """` (which closes the literal after the first
+    quote and leaves `"  # Value` as a stray token). }
+  IR := GenOPDF(
+    '''
+        program P;
+        const Q = '"';
+        begin end.
+        ''');
+  AssertTrue('quote value is escaped', Contains(IR, '.ascii "\""  # Value'));
+  AssertFalse('no unescaped triple-quote', Contains(IR, '.ascii """  # Value'));
+
+  { A newline in the value must become \n, not a literal line break. }
+  IR := GenOPDF(
+    '''
+        program P;
+        const NL = 'a'#10'b';
+        begin end.
+        ''');
+  AssertTrue('newline escaped as \n', Contains(IR, '.ascii "a\nb"  # Value'));
+
+  { A backslash must be doubled. }
+  IR := GenOPDF(
+    '''
+        program P;
+        const BS = 'a\b';
+        begin end.
+        ''');
+  AssertTrue('backslash doubled', Contains(IR, '.ascii "a\\b"  # Value'));
 end;
 
 procedure TOPDFTests.TestOPDF_GlobalVar_QuadLabel;

@@ -197,6 +197,44 @@ begin
   FDone               := False;
 end;
 
+{ Escape a raw string value for a GNU-as / internal-assembler `.ascii "..."`
+  literal.  A string CONSTANT's value is arbitrary user text — it may contain a
+  double-quote, backslash, `#`, or control characters, any of which would break
+  the surrounding `.ascii "<val>"  # Value` line (an unescaped `"` closes the
+  literal early, leaving `..."  # Value` as a garbage mnemonic).  We emit the
+  C-style escapes both assemblers understand.  The OPDF ValueLen field is the
+  RAW byte count (Length before escaping), which `.ascii` with these escapes
+  reproduces exactly, so escaping does not change the emitted byte length. }
+function EscapeAsciiStr(const S: string): string;
+var
+  I, B: Integer;
+begin
+  Result := '';
+  for I := 0 to Length(S) - 1 do
+  begin
+    B := OrdAt(S, I) and $FF;
+    case B of
+      Ord('\'): Result := Result + '\\';
+      Ord('"'): Result := Result + '\"';
+      10:       Result := Result + '\n';
+      13:       Result := Result + '\r';
+      9:        Result := Result + '\t';
+    else
+      { Printable ASCII passes through; anything else (including '#', which is a
+        comment start OUTSIDE a quoted literal but harmless inside one, and any
+        non-printable byte) is emitted as a 3-digit octal escape so the line
+        stays a single well-formed token. }
+      if (B >= 32) and (B < 127) then
+        Result := Result + Chr(B)
+      else
+        Result := Result + '\' +
+          Chr(Ord('0') + ((B shr 6) and 7)) +
+          Chr(Ord('0') + ((B shr 3) and 7)) +
+          Chr(Ord('0') + (B and 7));
+    end;
+  end;
+end;
+
 function TOPDFEmitter.ActiveSymTable: TSymbolTable;
 begin
   if FUnit <> nil then
@@ -1144,7 +1182,7 @@ begin
       L('    .word ' + IntToStr(Length(C.StrVal)) + '  # ValueLen');
       EmitNameLen(C.Name);
       if Length(C.StrVal) > 0 then
-        L('    .ascii "' + C.StrVal + '"  # Value');
+        L('    .ascii "' + EscapeAsciiStr(C.StrVal) + '"  # Value');
       EmitNameData(C.Name);
     end
     else

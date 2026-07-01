@@ -121,6 +121,13 @@ type
       assembled verbatim by the internal assembler and called from Pascal. }
     procedure TestInlineAsm_ReturnsValue;
     procedure TestInlineAsm_AddsTwoArgs;
+    { --debug-opdf appends the OPDF section to the SAME assembly text the
+      internal assembler consumes.  A string constant whose value contains a
+      double-quote or newline used to break the recConstant `.ascii "<val>"`
+      line (the raw value closed the literal early), aborting the assemble.
+      Escaping the value fixes it; this compiles+runs such a program under
+      --debug-opdf --assembler internal. }
+    procedure TestDebugOPDF_StringConstSpecialChars_AssemblesAndRuns;
   end;
 
 implementation
@@ -1324,6 +1331,57 @@ begin
   end;
   AssertEquals(0, EC);
   AssertEquals('42' + LineEnding, Out_);
+end;
+
+procedure TInternalAsmE2ETests.TestDebugOPDF_StringConstSpecialChars_AssemblesAndRuns;
+var
+  SrcFile, OutFile, CompOut, RunOut: string;
+  Rc, EC: Integer;
+  Src: string;
+begin
+  if not Self.CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+
+  { A double-quote, a newline and a backslash in string-constant VALUES — each
+    would break the recConstant `.ascii` line if emitted unescaped. }
+  Src :=
+    'program test_opdf_qc;' + LineEnding +
+    'const' + LineEnding +
+    '  Q = ' + '''' + '"' + '''' + ';' + LineEnding +
+    '  NL = ' + '''' + 'a' + '''' + '#10' + '''' + 'b' + '''' + ';' + LineEnding +
+    '  BS = ' + '''' + 'a\b' + '''' + ';' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(Q);' + LineEnding +
+    '  WriteLn(NL);' + LineEnding +
+    '  WriteLn(BS)' + LineEnding +
+    'end.';
+
+  FCounter := FCounter + 1;
+  SrcFile := FScratch + 'test_opdf_' + IntToStr(FCounter) + '.pas';
+  OutFile := FScratch + 'test_opdf_' + IntToStr(FCounter);
+  WriteFile(SrcFile, Src);
+
+  Rc := Self.RunProc(FCompiler, [
+    '--source', SrcFile,
+    '--unit-path', FRTLPath,
+    '--unit-path', FStdlibPath,
+    '--output', OutFile,
+    '--backend', 'native',
+    '--assembler', 'internal',
+    '--debug-opdf'
+  ], CompOut);
+  { The bug manifested as an "Internal assembler error: ... unhandled mnemonic"
+    from the mangled .ascii line — a non-zero compile with that text. }
+  if Rc <> 0 then
+    Fail('compile under --debug-opdf failed (rc=' + IntToStr(Rc) + '): ' + CompOut);
+
+  EC := Self.RunProcNoArgs(OutFile, RunOut);
+  AssertEquals(0, EC);
+  AssertEquals('"' + LineEnding + 'a' + LineEnding + 'b' + LineEnding +
+               'a\b' + LineEnding, RunOut);
 end;
 
 { ---- Registration ---- }
