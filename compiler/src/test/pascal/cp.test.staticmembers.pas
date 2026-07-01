@@ -589,6 +589,7 @@ type
     procedure TestIR_ClassStaticVar_ReleasedAtExit;
     procedure TestIR_StaticCall_InterfaceArg_NoLeadingComma;
     procedure TestIR_StaticVar_ChainedLValueBase_LoadsGlobal;
+    procedure TestIR_StaticVar_LValueUses_AddressGlobal;
   end;
 
 function TStaticMembersSemTests.AnalyseSrc(const ASrc: string): TProgram;
@@ -1072,6 +1073,49 @@ begin
   { The chained write loads the base instance pointer from the static var slot. }
   AssertTrue('chained l-value base loads static var global',
     Pos('loadl $THolder_GObj', IR) >= 0);
+end;
+
+procedure TStaticMembersSemTests.TestIR_StaticVar_LValueUses_AddressGlobal;
+{ A static var used as an l-value — passed by reference (Inc / a var parameter),
+  its address taken (@), or the receiver of Free — must address its mangled
+  global slot, never dereference the bare class-name base as a variable
+  (%_var_THolder). }
+const
+  Src =
+    '''
+        program P;
+        type
+          TObj = class
+          public
+            V: Integer;
+          end;
+          THolder = class
+          public static var
+            Counter: Integer;
+            GObj: TObj;
+          end;
+        procedure Bump(var X: Integer);
+        begin X := X + 1 end;
+        var Ptr: ^Integer;
+        begin
+          Inc(THolder.Counter);
+          Bump(THolder.Counter);
+          Ptr := @THolder.Counter;
+          THolder.GObj := TObj.Create();
+          THolder.GObj.Free();
+        end.
+        ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('static var l-values address the mangled global slot',
+    Pos('$THolder_Counter', IR) >= 0);
+  AssertTrue('Free releases the instance loaded from the static var slot',
+    Pos('loadl $THolder_GObj', IR) >= 0);
+  AssertTrue('Free zeros the static var slot',
+    Pos('storel 0, $THolder_GObj', IR) >= 0);
+  AssertFalse('no l-value use may dereference the class-name base as a variable',
+    Pos('%_var_THolder', IR) >= 0);
 end;
 
 initialization

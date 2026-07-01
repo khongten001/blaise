@@ -5315,6 +5315,12 @@ begin
   if AExpr is TFieldAccessExpr then
   begin
     FldAcc := TFieldAccessExpr(AExpr);
+    { Static (class-level) var used as an l-value (e.g. the receiver of
+      TFoo.StaticVar.Free(), or TFoo.StaticVar := V): its storage IS the
+      mangled global slot.  Return that directly — the class-name base must
+      not be dereferenced as a variable, which yields %_var_<TypeName>. }
+    if FldAcc.IsClassVarRead then
+      Exit('$' + FldAcc.ClassVarEmitName);
     if FldAcc.Base <> nil then
       BaseAddr := EmitInstancePtr(FldAcc.Base)
     else if FldAcc.IsClassAccess then

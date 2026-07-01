@@ -33,6 +33,7 @@ type
     procedure TestRun_StaticVar_QualifiedWrite_ClassARC;
     procedure TestRun_StaticVar_InterfaceStore;
     procedure TestRun_StaticVar_ChainedLValueBase;
+    procedure TestRun_StaticVar_LValueUses;
     procedure TestRun_StaticProperty_QualifiedRead;
     procedure TestRun_Singleton_LazyGetInstance;
     procedure TestRun_StaticConst_OnClass;
@@ -262,6 +263,48 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   LE := LineEnding;
   AssertRunsOnAll(Src, '0' + LE + '5' + LE + '6' + LE, 0);
+end;
+
+procedure TE2EStaticMembersTests.TestRun_StaticVar_LValueUses;
+{ A qualified static var used as an L-VALUE — passed by reference (Inc, a var
+  parameter), its address taken (@), or as the receiver of the built-in Free.
+  Its storage IS the mangled global slot, so every l-value-address path must
+  address that slot directly rather than treat the bare class-name base as a
+  variable / field of an instance.  All four forms previously miscompiled or
+  crashed (link-relocation against the class name, a nil-FieldInfo abort, or
+  garbage/segfault at runtime). }
+const Src =
+  '''
+  program P;
+  type
+    TObj = class
+    public
+      V: Integer;
+    end;
+    THolder = class
+    public static var
+      Counter: Integer;
+      GObj: TObj;
+    end;
+  procedure Bump(var X: Integer);
+  begin X := X + 10 end;
+  var Ptr: ^Integer;
+  begin
+    THolder.Counter := 0;
+    Inc(THolder.Counter);          { Inc: static var by reference }
+    Bump(THolder.Counter);         { var parameter: static var by reference }
+    Ptr := @THolder.Counter;       { address-of a static var }
+    WriteLn(Ptr^);                 { 11 }
+    THolder.GObj := TObj.Create();
+    THolder.GObj.Free();           { built-in Free through the static var }
+    if THolder.GObj = nil then WriteLn('freed')
+  end.
+  ''';
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll(Src, '11' + LE + 'freed' + LE, 0);
 end;
 
 procedure TE2EStaticMembersTests.TestRun_StaticProperty_QualifiedRead;

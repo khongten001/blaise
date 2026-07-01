@@ -4659,6 +4659,16 @@ begin
   if AExpr is TFieldAccessExpr then
   begin
     FAE := TFieldAccessExpr(AExpr);
+    { Static (class-level) var used as an l-value (e.g. the receiver of
+      TFoo.StaticVar.Free()): its storage IS the mangled global slot — load its
+      address, not a field of an instance.  Has no FieldInfo, so this must
+      precede the FieldInfo requirement below. }
+    if FAE.IsClassVarRead then
+    begin
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rdx',
+        [NativeMangle(FAE.ClassVarEmitName)]));
+      Exit;
+    end;
     if FAE.FieldInfo = nil then
       raise ENativeCodeGenError.Create(
         'native backend: L-value field access has no resolved field info');
@@ -5066,27 +5076,36 @@ begin
   else if Arg0 is TFieldAccessExpr then
   begin
     FAE := TFieldAccessExpr(Arg0);
-    if FAE.Base <> nil then
-    begin
-      Self.EmitExprToEax(FAE.Base);
-      Self.Emit(#9'movq %rax, %rdx');
-    end
-    else if FAE.IsImplicitSelf then
-    begin
-      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('Self')]));
-      if (FAE.ImplicitBaseInfo <> nil) and (FAE.ImplicitBaseInfo.Offset > 0) then
-        Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.ImplicitBaseInfo.Offset]));
-    end
-    else if FAE.IsVarParam then
-    begin
-      Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]));
-    end
+    { A static (class-level) var: its storage IS the mangled global slot —
+      address it directly and skip the base+FieldInfo.Offset arithmetic (a
+      static var has no FieldInfo, so touching it would dereference nil). }
+    if FAE.IsClassVarRead then
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rdx',
+        [NativeMangle(FAE.ClassVarEmitName)]))
     else
     begin
-      Self.EmitVarBaseToReg(FAE.RecordName, True, '%rdx');
+      if FAE.Base <> nil then
+      begin
+        Self.EmitExprToEax(FAE.Base);
+        Self.Emit(#9'movq %rax, %rdx');
+      end
+      else if FAE.IsImplicitSelf then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand('Self')]));
+        if (FAE.ImplicitBaseInfo <> nil) and (FAE.ImplicitBaseInfo.Offset > 0) then
+          Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.ImplicitBaseInfo.Offset]));
+      end
+      else if FAE.IsVarParam then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rdx', [Self.VarOperand(FAE.RecordName)]));
+      end
+      else
+      begin
+        Self.EmitVarBaseToReg(FAE.RecordName, True, '%rdx');
+      end;
+      if FAE.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
     end;
-    if FAE.FieldInfo.Offset > 0 then
-      Self.Emit(Format(#9'addq $%d, %%rdx', [FAE.FieldInfo.Offset]));
     Self.Emit(#9'pushq %rdx');
     if HasStep then
     begin
@@ -7981,6 +8000,17 @@ begin
   begin
     AOE := TAddrOfExpr(AExpr);
 
+    { @TFoo.StaticVar — a static (class-level) var's storage IS the mangled
+      global slot; take its address directly rather than as a field of an
+      instance. }
+    if (AOE.Expr is TFieldAccessExpr) and
+       TFieldAccessExpr(AOE.Expr).IsClassVarRead then
+    begin
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+        [NativeMangle(TFieldAccessExpr(AOE.Expr).ClassVarEmitName)]));
+      Exit;
+    end;
+
     { @Array[I] — address of array element.  The inner expression is
       TStringSubscriptExpr (the parser's postfix-bracket node).  Compute
       base + index * elemSize without the final load. }
@@ -8900,6 +8930,15 @@ begin
     { Record/class field as var argument (including fields of the sret
       Result record).  Compute the field's address. }
     FAE := TFieldAccessExpr(AArg);
+    { A static (class-level) var passed by reference: its storage IS the
+      mangled global slot — take its address, not a field of an instance.
+      Has no FieldInfo, so this must precede the guard below. }
+    if FAE.IsClassVarRead then
+    begin
+      Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
+        [NativeMangle(FAE.ClassVarEmitName)]));
+      Exit;
+    end;
     if FAE.FieldInfo = nil then
       raise ENativeCodeGenError.Create(
         'native backend: var/out field argument has no resolved field info');
