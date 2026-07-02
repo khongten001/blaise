@@ -1629,10 +1629,23 @@ begin
     raise ELinker.Create(AContext + ': relocation symbol index out of range');
   Sym := AObj.Symbols.Get(ASymIdx);
 
-  { Locally-defined (any binding) symbol: resolve via its section. }
+  { Locally-defined symbol: resolve via its section — but for globals
+    that are defined in multiple objects, use the canonical address from
+    the global symbol table so every reference resolves to the same copy.
+    BuildSymbols uses first-definition-wins for duplicate STB_GLOBAL
+    symbols, so the global table holds the single canonical address. }
   if (Sym.Shndx <> SHN_UNDEF) and (Sym.Shndx <> SHN_ABS)
      and (Sym.Shndx <> SHN_COMMON) then
   begin
+    if Sym.Bind = STB_GLOBAL then
+    begin
+      G := Self.FindSymbol(Sym.Name);
+      if (G <> nil) and G.Defined then
+      begin
+        Result := G.Addr;
+        Exit;
+      end;
+    end;
     Oi := FObjects.IndexOf(AObj);
     Base := Self.PlacementBaseAddr(Oi, Sym.Shndx);
     if Base < 0 then
