@@ -20,7 +20,7 @@ unit uDebugOPDF;
 interface
 
 uses
-  SysUtils, Classes, contnrs, uAST, uSymbolTable, uDebugFacts;
+  SysUtils, Classes, contnrs, uAST, uSymbolTable, uDebugFacts, blaise.codegen;
 
 type
   TOPDFEmitter = class
@@ -593,18 +593,9 @@ begin
       end;
     end;
   end;
-  { Generic instance names carry '<', '>' and ',' — apply the same
-    character mangling the native backend uses for its symbols
-    (NativeMangle: '<' and ',' become '_', '>' is dropped). }
-  Result := '';
-  for I := 0 to Length(AClassName) - 1 do
-  begin
-    Ch := Copy(AClassName, I, 1);
-    if (Ch = '<') or (Ch = ',') then Result := Result + '_'
-    else if Ch = '>' then
-    else Result := Result + Ch;
-  end;
-  Result := Pfx + Result;
+  { Apply the shared CodegenMangle so the symbol matches the native backend
+    exactly — handles '<', '>', ',', ' ' (e.g. 'class of T'), '$', '@', '^'. }
+  Result := Pfx + CodegenMangle(AClassName);
 end;
 
 procedure TOPDFEmitter.EmitClass(AType: TRecordTypeDesc);
