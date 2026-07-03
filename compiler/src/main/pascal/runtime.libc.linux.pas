@@ -123,13 +123,74 @@ begin
 end;
 
 function execvp(File_: PChar; Argv: Pointer): Integer;
+var
+  PathEnv: PChar;
+  PathKey: array[0..4] of Byte;
+  Buf: array[0..4095] of Byte;
+  NLen, DirStart, DirLen, I, J: Int64;
 begin
-  { No PATH search yet: execve the name directly.  The RTL only execs
-    absolute/relative program paths (system() builds "/bin/sh"), so this covers
-    the present call sites.  A bare program name resolves only relative to the
-    CWD and otherwise fails with the kernel's ENOENT (never a silent wrong
-    result); add a $PATH scan here if a bare-name exec call site appears. }
-  Result := execve(File_, Argv, environ);
+  { Names containing '/' resolve relative to the CWD only (POSIX semantics):
+    execve directly, no $PATH scan. }
+  NLen := CStrLen(File_);
+  I := 0;
+  while I < NLen do
+  begin
+    if (File_[I] and $FF) = Ord('/') then
+      Exit(execve(File_, Argv, environ));
+    I := I + 1;
+  end;
+
+  { Bare name: try each colon-separated $PATH prefix in order.  execve only
+    returns on failure, so falling through means "try the next directory".
+    The 'PATH' key is copied into a local byte buffer for a stable address
+    (freestanding: no managed-string literals here). }
+  PathKey[0]:=Ord('P'); PathKey[1]:=Ord('A'); PathKey[2]:=Ord('T'); PathKey[3]:=Ord('H'); PathKey[4]:=0;
+  PathEnv := getenv(PChar(@PathKey[0]));
+  if PathEnv = nil then
+    Exit(execve(File_, Argv, environ));
+
+  DirStart := 0;
+  while True do
+  begin
+    DirLen := 0;
+    while ((PathEnv[DirStart + DirLen] and $FF) <> 0) and
+          ((PathEnv[DirStart + DirLen] and $FF) <> Ord(':')) do
+      DirLen := DirLen + 1;
+    if DirLen + 1 + NLen + 1 <= 4096 then   { skip entries that cannot fit }
+    begin
+      J := 0;
+      if DirLen = 0 then
+      begin
+        { An empty $PATH entry means the CWD: use "./name". }
+        Buf[0] := Ord('.');
+        J := 1;
+      end
+      else
+      begin
+        I := 0;
+        while I < DirLen do
+        begin
+          Buf[J] := PathEnv[DirStart + I] and $FF;
+          J := J + 1;
+          I := I + 1;
+        end;
+      end;
+      Buf[J] := Ord('/');
+      J := J + 1;
+      I := 0;
+      while I < NLen do
+      begin
+        Buf[J] := File_[I] and $FF;
+        J := J + 1;
+        I := I + 1;
+      end;
+      Buf[J] := 0;
+      execve(PChar(@Buf[0]), Argv, environ);
+    end;
+    if (PathEnv[DirStart + DirLen] and $FF) = 0 then Break;
+    DirStart := DirStart + DirLen + 1;
+  end;
+  Result := -1;
 end;
 
 { Population count of a 1024-bit affinity mask (128 bytes), counting set CPUs. }
