@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Internal-toolchain conformance check for the Blaise self-hosting toolchain.
 #
 # WHAT IT GUARDS:

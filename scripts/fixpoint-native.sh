@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Native fixpoint test for the Blaise self-hosting check.
 #
 # Verifies that the native backend (--backend native) is fully

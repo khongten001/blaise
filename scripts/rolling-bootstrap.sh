@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Rolling bootstrap for the Blaise self-hosting chain.
 #
 # Problem this solves:

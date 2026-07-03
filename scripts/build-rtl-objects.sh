@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build the implicit RTL object files from source, mirroring the compiler's
 # own TBackendDriver.EnsureRTLObjects.  Used by the fixpoint / bootstrap
 # scripts to link a self-hosted compiler binary WITHOUT the legacy
@@ -72,13 +72,20 @@ mkdir -p "$OUTDIR"
 # Leaf-first link order.  rtl.platform owns the shared globals (GPlatformLayout,
 # GRtlPlatform) that layout.linux + posix reference externally, so it is built
 # first and linked once.
+# Select the platform layout + errno units for the host OS.
+case "$(uname -s)" in
+  FreeBSD) LAYOUT_UNIT=rtl.platform.layout.freebsd
+           ERRNO_UNIT=runtime.errno.freebsd ;;
+  *)       LAYOUT_UNIT=rtl.platform.layout.linux
+           ERRNO_UNIT=runtime.errno.linux ;;
+esac
 RTL_UNITS=(
   rtl.platform
   runtime.start runtime.atomic runtime.setjmp runtime.utf8
   runtime.mem runtime.str runtime.set runtime.arc
   runtime.weak runtime.float runtime.thread runtime.exc
-  runtime.errno.linux
-  rtl.platform.layout.linux rtl.platform.posix
+  "$ERRNO_UNIT"
+  "$LAYOUT_UNIT" rtl.platform.posix
 )
 
 # Symbols the main program object already defines (for --exclude-defined-by).

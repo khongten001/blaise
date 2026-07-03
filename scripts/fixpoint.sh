@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Fixpoint test for the Blaise self-hosting check.
 #
 # Uses the most recent release binary as stage-1 (no FPC dependency).

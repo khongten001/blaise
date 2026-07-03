@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Incremental warm-cache rebuild guard for the Blaise self-hosting toolchain.
 #
 # WHAT IT GUARDS:
