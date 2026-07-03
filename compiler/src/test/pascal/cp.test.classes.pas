@@ -70,6 +70,9 @@ type
     procedure TestCodegen_SeparateImpl_EmitsMethod;
     procedure TestCodegen_MethodCall_CaseInsensitive;
     procedure TestCodegen_MethodBody_ReadsProgramGlobal;
+    procedure TestSemantic_MethodDeclaredNotImplemented_RaisesError;
+    procedure TestSemantic_AbstractMethod_NoImpl_OK;
+    procedure TestSemantic_ExternalMethod_NoImpl_OK;
 
     { ------------------------------------------------------------------ }
     { Forward class declarations  (TFoo = class;)                          }
@@ -766,6 +769,59 @@ begin
         begin end.
         ''');
   AssertTrue('method loads global $gValue', Pos('loadw $gValue', IR) > 0);
+end;
+
+procedure TClassTests.TestSemantic_MethodDeclaredNotImplemented_RaisesError;
+begin
+  { Regression for issue #161: a concrete class method that is declared but
+    never implemented must be rejected at compile time.  Previously the
+    program compiled and only failed at load time with
+    `undefined symbol: TForward_work`. }
+  AnalyseExpectError(
+    '''
+        program P;
+        type
+          TForward = class
+            procedure Work;
+          end;
+        var F: TForward;
+        begin
+          F := TForward.Create();
+          F.Work()
+        end.
+        ''');
+end;
+
+procedure TClassTests.TestSemantic_AbstractMethod_NoImpl_OK;
+begin
+  { An abstract method legitimately has no implementation — the missing-body
+    diagnostic (issue #161) must not fire for it. }
+  AnalyseSrc(
+    '''
+        program P;
+        type
+          TBase = class
+            procedure Work; virtual; abstract;
+          end;
+        begin
+        end.
+        ''').Free();
+end;
+
+procedure TClassTests.TestSemantic_ExternalMethod_NoImpl_OK;
+begin
+  { An external method is satisfied by a foreign symbol and carries no Blaise
+    body — the missing-body diagnostic (issue #161) must not fire for it. }
+  AnalyseSrc(
+    '''
+        program P;
+        type
+          TWrap = class
+            function Peek: Integer; external 'peek';
+          end;
+        begin
+        end.
+        ''').Free();
 end;
 
 procedure TClassTests.TestCodegen_SeparateImpl_EmitsMethod;

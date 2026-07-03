@@ -520,6 +520,10 @@ begin
           end;
           ECompileError = class(Exception)
           end;
+        constructor Exception.Create(AMessage: string);
+        begin
+          FMessage := AMessage;
+        end;
         var E: ECompileError;
         begin
           E := ECompileError.Create('compile error');
@@ -815,6 +819,10 @@ begin
           end;
           ECompileError = class(Exception)
           end;
+        constructor Exception.Create(AMessage: string);
+        begin
+          FMessage := AMessage;
+        end;
         var E: ECompileError;
         begin
           E := ECompileError.Create('oops');
@@ -842,6 +850,10 @@ const
           end;
           EFoo = class(Exception) end;
           EBar = class(Exception) end;
+        constructor Exception.Create(AMessage: string);
+        begin
+          FMessage := AMessage;
+        end;
         ''';
 
   SrcTypedExceptSingle =

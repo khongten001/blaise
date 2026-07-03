@@ -203,6 +203,18 @@ const
           TMyCol = class
             function GetEnumerator: TMyEnum;
           end;
+        function TMyEnum.MoveNext: Boolean;
+        begin
+          Result := False;
+        end;
+        function TMyEnum.GetCurrent: Integer;
+        begin
+          Result := FCurrent;
+        end;
+        function TMyCol.GetEnumerator: TMyEnum;
+        begin
+          Result := nil;
+        end;
         ''';
 
   SrcForIn =

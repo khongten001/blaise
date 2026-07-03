@@ -270,6 +270,7 @@ type
     procedure AnalyseTypeDecls(ABlock: TBlock);
     procedure LinkClassMethodImpls(ABlock: TBlock);
     procedure LinkGenericClassMethodImpls(ABlock: TBlock);
+    procedure CheckClassMethodsImplemented(ABlock: TBlock);
     procedure RepairEarlyGenericInstances;
     { Move any generic instances parked at import time (FProg/FCurrentUnit
       both nil) into the now-current program or unit, so codegen emits their
@@ -2109,6 +2110,11 @@ begin
     so instances can clone bodies at instantiation time. }
   LinkClassMethodImpls(AUnit.ImplBlock);
 
+  { A concrete class method declared in either section must have an
+    implementation in the impl section (see CheckClassMethodsImplemented). }
+  CheckClassMethodsImplemented(AUnit.IntfBlock);
+  CheckClassMethodsImplemented(AUnit.ImplBlock);
+
   { --- Implementation section -------------------------------------------
     Push a scope so impl-only standalone symbols don't leak globally.
     Class method bodies are analysed inside this scope so they can call
@@ -2733,6 +2739,45 @@ begin
     { Transfer the body; after this, AnalyseMethodBodies will find and analyse it }
     Match.Body := Decl.Body;
     Decl.Body  := nil;
+  end;
+end;
+
+{ Diagnose class methods that were declared but never implemented.  Must run
+  AFTER LinkClassMethodImpls has transferred every matching implementation body
+  onto its class method declaration: a concrete (non-abstract, non-external)
+  method whose Body is still nil has no implementation, so codegen would emit a
+  call to a symbol that is never defined and the program fails at link/load
+  time with `undefined symbol: <Class>_<Method>`.  A declared concrete method
+  is a promise of an implementation; diagnose the broken promise up front. }
+procedure TSemanticAnalyser.CheckClassMethodsImplemented(ABlock: TBlock);
+var
+  I, J:  Integer;
+  TD:    TTypeDecl;
+  CD:    TClassTypeDef;
+  MDecl: TMethodDecl;
+begin
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    CD := TClassTypeDef(TD.Def);
+    { A bare forward declaration carries no members; the completing full
+      declaration is a separate TypeDecl and is checked on its own. }
+    if CD.IsForward then Continue;
+    for J := 0 to CD.Methods.Count - 1 do
+    begin
+      MDecl := TMethodDecl(CD.Methods.Items[J]);
+      { Abstract methods intentionally have no body; external methods are
+        satisfied by a foreign symbol; a generic method template
+        (TypeParams <> nil) has its body cloned per instantiation. }
+      if MDecl.IsAbstract or MDecl.IsExternal then Continue;
+      if MDecl.TypeParams <> nil then Continue;
+      if MDecl.Body = nil then
+        SemanticError(
+          Format('Method ''%s.%s'' declared but not implemented',
+            [TD.Name, MDecl.Name]),
+          MDecl.Line, MDecl.Col);
+    end;
   end;
 end;
 
@@ -4633,6 +4678,7 @@ begin
     declarations, transferring the body so AnalyseMethodBodies can process it. }
   LinkClassMethodImpls(ABlock);
   LinkGenericClassMethodImpls(ABlock);
+  CheckClassMethodsImplemented(ABlock);
   RepairEarlyGenericInstances();
   { Register standalone proc/func signatures before class method bodies so that
     methods can call free functions declared in the same block. }
