@@ -52,6 +52,21 @@ type
     function StatMode(Buf: Pointer):  Integer; override;
   end;
 
+{ Flat function for runtime.mem (imported there via `external name`): returns
+  the target's MAP_ANONYMOUS value.  Called before GPlatformLayout is
+  initialised, so it cannot be a layout method.  Linux MAP_ANONYMOUS = $20.
+  Guarded by the target define: link-level flat functions exist in BOTH layout
+  units under the SAME global symbol name, and a host test build may link the
+  foreign layout unit alongside this one (cp.test.platformlayout.freebsd) — an
+  unguarded pair collides at link time and the loose test object wins over the
+  archived host copy, handing the allocator the wrong OS's value (every
+  fresh-arena mmap then fails EBADF).  The guard keeps the class API
+  IFDEF-free (the rtl.platform doctrine); only the link-level leaf is
+  conditional. }
+{$IFDEF LINUX}
+function _MapAnonFlag: Integer;
+{$ENDIF}
+
 implementation
 
 const
@@ -129,6 +144,13 @@ asm
     .weak _BlaisePlatformInit
     jmp AssignLayoutLinux
 end;
+
+{$IFDEF LINUX}
+function _MapAnonFlag: Integer;
+begin
+  Result := $20;
+end;
+{$ENDIF}
 
 initialization
   AssignLayoutLinux();

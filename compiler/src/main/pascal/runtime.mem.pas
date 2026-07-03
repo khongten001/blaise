@@ -30,8 +30,8 @@
     Each gets its own mmap region with a 24-byte header.  Freed large
     blocks are cached on a LIFO freelist for O(1) reuse.  The cache
     holds up to LARGE_CACHE_MAX entries; excess blocks are munmap-ed
-    immediately.  Large reallocs use Linux mremap to resize in-place
-    without copying.  All mmap sizes are rounded up to page granularity
+    immediately.  Large reallocs allocate a new region, copy, and free
+    the old one.  All mmap sizes are rounded up to page granularity
     (4 KB) for better cache hit rates.
 
   All returned pointers are 8-byte aligned.
@@ -107,8 +107,6 @@ function  _libc_mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
             Offset: Int64): Pointer; external name 'mmap';
 function  _libc_munmap(Addr: Pointer; Length: Int64): Integer;
             external name 'munmap';
-function  _libc_mremap(OldAddr: Pointer; OldSize, NewSize: Int64;
-            Flags: Integer): Pointer; external name 'mremap';
 procedure _libc_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
 
 { Thread-exit hook bindings (phase 5).  pthread_key_create registers a
@@ -126,13 +124,17 @@ function _pthread_setspecific(Key: Integer; Value: Pointer): Integer;
 function _libc_cxa_atexit(Fn, Arg, DsoHandle: Pointer): Integer;
   external name '__cxa_atexit';
 
+{ OS-specific MAP_ANONYMOUS value, provided by the linked platform layout
+  unit (rtl.platform.layout.<os>).  Linux = $20, FreeBSD = $1000.  A flat
+  function rather than a GPlatformLayout virtual call because the allocator
+  runs before the platform layer is initialised. }
+function  _MapAnonFlag: Integer; external name '_MapAnonFlag';
+
 const
   PROT_READ       = 1;
   PROT_WRITE      = 2;
   MAP_PRIVATE     = 2;
-  MAP_ANONYMOUS   = 32;
   MAP_FAILED_VAL  = -1;
-  MREMAP_MAYMOVE  = 1;
 
   PAGE_SIZE       = 4096;
   ARENA_SIZE      = 65536;
@@ -568,7 +570,7 @@ begin
   Size := PageRound(Size);
   Result := _libc_mmap(nil, Size,
     PROT_READ or PROT_WRITE,
-    MAP_PRIVATE or MAP_ANONYMOUS,
+    MAP_PRIVATE or _MapAnonFlag(),
     -1, 0);
   if MapFailed(Result) then
     Result := nil;
@@ -796,16 +798,7 @@ begin
       Hdr^.OwnerTid := MyTid();
       Exit(Pointer(PtrUInt(Hdr) + LARGE_HEADER));
     end;
-    Base := _libc_mremap(Pointer(Node), CachedSize, Needed, MREMAP_MAYMOVE);
-    if not MapFailed(Base) then
-    begin
-      Hdr := PLargeHeader(Base);
-      Hdr^.TotalMapped := Needed;
-      Hdr^.AllocSize := Size;
-      Hdr^.Flags := FLAG_LARGE;
-      Hdr^.OwnerTid := MyTid();
-      Exit(Pointer(PtrUInt(Base) + LARGE_HEADER));
-    end;
+    { Cached block too small — free it and fall through to a fresh mmap. }
     _libc_munmap(Pointer(Node), CachedSize);
   end;
 
@@ -959,7 +952,6 @@ var
   OldSize, CopySize: Integer;
   Hdr: PBlockHeader;
   LHdr: PLargeHeader;
-  Base, NewBase: Pointer;
   OldMapped, NewMapped: Int64;
 begin
   if Ptr = nil then
@@ -991,17 +983,7 @@ begin
       LHdr^.AllocSize := NewSize;
       Exit(Ptr);
     end;
-    Base := Pointer(LHdr);
-    NewBase := _libc_mremap(Base, OldMapped, NewMapped, MREMAP_MAYMOVE);
-    if not MapFailed(NewBase) then
-    begin
-      LHdr := PLargeHeader(NewBase);
-      LHdr^.TotalMapped := NewMapped;
-      LHdr^.AllocSize := NewSize;
-      LHdr^.Flags := FLAG_LARGE;
-      LHdr^.OwnerTid := MyTid();
-      Exit(Pointer(PtrUInt(NewBase) + LARGE_HEADER));
-    end;
+    { Fall through to the alloc-copy-free path below. }
   end;
   Result := _BlaiseGetMem(NewSize);
   if Result = nil then Exit;

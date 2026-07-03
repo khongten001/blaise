@@ -15,8 +15,13 @@ unit rtl.platform.layout.freebsd;
 // This is the FreeBSD sibling of rtl.platform.layout.linux.  The POSIX method
 // bodies in rtl.platform.posix are shared between Linux and FreeBSD; the only
 // per-target divergence is the struct stat layout and a handful of OS constant
-// values, both of which live here.  No conditional compilation: the FreeBSD RTL
-// archive composes this unit in place of the Linux one.
+// values, both of which live here.  The class API uses no conditional
+// compilation: the FreeBSD RTL archive composes this unit in place of the
+// Linux one.  Link-level FLAT functions (same global symbol name in every
+// layout unit, imported elsewhere via `external name`) are the one exception —
+// they are guarded by the target define so a host build that imports this unit
+// for its class API (cp.test.platformlayout.freebsd) emits no colliding
+// symbols.
 //
 // Layout pinned to FreeBSD 14.x amd64 (sys/sys/stat.h).  It is identical on
 // FreeBSD 13.x: the ino_t/dev_t widening that changed struct stat landed in
@@ -61,6 +66,18 @@ type
     function StatMtime(Buf: Pointer): Int64; override;
     function StatMode(Buf: Pointer):  Integer; override;
   end;
+
+{ Flat function for runtime.mem (imported there via `external name`): returns
+  the target's MAP_ANONYMOUS value.  Called before GPlatformLayout is
+  initialised, so it cannot be a layout method.  FreeBSD MAP_ANON = $1000.
+  Guarded by the target define — see the twin in rtl.platform.layout.linux for
+  the full rationale: a host (Linux) test build links this unit for its class
+  API (cp.test.platformlayout.freebsd), and an unguarded flat function here
+  would collide with — and win over — the archived Linux copy, handing the
+  Linux allocator FreeBSD's MAP_ANON. }
+{$IFDEF FREEBSD}
+function _MapAnonFlag: Integer;
+{$ENDIF}
 
 implementation
 
@@ -136,6 +153,13 @@ asm
     .weak _BlaisePlatformInit
     jmp AssignLayoutFreeBSD
 end;
+
+{$IFDEF FREEBSD}
+function _MapAnonFlag: Integer;
+begin
+  Result := $1000;
+end;
+{$ENDIF}
 
 initialization
   AssignLayoutFreeBSD();

@@ -11,9 +11,15 @@ unit rtl.platform;
 // Blaise RTL — platform abstraction layer.
 //
 // TRtlPlatform is the abstract base class defining all OS-level operations.
-// No {$IFDEF} directives appear anywhere in this unit or its concrete
+// No {$IFDEF} directives appear in the CLASS APIs of this unit or its concrete
 // implementations.  Platform-specific behaviour is expressed by subclassing
 // TRtlPlatform and assigning the instance to GRtlPlatform at program start.
+// One carve-out: link-level FLAT functions in the concrete layout units
+// (pre-init leaves like _MapAnonFlag, imported via `external name`) share one
+// global symbol name across every layout unit, so each is guarded by its
+// target define — otherwise a host build that imports a foreign layout unit
+// for its class API (e.g. cp.test.platformlayout.freebsd) links two
+// definitions and the wrong OS's value can win.
 //
 // Each supported platform provides a single concrete subclass:
 //   - TRtlPlatformPosix  (Linux, FreeBSD)
