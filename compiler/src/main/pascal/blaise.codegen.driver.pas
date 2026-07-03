@@ -568,9 +568,14 @@ begin
     follows the target, and a static link swaps in the freestanding per-OS
     kernel leaf (start / syscall / libc shims / thread) in place of libc.  A
     freestanding target (FreeBSD, Strategy B) has no libc, so it is static
-    regardless of the --static flag.  See BuildRTLUnitList. }
+    regardless of the --static flag — but ONLY when the internal linker owns
+    the link (AIncludeStartup).  A cc link line (AIncludeStartup=False) always
+    links libc: crt1 supplies _start and environ, so the freestanding kernel
+    leaf must stay off that line or both are doubly defined.
+    See BuildRTLUnitList. }
   Units := BuildRTLUnitList(
-    AOpts.Static or TargetIsFreestanding(AOpts.Target), AOpts.Target.OS);
+    (AOpts.Static or TargetIsFreestanding(AOpts.Target)) and AIncludeStartup,
+    AOpts.Target.OS);
 
   for I := 0 to Units.Count - 1 do
   begin
