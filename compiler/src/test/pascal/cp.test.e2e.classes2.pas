@@ -27,6 +27,7 @@ type
     procedure TestRun_Phase3Milestone_Stdout;
     procedure TestRun_Phase3Milestone_Valgrind;
     procedure TestRun_MultiTypeBlock_BothClassesWork;
+    procedure TestRun_ForwardClass_CaseDifferentSpelling_RunsClean;
     procedure TestRun_ToString_DefaultReturnsClassName;
     procedure TestRun_ToString_OverrideDispatchedVirtually;
     procedure TestRun_ToString_InheritedOverrideStillReached;
@@ -1106,6 +1107,32 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertTrue('compile+run', CompileAndRun(SrcMultiTypeBlock, Output, RCode));
   AssertEquals('TCounter(3).Double = 6', '6', Trim(Output));
+end;
+
+procedure TE2EClasses2Tests.TestRun_ForwardClass_CaseDifferentSpelling_RunsClean;
+begin
+  { Regression for issue #162: a forward class declaration whose completing
+    full declaration differs only in case must link and run.  Before the fix
+    the program aborted at load time with
+    `undefined symbol: _FieldCleanup_TState`. }
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(
+    '''
+        program P;
+        type
+          TState = class;
+          Tstate = class
+            FName: string;
+          end;
+        var S: Tstate;
+        begin
+          S := Tstate.Create();
+          S.FName := 'hello';
+          WriteLn(S.FName);
+          S.Free()
+        end.
+        ''',
+    'hello' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_ToString_DefaultReturnsClassName;

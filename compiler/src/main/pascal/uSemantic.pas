@@ -5671,6 +5671,7 @@ var
   ForwardDecls: TStringList;  { names of bare forward class/interface decls still
                                awaiting their completing full declaration }
   FwdIdx:     Integer;
+  FwdType:    TTypeDesc;
 begin
   { Forward declarations (`TFoo = class;` / `IFoo = interface;`) register a
     placeholder type in pass 1 and are completed by a later full declaration of
@@ -5715,6 +5716,18 @@ begin
       FwdIdx := ForwardDecls.IndexOf(TD.Name);
       if FwdIdx >= 0 then
       begin
+        { The placeholder was registered under the forward declaration's name
+          spelling.  Adopt the completing declaration's spelling on the shared
+          descriptor so it matches the TTypeDecl the codegen keys a class's
+          storage symbols (_FieldCleanup / typeinfo / vtable) on.  Without this
+          a case-only difference between the two spellings (e.g. `TState = class;`
+          then `Tstate = class ... end;`) leaves instantiation sites — which read
+          the descriptor Name — referencing `_FieldCleanup_TState` while the
+          definition is emitted under `_FieldCleanup_Tstate`, an undefined-symbol
+          link failure. }
+        FwdType := FTable.FindType(TD.Name);
+        if FwdType <> nil then
+          FwdType.Name := TD.Name;
         ForwardDecls.Delete(FwdIdx);
         Continue;
       end;

@@ -79,6 +79,7 @@ type
     procedure TestSemantic_ForwardClass_Unresolved_RaisesError;
     procedure TestSemantic_ForwardClass_DoubleForward_RaisesError;
     procedure TestCodegen_ForwardClass_SingleVTable;
+    procedure TestCodegen_ForwardClass_CaseDifferentSpelling_FieldCleanupConsistent;
 
     { ------------------------------------------------------------------ }
     { Free built-in                                                        }
@@ -1302,6 +1303,36 @@ begin
     if P >= 0 then begin Inc(Count); Inc(P) end;
   until P < 0;
   AssertEquals('vtable_TFoo emitted exactly once', 1, Count);
+end;
+
+procedure TClassTests.TestCodegen_ForwardClass_CaseDifferentSpelling_FieldCleanupConsistent;
+var
+  IR: string;
+begin
+  { Regression for issue #162: when the forward declaration and its completing
+    full declaration differ only in case (TState vs Tstate), the shared class
+    descriptor must adopt the completing spelling so a class's _FieldCleanup is
+    referenced under the same name it is defined with.  Previously the
+    instantiation site read the forward spelling and referenced
+    $_FieldCleanup_TState while the definition was emitted as
+    $_FieldCleanup_Tstate — an undefined-symbol link failure. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TState = class;
+          Tstate = class
+            FName: string;
+          end;
+        var S: Tstate;
+        begin
+          S := Tstate.Create()
+        end.
+        ''');
+  AssertTrue('_FieldCleanup defined+referenced under the completing spelling',
+    Pos('$_FieldCleanup_Tstate', IR) > 0);
+  AssertTrue('no dangling forward-spelling $_FieldCleanup_TState reference',
+    Pos('$_FieldCleanup_TState', IR) < 0);
 end;
 
 initialization
