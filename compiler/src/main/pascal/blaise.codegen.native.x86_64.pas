@@ -538,7 +538,8 @@ type
                                       const AName: string;
                                       AIsGlobal: Boolean): Boolean;
     { Sret a record-returning call (function or method) into ADest. }
-    procedure EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string);
+    procedure EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string;
+      AIndirect: Boolean = False);
     { Sret call for a TFuncCallExpr: routes an implicit-Self method through the
       vtable-aware method-sret emitter, a free function through EmitSretCall. }
     procedure EmitFuncCallSret(AFC: TFuncCallExpr; const ADest: string;
@@ -4923,6 +4924,15 @@ begin
      (TMethodDecl(TInheritedCallExpr(AExpr).ResolvedMethod).ResolvedReturnType <> nil) and
      (TMethodDecl(TInheritedCallExpr(AExpr).ResolvedMethod).ResolvedReturnType.Kind = tyRecord) then
     Exit(True);
+  { Method-backed property read whose getter returns a record — a getter call,
+    routed through EmitRecordCallSretAt (which synthesises the method call). }
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).PropRead <> nil) and
+     (TFieldAccessExpr(AExpr).PropReadDecl <> nil) and
+     (TFieldAccessExpr(AExpr).PropIndexExpr = nil) and
+     (TFieldAccessExpr(AExpr).PropRead.TypeDesc <> nil) and
+     (TFieldAccessExpr(AExpr).PropRead.TypeDesc.Kind = tyRecord) then
+    Exit(True);
 end;
 
 function TX86_64Backend.RecordCallReceiverIsVar(AExpr: TASTExpr;
@@ -4972,23 +4982,54 @@ begin
       AFC.Args, ADest, AIndirect);
 end;
 
-procedure TX86_64Backend.EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string);
+procedure TX86_64Backend.EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string;
+  AIndirect: Boolean);
+var
+  FAE:   TFieldAccessExpr;
+  Synth: TMethodCallExpr;
 begin
+  { Record-returning property read (O.Prop): a getter call, so synthesise the
+    method call from the resolved getter decl and route it through
+    EmitMethodSretCall exactly as a record-returning method call. }
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).PropRead <> nil) and
+     (TFieldAccessExpr(AExpr).PropReadDecl <> nil) and
+     (TFieldAccessExpr(AExpr).PropIndexExpr = nil) then
+  begin
+    FAE := TFieldAccessExpr(AExpr);
+    Synth := TMethodCallExpr.Create();
+    try
+      Synth.Name           := FAE.PropRead.ReadMethod;
+      Synth.ResolvedMethod := FAE.PropReadDecl;
+      Synth.ResolvedType   := FAE.ResolvedType;
+      Synth.ObjExpr        := FAE.Base;          { borrowed — detached before Free }
+      if FAE.Base = nil then
+      begin
+        Synth.ObjectName := FAE.RecordName;
+        Synth.IsGlobal   := FAE.IsGlobal;
+      end;
+      Self.EmitMethodSretCall(Synth, ADest, AIndirect);
+    finally
+      Synth.ObjExpr := nil;   { do not free the borrowed base expression }
+      Synth.Free();
+    end;
+    Exit;
+  end;
   if (AExpr is TMethodCallExpr) and
      (TMethodCallExpr(AExpr).ResolvedClassType <> nil) and
      (TMethodCallExpr(AExpr).ResolvedClassType.Kind = tyInterface) then
     { Interface (itab) record-returning dispatch — EmitMethodSretCall raises on
       a nil ResolvedMethod, so route through the itab record-return helper. }
-    Self.EmitIntfRecordSretDispatch(TMethodCallExpr(AExpr), ADest, False)
+    Self.EmitIntfRecordSretDispatch(TMethodCallExpr(AExpr), ADest, AIndirect)
   else if AExpr is TMethodCallExpr then
-    Self.EmitMethodSretCall(TMethodCallExpr(AExpr), ADest, False)
+    Self.EmitMethodSretCall(TMethodCallExpr(AExpr), ADest, AIndirect)
   else if AExpr is TInheritedCallExpr then
     Self.EmitInheritedRecordSret(
       TMethodDecl(TInheritedCallExpr(AExpr).ResolvedMethod),
       TInheritedCallExpr(AExpr).Args,
-      TInheritedCallExpr(AExpr).Name, ADest, False)
+      TInheritedCallExpr(AExpr).Name, ADest, AIndirect)
   else
-    Self.EmitFuncCallSret(TFuncCallExpr(AExpr), ADest, False);
+    Self.EmitFuncCallSret(TFuncCallExpr(AExpr), ADest, AIndirect);
 end;
 
 procedure TX86_64Backend.EmitIncDec(ACall: TProcCall);
@@ -10355,6 +10396,8 @@ var
   GetEDecl, MNDecl, CurDecl: TMethodDecl;
   EnumOp, Sym: string;
   SlotOff:   Integer;
+  CurRT:     TRecordTypeDesc;
+  SynthCur:  TMethodCallExpr;
 begin
   if AStmt.IsArrayIter then
   begin
@@ -10742,18 +10785,44 @@ begin
   FContinueLabels.Push(LCond);
   FContinueExcDepths.Push(FExcDepth);
 
-  Self.Emit(Format(#9'movq %s, %%rdi', [EnumOp]));
-  Sym := MethodEmitNameNative(CurDecl, CurDecl.OwnerTypeName, CurDecl.Name);
-  if CurDecl.VTableSlot >= 0 then
+  if CurDecl.ResolvedReturnType.Kind = tyRecord then
   begin
-    SlotOff := (CurDecl.VTableSlot + 1) * 8;
-    Self.Emit(#9'movq (%rdi), %rcx');
-    Self.Emit(Format(#9'movq %d(%%rcx), %%r10', [SlotOff]));
-    Self.Emit(#9'callq *%r10');
+    { Record-returning Current: sret the getter straight into the loop-var
+      slot after releasing the previous entry, exactly as `V := Enum.Current`
+      lowers (the record-method-call assignment path).  A scalar-return call
+      would use the wrong ABI and corrupt the managed fields. }
+    CurRT := TRecordTypeDesc(CurDecl.ResolvedReturnType);
+    SynthCur := TMethodCallExpr.Create();
+    try
+      SynthCur.Name           := CurDecl.Name;
+      SynthCur.ResolvedMethod := CurDecl;
+      SynthCur.ResolvedType   := CurDecl.ResolvedReturnType;
+      SynthCur.ObjectName     := AStmt.EnumVarName;
+      SynthCur.IsGlobal       := False;
+      Self.Emit(#9'pushq %rbx');
+      Self.EmitVarAddr(AStmt.VarName, '%rbx');
+      Self.EmitRecordFieldReleases(CurRT, '%rbx');
+      Self.EmitMethodSretCall(SynthCur, '(%rbx)', False);
+      Self.Emit(#9'popq %rbx');
+    finally
+      SynthCur.Free();
+    end;
   end
   else
-    Self.Emit(#9'callq ' + Sym);
-  Self.EmitForInAssignElem(AStmt);
+  begin
+    Self.Emit(Format(#9'movq %s, %%rdi', [EnumOp]));
+    Sym := MethodEmitNameNative(CurDecl, CurDecl.OwnerTypeName, CurDecl.Name);
+    if CurDecl.VTableSlot >= 0 then
+    begin
+      SlotOff := (CurDecl.VTableSlot + 1) * 8;
+      Self.Emit(#9'movq (%rdi), %rcx');
+      Self.Emit(Format(#9'movq %d(%%rcx), %%r10', [SlotOff]));
+      Self.Emit(#9'callq *%r10');
+    end
+    else
+      Self.Emit(#9'callq ' + Sym);
+    Self.EmitForInAssignElem(AStmt);
+  end;
 
   Self.EmitStmt(AStmt.Body);
   FContinueExcDepths.Pop();
@@ -11719,6 +11788,35 @@ begin
       end;
       Self.EmitRecordFieldReleases(TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
       Self.EmitIntfRecordSretDispatch(TMethodCallExpr(Asgn.Expr), '(%rbx)', False);
+      Self.Emit(#9'popq %rbx');
+      Exit;
+    end;
+    { sret assignment: record-returning property read (V := Obj.Prop).  A getter
+      call, so route it through EmitRecordCallSretAt (which synthesises the
+      method call) exactly as the record-method-call case above.  No aliasing
+      guard is needed — the receiver is a class, distinct from the record dest. }
+    if (Asgn.ResolvedLhsType <> nil) and
+       (Asgn.ResolvedLhsType.Kind = tyRecord) and
+       (Asgn.Expr is TFieldAccessExpr) and
+       (TFieldAccessExpr(Asgn.Expr).PropRead <> nil) and
+       (TFieldAccessExpr(Asgn.Expr).PropReadDecl <> nil) and
+       (TFieldAccessExpr(Asgn.Expr).PropIndexExpr = nil) then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      if FSretFunc and SameText(Asgn.Name, 'Result') then
+        Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand('Result')]))
+      else if Asgn.IsVarParam then
+        Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(Asgn.Name)]))
+      else if Self.IsLocal(Asgn.Name) then
+        Self.Emit(Format(#9'leaq %s, %%rbx', [Self.VarOperand(Asgn.Name)]))
+      else
+      begin
+        Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
+        if Asgn.IsThreadVar then Self.MarkThreadVar(Asgn.Name);
+        Self.EmitLeaqGlobal(Asgn.Name, '%rbx');
+      end;
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
+      Self.EmitRecordCallSretAt(Asgn.Expr, '(%rbx)', False);
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
@@ -14211,6 +14309,13 @@ begin
   if (AArg is TMethodCallExpr) and
      not TMethodCallExpr(AArg).IsConstructorCall then
     Exit(True);
+  { A record-returning property read (Obj.Prop) is a getter call producing a
+    fresh sret record — materialise it into a buffer like any record-call arg. }
+  if (AArg is TFieldAccessExpr) and
+     (TFieldAccessExpr(AArg).PropRead <> nil) and
+     (TFieldAccessExpr(AArg).PropReadDecl <> nil) and
+     (TFieldAccessExpr(AArg).PropIndexExpr = nil) then
+    Exit(True);
 end;
 
 function TX86_64Backend.RecArgBufBytes(AArg: TASTExpr): Integer;
@@ -14461,6 +14566,15 @@ begin
           TFuncCallExpr path in EmitExprToEax. }
         Self.Emit(Format(#9'subq $%d, %%rsp', [Self.RecArgBufBytes(Arg)]));
         Self.EmitMethodSretCall(TMethodCallExpr(Arg), '(%rsp)', False);
+        Self.Emit(#9'leaq (%rsp), %rax');
+      end
+      else if (Arg is TFieldAccessExpr) and
+              (TFieldAccessExpr(Arg).PropRead <> nil) then
+      begin
+        { Record-returning property read: same as the method-call arg — sret the
+          getter into a fresh buffer, then carry its pointer in %rax. }
+        Self.Emit(Format(#9'subq $%d, %%rsp', [Self.RecArgBufBytes(Arg)]));
+        Self.EmitRecordCallSretAt(Arg, '(%rsp)', False);
         Self.Emit(#9'leaq (%rsp), %rax');
       end
       else

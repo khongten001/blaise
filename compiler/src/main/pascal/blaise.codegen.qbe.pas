@@ -3306,6 +3306,8 @@ var
   SetMQT:     string;
   SetMLd:     string;
   SetMSt:     string;
+  CurRT:      TRecordTypeDesc;
+  LVRef:      string;
 begin
   if AStmt.IsArrayIter then
   begin
@@ -3925,6 +3927,25 @@ begin
   try
     SelfT    := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [SelfT, EnumSlot]));
+
+    { Record-returning Current: the getter returns by sret.  Release the loop
+      variable's previous entry, zero it, and let the getter write the new
+      record straight into the loop-var slot — exactly as `V := Enum.Current`
+      lowers (EmitAssignment's record-call path).  A scalar-return call here
+      would use the wrong ABI and corrupt the managed fields. }
+    if CurDecl.ResolvedReturnType.Kind = tyRecord then
+    begin
+      CurRT := TRecordTypeDesc(CurDecl.ResolvedReturnType);
+      LVRef := VarRef(AStmt.VarName, AStmt.VarIsGlobal);
+      EmitRecordReleaseFields(CurRT, LVRef);
+      if CurRT.TotalSize() > 0 then
+        EmitLine(Format('  call $memset(l %s, w 0, l %d)', [LVRef, CurRT.TotalSize()]));
+      FuncName := SretMethodCallTarget(CurDecl, SelfT, CurDecl.Name);
+      EmitRecordReturnCallSite(FuncName, Format('l %s', [SelfT]),
+        SretRetRec(CurDecl.ResolvedReturnType), LVRef);
+    end
+    else
+    begin
     QType    := QbeTypeOf(CurDecl.ResolvedReturnType);
     FuncName := '$' + MethodEmitName(CurDecl, CurDecl.OwnerTypeName, CurDecl.Name);
     CurT     := AllocTemp();
@@ -3974,6 +3995,7 @@ begin
     else
       EmitLine(Format('  storel %s, %s',
         [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+    end;
 
     EmitStmt(AStmt.Body);
   finally
@@ -4097,7 +4119,11 @@ begin
   else if AExpr is TMethodCallExpr then
     Result := not TMethodCallExpr(AExpr).IsConstructorCall
   else if AExpr is TInheritedCallExpr then
-    Result := TInheritedCallExpr(AExpr).ResolvedMethod <> nil;
+    Result := TInheritedCallExpr(AExpr).ResolvedMethod <> nil
+  else if AExpr is TFieldAccessExpr then
+    { A record-returning property read is a getter call producing a fresh sret
+      temp, just like a method call. }
+    Result := TFieldAccessExpr(AExpr).PropRead <> nil;
 end;
 
 procedure TCodeGenQBE.EmitOwnedArgReleases(AArgs: TObjectList;
@@ -5434,6 +5460,15 @@ begin
   else if AExpr is TFieldAccessExpr then
   begin
     FldA := TFieldAccessExpr(AExpr);
+    { A method-backed property read whose getter returns a record is a getter
+      call — route it through the sret path so the getter writes straight into
+      the assignment destination. }
+    if FldA.PropRead <> nil then
+    begin
+      Result := (FldA.PropRead.TypeDesc <> nil) and
+                (FldA.PropRead.TypeDesc.Kind in [tyRecord, tyStaticArray]);
+      Exit;
+    end;
     if not FldA.IsMethodCall then Exit;
     { Zero-arg interface (itab) dispatch (G.GetThing): no ResolvedMethod —
       classify by the resolved return type, as for the args form above. }
@@ -6230,6 +6265,46 @@ begin
   else if AExpr is TFieldAccessExpr then
   begin
     FldAccess := TFieldAccessExpr(AExpr);
+    { Record-typed method-backed property read (O.Prop where Prop's getter
+      returns a record): a property read is a getter call, so route it through
+      the sret ABI exactly like a record-returning method call — pass ASretAddr
+      as the getter's hidden first argument.  Without this it would be emitted
+      as a scalar-return call and the object pointer would be handed to the
+      callee where the sret pointer belongs, corrupting memory and dropping the
+      managed fields' retain. }
+    if FldAccess.PropRead <> nil then
+    begin
+      SelfTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s',
+        [SelfTemp, VarRef(FldAccess.RecordName, FldAccess.IsGlobal)]));
+      if FldAccess.FieldInfo <> nil then
+      begin
+        { Getter on a field of the record (Rec.Field.Prop): step to the field. }
+        if FldAccess.FieldInfo.Offset > 0 then
+        begin
+          Ptr := AllocTemp();
+          EmitLine(Format('  %s =l add %s, %d',
+            [Ptr, SelfTemp, FldAccess.FieldInfo.Offset]));
+        end
+        else
+          Ptr := SelfTemp;
+        SelfTemp := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [SelfTemp, Ptr]));
+      end;
+      RetType  := SretRetRec(FldAccess.PropRead.TypeDesc);
+      FuncName := PropAccessorTarget(FldAccess.PropOwnerType,
+        FldAccess.PropRead.ReadMethod, FldAccess.PropAccessorVSlot, SelfTemp);
+      VisArgs  := Format('l %s', [SelfTemp]);
+      if FldAccess.PropIndexExpr <> nil then
+      begin
+        ArgTemp := EmitExpr(FldAccess.PropIndexExpr);
+        VisArgs := VisArgs + Format(', %s %s',
+          [QbeTypeOf(FldAccess.PropRead.IndexTypeDesc), ArgTemp]);
+      end;
+      EmitRecordReturnCallSite(FuncName, VisArgs, RetType, ASretAddr);
+      FlushPendingReleases(PMark);
+      Exit;
+    end;
     if FldAccess.IsInterfaceCall then
     begin
       { Zero-arg interface method call through itab dispatch. }
@@ -12943,6 +13018,24 @@ begin
     end
     else if FldAccess.PropRead <> nil then
     begin
+      { Record-returning property getter: the getter returns by sret, so
+        allocate a destination buffer and route the call through
+        EmitRecordCallSret (which passes the buffer as the getter's hidden
+        first arg), exactly as a record-returning method call.  A scalar-return
+        call would use the wrong ABI and corrupt memory / drop the retain. }
+      if FldAccess.PropRead.TypeDesc.Kind = tyRecord then
+      begin
+        RT      := TRecordTypeDesc(FldAccess.PropRead.TypeDesc);
+        SretBuf := AllocTemp();
+        if RT.MaxAlign() >= 8 then
+          EmitLine(Format('  %s =l alloc8 %d', [SretBuf, RT.TotalSize()]))
+        else
+          EmitLine(Format('  %s =l alloc4 %d', [SretBuf, RT.TotalSize()]));
+        if RT.TotalSize() > 0 then
+          EmitLine(Format('  call $memset(l %s, w 0, l %d)', [SretBuf, RT.TotalSize()]));
+        EmitRecordCallSret(AExpr, SretBuf);
+        Exit(SretBuf);
+      end;
       { Method-backed property read: load Self pointer and call getter.
         When FieldInfo is also non-nil, the getter is on a field of the record
         (e.g. Rec.Field[I]) — load the field first, then use that as Self. }

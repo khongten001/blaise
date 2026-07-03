@@ -43,6 +43,10 @@ type
     procedure TestCodegen_ClassField_StaysOnSret;
     procedure TestCodegen_DynArrayField_StaysOnSret;
 
+    { Property getter returning a managed-field record: the READ must route
+      through sret (regression for the property-read heap-corruption bug). }
+    procedure TestCodegen_RecordProperty_Read_UsesSret;
+
     { rcInt1 widened: multi-field one-eightbyte records }
     procedure TestCodegen_TwoIntegerFields_UsesRegReturnL;
     procedure TestCodegen_TwoSmallIntFields_UsesRegReturnW;
@@ -838,6 +842,41 @@ begin
         ''');
   { sret pointer (Result slot) first, Self second, static call to the parent. }
   AssertContains('call $TBase_Next(l %_var_Result, l', IR);
+end;
+
+procedure TRecordReturnTests.TestCodegen_RecordProperty_Read_UsesSret;
+var IR: string;
+begin
+  { Regression: reading a property whose getter returns a record with a managed
+    (string) field must pass the assignment destination as the getter's hidden
+    sret arg, not emit a scalar-return call — the latter handed the object
+    pointer to the callee where the sret pointer belongs and over-released the
+    string field (`_StringRelease corrupted header`). }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TS = record S: string; end;
+          TObj = class
+            function GetS: TS;
+            property Cur: TS read GetS;
+          end;
+        function TObj.GetS: TS;
+        begin
+          Result.S := 'x'
+        end;
+        var O: TObj; R: TS;
+        begin
+          O := TObj.Create();
+          R := O.Cur
+        end.
+        ''');
+  { The getter is sret-called with $R (the destination) as its hidden first arg. }
+  AssertContains('call $TObj_GetS(l $R', IR);
+  { Not a scalar/register-return call (self-only) — that was the corrupting form. }
+  AssertFalse('property getter misused as a register-return call',
+    (Pos('=w call $TObj_GetS', IR) <> -1) or
+    (Pos('=l call $TObj_GetS', IR) <> -1));
 end;
 
 initialization

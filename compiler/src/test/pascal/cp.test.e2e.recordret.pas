@@ -154,6 +154,18 @@ type
     { Discarded record-returning call via an expression receiver
       (Obj.RecordMethod();).  Tests the ObjExpr path. }
     procedure TestRun_DiscardedRecordReturn_ObjExprReceiver;
+    { Regression: reading a PROPERTY whose getter returns a record with a
+      managed (string) field.  The property read was emitted as a scalar-return
+      call (object pointer where the sret pointer belongs), over-releasing the
+      string field -> `_StringRelease corrupted header`.  Exercises the read as
+      an assignment (twice), a value argument, and a nested field access.
+      Both backends. }
+    procedure TestRun_RecordProperty_Read_AllContexts;
+    { Regression: a for-in loop whose enumerator's Current returns a record with
+      a managed (string) field.  The loop reads Enumerator.Current (a property)
+      each pass; the record must sret into the loop variable rather than be
+      copied via a scalar-return call.  Both backends. }
+    procedure TestRun_ForIn_RecordCurrent_ManagedField;
   end;
 
 implementation
@@ -1217,6 +1229,94 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'mytag' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordProperty_Read_AllContexts;
+const
+  Src =
+    '''
+    program P;
+    type
+      TItem = record
+        Name: string;
+      end;
+      TObj = class
+        function GetCurrent: TItem;
+        property Current: TItem read GetCurrent;
+      end;
+    function TObj.GetCurrent: TItem;
+    begin
+      Result.Name := 'x'
+    end;
+    procedure Use(A: TItem);
+    begin
+      WriteLn('arg ', A.Name)
+    end;
+    var
+      O: TObj;
+      R: TItem;
+    begin
+      O := TObj.Create();
+      R := O.Current;            { assignment }
+      WriteLn('one ', R.Name);
+      R := O.Current;            { second read -> the corruption used to hit here }
+      WriteLn('two ', R.Name);
+      Use(O.Current);            { value argument }
+      WriteLn('fld ', O.Current.Name);   { nested field access }
+      O.Free()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src,
+    'one x' + LE + 'two x' + LE + 'arg x' + LE + 'fld x' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_ForIn_RecordCurrent_ManagedField;
+const
+  Src =
+    '''
+    program P;
+    type
+      TItem = record
+        Name: string;
+        N: Integer;
+      end;
+      TEnum = class
+        FI: Integer;
+        function GetCurrent: TItem;
+        function GetEnumerator: TEnum;
+        function MoveNext: Boolean;
+        property Current: TItem read GetCurrent;
+      end;
+    function TEnum.GetCurrent: TItem;
+    begin
+      Result.Name := 'item';
+      Result.N := FI
+    end;
+    function TEnum.GetEnumerator: TEnum;
+    begin
+      Result := Self
+    end;
+    function TEnum.MoveNext: Boolean;
+    begin
+      FI := FI + 1;
+      Result := FI <= 3
+    end;
+    var
+      E: TEnum;
+      It: TItem;
+    begin
+      E := TEnum.Create();
+      for It in E do
+        WriteLn(It.Name, ' ', It.N);
+      E.Free()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src,
+    'item 1' + LE + 'item 2' + LE + 'item 3' + LE, 0);
 end;
 
 initialization

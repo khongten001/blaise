@@ -12328,6 +12328,7 @@ begin
           PropAccessorOwner(RT.Name, PropInfo.ReadMethod);
         AAccess.PropAccessorVSlot :=
           PropAccessorVSlot(RT.Name, PropInfo.ReadMethod);
+        AAccess.PropReadDecl := FindMethodDecl(RT.Name, PropInfo.ReadMethod);
         Result := PropInfo.TypeDesc;
         AAccess.ResolvedType := Result;
         Exit;
@@ -12819,6 +12820,7 @@ begin
           PropAccessorOwner(RT.Name, PropInfo.ReadMethod);
         AAccess.PropAccessorVSlot :=
           PropAccessorVSlot(RT.Name, PropInfo.ReadMethod);
+        AAccess.PropReadDecl := FindMethodDecl(RT.Name, PropInfo.ReadMethod);
         Result := PropInfo.TypeDesc;
         AAccess.ResolvedType := Result;
         Exit;

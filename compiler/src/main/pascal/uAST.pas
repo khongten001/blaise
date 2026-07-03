@@ -154,6 +154,9 @@ type
     PropRead:          TPropertyInfo; { non-nil if this is a method-backed property read }
     PropOwnerType:     string;        { class type name for method-backed property calls }
     PropAccessorVSlot: Integer;       { set by uSemantic — getter vtable slot, -1 = static call }
+    [Unretained] PropReadDecl: TObject; { TMethodDecl of the getter — not owned; set by
+                                          uSemantic so codegen can sret a record-returning
+                                          property read via the record-method-call path }
     IsImplicitSelf:    Boolean;       { set by uSemantic — RecordName is a field of Self }
     [Unretained] ImplicitBaseInfo:  TFieldInfo;    { non-owned — the field of Self holding the record/class }
     IsMethodCall:        Boolean;     { set by uSemantic — FieldName is a zero-arg method }

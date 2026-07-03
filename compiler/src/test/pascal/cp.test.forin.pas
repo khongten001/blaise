@@ -52,6 +52,9 @@ type
     procedure TestCodegen_ForIn_CallsGetCurrent;
     procedure TestCodegen_ForIn_JnzOnMoveNextResult;
     procedure TestCodegen_ForIn_JumpsBackToCond;
+    { A record-typed Current must sret straight into the loop variable
+      (regression for the record-property-read heap corruption). }
+    procedure TestCodegen_ForIn_RecordCurrent_SretsIntoLoopVar;
 
     { ------------------------------------------------------------------ }
     { Semantic — static array                                              }
@@ -883,6 +886,46 @@ begin
     as a copy operand. }
   IR := GenIR(SrcSetForIn);
   AssertTrue('mask value 5 emitted', Pos('copy 5', IR) > 0);
+end;
+
+procedure TForInTests.TestCodegen_ForIn_RecordCurrent_SretsIntoLoopVar;
+var IR: string;
+begin
+  { When the enumerator's Current returns a record with a managed field, the
+    loop-variable refresh must release the previous entry and let the getter
+    write the new record straight into the loop-var slot via sret.  A scalar-
+    return call here corrupted the managed field. }
+  IR := GenIR(
+    '''
+        program P;
+        type
+          TItem = record S: string; end;
+          TEnum = class
+            FI: Integer;
+            function GetCurrent: TItem;
+            function GetEnumerator: TEnum;
+            function MoveNext: Boolean;
+            property Current: TItem read GetCurrent;
+          end;
+        function TEnum.GetCurrent: TItem;
+        begin Result.S := 'x' end;
+        function TEnum.GetEnumerator: TEnum;
+        begin Result := Self end;
+        function TEnum.MoveNext: Boolean;
+        begin FI := FI + 1; Result := FI <= 2 end;
+        var E: TEnum; It: TItem;
+        begin
+          E := TEnum.Create();
+          for It in E do
+            WriteLn(It.S)
+        end.
+        ''');
+  { The getter is sret-called with $It (the loop var) as its hidden first arg. }
+  AssertTrue('Current sret-called into loop var',
+    Pos('call $TEnum_GetCurrent(l $It', IR) > 0);
+  { The previous entry is released before the getter overwrites the slot. }
+  AssertTrue('loop var released before refresh',
+    Pos('call $_StringRelease(l ', IR) > 0);
 end;
 
 initialization
