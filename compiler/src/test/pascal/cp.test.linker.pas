@@ -19,7 +19,8 @@ interface
 
 uses
   classes, SysUtils, process, blaise.testing, Generics.Collections,
-  blaise.elfreader, blaise.linker.elf, blaise.assembler.x86_64;
+  blaise.elfreader, blaise.linker.elf, blaise.assembler.x86_64,
+  blaise.codegen.target;
 
 type
   TElfReaderTests = class(TTestCase)
@@ -443,12 +444,14 @@ begin
     AssertTrue('expected several RTL members, got '
       + IntToStr(Members.Count), Members.Count >= 5);
     { A member whose name exceeds 15 chars exercises the GNU long-name (//)
-      table.  rtl.platform.layout.linux.o is the longest current RTL member. }
+      table.  The host's platform-layout object (rtl.platform.layout.<os>.o,
+      selected by build-rtl-objects.sh via uname) is the longest RTL member
+      on every host. }
     SawLongName := False;
     for I := 0 to Members.Count - 1 do
     begin
       M := Members.Get(I);
-      if M.Name = 'rtl.platform.layout.linux.o' then
+      if Pos('rtl.platform.layout.', M.Name) = 0 then
         SawLongName := True;
       { Every member must parse as a valid x86-64 relocatable object
         with at least its NULL section + one real section. }
@@ -460,7 +463,7 @@ begin
         Obj.Free();
       end;
     end;
-    AssertTrue('long-named member rtl.platform.layout.linux.o not found '
+    AssertTrue('long-named member rtl.platform.layout.<os>.o not found '
       + '(GNU long-name table mishandled?)', SawLongName);
   finally
     for I := 0 to Members.Count - 1 do
@@ -1023,11 +1026,15 @@ procedure TLinkerE2ETests.TestRun_SyscallHelloWorld;
 const
   { A freestanding program that talks straight to the kernel: it needs
     no libc, no RTL, and no dynamic linker, so Phase B links and runs
-    it on its own.  write(1, msg, 14); exit(7).  The exit code (7)
+    it on its own.  write(1, msg, 15); exit(7).  The exit code (7)
     plus the stdout both prove the executable loaded and ran with the
     correct entry point, segment permissions, and a PC-relative
-    `leaq msg(%rip)` resolved against the merged .rodata. }
-  FixtureAsm =
+    `leaq msg(%rip)` resolved against the merged .rodata.
+    The syscall NUMBERS follow the host the suite runs on (Linux
+    write=1/exit=60, FreeBSD write=4/exit=1), and the link target
+    matches so the ELF carries the right OSABI brand — the FreeBSD
+    kernel refuses an unbranded (Linux-shaped) static ET_EXEC. }
+  FixtureLinux =
     '.text' + LineEnding +
     '.globl _start' + LineEnding +
     '_start:' + LineEnding +
@@ -1042,14 +1049,38 @@ const
     '.section .rodata' + LineEnding +
     'msg:' + LineEnding +
     '  .ascii "Hello, linker!\n"' + LineEnding;
+  FixtureFreeBSD =
+    '.text' + LineEnding +
+    '.globl _start' + LineEnding +
+    '_start:' + LineEnding +
+    '  movq $4, %rax' + LineEnding +        { SYS_write (FreeBSD) }
+    '  movq $1, %rdi' + LineEnding +        { fd = stdout }
+    '  leaq msg(%rip), %rsi' + LineEnding + { buf (PC-relative) }
+    '  movq $15, %rdx' + LineEnding +       { count (14 chars + newline) }
+    '  .byte 15' + LineEnding + '  .byte 5' + LineEnding +  { syscall }
+    '  movq $1, %rax' + LineEnding +        { SYS_exit (FreeBSD) }
+    '  movq $7, %rdi' + LineEnding +        { exit code }
+    '  .byte 15' + LineEnding + '  .byte 5' + LineEnding +  { syscall }
+    '.section .rodata' + LineEnding +
+    'msg:' + LineEnding +
+    '  .ascii "Hello, linker!\n"' + LineEnding;
 var
   Lk: TLinker;
   Obj: TElfObjectFile;
-  BinPath, Output: string;
+  BinPath, Output, FixtureAsm: string;
   Rc: Integer;
 begin
   BinPath := FScratch + '/hello_syscall';
-  Lk := TLinker.Create();
+  if HostTarget().OS = osFreeBSD then
+  begin
+    FixtureAsm := FixtureFreeBSD;
+    Lk := TLinker.Create(FreeBSDX86_64Target());
+  end
+  else
+  begin
+    FixtureAsm := FixtureLinux;
+    Lk := TLinker.Create();
+  end;
   try
     Obj := ParseElfObject(AssembleToBytes(FixtureAsm), 'hello.o');
     Lk.AddOwnedObject(Obj);

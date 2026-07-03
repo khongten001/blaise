@@ -1863,14 +1863,14 @@ const
     begin
       {$IFDEF FOO}WriteLn('foo'){$ELSE}WriteLn('no-foo'){$ENDIF};
       {$IFNDEF BAR}WriteLn('no-bar'){$ENDIF};
-      {$IFDEF LINUX}
-        {$IFDEF BLAISE}WriteLn('linux-blaise'){$ENDIF}
+      {$IFDEF CPUX86_64}
+        {$IFDEF BLAISE}WriteLn('cpu-blaise'){$ENDIF}
       {$ENDIF}
     end.
     ''';
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  AssertRunsOnAll(Src, 'no-foo' + LE + 'no-bar' + LE + 'linux-blaise' + LE, 0);
+  AssertRunsOnAll(Src, 'no-foo' + LE + 'no-bar' + LE + 'cpu-blaise' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_Const_LargeHex_NotTruncated;

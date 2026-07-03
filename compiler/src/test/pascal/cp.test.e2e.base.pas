@@ -450,9 +450,10 @@ procedure TE2ETestCase.AssertRunsOnOne(ABackend: TBackend; const AName, ASrc,
 var
   Output: string;
   RCode:  Integer;
+  OK:     Boolean;
 begin
-  AssertTrue('[' + AName + '] compile+run',
-    Self.CompileAndRunOn(ABackend, ASrc, Output, RCode));
+  OK := Self.CompileAndRunOn(ABackend, ASrc, Output, RCode);
+  AssertTrue('[' + AName + '] compile+run: ' + Output, OK);
   if RCode <> AExpectedCode then
     AssertEquals('[' + AName + '] exit code (stdout: ' + Output + ')',
       AExpectedCode, RCode)

@@ -27,7 +27,7 @@ unit cp.test.toolchain;
 interface
 
 uses
-  blaise.testing,
+  blaise.testing, sysutils, process,
   blaise.codegen.target, uToolchain;
 
 type
@@ -44,7 +44,7 @@ type
     { ---- pure helpers ---- }
     procedure TestExecutableExtension_Windows_IsExe;
     procedure TestExecutableExtension_Linux_IsEmpty;
-    procedure TestHostTarget_OnThisHost_IsLinux;
+    procedure TestHostTarget_OnThisHost_MatchesUname;
     procedure TestHostExeExt_OnThisHost_IsEmpty;
 
     { ---- ResolveSpec: native (non-cross) build ---- }
@@ -113,14 +113,39 @@ begin
     ExecutableExtension(Self.LinuxTarget()));
 end;
 
-procedure TToolchainTests.TestHostTarget_OnThisHost_IsLinux;
+procedure TToolchainTests.TestHostTarget_OnThisHost_MatchesUname;
+var
+  Proc:  TProcess;
+  Chunk: string;
+  Uname: string;
+  Expected: TTargetOS;
 begin
-  { The compiler binary running the suite has no .exe suffix, so HostTarget
-    detects linux.  (On a Windows host this test would need adjusting — but
-    the suite is built and run on linux.)  The inline HostTarget().OS read as
-    an AssertEquals argument also exercises the native sret-call-field-arg
-    path fixed alongside this work. }
-  AssertEquals('host OS is linux', Ord(osLinux), Ord(HostTarget().OS));
+  { HostTarget is a COMPILE-TIME property of the binary (target-driven
+    defines).  Verify the baked-in identity matches the OS the suite is
+    actually running on, as reported by uname(1) — a genuine round-trip
+    check that works unchanged on every POSIX host.  The inline
+    HostTarget().OS read as an AssertEquals argument also exercises the
+    native sret-call-field-arg path fixed alongside this work. }
+  Proc := TProcess.Create(nil);
+  Proc.Executable := 'uname';
+  Proc.Parameters.Add('-s');
+  Proc.Execute();
+  Uname := '';
+  repeat
+    Chunk := Proc.ReadOutput();
+    Uname := Uname + Chunk
+  until (Chunk = '') and not Proc.Running;
+  Proc.WaitOnExit();
+  Proc.Free();
+  Uname := Trim(Uname);
+  if Uname = 'FreeBSD' then
+    Expected := osFreeBSD
+  else if Uname = 'Darwin' then
+    Expected := osMacOS
+  else
+    Expected := osLinux;
+  AssertEquals('host OS matches uname (' + Uname + ')',
+    Ord(Expected), Ord(HostTarget().OS));
 end;
 
 procedure TToolchainTests.TestHostExeExt_OnThisHost_IsEmpty;
@@ -134,9 +159,10 @@ procedure TToolchainTests.TestResolveSpec_NativeLinker_FindsCcOnPath;
 var
   Resolved: string;
 begin
-  { Native linux build: the linker is a target tool, but the target IS the
-    host, so the bare $PATH lookup applies and finds a real cc/clang. }
-  Resolved := ResolveSpec(Self.MakeLinkerSpec(), Self.LinuxTarget());
+  { Native build: the linker is a target tool, but the target IS the host
+    (HostTarget, whatever this suite was built for), so the bare $PATH lookup
+    applies and finds a real cc/clang. }
+  Resolved := ResolveSpec(Self.MakeLinkerSpec(), HostTarget());
   AssertTrue('resolved to an absolute path on $PATH (found cc/clang)',
     (Length(Resolved) > 0) and (Resolved[0] = '/'));
 end;
