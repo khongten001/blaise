@@ -2160,7 +2160,10 @@ function EncodeXchg(var ACB: TCodeBuf; var ACtx: TEncodeContext;
 var
   W64, IsCmpxchg: Boolean;
 begin
-  W64 := AMnem[Length(AMnem)] = Ord('q');
+  { Blaise strings are 0-based: the last character is at Length-1.  Reading
+    AMnem[Length(AMnem)] inspected the byte past the end, so W64 was always
+    False and the q-suffixed forms lost REX.W (32-bit narrowing). }
+  W64 := AMnem[Length(AMnem) - 1] = Ord('q');
   IsCmpxchg := (AMnem = 'cmpxchgl') or (AMnem = 'cmpxchgq');
 
   if ASrc.Kind <> opReg then

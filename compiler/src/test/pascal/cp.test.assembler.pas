@@ -38,6 +38,9 @@ type
     procedure TestMovqRegToXmm_SseEncoding;
     procedure TestNegl_F7Slash3;
     procedure TestLockXaddl_AtomicEncoding;
+    procedure TestLockXaddq_RexW;
+    procedure TestXchgq_RexW;
+    procedure TestLockCmpxchgq_RexW;
     procedure TestUnsuffixedMov_InfersSize;
     procedure TestJmpIndirectMem_FFSlash4;
     procedure TestEndbr64AndHlt;
@@ -194,6 +197,43 @@ begin
   Obj := AssembleToBytes('lock xaddl %eax, (%rdi)' + LineEnding);
   AssertTrue('f0 0f c1 07 missing',
     ContainsBytes(Obj, Chr($F0) + Chr($0F) + Chr($C1) + Chr($07)));
+end;
+
+procedure TAsmEncodingTests.TestLockXaddq_RexW;
+var
+  Obj: string;
+begin
+  { lock xaddq %rax, (%rdi) -> f0 48 0f c1 07.  The 64-bit atomic
+    fetch-add (_AtomicAddInt64) — REX.W must be present or the operation
+    silently narrows to 32 bits.  Verified vs `cc`. }
+  Obj := AssembleToBytes('lock xaddq %rax, (%rdi)' + LineEnding);
+  AssertTrue('f0 48 0f c1 07 missing',
+    ContainsBytes(Obj, Chr($F0) + Chr($48) + Chr($0F) + Chr($C1) + Chr($07)));
+end;
+
+procedure TAsmEncodingTests.TestXchgq_RexW;
+var
+  Obj: string;
+begin
+  { xchgq %rsi, (%rdi) -> 48 87 37.  The 64-bit atomic exchange
+    (_AtomicXchgPtr).  A missing REX.W narrows the exchange to 32 bits and
+    zero-extends the returned old value — pointer truncation.  Verified
+    vs `cc`. }
+  Obj := AssembleToBytes('xchgq %rsi, (%rdi)' + LineEnding);
+  AssertTrue('48 87 37 missing',
+    ContainsBytes(Obj, Chr($48) + Chr($87) + Chr($37)));
+end;
+
+procedure TAsmEncodingTests.TestLockCmpxchgq_RexW;
+var
+  Obj: string;
+begin
+  { lock cmpxchgq %rdx, (%rdi) -> f0 48 0f b1 17.  The 64-bit atomic
+    compare-and-swap (_AtomicCASPtr).  A missing REX.W compares/stores only
+    the low 32 bits of the pointer.  Verified vs `cc`. }
+  Obj := AssembleToBytes('lock cmpxchgq %rdx, (%rdi)' + LineEnding);
+  AssertTrue('f0 48 0f b1 17 missing',
+    ContainsBytes(Obj, Chr($F0) + Chr($48) + Chr($0F) + Chr($B1) + Chr($17)));
 end;
 
 procedure TAsmEncodingTests.TestUnsuffixedMov_InfersSize;
