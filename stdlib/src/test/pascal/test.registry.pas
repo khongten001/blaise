@@ -29,7 +29,8 @@ uses
   WebSockets.Tests,
   HttpServer.Tests,
   Guid.Tests,
-  StrUtils.Tests;
+  StrUtils.Tests,
+  Scheduler.Tests;
 
 implementation
 
