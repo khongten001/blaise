@@ -8733,6 +8733,10 @@ begin
       SubAddrWrap.Free();
     end;
   end
+  else if AArg is TDerefExpr then
+    { Pointer dereference P^ as a var/out actual: the address of P^ is
+      simply the pointer's value — evaluate P itself. }
+    Self.EmitExprToEax(TDerefExpr(AArg).Expr)
   else
     raise ENativeCodeGenError.Create(
       'native backend: var/out argument must be a variable or field');

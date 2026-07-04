@@ -34,6 +34,11 @@ type
     procedure TestRun_DynArrayElemVarArg;
     procedure TestRun_SwapArrayElements;
     procedure TestRun_VarStringArrayElem;
+    { Pointer dereference (P^) as a var/out actual — the address is simply
+      the pointer's value.  punit passes CurrentResult^ to var params; the
+      native backend previously rejected this ("var/out argument must be a
+      variable or field"). }
+    procedure TestRun_PointerDerefVarArg;
   end;
 
 implementation
@@ -128,6 +133,32 @@ const
     begin a[0] := 'q'; App(a[0]); WriteLn(a[0]) end.
     ''';
 
+  SrcPtrDeref = '''
+    program Prg;
+    type
+      TRec = record
+        A: Integer;
+        B: Integer;
+      end;
+      PRec = ^TRec;
+    procedure FillRec(var R: TRec); begin R.A := 7; R.B := 11 end;
+    procedure Set9(var X: Integer); begin X := 9 end;
+    var
+      Rec: TRec;
+      P: PRec;
+      V: Integer;
+      PI: ^Integer;
+    begin
+      P := @Rec;
+      FillRec(P^);
+      WriteLn(Rec.A, ' ', Rec.B);
+      V := 0;
+      PI := @V;
+      Set9(PI^);
+      WriteLn(V)
+    end.
+    ''';
+
 procedure TE2EVarParamTests.TestRun_VarInt;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
@@ -192,6 +223,12 @@ procedure TE2EVarParamTests.TestRun_VarStringArrayElem;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcVarStrElem, 'qx' + LE, 0);
+end;
+
+procedure TE2EVarParamTests.TestRun_PointerDerefVarArg;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcPtrDeref, '7 11' + LE + '9' + LE, 0);
 end;
 
 initialization
