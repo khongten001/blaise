@@ -114,6 +114,7 @@ uses
   cp.test.e2e.callalign,
   cp.test.e2e.errno,
   cp.test.e2e.fibers,
+  cp.test.e2e.scheduler,
   cp.test.e2e.openarray,
   cp.test.e2e.staticarray,
   cp.test.e2e.constarg,

@@ -108,6 +108,54 @@ type
     property Count: Integer read GetCount;
   end;
 
+  { Per-worker scheduler state.  L1 has exactly one worker, driven by
+    RunScheduler on the calling thread; the multicore step adds N of these
+    (each on its own OS thread, with a stealing deque and a shared injector
+    queue) without changing the fields the loop depends on. }
+  TWorker = class
+  public
+    RunQ: TRunQueue;
+    Timers: TTimerHeap;
+    SchedFib: PFiber;         { the scheduler loop's own L0 context }
+    Current: TFiberTask;      { task executing on this worker; nil in the loop }
+    Tasks: TList<TFiberTask>; { every spawned task; keeps handles valid }
+    LiveCount: Integer;       { spawned and not yet finished }
+    Running: Boolean;         { re-entrancy guard for RunScheduler }
+    constructor Create;
+  end;
+
+{ Spawn AProc(AArg) as a scheduled fiber on the current worker.  The fiber
+  runs when RunScheduler drives the run queue (spawning never switches).
+  AStackSize is the usable stack in bytes (0 = FiberDefaultStackSize).  The
+  returned handle stays valid after completion — State/FailMessage remain
+  queryable until ResetScheduler. }
+function SpawnFiber(AProc: TFiberProc; AArg: Pointer;
+  AStackSize: Int64 = 0): TFiberTask;
+
+{ Run the scheduler loop on the calling thread until every spawned fiber has
+  finished (fsDone/fsFailed/fsCancelled).  When no fiber is ready the worker
+  sleeps until the nearest timer deadline — it never busy-waits. }
+procedure RunScheduler;
+
+{ Cooperatively give up the worker: requeue the current fiber at the tail of
+  the run queue and switch to the scheduler.  Off-scheduler (not inside a
+  spawned fiber) it is a no-op. }
+procedure FiberYield;
+
+{ Park the current fiber in the timer heap for AMillis milliseconds; the
+  scheduler runs other fibers meanwhile and requeues this one when the
+  deadline fires.  Off-scheduler it degrades to a plain blocking OS sleep
+  (the same blocking-fallback posture the design gives L3 fiber I/O). }
+procedure FiberSleep(AMillis: Int64);
+
+{ Number of spawned fibers that have not yet finished. }
+function SchedulerLiveCount: Integer;
+
+{ Drop all task handles and the worker state so a fresh scheduling round
+  starts clean.  Only legal when the scheduler is not running and no fiber
+  is still live. }
+procedure ResetScheduler;
+
 { Current CLOCK_MONOTONIC time in nanoseconds (the timer-heap key space). }
 function MonotonicNowNs: Int64;
 
@@ -116,6 +164,8 @@ implementation
 { Linux-shaped libc bindings (same posture as the context unit's mmap set). }
 function _libc_clock_gettime(AClockId: Integer; ATs: Pointer): Integer;
   external name 'clock_gettime';
+function _libc_nanosleep(AReq, ARem: Pointer): Integer;
+  external name 'nanosleep';
 
 const
   CLOCK_MONOTONIC = 1;
@@ -288,6 +338,189 @@ begin
     Self.SiftDown(Idx);
     Self.SiftUp(Idx);
   end;
+end;
+
+{ ---------------------------------------------------------------------------
+  The worker and the scheduler loop
+  --------------------------------------------------------------------------- }
+
+constructor TWorker.Create;
+begin
+  Self.RunQ := TRunQueue.Create();
+  Self.Timers := TTimerHeap.Create();
+  Self.Tasks := TList<TFiberTask>.Create();
+end;
+
+var
+  GWorker: TWorker;
+
+function NeedWorker: TWorker;
+begin
+  if GWorker = nil then
+    GWorker := TWorker.Create();
+  Result := GWorker;
+end;
+
+{ Blocking OS sleep (nanosleep).  An early EINTR return is harmless: the
+  scheduler loop re-derives the remaining wait from the timer heap. }
+procedure OsSleepNs(ANs: Int64);
+var
+  Ts: TTimeSpec;
+begin
+  if ANs <= 0 then
+    Exit;
+  Ts.Sec := ANs div Int64(1000000000);
+  Ts.NSec := ANs mod Int64(1000000000);
+  _libc_nanosleep(@Ts, nil);
+end;
+
+{ Entry wrapper every spawned fiber runs (the design's root exception
+  frame lands in the cancellation slice; for now the wrapper marks
+  completion).  The current task is read from the worker — the scheduler
+  sets Current before switching in. }
+procedure SchedFiberEntry(AArg: Pointer);
+var
+  T: TFiberTask;
+begin
+  T := GWorker.Current;
+  T.Proc(T.Arg);
+  T.State := fsDone;
+end;
+
+function SpawnFiber(AProc: TFiberProc; AArg: Pointer;
+  AStackSize: Int64): TFiberTask;
+var
+  W: TWorker;
+  T: TFiberTask;
+begin
+  W := NeedWorker();
+  T := TFiberTask.Create();
+  T.Proc := AProc;
+  T.Arg := AArg;
+  T.Fib := FiberSpawn(@SchedFiberEntry, nil, AStackSize);
+  if T.Fib = nil then
+    raise Exception.Create('SpawnFiber: cannot map a fiber stack');
+  W.Tasks.Add(T);
+  W.LiveCount := W.LiveCount + 1;
+  W.RunQ.Push(T);
+  Result := T;
+end;
+
+procedure RunScheduler;
+var
+  W: TWorker;
+  T: TFiberTask;
+  NowNs: Int64;
+begin
+  W := NeedWorker();
+  if W.Running then
+    raise Exception.Create('RunScheduler: scheduler already running');
+  if W.SchedFib = nil then
+  begin
+    if CurrentFiber() <> nil then
+      W.SchedFib := CurrentFiber()
+    else
+      W.SchedFib := FiberCreateMain();
+  end;
+  W.Running := True;
+  while W.LiveCount > 0 do
+  begin
+    { Move every due timer to the run queue. }
+    NowNs := MonotonicNowNs();
+    while (W.Timers.Count > 0) and (W.Timers.PeekMin().Deadline <= NowNs) do
+    begin
+      T := W.Timers.PopMin();
+      T.State := fsReady;
+      W.RunQ.Push(T);
+    end;
+    T := W.RunQ.Pop();
+    if T = nil then
+    begin
+      if W.Timers.Count = 0 then
+      begin
+        { No ready fiber, no timer, yet fibers are live: nothing can wake
+          them on a single worker.  Unreachable through the public L1 API
+          (the only park is FiberSleep); guard it loudly all the same. }
+        W.Running := False;
+        raise Exception.Create('RunScheduler: stalled - live fibers but ' +
+          'nothing ready and no timers');
+      end;
+      { Never busy-wait: sleep until the nearest deadline. }
+      OsSleepNs(W.Timers.PeekMin().Deadline - MonotonicNowNs());
+      Continue;
+    end;
+    T.State := fsRunning;
+    W.Current := T;
+    FiberSwitch(W.SchedFib, T.Fib);
+    W.Current := nil;
+    if FiberIsDone(T.Fib) then
+    begin
+      W.LiveCount := W.LiveCount - 1;
+      FiberFree(T.Fib);       { stack back to the pool }
+      T.Fib := nil;
+    end;
+  end;
+  W.Running := False;
+end;
+
+procedure FiberYield;
+var
+  W: TWorker;
+  T: TFiberTask;
+begin
+  W := GWorker;
+  if W = nil then
+    Exit;
+  T := W.Current;
+  if T = nil then
+    Exit;                     { off-scheduler: no-op }
+  T.State := fsReady;
+  W.RunQ.Push(T);
+  FiberSwitch(T.Fib, W.SchedFib);
+end;
+
+procedure FiberSleep(AMillis: Int64);
+var
+  W: TWorker;
+  T: TFiberTask;
+begin
+  W := GWorker;
+  if W <> nil then
+    T := W.Current
+  else
+    T := nil;
+  if T = nil then
+  begin
+    OsSleepNs(AMillis * Int64(1000000));   { blocking fallback off-scheduler }
+    Exit;
+  end;
+  if AMillis <= 0 then
+  begin
+    FiberYield();
+    Exit;
+  end;
+  T.Deadline := MonotonicNowNs() + AMillis * Int64(1000000);
+  T.State := fsSleeping;
+  W.Timers.Push(T);
+  FiberSwitch(T.Fib, W.SchedFib);
+end;
+
+function SchedulerLiveCount: Integer;
+begin
+  if GWorker = nil then
+    Exit(0);
+  Result := GWorker.LiveCount;
+end;
+
+procedure ResetScheduler;
+begin
+  if GWorker = nil then
+    Exit;
+  if GWorker.Running then
+    raise Exception.Create('ResetScheduler: scheduler is running');
+  if GWorker.LiveCount > 0 then
+    raise Exception.Create('ResetScheduler: fibers still live');
+  GWorker := nil;   { ARC cascades: task list, queue chain, heap entries }
 end;
 
 end.

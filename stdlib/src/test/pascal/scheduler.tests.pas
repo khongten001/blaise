@@ -46,6 +46,18 @@ type
     procedure TestMonotonicNowNs_NonDecreasing;
   end;
 
+  { In-process scheduler behaviour: SpawnFiber/RunScheduler/FiberYield/
+    FiberSleep drive real fiber switches inside the test-runner process.
+    Each test ends with ResetScheduler so suites stay independent. }
+  TSchedulerTests = class(TTestCase)
+  published
+    procedure TestRun_YieldRoundRobin;
+    procedure TestRun_SleepWakesInDeadlineOrder;
+    procedure TestRun_FiberSpawnsFiber;
+    procedure TestRun_ZeroSleepIsYield;
+    procedure TestRun_ResetAllowsFreshRound;
+  end;
+
 implementation
 
 function MakeTask(ADeadline: Int64): TFiberTask;
@@ -241,9 +253,125 @@ begin
   end;
 end;
 
+{ --- in-process scheduler runs -------------------------------------------- }
+
+var
+  GLog: string;
+
+procedure LogYieldWorker(AArg: Pointer);
+var
+  I: Integer;
+begin
+  for I := 0 to 1 do
+  begin
+    GLog := GLog + 'F' + IntToStr(Integer(AArg)) + IntToStr(I) + ' ';
+    FiberYield();
+  end;
+end;
+
+procedure LogSleepWorker(AArg: Pointer);
+begin
+  FiberSleep(Int64(AArg));
+  GLog := GLog + 'S' + IntToStr(Integer(AArg)) + ' ';
+end;
+
+procedure LogChildWorker(AArg: Pointer);
+begin
+  GLog := GLog + 'C ';
+end;
+
+procedure LogParentWorker(AArg: Pointer);
+var
+  T: TFiberTask;
+begin
+  GLog := GLog + 'P1 ';
+  T := SpawnFiber(@LogChildWorker, nil);
+  FiberYield();
+  GLog := GLog + 'P2 ';
+end;
+
+procedure LogZeroSleepWorker(AArg: Pointer);
+begin
+  GLog := GLog + 'A1 ';
+  FiberSleep(0);          { must behave as a yield, not a timer park }
+  GLog := GLog + 'A2 ';
+end;
+
+procedure TSchedulerTests.TestRun_YieldRoundRobin;
+var
+  T0, T1: TFiberTask;
+begin
+  GLog := '';
+  T0 := SpawnFiber(@LogYieldWorker, Pointer(0));
+  T1 := SpawnFiber(@LogYieldWorker, Pointer(1));
+  RunScheduler();
+  AssertEquals('deterministic FIFO interleaving',
+    'F00 F10 F01 F11 ', GLog);
+  AssertTrue('first fiber done', T0.State = fsDone);
+  AssertTrue('second fiber done', T1.State = fsDone);
+  AssertEquals('nothing live after drain', 0, SchedulerLiveCount());
+  ResetScheduler();
+end;
+
+procedure TSchedulerTests.TestRun_SleepWakesInDeadlineOrder;
+var
+  T: TFiberTask;
+begin
+  GLog := '';
+  T := SpawnFiber(@LogSleepWorker, Pointer(15));
+  T := SpawnFiber(@LogSleepWorker, Pointer(5));
+  T := SpawnFiber(@LogSleepWorker, Pointer(10));
+  RunScheduler();
+  AssertEquals('timers fire in deadline order, not spawn order',
+    'S5 S10 S15 ', GLog);
+  ResetScheduler();
+end;
+
+procedure TSchedulerTests.TestRun_FiberSpawnsFiber;
+var
+  T: TFiberTask;
+begin
+  GLog := '';
+  T := SpawnFiber(@LogParentWorker, nil);
+  RunScheduler();
+  AssertEquals('child runs between parent yield and resume',
+    'P1 C P2 ', GLog);
+  ResetScheduler();
+end;
+
+procedure TSchedulerTests.TestRun_ZeroSleepIsYield;
+var
+  A, B: TFiberTask;
+begin
+  GLog := '';
+  A := SpawnFiber(@LogZeroSleepWorker, nil);
+  B := SpawnFiber(@LogChildWorker, nil);
+  RunScheduler();
+  AssertEquals('zero sleep requeues behind the other fiber',
+    'A1 C A2 ', GLog);
+  ResetScheduler();
+end;
+
+procedure TSchedulerTests.TestRun_ResetAllowsFreshRound;
+var
+  T: TFiberTask;
+begin
+  GLog := '';
+  T := SpawnFiber(@LogChildWorker, nil);
+  RunScheduler();
+  ResetScheduler();
+  AssertEquals('live count clean after reset', 0, SchedulerLiveCount());
+  T := SpawnFiber(@LogChildWorker, nil);
+  RunScheduler();
+  AssertEquals('both rounds ran', 'C C ', GLog);
+  AssertTrue('second round fiber done', T.State = fsDone);
+  ResetScheduler();
+end;
+
 initialization
   RegisterTest(TTimerHeapTests);
   RegisterTest(TRunQueueTests);
   RegisterTest(TMonotonicClockTests);
+  RegisterTest(TSchedulerTests);
 
 end.
