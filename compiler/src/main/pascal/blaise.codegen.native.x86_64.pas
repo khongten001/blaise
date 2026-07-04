@@ -63,6 +63,22 @@ type
   TX86_64Backend = class(TNativeBackend)
   protected
     FLabelCount: Integer;       { monotonic source of unique local labels }
+    { Tracked stack depth of the emitted instruction stream, in bytes below
+      the 16-byte-aligned post-prologue %rsp (0 right after
+      `movq %rsp, %rbp`; a function label resets it to 8 = the return
+      address of a not-yet-framed function).  Maintained by the Emit
+      override, which parses pushq/popq/subq/addq-on-%rsp lines as they are
+      emitted.  System V requires %rsp ≡ 0 (mod 16) at every call
+      instruction; argument staging pushes values, so a call evaluated
+      while an odd number of 8-byte slots is pinned (F(a, G(...)) — a is
+      pushed while G's whole subtree runs) would execute at %rsp ≡ 8
+      (mod 16).  Emit wraps any callq at a misaligned tracked depth in a
+      subq $8/addq $8 pad pair.  Calls that pass genuine SysV stack
+      arguments must NOT be wrapped (the pad would shift the arguments);
+      the >6-slot overflow paths instead size their overflow region via
+      AlignFreshBytes so the call site is aligned by construction and the
+      wrap pad never fires for them. }
+    FSPDepth: Integer;
     { OPDF debug facts (nil unless --debug-opdf): the backend records each
       function's symbol, end label, real frame-slot offsets and per-statement
       line labels here; the OPDF emitter consumes them for exact debug info.
@@ -677,6 +693,22 @@ type
 
       Returns the region bytes.  The call site reloads hoisted values in its
       arg loop and finishes with EmitHoistEpilogue AFTER the call. }
+    { Emit override: tracks FSPDepth across the emitted stream and wraps any
+      callq at a misaligned tracked depth in a subq $8/addq $8 pad pair (see
+      the FSPDepth field comment for the full rationale). }
+    procedure Emit(const ALine: string); override;
+    { Parse the immediate of a `subq $N, %rsp` / `addq $N, %rsp` line and
+      apply it to FSPDepth (ASign = +1 for subq, -1 for addq).  Lines whose
+      destination is not %rsp are ignored. }
+    procedure TrackRspAdjust(const ALine: string; ASign: Integer);
+    { Bytes for a fresh SysV stack-argument region holding ASlots 8-byte
+      slots, padded (+8) when needed so that a call emitted after
+      `subq $Result, %rsp` (with no further %rsp movement) sees a
+      16-byte-aligned %rsp.  Used by every >6-slot overflow path: copying
+      the overflow slots into such a region makes the call site aligned by
+      construction, so the Emit wrap pad (which would shift genuine stack
+      arguments) never fires for those calls. }
+    function AlignFreshBytes(ASlots: Integer): Integer;
     function EmitArgHoist(AParams: TObjectList; AProcParams: TObjectList;
                           AKnownSig: Boolean; const AVarFlags: string;
                           AArgs: TObjectList;
@@ -9019,24 +9051,24 @@ begin
   for K := 0 to RegSlots - 1 do
     Self.Emit(Format(#9'movq %d(%%rsp), %s',
       [(ASlots - 1 - K) * 8, Self.SysVArg64(K + ABase)]));
-  { Relocate overflow slot (RegSlots + K) from its source offset to its final
-    offset (RegSlots + K)*8.  Highest target first so live low-offset sources
-    are not clobbered. }
-  for K := OverflowSlots - 1 downto 0 do
+  { Copy the overflow slots into a FRESH region below the pushed slots, in
+    ascending arg order, so the call sees them at 0(%rsp).. (System V
+    order).  Every destination is strictly below every source, so the copy
+    can never clobber an unread slot, and AlignFreshBytes sizes the region
+    so the call site is 16-byte aligned even when pinned pushes above the
+    slot block have left the frame at an odd slot count.  Result = bytes
+    between %rsp and the region above the pushed slots at call time — the
+    caller both re-derives its sret buffer pointer from it and reclaims it
+    after the call. }
+  DstOff := Self.AlignFreshBytes(OverflowSlots);
+  Self.Emit(Format(#9'subq $%d, %%rsp', [DstOff]));
+  for K := 0 to OverflowSlots - 1 do
   begin
-    SrcOff := (ASlots - 1 - (RegSlots + K)) * 8;
-    DstOff := (RegSlots + K) * 8;
-    if SrcOff <> DstOff then
-    begin
-      Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [SrcOff]));
-      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [DstOff]));
-    end;
+    SrcOff := DstOff + (ASlots - 1 - (RegSlots + K)) * 8;
+    Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [SrcOff]));
+    Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [K * 8]));
   end;
-  { Raise %rsp past the vacated register-slot space; overflow now sits at
-    0(%rsp).. with slot RegSlots first. }
-  if RegSlots > 0 then
-    Self.Emit(Format(#9'addq $%d, %%rsp', [RegSlots * 8]));
-  Result := OverflowSlots * 8;
+  Result := DstOff + ASlots * 8;
 end;
 
 procedure TX86_64Backend.EmitSelfDispatch(AMD: TMethodDecl;
@@ -9205,7 +9237,7 @@ var
   I, IntIdx, XmmIdx, SlotOff: Integer;
   IsFloatSlot: TList<Integer>;   { per flat slot (slot 0 = Self): 1 = xmm }
   OverflowOffs: TList<Integer>;  { source offsets of integer-overflow slots }
-  RK, RSrc, RDst, OverflowBytes: Integer;
+  RK, RSrc, OverflowBytes: Integer;
 begin
   IsFloatSlot := TList<Integer>.Create();
   OverflowOffs := TList<Integer>.Create();
@@ -9246,22 +9278,22 @@ begin
       Exit;
     end;
 
-    { Relocate overflow to the top of the allocation (16-aligned region) so the
-      call sees a 16-aligned %rsp with the lowest-indexed overflow arg first. }
-    OverflowBytes := ((OverflowOffs.Count * 8 + 15) and (-16));
-    for RK := OverflowOffs.Count - 1 downto 0 do
+    { Copy the overflow slots into a FRESH region below the slot block, with
+      the lowest-indexed overflow arg first (System V order).  Every
+      destination is strictly below every source, so the copy can never
+      clobber an unread slot, and AlignFreshBytes sizes the region so the
+      call sees a 16-byte-aligned %rsp even when pinned pushes above the
+      slot block have left the frame at an odd slot count.  The slot block
+      plus the fresh region is reclaimed after the call (Result). }
+    OverflowBytes := Self.AlignFreshBytes(OverflowOffs.Count);
+    Self.Emit(Format(#9'subq $%d, %%rsp', [OverflowBytes]));
+    for RK := 0 to OverflowOffs.Count - 1 do
     begin
-      RSrc := OverflowOffs.Get(RK);
-      RDst := (AAllocSz - OverflowBytes) + RK * 8;
-      if RSrc <> RDst then
-      begin
-        Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [RSrc]));
-        Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [RDst]));
-      end;
+      RSrc := OverflowBytes + OverflowOffs.Get(RK);
+      Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [RSrc]));
+      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [RK * 8]));
     end;
-    if AAllocSz > OverflowBytes then
-      Self.Emit(Format(#9'addq $%d, %%rsp', [AAllocSz - OverflowBytes]));
-    Result := OverflowBytes;
+    Result := OverflowBytes + AAllocSz;
   finally
     OverflowOffs.Free();
     IsFloatSlot.Free();
@@ -14008,6 +14040,135 @@ begin
   Result := TOALCallFrame(FOALFrames.Get(FOALFrames.Count - 1)).Total;
 end;
 
+{ File-local: does ALine start with APrefix?  Allocation-free (Emit is on the
+  hot path — one call per emitted assembly line). }
+function LineStartsWith(const ALine, APrefix: string): Boolean;
+var
+  I, PL: Integer;
+begin
+  PL := Length(APrefix);
+  if Length(ALine) < PL then
+  begin
+    Result := False;
+    Exit;
+  end;
+  for I := 0 to PL - 1 do
+    if StrAt(ALine, I) <> StrAt(APrefix, I) then
+    begin
+      Result := False;
+      Exit;
+    end;
+  Result := True;
+end;
+
+procedure TX86_64Backend.Emit(const ALine: string);
+var
+  L, C, Rem: Integer;
+begin
+  L := Length(ALine);
+  if (L > 1) and (StrAt(ALine, 0) = 9) then          { 9 = TAB: instruction }
+  begin
+    C := StrAt(ALine, 1);
+    if C = 112 then                                  { 'p' }
+    begin
+      if LineStartsWith(ALine, #9'pushq ') then
+        FSPDepth := FSPDepth + 8
+      else if LineStartsWith(ALine, #9'popq ') then
+        FSPDepth := FSPDepth - 8;
+    end
+    else if C = 115 then                             { 's' }
+    begin
+      if LineStartsWith(ALine, #9'subq $') then
+        Self.TrackRspAdjust(ALine, 1);
+    end
+    else if C = 97 then                              { 'a' }
+    begin
+      if LineStartsWith(ALine, #9'addq $') then
+        Self.TrackRspAdjust(ALine, -1);
+    end
+    else if C = 109 then                             { 'm' }
+    begin
+      { Prologue baseline: after `movq %rsp, %rbp` the return address (8)
+        plus the saved %rbp (8) leave %rsp 16-aligned — depth 0.  The
+        epilogue frame restore re-establishes the same point. }
+      if ALine = #9'movq %rsp, %rbp' then
+        FSPDepth := 0
+      else if ALine = #9'movq %rbp, %rsp' then
+        FSPDepth := 0;
+    end
+    else if C = 108 then                             { 'l' }
+    begin
+      if ALine = #9'leave' then
+        FSPDepth := 0;
+    end
+    else if C = 99 then                              { 'c' }
+    begin
+      if LineStartsWith(ALine, #9'callq ') then
+      begin
+        Rem := FSPDepth mod 16;
+        if Rem < 0 then
+          Rem := Rem + 16;
+        if Rem <> 0 then
+        begin
+          { Misaligned call site (odd pinned-slot count above): pad %rsp to
+            a 16-byte boundary for the duration of the call.  Safe for every
+            call reached here — its arguments are all in registers.  Calls
+            with genuine SysV stack arguments size their overflow region via
+            AlignFreshBytes, so their tracked depth is 0 mod 16 and they
+            never take this branch (a pad would shift their stack args). }
+          inherited Emit(Format(#9'subq $%d, %%rsp', [16 - Rem]));
+          inherited Emit(ALine);
+          inherited Emit(Format(#9'addq $%d, %%rsp', [16 - Rem]));
+          Exit;
+        end;
+      end;
+    end;
+  end
+  else if (L > 1) and (StrAt(ALine, 0) <> 46) and    { 46 = '.' }
+          (StrAt(ALine, L - 1) = 58) then            { 58 = ':' }
+    { A non-local label (control-flow labels are all .L-prefixed): a
+      function or data entry point.  At function entry only the return
+      address sits on the stack — depth 8.  Data labels never precede
+      instructions, so the reset is harmless there. }
+    FSPDepth := 8;
+  inherited Emit(ALine);
+end;
+
+procedure TX86_64Backend.TrackRspAdjust(const ALine: string; ASign: Integer);
+var
+  I, L, C, V: Integer;
+begin
+  { ALine is #9'subq $N, <dest>' or #9'addq $N, <dest>' — index 7 is the
+    first digit of N.  Only a %rsp destination adjusts the tracked depth
+    (e.g. `addq $16, %rax` must not count). }
+  L := Length(ALine);
+  V := 0;
+  I := 7;
+  while I < L do
+  begin
+    C := StrAt(ALine, I);
+    if (C >= 48) and (C <= 57) then                  { '0'..'9' }
+      V := V * 10 + (C - 48)
+    else
+      Break;
+    I := I + 1;
+  end;
+  if StrCopyTail(ALine, I) = ', %rsp' then
+    FSPDepth := FSPDepth + ASign * V;
+end;
+
+function TX86_64Backend.AlignFreshBytes(ASlots: Integer): Integer;
+var
+  Rem: Integer;
+begin
+  Result := ASlots * 8;
+  Rem := (FSPDepth + Result) mod 16;
+  if Rem < 0 then
+    Rem := Rem + 16;
+  if Rem <> 0 then
+    Result := Result + (16 - Rem);
+end;
+
 function TX86_64Backend.EmitArgHoist(AParams: TObjectList;
   AProcParams: TObjectList; AKnownSig: Boolean; const AVarFlags: string;
   AArgs: TObjectList;
@@ -14331,7 +14492,7 @@ var
   OALPushed:      Integer;
   OverflowOffs:   TList<Integer>;  { source offsets of integer-overflow slots,
                                      in ascending arg order, for relocation }
-  RK, RSrc, RDst: Integer;
+  RK, RSrc: Integer;
 begin
   { Detect whether any arg is float-typed.
     Also compute SlotCount: open-array args expand to 2 register slots each. }
@@ -14828,39 +14989,36 @@ begin
     end;
 
     { If nothing overflowed, reclaim the entire pre-allocated area.  Otherwise
-      relocate the integer-overflow slots to the TOP of the region (highest
-      offsets, just below the hoist area) in ascending arg order, then raise
-      %rsp past the vacated low space so the call sees the overflow at
+      copy the integer-overflow slots into a FRESH region below the slot
+      block, in ascending arg order, so the call sees the overflow at
       0(%rsp).. with the lowest-indexed overflow arg first (System V order).
-      Relocation runs highest-target-first so a target never clobbers a source
-      that has not been moved yet.  Float args never overflow (they always take
-      an xmm register, of which there are 8), so only integer slots appear here.
+      Every destination is strictly below every source, so the copy can never
+      clobber an unread slot, and AlignFreshBytes sizes the region so the
+      call site is 16-byte aligned even when pinned pushes above the slot
+      block have left the frame at an odd slot count.  Float args never
+      overflow (they always take an xmm register, of which there are 8), so
+      only integer slots appear here.  The slot block plus the fresh region
+      is reclaimed after the call via the hoist epilogue's base bytes.
 
-      This replaces a former `addq $48` shortcut that assumed exactly the first
-      six contiguous slots were register-bound; with floats interspersed fewer
-      integer slots precede the overflow, so that shortcut placed the overflow
-      at the wrong address and crashed the callee. }
+      This replaces a former `addq $48` shortcut that assumed exactly the
+      first six contiguous slots were register-bound; with floats
+      interspersed fewer integer slots precede the overflow, so that shortcut
+      placed the overflow at the wrong address and crashed the callee. }
     if OverflowOffs.Count = 0 then
       Self.Emit(Format(#9'addq $%d, %%rsp', [AllocSz]))
     else
     begin
-      { Reserve a 16-byte-aligned overflow region at the top of the allocation
-        so that, after raising %rsp to its base, the call sees a 16-aligned
-        %rsp (System V requires it at the call site).  The overflow args
-        occupy the low Count*8 bytes of that region. }
-      OverflowBytes := ((OverflowOffs.Count * 8 + 15) and (-16));
-      for RK := OverflowOffs.Count - 1 downto 0 do
+      OverflowBytes := Self.AlignFreshBytes(OverflowOffs.Count);
+      Self.Emit(Format(#9'subq $%d, %%rsp', [OverflowBytes]));
+      for RK := 0 to OverflowOffs.Count - 1 do
       begin
-        RSrc := OverflowOffs.Get(RK);
-        RDst := (AllocSz - OverflowBytes) + RK * 8;
-        if RSrc <> RDst then
-        begin
-          Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [RSrc]));
-          Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [RDst]));
-        end;
+        RSrc := OverflowBytes + OverflowOffs.Get(RK);
+        Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [RSrc]));
+        Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [RK * 8]));
       end;
-      if AllocSz > OverflowBytes then
-        Self.Emit(Format(#9'addq $%d, %%rsp', [AllocSz - OverflowBytes]));
+      { The hoist epilogue reclaims OverflowBytes as its base — it must now
+        cover the fresh region AND the still-allocated slot block. }
+      OverflowBytes := OverflowBytes + AllocSz;
     end;
   end;
 
@@ -14969,8 +15127,17 @@ begin
     end;
     for I := 0 to 5 do
       Self.Emit(Format(#9'movq %d(%%rsp), %s', [I * 8, SysVArg64(I)]));
-    Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
-    CleanUp := AllocSz - 6 * 8;
+    { Copy the overflow args (slots 6.., offsets 48..) into a FRESH region
+      below the slot block so the call sees them at 0(%rsp).. on a 16-byte-
+      aligned %rsp regardless of pinned pushes above (see AlignFreshBytes). }
+    CleanUp := Self.AlignFreshBytes(AArgs.Count - 6);
+    Self.Emit(Format(#9'subq $%d, %%rsp', [CleanUp]));
+    for I := 0 to AArgs.Count - 7 do
+    begin
+      Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [CleanUp + 48 + I * 8]));
+      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [I * 8]));
+    end;
+    CleanUp := CleanUp + AllocSz;
     Self.Emit(Format(#9'movq %s, %%r10', [APtrOperand]));
     Self.Emit(#9'callq *%r10');
     Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, CleanUp, True);
@@ -16741,8 +16908,17 @@ begin
     Self.Emit(#9'movq 8(%rcx), %rdi');
     for I := 0 to 4 do
       Self.Emit(Format(#9'movq %d(%%rsp), %s', [(I + 1) * 8, SysVArg64(I + 1)]));
-    Self.Emit(Format(#9'addq $%d, %%rsp', [6 * 8]));
-    CleanUp := AllocSz - 6 * 8;
+    { Copy the overflow args (slots 6.., offsets 48..) into a FRESH region
+      below the slot block so the call sees them at 0(%rsp).. on a 16-byte-
+      aligned %rsp regardless of pinned pushes above (see AlignFreshBytes). }
+    CleanUp := Self.AlignFreshBytes(AArgs.Count - 5);
+    Self.Emit(Format(#9'subq $%d, %%rsp', [CleanUp]));
+    for I := 0 to AArgs.Count - 6 do
+    begin
+      Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [CleanUp + 48 + I * 8]));
+      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [I * 8]));
+    end;
+    CleanUp := CleanUp + AllocSz;
     Self.Emit(#9'callq *%r10');
     Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, CleanUp, True);
   end;

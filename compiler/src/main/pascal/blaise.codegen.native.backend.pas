@@ -54,8 +54,10 @@ type
       backend's TIRBuffer uses. }
     FAsm:      TStringBuilder;
 
-    { Append one line of assembly (a newline is added). }
-    procedure Emit(const ALine: string);
+    { Append one line of assembly (a newline is added).  Virtual so a target
+      backend can observe the emitted stream (the x86-64 backend tracks the
+      stack depth here to keep call sites 16-byte aligned). }
+    procedure Emit(const ALine: string); virtual;
     { Append a blank separator line. }
     procedure EmitBlank;
 
