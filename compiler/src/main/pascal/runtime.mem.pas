@@ -17,15 +17,17 @@
 
   Small allocations (up to LARGE_THRESHOLD bytes):
     Served from 64 KB arenas obtained via mmap.  Each allocation has
-    an 8-byte header storing the usable size.  Freed blocks go onto a
-    per-size-class freelist for O(1) reuse.  Size classes are powers
-    of two: 16, 32, 64, 128, 256, 512, 1024, 2048.
+    a 16-byte header storing the usable size and a back-pointer to the
+    owning arena (the routing key for the migration-safe cross-thread
+    free path — docs/concurrent-allocator-design.adoc).  Freed blocks
+    go onto a per-size-class freelist for O(1) reuse.  Size classes are
+    powers of two: 16, 32, 64, 128, 256, 512, 1024, 2048.
 
     Only the head arena is used for bump allocation.  When it fills,
     a new arena is allocated and becomes the head.  No arena-list walk.
 
   Large allocations (above LARGE_THRESHOLD):
-    Each gets its own mmap region with a 16-byte header.  Freed large
+    Each gets its own mmap region with a 24-byte header.  Freed large
     blocks are cached on a LIFO freelist for O(1) reuse.  The cache
     holds up to LARGE_CACHE_MAX entries; excess blocks are munmap-ed
     immediately.  Large reallocs use Linux mremap to resize in-place
@@ -73,15 +75,31 @@ const
   PAGE_SIZE       = 4096;
   ARENA_SIZE      = 65536;
   LARGE_THRESHOLD = 2048;
-  HEADER_SIZE     = 8;
-  LARGE_HEADER    = 16;
+  HEADER_SIZE     = 16;
+  LARGE_HEADER    = 24;
   LARGE_CACHE_MAX = 32;
 
+{ CROSS-LAYOUT INVARIANT (concurrent-allocator-design.adoc, §Data
+  structures): IsLarge and GetAllocSize classify a block by reading Flags
+  through the SMALL layout at Ptr - HEADER_SIZE, regardless of the block
+  kind.  This works only because both layouts place Flags at the same
+  distance from the user pointer:
+
+    small: Ptr - 16 + 4  = Ptr - 12
+    large: Ptr - 24 + 12 = Ptr - 12
+
+  New fields must therefore be appended AFTER Flags in both records;
+  reordering either silently breaks every free.  The invariant is pinned
+  by Test_FlagsOffset_Invariant in test_blaise_mem.pas. }
+
 type
+  PArena = ^TArena;
+
   PBlockHeader = ^TBlockHeader;
   TBlockHeader = record
     AllocSize: Integer;
     Flags:     Integer;
+    Arena:     PArena;   { owning arena — the cross-thread routing key }
   end;
 
   PLargeHeader = ^TLargeHeader;
@@ -89,6 +107,8 @@ type
     TotalMapped: Int64;
     AllocSize:   Integer;
     Flags:       Integer;
+    OwnerTid:    Int64;  { reserved for the foreign large-free policy;
+                           written as 0 until that phase lands }
   end;
 
   PFreeNode = ^TFreeNode;
@@ -102,7 +122,6 @@ type
     TotalMapped: Int64;
   end;
 
-  PArena = ^TArena;
   TArena = record
     Base:     Pointer;
     Offset:   Integer;
@@ -207,6 +226,7 @@ begin
     Hdr := Pointer(PtrUInt(A^.Base) + PtrUInt(A^.Offset));
     Hdr^.AllocSize := Size;
     Hdr^.Flags := FLAG_SMALL;
+    Hdr^.Arena := A;
     A^.Offset := A^.Offset + Needed;
     Exit(Pointer(PtrUInt(Hdr) + HEADER_SIZE));
   end;
@@ -219,6 +239,7 @@ begin
   Hdr := Pointer(PtrUInt(A^.Base) + PtrUInt(A^.Offset));
   Hdr^.AllocSize := Size;
   Hdr^.Flags := FLAG_SMALL;
+  Hdr^.Arena := A;
   A^.Offset := A^.Offset + Needed;
   Result := Pointer(PtrUInt(Hdr) + HEADER_SIZE);
 end;
@@ -278,6 +299,7 @@ begin
       Hdr^.TotalMapped := CachedSize;
       Hdr^.AllocSize := Size;
       Hdr^.Flags := FLAG_LARGE;
+      Hdr^.OwnerTid := 0;
       Exit(Pointer(PtrUInt(Hdr) + LARGE_HEADER));
     end;
     Base := _libc_mremap(Pointer(Node), CachedSize, Needed, MREMAP_MAYMOVE);
@@ -287,6 +309,7 @@ begin
       Hdr^.TotalMapped := Needed;
       Hdr^.AllocSize := Size;
       Hdr^.Flags := FLAG_LARGE;
+      Hdr^.OwnerTid := 0;
       Exit(Pointer(PtrUInt(Base) + LARGE_HEADER));
     end;
     _libc_munmap(Pointer(Node), CachedSize);
@@ -302,6 +325,7 @@ begin
   Hdr^.TotalMapped := Total;
   Hdr^.AllocSize := Size;
   Hdr^.Flags := FLAG_LARGE;
+  Hdr^.OwnerTid := 0;
   Result := Pointer(PtrUInt(Base) + LARGE_HEADER);
 end;
 
@@ -416,6 +440,7 @@ begin
       LHdr^.TotalMapped := NewMapped;
       LHdr^.AllocSize := NewSize;
       LHdr^.Flags := FLAG_LARGE;
+      LHdr^.OwnerTid := 0;
       Exit(Pointer(PtrUInt(NewBase) + LARGE_HEADER));
     end;
   end;

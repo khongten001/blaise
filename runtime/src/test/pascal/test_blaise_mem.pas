@@ -646,6 +646,79 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
+{ Header layout (concurrent-allocator-design.adoc, §Data structures).  }
+{ These pin the 16-byte small header, the 24-byte large header, the    }
+{ cross-layout Flags punning invariant, and the arena back-pointer.    }
+{ ------------------------------------------------------------------ }
+
+{ Cross-layout invariant: IsLarge/GetAllocSize classify a block by
+  reading Flags through the SMALL layout regardless of the block kind,
+  so Flags must sit at the same offset from the user pointer in both
+  layouts: small Ptr-16+4 = Ptr-12, large Ptr-24+12 = Ptr-12. }
+function Test_FlagsOffset_Invariant: string;
+var
+  P: Pointer;
+  FlagsP: ^Integer;
+begin
+  P := _BlaiseGetMem(64);
+  AssertNotNull('small alloc', P);
+  FlagsP := Pointer(PtrUInt(P) - 12);
+  AssertEquals('small block Flags (FLAG_SMALL) at Ptr-12', 0, FlagsP^);
+  _BlaiseFreeMem(P);
+
+  P := _BlaiseGetMem(8192);
+  AssertNotNull('large alloc', P);
+  FlagsP := Pointer(PtrUInt(P) - 12);
+  AssertEquals('large block Flags (FLAG_LARGE) at Ptr-12', 1, FlagsP^);
+  _BlaiseFreeMem(P);
+  Result := '';
+end;
+
+{ The small header carries the owning-arena back-pointer at offset 8
+  (AllocSize:4, Flags:4, Arena:8) — i.e. at Ptr-8.  The arena record
+  sits at the start of its 64 KiB mmap region, so the block must lie
+  inside [Arena, Arena+65536). }
+function Test_ArenaBackPointer: string;
+var
+  P: Pointer;
+  ArenaP: ^Pointer;
+  Arena: Pointer;
+begin
+  P := _BlaiseGetMem(48);
+  AssertNotNull('small alloc', P);
+  ArenaP := Pointer(PtrUInt(P) - 8);
+  Arena := ArenaP^;
+  AssertNotNull('back-pointer non-nil', Arena);
+  AssertTrue('block above arena base', PtrUInt(P) > PtrUInt(Arena));
+  AssertTrue('block inside arena', PtrUInt(P) < PtrUInt(Arena) + 65536);
+  _BlaiseFreeMem(P);
+  Result := '';
+end;
+
+{ The back-pointer must survive freelist recycling: a block freed and
+  reallocated in the same class keeps a valid arena back-pointer. }
+function Test_ArenaBackPointer_AfterReuse: string;
+var
+  A, B: Pointer;
+  ArenaP: ^Pointer;
+  Arena: Pointer;
+begin
+  A := _BlaiseGetMem(32);
+  AssertNotNull('first alloc', A);
+  _BlaiseFreeMem(A);
+  B := _BlaiseGetMem(32);
+  AssertNotNull('recycled alloc', B);
+  AssertEquals('freelist recycled the block', PtrUInt(A), PtrUInt(B));
+  ArenaP := Pointer(PtrUInt(B) - 8);
+  Arena := ArenaP^;
+  AssertNotNull('recycled back-pointer non-nil', Arena);
+  AssertTrue('recycled block above arena base', PtrUInt(B) > PtrUInt(Arena));
+  AssertTrue('recycled block inside arena', PtrUInt(B) < PtrUInt(Arena) + 65536);
+  _BlaiseFreeMem(B);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
 { Atomic primitives (runtime.atomic) — single-threaded semantics.      }
 { These prove the asm bodies and the Boolean/pointer ABI before any    }
 { concurrent use (concurrent-allocator-design.adoc, §Testing).         }
@@ -768,6 +841,10 @@ begin
   AddTest('Interleaved_Mixed',      @Test_Interleaved_Mixed,      'blaise_mem');
   AddTest('Realloc_Churn',          @Test_Realloc_Churn,          'blaise_mem');
   AddTest('Alignment_All_Classes',  @Test_Alignment_All_Classes,  'blaise_mem');
+
+  AddTest('FlagsOffset_Invariant', @Test_FlagsOffset_Invariant, 'blaise_mem');
+  AddTest('ArenaBackPointer', @Test_ArenaBackPointer, 'blaise_mem');
+  AddTest('ArenaBackPointer_AfterReuse', @Test_ArenaBackPointer_AfterReuse, 'blaise_mem');
 
   AddSuite('blaise_atomic', nil);
   AddTest('AtomicCASPtr_Success', @Test_AtomicCASPtr_Success, 'blaise_atomic');
