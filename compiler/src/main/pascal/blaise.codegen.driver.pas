@@ -442,11 +442,12 @@ end;
   the shared globals (GPlatformLayout, GRtlPlatform) so it must be built first
   and linked once. }
 const
-  RTL_UNITS: array[0..14] of string = (
+  RTL_UNITS: array[0..15] of string = (
     'rtl.platform',
     'runtime.start', 'runtime.atomic', 'runtime.setjmp', 'runtime.utf8',
     'runtime.mem', 'runtime.str', 'runtime.set', 'runtime.arc',
     'runtime.weak', 'runtime.float', 'runtime.thread', 'runtime.exc',
+    'runtime.errno.linux',
     'rtl.platform.layout.linux', 'rtl.platform.posix');
 
 { Lower-case OS suffix used in the OS-specific RTL unit names
@@ -478,6 +479,16 @@ begin
       Result.Add('rtl.platform.layout.' + OS)
     else if AStatic and SameText(RTL_UNITS[I], 'runtime.start') then
       Result.Add('runtime.start.static.' + OS)
+    else if SameText(RTL_UNITS[I], 'runtime.errno.linux') then
+    begin
+      { The errno-classification leaf (P3, async design) follows the target OS
+        on both profiles and swaps to the raw negative-errno variant under
+        --static (the raw syscall leaves return -errno; no errno variable). }
+      if AStatic then
+        Result.Add('runtime.errno.static.' + OS)
+      else
+        Result.Add('runtime.errno.' + OS);
+    end
     else
       Result.Add(RTL_UNITS[I]);
   { The freestanding kernel leaf that replaces libc under --static: the raw

@@ -60,11 +60,16 @@ function chmod(Path: PChar; Mode: Integer): Integer;
 function getpid: Integer;
 function dup2(OldFd, NewFd: Integer): Integer;
 function pipe(Fds: Pointer): Integer;
+{ fcntl(fd, cmd, arg) — needed to flip O_NONBLOCK on fds (the fiber I/O layer
+  and the errno-classification tests; docs/async-networking-design.adoc P3). }
+function fcntl(Fd, Cmd, Arg: Integer): Integer;
 
 { Memory. }
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
              Offset: Int64): Pointer;
 function munmap(Addr: Pointer; Length: Int64): Integer;
+{ mprotect(addr, len, prot) — guard pages for fiber stacks (async design L0). }
+function mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
 { mremap(old, oldsz, newsz, flags, newaddr) - 5 args; raw syscall. }
 function mremap(OldAddr: Pointer; OldSize, NewSize: Int64; Flags: Integer;
                NewAddr: Pointer): Pointer;
@@ -279,6 +284,14 @@ asm
     ret
 end;
 
+function fcntl(Fd, Cmd, Arg: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $72, %rax       { SYS_fcntl }
+    syscall
+    ret
+end;
+
 { mmap has 6 args; arg4 (Flags) arrives in %rcx (C ABI) but the kernel wants it
   in %r10.  Move it before the syscall. }
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
@@ -295,6 +308,14 @@ function munmap(Addr: Pointer; Length: Int64): Integer;
   assembler; nostackframe;
 asm
     movq $11, %rax       { SYS_munmap }
+    syscall
+    ret
+end;
+
+function mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $10, %rax       { SYS_mprotect }
     syscall
     ret
 end;

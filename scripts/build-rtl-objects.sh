@@ -77,6 +77,7 @@ RTL_UNITS=(
   runtime.start runtime.atomic runtime.setjmp runtime.utf8
   runtime.mem runtime.str runtime.set runtime.arc
   runtime.weak runtime.float runtime.thread runtime.exc
+  runtime.errno.linux
   rtl.platform.layout.linux rtl.platform.posix
 )
 

@@ -40,6 +40,13 @@ type
     procedure TestRTLUnits_FreeBSDStatic_SwapsFreeBSDLeaf;
     procedure TestRTLUnits_FreeBSDStatic_NoLinuxLeaf;
 
+    { P3 (async design): the errno-classification leaf (WouldBlock) follows
+      the same per-OS + per-profile swap as runtime.start — the libc variant
+      in dynamic links, the raw negative-errno variant under --static. }
+    procedure TestRTLUnits_Errno_LinuxDynamic_LibcVariant;
+    procedure TestRTLUnits_Errno_LinuxStatic_StaticVariant;
+    procedure TestRTLUnits_Errno_FreeBSD_FollowsTarget;
+
     { ClaimsEmitIR selection policy. }
     procedure TestQBE_ClaimsEmitIR_True;
     procedure TestNative_ClaimsEmitIR_False;
@@ -162,6 +169,65 @@ begin
       ListContains(U, 'runtime.libc2.linux'));
     AssertFalse('no linux static thread leaf',
       ListContains(U, 'runtime.thread.static.linux'));
+  finally
+    U.Free();
+  end;
+end;
+
+procedure TBackendDriverContractTests.TestRTLUnits_Errno_LinuxDynamic_LibcVariant;
+var
+  U: TStringList;
+begin
+  { Dynamic (libc) Linux link: the __errno_location-reading variant is linked;
+    the raw negative-errno variant is not. }
+  U := BuildRTLUnitList(False, osLinux);
+  try
+    AssertTrue('libc errno leaf present',
+      ListContains(U, 'runtime.errno.linux'));
+    AssertFalse('no static errno leaf in dynamic mode',
+      ListContains(U, 'runtime.errno.static.linux'));
+  finally
+    U.Free();
+  end;
+end;
+
+procedure TBackendDriverContractTests.TestRTLUnits_Errno_LinuxStatic_StaticVariant;
+var
+  U: TStringList;
+begin
+  { --static Linux link: the raw negative-errno variant replaces the libc one
+    (the raw syscall leaves return -errno; there is no errno variable). }
+  U := BuildRTLUnitList(True, osLinux);
+  try
+    AssertTrue('static errno leaf present',
+      ListContains(U, 'runtime.errno.static.linux'));
+    AssertFalse('libc errno leaf dropped',
+      ListContains(U, 'runtime.errno.linux'));
+  finally
+    U.Free();
+  end;
+end;
+
+procedure TBackendDriverContractTests.TestRTLUnits_Errno_FreeBSD_FollowsTarget;
+var
+  U: TStringList;
+begin
+  { The errno leaf follows the target OS on both profiles. }
+  U := BuildRTLUnitList(False, osFreeBSD);
+  try
+    AssertTrue('freebsd libc errno leaf present',
+      ListContains(U, 'runtime.errno.freebsd'));
+    AssertFalse('no linux errno leaf on freebsd',
+      ListContains(U, 'runtime.errno.linux'));
+  finally
+    U.Free();
+  end;
+  U := BuildRTLUnitList(True, osFreeBSD);
+  try
+    AssertTrue('freebsd static errno leaf present',
+      ListContains(U, 'runtime.errno.static.freebsd'));
+    AssertFalse('no freebsd libc errno leaf under --static',
+      ListContains(U, 'runtime.errno.freebsd'));
   finally
     U.Free();
   end;

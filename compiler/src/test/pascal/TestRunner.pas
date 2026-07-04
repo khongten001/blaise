@@ -110,6 +110,7 @@ uses
   cp.test.e2e.tstringlist,
   cp.test.e2e.tcomponent,
   cp.test.e2e.threading,
+  cp.test.e2e.errno,
   cp.test.e2e.openarray,
   cp.test.e2e.staticarray,
   cp.test.e2e.constarg,

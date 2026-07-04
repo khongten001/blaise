@@ -43,6 +43,7 @@ PAS_OBJS = $(OBJ_DIR)/runtime.start.o \
            $(OBJ_DIR)/runtime.float.o \
            $(OBJ_DIR)/runtime.thread.o \
            $(OBJ_DIR)/runtime.exc.o \
+           $(OBJ_DIR)/runtime.errno.linux.o \
            $(OBJ_DIR)/rtl.platform.layout.linux.o \
            $(OBJ_DIR)/rtl.platform.posix.o
 

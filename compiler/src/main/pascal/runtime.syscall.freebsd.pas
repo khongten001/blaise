@@ -77,11 +77,16 @@ function getpid: Integer;
 function dup2(OldFd, NewFd: Integer): Integer;
 { FreeBSD deprecated the 2-arg pipe(2) (legacy 42); this calls pipe2(fds, 0). }
 function pipe(Fds: Pointer): Integer;
+{ fcntl(fd, cmd, arg) — raw; note FreeBSD's O_NONBLOCK is 0x4 (not Linux's
+  0x800): callers must pass FreeBSD flag values, this leaf does not translate. }
+function fcntl(Fd, Cmd, Arg: Integer): Integer;
 
 { Memory. }
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
              Offset: Int64): Pointer;
 function munmap(Addr: Pointer; Length: Int64): Integer;
+{ mprotect(addr, len, prot) — guard pages for fiber stacks (async design L0). }
+function mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
 
 { mremap(old, oldsz, newsz, flags): FreeBSD has NO in-place remap syscall, so
   this is a stub that always reports failure (MAP_FAILED = -1).  runtime.mem's
@@ -424,6 +429,28 @@ asm
     jae  .Lok_munmap
     negq %rax
 .Lok_munmap:
+    ret
+end;
+
+function mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $74, %rax           { SYS_mprotect }
+    syscall
+    jae  .Lok_mprotect
+    negq %rax
+.Lok_mprotect:
+    ret
+end;
+
+function fcntl(Fd, Cmd, Arg: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $92, %rax           { SYS_fcntl }
+    syscall
+    jae  .Lok_fcntl
+    negq %rax
+.Lok_fcntl:
     ret
 end;
 
