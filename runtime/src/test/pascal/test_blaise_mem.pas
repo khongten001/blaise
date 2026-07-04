@@ -23,7 +23,7 @@
 program test_blaise_mem;
 
 uses
-  punit, runtime.mem;
+  punit, runtime.mem, runtime.atomic;
 
 { ------------------------------------------------------------------ }
 { Test: basic GetMem returns non-nil                                   }
@@ -98,7 +98,7 @@ end;
 function Test_FreeMem_Nil: string;
 begin
   _BlaiseFreeMem(nil);
-  AssertPassed;
+  AssertPassed();
   Result := '';
 end;
 
@@ -645,6 +645,99 @@ begin
   Result := '';
 end;
 
+{ ------------------------------------------------------------------ }
+{ Atomic primitives (runtime.atomic) — single-threaded semantics.      }
+{ These prove the asm bodies and the Boolean/pointer ABI before any    }
+{ concurrent use (concurrent-allocator-design.adoc, §Testing).         }
+{ ------------------------------------------------------------------ }
+
+function Test_AtomicCASPtr_Success: string;
+var
+  Slot: Pointer;
+  A, B: Integer;
+  Ok: Boolean;
+begin
+  Slot := @A;
+  Ok := _AtomicCASPtr(@Slot, @A, @B);
+  AssertTrue('CAS with matching expected succeeds', Ok);
+  AssertEquals('CAS installed the new value', Pointer(@B), Slot);
+  Result := '';
+end;
+
+function Test_AtomicCASPtr_Failure: string;
+var
+  Slot: Pointer;
+  A, B, C: Integer;
+  Ok: Boolean;
+begin
+  Slot := @A;
+  Ok := _AtomicCASPtr(@Slot, @C, @B);
+  AssertFalse('CAS with mismatched expected fails', Ok);
+  AssertEquals('failed CAS leaves the value unchanged', Pointer(@A), Slot);
+  Result := '';
+end;
+
+function Test_AtomicCASPtr_NilTransitions: string;
+var
+  Slot: Pointer;
+  A: Integer;
+  Ok: Boolean;
+begin
+  Slot := nil;
+  Ok := _AtomicCASPtr(@Slot, nil, @A);
+  AssertTrue('CAS nil -> ptr succeeds', Ok);
+  AssertEquals('slot now holds ptr', Pointer(@A), Slot);
+  Ok := _AtomicCASPtr(@Slot, @A, nil);
+  AssertTrue('CAS ptr -> nil succeeds', Ok);
+  AssertNull('slot back to nil', Slot);
+  Result := '';
+end;
+
+function Test_AtomicXchgPtr: string;
+var
+  Slot: Pointer;
+  A, B: Integer;
+  Old: Pointer;
+begin
+  Slot := @A;
+  Old := _AtomicXchgPtr(@Slot, @B);
+  AssertEquals('xchg returns the previous value', Pointer(@A), Old);
+  AssertEquals('xchg installed the new value', Pointer(@B), Slot);
+  Old := _AtomicXchgPtr(@Slot, nil);
+  AssertEquals('second xchg returns prior', Pointer(@B), Old);
+  AssertNull('slot drained to nil', Slot);
+  Result := '';
+end;
+
+function Test_AtomicAddInt64: string;
+var
+  V: Int64;
+  Old: Int64;
+begin
+  V := 10;
+  Old := _AtomicAddInt64(@V, 32);
+  AssertEquals('fetch-add returns previous', Int64(10), Old);
+  AssertEquals('fetch-add applied delta', Int64(42), V);
+  Old := _AtomicAddInt64(@V, -42);
+  AssertEquals('negative delta returns previous', Int64(42), Old);
+  AssertEquals('negative delta applied', Int64(0), V);
+  Result := '';
+end;
+
+function Test_AtomicAddInt64_Wide: string;
+var
+  V: Int64;
+  Old: Int64;
+begin
+  { A value and delta that both exceed 32 bits — proves the operation is a
+    true 64-bit xadd, not a 32-bit one on the low word. }
+  V := $100000000;
+  Old := _AtomicAddInt64(@V, $200000004);
+  AssertEquals('wide fetch-add returns previous', Int64($100000000), Old);
+  AssertEquals('wide fetch-add applied', Int64($300000004), V);
+  Result := '';
+end;
+
 begin
   AddSuite('blaise_mem', nil);
   AddTest('GetMem_Basic',           @Test_GetMem_Basic,           'blaise_mem');
@@ -675,5 +768,13 @@ begin
   AddTest('Interleaved_Mixed',      @Test_Interleaved_Mixed,      'blaise_mem');
   AddTest('Realloc_Churn',          @Test_Realloc_Churn,          'blaise_mem');
   AddTest('Alignment_All_Classes',  @Test_Alignment_All_Classes,  'blaise_mem');
-  RunAllSysTests;
+
+  AddSuite('blaise_atomic', nil);
+  AddTest('AtomicCASPtr_Success', @Test_AtomicCASPtr_Success, 'blaise_atomic');
+  AddTest('AtomicCASPtr_Failure', @Test_AtomicCASPtr_Failure, 'blaise_atomic');
+  AddTest('AtomicCASPtr_NilTransitions', @Test_AtomicCASPtr_NilTransitions, 'blaise_atomic');
+  AddTest('AtomicXchgPtr', @Test_AtomicXchgPtr, 'blaise_atomic');
+  AddTest('AtomicAddInt64', @Test_AtomicAddInt64, 'blaise_atomic');
+  AddTest('AtomicAddInt64_Wide', @Test_AtomicAddInt64_Wide, 'blaise_atomic');
+  RunAllSysTests();
 end.

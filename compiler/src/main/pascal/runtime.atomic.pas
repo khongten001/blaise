@@ -29,6 +29,24 @@ interface
 function _AtomicAddInt32(Ptr: Pointer; Delta: Integer): Integer;
 function _AtomicSubInt32(Ptr: Pointer; Delta: Integer): Integer;
 
+{ Pointer-width primitives for the migration-safe allocator's remote-free
+  queue (docs/concurrent-allocator-design.adoc, §"The new atomic primitives").
+  All operate on a 64-bit word at Ptr^. }
+
+{ Atomic compare-and-swap of a pointer-sized word.
+  If Ptr^ = Expected, set Ptr^ := NewVal and return True; else return False.
+  Ptr -> %rdi, Expected -> %rsi, NewVal -> %rdx. }
+function _AtomicCASPtr(Ptr: Pointer; Expected, NewVal: Pointer): Boolean;
+
+{ Atomic exchange of a pointer-sized word.
+  Store NewVal into Ptr^ and return the previous value.
+  Ptr -> %rdi, NewVal -> %rsi. }
+function _AtomicXchgPtr(Ptr: Pointer; NewVal: Pointer): Pointer;
+
+{ Atomic fetch-and-add of a 64-bit word; return the PREVIOUS value.
+  Ptr -> %rdi, Delta -> %rsi. }
+function _AtomicAddInt64(Ptr: Pointer; Delta: Int64): Int64;
+
 implementation
 
 { return *Ptr (old); *Ptr += Delta — atomically. }
@@ -47,6 +65,44 @@ asm
     negl %esi
     movl %esi, %eax
     lock xaddl %eax, (%rdi)
+    ret
+end;
+
+{ cmpxchg sets ZF on success; SETE -> AL gives the Boolean result.
+  `lock cmpxchgq %rdx, (%rdi)`:
+     if (%rdi) = %rax  then (%rdi) := %rdx, ZF := 1
+     else %rax := (%rdi),                   ZF := 0
+  Expected is loaded into %rax first (cmpxchg's implicit comparand).
+  `lock cmpxchg` is a full barrier on x86-64, so the publish has release
+  semantics for free (the remote-free push relies on this). }
+function _AtomicCASPtr(Ptr: Pointer; Expected, NewVal: Pointer): Boolean;
+  assembler; nostackframe;
+asm
+    movq %rsi, %rax
+    lock cmpxchgq %rdx, (%rdi)
+    sete %al
+    movzbl %al, %eax
+    ret
+end;
+
+{ xchg with a memory operand carries an implicit LOCK and is a full barrier
+  (acquire semantics for free — the drain's claim relies on this).  It
+  atomically swaps %rsi with (%rdi); the old value ends up in %rsi, which
+  is moved to %rax to return it. }
+function _AtomicXchgPtr(Ptr: Pointer; NewVal: Pointer): Pointer;
+  assembler; nostackframe;
+asm
+    xchgq %rsi, (%rdi)
+    movq %rsi, %rax
+    ret
+end;
+
+{ 64-bit sibling of _AtomicAddInt32 — return *Ptr (old); *Ptr += Delta. }
+function _AtomicAddInt64(Ptr: Pointer; Delta: Int64): Int64;
+  assembler; nostackframe;
+asm
+    movq %rsi, %rax
+    lock xaddq %rax, (%rdi)
     ret
 end;
 
