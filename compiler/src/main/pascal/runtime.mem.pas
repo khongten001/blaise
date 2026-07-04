@@ -110,8 +110,10 @@ type
     TotalMapped: Int64;
     AllocSize:   Integer;
     Flags:       Integer;
-    OwnerTid:    Int64;  { reserved for the foreign large-free policy;
-                           written as 0 until that phase lands }
+    OwnerTid:    Int64;  { allocating thread's tid (MyTid).  LargeFreeMem
+                           caches on a local free and munmaps on a
+                           foreign one (concurrent-allocator-design.adoc,
+                           §The large-block remote path, option 2) }
   end;
 
   PFreeNode = ^TFreeNode;
@@ -446,7 +448,7 @@ begin
       Hdr^.TotalMapped := CachedSize;
       Hdr^.AllocSize := Size;
       Hdr^.Flags := FLAG_LARGE;
-      Hdr^.OwnerTid := 0;
+      Hdr^.OwnerTid := MyTid();
       Exit(Pointer(PtrUInt(Hdr) + LARGE_HEADER));
     end;
     Base := _libc_mremap(Pointer(Node), CachedSize, Needed, MREMAP_MAYMOVE);
@@ -456,7 +458,7 @@ begin
       Hdr^.TotalMapped := Needed;
       Hdr^.AllocSize := Size;
       Hdr^.Flags := FLAG_LARGE;
-      Hdr^.OwnerTid := 0;
+      Hdr^.OwnerTid := MyTid();
       Exit(Pointer(PtrUInt(Base) + LARGE_HEADER));
     end;
     _libc_munmap(Pointer(Node), CachedSize);
@@ -472,7 +474,7 @@ begin
   Hdr^.TotalMapped := Total;
   Hdr^.AllocSize := Size;
   Hdr^.Flags := FLAG_LARGE;
-  Hdr^.OwnerTid := 0;
+  Hdr^.OwnerTid := MyTid();
   Result := Pointer(PtrUInt(Base) + LARGE_HEADER);
 end;
 
@@ -482,6 +484,16 @@ var
   Node: PLargeFreeNode;
 begin
   Hdr := PLargeHeader(Pointer(PtrUInt(Ptr) - LARGE_HEADER));
+  { Foreign free: a large block is its own private mapping, so any
+    thread can munmap it directly — the design's option 2 (§The
+    large-block remote path).  Only a LOCAL free may cache the block;
+    otherwise a mapping allocated by thread A would sit on thread B's
+    threadvar LIFO cache and be handed out from there. }
+  if Hdr^.OwnerTid <> MyTid() then
+  begin
+    _libc_munmap(Pointer(Hdr), Hdr^.TotalMapped);
+    Exit;
+  end;
   if LargeFreeCount < LARGE_CACHE_MAX then
   begin
     Node := PLargeFreeNode(Pointer(Hdr));
@@ -587,7 +599,7 @@ begin
       LHdr^.TotalMapped := NewMapped;
       LHdr^.AllocSize := NewSize;
       LHdr^.Flags := FLAG_LARGE;
-      LHdr^.OwnerTid := 0;
+      LHdr^.OwnerTid := MyTid();
       Exit(Pointer(PtrUInt(NewBase) + LARGE_HEADER));
     end;
   end;

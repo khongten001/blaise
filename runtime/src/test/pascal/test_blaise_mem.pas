@@ -719,6 +719,87 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
+{ Large-block owner tid (phase 4 — the munmap-on-foreign-free path).   }
+{ TLargeHeader = TotalMapped:Int64, AllocSize:4, Flags:4, OwnerTid:8   }
+{ = 24 bytes; the user pointer is Base+24, so OwnerTid sits at Ptr-8.  }
+{ Every large-alloc path must stamp the allocating thread's tid so     }
+{ LargeFreeMem can distinguish a local free (cache) from a foreign     }
+{ free (munmap).                                                       }
+{ ------------------------------------------------------------------ }
+
+function Test_Large_OwnerTid_Set: string;
+var
+  P, Q: Pointer;
+  TidP, TidQ: ^Int64;
+begin
+  P := _BlaiseGetMem(8192);
+  AssertNotNull('large alloc', P);
+  TidP := Pointer(PtrUInt(P) - 8);
+  AssertTrue('fresh large block has a non-zero owner tid', TidP^ <> 0);
+
+  Q := _BlaiseGetMem(8192);
+  AssertNotNull('second large alloc', Q);
+  TidQ := Pointer(PtrUInt(Q) - 8);
+  AssertTrue('second block has a non-zero owner tid', TidQ^ <> 0);
+  AssertEquals('same thread stamps the same owner tid', TidP^, TidQ^);
+
+  _BlaiseFreeMem(Q);
+  _BlaiseFreeMem(P);
+  Result := '';
+end;
+
+function Test_Large_OwnerTid_AfterCacheReuse: string;
+var
+  A, B: Pointer;
+  TidP: ^Int64;
+begin
+  { A local free caches the block; the cache-reuse alloc path must
+    re-stamp OwnerTid (the header bytes were recycled as a free node). }
+  A := _BlaiseGetMem(16384);
+  AssertNotNull('first large', A);
+  _BlaiseFreeMem(A);
+  B := _BlaiseGetMem(16384);
+  AssertNotNull('cache-reuse large', B);
+  AssertEquals('cache returned the same block', PtrUInt(A), PtrUInt(B));
+  TidP := Pointer(PtrUInt(B) - 8);
+  AssertTrue('cache-reused block has a non-zero owner tid', TidP^ <> 0);
+  _BlaiseFreeMem(B);
+  Result := '';
+end;
+
+function Test_Large_OwnerTid_AfterRealloc: string;
+var
+  P: Pointer;
+  TidP: ^Int64;
+begin
+  { The large->large mremap realloc path must also stamp OwnerTid. }
+  P := _BlaiseGetMem(4096);
+  AssertNotNull('alloc 4096', P);
+  P := _BlaiseReallocMem(P, 65536);
+  AssertNotNull('realloc to 65536', P);
+  TidP := Pointer(PtrUInt(P) - 8);
+  AssertTrue('realloc-grown block has a non-zero owner tid', TidP^ <> 0);
+  _BlaiseFreeMem(P);
+  Result := '';
+end;
+
+function Test_Large_LocalFree_StillCaches: string;
+var
+  A, B: Pointer;
+begin
+  { The owner-tid test must not break the local LIFO cache: a local
+    free followed by a same-size alloc must return the same mapping. }
+  A := _BlaiseGetMem(32768);
+  AssertNotNull('alloc', A);
+  _BlaiseFreeMem(A);
+  B := _BlaiseGetMem(32768);
+  AssertEquals('local free cached and reused the block',
+               PtrUInt(A), PtrUInt(B));
+  _BlaiseFreeMem(B);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
 { Remote-free queue (phase 3) — single-threaded synthetic drain.       }
 { Forge a "foreign" free by planting a remote node on the owning       }
 { arena's RemoteHead directly (what RemoteFreePush does from another   }
@@ -910,6 +991,10 @@ begin
   AddTest('ArenaBackPointer', @Test_ArenaBackPointer, 'blaise_mem');
   AddTest('ArenaBackPointer_AfterReuse', @Test_ArenaBackPointer_AfterReuse, 'blaise_mem');
   AddTest('RemoteQueue_DrainRecycles', @Test_RemoteQueue_DrainRecycles, 'blaise_mem');
+  AddTest('Large_OwnerTid_Set', @Test_Large_OwnerTid_Set, 'blaise_mem');
+  AddTest('Large_OwnerTid_AfterCacheReuse', @Test_Large_OwnerTid_AfterCacheReuse, 'blaise_mem');
+  AddTest('Large_OwnerTid_AfterRealloc', @Test_Large_OwnerTid_AfterRealloc, 'blaise_mem');
+  AddTest('Large_LocalFree_StillCaches', @Test_Large_LocalFree_StillCaches, 'blaise_mem');
 
   AddSuite('blaise_atomic', nil);
   AddTest('AtomicCASPtr_Success', @Test_AtomicCASPtr_Success, 'blaise_atomic');
