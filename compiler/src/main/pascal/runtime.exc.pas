@@ -33,6 +33,18 @@ interface
 
 procedure _PushExcFrame(Frame: Pointer);
 procedure _PopExcFrame;
+
+{ Per-fiber exception-state snapshot hooks (async design, P1).  The exception
+  machine is rooted in the threadvars g_exc_top / g_current_exception — per
+  OS thread, shared by every fiber on a worker.  A fiber switch must save the
+  outgoing fiber's pair into its control block and reinstate the incoming
+  fiber's, or a try across a suspension is unsound (frames chain across fiber
+  stacks and a raise longjmps into a suspended/stale frame).  The fiber
+  runtime (async.fibers.context.<cpu>) binds these by bare symbol name. }
+function  _ExcGetTop: Pointer;
+procedure _ExcSetTop(AFrame: Pointer);
+function  _ExcGetCurrent: Pointer;
+procedure _ExcSetCurrent(AExc: Pointer);
 procedure _Raise(Obj: Pointer);
 procedure _Reraise(Exc: Pointer);
 function  _CurrentException: Pointer;
@@ -105,6 +117,26 @@ begin
     PrevSlot := g_exc_top + OFS_PREV;
     g_exc_top := PrevSlot^;
   end;
+end;
+
+function _ExcGetTop: Pointer;
+begin
+  Result := g_exc_top;
+end;
+
+procedure _ExcSetTop(AFrame: Pointer);
+begin
+  g_exc_top := AFrame;
+end;
+
+function _ExcGetCurrent: Pointer;
+begin
+  Result := g_current_exception;
+end;
+
+procedure _ExcSetCurrent(AExc: Pointer);
+begin
+  g_current_exception := AExc;
 end;
 
 procedure _Raise(Obj: Pointer);

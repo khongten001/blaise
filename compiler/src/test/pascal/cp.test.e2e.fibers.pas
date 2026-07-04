@@ -41,6 +41,11 @@ type
     procedure TestFiberExit_TrampolineReturns_StackPooled;
     procedure TestFiberStack_GuardPageFaults;
     procedure TestFiberUnit_QBEBackend_RejectsInlineAsm;
+
+    { P1 — per-fiber exception state across FiberSwitch (the gate tests). }
+    procedure TestFiberExc_TryExcept_SurvivesSwap;
+    procedure TestFiberExc_TryFinally_SurvivesSwap;
+    procedure TestFiberExc_EachFiberHandlesItsOwn;
   end;
 
 implementation
@@ -156,6 +161,152 @@ const
     end.
     ''';
 
+  { Shared preamble for the P1 gate programs: a local exception hierarchy so
+    the tests need no stdlib exception unit. }
+  SrcFiberExcBase =
+    '''
+    program fiberexc;
+    uses async.fibers.context.x86_64;
+    type
+      Exception = class
+        FMessage: string;
+        constructor Create(AMsg: string);
+        property Message: string read FMessage;
+      end;
+    constructor Exception.Create(AMsg: string);
+    begin
+      FMessage := AMsg;
+    end;
+    var
+      MainF, FA, FB: PFiber;
+    ''';
+
+  { THE KEY GATE TEST (design [#rtl-prerequisites] P1).  The exception-frame
+    lifetimes of the two fibers deliberately do NOT nest: B suspends inside
+    an open try; A then opens its own try, suspends inside it, and B's try
+    COMPLETES (pops) while A's frame is live.  On a shared threadvar chain
+    B's pop removes A's frame (the top), so A's later raise longjmps into
+    B's stale frame on B's stack — the wrong handler fires ('B:caught') and
+    control resumes inside B.  With per-fiber snapshot/restore in FiberSwitch
+    each fiber sees only its own chain and every handler fires on its own
+    stack. }
+  SrcExcTryExceptAcrossSwap =
+    SrcFiberExcBase +
+    '''
+    procedure ProcB(AArg: Pointer);
+    begin
+      try
+        WriteLn('B:try');
+        FiberSwitch(FB, FA);
+        WriteLn('B:end');
+      except
+        WriteLn('B:caught');
+      end;
+      WriteLn('B:out');
+      FiberSwitch(FB, FA);
+    end;
+    procedure ProcA(AArg: Pointer);
+    begin
+      WriteLn('A:start');
+      FiberSwitch(FA, FB);
+      try
+        WriteLn('A:try');
+        FiberSwitch(FA, FB);
+        raise Exception.Create('boom-A');
+      except
+        on E: Exception do WriteLn('A:caught ', E.Message);
+      end;
+      FiberSwitch(FA, MainF);
+    end;
+    begin
+      MainF := FiberCreateMain();
+      FA := FiberSpawn(@ProcA, nil, 0);
+      FB := FiberSpawn(@ProcB, nil, 0);
+      FiberSwitch(MainF, FA);
+      WriteLn('M');
+    end.
+    ''';
+
+  { Same non-nested shape with try/finally: B's try/finally completes while A
+    is suspended inside its own try/finally.  B's finally must run exactly
+    once on B's own path, and A's raise must still run A's finally and reach
+    A's handler after the resume. }
+  SrcExcTryFinallyAcrossSwap =
+    SrcFiberExcBase +
+    '''
+    procedure ProcB(AArg: Pointer);
+    begin
+      try
+        WriteLn('B:try');
+        FiberSwitch(FB, FA);
+        WriteLn('B:mid');
+      finally
+        WriteLn('B:fin');
+      end;
+      FiberSwitch(FB, FA);
+    end;
+    procedure ProcA(AArg: Pointer);
+    begin
+      FiberSwitch(FA, FB);
+      try
+        try
+          WriteLn('A:try');
+          FiberSwitch(FA, FB);
+          raise Exception.Create('boom');
+        finally
+          WriteLn('A:fin');
+        end;
+      except
+        on E: Exception do WriteLn('A:caught ', E.Message);
+      end;
+      FiberSwitch(FA, MainF);
+    end;
+    begin
+      MainF := FiberCreateMain();
+      FA := FiberSpawn(@ProcA, nil, 0);
+      FB := FiberSpawn(@ProcB, nil, 0);
+      FiberSwitch(MainF, FA);
+      WriteLn('M');
+    end.
+    ''';
+
+  { The design's literal scenario: fiber A enters a try, swaps to fiber B
+    which raises AND handles its own exception, swaps back; A then raises and
+    its own handler catches — with the g_current_exception of each fiber kept
+    separate (B's handled exception must not leak into A's view). }
+  SrcExcEachFiberItsOwn =
+    SrcFiberExcBase +
+    '''
+    procedure ProcB(AArg: Pointer);
+    begin
+      try
+        WriteLn('B:try');
+        raise Exception.Create('boom-B');
+      except
+        on E: Exception do WriteLn('B:caught ', E.Message);
+      end;
+      FiberSwitch(FB, FA);
+    end;
+    procedure ProcA(AArg: Pointer);
+    begin
+      try
+        WriteLn('A:try');
+        FiberSwitch(FA, FB);
+        raise Exception.Create('boom-A');
+      except
+        on E: Exception do WriteLn('A:caught ', E.Message);
+      end;
+      FiberSwitch(FA, MainF);
+    end;
+    begin
+      MainF := FiberCreateMain();
+      FA := FiberSpawn(@ProcA, nil, 0);
+      FB := FiberSpawn(@ProcB, nil, 0);
+      FiberSwitch(MainF, FA);
+      WriteLn('M');
+    end.
+    ''';
+
   { Minimal uses-fibers program for the QBE guard test. }
   SrcQBEGuard =
     '''
@@ -193,6 +344,30 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRTLRunsOnOne(beNative, 'fiber-guard', SrcGuardPage,
     'USABLE_OK' + LE + 'GUARD_OK' + LE, 0)
+end;
+
+procedure TFiberE2ETests.TestFiberExc_TryExcept_SurvivesSwap;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'fiber-exc-tryexcept', SrcExcTryExceptAcrossSwap,
+    'A:start' + LE + 'B:try' + LE + 'A:try' + LE + 'B:end' + LE + 'B:out' + LE +
+    'A:caught boom-A' + LE + 'M' + LE, 0)
+end;
+
+procedure TFiberE2ETests.TestFiberExc_TryFinally_SurvivesSwap;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'fiber-exc-tryfinally', SrcExcTryFinallyAcrossSwap,
+    'B:try' + LE + 'A:try' + LE + 'B:mid' + LE + 'B:fin' + LE + 'A:fin' + LE +
+    'A:caught boom' + LE + 'M' + LE, 0)
+end;
+
+procedure TFiberE2ETests.TestFiberExc_EachFiberHandlesItsOwn;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'fiber-exc-own', SrcExcEachFiberItsOwn,
+    'A:try' + LE + 'B:try' + LE + 'B:caught boom-B' + LE +
+    'A:caught boom-A' + LE + 'M' + LE, 0)
 end;
 
 { The design's QBE posture: compiling a program that pulls in the fiber

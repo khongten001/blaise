@@ -36,11 +36,21 @@ unit async.fibers.context.x86_64;
 interface
 
 type
-  { Opaque saved context: a single stack-pointer slot.  The callee-saved
-    registers and return address live on the fiber's own stack. }
+  { Saved context.  SP is the register context (the callee-saved registers
+    and return address live on the fiber's own stack; FiberSwapAsm reads and
+    writes ONLY the SP field, which must stay first).
+
+    ExcTop/ExcCurrent are the per-fiber snapshot of the exception machine's
+    threadvars (runtime.exc g_exc_top / g_current_exception — design P1):
+    those are per OS thread and shared by every fiber on it, so FiberSwitch
+    saves the outgoing fiber's pair here and reinstates the incoming
+    fiber's.  Without that, a try across a suspension chains frames across
+    fiber stacks and a raise longjmps into a suspended or stale frame. }
   PFiberContext = ^TFiberContext;
   TFiberContext = record
     SP: Pointer;
+    ExcTop: Pointer;
+    ExcCurrent: Pointer;
   end;
 
   { Fiber entry procedure. }
@@ -113,6 +123,12 @@ function _libc_munmap(Addr: Pointer; Length: Int64): Integer;
 function _libc_mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
   external name 'mprotect';
 procedure _libc_abort; external name 'abort';
+
+{ Exception-state snapshot hooks exported by runtime.exc (design P1). }
+function _ExcGetTop: Pointer; external name '_ExcGetTop';
+procedure _ExcSetTop(AFrame: Pointer); external name '_ExcSetTop';
+function _ExcGetCurrent: Pointer; external name '_ExcGetCurrent';
+procedure _ExcSetCurrent(AExc: Pointer); external name '_ExcSetCurrent';
 
 const
   PROT_NONE = 0;
@@ -279,6 +295,9 @@ begin
   if Base = nil then
     Exit(nil);
   F := GetMem(SizeOf(TFiber));
+  { Fresh fiber: empty exception chain, no current exception (P1). }
+  F^.Ctx.ExcTop := nil;
+  F^.Ctx.ExcCurrent := nil;
   F^.StackBase := Base;
   F^.StackTotal := Total;
   F^.EntryProc := AProc;
@@ -315,6 +334,10 @@ var
 begin
   F := GetMem(SizeOf(TFiber));
   F^.Ctx.SP := nil;
+  { The main context's exception snapshot is captured on its first switch
+    away; start empty. }
+  F^.Ctx.ExcTop := nil;
+  F^.Ctx.ExcCurrent := nil;
   F^.StackBase := nil;
   F^.StackTotal := 0;
   F^.EntryProc := nil;
@@ -328,10 +351,19 @@ end;
 procedure FiberSwitch(AFrom, ATo: PFiber);
 begin
   ATo^.ReturnTo := AFrom;
+  { Per-fiber exception state (P1): the register swap alone is not the whole
+    context.  Snapshot the outgoing fiber's exception-chain head + current
+    exception into its control block and reinstate the incoming fiber's,
+    so try/finally and raise work correctly across the suspension point. }
+  AFrom^.Ctx.ExcTop := _ExcGetTop();
+  AFrom^.Ctx.ExcCurrent := _ExcGetCurrent();
+  _ExcSetTop(ATo^.Ctx.ExcTop);
+  _ExcSetCurrent(ATo^.Ctx.ExcCurrent);
   GCurrentFiber := ATo;
   FiberSwapAsm(@AFrom^.Ctx, @ATo^.Ctx);
   { Someone switched back into AFrom: it is current again (its resumer's
-    FiberSwitch already set GCurrentFiber := AFrom before the swap). }
+    FiberSwitch already set GCurrentFiber := AFrom and reinstated AFrom's
+    exception state before the swap). }
 end;
 
 function CurrentFiber: PFiber;
