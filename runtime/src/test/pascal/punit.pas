@@ -733,7 +733,7 @@ begin
   Result := SetTestError(teOK);
   Result := TearDownTestRegistry();
   if Result = teOK then
-    DoSetupTestRegistry;
+    DoSetupTestRegistry();
 end;
 
 function TearDownTestRegistry : TTestError;
@@ -893,7 +893,7 @@ begin
   SetTestError(teOK);
   if not CheckInactive() then
     exit;
-  DoSetupTestRegistry;
+  DoSetupTestRegistry();
   if AName = '' then
     begin
     SetTestError(teNoSuiteName);
@@ -2058,7 +2058,7 @@ end;
 function RunTest(ASuite : ^TSuite; ATest : ^TTest) : TTestError; overload;
 begin
   Result := SetTestError(teOK);
-  ProcessSysCommandline;
+  ProcessSysCommandline();
   if ASuite = nil then
     Result := SetTestError(teNoSuite)
   else if ATest = nil then
@@ -2133,7 +2133,7 @@ procedure DoRunSysTests(S : PSuite; T : PTest); overload; forward;
 
 procedure RunTest(ARun : TTestRun); overload;
 begin
-  ProcessSysCommandLine;
+  ProcessSysCommandLine();
   if ARun = nil then
     Halt(2);
   if AddTest('Global', ARun, '') = nil then
@@ -2209,7 +2209,7 @@ begin
     if CurrentRunMode = rvVerbose then
       WriteLn(' (' + IntToStr(ASuite^.Tests.Count) + ' ' + STests + ')')
     else
-      WriteLn;
+      WriteLn();
     SysSuite := ASuite;
     end;
 end;
@@ -2266,7 +2266,7 @@ begin
       Write(SUnknown + ' : ' + AResultRecord^.TestMessage);
   end;
   if O or (not F) then
-    WriteLn;
+    WriteLn();
 end;
 
 procedure SysSuiteCompleteHandler(ASuite : PSuite;
@@ -2286,7 +2286,7 @@ begin
     ' ' + SIgnoredCount + ': ' + IntToStr(Stats.TestsIgnored));
   if RequirePassed then
     Write(' ' + SUnimplementedCount + ': ' + IntToStr(Stats.TestsUnimplemented));
-  WriteLn;
+  WriteLn();
   Delete(SysSuiteIndent, 1, 2);
 end;
 
@@ -2301,7 +2301,7 @@ begin
     Inc(TC, PSuite(BlockGet(Suites, I))^.Tests.Count);
   Write(STestRun + ':');
   if CurrentRunMode <> rvVerbose then
-    WriteLn
+    WriteLn()
   else
     WriteLn(' ' + IntToStr(Count) + ' ' + SSuites +
       ', ' + IntToStr(TC) + ' ' + STests);
@@ -2315,7 +2315,7 @@ begin
     WriteLn(SFailedCount + ': ' + IntToStr(AResult.TestsFailed));
     exit;
     end;
-  WriteLn;
+  WriteLn();
   WriteLn(SRunSummary + ':');
   if CurrentRunMode = rvVerbose then
     begin
@@ -2347,7 +2347,7 @@ begin
       WriteLn(' ' + SUnimplementedCount + ': ' +
         IntToStr(AResult.TestsUnimplemented))
     else
-      WriteLn;
+      WriteLn();
     end;
 end;
 
@@ -2377,7 +2377,7 @@ end;
 
 procedure TearDownSysHandlers;
 begin
-  ClearTestHooks;
+  ClearTestHooks();
 end;
 
 function GetSysRunVerbosity : TSysRunVerbosity;
@@ -2514,7 +2514,7 @@ begin
   case SysRunMode of
     rmHelp :
       begin
-      SysShowHelp;
+      SysShowHelp();
       Halt(0);
       end;
     rmList :
@@ -2533,7 +2533,7 @@ begin
       if R <> teOK then
         Halt(5)
       else
-        SysHalt;
+        SysHalt();
       end;
   end;
 end;
@@ -2546,7 +2546,7 @@ var
 begin
   S := nil;
   T := nil;
-  ProcessSysCommandline;
+  ProcessSysCommandline();
   P := Pos('.', SysTestName);
   if P > 0 then
     begin
@@ -2598,10 +2598,10 @@ initialization
   DefaultDoubleDelta := 1E-14;
   CurrentRunMode   := rvNormal;
   SetupTestRegistry();
-  SetupSysHandlers;
+  SetupSysHandlers();
 
 finalization
-  TearDownSysHandlers;
+  TearDownSysHandlers();
   TearDownTestRegistry();
   ResetRun(CurrentRun);
 
