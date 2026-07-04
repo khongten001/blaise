@@ -33,6 +33,11 @@ type
     procedure TestScheduler_SleepOrdering_TimersFireInDeadlineOrder;
     procedure TestScheduler_FiberSpawnsFibers;
     procedure TestScheduler_Smoke10kFibers_DrainsToCompletion;
+
+    { Slice 3 — root exception frame + cancellation. }
+    procedure TestScheduler_UnhandledException_ContainedByRootFrame;
+    procedure TestScheduler_CancelSleeping_RaisesAtSuspensionPoint;
+    procedure TestScheduler_CancelUncaught_RunsFinally_SchedulerSurvives;
   end;
 
 implementation
@@ -149,6 +154,120 @@ const
     end.
     ''';
 
+  { Root exception frame (design [#scheduler-cancellation] / the L0 open
+    item): an exception that escapes a fiber's entry procedure must be
+    contained — the fiber reads fsFailed with the message recorded, the
+    OTHER fibers keep running, and RunScheduler returns normally. }
+  SrcUnhandledContained =
+    '''
+    program schedexc;
+    uses async.fibers, SysUtils;
+    procedure Boomer(AArg: Pointer);
+    begin
+      WriteLn('B:pre');
+      raise Exception.Create('boom');
+    end;
+    procedure Steady(AArg: Pointer);
+    var
+      I: Integer;
+    begin
+      for I := 0 to 1 do
+      begin
+        WriteLn('S', I);
+        FiberYield();
+      end;
+    end;
+    var
+      TB, TS: TFiberTask;
+    begin
+      TB := SpawnFiber(@Boomer, nil);
+      TS := SpawnFiber(@Steady, nil);
+      RunScheduler();
+      if TB.State = fsFailed then
+        WriteLn('FAILED:', TB.FailMessage);
+      if TS.State = fsDone then
+        WriteLn('STEADY:done');
+      WriteLn('M');
+    end.
+    ''';
+
+  { Cancelling a parked fiber wakes it from the timer heap and raises
+    EFiberCancelled at the suspension point (inside FiberSleep), so the
+    fiber's own except handler runs on its own stack — the long 10 s sleep
+    must NOT elapse. }
+  SrcCancelSleeping =
+    '''
+    program schedcancel;
+    uses async.fibers;
+    var
+      TSleep: TFiberTask;
+    procedure Sleepy(AArg: Pointer);
+    begin
+      try
+        WriteLn('S:pre');
+        FiberSleep(10000);
+        WriteLn('S:post');
+      except
+        on E: EFiberCancelled do WriteLn('S:cancelled');
+      end;
+    end;
+    procedure Canceller(AArg: Pointer);
+    begin
+      FiberSleep(20);
+      FiberCancel(TSleep);
+      WriteLn('C:cancelled-it');
+    end;
+    var
+      TC: TFiberTask;
+    begin
+      TSleep := SpawnFiber(@Sleepy, nil);
+      TC := SpawnFiber(@Canceller, nil);
+      RunScheduler();
+      if TSleep.State = fsDone then
+        WriteLn('SLEEPY:done');
+      WriteLn('M');
+    end.
+    ''';
+
+  { An UNCAUGHT EFiberCancelled unwinds the fiber through its try/finally
+    (releasing what it holds — the P1 coupling) into the root frame, which
+    marks it fsCancelled; the scheduler survives and drains the rest. }
+  SrcCancelUncaught =
+    '''
+    program schedcancel2;
+    uses async.fibers;
+    var
+      TSleep: TFiberTask;
+    procedure Sleepy(AArg: Pointer);
+    begin
+      try
+        WriteLn('S:pre');
+        FiberSleep(10000);
+        WriteLn('S:post');
+      finally
+        WriteLn('S:fin');
+      end;
+    end;
+    procedure Canceller(AArg: Pointer);
+    begin
+      FiberSleep(20);
+      FiberCancel(TSleep);
+      WriteLn('C:cancelled-it');
+    end;
+    var
+      TC: TFiberTask;
+    begin
+      TSleep := SpawnFiber(@Sleepy, nil);
+      TC := SpawnFiber(@Canceller, nil);
+      RunScheduler();
+      if TSleep.State = fsCancelled then
+        WriteLn('SLEEPY:cancelled');
+      if TC.State = fsDone then
+        WriteLn('CANCELLER:done');
+      WriteLn('M');
+    end.
+    ''';
+
 procedure TSchedulerE2ETests.SetUp;
 begin
   inherited SetUp();
@@ -184,6 +303,30 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRTLRunsOnOne(beNative, 'sched-smoke', SrcSmoke10k,
     'COUNT=10000' + LE + 'LIVE=0' + LE, 0)
+end;
+
+procedure TSchedulerE2ETests.TestScheduler_UnhandledException_ContainedByRootFrame;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'sched-exc', SrcUnhandledContained,
+    'B:pre' + LE + 'S0' + LE + 'S1' + LE +
+    'FAILED:boom' + LE + 'STEADY:done' + LE + 'M' + LE, 0)
+end;
+
+procedure TSchedulerE2ETests.TestScheduler_CancelSleeping_RaisesAtSuspensionPoint;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'sched-cancel', SrcCancelSleeping,
+    'S:pre' + LE + 'C:cancelled-it' + LE + 'S:cancelled' + LE +
+    'SLEEPY:done' + LE + 'M' + LE, 0)
+end;
+
+procedure TSchedulerE2ETests.TestScheduler_CancelUncaught_RunsFinally_SchedulerSurvives;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'sched-cancel-uncaught', SrcCancelUncaught,
+    'S:pre' + LE + 'C:cancelled-it' + LE + 'S:fin' + LE +
+    'SLEEPY:cancelled' + LE + 'CANCELLER:done' + LE + 'M' + LE, 0)
 end;
 
 initialization

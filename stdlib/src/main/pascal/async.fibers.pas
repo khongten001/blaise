@@ -148,6 +148,14 @@ procedure FiberYield;
   (the same blocking-fallback posture the design gives L3 fiber I/O). }
 procedure FiberSleep(AMillis: Int64);
 
+{ Request cancellation of a fiber (design [#scheduler-cancellation]).  Sets
+  the task's Cancelled flag; if the fiber is parked in the timer heap it is
+  woken immediately.  The fiber observes cancellation at its next (or
+  current) suspension point, where EFiberCancelled is raised so cleanup runs
+  through normal try/finally on its own stack.  A fiber that never suspends
+  again simply runs to completion.  Cancelling a finished fiber is a no-op. }
+procedure FiberCancel(ATask: TFiberTask);
+
 { Number of spawned fibers that have not yet finished. }
 function SchedulerLiveCount: Integer;
 
@@ -374,17 +382,39 @@ begin
   _libc_nanosleep(@Ts, nil);
 end;
 
-{ Entry wrapper every spawned fiber runs (the design's root exception
-  frame lands in the cancellation slice; for now the wrapper marks
-  completion).  The current task is read from the worker — the scheduler
-  sets Current before switching in. }
+{ Entry wrapper every spawned fiber runs — the ROOT EXCEPTION FRAME.  A
+  fresh fiber starts with an empty exception chain (P1), so before this
+  frame existed an unhandled raise on a fiber aborted the whole process;
+  now it unwinds to here, is recorded on the task handle, and the
+  scheduler carries on with the other fibers.  An unhandled
+  EFiberCancelled is the normal end of a cancelled fiber and is recorded
+  as fsCancelled rather than a failure.  The current task is read from
+  the worker — the scheduler sets Current before switching in. }
 procedure SchedFiberEntry(AArg: Pointer);
 var
   T: TFiberTask;
 begin
   T := GWorker.Current;
-  T.Proc(T.Arg);
-  T.State := fsDone;
+  try
+    T.Proc(T.Arg);
+    T.State := fsDone;
+  except
+    on E: EFiberCancelled do
+    begin
+      T.State := fsCancelled;
+      T.FailMessage := E.Message;
+    end;
+    on E: Exception do
+    begin
+      T.State := fsFailed;
+      T.FailMessage := E.Message;
+    end;
+    else
+    begin
+      T.State := fsFailed;
+      T.FailMessage := 'unhandled exception (not an Exception descendant)';
+    end;
+  end;
 end;
 
 function SpawnFiber(AProc: TFiberProc; AArg: Pointer;
@@ -494,6 +524,12 @@ begin
     OsSleepNs(AMillis * Int64(1000000));   { blocking fallback off-scheduler }
     Exit;
   end;
+  { A suspension point observes cancellation (design: the fiber-aware call
+    raises EFiberCancelled at the suspension point, so cleanup runs through
+    normal try/finally) — both when already flagged on entry and when
+    cancelled while parked. }
+  if T.Cancelled then
+    raise EFiberCancelled.Create('fiber cancelled');
   if AMillis <= 0 then
   begin
     FiberYield();
@@ -503,6 +539,33 @@ begin
   T.State := fsSleeping;
   W.Timers.Push(T);
   FiberSwitch(T.Fib, W.SchedFib);
+  if T.Cancelled then
+    raise EFiberCancelled.Create('fiber cancelled');
+end;
+
+procedure FiberCancel(ATask: TFiberTask);
+var
+  W: TWorker;
+begin
+  if ATask = nil then
+    Exit;
+  if (ATask.State = fsDone) or (ATask.State = fsFailed) or
+     (ATask.State = fsCancelled) then
+    Exit;
+  if ATask.Cancelled then
+    Exit;
+  ATask.Cancelled := True;
+  W := GWorker;
+  if W = nil then
+    Exit;
+  { Wake a parked fiber immediately: pull it out of the timer heap and
+    requeue it; its FiberSleep raises EFiberCancelled on resume. }
+  if ATask.State = fsSleeping then
+  begin
+    W.Timers.Remove(ATask);
+    ATask.State := fsReady;
+    W.RunQ.Push(ATask);
+  end;
 end;
 
 function SchedulerLiveCount: Integer;

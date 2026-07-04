@@ -22,7 +22,7 @@ unit Scheduler.Tests;
 interface
 
 uses
-  blaise.testing, async.fibers;
+  blaise.testing, SysUtils, async.fibers;
 
 type
   TTimerHeapTests = class(TTestCase)
@@ -56,6 +56,19 @@ type
     procedure TestRun_FiberSpawnsFiber;
     procedure TestRun_ZeroSleepIsYield;
     procedure TestRun_ResetAllowsFreshRound;
+  end;
+
+  { Root exception frame + cancellation (design [#scheduler-cancellation]):
+    an exception escaping a fiber's entry procedure is contained by the
+    scheduler's root frame — recorded on the handle, other fibers continue —
+    and FiberCancel wakes a parked fiber with EFiberCancelled raised at the
+    suspension point. }
+  TSchedulerFaultTests = class(TTestCase)
+  published
+    procedure TestRun_UnhandledException_MarksFailedAndContinues;
+    procedure TestRun_CancelSleeping_RaisesAtSuspensionPoint;
+    procedure TestRun_CancelUncaught_MarksCancelled_RunsFinally;
+    procedure TestRun_CancelBeforeSleep_RaisesImmediately;
   end;
 
 implementation
@@ -368,10 +381,139 @@ begin
   ResetScheduler();
 end;
 
+{ --- root exception frame + cancellation ----------------------------------- }
+
+var
+  GVictim: TFiberTask;
+
+procedure BoomWorker(AArg: Pointer);
+begin
+  GLog := GLog + 'B1 ';
+  raise Exception.Create('boom');
+end;
+
+procedure CaughtCancelWorker(AArg: Pointer);
+begin
+  try
+    GLog := GLog + 'V1 ';
+    FiberSleep(10000);
+    GLog := GLog + 'V2 ';
+  except
+    on E: EFiberCancelled do
+      GLog := GLog + 'Vcancelled ';
+  end;
+end;
+
+procedure UncaughtCancelWorker(AArg: Pointer);
+begin
+  try
+    GLog := GLog + 'V1 ';
+    FiberSleep(10000);
+    GLog := GLog + 'V2 ';
+  finally
+    GLog := GLog + 'Vfin ';
+  end;
+end;
+
+procedure CancellerWorker(AArg: Pointer);
+begin
+  FiberSleep(5);
+  FiberCancel(GVictim);
+  GLog := GLog + 'K ';
+end;
+
+procedure PreCancelledWorker(AArg: Pointer);
+begin
+  try
+    FiberYield();          { canceller runs here and flags us }
+    GLog := GLog + 'P1 ';
+    FiberSleep(10000);     { must raise immediately, never park }
+    GLog := GLog + 'P2 ';
+  except
+    on E: EFiberCancelled do
+      GLog := GLog + 'Pcancelled ';
+  end;
+end;
+
+procedure ImmediateCancellerWorker(AArg: Pointer);
+begin
+  FiberCancel(GVictim);
+  GLog := GLog + 'K ';
+end;
+
+procedure TSchedulerFaultTests.TestRun_UnhandledException_MarksFailedAndContinues;
+var
+  TB, TS: TFiberTask;
+begin
+  GLog := '';
+  TB := SpawnFiber(@BoomWorker, nil);
+  TS := SpawnFiber(@LogYieldWorker, Pointer(7));
+  RunScheduler();
+  AssertEquals('boomer ran, then survivor kept running',
+    'B1 F70 F71 ', GLog);
+  AssertTrue('raising fiber marked failed', TB.State = fsFailed);
+  AssertEquals('exception message recorded', 'boom', TB.FailMessage);
+  AssertTrue('other fiber unaffected', TS.State = fsDone);
+  AssertEquals('scheduler drained', 0, SchedulerLiveCount());
+  ResetScheduler();
+end;
+
+procedure TSchedulerFaultTests.TestRun_CancelSleeping_RaisesAtSuspensionPoint;
+var
+  Started: Int64;
+  TK: TFiberTask;
+begin
+  GLog := '';
+  Started := MonotonicNowNs();
+  GVictim := SpawnFiber(@CaughtCancelWorker, nil);
+  TK := SpawnFiber(@CancellerWorker, nil);
+  RunScheduler();
+  AssertEquals('handler ran at the suspension point, canceller first',
+    'V1 K Vcancelled ', GLog);
+  AssertTrue('caught cancellation completes the fiber normally',
+    GVictim.State = fsDone);
+  AssertTrue('the 10 s park did not elapse',
+    MonotonicNowNs() - Started < Int64(5000000000));
+  GVictim := nil;
+  ResetScheduler();
+end;
+
+procedure TSchedulerFaultTests.TestRun_CancelUncaught_MarksCancelled_RunsFinally;
+var
+  TK: TFiberTask;
+begin
+  GLog := '';
+  GVictim := SpawnFiber(@UncaughtCancelWorker, nil);
+  TK := SpawnFiber(@CancellerWorker, nil);
+  RunScheduler();
+  AssertEquals('finally ran during the cancellation unwind',
+    'V1 K Vfin ', GLog);
+  AssertTrue('uncaught cancellation marks fsCancelled',
+    GVictim.State = fsCancelled);
+  GVictim := nil;
+  ResetScheduler();
+end;
+
+procedure TSchedulerFaultTests.TestRun_CancelBeforeSleep_RaisesImmediately;
+var
+  TK: TFiberTask;
+begin
+  GLog := '';
+  GVictim := SpawnFiber(@PreCancelledWorker, nil);
+  TK := SpawnFiber(@ImmediateCancellerWorker, nil);
+  RunScheduler();
+  AssertEquals('pre-flagged fiber raises on its next park attempt',
+    'K P1 Pcancelled ', GLog);
+  AssertTrue('victim completed via its handler', GVictim.State = fsDone);
+  GVictim := nil;
+  ResetScheduler();
+end;
+
 initialization
   RegisterTest(TTimerHeapTests);
   RegisterTest(TRunQueueTests);
   RegisterTest(TMonotonicClockTests);
   RegisterTest(TSchedulerTests);
+  RegisterTest(TSchedulerFaultTests);
 
 end.
