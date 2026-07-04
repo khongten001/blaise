@@ -719,6 +719,70 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
+{ Remote-free queue (phase 3) — single-threaded synthetic drain.       }
+{ Forge a "foreign" free by planting a remote node on the owning       }
+{ arena's RemoteHead directly (what RemoteFreePush does from another   }
+{ thread), then allocate until the owner drains and recycles it.       }
+{ Layout pinned here: TArena.OwnerTid at +24, RemoteHead at +32;       }
+{ TRemoteNode.Next at +0, SizeClass at +8.                             }
+{ ------------------------------------------------------------------ }
+
+function Test_RemoteQueue_DrainRecycles: string;
+const
+  Sz = 2000;   { class 7 (2048) — biggest class, fills an arena fastest }
+var
+  P, Q, Arena: Pointer;
+  ArenaP: ^Pointer;
+  RemoteHeadP: ^Pointer;
+  OwnerTidP: ^Int64;
+  NodeNextP: ^Pointer;
+  NodeClassP: ^Integer;
+  I: Integer;
+  Found: Boolean;
+begin
+  P := _BlaiseGetMem(Sz);
+  AssertNotNull('alloc', P);
+  ArenaP := Pointer(PtrUInt(P) - 8);
+  Arena := ArenaP^;
+  AssertNotNull('arena back-pointer', Arena);
+
+  OwnerTidP := Pointer(PtrUInt(Arena) + 24);
+  AssertTrue('arena has a non-zero owner tid', OwnerTidP^ <> 0);
+
+  { Forge the remote free: node in the block's user bytes, planted on
+    the arena's RemoteHead.  (Single-threaded, so a plain store stands
+    in for the producer's CAS.) }
+  NodeNextP := Pointer(P);
+  NodeNextP^ := nil;
+  NodeClassP := Pointer(PtrUInt(P) + 8);
+  NodeClassP^ := 7;
+  RemoteHeadP := Pointer(PtrUInt(Arena) + 32);
+  AssertNull('remote queue empty before forge', RemoteHeadP^);
+  RemoteHeadP^ := P;
+
+  { The owner must reclaim P: either the empty-freelist drain of the
+    head arena or the drain-all on arena exhaustion files it back onto
+    FreeLists[7], from where allocation returns it by pointer identity.
+    Class 7 blocks are 2048+16 bytes, so well under 64 iterations force
+    an arena refill even from a fresh arena. }
+  Found := False;
+  for I := 0 to 63 do
+  begin
+    Q := _BlaiseGetMem(Sz);
+    AssertNotNull('drain-loop alloc ' + IntToStr(I), Q);
+    if Q = P then
+    begin
+      Found := True;
+      Break;
+    end;
+  end;
+  AssertTrue('forged remote free was drained and recycled', Found);
+  AssertNull('remote queue empty after drain', RemoteHeadP^);
+  _BlaiseFreeMem(P);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
 { Atomic primitives (runtime.atomic) — single-threaded semantics.      }
 { These prove the asm bodies and the Boolean/pointer ABI before any    }
 { concurrent use (concurrent-allocator-design.adoc, §Testing).         }
@@ -845,6 +909,7 @@ begin
   AddTest('FlagsOffset_Invariant', @Test_FlagsOffset_Invariant, 'blaise_mem');
   AddTest('ArenaBackPointer', @Test_ArenaBackPointer, 'blaise_mem');
   AddTest('ArenaBackPointer_AfterReuse', @Test_ArenaBackPointer_AfterReuse, 'blaise_mem');
+  AddTest('RemoteQueue_DrainRecycles', @Test_RemoteQueue_DrainRecycles, 'blaise_mem');
 
   AddSuite('blaise_atomic', nil);
   AddTest('AtomicCASPtr_Success', @Test_AtomicCASPtr_Success, 'blaise_atomic');

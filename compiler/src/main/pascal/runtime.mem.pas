@@ -50,6 +50,9 @@ unit runtime.mem;
 
 interface
 
+uses
+  runtime.atomic;
+
 function  _BlaiseGetMem(Size: Integer): Pointer;
 procedure _BlaiseFreeMem(Ptr: Pointer);
 function  _BlaiseReallocMem(Ptr: Pointer; NewSize: Integer): Pointer;
@@ -127,6 +130,25 @@ type
     Offset:   Integer;
     Capacity: Integer;
     Next:     PArena;
+    { Migration-safe cross-thread free path (concurrent-allocator-design.adoc).
+      OwnerTid identifies the owning thread (0 = abandoned, a later phase);
+      RemoteHead is the MPSC remote-free stack head, touched ONLY through
+      _AtomicCASPtr (producer push) / _AtomicXchgPtr (owner drain);
+      RemoteList is reserved for the global abandoned-arena registry
+      (phase 5) and stays nil until that lands. }
+    OwnerTid:   Int64;
+    RemoteHead: Pointer;
+    RemoteList: PArena;
+  end;
+
+  { A foreign-freed block's intrusive node, living in the block's user
+    bytes while it waits on an arena's RemoteHead.  SizeClass lets the
+    draining owner file it without re-reading the block header.  16 bytes
+    with default alignment — fits even the smallest (16-byte) class. }
+  PRemoteNode = ^TRemoteNode;
+  TRemoteNode = record
+    Next:      PRemoteNode;
+    SizeClass: Integer;
   end;
 
 const
@@ -138,6 +160,75 @@ threadvar
   ArenaHead: PArena;
   LargeFreeHead: PLargeFreeNode;
   LargeFreeCount: Integer;
+  { Cross-thread free path state.  TidAnchor exists only for its per-thread
+    TLS address (see MyTid); FreeDrainCounter and DrainCursor implement the
+    periodic rotating free-side drain. }
+  TidAnchor: Int64;
+  FreeDrainCounter: Integer;
+  DrainCursor: PArena;
+
+{ Per-thread identity for the owner-vs-foreign test.  The address of a
+  threadvar is unique among live threads (each thread has its own TLS
+  block) and never zero, which is all OwnerTid needs.  This deliberately
+  deviates from the design doc's pthread_self binding: it costs one leaq
+  instead of a libc call, needs no pthread_self shim in the static
+  (libc-free) build, and is CPU/OS-invariant. }
+function MyTid: Int64;
+begin
+  Result := Int64(PtrUInt(@TidAnchor));
+end;
+
+{ Producer side: push a foreign-freed block onto its owning arena's MPSC
+  remote-free stack (Treiber push; one CAS, retried on contention with
+  another producer).  lock cmpxchg is a full barrier on x86-64, so the
+  node-field stores are published before the new head (release). }
+procedure RemoteFreePush(Arena: PArena; Ptr: Pointer; SizeClass: Integer);
+var
+  Node: PRemoteNode;
+  OldHead: Pointer;
+begin
+  Node := PRemoteNode(Ptr);
+  Node^.SizeClass := SizeClass;
+  repeat
+    OldHead := Arena^.RemoteHead;
+    Node^.Next := PRemoteNode(OldHead);
+  until _AtomicCASPtr(@Arena^.RemoteHead, OldHead, Pointer(Node));
+end;
+
+{ Consumer side: the OWNING thread claims the whole remote stack with one
+  atomic exchange, then walks the now-private list with no atomics and
+  files each block onto its normal freelist.  Only the owner ever drains
+  its arenas — the single-consumer guarantee that makes the walk safe. }
+procedure DrainRemoteFrees(Arena: PArena);
+var
+  Claimed, Nxt: PRemoteNode;
+  FNode: PFreeNode;
+begin
+  if Arena^.RemoteHead = nil then Exit;
+  Claimed := PRemoteNode(_AtomicXchgPtr(@Arena^.RemoteHead, nil));
+  while Claimed <> nil do
+  begin
+    Nxt := Claimed^.Next;
+    FNode := PFreeNode(Claimed);
+    FNode^.Next := FreeLists[Claimed^.SizeClass];
+    FreeLists[Claimed^.SizeClass] := FNode;
+    Claimed := Nxt;
+  end;
+end;
+
+{ Cold path: drain every arena the calling thread owns.  Used before
+  growing the arena list — reclaiming foreign frees can avoid the mmap. }
+procedure DrainAllRemoteFrees;
+var
+  A: PArena;
+begin
+  A := ArenaHead;
+  while A <> nil do
+  begin
+    DrainRemoteFrees(A);
+    A := A^.Next;
+  end;
+end;
 
 function MapFailed(P: Pointer): Boolean;
 begin
@@ -207,6 +298,9 @@ begin
   A^.Offset := SizeOf(TArena);
   A^.Capacity := ARENA_SIZE;
   A^.Next := ArenaHead;
+  A^.OwnerTid := MyTid();
+  A^.RemoteHead := nil;
+  A^.RemoteList := nil;
   ArenaHead := A;
   Result := A;
 end;
@@ -216,6 +310,8 @@ var
   A: PArena;
   BlockSize, Needed: Integer;
   Hdr: PBlockHeader;
+  Node: PFreeNode;
+  Idx: Integer;
 begin
   BlockSize := RoundUpToClass(Size);
   Needed := HEADER_SIZE + BlockSize;
@@ -229,6 +325,20 @@ begin
     Hdr^.Arena := A;
     A^.Offset := A^.Offset + Needed;
     Exit(Pointer(PtrUInt(Hdr) + HEADER_SIZE));
+  end;
+
+  { Head arena exhausted (cold path).  Drain every owned arena's remote
+    queue first — a foreign-freed block of the needed class avoids the
+    mmap entirely. }
+  DrainAllRemoteFrees();
+  Idx := SizeClassIndex(Size);
+  Node := FreeLists[Idx];
+  if Node <> nil then
+  begin
+    FreeLists[Idx] := Node^.Next;
+    Hdr := PBlockHeader(Pointer(PtrUInt(Node) - HEADER_SIZE));
+    Hdr^.AllocSize := Size;
+    Exit(Pointer(Node));
   end;
 
   A := AllocArena();
@@ -253,6 +363,16 @@ begin
   Idx := SizeClassIndex(Size);
 
   Node := FreeLists[Idx];
+  if (Node = nil) and (ArenaHead <> nil)
+     and (ArenaHead^.RemoteHead <> nil) then
+  begin
+    { Empty freelist: drain the head arena's remote queue first — a
+      foreign free of this class satisfies the request without growing
+      the arena.  The nil check above keeps the non-fiber fast path at
+      one load + not-taken branch. }
+    DrainRemoteFrees(ArenaHead);
+    Node := FreeLists[Idx];
+  end;
   if Node <> nil then
   begin
     FreeLists[Idx] := Node^.Next;
@@ -269,12 +389,39 @@ var
   Hdr: PBlockHeader;
   Idx: Integer;
   Node: PFreeNode;
+  Arena: PArena;
 begin
   Hdr := PBlockHeader(Pointer(PtrUInt(Ptr) - HEADER_SIZE));
   Idx := SizeClassIndex(Hdr^.AllocSize);
-  Node := PFreeNode(Ptr);
-  Node^.Next := FreeLists[Idx];
-  FreeLists[Idx] := Node;
+  Arena := Hdr^.Arena;
+
+  if Arena^.OwnerTid = MyTid() then
+  begin
+    { LOCAL fast path — identical to the pre-concurrency code, zero
+      atomics. }
+    Node := PFreeNode(Ptr);
+    Node^.Next := FreeLists[Idx];
+    FreeLists[Idx] := Node;
+    { Periodic rotating drain: every 64th local free, drain ONE arena,
+      walking ArenaHead -> Next and wrapping, so foreign frees to
+      non-head arenas cannot starve regardless of allocation rate. }
+    Inc(FreeDrainCounter);
+    if (FreeDrainCounter and 63) = 0 then
+    begin
+      if DrainCursor = nil then
+        DrainCursor := ArenaHead;
+      if DrainCursor <> nil then
+      begin
+        DrainRemoteFrees(DrainCursor);
+        DrainCursor := DrainCursor^.Next;
+      end;
+    end;
+  end
+  else
+    { FOREIGN path: the block belongs to another thread's arena — route
+      it back via the arena's MPSC remote-free queue; never touch this
+      thread's freelists. }
+    RemoteFreePush(Arena, Ptr, Idx);
 end;
 
 function LargeGetMem(Size: Integer): Pointer;
