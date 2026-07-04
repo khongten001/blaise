@@ -7891,15 +7891,15 @@ begin
       Exit;
     end;
 
-    { @Variable — take the address of a local or global variable. }
+    { @Variable — take the address of a local or global variable.
+      Routed through EmitVarAddr so a threadvar global yields the
+      PER-THREAD address (movq %fs:0 + leaq @tpoff) instead of a
+      static leaq Name(%rip) — the bare rip-relative form made every
+      thread's @TV identical, silently breaking any code that keys
+      identity off a threadvar address (runtime.mem's MyTid). }
     if AOE.Expr is TIdentExpr then
     begin
-      if Self.IsLocal(TIdentExpr(AOE.Expr).Name) then
-        Self.Emit(Format(#9'leaq %s, %%rax',
-          [Self.VarOperand(TIdentExpr(AOE.Expr).Name)]))
-      else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-          [TIdentExpr(AOE.Expr).Name]));
+      Self.EmitVarAddr(TIdentExpr(AOE.Expr).Name, '%rax');
       Exit;
     end;
 

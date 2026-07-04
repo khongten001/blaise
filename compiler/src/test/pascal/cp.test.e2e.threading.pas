@@ -34,6 +34,7 @@ type
     procedure TestRun_ThreadVar_MixedWithGlobalVar;
     procedure TestRun_ThreadVar_RecordField_PerThreadIsolation;
     procedure TestRun_ThreadVar_RecordMethod_PerThreadIsolation;
+    procedure TestRun_ThreadVar_AddressOf_PerThreadIsolation;
     procedure TestRun_PerThreadAllocator_IndependentAllocs;
     procedure TestRun_AtomicARC_SharedObject_NoCorruption;
   end;
@@ -517,6 +518,82 @@ var
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTL(SrcThreadVarRecordMethod, Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('stdout', 'ok' + LE, Output)
+end;
+
+const
+  { @ThreadVar must be the PER-THREAD address.  The native backend used a
+    static leaq Name(%rip) for the address-of form (value access was already
+    TLS-correct), so every thread's @TV aliased one slot: a write through
+    the pointer landed in the shared slot while the TLS read saw the
+    thread's own zero-initialised copy -> 'CORRUPT'.  Also asserts the
+    addresses observed by concurrent threads are pairwise distinct — the
+    property runtime.mem's MyTid identity relies on. }
+  SrcThreadVarAddressOf =
+    '''
+    program P;
+    uses Classes;
+    type
+      TAddrThread = class(TThread)
+        MyId: Int64;
+        Slot: Integer;
+      protected
+        procedure Execute; override;
+      end;
+    threadvar
+      TV: Int64;
+    var
+      Corrupt: Integer;
+      Addrs: array[0..2] of Int64;
+    procedure TAddrThread.Execute;
+    var
+      P: ^Int64;
+      I: Integer;
+    begin
+      P := @TV;
+      Addrs[Self.Slot] := Int64(PtrUInt(P));
+      P^ := Self.MyId;
+      for I := 0 to 200000 do
+        if TV <> Self.MyId then
+        begin
+          Corrupt := 1;
+          Exit
+        end
+    end;
+    var
+      A, B, C: TAddrThread;
+    begin
+      Corrupt := 0;
+      A := TAddrThread.Create(True);
+      B := TAddrThread.Create(True);
+      C := TAddrThread.Create(True);
+      A.MyId := 11; A.Slot := 0;
+      B.MyId := 22; B.Slot := 1;
+      C.MyId := 33; C.Slot := 2;
+      A.Start();
+      B.Start();
+      C.Start();
+      A.WaitFor();
+      B.WaitFor();
+      C.WaitFor();
+      if (Addrs[0] = Addrs[1]) or (Addrs[0] = Addrs[2])
+         or (Addrs[1] = Addrs[2]) then
+        Corrupt := 2;
+      if Corrupt = 0 then
+        WriteLn('ok')
+      else
+        WriteLn('CORRUPT ' + IntToStr(Corrupt))
+    end.
+    ''';
+
+procedure TE2EThreadingTests.TestRun_ThreadVar_AddressOf_PerThreadIsolation;
+var
+  Output: string;
+  RCode:  Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcThreadVarAddressOf, Output, RCode));
   AssertEquals('exit code', 0, RCode);
   AssertEquals('stdout', 'ok' + LE, Output)
 end;

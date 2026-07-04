@@ -12,12 +12,14 @@ interface
 
 uses
   blaise.testing,
-  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe;
+  uLexer, uParser, uAST, uSemantic, blaise.codegen.qbe,
+  blaise.codegen.native, blaise.codegen.target;
 
 type
   TThreadVarTests = class(TTestCase)
   private
     function GenerateIR(const ASrc: string): string;
+    function GenerateNativeAsm(const ASrc: string): string;
     function IRContains(const AIR, AFragment: string): Boolean;
   published
     procedure TestParser_ThreadVarBlockParsed;
@@ -29,6 +31,12 @@ type
     procedure TestCodegen_RegularVar_NoThreadPrefix;
     procedure TestCodegen_MixedVarAndThreadVar;
     procedure TestCodegen_ThreadVarStaticArray_EmitsCorrectSize;
+    { @ThreadVar must yield the PER-THREAD address (%fs:0 + @tpoff), not
+      the static leaq Name(%rip).  A static address makes every thread's
+      @TV identical — which silently broke the allocator's MyTid identity
+      (runtime.mem) and any code holding a pointer into a threadvar. }
+    procedure TestCodegenNative_AddrOfThreadVar_UsesTls;
+    procedure TestCodegenNative_AddrOfPlainGlobal_StaysRipRelative;
   end;
 
 implementation
@@ -59,6 +67,42 @@ begin
     Pr.Free();
     P.Free();
     L.Free();
+  end;
+end;
+
+function TThreadVarTests.GenerateNativeAsm(const ASrc: string): string;
+var
+  L:  TLexer;
+  P:  TParser;
+  Pr: TProgram;
+  A:  TSemanticAnalyser;
+  CG: TCodeGenNative;
+begin
+  L := TLexer.Create(ASrc);
+  P := TParser.Create(L);
+  try
+    Pr := P.Parse();
+  finally
+    P.Free();
+    L.Free();
+  end;
+  try
+    A := TSemanticAnalyser.Create();
+    try
+      A.Analyse(Pr);
+    finally
+      A.Free();
+    end;
+    CG := TCodeGenNative.Create();
+    try
+      CG.SetTarget(HostTarget());
+      CG.Generate(Pr);
+      Result := CG.GetOutput();
+    finally
+      CG.Free();
+    end;
+  finally
+    Pr.Free();
   end;
 end;
 
@@ -230,6 +274,45 @@ begin
     'end.');
   AssertTrue(Self.IRContains(IR, 'export thread data $Buckets'));
   AssertTrue(Self.IRContains(IR, 'z 64'));
+end;
+
+procedure TThreadVarTests.TestCodegenNative_AddrOfThreadVar_UsesTls;
+var
+  Asm_: string;
+begin
+  Asm_ := Self.GenerateNativeAsm(
+    'program P;' + #10 +
+    'threadvar' + #10 +
+    '  TV: Int64;' + #10 +
+    'var' + #10 +
+    '  Q: Pointer;' + #10 +
+    'begin' + #10 +
+    '  Q := @TV' + #10 +
+    'end.');
+  AssertTrue('@threadvar computes the thread pointer base (%fs:0)',
+    Pos('movq %fs:0', Asm_) >= 0);
+  AssertTrue('@threadvar offsets via TV@tpoff',
+    Pos('TV@tpoff(', Asm_) >= 0);
+  AssertTrue('@threadvar must NOT take the static address',
+    Pos('leaq TV(%rip)', Asm_) < 0);
+end;
+
+procedure TThreadVarTests.TestCodegenNative_AddrOfPlainGlobal_StaysRipRelative;
+var
+  Asm_: string;
+begin
+  Asm_ := Self.GenerateNativeAsm(
+    'program P;' + #10 +
+    'var' + #10 +
+    '  GV: Int64;' + #10 +
+    '  Q: Pointer;' + #10 +
+    'begin' + #10 +
+    '  Q := @GV' + #10 +
+    'end.');
+  AssertTrue('@global stays PC-relative',
+    Pos('leaq GV(%rip)', Asm_) >= 0);
+  AssertTrue('@global takes no TLS path',
+    Pos('GV@tpoff', Asm_) < 0);
 end;
 
 initialization
