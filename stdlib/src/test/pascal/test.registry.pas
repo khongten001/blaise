@@ -30,7 +30,8 @@ uses
   HttpServer.Tests,
   Guid.Tests,
   StrUtils.Tests,
-  Scheduler.Tests;
+  Scheduler.Tests,
+  Deque.Tests;
 
 implementation
 
