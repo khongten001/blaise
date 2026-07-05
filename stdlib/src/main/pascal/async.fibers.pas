@@ -55,7 +55,7 @@ type
                     root frame contained it (FailMessage holds the message)
       fsCancelled — unwound via an unhandled EFiberCancelled }
   TFiberState = (fsReady, fsRunning, fsSleeping, fsDone, fsFailed,
-    fsCancelled);
+    fsCancelled, fsBlocked);
 
   { Control block of one scheduled fiber.  Returned by SpawnFiber as the
     fiber's handle; remains valid (queryable) after the fiber completes,
@@ -72,6 +72,12 @@ type
     HeapIndex: Integer;      { slot in the timer heap; -1 when not queued }
     Cancelled: Boolean;
     FailMessage: string;     { set by the root frame on fsFailed/fsCancelled }
+    { Park handshake word (async.sync park/resume): PK_RUNNING/PK_PARKING/
+      PK_PARKED/PK_NOTIFIED.  POINTER-WIDTH (Int64) because the atomic CAS on it
+      goes through _AtomicCASPtr, which operates on a full 64-bit word — a
+      32-bit field would let the adjacent field's bytes into the comparison and
+      the CAS would never match (a real bug that caused a hot-spin livelock). }
+    ParkState: Int64;
     constructor Create;
   end;
 
@@ -202,6 +208,30 @@ procedure RunSchedulerMC(ANumWorkers: Integer = 0);
 { True while a multicore run is active (RunSchedulerMC is on the stack). }
 function SchedulerIsMulticore: Boolean;
 
+{ ------------------------------------------------------------------------- }
+{ Park / resume — the primitive the fiber-aware sync objects build on        }
+{ ------------------------------------------------------------------------- }
+
+{ The task currently running on this worker (nil off any scheduler).  A
+  fiber-aware sync primitive records this before parking so a waker can
+  resume it. }
+function CurrentFiberTask: TFiberTask;
+
+{ Park the CURRENT fiber: mark it fsBlocked and switch to the scheduler
+  WITHOUT enqueuing it anywhere.  It stays off every run queue until a
+  matching FiberResume.  The caller (a sync primitive) must have already
+  recorded the current task (CurrentFiberTask) on its wait list under its own
+  lock, so a concurrent FiberResume can find it.  Off-scheduler it is a
+  no-op (returns immediately) — callers must handle the non-fiber path
+  themselves (e.g. a blocking OS wait).  Observes cancellation on resume:
+  raises EFiberCancelled if the task was cancelled while parked. }
+procedure FiberParkCurrent;
+
+{ Make a parked (fsBlocked) fiber runnable again: push it to a run queue and
+  wake a worker.  Safe to call from any worker thread or the main thread.  A
+  task that is not fsBlocked is ignored (idempotent against double-resume). }
+procedure FiberResume(ATask: TFiberTask);
+
 implementation
 
 uses
@@ -233,6 +263,22 @@ const
 const
   CLOCK_MONOTONIC = 1;
 
+{ Park handshake states (async.sync park/resume).  A cross-thread waker must
+  never enqueue a task while its fiber is still executing on its own stack
+  (between committing to park and the FiberSwitch that saves the context) —
+  that is two threads on one stack.  The four states serialise ownership of the
+  wake:
+    PK_RUNNING(0)  — not parking.
+    PK_PARKING(1)  — the fiber set fsBlocked and is switching away; its context
+                     is NOT yet safely saved.
+    PK_PARKED(2)   — the owning worker confirmed the switch completed; the task
+                     is off every run queue and safe to enqueue.
+    PK_NOTIFIED(3) — a waker fired; whoever owns the transition enqueues it. }
+  PK_RUNNING  = 0;
+  PK_PARKING  = 1;
+  PK_PARKED   = 2;
+  PK_NOTIFIED = 3;
+
 type
   TTimeSpec = record
     Sec: Int64;
@@ -257,6 +303,7 @@ constructor TFiberTask.Create;
 begin
   Self.HeapIndex := -1;
   Self.State := fsReady;
+  Self.ParkState := 0;
 end;
 
 { ---------------------------------------------------------------------------
@@ -435,7 +482,9 @@ var
   GNumWorkers: Integer;
   GGlobalLive: Integer;        { atomic: fibers spawned and not yet finished }
   GStop: Integer;              { atomic: 1 tells every worker to exit }
-  GInjectorTop: Pointer;       { Treiber stack head (TFiberTask via NextReady) }
+  GInjectorHead: TFiberTask;   { global injector FIFO head (TFiberTask.NextReady) }
+  GInjectorTail: TFiberTask;   { global injector FIFO tail }
+  GInjectorMtx: array[0..5] of Int64;  { guards the injector FIFO }
   GAllTasks: TList<TFiberTask>;{ keeps every handle alive; guarded by GTaskMtx }
   GTaskMtx: array[0..5] of Int64;   { pthread_mutex_t buffer }
   GCancelGen: Integer;         { atomic: bumped on every FiberCancel }
@@ -604,6 +653,20 @@ begin
       W.LiveCount := W.LiveCount - 1;
       FiberFree(T.Fib);       { stack back to the pool }
       T.Fib := nil;
+    end
+    else if T.State = fsBlocked then
+    begin
+      { The fiber parked on a sync primitive.  Settle the handshake: if a
+        resume fired during the switch (PK_NOTIFIED), re-enqueue; else it stays
+        cleanly parked (PK_PARKED) until a later FiberResume. }
+      if _AtomicCASPtr(@T.ParkState, Pointer(PK_PARKING), Pointer(PK_PARKED)) then
+        { cleanly parked, off queue }
+      else
+      begin
+        T.ParkState := PK_RUNNING;
+        T.State := fsReady;
+        W.RunQ.Push(T);
+      end;
     end;
   end;
   W.Running := False;
@@ -634,6 +697,112 @@ begin
     { Single worker: no thief, so the original in-line enqueue is safe. }
     W.RunQ.Push(T);
     FiberSwitch(T.Fib, W.SchedFib);
+  end;
+end;
+
+function CurrentFiberTask: TFiberTask;
+var
+  W: TWorker;
+begin
+  W := CurrentWorker();
+  if W = nil then
+    Exit(nil);
+  Result := W.Current;
+end;
+
+{ Enqueue a runnable task onto a run queue and wake a worker (multicore) or the
+  single worker's FIFO.  Used by FiberResume and, in multicore, from any
+  thread. }
+procedure ScheduleRunnable(ATask: TFiberTask);
+begin
+  ATask.State := fsReady;
+  if GMulticore then
+  begin
+    { From any thread: the injector is the only run queue safe to push to from
+      a non-owning thread.  Wake ONE worker to drain it; the finite park cap in
+      the loop makes any missed wake self-heal within a cap, so a single wake
+      is enough for both liveness and low overhead. }
+    InjectorPush(ATask);
+    WakeWorker(GWorkers[0]);
+  end
+  else if GWorker <> nil then
+    GWorker.RunQ.Push(ATask);
+end;
+
+procedure FiberParkCurrent;
+var
+  W: TWorker;
+  T: TFiberTask;
+begin
+  W := CurrentWorker();
+  if W = nil then
+    Exit;                     { off-scheduler: caller handles the blocking path }
+  T := W.Current;
+  if T = nil then
+    Exit;
+
+  { Commit to parking.  If a waker already published NOTIFIED (raced in between
+    the caller registering on its wait list and here), do NOT park — reset and
+    carry on. }
+  if not _AtomicCASPtr(@T.ParkState, Pointer(PK_RUNNING), Pointer(PK_PARKING)) then
+  begin
+    T.ParkState := PK_RUNNING;
+    if T.Cancelled then
+      raise EFiberCancelled.Create('fiber cancelled');
+    Exit;
+  end;
+
+  T.State := fsBlocked;
+  FiberSwitch(T.Fib, W.SchedFib);
+  { Resumed on some worker: reset for the next park. }
+  T.ParkState := PK_RUNNING;
+  if T.Cancelled then
+    raise EFiberCancelled.Create('fiber cancelled');
+end;
+
+{ Called by the OWNING worker's loop immediately after a fiber's FiberSwitch
+  returned with the fiber left fsBlocked.  The context is now saved off the
+  fiber stack, so it is finally safe to make the task stealable.  Publish
+  PK_PARKED; if a waker beat us to PK_NOTIFIED, enqueue the task right here.
+  Returns True if the task was (re)made runnable and should NOT stay parked. }
+function McSettlePark(AW: TWorker; ATask: TFiberTask): Boolean;
+begin
+  if _AtomicCASPtr(@ATask.ParkState, Pointer(PK_PARKING), Pointer(PK_PARKED)) then
+    Exit(False);              { cleanly parked, still off-queue }
+  { A waker published PK_NOTIFIED while we were switching: take ownership of the
+    wake and enqueue on THIS worker's deque (context is saved; we are owner). }
+  ATask.ParkState := PK_RUNNING;
+  ATask.State := fsReady;
+  AW.Deque.PushBottom(Pointer(ATask));
+  Result := True;
+end;
+
+procedure FiberResume(ATask: TFiberTask);
+begin
+  if ATask = nil then
+    Exit;
+  while True do
+  begin
+    { PARKED -> RUNNING + enqueue: the fiber is stably parked off every queue;
+      we own the wake and schedule it. }
+    if _AtomicCASPtr(@ATask.ParkState, Pointer(PK_PARKED), Pointer(PK_RUNNING)) then
+    begin
+      ScheduleRunnable(ATask);
+      Exit;
+    end;
+    { PARKING -> NOTIFIED: the fiber is mid-switch; its owning worker will see
+      NOTIFIED in McSettlePark and enqueue it.  We are done. }
+    if _AtomicCASPtr(@ATask.ParkState, Pointer(PK_PARKING), Pointer(PK_NOTIFIED)) then
+      Exit;
+    { RUNNING -> NOTIFIED: the fiber has not parked yet; it will see NOTIFIED in
+      FiberParkCurrent and skip the park entirely. }
+    if _AtomicCASPtr(@ATask.ParkState, Pointer(PK_RUNNING), Pointer(PK_NOTIFIED)) then
+      Exit;
+    { Already NOTIFIED (a concurrent resume won): idempotent, nothing to do. }
+    if _AtomicAddInt64(@ATask.ParkState, 0) = PK_NOTIFIED then
+      Exit;
+    { Otherwise the state changed under us (e.g. PARKING just became PARKED);
+      loop and retry. }
   end;
 end;
 
@@ -683,6 +852,16 @@ begin
   if ATask.Cancelled then
     Exit;
   ATask.Cancelled := True;
+
+  { A fiber parked on a sync primitive (fsBlocked) must be woken so it observes
+    the cancellation at its suspension point.  FiberResume is thread-safe and
+    idempotent via the park handshake. }
+  if ATask.State = fsBlocked then
+  begin
+    FiberResume(ATask);
+    if not GMulticore then
+      Exit;
+  end;
 
   if GMulticore then
   begin
@@ -744,14 +923,15 @@ var
   Ts: TTimeSpec;
   TsPtr: Pointer;
 begin
+  { A finite timeout is ALWAYS used: FUTEX_WAIT with a NULL timeout blocks
+    forever, so a single lost wake would hang the worker.  A non-positive
+    request is coerced to a short bound (the caller already handles the
+    "due now" case; this is a belt-and-braces floor). }
   if ATimeoutNs <= 0 then
-    TsPtr := nil
-  else
-  begin
-    Ts.Sec := ATimeoutNs div Int64(1000000000);
-    Ts.NSec := ATimeoutNs mod Int64(1000000000);
-    TsPtr := @Ts;
-  end;
+    ATimeoutNs := Int64(1000000);   { 1 ms floor }
+  Ts.Sec := ATimeoutNs div Int64(1000000000);
+  Ts.NSec := ATimeoutNs mod Int64(1000000000);
+  TsPtr := @Ts;
   _libc_syscall6(SYS_futex, Int64(PtrUInt(AAddr)),
     Int64(FUTEX_WAIT_PRIVATE), Int64(AExpected),
     Int64(PtrUInt(TsPtr)), 0, 0);
@@ -784,37 +964,39 @@ end;
 
 { --- global injector (Treiber stack) --------------------------------------- }
 
+{ The global injector is a mutex-protected FIFO, not a lock-free Treiber stack:
+  it is off the hot path (only off-worker spawns and cross-thread resumes push
+  here), and a lock-free stack is ABA-prone when the SAME task is recycled
+  through it (resume -> run -> re-park -> resume), which manifested as lost
+  tasks and hot-spin livelocks.  A short critical section is correct and cheap
+  here. }
 procedure InjectorPush(ATask: TFiberTask);
-var
-  Head: Pointer;
 begin
-  while True do
-  begin
-    Head := GInjectorTop;
-    ATask.NextReady := TFiberTask(Head);
-    if _AtomicCASPtr(@GInjectorTop, Head, Pointer(ATask)) then
-      Exit;
-  end;
+  pthread_mutex_lock(@GInjectorMtx[0]);
+  ATask.NextReady := nil;
+  if GInjectorTail = nil then
+    GInjectorHead := ATask
+  else
+    GInjectorTail.NextReady := ATask;
+  GInjectorTail := ATask;
+  pthread_mutex_unlock(@GInjectorMtx[0]);
 end;
 
 function InjectorPop: TFiberTask;
 var
-  Head: Pointer;
-  Next: TFiberTask;
+  T: TFiberTask;
 begin
-  while True do
+  pthread_mutex_lock(@GInjectorMtx[0]);
+  T := GInjectorHead;
+  if T <> nil then
   begin
-    Head := GInjectorTop;
-    if Head = nil then
-      Exit(nil);
-    Next := TFiberTask(Head).NextReady;
-    if _AtomicCASPtr(@GInjectorTop, Head, Pointer(Next)) then
-    begin
-      Result := TFiberTask(Head);
-      Result.NextReady := nil;
-      Exit;
-    end;
+    GInjectorHead := T.NextReady;
+    if GInjectorHead = nil then
+      GInjectorTail := nil;
+    T.NextReady := nil;
   end;
+  pthread_mutex_unlock(@GInjectorMtx[0]);
+  Result := T;
 end;
 
 { --- task registration + ready submission ---------------------------------- }
@@ -969,15 +1151,23 @@ begin
     if T = nil then
     begin
       { Nothing ready.  Bound the park by the nearest local timer deadline so
-        our own sleepers fire on time; otherwise park until woken. }
+        our own sleepers fire on time, and ALWAYS by a finite safety cap so a
+        (theoretically) lost wake self-heals within one cap rather than
+        hanging.  A zero/negative wait means there is due work now — do not
+        park, just re-loop. }
       if _AtomicAddInt32(@GStop, 0) <> 0 then
         Break;
       if AW.Timers.Count > 0 then
         WaitNs := AW.Timers.PeekMin().Deadline - MonotonicNowNs()
       else
-        WaitNs := Int64(50) * Int64(1000000);   { 50 ms safety cap }
-      if WaitNs < 0 then
-        WaitNs := 0;
+        WaitNs := Int64(10) * Int64(1000000);    { 10 ms safety cap }
+      if WaitNs > Int64(10) * Int64(1000000) then
+        WaitNs := Int64(10) * Int64(1000000);    { cap all parks at 10 ms }
+      if WaitNs <= 0 then
+      begin
+        AW.ParkWord := 0;
+        Continue;                { due timer now: re-loop without parking }
+      end;
       { Consume any pending wake without sleeping; else futex-wait on 0. }
       if AW.ParkWord <> 0 then
         AW.ParkWord := 0
@@ -1008,7 +1198,13 @@ begin
         the fiber's stack, so it is safe to make it stealable: re-enqueue it on
         THIS worker's deque.  (fsSleeping is handled by the timer heap; the
         fiber parked itself there before switching.) }
-      AW.Deque.PushBottom(Pointer(T));
+      AW.Deque.PushBottom(Pointer(T))
+    else if T.State = fsBlocked then
+      { The fiber parked on a sync primitive (FiberParkCurrent).  Settle the
+        park handshake now that the context is saved: either it stays off-queue
+        (cleanly parked) or, if a waker fired during the switch, it is
+        re-enqueued here. }
+      McSettlePark(AW, T);
   end;
 end;
 
@@ -1044,7 +1240,9 @@ begin
     common pattern: spawn from the main thread, then RunSchedulerMC).  Their
     handles and the ready tasks move into the multicore world. }
   GAllTasks := TList<TFiberTask>.Create();
-  GInjectorTop := nil;
+  GInjectorHead := nil;
+  GInjectorTail := nil;
+  pthread_mutex_init(@GInjectorMtx[0], nil);
   GGlobalLive := 0;
   GStop := 0;
   GCancelGen := 0;
@@ -1106,6 +1304,7 @@ begin
     pthread_join(Threads[I], nil);
 
   pthread_mutex_destroy(@GTaskMtx[0]);
+  pthread_mutex_destroy(@GInjectorMtx[0]);
 
   { Tear down.  All fibers are finished (GGlobalLive = 0). }
   GMulticore := False;
