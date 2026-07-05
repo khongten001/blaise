@@ -42,6 +42,9 @@ type
     { local := MakeClass() consumes the call's +1 — no leak per assignment.
       Pins the native class-assignment AddRef elision against the QBE backend. }
     procedure TestDebug_FuncReturnAssign_NoLeak;
+    { MakeClass() called in statement position discards its +1 result — it must
+      be released or one object leaks per call.  Both backends. }
+    procedure TestDebug_DiscardedClassReturn_NoLeak;
     { Multiple same-named typed handlers share one slot — no over-release. }
     procedure TestDebug_MultiHandlerVar_NoOverRelease;
     { for-in over a TList: GetEnumerator's +1 result must be transferred
@@ -559,6 +562,31 @@ const
     end.
     ''';
 
+  { A class-returning function called in STATEMENT position discards its
+    result.  The callee transferred a +1 reference (Result was AddRef'd on
+    `Result := x` and not released at scope exit); the discard must release it
+    or one object leaks per call.  This is the same transient-release rule the
+    assignment path applies (SrcFuncReturnAssign above), for the discarded case.
+    Regressed on BOTH backends before the discarded-class-call release landed in
+    EmitProcCall (qbe) / EmitStmt's TProcCall tail (native). }
+  SrcDiscardedClassReturn = '''
+    program P;
+    type
+      TThing = class N: Integer; end;
+    function MakeThing(): TThing;
+    begin
+      Result := TThing.Create();
+      Result.N := 7;
+    end;
+    var
+      I: Integer;
+    begin
+      for I := 1 to 100 do
+        MakeThing();
+      WriteLn(100);
+    end.
+    ''';
+
   SrcMultiHandlerVar = '''
     program P;
     type
@@ -612,6 +640,24 @@ begin
     CompileAndRunWithRTLDebugOn(beNative, SrcFuncReturnAssign, Output, ExitCode, True));
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertEquals('stdout (native)', '900' + LE, Output);
+  AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_DiscardedClassReturn_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcDiscardedClassReturn, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', '100' + LE, Output);
+  AssertTrue('no leak report (qbe)', Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcDiscardedClassReturn, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', '100' + LE, Output);
   AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
 end;
 

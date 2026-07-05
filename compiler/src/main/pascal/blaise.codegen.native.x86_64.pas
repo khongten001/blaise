@@ -12338,6 +12338,21 @@ begin
     { User procedure call (result, if any, ignored in statement position). }
     Self.EmitCall(FuncSymbolFromDecl(TMethodDecl(PC.ResolvedDecl)),
       TMethodDecl(PC.ResolvedDecl), PC.Args);
+    { A function called in statement position discards its result.  When the
+      result is a managed CLASS the callee transferred a +1 reference (it
+      AddRef'd on `Result := x` and did not release Result at scope exit); the
+      discard would leak it — the same transient-release rule the assignment/arg
+      paths apply, here for the discarded call.  The return is in %rax; release
+      it once.  Only tyClass needs this (String/dynarray discards balance via
+      the callee's scope-exit convention; non-managed returns own nothing).  A
+      bare TProcCall is never a constructor, so every tyClass return is owned. }
+    MD := TMethodDecl(PC.ResolvedDecl);
+    if (MD.ResolvedReturnType <> nil) and
+       (MD.ResolvedReturnType.Kind = tyClass) then
+    begin
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+    end;
     Exit;
   end;
 

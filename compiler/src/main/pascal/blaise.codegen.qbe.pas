@@ -9419,6 +9419,8 @@ var
   PMark:     Integer;
   SelfTemp:  string;
   CallTgt:   string;
+  DiscardRel:  Boolean;
+  DiscardTemp: string;
 begin
   PMark := PendingReleaseMark();
   { Unqualified call to a procedural-typed field of the current class
@@ -9617,7 +9619,29 @@ begin
           ArgLine := ArgLine + Format('%s %s', [QbeParamTypeOf(Par.ResolvedType), ArgTemp]);
         end;
       end;
-      if MDecl.IsExternal and (MDecl.ExternalName <> '') then
+      { A function called in STATEMENT position discards its result.  When that
+        result is a managed CLASS, the callee transferred a +1 reference (it
+        AddRef'd on `Result := x` and did not release Result at scope exit) that
+        the discard would otherwise leak — the same transient-release rule the
+        assignment/arg paths apply via ExprOwnsRef, here for the discarded call.
+        Capture the return into a temp and release it once.  Only tyClass needs
+        this: a discarded String/dynarray return is handled by the callee's own
+        scope-exit release convention, and non-managed returns own nothing.  A
+        bare TProcCall is never a constructor (those dispatch through the
+        method/field-access paths), so every tyClass return here is owned. }
+      DiscardRel := (MDecl.ResolvedReturnType <> nil) and
+                    (MDecl.ResolvedReturnType.Kind = tyClass);
+      if DiscardRel then
+      begin
+        DiscardTemp := AllocTemp();
+        if MDecl.IsExternal and (MDecl.ExternalName <> '') then
+          EmitLine(Format('  %s =l call $%s(%s)', [DiscardTemp, MDecl.ExternalName, ArgLine]))
+        else if MDecl.ResolvedQbeName <> '' then
+          EmitLine(Format('  %s =l call $%s(%s)', [DiscardTemp, QBEMangle(MDecl.ResolvedQbeName), ArgLine]))
+        else
+          EmitLine(Format('  %s =l call $%s(%s)', [DiscardTemp, QBEMangle(ACall.Name), ArgLine]));
+      end
+      else if MDecl.IsExternal and (MDecl.ExternalName <> '') then
         EmitLine(Format('  call $%s(%s)', [MDecl.ExternalName, ArgLine]))
       else if MDecl.ResolvedQbeName <> '' then
         EmitLine(Format('  call $%s(%s)', [QBEMangle(MDecl.ResolvedQbeName), ArgLine]))
@@ -9626,6 +9650,8 @@ begin
       FlushPendingReleases(PMark);
       EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
       ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
+      if DiscardRel then
+        EmitLine(Format('  call $_ClassRelease(l %s)', [DiscardTemp]));
     finally
       ArgTemps.Free();
     end;
