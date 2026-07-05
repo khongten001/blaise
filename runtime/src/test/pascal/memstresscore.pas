@@ -38,7 +38,18 @@ interface
   created. }
 function RunMemStress(NThreads, Iters: Integer): Int64;
 
-{ Counters from the most recent RunMemStress call. }
+{ Phase-5 worker-churn stress (concurrent-allocator-design.adoc,
+  §Teardown): Gens generations of ring workers are spawned and joined
+  while allocation traffic continues — worker iteration counts are
+  staggered so some workers exit mid-generation (their arenas are
+  abandoned under live ring load and adopted/reclaimed by the survivors'
+  refill scans), and the main thread keeps allocating throughout.  Each
+  generation ends with the mailbox terminal drain and a reclamation
+  sweep.  Returns the number of integrity failures (0 = clean);
+  -1 if a worker thread could not be created. }
+function RunChurnStress(NThreads, Iters, Gens: Integer): Int64;
+
+{ Counters from the most recent RunMemStress / RunChurnStress call. }
 function StressAllocTotal: Int64;
 function StressFreeTotal: Int64;
 function StressAllocFails: Int64;
@@ -62,6 +73,9 @@ var
   GIdx: array[0..15] of Integer;
   GNThreads: Integer;
   GIters: Integer;
+  { Per-worker iteration counts — uniform for RunMemStress, staggered
+    for RunChurnStress so some workers exit mid-generation. }
+  GItersOf: array[0..15] of Integer;
   GBad: Int64;
   GAllocFail: Int64;
   GAllocTotal: Int64;
@@ -130,7 +144,7 @@ begin
   Idx := IdxP^;
   Target := Idx + 1;
   if Target >= GNThreads then Target := 0;
-  for I := 0 to GIters - 1 do
+  for I := 0 to GItersOf[Idx] - 1 do
   begin
     { Consume one inbound slot: verify the pattern written by the
       producing thread, then free — a foreign free by construction. }
@@ -164,39 +178,15 @@ begin
   end;
 end;
 
-function RunMemStress(NThreads, Iters: Integer): Int64;
+{ Terminal drain: every block still in flight in the mailboxes is
+  verified and freed by the calling (main) thread.  After this,
+  allocated = freed or the run leaked. }
+procedure DrainMailboxes;
 var
-  H: array[0..15] of Int64;
-  I, S, Rc: Integer;
-  Fn: TThreadProc;
+  I, S: Integer;
   Q: Pointer;
 begin
-  if NThreads > MAXT then NThreads := MAXT;
-  if NThreads < 2 then NThreads := 2;
-  GNThreads := NThreads;
-  GIters := Iters;
-  GBad := 0;
-  GAllocFail := 0;
-  GAllocTotal := 0;
-  GFreeTotal := 0;
-  for I := 0 to MAXT - 1 do
-    for S := 0 to SLOTS - 1 do
-      GMail[I][S] := nil;
-
-  Fn := @StressWorker;
-  for I := 0 to NThreads - 1 do
-  begin
-    GIdx[I] := I;
-    H[I] := 0;
-    Rc := pthread_create(@H[I], nil, Pointer(Fn), Pointer(@GIdx[I]));
-    if Rc <> 0 then Exit(-1);
-  end;
-  for I := 0 to NThreads - 1 do
-    pthread_join(H[I], nil);
-
-  { Terminal drain: every block still in flight is verified and freed
-    by the main thread.  After this, allocated = freed or the run leaked. }
-  for I := 0 to NThreads - 1 do
+  for I := 0 to GNThreads - 1 do
     for S := 0 to SLOTS - 1 do
     begin
       Q := _AtomicXchgPtr(@GMail[I][S], nil);
@@ -208,6 +198,123 @@ begin
         _AtomicAddInt64(@GFreeTotal, 1);
       end;
     end;
+end;
+
+procedure ResetCounters(NThreads: Integer);
+var
+  I, S: Integer;
+begin
+  GNThreads := NThreads;
+  GBad := 0;
+  GAllocFail := 0;
+  GAllocTotal := 0;
+  GFreeTotal := 0;
+  for I := 0 to MAXT - 1 do
+    for S := 0 to SLOTS - 1 do
+      GMail[I][S] := nil;
+end;
+
+function RunMemStress(NThreads, Iters: Integer): Int64;
+var
+  H: array[0..15] of Int64;
+  I, Rc: Integer;
+  Fn: TThreadProc;
+begin
+  if NThreads > MAXT then NThreads := MAXT;
+  if NThreads < 2 then NThreads := 2;
+  GIters := Iters;
+  ResetCounters(NThreads);
+
+  Fn := @StressWorker;
+  for I := 0 to NThreads - 1 do
+  begin
+    GIdx[I] := I;
+    GItersOf[I] := Iters;
+    H[I] := 0;
+    Rc := pthread_create(@H[I], nil, Pointer(Fn), Pointer(@GIdx[I]));
+    if Rc <> 0 then Exit(-1);
+  end;
+  for I := 0 to NThreads - 1 do
+    pthread_join(H[I], nil);
+
+  DrainMailboxes();
+  Result := GBad;
+end;
+
+function RunChurnStress(NThreads, Iters, Gens: Integer): Int64;
+var
+  H: array[0..15] of Int64;
+  G, I, Rc, S: Integer;
+  Fn: TThreadProc;
+  P: PChar;
+  MainBuf: array[0..31] of Pointer;
+begin
+  if NThreads > MAXT then NThreads := MAXT;
+  if NThreads < 2 then NThreads := 2;
+  if Gens < 1 then Gens := 1;
+  GIters := Iters;
+  ResetCounters(NThreads);
+  for S := 0 to 31 do
+    MainBuf[S] := nil;
+
+  Fn := @StressWorker;
+  for G := 0 to Gens - 1 do
+  begin
+    { Staggered iteration counts: even-index workers run a third of the
+      odd ones, so they exit mid-generation while ring traffic to and
+      from their arenas continues — their arenas are abandoned under
+      live load and adopted/reclaimed by the survivors' refill scans. }
+    for I := 0 to NThreads - 1 do
+    begin
+      GIdx[I] := I;
+      if (I and 1) = 0 then
+        GItersOf[I] := Iters div 3
+      else
+        GItersOf[I] := Iters;
+      H[I] := 0;
+      Rc := pthread_create(@H[I], nil, Pointer(Fn), Pointer(@GIdx[I]));
+      if Rc <> 0 then Exit(-1);
+    end;
+
+    { Main-thread allocation traffic WHILE the workers churn: alloc,
+      fill, verify, free — kept out of the ring totals (it is pure
+      local-path load; the balance assertion is about ring blocks). }
+    for I := 0 to Iters - 1 do
+    begin
+      S := I and 31;
+      if MainBuf[S] <> nil then
+      begin
+        if not CheckBlock(PChar(MainBuf[S])) then
+          _AtomicAddInt64(@GBad, 1);
+        _BlaiseFreeMem(MainBuf[S]);
+        MainBuf[S] := nil;
+      end;
+      P := PChar(_BlaiseGetMem(PickSize(I + G * 13)));
+      if P <> nil then
+      begin
+        FillBlock(P, PickSize(I + G * 13), (G shl 24) + I);
+        MainBuf[S] := Pointer(P);
+      end;
+    end;
+    for S := 0 to 31 do
+      if MainBuf[S] <> nil then
+      begin
+        if not CheckBlock(PChar(MainBuf[S])) then
+          _AtomicAddInt64(@GBad, 1);
+        _BlaiseFreeMem(MainBuf[S]);
+        MainBuf[S] := nil;
+      end;
+
+    for I := 0 to NThreads - 1 do
+      pthread_join(H[I], nil);
+
+    { Generation teardown: free every in-flight block (foreign pushes
+      onto the dead workers' abandoned arenas), then run the
+      reclamation sweep so empty abandoned arenas are unmapped mid-run,
+      not just at the end. }
+    DrainMailboxes();
+    _MemReclaimAbandoned();
+  end;
   Result := GBad;
 end;
 

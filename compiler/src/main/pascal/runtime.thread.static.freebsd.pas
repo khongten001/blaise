@@ -61,6 +61,15 @@ function pthread_mutex_destroy(Mutex: Pointer): Integer;
 function pthread_create(Thread, Attr, StartRoutine, Arg: Pointer): Integer;
 function pthread_join(Thread: Int64; RetVal: Pointer): Integer;
 
+{ TSD no-op seam for the allocator's thread-exit hook (runtime.mem,
+  phase 5 of concurrent-allocator-design.adoc) — same contract as the
+  Linux static shim: key registration is accepted and ignored; a static
+  worker's arenas are reclaimed by later adoption sweeps or at process
+  exit, and the main thread's sweep still runs via __cxa_atexit
+  (runtime.libc2). }
+function pthread_key_create(Key, Dtor: Pointer): Integer;
+function pthread_setspecific(Key: Integer; Value: Pointer): Integer;
+
 implementation
 
 type
@@ -311,6 +320,17 @@ begin
     W := CB^.JoinWord;
   end;
   munmap(CB^.MapBase, CB^.MapSize);
+  Result := 0;
+end;
+
+{ TSD no-op seam — see the interface comment. }
+function pthread_key_create(Key, Dtor: Pointer): Integer;
+begin
+  Result := 0;
+end;
+
+function pthread_setspecific(Key: Integer; Value: Pointer): Integer;
+begin
   Result := 0;
 end;
 

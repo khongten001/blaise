@@ -51,6 +51,18 @@ function pthread_mutex_destroy(Mutex: Pointer): Integer;
 function pthread_create(Thread, Attr, StartRoutine, Arg: Pointer): Integer;
 function pthread_join(Thread: Int64; RetVal: Pointer): Integer;
 
+{ TSD no-op seam for the allocator's thread-exit hook (runtime.mem,
+  phase 5 of concurrent-allocator-design.adoc).  The static build has no
+  thread-specific-data machinery and its threads exit via SYS_exit with
+  no destructor pass, so key registration is accepted and ignored: a
+  static worker's arenas are never marked abandoned at thread exit —
+  they are reclaimed by later adoption sweeps or at process exit.  The
+  static worker-thread allocator path is explicitly out of scope
+  (§Scope of the design); returning 0 keeps the caller quiet.  The main
+  thread's sweep still runs — __cxa_atexit is real in runtime.libc2. }
+function pthread_key_create(Key, Dtor: Pointer): Integer;
+function pthread_setspecific(Key: Integer; Value: Pointer): Integer;
+
 { sysconf is provided by runtime.libc.linux (sched_getaffinity + popcount); it is
   not redefined here. }
 
@@ -277,6 +289,17 @@ begin
     Tid := CB^.TidWord;
   end;
   munmap(CB^.MapBase, CB^.MapSize);
+  Result := 0;
+end;
+
+{ TSD no-op seam — see the interface comment. }
+function pthread_key_create(Key, Dtor: Pointer): Integer;
+begin
+  Result := 0;
+end;
+
+function pthread_setspecific(Key: Integer; Value: Pointer): Integer;
+begin
   Result := 0;
 end;
 

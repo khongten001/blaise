@@ -14,7 +14,24 @@
       arena's freelists by pointer identity);
     * the large-block foreign-free path (munmap on foreign free —
       option 2 of §The large-block remote path);
-    * a bounded version of the pthread ring stress (memstresscore).
+    * a bounded version of the pthread ring stress (memstresscore);
+
+  and the phase-5 abandoned-arena reclamation tests (§Teardown,
+  §Reclamation protocol):
+
+    * the global arena registry (arenas register on creation; a worker
+      whose arenas are all empty at thread exit has them unmapped by the
+      thread-exit hook — registry returns to baseline);
+    * the per-arena live-block counter's decrement-at-drain rule (a
+      foreign free does NOT decrement at push time; the owner's drain
+      does);
+    * adoption + unmap-when-empty-and-abandoned (a worker exits holding
+      live blocks — its arenas are abandoned, the main thread's foreign
+      frees land on the abandoned queue, and the reclamation sweep
+      adopts, drains and unmaps them);
+    * a bounded worker-churn stress (generations of workers spawned and
+      joined mid-run while traffic continues; the registry must return
+      to baseline).
 
   Worker threads deliberately use NO punit asserts, NO strings and NO
   I/O: punit's counters are process-global and the string runtime would
@@ -44,6 +61,10 @@ const
   MaxPump = 8192;
 
 var
+  { Phase-5 shared state (registry / counter / reclamation tests). }
+  GCntPtr: Pointer;
+  GAbBlocks: array[0..63] of Pointer;
+
   { Cross-thread small-free shared state (written by main, freed by B). }
   GBlocks: array[0..63] of Pointer;
   GSizes: array[0..63] of Integer;
@@ -299,10 +320,195 @@ begin
   Result := '';
 end;
 
+{ ------------------------------------------------------------------ }
+{ Phase 5: live-block counter — decrement-at-drain rule.               }
+{ A foreign free must NOT decrement the owning arena's live-block      }
+{ counter at push time; the decrement happens when the owner drains    }
+{ (concurrent-allocator-design.adoc §Reclamation protocol).            }
+{ ------------------------------------------------------------------ }
+procedure CounterFreeWorker(Arg: Pointer);
+begin
+  _BlaiseFreeMem(GCntPtr);   { foreign free — remote push, no decrement }
+end;
+
+function Test_LiveCounter_DecrementAtDrain: string;
+var
+  R, Q: Pointer;
+  BeforeLocal, AfterLocal: Int64;
+  BeforeRemote, AfterPush, AfterDrain: Int64;
+  H: Int64;
+  Rc, RcJoin: Integer;
+  Fn: TThreadProc;
+begin
+  { Local free decrements immediately. }
+  R := _BlaiseGetMem(48);
+  BeforeLocal := _MemArenaLiveBlocks(R);
+  _BlaiseFreeMem(R);
+  AfterLocal := _MemArenaLiveBlocks(R);   { header survives a free }
+
+  { Foreign free: no decrement at push; decrement at the owner's drain. }
+  Q := _BlaiseGetMem(48);
+  GCntPtr := Q;
+  BeforeRemote := _MemArenaLiveBlocks(Q);
+  Fn := @CounterFreeWorker;
+  H := 0;
+  Rc := pthread_create(@H, nil, Pointer(Fn), nil);
+  RcJoin := pthread_join(H, nil);
+  AfterPush := _MemArenaLiveBlocks(Q);
+  _MemDrainRemoteFrees();
+  AfterDrain := _MemArenaLiveBlocks(Q);
+
+  AssertEquals('pthread_create', 0, Rc);
+  AssertEquals('pthread_join', 0, RcJoin);
+  AssertEquals('local free decrements the live-block counter',
+               BeforeLocal - 1, AfterLocal);
+  AssertEquals('foreign push does NOT decrement (decrement-at-drain)',
+               BeforeRemote, AfterPush);
+  AssertEquals('owner drain performs the decrement',
+               BeforeRemote - 1, AfterDrain);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 5: registry + thread-exit hook.  A worker that frees all its   }
+{ blocks locally exits with empty arenas; the exit hook must unmap     }
+{ them and the registry must return to its pre-worker size.            }
+{ ------------------------------------------------------------------ }
+procedure RegistryWorker(Arg: Pointer);
+var
+  I: Integer;
+  Ptrs: array[0..255] of Pointer;
+begin
+  { >2 arenas' worth of traffic on a fresh thread, all freed locally. }
+  for I := 0 to 255 do
+    Ptrs[I] := _BlaiseGetMem(512);
+  for I := 0 to 255 do
+    _BlaiseFreeMem(Ptrs[I]);
+end;
+
+function Test_Registry_WorkerExitReclaim: string;
+var
+  R0, R1, A1: Integer;
+  H: Int64;
+  Rc, RcJoin: Integer;
+  Fn: TThreadProc;
+begin
+  { Normalise: reclaim any abandoned arenas earlier tests left behind,
+    so the baseline below is stable for the duration of this test. }
+  _MemReclaimAbandoned();
+  R0 := _MemArenaCount();
+  Fn := @RegistryWorker;
+  H := 0;
+  Rc := pthread_create(@H, nil, Pointer(Fn), nil);
+  RcJoin := pthread_join(H, nil);
+  R1 := _MemArenaCount();
+  A1 := _MemAbandonedArenaCount();
+
+  AssertEquals('pthread_create', 0, Rc);
+  AssertEquals('pthread_join', 0, RcJoin);
+  AssertTrue('registry counts this thread''s arenas', R0 > 0);
+  AssertEquals('empty worker arenas unmapped at thread exit '
+               + '(registry back to baseline)', R0, R1);
+  AssertEquals('no arenas left abandoned', 0, A1);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 5: abandonment + adoption + unmap-when-empty-and-abandoned.    }
+{ A worker exits while its blocks are still live: its arenas must be   }
+{ abandoned (not unmapped).  The main thread's frees are foreign       }
+{ pushes onto the abandoned queues; the reclamation sweep then adopts, }
+{ drains and unmaps — registry back to baseline.                       }
+{ ------------------------------------------------------------------ }
+procedure AbandonWorker(Arg: Pointer);
+var
+  I: Integer;
+begin
+  for I := 0 to 63 do
+    GAbBlocks[I] := _BlaiseGetMem(256);
+  { exits WITHOUT freeing — every block stays live in its arenas }
+end;
+
+function Test_Abandoned_AdoptAndReclaim: string;
+var
+  R0, RAbandoned, AAbandoned, RAfter, AAfter, Reclaimed: Integer;
+  I: Integer;
+  H: Int64;
+  Rc, RcJoin: Integer;
+  Fn: TThreadProc;
+begin
+  _MemReclaimAbandoned();
+  R0 := _MemArenaCount();
+  Fn := @AbandonWorker;
+  H := 0;
+  Rc := pthread_create(@H, nil, Pointer(Fn), nil);
+  RcJoin := pthread_join(H, nil);
+  RAbandoned := _MemArenaCount();
+  AAbandoned := _MemAbandonedArenaCount();
+
+  { Foreign frees onto the dead worker's abandoned arenas. }
+  for I := 0 to 63 do
+    _BlaiseFreeMem(GAbBlocks[I]);
+
+  Reclaimed := _MemReclaimAbandoned();
+  RAfter := _MemArenaCount();
+  AAfter := _MemAbandonedArenaCount();
+
+  AssertEquals('pthread_create', 0, Rc);
+  AssertEquals('pthread_join', 0, RcJoin);
+  AssertTrue('worker arenas stay registered after exit (live blocks)',
+             RAbandoned > R0);
+  AssertTrue('worker arenas are marked abandoned, not unmapped',
+             AAbandoned > 0);
+  AssertTrue('reclamation sweep unmapped the drained arenas',
+             Reclaimed > 0);
+  AssertEquals('registry back to baseline after adopt+drain+unmap',
+               R0, RAfter);
+  AssertEquals('no abandoned arenas remain', 0, AAfter);
+  Result := '';
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 5: bounded worker-churn stress — workers spawned and joined    }
+{ mid-run while allocation traffic continues.  Integrity + terminal    }
+{ balance + the reclamation guarantee (registry returns to baseline,   }
+{ no abandoned arenas survive).                                        }
+{ ------------------------------------------------------------------ }
+function Test_Stress_WorkerChurn: string;
+var
+  R0, R1, A1: Integer;
+  Bad: Int64;
+begin
+  _MemReclaimAbandoned();
+  R0 := _MemArenaCount();
+  Bad := RunChurnStress(4, 6000, 5);
+  _MemReclaimAbandoned();
+  R1 := _MemArenaCount();
+  A1 := _MemAbandonedArenaCount();
+
+  AssertEquals('churn integrity failures', Int64(0), Bad);
+  AssertEquals('churn allocation failures', Int64(0), StressAllocFails());
+  AssertTrue('churn performed allocations', StressAllocTotal() > 0);
+  AssertEquals('terminal drain balances: allocated = freed',
+               StressAllocTotal(), StressFreeTotal());
+  AssertEquals('no abandoned arenas after churn + reclaim', 0, A1);
+  AssertTrue('registry returned to baseline after churn '
+             + '(worker arenas reclaimed): R1=' + IntToStr(R1)
+             + ' R0=' + IntToStr(R0), R1 <= R0 + 8);
+  Result := '';
+end;
+
 begin
   AddSuite('blaise_mem_mt', nil);
   AddTest('CrossThread_SmallFree', @Test_CrossThread_SmallFree, 'blaise_mem_mt');
   AddTest('CrossThread_LargeFree', @Test_CrossThread_LargeFree, 'blaise_mem_mt');
   AddTest('Stress_Bounded', @Test_Stress_Bounded, 'blaise_mem_mt');
+  AddTest('LiveCounter_DecrementAtDrain', @Test_LiveCounter_DecrementAtDrain,
+          'blaise_mem_mt');
+  AddTest('Registry_WorkerExitReclaim', @Test_Registry_WorkerExitReclaim,
+          'blaise_mem_mt');
+  AddTest('Abandoned_AdoptAndReclaim', @Test_Abandoned_AdoptAndReclaim,
+          'blaise_mem_mt');
+  AddTest('Stress_WorkerChurn', @Test_Stress_WorkerChurn, 'blaise_mem_mt');
   RunAllSysTests();
 end.
