@@ -60,6 +60,15 @@ procedure _AbstractMethodError;
 procedure _LeakTrackerEnable;
 procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer;
   UnitName: Pointer; Line: Int64);
+{ Temporarily suspend / resume the leak tracker.  The tracker's table is a
+  global open-addressed map with NO locking; running it while N worker OS
+  threads concurrently create/release objects (the multicore fiber scheduler)
+  corrupts it.  The scheduler suspends it while N>1 workers run and resumes it
+  afterwards.  Suspend returns the previous enabled state so the caller can
+  restore exactly (a no-op when the tracker was never enabled, e.g. a non-debug
+  build).  Idempotent-safe: Resume(False) leaves it disabled. }
+function  _LeakTrackerSuspend: Boolean;
+procedure _LeakTrackerResume(APrevEnabled: Boolean);
 { Register an at-exit handler.  Uses __cxa_atexit, NOT atexit: glibc's bare
   `atexit` lives only in the static libc_nonshared.a (it is not a dynamic export
   of libc.so.6), so a link that does not pull that archive — as the native
@@ -375,6 +384,20 @@ begin
   if GLTTable = nil then begin GLTEnabled := False; Exit end;
   _libc_memset(GLTTable, 0, Int64(TableSize));
   _libc_cxa_atexit(Pointer(@_LeakTrackerReport), nil, nil);
+end;
+
+function _LeakTrackerSuspend: Boolean;
+begin
+  Result := GLTEnabled;
+  GLTEnabled := False;
+end;
+
+procedure _LeakTrackerResume(APrevEnabled: Boolean);
+begin
+  { Only re-enable when the table actually exists; a suspend from a build that
+    never enabled tracking (GLTTable = nil) must stay disabled. }
+  if APrevEnabled and (GLTTable <> nil) then
+    GLTEnabled := True;
 end;
 
 { ------------------------------------------------------------------ }

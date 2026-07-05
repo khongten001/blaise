@@ -36,7 +36,8 @@ unit async.fibers;
 interface
 
 uses
-  SysUtils, generics.collections, async.fibers.context.x86_64;
+  SysUtils, generics.collections, async.fibers.context.x86_64,
+  async.deque;
 
 type
   { Raised at a suspension point inside a fiber that has been cancelled via
@@ -105,6 +106,9 @@ type
     function PeekMin: TFiberTask;
     function PopMin: TFiberTask;
     procedure Remove(ATask: TFiberTask);
+    { Raw heap-array access (unordered) — used by the multicore worker loop to
+      scan for cancelled sleepers.  0 <= AIdx < Count. }
+    function HeapItem(AIdx: Integer): TFiberTask;
     property Count: Integer read GetCount;
   end;
 
@@ -121,6 +125,12 @@ type
     Tasks: TList<TFiberTask>; { every spawned task; keeps handles valid }
     LiveCount: Integer;       { spawned and not yet finished }
     Running: Boolean;         { re-entrancy guard for RunScheduler }
+
+    { --- multicore fields (L1 multicore; single-worker path ignores them) --- }
+    Id: Integer;              { index into GWorkers }
+    Deque: TWorkStealDeque;   { per-worker Chase-Lev run queue (owner = this) }
+    Handoff: TFiberTask;      { LIFO hand-off slot for a just-woken fiber }
+    ParkWord: Integer;        { futex word: 0 = may sleep, 1 = wake pending }
     constructor Create;
   end;
 
@@ -167,13 +177,58 @@ procedure ResetScheduler;
 { Current CLOCK_MONOTONIC time in nanoseconds (the timer-heap key space). }
 function MonotonicNowNs: Int64;
 
+{ ------------------------------------------------------------------------- }
+{ L1 MULTICORE (docs/async-networking-design.adoc, [#scheduler])            }
+{ ------------------------------------------------------------------------- }
+
+{ Run the scheduler across ANumWorkers OS threads until every spawned fiber
+  has finished.  ANumWorkers <= 0 defaults to GetCPUCount.  Worker 0 runs on
+  the calling thread; workers 1..N-1 each get their own pthread.
+
+  Scheduling per worker follows the design: LIFO hand-off slot -> local
+  Chase-Lev deque (PopBottom) -> steal from a random peer -> global injector
+  queue.  Idle workers PARK on a futex (never busy-wait) and are woken when a
+  task is handed to them or spawned into the injector.
+
+  Fibers spawned with SpawnFiber from inside a worker land on that worker's
+  local deque; spawns from outside any worker go to the global injector.
+
+  The leak tracker is a lockless global table and is SUSPENDED for the whole
+  run (N>1), then restored — running it under concurrent create/release would
+  corrupt it (design <<rtl-prerequisites>>).  Existing single-worker
+  RunScheduler is unchanged and does not touch the tracker. }
+procedure RunSchedulerMC(ANumWorkers: Integer = 0);
+
+{ True while a multicore run is active (RunSchedulerMC is on the stack). }
+function SchedulerIsMulticore: Boolean;
+
 implementation
+
+uses
+  runtime.atomic, runtime.thread;
 
 { Linux-shaped libc bindings (same posture as the context unit's mmap set). }
 function _libc_clock_gettime(AClockId: Integer; ATs: Pointer): Integer;
   external name 'clock_gettime';
 function _libc_nanosleep(AReq, ARem: Pointer): Integer;
   external name 'nanosleep';
+
+{ Raw Linux futex(2) via libc's syscall(3) — the park/wake primitive for idle
+  workers.  We use the private-futex ops.  syscall returns 0 / a wake count on
+  success or -1 (with errno) on error; the scheduler ignores the result (a
+  spurious wake just re-checks the run queues). }
+function _libc_syscall6(ANum: Int64; A1, A2, A3, A4, A5, A6: Int64): Int64;
+  external name 'syscall';
+
+{ Exception-state and leak-tracker hooks from the RTL. }
+function _LeakTrackerSuspend: Boolean; external name '_LeakTrackerSuspend';
+procedure _LeakTrackerResume(APrev: Boolean);
+  external name '_LeakTrackerResume';
+
+const
+  SYS_futex = 202;             { x86-64 }
+  FUTEX_WAIT_PRIVATE = 128;    { FUTEX_WAIT | FUTEX_PRIVATE_FLAG }
+  FUTEX_WAKE_PRIVATE = 129;    { FUTEX_WAKE | FUTEX_PRIVATE_FLAG }
 
 const
   CLOCK_MONOTONIC = 1;
@@ -251,6 +306,11 @@ end;
 function TTimerHeap.GetCount: Integer;
 begin
   Result := Self.FItems.Count;
+end;
+
+function TTimerHeap.HeapItem(AIdx: Integer): TFiberTask;
+begin
+  Result := Self.FItems[AIdx];
 end;
 
 procedure TTimerHeap.SiftUp(AIdx: Integer);
@@ -357,13 +417,50 @@ begin
   Self.RunQ := TRunQueue.Create();
   Self.Timers := TTimerHeap.Create();
   Self.Tasks := TList<TFiberTask>.Create();
+  Self.Id := 0;
+  Self.Deque := nil;         { created lazily by the multicore path }
+  Self.Handoff := nil;
+  Self.ParkWord := 0;
 end;
 
+type
+  TWorkerArray = array of TWorker;
+
 var
-  GWorker: TWorker;
+  GWorker: TWorker;         { the single-worker (RunScheduler) worker }
+
+  { --- multicore global state (see the MULTICORE section below) --- }
+  GMulticore: Boolean;
+  GWorkers: TWorkerArray;
+  GNumWorkers: Integer;
+  GGlobalLive: Integer;        { atomic: fibers spawned and not yet finished }
+  GStop: Integer;              { atomic: 1 tells every worker to exit }
+  GInjectorTop: Pointer;       { Treiber stack head (TFiberTask via NextReady) }
+  GAllTasks: TList<TFiberTask>;{ keeps every handle alive; guarded by GTaskMtx }
+  GTaskMtx: array[0..5] of Int64;   { pthread_mutex_t buffer }
+  GCancelGen: Integer;         { atomic: bumped on every FiberCancel }
+
+threadvar
+  { The worker whose scheduler loop is running on THIS OS thread.  Set by each
+    multicore worker thread at start-up; nil off any worker thread.  The single
+    -worker RunScheduler path leaves this nil and uses GWorker directly. }
+  GTLWorker: TWorker;
+
+{ The worker the fiber-facing calls (SpawnFiber/FiberYield/FiberSleep/
+  FiberCancel) act on: this thread's multicore worker if any, else the single
+  -worker GWorker. }
+function CurrentWorker: TWorker;
+begin
+  if GTLWorker <> nil then
+    Result := GTLWorker
+  else
+    Result := GWorker;
+end;
 
 function NeedWorker: TWorker;
 begin
+  if GTLWorker <> nil then
+    Exit(GTLWorker);
   if GWorker = nil then
     GWorker := TWorker.Create();
   Result := GWorker;
@@ -390,11 +487,17 @@ end;
   EFiberCancelled is the normal end of a cancelled fiber and is recorded
   as fsCancelled rather than a failure.  The current task is read from
   the worker — the scheduler sets Current before switching in. }
+{ Forward declarations for the multicore helpers used by the fiber-facing
+  calls above their definitions in the MULTICORE section below. }
+procedure McRegisterTask(AW: TWorker; ATask: TFiberTask); forward;
+procedure McSubmitReady(AW: TWorker; ATask: TFiberTask); forward;
+procedure McRequestCancelWake(ATask: TFiberTask); forward;
+
 procedure SchedFiberEntry(AArg: Pointer);
 var
   T: TFiberTask;
 begin
-  T := GWorker.Current;
+  T := CurrentWorker().Current;
   try
     T.Proc(T.Arg);
     T.State := fsDone;
@@ -423,13 +526,26 @@ var
   W: TWorker;
   T: TFiberTask;
 begin
-  W := NeedWorker();
   T := TFiberTask.Create();
   T.Proc := AProc;
   T.Arg := AArg;
   T.Fib := FiberSpawn(@SchedFiberEntry, nil, AStackSize);
   if T.Fib = nil then
     raise Exception.Create('SpawnFiber: cannot map a fiber stack');
+
+  if GMulticore then
+  begin
+    { Multicore: the task belongs to the whole run, not one worker.  Keep the
+      handle alive on the owning worker's Tasks list (the spawning worker, or
+      worker 0 for an off-worker spawn), bump the global live count, and hand
+      the ready task to the current worker's deque or the global injector. }
+    W := GTLWorker;
+    McRegisterTask(W, T);
+    McSubmitReady(W, T);
+    Exit(T);
+  end;
+
+  W := NeedWorker();
   W.Tasks.Add(T);
   W.LiveCount := W.LiveCount + 1;
   W.RunQ.Push(T);
@@ -498,15 +614,27 @@ var
   W: TWorker;
   T: TFiberTask;
 begin
-  W := GWorker;
+  W := CurrentWorker();
   if W = nil then
     Exit;
   T := W.Current;
   if T = nil then
     Exit;                     { off-scheduler: no-op }
   T.State := fsReady;
-  W.RunQ.Push(T);
-  FiberSwitch(T.Fib, W.SchedFib);
+  if GMulticore then
+    { CRITICAL: do NOT enqueue the task here.  In multicore mode a thief could
+      steal it and start resuming its context on ANOTHER worker before this
+      FiberSwitch has finished saving the context off this stack — two threads
+      on one fiber stack.  Instead switch to the scheduler and let the OWNING
+      worker re-enqueue it (McWorkerLoop, after the switch returns) once the
+      context is safely saved. }
+    FiberSwitch(T.Fib, W.SchedFib)
+  else
+  begin
+    { Single worker: no thief, so the original in-line enqueue is safe. }
+    W.RunQ.Push(T);
+    FiberSwitch(T.Fib, W.SchedFib);
+  end;
 end;
 
 procedure FiberSleep(AMillis: Int64);
@@ -514,7 +642,7 @@ var
   W: TWorker;
   T: TFiberTask;
 begin
-  W := GWorker;
+  W := CurrentWorker();
   if W <> nil then
     T := W.Current
   else
@@ -555,6 +683,23 @@ begin
   if ATask.Cancelled then
     Exit;
   ATask.Cancelled := True;
+
+  if GMulticore then
+  begin
+    { A sleeping fiber lives in ITS OWNING worker's timer heap, which only
+      that worker may mutate.  Rather than reach across threads into the heap,
+      flag the task (done above, observed at the suspension point) and wake
+      every worker so the owner re-derives its timer wait and, on the next
+      loop pass, its due-timer sweep will not fire this one early — instead
+      the cancel is observed when the fiber is next scheduled.  To make it
+      prompt, publish a global cancel-generation bump and wake all workers;
+      the owning worker's loop pulls a flagged sleeper out of its own heap.
+      (Correctness does not depend on promptness: a never-resuming sleeper is
+      pulled when its own deadline fires or the run winds down.) }
+    McRequestCancelWake(ATask);
+    Exit;
+  end;
+
   W := GWorker;
   if W = nil then
     Exit;
@@ -570,6 +715,8 @@ end;
 
 function SchedulerLiveCount: Integer;
 begin
+  if GMulticore then
+    Exit(_AtomicAddInt32(@GGlobalLive, 0));
   if GWorker = nil then
     Exit(0);
   Result := GWorker.LiveCount;
@@ -584,6 +731,394 @@ begin
   if GWorker.LiveCount > 0 then
     raise Exception.Create('ResetScheduler: fibers still live');
   GWorker := nil;   { ARC cascades: task list, queue chain, heap entries }
+end;
+
+{ ===========================================================================
+  L1 MULTICORE — N worker OS threads, work-stealing deques, global injector
+  =========================================================================== }
+
+{ --- futex park / wake ----------------------------------------------------- }
+
+procedure FutexWait(AAddr: Pointer; AExpected: Integer; ATimeoutNs: Int64);
+var
+  Ts: TTimeSpec;
+  TsPtr: Pointer;
+begin
+  if ATimeoutNs <= 0 then
+    TsPtr := nil
+  else
+  begin
+    Ts.Sec := ATimeoutNs div Int64(1000000000);
+    Ts.NSec := ATimeoutNs mod Int64(1000000000);
+    TsPtr := @Ts;
+  end;
+  _libc_syscall6(SYS_futex, Int64(PtrUInt(AAddr)),
+    Int64(FUTEX_WAIT_PRIVATE), Int64(AExpected),
+    Int64(PtrUInt(TsPtr)), 0, 0);
+end;
+
+procedure FutexWake(AAddr: Pointer; ACount: Integer);
+begin
+  _libc_syscall6(SYS_futex, Int64(PtrUInt(AAddr)),
+    Int64(FUTEX_WAKE_PRIVATE), Int64(ACount), 0, 0, 0);
+end;
+
+{ Wake one specific worker: publish a pending-wake on its park word and futex
+  -wake it.  Idempotent — a worker already awake just sees ParkWord = 1 and
+  clears it before its next park. }
+procedure WakeWorker(AW: TWorker);
+begin
+  if AW = nil then Exit;
+  _AtomicAddInt32(@AW.ParkWord, 0);    { fence }
+  AW.ParkWord := 1;
+  FutexWake(@AW.ParkWord, 1);
+end;
+
+procedure WakeAllWorkers;
+var
+  I: Integer;
+begin
+  for I := 0 to GNumWorkers - 1 do
+    WakeWorker(GWorkers[I]);
+end;
+
+{ --- global injector (Treiber stack) --------------------------------------- }
+
+procedure InjectorPush(ATask: TFiberTask);
+var
+  Head: Pointer;
+begin
+  while True do
+  begin
+    Head := GInjectorTop;
+    ATask.NextReady := TFiberTask(Head);
+    if _AtomicCASPtr(@GInjectorTop, Head, Pointer(ATask)) then
+      Exit;
+  end;
+end;
+
+function InjectorPop: TFiberTask;
+var
+  Head: Pointer;
+  Next: TFiberTask;
+begin
+  while True do
+  begin
+    Head := GInjectorTop;
+    if Head = nil then
+      Exit(nil);
+    Next := TFiberTask(Head).NextReady;
+    if _AtomicCASPtr(@GInjectorTop, Head, Pointer(Next)) then
+    begin
+      Result := TFiberTask(Head);
+      Result.NextReady := nil;
+      Exit;
+    end;
+  end;
+end;
+
+{ --- task registration + ready submission ---------------------------------- }
+
+{ Record a freshly spawned task so its handle stays alive and count it in the
+  global live total.  Thread-safe (multiple workers spawn concurrently). }
+procedure McRegisterTask(AW: TWorker; ATask: TFiberTask);
+begin
+  pthread_mutex_lock(@GTaskMtx[0]);
+  GAllTasks.Add(ATask);
+  pthread_mutex_unlock(@GTaskMtx[0]);
+  _AtomicAddInt32(@GGlobalLive, 1);
+end;
+
+{ Hand a ready task to a run queue: the spawning worker's own deque (hot in
+  its cache) when on a worker, else the global injector plus a wake. }
+procedure McSubmitReady(AW: TWorker; ATask: TFiberTask);
+begin
+  ATask.State := fsReady;
+  if AW <> nil then
+    AW.Deque.PushBottom(Pointer(ATask))
+  else
+  begin
+    InjectorPush(ATask);
+    WakeWorker(GWorkers[0]);
+  end;
+end;
+
+{ Cross-thread cancel: the flag is already set on the task; bump the cancel
+  generation and wake every worker so the owning worker rescans its own timer
+  heap and pulls the flagged sleeper (see McSweepCancelled). }
+procedure McRequestCancelWake(ATask: TFiberTask);
+begin
+  _AtomicAddInt32(@GCancelGen, 1);
+  WakeAllWorkers();
+end;
+
+{ --- per-worker scheduling loop -------------------------------------------- }
+
+{ Move every timer whose deadline has passed onto the worker's own deque.
+  Owner-only. }
+procedure McDrainDueTimers(AW: TWorker; ANowNs: Int64);
+var
+  T: TFiberTask;
+begin
+  while (AW.Timers.Count > 0) and (AW.Timers.PeekMin().Deadline <= ANowNs) do
+  begin
+    T := AW.Timers.PopMin();
+    T.State := fsReady;
+    AW.Deque.PushBottom(Pointer(T));
+  end;
+end;
+
+{ Pull any cancelled sleeper out of this worker's own timer heap and make it
+  ready, so its FiberSleep resumes and raises EFiberCancelled promptly rather
+  than waiting for a possibly-distant deadline.  Owner-only; O(heap) but only
+  runs when the cancel generation advanced. }
+procedure McSweepCancelled(AW: TWorker);
+var
+  I: Integer;
+  Victims: TList<TFiberTask>;
+  T: TFiberTask;
+begin
+  if AW.Timers.Count = 0 then Exit;
+  Victims := TList<TFiberTask>.Create();
+  try
+    { Snapshot the heap contents into Victims first, then Remove/requeue the
+      cancelled ones (mutating the heap while iterating it is unsafe). }
+    for I := 0 to AW.Timers.Count - 1 do
+    begin
+      T := AW.Timers.HeapItem(I);
+      if T.Cancelled then
+        Victims.Add(T);
+    end;
+    for I := 0 to Victims.Count - 1 do
+    begin
+      T := Victims[I];
+      AW.Timers.Remove(T);
+      T.State := fsReady;
+      AW.Deque.PushBottom(Pointer(T));
+    end;
+  finally
+    Victims.Free();
+  end;
+end;
+
+{ Take the next ready task for worker AW, or nil if none is available right
+  now: LIFO hand-off slot -> local deque -> steal from a random peer ->
+  global injector. }
+function McTakeNext(AW: TWorker): TFiberTask;
+var
+  T: TFiberTask;
+  Tries, Victim: Integer;
+begin
+  { 1. LIFO hand-off slot (the just-woken fiber, kept hot on the waker). }
+  if AW.Handoff <> nil then
+  begin
+    T := AW.Handoff;
+    AW.Handoff := nil;
+    Exit(T);
+  end;
+  { 2. Local deque. }
+  T := TFiberTask(AW.Deque.PopBottom());
+  if T <> nil then
+    Exit(T);
+  { 3. Steal from a random peer (a few attempts). }
+  if GNumWorkers > 1 then
+  begin
+    Tries := 0;
+    while Tries < GNumWorkers * 2 do
+    begin
+      { Round-robin victim starting from the next worker. }
+      Victim := (AW.Id + 1 + Tries) mod GNumWorkers;
+      if (Victim <> AW.Id) and (GWorkers[Victim].Deque <> nil) then
+      begin
+        T := TFiberTask(GWorkers[Victim].Deque.Steal());
+        if T <> nil then
+          Exit(T);
+      end;
+      Tries := Tries + 1;
+    end;
+  end;
+  { 4. Global injector. }
+  T := InjectorPop();
+  Result := T;
+end;
+
+{ The scheduler loop each worker OS thread runs. }
+procedure McWorkerLoop(AW: TWorker);
+var
+  T: TFiberTask;
+  NowNs, WaitNs: Int64;
+  LastCancelGen, Gen: Integer;
+begin
+  GTLWorker := AW;
+  AW.SchedFib := FiberCreateMain();
+  LastCancelGen := 0;
+  while _AtomicAddInt32(@GStop, 0) = 0 do
+  begin
+    NowNs := MonotonicNowNs();
+    McDrainDueTimers(AW, NowNs);
+
+    { Rescan for cancelled sleepers only when a cancel happened. }
+    Gen := _AtomicAddInt32(@GCancelGen, 0);
+    if Gen <> LastCancelGen then
+    begin
+      LastCancelGen := Gen;
+      McSweepCancelled(AW);
+    end;
+
+    T := McTakeNext(AW);
+    if T = nil then
+    begin
+      { Nothing ready.  Bound the park by the nearest local timer deadline so
+        our own sleepers fire on time; otherwise park until woken. }
+      if _AtomicAddInt32(@GStop, 0) <> 0 then
+        Break;
+      if AW.Timers.Count > 0 then
+        WaitNs := AW.Timers.PeekMin().Deadline - MonotonicNowNs()
+      else
+        WaitNs := Int64(50) * Int64(1000000);   { 50 ms safety cap }
+      if WaitNs < 0 then
+        WaitNs := 0;
+      { Consume any pending wake without sleeping; else futex-wait on 0. }
+      if AW.ParkWord <> 0 then
+        AW.ParkWord := 0
+      else
+        FutexWait(@AW.ParkWord, 0, WaitNs);
+      AW.ParkWord := 0;
+      Continue;
+    end;
+
+    T.State := fsRunning;
+    AW.Current := T;
+    FiberSwitch(AW.SchedFib, T.Fib);
+    AW.Current := nil;
+    if FiberIsDone(T.Fib) then
+    begin
+      FiberFree(T.Fib);
+      T.Fib := nil;
+      if _AtomicSubInt32(@GGlobalLive, 1) = 1 then
+      begin
+        { That was the last live fiber (Sub returns the PREVIOUS value). }
+        GStop := 1;
+        _AtomicAddInt32(@GStop, 0);   { fence the publish }
+        WakeAllWorkers();
+      end;
+    end
+    else if T.State = fsReady then
+      { The fiber yielded (FiberYield).  The context is now safely saved off
+        the fiber's stack, so it is safe to make it stealable: re-enqueue it on
+        THIS worker's deque.  (fsSleeping is handled by the timer heap; the
+        fiber parked itself there before switching.) }
+      AW.Deque.PushBottom(Pointer(T));
+  end;
+end;
+
+{ pthread entry trampoline: %rdi = the TWorker, cast from Pointer. }
+procedure McThreadEntry(Arg: Pointer);
+begin
+  McWorkerLoop(TWorker(Arg));
+end;
+
+function SchedulerIsMulticore: Boolean;
+begin
+  Result := GMulticore;
+end;
+
+procedure RunSchedulerMC(ANumWorkers: Integer);
+var
+  N, I: Integer;
+  Threads: array of Int64;
+  W: TWorker;
+  PrevLeak: Boolean;
+  PendingLive: Integer;
+begin
+  if GMulticore then
+    raise Exception.Create('RunSchedulerMC: already running');
+
+  N := ANumWorkers;
+  if N <= 0 then
+    N := GetCPUCount();
+  if N < 1 then
+    N := 1;
+
+  { Carry over any fibers already spawned on the single-worker GWorker (the
+    common pattern: spawn from the main thread, then RunSchedulerMC).  Their
+    handles and the ready tasks move into the multicore world. }
+  GAllTasks := TList<TFiberTask>.Create();
+  GInjectorTop := nil;
+  GGlobalLive := 0;
+  GStop := 0;
+  GCancelGen := 0;
+  GNumWorkers := N;
+  SetLength(GWorkers, N);
+  for I := 0 to N - 1 do
+  begin
+    W := TWorker.Create();
+    W.Id := I;
+    W.Deque := TWorkStealDeque.Create();
+    GWorkers[I] := W;
+  end;
+
+  { Suspend the lockless leak tracker for the duration of the parallel run. }
+  PrevLeak := _LeakTrackerSuspend();
+
+  GMulticore := True;
+
+  { Migrate pre-spawned single-worker tasks into the injector. }
+  PendingLive := 0;
+  if GWorker <> nil then
+  begin
+    while GWorker.Tasks.Count > 0 do
+    begin
+      W := nil;  { unused }
+      GAllTasks.Add(GWorker.Tasks[0]);
+      InjectorPush(GWorker.Tasks[0]);
+      GWorker.Tasks.Delete(0);
+      PendingLive := PendingLive + 1;
+    end;
+    GGlobalLive := PendingLive;
+    GWorker.LiveCount := 0;
+    GWorker := nil;
+  end;
+
+  pthread_mutex_init(@GTaskMtx[0], nil);
+
+  { Launch workers 1..N-1 on their own threads; worker 0 runs on this thread. }
+  SetLength(Threads, N);
+  for I := 1 to N - 1 do
+  begin
+    Threads[I] := 0;
+    pthread_create(@Threads[I], nil, Pointer(@McThreadEntry), Pointer(GWorkers[I]));
+  end;
+
+  { If nothing is live, there is no work; still drive worker 0 once so it exits
+    cleanly. }
+  if GGlobalLive = 0 then
+  begin
+    GStop := 1;
+    WakeAllWorkers();
+  end;
+
+  McWorkerLoop(GWorkers[0]);
+  GTLWorker := nil;
+
+  { Join the peers. }
+  for I := 1 to N - 1 do
+    pthread_join(Threads[I], nil);
+
+  pthread_mutex_destroy(@GTaskMtx[0]);
+
+  { Tear down.  All fibers are finished (GGlobalLive = 0). }
+  GMulticore := False;
+  _LeakTrackerResume(PrevLeak);
+
+  for I := 0 to N - 1 do
+  begin
+    GWorkers[I].Deque.Free();
+    GWorkers[I].Deque := nil;
+  end;
+  SetLength(GWorkers, 0);
+  GNumWorkers := 0;
+  GAllTasks := nil;   { ARC cascades the handles }
 end;
 
 end.

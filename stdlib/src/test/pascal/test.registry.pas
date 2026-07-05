@@ -31,7 +31,8 @@ uses
   Guid.Tests,
   StrUtils.Tests,
   Scheduler.Tests,
-  Deque.Tests;
+  Deque.Tests,
+  SchedulerMc.Tests;
 
 implementation
 
