@@ -133,11 +133,15 @@ design.
 
 [NOTE]
 ====
-The large path has the same hazard (a large block freed on a foreign thread
-lands on that thread's `LargeFreeHead` LIFO and its `TotalMapped` accounting),
-but it is simpler: a large block is its own `mmap` region with a self-describing
-16-byte header, so its remote-free handling is a thin variant of the small-block
-queue rather than a separate mechanism (<<large-path>>).
+The large path is different in kind, not merely degree: a large block is its own
+self-contained `mmap` region with a self-describing 16-byte header, so a foreign
+large-free that lands on the freeing thread's `LargeFreeHead` LIFO is
+*functionally safe* — no arena bytes are shared with any other allocation and no
+corruption results. The motivation for a dedicated foreign-large policy is
+hygiene and accounting (a block cached on a thread's LIFO that may never reuse
+it, and cache bookkeeping credited to the wrong thread), not correctness. The
+large path therefore resolves to a much simpler answer than the small-block
+queue (<<large-path>>).
 ====
 
 == The chosen model: per-arena MPSC remote-free queue
@@ -285,6 +289,23 @@ blast-radius-sensitive line in the design and must be handled as follows:
   base) is discussed in <<alternatives>> and rejected as more fragile.
 ====
 
+[IMPORTANT]
+.Cross-layout invariant: `Flags` must sit at the same offset from the user pointer in both headers
+====
+`IsLarge` and `GetAllocSize` classify a block by reading `Flags` *through the
+small-header layout* at `Ptr - HEADER_SIZE`, regardless of whether the block is
+small or large. This works today only because both layouts place `Flags` at the
+same distance from the user pointer: small `Flags` at `Ptr - 8 + 4 = Ptr - 4`,
+large `Flags` at `Ptr - 16 + 12 = Ptr - 4`. The layouts specified in this design
+preserve the coincidence — small `Flags` at `Ptr - 16 + 4 = Ptr - 12`, large
+`Flags` at `Ptr - 24 + 12 = Ptr - 12` (<<large-path>>) — but *only* because the
+new fields (`Arena` in `TBlockHeader`, `OwnerTid` in `TLargeHeader`) are
+appended *after* `Flags`. Reordering either record (for example, placing `Arena`
+first) silently breaks every free. The invariant is pinned by a unit test
+(<<testing>>) that asserts the offset of `Flags` from the user pointer is equal
+in both layouts.
+====
+
 === Arena record: owner, remote queue, and the arena registry
 
 `TArena` gains the owning-thread identity and the remote-free queue head. The
@@ -322,10 +343,11 @@ type
   end;
 ----
 
-`SizeOf(TRemoteNode)` is 12 bytes (pointer + Integer), well within the 16-byte
-smallest size class's usable region, so even a class-0 block has room for its
-remote node. (The owner could instead recompute the class from the header on
-drain; storing it costs nothing and keeps the drain loop header-free.)
+`SizeOf(TRemoteNode)` is 16 bytes with default record alignment (8-byte pointer,
+4-byte `Integer`, 4 bytes tail padding), exactly the usable region of the 16-byte
+smallest size class, so even a class-0 block has room for its remote node. (The
+owner could instead recompute the class from the header on drain; storing it
+costs nothing and keeps the drain loop header-free.)
 
 === Free-list vs remote-queue split — invariant
 
@@ -357,26 +379,40 @@ in a `threadvar` set lazily on first use:
 
 [source,pascal]
 ----
-function _libc_pthread_self: Int64; external name 'pthread_self';
-
 threadvar
-  CurrentTid: Int64;   { 0 = not yet cached }
+  TidAnchor: Byte;     { its per-thread ADDRESS is the identity }
 
 function MyTid: Int64;
 begin
-  Result := CurrentTid;
-  if Result = 0 then
-  begin
-    Result := _libc_pthread_self();
-    CurrentTid := Result;
-  end;
+  Result := Int64(PtrUInt(@TidAnchor));
 end;
 ----
 
-`pthread_self` is already available via the pthreads link the dynamic build uses
-(`runtime.thread.pas` binds `pthread_create`/`pthread_join`); binding
-`pthread_self` is one more `external name` in the same family. `OwnerTid` is set
-from `MyTid` in `AllocArena`.
+The identity is the *address of a threadvar*, not `pthread_self()`. Each thread
+has its own TLS block, so `@TidAnchor` is unique among live threads, is never
+zero, and costs a TLS-base add — no libc call on the free path. The decisive
+reason over the earlier `pthread_self` sketch: the static (libc-free) build's
+thread shims (`runtime.thread.static.*`) do not define `pthread_self`, so
+binding it would break every `--static` link. (This was established during the
+phase-3 implementation, 2026-07-04; the implementation in `runtime.mem.pas` is
+the ground truth.) `OwnerTid` is set from `MyTid` in `AllocArena`.
+
+[NOTE]
+====
+The `OwnerTid = 0` sentinel meaning "abandoned" (<<teardown>>) relies on zero
+never being a valid thread id; a TLS address is never nil, so the property
+holds by construction on every platform.
+
+The address-as-identity scheme has one subtlety the `pthread_self` sketch
+shared: after a thread exits, its identity value may be *reused* by a later
+thread whose TLS block lands at the same address. This is harmless for the
+protocol — an arena whose owner exited is marked abandoned (`OwnerTid := 0`)
+by the thread-exit hook *before* any reuse can be observed (<<teardown>>).
+
+Taking `@threadvar` exposed a native-backend bug (the static address was
+returned instead of the per-thread TLS address) — fixed 2026-07-04 with asm
+and e2e guards (`cp.test.threadvar.pas`, `cp.test.e2e.threading.pas`).
+====
 
 == The concurrency protocol
 
@@ -470,8 +506,13 @@ thread:
   needed class then satisfies the request without growing the arena — the drain
   pays for itself.
 . *On free*, opportunistically: every Nth local free (a small counter, e.g.
-  every 64th, kept in a `threadvar`) drain the head arena. This bounds how long a
-  foreign-freed block can sit unreclaimed without adding an atomic to every free.
+  every 64th, kept in a `threadvar`) drain *one* arena, rotating through the
+  owner's `ArenaHead → Next` list via a `threadvar` cursor (`DrainCursor`) that
+  advances one arena per trigger and wraps to the head at the end of the list.
+  Rotation — rather than always draining the head — guarantees every arena's
+  remote queue is visited, so foreign frees to non-head arenas cannot starve.
+  This bounds how long a foreign-freed block can sit unreclaimed without adding
+  an atomic to every free.
 . *On arena exhaustion*, before `mmap`-ing a fresh arena, drain *all* of the
   owner's arenas' remote queues (walk the existing `ArenaHead → Next` list,
   which the owner already owns). Reclaiming foreign frees can avoid the `mmap`
@@ -480,8 +521,10 @@ thread:
 This keeps the common allocate/free path free of any unconditional drain cost —
 the `RemoteHead = nil` check is a single load and predicted-not-taken branch in
 non-fiber programs — while guaranteeing forward progress: a foreign-freed block
-is reclaimed by the owner's next allocation of that class at the latest, and the
-periodic free-side drain bounds the worst case for an allocation-light owner.
+in the head arena is reclaimed by the owner's next allocation of that class at
+the latest, and the rotating free-side drain bounds the worst case for *every*
+arena — including non-head arenas that the allocation-side drain never touches —
+independently of the owner's allocation rate.
 
 ----
   Owner allocate(class c):
@@ -492,7 +535,7 @@ periodic free-side drain bounds the worst case for an allocation-light owner.
 
   Owner free(p):                            (p's arena owned by me)
      push p onto FreeLists[classOf(p)]      (no atomics)
-     if (++freeCount and 63) = 0: drain head-arena remote queue
+     if (++freeCount and 63) = 0: drain next arena in rotation (DrainCursor)
 
   Foreign free(p):                          (p's arena owned by someone else)
      RemoteFreePush(p.arena, p, classOf(p)) (1 CAS, retry on contention)
@@ -662,8 +705,9 @@ of what changes and what is left verbatim.
 | `TArena`
 | Add `OwnerTid`, `RemoteHead`, `RemoteList` fields.
 
-| new `threadvar CurrentTid; FreeDrainCounter: Integer;`
-| Cached thread id and the periodic-drain counter.
+| new `threadvar CurrentTid: Int64; FreeDrainCounter: Integer; DrainCursor: PArena;`
+| Cached thread id, the periodic-drain counter, and the rotating drain cursor
+  (one arena advanced per periodic drain, wrapping to `ArenaHead`).
 
 | `AllocArena`
 | Set `A^.OwnerTid := MyTid; A^.RemoteHead := nil`. Register the arena for
@@ -709,7 +753,17 @@ begin
     FreeLists[Idx] := Node;
     Inc(FreeDrainCounter);
     if (FreeDrainCounter and 63) = 0 then
-      DrainRemoteFrees(ArenaHead);
+    begin
+      { Rotate: drain ONE arena per trigger, walking ArenaHead -> Next and
+        wrapping, so foreign frees to non-head arenas cannot starve. }
+      if DrainCursor = nil then
+        DrainCursor := ArenaHead;
+      if DrainCursor <> nil then
+      begin
+        DrainRemoteFrees(DrainCursor);
+        DrainCursor := DrainCursor^.Next;
+      end;
+    end;
   end
   else
     { ---- FOREIGN path: route to the owner, never touch FreeLists ---- }
@@ -864,9 +918,13 @@ whose owner no longer exists to drain it, and the arena's bytes must not be
 === The mechanism: a global abandoned-arena list and adoption
 
 . *Global registry.* Every arena, at creation, is also linked onto a
-  process-global, lock-protected (or lock-free via CAS) list of *live arenas*
-  through its `RemoteList` field. (The per-thread `ArenaHead → Next` list is the
-  owner's working set; the global list is the reclamation registry.)
+  process-global list of *live arenas* through its `RemoteList` field. The
+  registry is protected by a CAS spinlock built on `_AtomicCASPtr` — *not* a
+  `pthread_mutex` — so `runtime.mem` stays dependency-free (no libc mutex object,
+  no additional `external name` binding). Registry operations are rare (arena
+  create, abandon, adopt, unlink) and never on the hot path, so a spinlock is
+  adequate. (The per-thread `ArenaHead → Next` list is the owner's working set;
+  the global list is the reclamation registry.)
 . *On thread exit*, the allocator's thread-exit hook walks the exiting thread's
   `ArenaHead` list and marks each arena *abandoned* by atomically setting
   `OwnerTid := 0`. It does **not** `munmap` them — foreign blocks may still be
@@ -877,15 +935,15 @@ whose owner no longer exists to drain it, and the arena's bytes must not be
   `OwnerTid` from `0` to its own tid. The adopting thread then owns the arena,
   drains its remote queue, links it onto its own `ArenaHead`, and treats it as
   its own thereafter. Adoption is the mimalloc move that prevents both leaks and
-  premature unmapping.
-. *Reclamation.* An arena is `munmap`-ed only when it is *fully free* — every
-  block returned, bump `Offset` back to the initial `SizeOf(TArena)` watermark
-  with an empty remote queue — and it is abandoned (no owner). A per-arena live
-  block counter (maintained with `_AtomicAddInt64`: +1 on alloc-from-arena, −1 on
-  any free of an arena block, local or remote) reaching zero on an abandoned arena
-  is the unmap trigger. The thread that drives the count to zero performs the
-  `munmap`, after unlinking the arena from the global list under the registry
-  lock.
+  premature unmapping. A producer that read a non-zero `OwnerTid` just before
+  the owner exited may still push onto a freshly abandoned arena's queue; the
+  block is never lost — it sits on the queue and remains counted — and the
+  refill-time scan of the abandoned list is the backstop that eventually adopts
+  the arena and drains it.
+. *Reclamation.* An arena is `munmap`-ed only when it is *fully free* and
+  *abandoned* (no owner). "Fully free" is established by a per-arena live-block
+  counter with *decrement-at-drain* semantics, and the unmap itself follows a
+  lock-serialised sequence — both are specified in <<reclamation-protocol>>.
 
 ----
   Arena lifecycle:
@@ -898,6 +956,50 @@ whose owner no longer exists to drain it, and the arena's bytes must not be
             live-block count hits 0 while abandoned ---> munmap + unlink
 ----
 
+[#reclamation-protocol]
+=== Reclamation protocol: decrement-at-drain and the unmap sequence
+
+The per-arena live-block counter (maintained with `_AtomicAddInt64`) counts
+blocks that are in use *or still in flight on the remote queue*:
+
+* `+1` on every allocation of a block from the arena (bump allocation or
+  freelist reuse).
+* `−1` on a *local* free (the block lands on the owner's freelist immediately).
+* `−1` *at drain time* — when `DrainRemoteFrees` files a remote-freed block onto
+  a freelist — **not** at remote-push time.
+
+Decrement-at-drain is the load-bearing choice. If the producer decremented at
+push time, the counter could reach zero while blocks still sat on `RemoteHead`,
+and an unmap triggered by that zero would tear the queue's backing pages out
+from under the pending nodes. With decrement-at-drain, `counter = 0` is a
+*stable* state: a remote push requires the pusher to hold a live block of the
+arena, and every live block is counted, so once the counter reaches zero no
+thread holds any block and no further push can arrive. (The common last-free
+case is a remote push with no decrement — the counter then rests at 1 until a
+drain files the block, and the drainer is the thread that observes the zero.)
+
+The unmap sequence, executed by whichever thread observes
+`counter = 0` with `OwnerTid = 0`:
+
+. Acquire the registry spinlock; recheck `OwnerTid = 0` (an adopter may have
+  CAS-ed ownership since the observation) and unlink the arena from the global
+  list. From this point no refill-scan can find or adopt it.
+. Perform a final `DrainRemoteFrees` on the arena. With correct accounting it
+  finds `nil`; a non-empty result indicates an accounting bug and the drain is
+  the belt-and-braces guard that prevents unmapping a populated queue.
+. Recheck the live-block counter is still `0`; if not, relink the arena and
+  abort the unmap.
+. `munmap` the arena; release the spinlock.
+
+The stability argument above makes steps 2–3 invariant guards rather than
+correctness necessities, but the unlink-under-lock ordering in step 1 *is*
+necessary: it serialises unmap against adoption, so an arena can never be
+adopted and unmapped concurrently. One consequence of abandonment is accepted
+as-is: blocks that sat on the exiting owner's `threadvar` freelists are already
+decremented and their bytes simply lie fallow inside the arena until it becomes
+fully free and is unmapped — internal fragmentation within an already-mapped
+arena, not a leak that grows the process footprint.
+
 === Why a thread-exit hook exists, and how
 
 pthreads provides `pthread_key_create` with a destructor that runs on thread
@@ -909,7 +1011,7 @@ imports. For the main thread, an `__cxa_atexit` handler (already used by the lea
 tracker in `runtime.arc.pas:377`) performs the same final sweep.
 
 [NOTE]
-.Teardown is phase 2, not the GO/NO-GO gate
+.Teardown is a later phase (step 5), not part of the GO/NO-GO gate
 ====
 The hot-path remote-free queue (the P2 gate in `async-networking-design.adoc`) is
 correct and testable *without* abandoned-arena reclamation, as long as workers
@@ -920,6 +1022,7 @@ Teardown matters for *worker shutdown* and *dynamic worker pools*. The phased pl
 the riskiest hot-path work is validated before the teardown bookkeeping is built.
 ====
 
+[#testing]
 == Testing strategy
 
 Per project TDD policy, each layer is tested at the lowest level that proves it,
@@ -937,6 +1040,12 @@ has zero dependency on stdlib or ARC.
   for every size class; `GetAllocSize` and `IsLarge` still correct; the
   back-pointer `Hdr^.Arena` points at an arena whose `Base..Base+Capacity` range
   contains the block.
+* *Flags-offset invariant.* Assert the offset of `Flags` from the user pointer is
+  identical in the small and large header layouts (both `Ptr - 12` with the
+  layouts specified here) — the cross-layout punning that `IsLarge` and
+  `GetAllocSize` depend on (see the cross-layout invariant under § Data
+  structures). This pins the field ordering: a reordering of either record fails
+  the assertion before it can corrupt a free.
 * *Local path unchanged.* The full existing `test_blaise_mem` suite must pass
   verbatim — it is the regression guard that the fast path did not move.
 * *Drain semantics (single-thread, synthetic).* Manually push synthetic nodes
@@ -962,16 +1071,31 @@ block returns to the owning arena.* Concretely (pthreads, dynamic build):
 . A control assertion: thread 2's own freelists are empty (it never locally freed
   anything), proving the routing.
 
-=== The 100k-fiber stress
+=== The pthread stress (part of the P2 gate)
 
-The acceptance-grade stress from the async doc: spawn 100k fibers under the
+The stress that gates P2 must not depend on the fiber scheduler, which is itself
+gated on P2. It is therefore pthread-based: N worker threads (e.g. 8) allocate
+and free millions of blocks across all size classes, handing pointers between
+threads through shared queues so that a high proportion of frees execute on a
+thread other than the allocator. Assert: no crash, no leak, every block routed
+back to its owning arena, and steady-state RSS bounded. This stress, together
+with the cross-thread free test above and the TSan-style run, *is* the P2
+GO/NO-GO gate (plan step 4).
+
+=== The 100k-fiber stress (joint acceptance test, after the scheduler lands)
+
+The acceptance-grade stress from the async doc — spawn 100k fibers under the
 scheduler, each allocating and freeing across size classes with deliberate
 migration (force-yield between alloc and free so the free lands on a different
-worker than the alloc with high probability). Assert: no crash, no leak (the leak
-tracker, run scheduler-safe or disabled per the async doc, reports zero
-survivors), and steady-state RSS bounded (arenas are reclaimed/recycled, not
-grown without limit). This is the test that the *whole* design — queue, drain,
-adoption, reclamation — holds under realistic churn.
+worker than the alloc with high probability) — is a *joint* acceptance test. It
+runs only after `async-networking-design.adoc`'s phased plan delivers the L1
+scheduler, which in turn requires this design's phase 4 to have passed; it is
+deliberately *not* part of the P2 gate. It exercises the queue and drain under
+realistic churn; once phase 5 lands it is re-run with worker churn (workers
+spawned and joined mid-run) to additionally cover adoption and reclamation.
+Assert: no crash, no leak (the leak tracker, run scheduler-safe or disabled per
+the async doc, reports zero survivors), and steady-state RSS bounded (arenas are
+reclaimed/recycled, not grown without limit).
 
 === Race detection (TSan-style)
 
@@ -1005,9 +1129,12 @@ and the header change is offset-correct. A divergent fixpoint *blocks the commit
   `MyTid`, `RemoteFreePush`, `DrainRemoteFrees`, the foreign branch in
   `SmallFreeMem`, drain hooks in `SmallGetMem`/`ArenaAlloc`. Single-threaded: the
   foreign branch is dead code; fixpoint clean, `test_blaise_mem` unchanged.
-. *Cross-thread free test + 100k stress + TSan-style run.* The P2 acceptance
+. *Cross-thread free test + pthread stress + TSan-style run.* The P2 acceptance
   tests (above). *This is the GO/NO-GO gate for `async-networking-design.adoc`
-  P2.* Large-block foreign path: `munmap`-on-foreign-free (option 2).
+  P2.* Large-block foreign path: `munmap`-on-foreign-free (option 2). The
+  100k-fiber stress is *not* part of this gate — it is the joint acceptance test
+  run after the async design's phased plan delivers the L1 scheduler
+  (<<testing>>).
 . *Abandoned-arena reclamation.* Global arena registry, thread-exit hook
   (`pthread_key` destructor + `__cxa_atexit` main sweep), adoption, per-arena
   live-block counter and unmap-when-empty-and-abandoned. Stress with worker
@@ -1030,8 +1157,9 @@ and the header change is offset-correct. A divergent fixpoint *blocks the commit
   even where the model hides ordering ones.
 * *Drain starvation.* An allocation-light owner could let foreign frees
   accumulate. Mitigation: the periodic free-side drain (every 64th local free)
-  bounds the backlog independently of allocation; the arena-refill full drain is
-  the backstop.
+  rotates through the whole `ArenaHead → Next` list, one arena per trigger, so it
+  bounds the backlog for *every* arena — not only the head — independently of the
+  owner's allocation rate; the arena-refill full drain is the backstop.
 * *Abandoned-arena leak or premature unmap.* The hardest correctness surface.
   Mitigation: the live-block counter is the single source of truth for "safe to
   unmap"; reclamation is staged after the hot path is proven (phase 5), and the

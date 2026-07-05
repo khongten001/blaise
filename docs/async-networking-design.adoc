@@ -100,7 +100,7 @@ offer.
   three *core-RTL* changes that are not in `Async.Fibers` itself — see
   <<rtl-prerequisites>> — and the *ergonomic* public API (anonymous-procedure
   `Spawn`) depends on the separately-tracked anonymous-methods feature
-  (`future-improvements.adoc` § Language). The available-today API uses a plain
+  (`docs/anonymous-methods-design.adoc`). The available-today API uses a plain
   `procedure(Arg: Pointer)` + argument; both forms are shown in <<components>>.
 . *Synchronous-looking, opt-in at the application level.* `uses Async.Fibers`
   switches the I/O primitives to their fiber-aware implementations; a program
@@ -158,7 +158,7 @@ worker thread*. So:
 * Under work-stealing, A may resume on a *different* worker T2, whose `g_exc_top`
   is unrelated to the frames A pushed.
 
-*Required:* `FiberSwap` must save and restore `g_exc_top` and
+*Required:* `FiberSwitch` must save and restore `g_exc_top` and
 `g_current_exception` as part of the fiber context (store them in the fiber
 control block on save, reinstate on resume). Until this lands, *any* `try` across
 a suspension is unsound — which means the entire cancellation/cleanup story
@@ -183,7 +183,10 @@ forbidden. *Required:* a cross-thread free path — a per-arena remote-free queu
 MPSC queue, drained by the owner) — or pin every fiber's allocations to its
 origin worker (which defeats work-stealing for allocation-heavy fibers). The
 remote-free queue is the right answer; it is an allocator-model change, and it
-is the single largest piece of novel RTL risk in the whole design.
+is the single largest piece of novel RTL risk in the whole design. The full
+design — header widening, MPSC Treiber-stack queue, drain policy, abandoned-
+arena reclamation, and its own phased plan whose phase 4 *is* this
+prerequisite's GO/NO-GO gate — is `docs/concurrent-allocator-design.adoc`.
 
 === P3. `errno`/EAGAIN detection (the primitive the hot path assumes)
 
@@ -273,7 +276,7 @@ OS/CPU divergence is isolated to exactly one layer.
 | None (portable Pascal over L0/L2)
 
 | L0 Context switch
-| `FiberSwap` — save/restore callee-saved regs + SP; fresh-stack bootstrap;
+| `FiberSwitch`/`FiberSwapAsm` — save/restore callee-saved regs + SP; fresh-stack bootstrap;
   guard-page stacks.
 | *Per-CPU/ABI* → inline-asm leaf, native backend only
 |===
@@ -301,19 +304,35 @@ that the approach is sound and already supported.
 [source,pascal]
 ----
 type
-  { Opaque saved context: just a stack-pointer slot. The callee-saved
+  { Saved context: the stack-pointer slot FIRST (the asm leaf depends on
+    SP being at offset 0), followed by the per-fiber threadvar snapshot
+    (P1: the exception-chain head and current exception). The callee-saved
     registers and return address are pushed onto the fiber's OWN stack by
-    FiberSwap, so the context is a single saved RSP (the Go/boost.context
-    model). }
-  TFiberCtx = record
-    SP: Pointer;
+    the swap, so the register context is a single saved RSP (the
+    Go/boost.context model). }
+  TFiberContext = record
+    SP: Pointer;          { offset 0 — the asm leaf's only field }
+    ExcTop: Pointer;      { P1 snapshot: g_exc_top }
+    ExcCurrent: Pointer;  { P1 snapshot: g_current_exception }
   end;
-  PFiberCtx = ^TFiberCtx;
 
-{ Save the current context into ACur, load Anext, resume on Anext's stack.
-  When something later swaps back into ACur, FiberSwap returns here. }
-procedure FiberSwap(ACur, ANext: PFiberCtx); assembler; nostackframe;
+{ The bare register leaf: save callee-saved regs + RSP into AFromSP^,
+  load AToSP^, resume on the target stack. Registers only — never call
+  this directly; it is FiberSwitch's private engine. }
+procedure FiberSwapAsm(AFromSP, AToSP: PPointer); assembler; nostackframe;
+
+{ The real switch: snapshots the outgoing fiber's per-fiber threadvars
+  into its control block, calls FiberSwapAsm, reinstates the incoming
+  fiber's snapshot. When something later switches back into AFrom,
+  FiberSwitch returns here. }
+procedure FiberSwitch(AFrom, ATo: PFiber);
 ----
+
+(As implemented in `async.fibers.context.x86_64.pas`, 2026-07-04. Earlier
+drafts sketched a single `FiberSwap(ACur, ANext: PFiberCtx)`; the split into a
+public control-block-level `FiberSwitch` and a private register leaf is the
+direct consequence of the IMPORTANT block below — the wrapper owns the
+threadvar snapshot, so the wrapper is the API.)
 
 [IMPORTANT]
 .The register swap is not the whole context — threadvar state must swap too
@@ -323,11 +342,12 @@ machine's `g_exc_top`/`g_current_exception` are `threadvar`s (per-OS-thread,
 shared by every fiber on a worker — <<rtl-prerequisites>> P1), so the
 scheduler's switch path must *also* save the outgoing fiber's exception-chain
 head + current-exception into its control block and restore the incoming
-fiber's, around `FiberSwap`. The same applies to any other `threadvar` that is
+fiber's, around the swap. The same applies to any other `threadvar` that is
 logically per-fiber (audit the allocator's threadvar state under the migration
-model, P2). The bare `FiberSwap` asm swaps registers; the Pascal wrapper that
-calls it owns the threadvar save/restore. Treat "context" as *registers + SP +
-per-fiber threadvar snapshot*, not registers alone.
+model, P2). The bare `FiberSwapAsm` leaf swaps registers; the Pascal wrapper
+(`FiberSwitch`) that calls it owns the threadvar save/restore — which is why
+the wrapper, not the leaf, is the public API. Treat "context" as *registers +
+SP + per-fiber threadvar snapshot*, not registers alone.
 ====
 
 x86-64 System V sketch (the only architecture for v1; `nostackframe` so the body
@@ -356,12 +376,12 @@ owns the frame, exactly as `runtime.setjmp` and the syscall leaves do):
 === Bootstrapping a fresh fiber
 
 A newly created fiber has no saved context yet. `SpawnFiber` lays out the new
-stack so the first `FiberSwap` into it `ret`s into a trampoline:
+stack so the first `FiberSwapAsm` into it `ret`s into a trampoline:
 
 . `mmap` a stack region (see below); set `SP` near the top (16-byte aligned per
   the SysV ABI).
 . Push a synthetic frame: the trampoline address as the "return address", and
-  zeroed slots where `FiberSwap`'s `popq` sequence expects the saved
+  zeroed slots where `FiberSwapAsm`'s `popq` sequence expects the saved
   callee-saved registers.
 . The trampoline (`procedure FiberTrampoline; cdecl;`) reads the fiber's entry
   proc + argument from its control block, calls it, and on return calls
@@ -373,7 +393,7 @@ Two subtleties the trampoline must respect:
 * *Keep it in Pascal.* Inline `asm` cannot reference Pascal locals/args by name
   (`docs/inline-asm-design.adoc` § Scope — out of scope: "`@result` / typed
   local references"). So only the minimal frame synthesis is asm (register/ABI
-  conventions, like `FiberSwap`); reading the control block and calling the
+  conventions, like `FiberSwapAsm`); reading the control block and calling the
   entry proc is ordinary Pascal. The trampoline is the fiddliest, least-tested
   part of L0 — budget for it explicitly.
 * *FiberExit must drain the entry frame's ARC refs.* When the entry proc
@@ -460,7 +480,7 @@ no per-platform code at all.
   main thread) and for overflow.
 
 The loop: take next ready fiber (LIFO slot → local deque → steal from a random
-peer → global queue → poll the reactor); `FiberSwap` into it; when it parks,
+peer → global queue → poll the reactor); `FiberSwitch` into it; when it parks,
 yields, or exits, repeat.
 
 === Parking and wake-up
@@ -524,14 +544,33 @@ end;
 ----
 
 *Ergonomic form (future)* — the closure version below depends on the
-anonymous-methods language feature (`future-improvements.adoc` § Language —
-"reference to function/procedure"), which is *not* implemented. It is the target
-API, not today's:
+anonymous-methods language feature (`docs/anonymous-methods-design.adoc`),
+which is *not* implemented. It is the target API, not today's:
 
 [source,pascal]
 ----
-Group.Spawn(procedure begin FireOneRequest(I); end);  { needs anonymous methods }
+for I := 0 to 9999 do
+begin
+  var Snapshot: Integer := I;   { block-scoped copy — see WARNING below }
+  Group.Spawn(procedure begin FireOneRequest(Snapshot); end);
+end;
 ----
+
+[WARNING]
+.Loop-variable capture is by reference — the naïve form is a bug
+====
+`Group.Spawn(procedure begin FireOneRequest(I); end)` is *not* equivalent to
+the `Spawn(@FireOne, Pointer(I))` form above. Anonymous methods capture by
+reference (Delphi semantics — `docs/anonymous-methods-design.adoc` § "The
+loop-variable-capture case"): all 10 000 closures would share the *single*
+loop variable `I`, and since spawned fibers typically run at or after
+`Group.Wait`, most would fire `FireOneRequest(10000)`. The `Pointer(I)` form
+snapshots the *value* per spawn. The block-scoped `var Snapshot` idiom shown
+restores per-iteration capture — and it requires Phase 4 of the
+anonymous-methods plan (block-scoped environments), so the closure `Spawn`
+API is correct for loop-spawn patterns only from that phase onward, not from
+the first closure phase.
+====
 
 The runtime needs no compiler change; this ergonomic *sugar* does. The
 distinction matters because the design's "no language change" claim is about the
@@ -821,7 +860,9 @@ Strategy-B direction. Therefore:
 The long-term replacement is a pure-Pascal TLS 1.3 stack built on an expanded
 `Security.Crypto` (AEAD ciphers, ECDHE/X25519, the needed hashes/HKDF, X.509
 parsing + path validation). It is a substantial component in its own right
-(comparable to a regex engine in scope) and warrants its own design document.
+(comparable to a regex engine in scope); its design document is
+`docs/tls13-pure-pascal-design.adoc` (TLS 1.3 client, memory-BIO engine,
+bottom-up crypto phasing).
 The memory-BIO port boundary means it slots in by swapping `GTlsProvider` —
 *zero* change to any L5 component — and it is what finally lets the
 static/libc-free build speak TLS.
@@ -967,7 +1008,7 @@ is *not* always-linked RTL — it is opt-in like the rest of stdlib, matching th
 ----
 stdlib/src/main/pascal/
   async.fibers.pas                 L1 scheduler + public API (SpawnFiber, RunScheduler, TTaskGroup, yield, sleep)
-  async.fibers.context.x86_64.pas  L0 FiberSwap + trampoline (inline asm; native backend only)
+  async.fibers.context.x86_64.pas  L0 FiberSwitch/FiberSwapAsm + trampoline (inline asm; native backend only)
   async.sync.pas                   L1 TFiberMutex/Event/WaitGroup, TChannel<T>
   async.reactor.pas                L2 TReactor port (abstract) + GReactor selection
   async.reactor.epoll.pas          L2 TEpollReactor (Linux)
@@ -1014,7 +1055,10 @@ e2e behaviour on top:
      a real handler corrupts a stack.
   ** *Cross-thread free (P2):* allocate on worker 1, force-migrate the fiber to
      worker 2, free there; assert no corruption and the block returns to the
-     owning arena. Run under the 100k-fiber stress with allocation churn.
+     owning arena. The GO/NO-GO form of this test is *pthread-based* (no fibers
+     — `docs/concurrent-allocator-design.adoc` phase 4), so P2 can be proven
+     before the scheduler exists; the 100k-fiber stress with allocation churn
+     is the joint acceptance re-run once L1 lands.
   ** *Would-block (P3):* assert `WouldBlock` returns true for EAGAIN in *both*
      build profiles (libc `__errno_location` and static `-EAGAIN`).
   ** *Cancellation unwind:* a cancelled fiber mid-`try/finally` releases its
@@ -1047,13 +1091,15 @@ RTL prerequisites, so they land *before* the multicore milestone that depends on
 them, and the single-worker prototype is treated as a *correctness* step, not a
 proof of the throughput thesis (it cannot be — throughput is multicore-bound).
 
-. *L0 context switch (x86-64 SysV)* — `FiberSwap` (registers + per-fiber
+. *L0 context switch (x86-64 SysV)* — `FiberSwitch` (registers + per-fiber
   threadvar snapshot — <<rtl-prerequisites>> P1), trampoline, guard-page stacks,
   stack pool. E2e swap test, including a `try/except` that survives a swap.
   *Foundation; everything gates on this.*
 . *RTL prerequisites* — the three core-RTL changes (<<rtl-prerequisites>>):
   per-fiber exception-state save/restore in the switch path; the migration-safe
-  allocator (remote-free queue); the `WouldBlock` errno abstraction. Disable or
+  allocator (remote-free queue — full design and its own phased, fixpoint-gated
+  plan in `docs/concurrent-allocator-design.adoc`); the `WouldBlock` errno
+  abstraction. Disable or
   guard the leak tracker under the scheduler. *These are the genuinely novel,
   RTL-invasive risk — land and test them in isolation before building on them.*
 . *L1 single-worker scheduler* — run queue, park/resume, `FiberSleep` + timer
