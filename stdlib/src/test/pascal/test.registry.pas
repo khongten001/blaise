@@ -35,7 +35,8 @@ uses
   SchedulerMc.Tests,
   AsyncSync.Tests,
   TaskGroup.Tests,
-  AsyncStress.Tests;
+  AsyncStress.Tests,
+  Pool.Tests;
 
 implementation
 
