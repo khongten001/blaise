@@ -773,6 +773,28 @@ A constraint is offered as an *optional ergonomic* (v2): the existing
 *generic declaration* rather than each instantiation. v1 ships without it
 (consistent with reified generics' "errors surface at instantiation" model).
 
+=== Operators declared on generic types (prohibited in v1)
+
+v1 permits operator *use* inside generic bodies (above) but *prohibits
+declaring* a `class operator` inside a generic record or class (e.g.
+`class operator Add` on `TVec<T>`). The parser accepts the syntax; the
+semantic pass rejects it with a clear error:
+"operators on generic types are deferred". Rationale:
+
+* Monomorphised operator declarations need their own analysis: the
+  `FMethodGroups` index would have to be keyed per instantiated type name
+  (`'TVec<Integer>.Add'`), and the `.bif` serialisation of *generic* method
+  decls (`EncodeMethodDecl` on the generic template) must round-trip the
+  operator fields through the instantiation path — neither is covered by the
+  resolution and serialisation analysis in §6/§8.
+* The motivating types — `TDecimal` and `TMoney` — are not generic, so v1
+  loses nothing.
+
+This is recorded as an *open decision*: prohibition is the conservative
+default, and lifting it is a self-contained v2 item once the instantiation
+keying and the generic-template `.bif` round-trip are designed. The reserved
+operator-kind encoding needs no format change to lift the restriction.
+
 === Relationship to `Generics.Defaults` comparers
 
 For *ordered/keyed containers* (`Generics.Collections`), the connection between
@@ -852,7 +874,7 @@ program using `A + B` on an imported `TDecimal` compiles identically whether
 Following `docs/testing-strategy.adoc`'s three layers plus the project's
 fixpoint discipline. Tests are written *first*, red, then made green.
 
-=== Unit tests (punit, compiler-internal)
+=== Unit tests (blaise.testing, compiler-internal)
 
 In `compiler/src/test/pascal/` (new `cp.test.operators.pas`, plus additions to
 the existing `cp.test.numerics.decimal.pas` / `cp.test.numerics.money.pas`):
@@ -872,11 +894,14 @@ the existing `cp.test.numerics.decimal.pas` / `cp.test.numerics.money.pas`):
   unaffected (operator fallback not consulted).
 . *Class `=` identity preserved*: a class with an `Equal` operator still
   compares by identity for `Obj1 = Obj2` per §4.3.
+. *Generic-type prohibition*: a `class operator` declared inside a generic
+  record/class is rejected with the deferral error (see "Operators declared
+  on generic types (prohibited in v1)").
 
 === End-to-end tests (compiled programs)
 
-In `tests/e2e/` (or the project's e2e fixtures), small programs whose *output*
-is checked:
+In `cp.test.e2e.pas` (`compiler/src/test/pascal/`, the `TE2ETestCase`
+harness), small programs whose *output* is checked:
 
 . `A + B`, `A - B`, `A * B`, `-A` on `TDecimal` print the same strings as the
   equivalent `A.Add(B)` etc. — the *equivalence* assertion of §7.2.
@@ -964,6 +989,19 @@ removed or altered.
   record and class bodies (extend the member loop next to the `static`
   handling); validate the operator name against the reserved set and the arity
   (2 binary / 1 unary). Link out-of-line `Type.OperatorName` impls by signature.
+  Reject `class operator` inside a generic record/class with the deferral
+  error (see "Operators declared on generic types (prohibited in v1)").
+  *Same-commit documentation deliverables (project policy)*: add
+  a `ClassOperatorDecl` rule to `docs/grammar.ebnf` and a decision entry to
+  `docs/language-rationale.adoc` (Delphi `class operator` form chosen over the
+  FPC standalone form; class-identity `=` preserved; `Implicit`/`Explicit`
+  deferred to v2). *Verification*: confirm the parser's `0 - A` desugaring
+  stamps both the synthesised zero literal and the `TBinaryExpr` with the `-`
+  token's line/col — the §6.4 recognition gate depends on it; if it does not,
+  establish the stamping (or take the `TUnaryExpr` refactor of §11) before
+  Phase 2 starts. Review `uDebugOPDF.pas` per project convention: operator
+  methods ride the existing static-method emit paths, so no OPDF emitter
+  change is expected — record the outcome in the commit message.
 | *2. Semantic resolution*
 | Add `BinaryOpToOperatorKind` / `OperatorKindName`. Add the operator fallback
   at the end of `AnalyseBinaryExpr` (after built-ins), including the `0 - A`
@@ -983,7 +1021,9 @@ removed or altered.
 | Add `class operator` declarations + delegating bodies to `TDecimal` and
   `TMoney`. Add operator tests to the numerics suites. Update
   `numerics.decimal.pas`/`numerics.money.pas` header comments and
-  `future-improvements.adoc` (mark the item done).
+  `future-improvements.adoc` (mark the item done). Confirm `docs/grammar.ebnf`
+  and `docs/language-rationale.adoc` still match the shipped syntax and
+  semantics.
 | *6. Generics + comparer bridge (optional, can trail)*
 | Confirm operator-in-generic resolves per instantiation (test
   `SumAll<TDecimal>` vs `SumAll<Integer>`). Optionally add a `TComparer<T>`

@@ -8,6 +8,7 @@
 :sectanchors:
 :sectnums:
 
+[#purpose]
 == Purpose
 
 Blaise has three flavours of "code value" today:
@@ -26,7 +27,8 @@ a `procedure` declared inside another procedure's `var` block may read/write
 the enclosing frame's locals, lowered as hidden by-pointer parameters. That
 mechanism is *frame-scoped* — it works only while the enclosing frame is
 live, so the nested proc cannot _escape_ (be stored, returned, or handed to a
-scheduler). `uAST.pas` line 794 records the gap explicitly:
+scheduler). A comment on `TProceduralTypeDef` in `uAST.pas` records the gap
+explicitly:
 
 [quote]
 ____
@@ -52,6 +54,22 @@ Group.Spawn(procedure begin FireOneRequest(I); end);  { needs anonymous methods 
 
 and is broadly useful for callbacks, comparers (`Generics.Collections`
 sorting), and event handlers.
+
+[CAUTION]
+.The quoted example is itself the loop-capture trap
+====
+In the async document the quoted call sits inside `for I := 0 to 9999 do`,
+with `I` declared outside the loop. Under the by-reference capture specified
+in <<capture>> ("The loop-variable-capture case"), all 10 000 closures share
+a single environment field `I`, and a fiber that runs after the loop observes
+its final value. The closure form is therefore *not* behaviourally equivalent
+to the available-today `Group.Spawn(@FireOne, Pointer(I))`, which snapshots
+the value of `I` at each spawn. The correct closure form uses the
+block-scoped `var Snapshot` idiom documented in <<capture>>. Consequently the
+ergonomic fiber `Spawn` API is correct only from Phase 4 (block-scoped
+environments) onward, not from Phase 2; the Phase 7 test list covers the
+loop-spawn pattern explicitly.
+====
 
 == Scope and non-goals
 
@@ -181,8 +199,8 @@ existing closure lowering. No new runtime. This *supersedes* the original
 ====
 Target-typed param inference fights the *bottom-up* type checker. Today
 `ResolveStandaloneOverload`/`ResolveMethodOverload` score candidates from
-arguments that are *already analysed with `ResolvedType` set* (`uSemantic.pas`
-:282-301) — arguments are typed *before* the overload is chosen. That works for
+arguments that are *already analysed with `ResolvedType` set*
+(`uSemantic.pas`) — arguments are typed *before* the overload is chosen. That works for
 assignment/return position (the target type is known up front) but not for the
 headline argument position `List.Where((P) -> ...)`, where you must know
 `Where`'s parameter type to type `P`, yet the resolver wants `P` typed to pick
@@ -251,18 +269,18 @@ These are load-bearing throughout and shape every decision below:
 Grounding the design in what already exists (verified in-tree):
 
 `uAST.pas`::
-* `TProceduralTypeDef` (line 797): `Params`, `ReturnTypeName`, `IsFunction`,
+* `TProceduralTypeDef`: `Params`, `ReturnTypeName`, `IsFunction`,
   `IsMethodPtr`. We add `IsReference: Boolean` here.
-* `TMethodDecl` (line 841): the carrier for a routine body. `CapturedVars:
-  TStringList` (line 890) and `[Unretained] EnclosingDecl: TMethodDecl`
-  (line 891) already drive nested-proc capture.
-* `TASTExpr` (line 29) is the expression base — the anonymous literal is a
+* `TMethodDecl`: the carrier for a routine body. `CapturedVars: TStringList`
+  and `[Unretained] EnclosingDecl: TMethodDecl` already drive nested-proc
+  capture.
+* `TASTExpr` is the expression base — the anonymous literal is a
   new `TASTExpr` subclass.
 
 `uSymbolTable.pas`::
-* `TProceduralTypeDesc` (line 190): resolved type with `IsMethodPtr` and
+* `TProceduralTypeDesc`: resolved type with `IsMethodPtr` and
   `IsCompatibleWith`. We add `IsReference: Boolean`. The method-pointer note
-  at line 185 already documents the 16-byte _(Code, Data)_ layout — we reuse
+  on the class already documents the 16-byte _(Code, Data)_ layout — we reuse
   that representation almost verbatim.
 
 `runtime.arc.pas`::
@@ -278,21 +296,20 @@ Grounding the design in what already exists (verified in-tree):
 * `_StringAddRef`/`_StringRelease`, `_WeakZeroSlots`.
 
 `uSemantic.pas`::
-* `CollectCaptures` (line 6568) / `MaybeCaptureName` (line 6556): the
-  capture-analysis BFS over a nested body. We *generalise* this walk to drive
-  environment promotion.
-* `FCurrentEnclosingDecl` (line 87): the lexical-nesting cursor.
+* `CollectCaptures` / `MaybeCaptureName`: the capture-analysis BFS over a
+  nested body. We *generalise* this walk to drive environment promotion.
+* `FCurrentEnclosingDecl`: the lexical-nesting cursor.
 
 `blaise.codegen.native.x86_64.pas`::
-* `AddSlot` (line 3951): a method-pointer / interface slot is 16 bytes.
-* `FCapturedVars` (line 137): per-function set of captured names.
-* `EmitMethodPtrCall` (line 788): loads both halves of a fat value and emits
+* `AddSlot`: a method-pointer / interface slot is 16 bytes.
+* `FCapturedVars`: per-function set of captured names.
+* `EmitMethodPtrCall`: loads both halves of a fat value and emits
   `call code(data, args...)` — the call mechanism we reuse for closures.
 
 `uUnitInterfaceIO.pas`::
-* `WriteProcPayload` (line 562) / `ReadProcPayload` (line 2227): the `.bif`
-  encoding for procedural types. We extend it with the `IsReference` bool
-  and bump the `.bif` version.
+* `WriteProcPayload` / `ReadProcPayload`: the `.bif` encoding for procedural
+  types. We extend it with the `IsReference` bool and bump the `.bif`
+  version.
 
 This is the central insight of the whole design: *a closure is a method
 pointer whose `Data` half is an ARC-managed environment record instead of a
@@ -402,7 +419,7 @@ Why a fat value rather than an ARC interface object:
 
 | *Fat value (Code, Env)* — RECOMMENDED
 | Reuses the entire method-pointer path: `AddSlot` already sizes a 16-byte
-  procedural slot (line 3962), `EmitMethodPtrCall` already calls
+  procedural slot, `EmitMethodPtrCall` already calls
   `code(data, args...)`, the `.bif` proc payload already exists. The `Env`
   half is released exactly like an interface/object slot. Zero new dispatch
   machinery. The ARC cost is one slot (`Env`), released with `_ClassRelease`.
@@ -506,8 +523,8 @@ For each routine being analysed (the *enclosing* routine):
    original initial value.
 6. A `var`/`out` parameter captured by reference is promoted as a *pointer*
    field (the env stores the address), mirroring how the existing nested-proc
-   path already passes var-params by pointer (`CollectCaptures` comment at
-   `uSemantic.pas` line 6603).
+   path already passes var-params by pointer (see the var-param note in
+   `CollectCaptures`, `uSemantic.pas`).
 
 === The loop-variable-capture case
 
@@ -527,6 +544,8 @@ With *by-reference* capture and a *single* `I` slot, all three closures share
 the same env field `I`. After the loop, `I = 3` (loop ran 0,1,2 then the
 post-increment to 3 on the failing test). *All three print `3`.* This is
 exactly Delphi's behaviour and is the documented, intentional outcome.
+The same behaviour applies to the fiber `Spawn` example quoted in
+<<purpose>> — see the caution there.
 
 Blaise's stance — *match Delphi, document the gotcha, give an idiom*: to
 capture the *per-iteration* value, introduce a fresh binding inside the loop
@@ -552,6 +571,7 @@ through the closure stored in `Handlers`). This is the one place the
 promotion algorithm must respect *block* scope, not just *routine* scope; see
 <<phasing>> Phase 4.
 
+[#arc]
 == ARC correctness
 
 === Refcount management of the Env half
@@ -636,6 +656,46 @@ inferred); inferring weak capture would be surprising and inconsistent. The
 default is *strong* capture (correct for the common escaping-callback case);
 `[Weak]` is the opt-in for the self-storing case.
 
+[#closures-exceptions]
+=== Closures and exceptions
+
+Exception flow adds no new machinery:
+
+* The enclosing frame's `env` reference is a managed frame slot, so it is
+  released on the *exceptional* teardown path exactly as on normal exit — env
+  release joins the existing unwind cleanup that already handles local
+  object/string/interface slots. No special-casing.
+* A `raise` inside a closure body propagates to the *invoker* of the closure
+  as from any ordinary call: the thunk is a normal routine, so a
+  `try/except` around the call site catches it, and a `try/finally` inside
+  the body runs before unwinding. The unwind itself does not touch the env
+  refcount; each holder releases its own reference as its frame unwinds.
+* This path is routine, not exotic: fiber cancellation
+  (`docs/async-networking-design.adoc`) raises `EFiberCancelled` at a
+  suspension point *inside* closure bodies passed to `Spawn`, so closure
+  bodies must unwind cleanly through `try/finally`.
+
+Test (E2E, leak-checked): a closure body that raises through a `try/finally`
+and is caught by the invoker; the leak tracker must report the env allocated
+once and released exactly once.
+
+[#env-concurrency]
+=== Shared environments across fibers and threads
+
+By-reference capture makes the environment record *shared mutable state*: a
+closure handed to another fiber or thread (e.g. `TTaskGroup.Spawn`) exposes
+every captured variable to concurrent access. The refcount operations are
+atomic (`lock xadd` in `runtime.arc.pas`), so the env's *lifetime* is
+race-free — but field *mutation* is not: an `Integer` counter update is a
+plain read-modify-write, and string assignment goes through the non-atomic
+COW path. The rule (cross-referenced from Phase 7):
+
+* Captured mutable state shared across fibers/threads must be protected by a
+  fiber-aware primitive (`TFiberMutex`) or replaced by message passing
+  (`TChannel<T>`).
+* Prefer *capture of a snapshot* (a block-scoped `var` copy, as in the loop
+  idiom in <<capture>>) for spawn-style APIs, so each closure owns its data.
+
 == Semantic pass
 
 All work lands in `uSemantic.pas`, reusing the capture infrastructure.
@@ -670,8 +730,8 @@ All work lands in `uSemantic.pas`, reusing the capture infrastructure.
 
 1. When resolving a routine body, collect every `TAnonMethodExpr` in it
    (depth-first; closures may nest).
-2. For each, run the existing BFS (the statement/expression walk at
-   `uSemantic.pas` lines 6614-6714) to find references to *enclosing* names
+2. For each, run the existing BFS (the statement/expression walk inside
+   `CollectCaptures`, `uSemantic.pas`) to find references to *enclosing* names
    (the enclosing routine's locals/params, transitively through outer
    closures and `Self`).
 3. Union the per-closure capture sets into the enclosing routine's
@@ -686,8 +746,8 @@ and where to deposit results) changes.
 
 === Assignment compatibility and conversions [[conversions]]
 
-A `reference to` target accepts, with these rules (checked in
-`AreAssignmentCompatible` / the proc-type branch at `uSemantic.pas` line 1013):
+A `reference to` target accepts, with these rules (checked in the proc-type
+branch of `AreAssignmentCompatible` in `uSemantic.pas`):
 
 [cols="2,3"]
 |===
@@ -767,7 +827,7 @@ the env outlives the frame iff a closure still references it.
 
 === Calling through a `reference to` value
 
-Reuse `EmitMethodPtrCall` (line 788) almost verbatim — the only difference
+Reuse `EmitMethodPtrCall` almost verbatim — the only difference
 from a method pointer is *what the Data half means* (env vs. Self), which is
 transparent to the call:
 
@@ -805,6 +865,36 @@ right by one, identical to how `of object` shifts for `Self`.
 | adapter discards nil env, tail-calls the real routine
 |===
 
+== OPDF debug emission
+
+Project rule: every new type kind requires a matching case in
+`uDebugOPDF.pas` `EmitTypeDesc`, and every new declaration form requires a
+review of the OPDF emit paths. Closures add three emitter obligations;
+without them `pdr` `locals`/`print` silently shows garbage in *any* routine
+that contains a closure, because promoted locals no longer live in the frame.
+
+* *`reference to` type descriptors.* `EmitTypeDesc` gains an `IsReference`
+  arm: a 16-byte fat value _(Code, Env)_, emitted alongside the existing
+  method-pointer case so the debugger can render both halves.
+* *Synthetic env record types and thunk routines.* Each `TEnvTypeDesc` is
+  emitted as a record type (field names, offsets, ARC-slot kinds) and each
+  `$__closure_<unit>_<n>` thunk as a routine record with its hidden `env`
+  parameter, so breakpoints and `callstack` inside closure bodies resolve to
+  named frames.
+* *Indirect locations for promoted captures — the critical one.* A captured
+  local's storage is no longer a frame offset; it is `env_slot(%rbp)` →
+  dereference → field offset. The emitter must describe promoted locals with
+  the existing indirect location machinery (`LocationExpr = 3`, already used
+  for var-params and captured `_cap_` slots), in both the enclosing routine
+  (whose locals moved into the env) and the thunk (whose outer names live
+  behind the `env` parameter).
+
+Deliverables land with the corresponding phases: the type-descriptor arm in
+Phase 0, thunk routine records in Phase 1, env record types and indirect
+capture locations in Phase 2. Verification: a `pdr` session on a
+closure-using program (`break` in the thunk, `locals`, `print <captured>`,
+`callstack`).
+
 == Generics interaction
 
 Blaise generics are *reified / monomorphised* (`uSemantic.pas`
@@ -838,7 +928,7 @@ that cross a unit boundary.
 === Type payload (extend `WriteProcPayload`/`ReadProcPayload`)
 
 `uUnitInterfaceIO.pas` already serialises `IsFunction` and `IsMethodPtr` for
-a procedural type (lines 570-571, 2236-2237). Add one bool:
+a procedural type in `WriteProcPayload`/`ReadProcPayload`. Add one bool:
 
 [source,pascal]
 ----
@@ -867,7 +957,22 @@ has no compile-time identity. What crosses a unit boundary is:
   are *regenerated*, not serialised (consistent with how monomorphised code
   is always regenerated, never cached as machine code across units).
 
-No env layouts, no thunk bodies, and no adapter thunks appear in `.bif`.
+No env layouts, no thunk bodies, and no adapter thunks appear in `.bif`. The
+one closure-related piece of *AST* that does is the `TAnonMethodExpr` node
+inside a generic-body template:
+
+=== `TAnonMethodExpr` in generic-body templates
+
+Generic bodies are serialised as *AST* (`uSemanticExport.pas`
+`ExportGenericBodies` → `EncodeBlock`/`EncodeExpr` in `uUnitInterfaceIO.pas`),
+so an anonymous literal inside an exported generic body crosses the unit
+boundary as a `TAnonMethodExpr` node. The expression encoder/decoder
+therefore needs a `TAnonMethodExpr` dispatch case covering `Decl` and
+`WeakCaptures`; `EnvType` and `LiftedName` are semantic-pass outputs,
+re-derived at the importer's monomorphisation site, and are marked `safe` in
+`bif-coverage.status`. The `bif-coverage` tool will flag the node until the
+case is added — run `bif-coverage --reset` and commit the updated status file
+alongside the change. This is a Phase 6 deliverable.
 
 == EBNF fragment
 
@@ -946,27 +1051,42 @@ end;
 [#phasing]
 == Phased implementation plan
 
-Each phase is independently testable and leaves the compiler green.
+Each phase is independently testable and leaves the compiler green. Two
+standing rules apply across the plan:
+
+* Codegen work in every phase lands in *both* emitters —
+  `blaise.codegen.native.x86_64.pas` *and* `blaise.codegen.qbe.pas` — in the
+  same phase, and each codegen phase's verification includes the
+  native-built-TestRunner pass (step 7 of the pre-commit fixpoint checklist)
+  in addition to the QBE-built run.
+* Phases that add or change surface syntax (0, 1, 5, 9a) update
+  `docs/grammar.ebnf` (fragment above) and `docs/language-rationale.adoc` in
+  the *same commit* as the implementation.
 
 Phase 0 — Type form only (no literals)::
 Parse `reference to procedure/function`; set `IsReference`. Resolve to
 `TProceduralTypeDesc` with `IsReference := True`. `.bif` round-trip the new
 bool (version bump). Declare variables of the type, assign `nil`, assign a
-*plain routine* (adapter thunk). _No capture yet._ Tests: parse, resolve,
+*plain routine* (adapter thunk). Add the `IsReference` type-descriptor arm to
+`uDebugOPDF.pas` `EmitTypeDesc`. _No capture yet._ Tests: parse, resolve,
 compatibility, `.bif` round-trip.
 
 Phase 1 — Capture-free literals::
-Parse `TAnonMethodExpr`. Lower the body as a thunk with a `nil` env. Assign
-to a `reference to` var; call it. Covers `Spawn(procedure begin Foo; end)`
-when the body captures nothing. Tests: IR (thunk emitted, fat value built),
-E2E (calls run).
+Parse `TAnonMethodExpr`. Lower the body as a thunk with a `nil` env (both
+emitters). Assign to a `reference to` var; call it. Covers
+`Spawn(procedure begin Foo; end)` when the body captures nothing. OPDF: emit
+thunk routine records so breakpoints in closure bodies resolve. Tests: IR
+(thunk emitted, fat value built), E2E (calls run).
 
 Phase 2 — Strong capture + environment record::
 Generalise `CollectCaptures` to drive `TEnvTypeDesc` promotion; rewrite
 captured refs to `env^.Field`; emit `_ClassAlloc`, env-cleanup proc, frame
-addref/release. Strings + value types first, then objects/interfaces. Tests:
-ARC refcount E2E (env freed exactly once), captured-string no-leak, the
-loop-capture worked example.
+addref/release (both emitters). Strings + value types first, then
+objects/interfaces. OPDF: emit env record types and *indirect* location
+records for promoted captures (see the OPDF section). Tests: ARC refcount
+E2E (env freed exactly once), captured-string no-leak, the loop-capture
+worked example, a raise-through-`try/finally` inside a closure (env
+leak-checked), a `pdr` `locals`/`print` check on a promoted capture.
 
 Phase 3 — `Self` capture + method-pointer/closure interop::
 Capture `Self`; coerce `of object` values into closures (adapter +
@@ -985,12 +1105,26 @@ leak; weak-captured `Self` reads nil after the object dies.
 Phase 6 — Generics::
 Deep-clone `TAnonMethodExpr` in `CloneBlock`/`CloneMethodDecl`; monomorphise
 env field types and cleanup per instantiation; `.bif` generic-body template
-carries closures. Tests: `reference to function: T` instantiated at `Integer`
-and at `string`; cross-unit generic body with a closure.
+carries closures — add the `TAnonMethodExpr` dispatch case to the
+`EncodeExpr`/decode pair in `uUnitInterfaceIO.pas`, then run
+`bif-coverage --reset` and commit the updated `bif-coverage.status`. Tests:
+`reference to function: T` instantiated at `Integer` and at `string`;
+cross-unit generic body with a closure.
 
 Phase 7 — Concurrency hookup::
 Add the `reference to`-typed `TTaskGroup.Spawn` overload in the async stdlib
-(unblocks `docs/async-networking-design.adoc`). Tests: E2E spawn-with-closure.
+(unblocks `docs/async-networking-design.adoc`). Requires Phases 1-4: the
+capture-free forms need only Phase 1, but the loop-spawn pattern is *correct*
+only with Phase 4's block-scoped environments (see the caution in <<purpose>>
+and <<capture>>). The shared-env concurrency rule (<<env-concurrency>>)
+applies to every closure crossing a fiber boundary. Dependency: closure envs
+are heap blocks allocated on the *spawning* thread and released wherever the
+fiber last runs — a cross-thread free — so the fiber runtime's migration-safe
+allocator prerequisite (P2, `docs/concurrent-allocator-design.adoc`) gates
+the *multicore* closure-`Spawn` path; single-worker scheduling is safe
+without it. Tests: E2E spawn-with-closure, including the loop-spawn pattern
+(the block-scoped snapshot idiom spawns N distinct values; the shared-`I`
+form is asserted as the documented trap).
 
 The CEO-accepted functional layer (<<ceo-scope-expansion>>) builds on the
 primitive above and is sequenced after Phase 7:
@@ -1079,7 +1213,11 @@ Fixpoint / self-host::
   compiler-internal feature first used by the async stdlib, so the compiler
   itself need not use them, but the *runtime* env-cleanup path must be exercised
   by the stdlib `TTaskGroup` tests in the fixpoint suite.
+* Every codegen phase additionally runs the full suite under a
+  *native-built* TestRunner (step 7 of the pre-commit checklist), not only
+  the QBE-built one — the two runs cover different miscompilation paths.
 
+[#risks]
 == Risks and mitigations
 
 [cols="1,2,2"]
@@ -1123,6 +1261,10 @@ Fixpoint / self-host::
   field, returned, or passed as an argument), with a clear diagnostic
   suggesting capture of a local copy. Frame-local (non-escaping) closures may
   capture var-params by pointer as the nested-proc path already does.
+  Stated consequence of the conservative v1 classification: *passed as an
+  argument* counts as escaping, so a `var`-param capture in a never-escaping
+  `Sort` comparer (the E3 headline use) is also rejected; the workaround is
+  the same local copy.
 |===
 
 [#alternatives]

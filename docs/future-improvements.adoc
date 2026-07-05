@@ -385,6 +385,22 @@ The recommended path for Blaise:
 . Consider virtual threads as a long-term option if the runtime grows to
   support a user-mode scheduler (significant investment).
 
+[NOTE]
+.Superseded in part by the fiber-runtime design (2026-06)
+====
+For the specific goal of high-concurrency networking (an Indy-class component
+set at C100k scale), `async-networking-design.adoc` takes the opposite primary
+choice: a *stackful fiber runtime* (M:N user-mode scheduler) rather than
+async/await. Two facts post-date this section and invert its trade-offs there:
+inline assembly on the native backend (now the default) removes the QBE
+context-switch objection for that path, and the fiber approach runs existing
+synchronous protocol code unmodified, which async/await's function colouring
+cannot. The two remain complementary — async/await stays viable as a later,
+orthogonal language feature — but the networking work proceeds on fibers. See
+`async-networking-design.adoc` § "Relationship to the existing Concurrency
+note" for the full reconciliation.
+====
+
 *Design considerations.*
 
 * ARC interaction — both TThread (self-referential) and async/await handle

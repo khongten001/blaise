@@ -1112,6 +1112,25 @@ proof of the throughput thesis (it cannot be — throughput is multicore-bound).
   prerequisites phase), fiber-aware sync + channels, `SO_REUSEPORT`. First
   milestone that scales across cores.
 +
+[NOTE]
+.L1 multicore — LANDED (2026-07-05)
+====
+The multicore scheduler and fiber-aware synchronisation are implemented and
+tested (branch `features/async-networking-design`, not yet merged/reviewed):
+`async.deque.pas` (single-owner/multi-thief Chase–Lev deque),
+`RunSchedulerMC(N)` in `async.fibers.pas` (N pthreads, per-worker deque + timer
+heap, LIFO hand-off slot, mutex-protected global injector, futex parking, the
+leak-tracker suspended under N workers), and `async.sync.pas`
+(`TFiberMutex`/`TFiberEvent`/`TFiberWaitGroup`/`TChannel<T>` + `TTaskGroup`
+nursery over a four-state park/resume handshake).  `SO_REUSEPORT` and the
+reactor (L2) are *not* part of this milestone.  Verified: stdlib async suites,
+a native multicore e2e, all four self-hosting fixpoints, and the 100k-fibre
+joint stress (completion + bounded abandoned arenas).  One follow-up flagged:
+per-worker arenas are not reclaimed on thread exit (the total arena count grows
+across repeated `RunSchedulerMC` calls; the cross-thread-free path is
+unaffected).
+====
++
 [IMPORTANT]
 .GO/NO-GO gate
 ====

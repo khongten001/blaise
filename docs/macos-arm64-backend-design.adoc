@@ -51,7 +51,9 @@ an existing seam:
 
 . a *Mach-O container writer* (`TMachOWriter`) behind the linker's Bridge;
 . an *AArch64 backend* (`TArm64Backend`) as a Template-Method leaf of
-  `TNativeBackend`;
+  `TNativeBackend`, plus its in-process assembler sibling
+  (`blaise.assembler.arm64` — only the x86-64 encoder exists today; see
+  Phase 1b);
 . a *Darwin/arm64 kernel + layout leaf* — a link-time symbol swap binding the
   RTL's `external name` symbols to *libSystem*, plus a Darwin `TPlatformLayout`;
 . an *ad-hoc code-signature emitter* (`LC_CODE_SIGNATURE` + the embedded
@@ -358,9 +360,10 @@ chooses ELF `.rela` records or Mach-O `relocation_info`/chained-fixup entries.
 
 `TArm64Backend` subclasses `TNativeBackend` exactly as `TX86_64Backend` does,
 overriding `EmitProgram`, `EmitUnit`, `FinalizeEmit`, and the emission helpers,
-and emitting *AArch64 GNU-AT&T-syntax assembly text* into the inherited
-`FAsm: TStringBuilder` (the in-process assembler then turns that text into a
-Mach-O `MH_OBJECT`).
+and emitting *AArch64 GNU-assembler-syntax assembly text* into the inherited
+`FAsm: TStringBuilder`.  An AArch64 in-process assembler
+(`blaise.assembler.arm64` — a new component; only `blaise.assembler.x86_64.pas`
+exists today, see Phase 1b) then turns that text into a Mach-O `MH_OBJECT`.
 
 The architecture doc's *deferred* item now lands: lift the
 target-independent walkers into the base as template methods with abstract
@@ -436,7 +439,10 @@ A standard prologue/epilogue for a non-leaf function (the shape the leaf emits):
     ret
 ----
 
-`FRAME` is 16-byte-aligned; locals live at positive `[x29, #N]`/`[sp, #N]`
+`FRAME` is 16-byte-aligned, and the pre-indexed `stp`'s scaled 7-bit signed
+immediate caps it at 512 bytes — a larger frame must be allocated with a
+separate `sub sp, sp, #N` followed by an unscaled `stp x29, x30, [sp]`.
+Locals live at positive `[x29, #N]`/`[sp, #N]`
 offsets (contrast x86-64's negative `%rbp` offsets).  `VarOperand` and the
 frame-builder in the leaf change from `-N(%rbp)` to `[x29, #N]`, but `BuildFrame`
 itself (slot assignment, exception frames) is shared.
@@ -603,8 +609,10 @@ Linux/FreeBSD leaf files:
 
 . *`runtime.libsystem.darwin`* — the import leaf.  It declares the POSIX
   primitives (`open`/`read`/`write`/`close`/`lseek`/`fstat`/`stat`/`mmap`/
-  `munmap`/`nanosleep`/`clock_gettime`/`pthread_*`/…) as `external` symbols
-  bound to libSystem.  Because libSystem provides `pthread_*`, `mmap`,
+  `munmap`/`nanosleep`/`clock_gettime`/`pthread_*`/`kqueue`/`kevent`/…) as
+  `external` symbols bound to libSystem.  `kqueue`/`kevent` are included from
+  the start so the `TKqueueReactor` of `docs/async-networking-design.adoc`
+  binds on macOS with no leaf change.  Because libSystem provides `pthread_*`, `mmap`,
   `localtime_r`, `memcpy`, and `atexit` natively, *the entire "hardest-last"
   work-breakdown that FreeBSD Strategy B faced disappears* — there is no need to
   reimplement threads on `_umtx_op`, no missing-`mremap` allocator fallback, no
@@ -658,7 +666,7 @@ Darwin's `struct stat` is *different again* from both Linux and FreeBSD:
 
 | `st_mode`        | 24  | 24  | 4   (`st_mode` is a `mode_t` early in `struct stat`)
 | `st_size`        | 48  | 112 | 96
-| `st_mtimespec.tv_sec` | 88 | 64 | 32  (`struct timespec st_mtimespec`)
+| `st_mtimespec.tv_sec` | 88 | 64 | 48  (`struct timespec st_mtimespec`; offset 32 is `st_atimespec` — do not confuse the two)
 | `sizeof(struct stat)` | 144 | 224 | 144
 |===
 
@@ -678,7 +686,43 @@ match Linux, like FreeBSD; the `O_*` flags do not).  `errno` on the libSystem
 path is libSystem's thread-local `errno` reached via `__error()` — the POSIX
 layer's `if Fd < 0` tests work because libSystem already returns `-1` + sets
 `errno` (we are *not* on the raw-syscall negative-return convention here, unlike
-the freestanding leaves).
+the freestanding leaves).  The layout also carries the `kqueue` filter/flag
+constants (`EVFILT_READ`/`EVFILT_WRITE`, `EV_ADD`/`EV_DELETE`/`EV_CLEAR`) that
+the `TKqueueReactor` of `docs/async-networking-design.adoc` reads on macOS.
+
+== Threadvars — Mach-O TLV, not ELF TLS [[tlv]]
+
+The native backend today lowers `threadvar` access to ELF *local-exec* TLS
+(`%fs:NAME@tpoff` on x86-64; the AArch64 ELF analogue is a
+`tpidr_el0`-relative offset).  *Neither model exists in Mach-O.*  macOS
+thread-locals use *TLV descriptors*:
+
+* each `threadvar` becomes a three-word descriptor in `__DATA,__thread_vars`
+  (`{ thunk, key, offset }`, section flag `S_THREAD_LOCAL_VARIABLES`);
+* its initial value lives in `__thread_data` (`S_THREAD_LOCAL_REGULAR`) or
+  `__thread_bss` (`S_THREAD_LOCAL_ZEROFILL`);
+* an *access* materialises the descriptor's address (`adrp`/`add`), loads the
+  thunk word, and `blr`s through it — the thunk is dyld's `_tlv_get_addr`,
+  bound at load through the `__tlv_bootstrap` import — and receives the
+  calling thread's instance address in `x0`.
+
+The consequences, stated plainly:
+
+* the thunk call is a real call site — caller-saved registers are clobbered,
+  so the leaf lowers a threadvar access like a helper call, not like the
+  single-instruction ELF local-exec form;
+* this is *not* fiber-only work.  The exception runtime's
+  `g_exc_top`/`g_current_exception` are `threadvar`s, so *any* program with a
+  `try` block needs TLV lowering before it links and runs on macOS — and the
+  fiber runtime's per-fiber exception state
+  (`docs/async-networking-design.adoc`) sits on top of the same mechanism.
+
+Deliverables are split across the phases: `TMachOWriter` emits the three TLV
+sections, their `S_THREAD_LOCAL_*` flags, and the `__tlv_bootstrap` bind
+(Phase 1); `TArm64Backend` lowers threadvar reads/writes through the
+descriptor call (Phase 2); Phase 6 adds a behavioural threadvar test
+(per-thread values diverge across two threads, and an exception raised on a
+spawned thread unwinds correctly).
 
 == The arm64 inline-asm leaves [[asm-leaves]]
 
@@ -937,20 +981,42 @@ convention.  Phases are ordered so each lands on clean seams and is testable
 * Implement `TMachOWriter` behind `IContainerWriter`: `mach_header_64`, the
   `LC_SEGMENT_64` set (`__PAGEZERO`/`__TEXT`/`__DATA_CONST`/`__DATA`/
   `__LINKEDIT`), `LC_SYMTAB`/`LC_DYSYMTAB`, `LC_LOAD_DYLINKER`,
-  `LC_LOAD_DYLIB`, `LC_BUILD_VERSION`, `LC_MAIN`, and the relocation encoding
-  (`MH_OBJECT` `relocation_info`).  Start with *legacy* `LC_DYLD_INFO_ONLY`
-  bind/rebase opcodes (simpler) before chained fixups.
+  `LC_LOAD_DYLIB`, `LC_BUILD_VERSION`, `LC_MAIN`, the TLV sections
+  (`__thread_vars`/`__thread_data`/`__thread_bss` with their
+  `S_THREAD_LOCAL_*` flags and the `__tlv_bootstrap` bind — <<tlv>>), and the
+  relocation encoding (`MH_OBJECT` `relocation_info`).  Start with *legacy*
+  `LC_DYLD_INFO_ONLY` bind/rebase opcodes (simpler) before chained fixups.
 * *Verify:* the existing ELF-shape structural tests gain a Mach-O sibling — emit
   a probe object/executable, parse it back with a Mach-O reader, assert the
   header (`MH_MAGIC_64`, `CPU_TYPE_ARM64`, `MH_EXECUTE`), the segment set, the
   `LC_MAIN`/dylib/build-version commands.  Runs on Linux CI.
+
+=== Phase 1b — AArch64 internal assembler (`blaise.assembler.arm64`)
+
+* Implement the AArch64 sibling of `blaise.assembler.x86_64.pas` (the only
+  encoder that exists today): parse the backend's AArch64 assembly text and
+  encode the fixed-width 32-bit instructions, including the `@PAGE`/`@PAGEOFF`
+  (`adrp` + `add`/`ldr` lo12) fixup pairs and the Mach-O `MH_OBJECT`
+  relocation types (`ARM64_RELOC_BRANCH26`, `ARM64_RELOC_PAGE21`/`PAGEOFF12`,
+  `ARM64_RELOC_GOT_LOAD_*`, `ARM64_RELOC_UNSIGNED`, `ARM64_RELOC_ADDEND`).
+* *No external fallback exists*: Linux binutils cannot assemble Mach-O arm64,
+  and shelling out to a host toolchain is rejected (<<alternatives>>).  This
+  component therefore gates every inline-asm RTL leaf (<<asm-leaves>> —
+  atomics, setjmp, `FiberSwap`) and all cross-compilation from Linux; after
+  the writer itself it is the largest single new component and must not be
+  under-scoped.
+* *Verify:* assemble a probe covering each instruction family and every reloc
+  kind; byte-compare the encoded `__text` words against a known-good encoding
+  table, and parse the emitted `MH_OBJECT` back to assert the relocation
+  records.  Runs on Linux CI.
 
 === Phase 2 — AArch64 codegen (container-agnostic)
 
 * Implement `TArm64Backend` as the Template-Method leaf: prologue/epilogue,
   frame addressing (`[x29,#N]`), the instruction-selection surface, AAPCS64 +
   Darwin divergences (x8 sret, stack-packed args, variadic-on-stack), the
-  always-on div-by-zero guard, and the AArch64 object relocations.
+  always-on div-by-zero guard, the threadvar lowering through the Mach-O TLV
+  descriptor call (<<tlv>>), and the AArch64 object relocations.
 * *Verify:* compile a probe through `TArm64Backend` → `TMachOWriter`; assert the
   emitted `__text` disassembles to the expected AArch64 (a small built-in
   decoder check for the prologue/`bl`/`adrp` shapes), still on Linux CI.
@@ -960,8 +1026,11 @@ convention.  Phases are ordered so each lands on clean seams and is testable
 * `runtime.libsystem.darwin` (the libSystem import leaf),
   `runtime.start.darwin.arm64` (`main` for `LC_MAIN`),
   `rtl.platform.layout.darwin.arm64` (the Darwin `struct stat` + constants), and
-  the arm64 inline-asm leaves (`runtime.atomic.arm64`, `runtime.setjmp.arm64`).
-  Wire `EnsureRTLObjects` to select this set for `macos-arm64`.
+  the arm64 inline-asm leaves (`runtime.atomic.arm64`, `runtime.setjmp.arm64`,
+  and `runtime.fiber.arm64` — the `FiberSwap` leaf of <<asm-leaves>>; it lands
+  here, or with the async design's portability milestone if the fiber runtime
+  has not yet shipped).  Wire `EnsureRTLObjects` to select this set for
+  `macos-arm64`.
 * *Verify:* a `--target macos-arm64` program links the Darwin layout + libSystem
   import and contains no Linux/FreeBSD RTL code; the `struct stat` sentinel test
   passes on Linux CI.
@@ -985,7 +1054,8 @@ convention.  Phases are ordered so each lands on clean seams and is testable
 === Phase 6 — Bring-up on macOS
 
 * Run the produced binaries natively on an Apple-Silicon Mac: hello-world,
-  file-I/O smoke test, the ARC/exception/string suites.  Migrate the writer from
+  file-I/O smoke test, the ARC/exception/string suites, and the behavioural
+  threadvar test (<<tlv>>).  Migrate the writer from
   legacy bind opcodes to `LC_DYLD_CHAINED_FIXUPS` + `LC_DYLD_EXPORTS_TRIE` if
   the target macOS version requires it.  On a macOS host the test runner
   self-targets (`HostTarget()` → the macOS toolkit) and exercises the family
