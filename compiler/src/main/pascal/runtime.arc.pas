@@ -69,6 +69,9 @@ procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer;
   build).  Idempotent-safe: Resume(False) leaves it disabled. }
 function  _LeakTrackerSuspend: Boolean;
 procedure _LeakTrackerResume(APrevEnabled: Boolean);
+{ True while the leak tracker is actively recording (used by the multicore
+  leak-guard test to prove the tracker is suspended under N workers). }
+function  _LeakTrackerIsEnabled: Boolean;
 { Register an at-exit handler.  Uses __cxa_atexit, NOT atexit: glibc's bare
   `atexit` lives only in the static libc_nonshared.a (it is not a dynamic export
   of libc.so.6), so a link that does not pull that archive — as the native
@@ -398,6 +401,11 @@ begin
     never enabled tracking (GLTTable = nil) must stay disabled. }
   if APrevEnabled and (GLTTable <> nil) then
     GLTEnabled := True;
+end;
+
+function _LeakTrackerIsEnabled: Boolean;
+begin
+  Result := GLTEnabled;
 end;
 
 { ------------------------------------------------------------------ }

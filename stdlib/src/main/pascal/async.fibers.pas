@@ -1221,7 +1221,7 @@ end;
 
 procedure RunSchedulerMC(ANumWorkers: Integer);
 var
-  N, I: Integer;
+  N, I, MigI: Integer;
   Threads: array of Int64;
   W: TWorker;
   PrevLeak: Boolean;
@@ -1265,14 +1265,15 @@ begin
   PendingLive := 0;
   if GWorker <> nil then
   begin
-    while GWorker.Tasks.Count > 0 do
+    { Iterate forward and clear once — NOT Delete(0) per item, which is O(n)
+      each and makes migrating many pre-spawned tasks O(n^2). }
+    for MigI := 0 to GWorker.Tasks.Count - 1 do
     begin
-      W := nil;  { unused }
-      GAllTasks.Add(GWorker.Tasks[0]);
-      InjectorPush(GWorker.Tasks[0]);
-      GWorker.Tasks.Delete(0);
+      GAllTasks.Add(GWorker.Tasks[MigI]);
+      InjectorPush(GWorker.Tasks[MigI]);
       PendingLive := PendingLive + 1;
     end;
+    GWorker.Tasks.Clear();
     GGlobalLive := PendingLive;
     GWorker.LiveCount := 0;
     GWorker := nil;

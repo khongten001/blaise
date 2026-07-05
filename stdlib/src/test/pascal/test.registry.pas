@@ -34,7 +34,8 @@ uses
   Deque.Tests,
   SchedulerMc.Tests,
   AsyncSync.Tests,
-  TaskGroup.Tests;
+  TaskGroup.Tests,
+  AsyncStress.Tests;
 
 implementation
 

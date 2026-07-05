@@ -37,11 +37,12 @@ uses
   SysUtils, generics.collections, async.fibers;
 
 type
-  { An intrusive-free FIFO of parked fibers, guarded by the owning object's
-    lock.  Small wrapper over TList so waiters pop in wake order. }
+  { A FIFO of parked fibers, guarded by the owning object's lock.  Backed by
+    TQueue so Push/Pop are O(1) — a TList with Delete(0) is O(n) per pop and
+    turns a channel with thousands of parked senders into O(n^2). }
   TWaiterQueue = class
   private
-    FItems: TList<TFiberTask>;
+    FItems: TQueue<TFiberTask>;
   public
     constructor Create;
     destructor Destroy; override;
@@ -179,7 +180,7 @@ uses
 
 constructor TWaiterQueue.Create;
 begin
-  Self.FItems := TList<TFiberTask>.Create();
+  Self.FItems := TQueue<TFiberTask>.Create();
 end;
 
 destructor TWaiterQueue.Destroy;
@@ -190,15 +191,14 @@ end;
 
 procedure TWaiterQueue.Push(ATask: TFiberTask);
 begin
-  Self.FItems.Add(ATask);
+  Self.FItems.Enqueue(ATask);
 end;
 
 function TWaiterQueue.Pop: TFiberTask;
 begin
   if Self.FItems.Count = 0 then
     Exit(nil);
-  Result := Self.FItems[0];
-  Self.FItems.Delete(0);
+  Result := Self.FItems.Dequeue();
 end;
 
 function TWaiterQueue.Count: Integer;
