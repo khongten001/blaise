@@ -611,9 +611,20 @@ procedure McRequestCancelWake(ATask: TFiberTask); forward;
 
 procedure SchedFiberEntry(AArg: Pointer);
 var
+  W: TWorker;
   T: TFiberTask;
 begin
-  T := CurrentWorker().Current;
+  { Grab the running task ONCE at entry.  The task is migration-stable (the
+    same object whichever worker runs it), so holding it across the Proc call —
+    which may park and resume on a different worker under work-stealing — is
+    correct.  Read it via a WORKER LOCAL first (W := CurrentWorker(); T :=
+    W.Current) rather than the chained CurrentWorker().Current: a class field
+    read off a FUNCTION-CALL RESULT leaks the call's owned result on the native
+    backend (the field-access-base release does not fire for this shape — see
+    the call-result-field-read note in bugs.txt), which leaked one TFiberTask
+    per fiber and crept the arena registry. }
+  W := CurrentWorker();
+  T := W.Current;
   try
     T.Proc(T.Arg);
     T.State := fsDone;

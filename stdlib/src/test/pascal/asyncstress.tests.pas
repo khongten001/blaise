@@ -32,6 +32,11 @@ type
   published
     procedure TestLeakGuard_SuspendedUnderMulticore;
     procedure TestStress_100kFibersCompleteAndBaselineReturns;
+    { The single-worker fiber path must not leak one TFiberTask per fiber:
+      SpawnFiber + RunScheduler + ResetScheduler over many rounds must reach a
+      STEADY arena count, not creep.  Guards the SchedFiberEntry
+      call-result-field-read leak fix (see bugs.txt). }
+    procedure TestStress_SingleWorkerArenaPlateaus;
   end;
 
 implementation
@@ -173,6 +178,41 @@ begin
   Abandoned := _MemAbandonedArenaCount();
   AssertTrue('abandoned arenas stay bounded (cross-thread reclamation works)',
     Abandoned <= 64);
+end;
+
+procedure PlateauNoop(Arg: Pointer);
+begin
+end;
+
+procedure TAsyncStressTests.TestStress_SingleWorkerArenaPlateaus;
+const
+  ROUNDS = 6;
+  PER_ROUND = 2000;
+var
+  R, I: Integer;
+  AfterWarm, AfterLast: Integer;
+begin
+  { Before the SchedFiberEntry fix each fiber leaked one TFiberTask (the
+    CurrentWorker().Current call-result-field-read leaked its transient on
+    native), so the arena registry crept ~one arena per few-hundred fibers,
+    round on round, unbounded.  With the fix a completed fiber's task is freed,
+    so once the pooled small-object arenas are warm the count is STEADY.
+    Sample after an early round (warm) and after the last round; a per-fiber
+    leak of ~PER_ROUND objects/round would add many arenas between the two. }
+  for R := 0 to ROUNDS - 1 do
+  begin
+    for I := 0 to PER_ROUND - 1 do
+      SpawnFiber(@PlateauNoop, nil);
+    RunScheduler();
+    ResetScheduler();
+    if R = 1 then
+      AfterWarm := _MemArenaCount();
+  end;
+  AfterLast := _MemArenaCount();
+  { Allow a tiny slack for incidental allocation, but a real per-fiber leak
+    would blow far past this (pre-fix: +~6-7 arenas EVERY round). }
+  AssertTrue('single-worker fiber arena count plateaus (no per-fiber leak)',
+    AfterLast - AfterWarm <= 2);
 end;
 
 initialization
