@@ -97,6 +97,53 @@ type
     procedure Wait;
   end;
 
+  { Structured-concurrency nursery (design [#scheduler-cancellation]).  Owns a
+    dynamic set of child fibers; Wait joins them all, cancelling every child on
+    the first failure or when the optional deadline elapses; Free joins and
+    cancels any stragglers so no fiber leaks by construction.
+
+    Available-today API: Spawn takes a plain procedure + an untyped Pointer
+    argument, exactly like SpawnFiber (no closures — anonymous methods are not
+    implemented).  Intended use (30 s deadline, 0 = none):
+
+      Group := TTaskGroup.Create(30000);
+      try
+        for I := 0 to N - 1 do
+          Group.Spawn(AtFireOne, IntPtr I);
+        Group.Wait;
+      finally
+        Group.Free;
+      end;
+
+    Must be driven from inside a fiber (it parks the caller in Wait). }
+  TTaskGroup = class
+  private
+    FMtx: array[0..5] of Int64;
+    FChildren: TList<TFiberTask>;
+    FRemaining: Integer;          { real children not yet finished }
+    FWaiter: TFiberTask;          { the fiber parked in Wait, or nil }
+    FDeadlineMs: Int64;           { 0 = no deadline }
+    FDeadlineTask: TFiberTask;    { the deadline watchdog fiber, or nil }
+    FFailed: Boolean;
+    FFailMessage: string;
+    FCancelling: Boolean;
+    procedure ChildFinished(AFailed: Boolean; const AMsg: string);
+    procedure CancelAll;
+  public
+    constructor Create(ADeadlineMs: Int64 = 0);
+    destructor Destroy; override;
+    { Spawn a child fiber running AProc(AArg) under this group. }
+    function Spawn(AProc: TFiberProc; AArg: Pointer): TFiberTask;
+    { Park until every child has finished, or cancel all children on the first
+      failure or when the deadline elapses, then return.  Returns True if all
+      children completed successfully, False if any failed or the deadline
+      fired. }
+    function Wait: Boolean;
+    { True once a child failed (message in FailMessage) or the deadline fired. }
+    property Failed: Boolean read FFailed;
+    property FailMessage: string read FFailMessage;
+  end;
+
   { Go-style channel of T.  Capacity 0 or more: Send parks when the buffer is
     full (bounded backpressure), Recv parks when it is empty.  A capacity of
     -1 means unbounded (Send never parks).  Fiber-to-fiber hand-off. }
@@ -377,6 +424,225 @@ begin
   Self.FWaiters.Push(T);
   pthread_mutex_unlock(@Self.FMtx[0]);
   FiberParkCurrent();
+end;
+
+{ --- TTaskGroup ----------------------------------------------------------- }
+
+type
+  { Per-child closure captured for the trampoline (no anonymous methods, so we
+    box the group + user proc + arg on the heap). }
+  PTaskGroupChild = ^TTaskGroupChild;
+  TTaskGroupChild = record
+    Group: TTaskGroup;
+    Proc: TFiberProc;
+    Arg: Pointer;
+  end;
+
+{ Forward: the group marks a deadline internally. }
+procedure TaskGroupTripDeadline(AGroup: TTaskGroup); forward;
+
+{ The deadline watchdog fiber: sleep the deadline, and if the group has not
+  already finished, trip a deadline failure that cancels the remaining
+  children.  Cancelled (by the group completing first) it just unwinds. }
+procedure TaskGroupDeadlineEntry(AArg: Pointer);
+var
+  G: TTaskGroup;
+begin
+  G := TTaskGroup(AArg);
+  try
+    FiberSleep(G.FDeadlineMs);
+    TaskGroupTripDeadline(G);
+  except
+    on E: EFiberCancelled do
+      ;   { the group finished first and cancelled us }
+  end;
+end;
+
+{ The fiber body every child runs: invoke the user proc under a root frame,
+  report success/failure to the group, and free the boxed child record.  A
+  child cancelled via CancelAll unwinds through EFiberCancelled here and is
+  reported as a (benign) completion, not a failure. }
+procedure TaskGroupChildEntry(AArg: Pointer);
+var
+  C: PTaskGroupChild;
+  G: TTaskGroup;
+  UserProc: TFiberProc;
+  UserArg: Pointer;
+  Failed: Boolean;
+  Msg: string;
+begin
+  C := PTaskGroupChild(AArg);
+  G := C^.Group;
+  UserProc := C^.Proc;
+  UserArg := C^.Arg;
+  Failed := False;
+  Msg := '';
+  try
+    UserProc(UserArg);
+  except
+    on E: EFiberCancelled do
+      ;   { cancellation is a normal, non-failing end for a child }
+    on E: Exception do
+    begin
+      Failed := True;
+      Msg := E.Message;
+    end;
+  end;
+  FreeMem(C);
+  G.ChildFinished(Failed, Msg);
+end;
+
+constructor TTaskGroup.Create(ADeadlineMs: Int64);
+begin
+  pthread_mutex_init(@Self.FMtx[0], nil);
+  Self.FChildren := TList<TFiberTask>.Create();
+  Self.FRemaining := 0;
+  Self.FWaiter := nil;
+  Self.FDeadlineMs := ADeadlineMs;
+  Self.FDeadlineTask := nil;
+  Self.FFailed := False;
+  Self.FCancelling := False;
+end;
+
+destructor TTaskGroup.Destroy;
+begin
+  { Free joins + cancels stragglers: cancel every unfinished child so the run
+    can drain, then release.  Wait (if the caller used it) has usually already
+    drained them; this is the belt-and-braces path for the try/finally idiom. }
+  Self.CancelAll();
+  pthread_mutex_destroy(@Self.FMtx[0]);
+  Self.FChildren.Free();
+  inherited Destroy();
+end;
+
+function TTaskGroup.Spawn(AProc: TFiberProc; AArg: Pointer): TFiberTask;
+var
+  C: PTaskGroupChild;
+  T: TFiberTask;
+begin
+  C := GetMem(SizeOf(TTaskGroupChild));
+  C^.Group := Self;
+  C^.Proc := AProc;
+  C^.Arg := AArg;
+  pthread_mutex_lock(@Self.FMtx[0]);
+  Self.FRemaining := Self.FRemaining + 1;
+  pthread_mutex_unlock(@Self.FMtx[0]);
+  T := SpawnFiber(@TaskGroupChildEntry, C);
+  pthread_mutex_lock(@Self.FMtx[0]);
+  Self.FChildren.Add(T);
+  pthread_mutex_unlock(@Self.FMtx[0]);
+  Result := T;
+end;
+
+procedure TTaskGroup.CancelAll;
+var
+  I: Integer;
+  Snapshot: TList<TFiberTask>;
+begin
+  pthread_mutex_lock(@Self.FMtx[0]);
+  if Self.FCancelling then
+  begin
+    pthread_mutex_unlock(@Self.FMtx[0]);
+    Exit;
+  end;
+  Self.FCancelling := True;
+  Snapshot := TList<TFiberTask>.Create();
+  try
+    for I := 0 to Self.FChildren.Count - 1 do
+      Snapshot.Add(Self.FChildren[I]);
+    pthread_mutex_unlock(@Self.FMtx[0]);
+    for I := 0 to Snapshot.Count - 1 do
+      FiberCancel(Snapshot[I]);
+  finally
+    Snapshot.Free();
+  end;
+end;
+
+{ Called by the deadline watchdog when the deadline elapses before all children
+  finished: mark the failure and cancel every remaining child. }
+procedure TaskGroupTripDeadline(AGroup: TTaskGroup);
+var
+  DoCancel: Boolean;
+begin
+  pthread_mutex_lock(@AGroup.FMtx[0]);
+  DoCancel := False;
+  if (AGroup.FRemaining > 0) and (not AGroup.FFailed) then
+  begin
+    AGroup.FFailed := True;
+    AGroup.FFailMessage := 'task group deadline elapsed';
+    DoCancel := True;
+  end;
+  pthread_mutex_unlock(@AGroup.FMtx[0]);
+  if DoCancel then
+    AGroup.CancelAll();
+end;
+
+procedure TTaskGroup.ChildFinished(AFailed: Boolean; const AMsg: string);
+var
+  Waiter, DeadlineTask: TFiberTask;
+  DoCancel: Boolean;
+begin
+  pthread_mutex_lock(@Self.FMtx[0]);
+  Self.FRemaining := Self.FRemaining - 1;
+  DoCancel := False;
+  if AFailed and (not Self.FFailed) then
+  begin
+    Self.FFailed := True;
+    Self.FFailMessage := AMsg;
+    DoCancel := True;         { first failure cancels the siblings }
+  end;
+  Waiter := nil;
+  DeadlineTask := nil;
+  if Self.FRemaining <= 0 then
+  begin
+    { All real children done: wake the waiter and retire the deadline
+      watchdog (if any) so it does not keep the run alive. }
+    Waiter := Self.FWaiter;
+    Self.FWaiter := nil;
+    DeadlineTask := Self.FDeadlineTask;
+    Self.FDeadlineTask := nil;
+  end;
+  pthread_mutex_unlock(@Self.FMtx[0]);
+
+  if DoCancel then
+    Self.CancelAll();
+  if DeadlineTask <> nil then
+    FiberCancel(DeadlineTask);
+  if Waiter <> nil then
+    FiberResume(Waiter);
+end;
+
+function TTaskGroup.Wait: Boolean;
+var
+  T: TFiberTask;
+begin
+  { A deadline is enforced by a watchdog fiber (not a counted child) so a
+    prompt success is not held back by the watchdog's sleep. }
+  if (Self.FDeadlineMs > 0) and (Self.FDeadlineTask = nil) then
+  begin
+    pthread_mutex_lock(@Self.FMtx[0]);
+    if Self.FRemaining > 0 then
+      Self.FDeadlineTask := SpawnFiber(@TaskGroupDeadlineEntry, Pointer(Self));
+    pthread_mutex_unlock(@Self.FMtx[0]);
+  end;
+
+  pthread_mutex_lock(@Self.FMtx[0]);
+  if Self.FRemaining <= 0 then
+  begin
+    pthread_mutex_unlock(@Self.FMtx[0]);
+    Exit(not Self.FFailed);
+  end;
+  T := CurrentFiberTask();
+  if T = nil then
+  begin
+    { Off-scheduler: cannot park.  Nothing sensible to wait on. }
+    pthread_mutex_unlock(@Self.FMtx[0]);
+    Exit(not Self.FFailed);
+  end;
+  Self.FWaiter := T;
+  pthread_mutex_unlock(@Self.FMtx[0]);
+  FiberParkCurrent();
+  Result := not Self.FFailed;
 end;
 
 { --- TChannel<T> ---------------------------------------------------------- }

@@ -33,7 +33,8 @@ uses
   Scheduler.Tests,
   Deque.Tests,
   SchedulerMc.Tests,
-  AsyncSync.Tests;
+  AsyncSync.Tests,
+  TaskGroup.Tests;
 
 implementation
 
