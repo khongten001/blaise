@@ -41,6 +41,9 @@ type
 
     { L1 multicore — N worker threads, work-stealing, channel hand-off. }
     procedure TestScheduler_Multicore_AllFibersCompleteAcrossWorkers;
+
+    { Persistent worker-thread pool — two batches on ONE pool. }
+    procedure TestScheduler_Pool_TwoBatchesOnOnePool;
   end;
 
 implementation
@@ -328,6 +331,73 @@ const
     end.
     ''';
 
+  { Persistent pool: create the pool ONCE, run TWO batches on it (spawn +
+    FiberPoolRun each), then shut down.  The second batch must run on the SAME
+    peer threads without recreating them.  Each batch tallies via an atomic
+    counter and hands values through a channel to a drain fiber; the program
+    prints per-batch totals so the e2e pins that the native + pthread + RTL
+    stack drives repeated batches on one pool correctly (the stdlib harness
+    cannot exercise the compile->QBE-reject->native path). }
+  SrcPoolTwoBatches =
+    '''
+    program schedpool;
+    uses async.fibers, async.sync, runtime.atomic;
+    var
+      GDone: Integer;
+      GSum: Integer;
+      GCh: TChannel<Integer>;
+    procedure Worker(AArg: Pointer);
+    var
+      V: Integer;
+    begin
+      FiberYield();
+      V := Integer(AArg);
+      GCh.Send(V);
+      _AtomicAddInt32(@GDone, 1);
+    end;
+    procedure Drain(AArg: Pointer);
+    var
+      V, Got: Integer;
+    begin
+      Got := 0;
+      while Got < Integer(AArg) do
+      begin
+        if GCh.Recv(V) then
+        begin
+          _AtomicAddInt32(@GSum, V);
+          Got := Got + 1;
+        end
+        else
+          Break;
+      end;
+    end;
+    procedure RunBatch(ACount: Integer);
+    var
+      I: Integer;
+    begin
+      GDone := 0;
+      GSum := 0;
+      GCh := TChannel<Integer>.Create(16);
+      SpawnFiber(@Drain, Pointer(ACount));
+      for I := 0 to ACount - 1 do
+        SpawnFiber(@Worker, Pointer(I + 1));
+      FiberPoolRun();
+      GCh.Free();
+      WriteLn('BATCH DONE=', GDone, ' SUM=', GSum);
+    end;
+    begin
+      FiberPoolStart(4);
+      if FiberPoolIsActive() then
+        WriteLn('POOL:active');
+      RunBatch(100);
+      RunBatch(50);
+      FiberPoolShutdown();
+      if not FiberPoolIsActive() then
+        WriteLn('POOL:down');
+      WriteLn('LIVE=', SchedulerLiveCount());
+    end.
+    ''';
+
 procedure TSchedulerE2ETests.SetUp;
 begin
   inherited SetUp();
@@ -398,6 +468,19 @@ begin
     workers is non-deterministic. }
   AssertRTLRunsOnOne(beNative, 'sched-mc', SrcMulticore,
     'DONE=200' + LE + 'SUM=20100' + LE + 'LIVE=0' + LE, 0)
+end;
+
+procedure TSchedulerE2ETests.TestScheduler_Pool_TwoBatchesOnOnePool;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Batch 1: 100 fibers -> DONE=100, SUM=1+..+100=5050.
+    Batch 2 on the SAME pool: 50 fibers -> DONE=50, SUM=1+..+50=1275.
+    Pool active between start/shutdown, down after, and nothing left live. }
+  AssertRTLRunsOnOne(beNative, 'sched-pool', SrcPoolTwoBatches,
+    'POOL:active' + LE +
+    'BATCH DONE=100 SUM=5050' + LE +
+    'BATCH DONE=50 SUM=1275' + LE +
+    'POOL:down' + LE + 'LIVE=0' + LE, 0)
 end;
 
 initialization
