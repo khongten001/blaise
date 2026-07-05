@@ -38,6 +38,9 @@ type
     procedure TestScheduler_UnhandledException_ContainedByRootFrame;
     procedure TestScheduler_CancelSleeping_RaisesAtSuspensionPoint;
     procedure TestScheduler_CancelUncaught_RunsFinally_SchedulerSurvives;
+
+    { L1 multicore — N worker threads, work-stealing, channel hand-off. }
+    procedure TestScheduler_Multicore_AllFibersCompleteAcrossWorkers;
   end;
 
 implementation
@@ -268,6 +271,63 @@ const
     end.
     ''';
 
+  { L1 multicore: spawn many fibers, run them across N worker OS threads with
+    work-stealing, hand every fiber's value through a bounded channel to a
+    single drain fiber, and print the atomic tally + sum.  Interleaving is
+    non-deterministic across workers, so the program asserts on COUNTS
+    (order-independent) — the whole point of the e2e is that the native
+    codegen + pthread + RTL stack produces the right totals, which the
+    IR/stdlib harness cannot see. }
+  SrcMulticore =
+    '''
+    program schedmc;
+    uses async.fibers, async.sync, runtime.atomic;
+    var
+      GDone: Integer;
+      GSum: Integer;
+      GCh: TChannel<Integer>;
+    procedure Worker(AArg: Pointer);
+    var
+      V: Integer;
+    begin
+      FiberYield();
+      V := Integer(AArg);
+      GCh.Send(V);
+      _AtomicAddInt32(@GDone, 1);
+    end;
+    procedure Drain(AArg: Pointer);
+    var
+      V, Got: Integer;
+    begin
+      Got := 0;
+      while Got < 200 do
+      begin
+        if GCh.Recv(V) then
+        begin
+          _AtomicAddInt32(@GSum, V);
+          Got := Got + 1;
+        end
+        else
+          Break;
+      end;
+    end;
+    var
+      I: Integer;
+    begin
+      GDone := 0;
+      GSum := 0;
+      GCh := TChannel<Integer>.Create(16);
+      SpawnFiber(@Drain, nil);
+      for I := 0 to 199 do
+        SpawnFiber(@Worker, Pointer(I + 1));
+      RunSchedulerMC(4);
+      GCh.Free();
+      WriteLn('DONE=', GDone);
+      WriteLn('SUM=', GSum);
+      WriteLn('LIVE=', SchedulerLiveCount());
+    end.
+    ''';
+
 procedure TSchedulerE2ETests.SetUp;
 begin
   inherited SetUp();
@@ -327,6 +387,17 @@ begin
   AssertRTLRunsOnOne(beNative, 'sched-cancel-uncaught', SrcCancelUncaught,
     'S:pre' + LE + 'C:cancelled-it' + LE + 'S:fin' + LE +
     'SLEEPY:cancelled' + LE + 'CANCELLER:done' + LE + 'M' + LE, 0)
+end;
+
+procedure TSchedulerE2ETests.TestScheduler_Multicore_AllFibersCompleteAcrossWorkers;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 200 fibers over 4 worker threads + a channel drain: every fiber completes
+    (DONE=200), every value is delivered (SUM = 1+..+200 = 20100), and the
+    scheduler drains (LIVE=0).  Order-independent because interleaving across
+    workers is non-deterministic. }
+  AssertRTLRunsOnOne(beNative, 'sched-mc', SrcMulticore,
+    'DONE=200' + LE + 'SUM=20100' + LE + 'LIVE=0' + LE, 0)
 end;
 
 initialization
