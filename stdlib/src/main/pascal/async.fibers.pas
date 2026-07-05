@@ -67,7 +67,14 @@ type
     Proc: TFiberProc;
     Arg: Pointer;
     State: TFiberState;
-    NextReady: TFiberTask;   { intrusive FIFO link (run queue) }
+    { Intrusive FIFO link (run queue / injector).  NON-OWNING: the sole owner
+      of every task is GAllTasks (multicore) or the worker's Tasks list (single
+      worker).  A RETAINING intrusive link would form ARC retains between tasks
+      and with the injector head/tail cursors that never balance cleanly, so a
+      task's refcount never returns to the owner-only count and it is never
+      freed — a per-fiber leak that creeps the arena registry ~one arena per
+      few-thousand-fiber batch on a persistent pool. }
+    [Unretained] NextReady: TFiberTask;
     Deadline: Int64;         { absolute CLOCK_MONOTONIC ns, when fsSleeping }
     HeapIndex: Integer;      { slot in the timer heap; -1 when not queued }
     Cancelled: Boolean;
@@ -87,8 +94,11 @@ type
     scheduler loop depends on. }
   TRunQueue = class
   private
-    FHead: TFiberTask;
-    FTail: TFiberTask;
+    { RAW cursors into the owner-held task chain (NextReady is [Unretained]).
+      ARC-typed head/tail here would leave a dangling retain on drain and leak
+      the task — the same non-owning-cursor discipline the injector uses. }
+    FHead: Pointer;
+    FTail: Pointer;
     FCount: Integer;
   public
     procedure Push(ATask: TFiberTask);
@@ -209,6 +219,46 @@ procedure RunSchedulerMC(ANumWorkers: Integer = 0);
 function SchedulerIsMulticore: Boolean;
 
 { ------------------------------------------------------------------------- }
+{ PERSISTENT WORKER-THREAD POOL (docs/async-networking-design.adoc,          }
+{ [#scheduler])                                                              }
+{ ------------------------------------------------------------------------- }
+
+{ The per-call RunSchedulerMC creates and joins its N-1 peer OS threads on
+  EVERY call.  That churns OS threads and — because a worker thread only hands
+  its runtime.mem allocator arenas back at THREAD EXIT — makes the arena
+  registry grow across repeated runs (thread-exit churn + lazy-reclaim lag).
+
+  The pool separates POOL lifecycle from BATCH lifecycle: the peer threads are
+  created ONCE (FiberPoolStart) and PARK between batches instead of exiting, so
+  their arenas stay hot and are reused across every batch.  A batch is driven by
+  FiberPoolRun (worker 0 runs on the calling thread, returns when the batch's
+  fibers have all finished; the peers park for the next batch).  FiberPoolShutdown
+  signals the peers to leave their loops, joins them, and tears the pool down.
+
+  Fibers spawned between FiberPoolStart and a FiberPoolRun (and re-spawned for a
+  SECOND FiberPoolRun on the same pool) route into the injector and run on the
+  batch.  The leak tracker is suspended for the whole pool lifetime (across every
+  batch), not toggled per batch. }
+
+{ Create the pool once.  ANumWorkers <= 0 defaults to GetCPUCount.  Worker 0
+  drives on the calling thread during each FiberPoolRun; workers 1..N-1 live on
+  their own pthreads, parked until the first batch.  Raises if a pool or a
+  per-call RunSchedulerMC is already active. }
+procedure FiberPoolStart(ANumWorkers: Integer = 0);
+
+{ Drive the currently-spawned fibers to completion on the pool.  Returns when
+  every fiber of THIS batch has finished; the peer threads then park, ready for
+  the next FiberPoolRun.  Legal to call repeatedly on the same pool. }
+procedure FiberPoolRun;
+
+{ Signal shutdown, wake and join the peer threads, destroy the workers and tear
+  the pool down.  The leak tracker is restored here. }
+procedure FiberPoolShutdown;
+
+{ True while a pool is active (between FiberPoolStart and FiberPoolShutdown). }
+function FiberPoolIsActive: Boolean;
+
+{ ------------------------------------------------------------------------- }
 { Park / resume — the primitive the fiber-aware sync objects build on        }
 { ------------------------------------------------------------------------- }
 
@@ -315,30 +365,33 @@ begin
   ATask.NextReady := nil;
   if Self.FTail = nil then
   begin
-    Self.FHead := ATask;
-    Self.FTail := ATask;
+    Self.FHead := Pointer(ATask);
+    Self.FTail := Pointer(ATask);
   end
   else
   begin
-    Self.FTail.NextReady := ATask;
-    Self.FTail := ATask;
+    TFiberTask(Self.FTail).NextReady := ATask;
+    Self.FTail := Pointer(ATask);
   end;
   Self.FCount := Self.FCount + 1;
 end;
 
 function TRunQueue.Pop: TFiberTask;
 var
-  T: TFiberTask;
+  Head: Pointer;
 begin
-  T := Self.FHead;
-  if T = nil then
+  { Navigate via a RAW pointer so only the single Result cast retains (a
+    second `TFiberTask(FHead)` local would add an unbalanced phantom retain and
+    leak the task — the deque/injector non-owning-cursor discipline). }
+  Head := Self.FHead;
+  if Head = nil then
     Exit(nil);
-  Self.FHead := T.NextReady;
+  Self.FHead := Pointer(TFiberTask(Head).NextReady);
   if Self.FHead = nil then
     Self.FTail := nil;
-  T.NextReady := nil;
+  TFiberTask(Head).NextReady := nil;
   Self.FCount := Self.FCount - 1;
-  Result := T;
+  Result := TFiberTask(Head);
 end;
 
 { ---------------------------------------------------------------------------
@@ -481,9 +534,23 @@ var
   GWorkers: TWorkerArray;
   GNumWorkers: Integer;
   GGlobalLive: Integer;        { atomic: fibers spawned and not yet finished }
-  GStop: Integer;              { atomic: 1 tells every worker to exit }
-  GInjectorHead: TFiberTask;   { global injector FIFO head (TFiberTask.NextReady) }
-  GInjectorTail: TFiberTask;   { global injector FIFO tail }
+  GStop: Integer;              { atomic: 1 = current BATCH drained (worker 0's
+                                 drive loop returns; peers PARK, they do NOT
+                                 exit unless GPoolShutdown is also set) }
+  GPoolShutdown: Integer;      { atomic: 1 tells parked peer threads to actually
+                                 LEAVE their loop so they can be pthread_join'd.
+                                 Only FiberPoolShutdown sets it. }
+  GPoolActive: Boolean;        { a pool is live (FiberPoolStart..Shutdown) }
+  GPoolThreads: array of Int64;{ peer pthread handles, for join at shutdown }
+  GPoolPrevLeak: Boolean;      { leak-tracker state to restore at shutdown }
+  { Global injector FIFO head/tail.  RAW Pointer, not TFiberTask — like the
+    Chase-Lev deque's slots, the injector is a NON-OWNING intrusive work list;
+    the sole owner of every task is GAllTasks.  ARC-typed head/tail globals here
+    would each hold a retain while a task is queued and, interacting with the
+    intrusive NextReady chain, leak a net +1 per task that never balances — the
+    task is never freed and the arena registry creeps across pool batches. }
+  GInjectorHead: Pointer;
+  GInjectorTail: Pointer;
   GInjectorMtx: array[0..5] of Int64;  { guards the injector FIFO }
   GAllTasks: TList<TFiberTask>;{ keeps every handle alive; guarded by GTaskMtx }
   GTaskMtx: array[0..5] of Int64;   { pthread_mutex_t buffer }
@@ -975,10 +1042,10 @@ begin
   pthread_mutex_lock(@GInjectorMtx[0]);
   ATask.NextReady := nil;
   if GInjectorTail = nil then
-    GInjectorHead := ATask
+    GInjectorHead := Pointer(ATask)
   else
-    GInjectorTail.NextReady := ATask;
-  GInjectorTail := ATask;
+    TFiberTask(GInjectorTail).NextReady := ATask;
+  GInjectorTail := Pointer(ATask);
   pthread_mutex_unlock(@GInjectorMtx[0]);
 end;
 
@@ -987,10 +1054,10 @@ var
   T: TFiberTask;
 begin
   pthread_mutex_lock(@GInjectorMtx[0]);
-  T := GInjectorHead;
+  T := TFiberTask(GInjectorHead);
   if T <> nil then
   begin
-    GInjectorHead := T.NextReady;
+    GInjectorHead := Pointer(T.NextReady);
     if GInjectorHead = nil then
       GInjectorTail := nil;
     T.NextReady := nil;
@@ -1083,25 +1150,49 @@ begin
   end;
 end;
 
-{ Take the next ready task for worker AW, or nil if none is available right
-  now: LIFO hand-off slot -> local deque -> steal from a random peer ->
-  global injector. }
-function McTakeNext(AW: TWorker): TFiberTask;
+{ Injector pop returning a RAW pointer (no retaining TFiberTask cast).  The
+  deque/injector are NON-OWNING work lists; the retaining cast `TFiberTask(P)`
+  adds an ARC retain with no matching release (the slot stored a raw Pointer),
+  which leaks one ref per pop — a real per-fiber leak.  Popping as Pointer and
+  casting ONCE in the worker-loop body keeps the retain balanced by that single
+  typed local's release. }
+function InjectorPopRaw: Pointer;
 var
   T: TFiberTask;
+begin
+  pthread_mutex_lock(@GInjectorMtx[0]);
+  T := TFiberTask(GInjectorHead);
+  if T <> nil then
+  begin
+    GInjectorHead := Pointer(T.NextReady);
+    if GInjectorHead = nil then
+      GInjectorTail := nil;
+    T.NextReady := nil;
+  end;
+  Result := Pointer(T);
+  pthread_mutex_unlock(@GInjectorMtx[0]);
+end;
+
+{ Take the next ready task for worker AW as a RAW pointer, or nil if none is
+  available right now: LIFO hand-off slot -> local deque -> steal from a random
+  peer -> global injector.  Returns Pointer so no retaining cast happens on the
+  navigational reads; the caller casts once into its loop local. }
+function McTakeNextRaw(AW: TWorker): Pointer;
+var
+  P: Pointer;
   Tries, Victim: Integer;
 begin
   { 1. LIFO hand-off slot (the just-woken fiber, kept hot on the waker). }
   if AW.Handoff <> nil then
   begin
-    T := AW.Handoff;
+    P := Pointer(AW.Handoff);
     AW.Handoff := nil;
-    Exit(T);
+    Exit(P);
   end;
   { 2. Local deque. }
-  T := TFiberTask(AW.Deque.PopBottom());
-  if T <> nil then
-    Exit(T);
+  P := AW.Deque.PopBottom();
+  if P <> nil then
+    Exit(P);
   { 3. Steal from a random peer (a few attempts). }
   if GNumWorkers > 1 then
   begin
@@ -1112,16 +1203,15 @@ begin
       Victim := (AW.Id + 1 + Tries) mod GNumWorkers;
       if (Victim <> AW.Id) and (GWorkers[Victim].Deque <> nil) then
       begin
-        T := TFiberTask(GWorkers[Victim].Deque.Steal());
-        if T <> nil then
-          Exit(T);
+        P := GWorkers[Victim].Deque.Steal();
+        if P <> nil then
+          Exit(P);
       end;
       Tries := Tries + 1;
     end;
   end;
   { 4. Global injector. }
-  T := InjectorPop();
-  Result := T;
+  Result := InjectorPopRaw();
 end;
 
 { The scheduler loop each worker OS thread runs. }
@@ -1132,7 +1222,11 @@ var
   LastCancelGen, Gen: Integer;
 begin
   GTLWorker := AW;
-  AW.SchedFib := FiberCreateMain();
+  { Create the scheduler's own L0 context once per THREAD, not once per batch:
+    a persistent peer re-enters this loop for every batch and must keep the same
+    SchedFib (recreating it each batch would leak main-fiber contexts). }
+  if AW.SchedFib = nil then
+    AW.SchedFib := FiberCreateMain();
   LastCancelGen := 0;
   while _AtomicAddInt32(@GStop, 0) = 0 do
   begin
@@ -1147,7 +1241,9 @@ begin
       McSweepCancelled(AW);
     end;
 
-    T := McTakeNext(AW);
+    { Cast the raw work-list pointer into the loop's single typed local; its
+      release on the next iteration balances this one retain (see McTakeNextRaw). }
+    T := TFiberTask(McTakeNextRaw(AW));
     if T = nil then
     begin
       { Nothing ready.  Bound the park by the nearest local timer deadline so
@@ -1208,10 +1304,48 @@ begin
   end;
 end;
 
-{ pthread entry trampoline: %rdi = the TWorker, cast from Pointer. }
+{ The OUTER loop a PERSISTENT peer thread runs.  It drives one batch
+  (McWorkerLoop returns when GStop = 1, i.e. the batch drained), then PARKS
+  until either the next batch is submitted (FiberPoolRun clears GStop and wakes
+  all workers) or the pool is shut down (GPoolShutdown = 1).
+
+  Wake-race safety: FiberPoolRun clears GStop to 0 and only THEN wakes every
+  worker, so a peer that observes GStop = 0 after a wake re-enters McWorkerLoop
+  for the new batch.  The park is capped at a finite bound (like the in-loop
+  park) so a theoretically-lost wake self-heals within one cap rather than
+  hanging.  GPoolShutdown is checked before and after the park. }
+procedure McPeerLoop(AW: TWorker);
+begin
+  { First batch: SchedFib is created inside McWorkerLoop's prologue. }
+  while _AtomicAddInt32(@GPoolShutdown, 0) = 0 do
+  begin
+    { Drive one batch.  Returns when GStop = 1 (batch drained) — or immediately
+      if GStop is already 1 (we are parked between batches). }
+    if _AtomicAddInt32(@GStop, 0) = 0 then
+      McWorkerLoop(AW);
+
+    if _AtomicAddInt32(@GPoolShutdown, 0) <> 0 then
+      Break;
+
+    { Batch drained, pool still alive: PARK until the next batch or shutdown.
+      Consume any pending wake without sleeping; else futex-wait on 0 with the
+      finite safety cap so a lost wake self-heals. }
+    if AW.ParkWord <> 0 then
+      AW.ParkWord := 0
+    else
+      FutexWait(@AW.ParkWord, 0, Int64(10) * Int64(1000000));   { 10 ms cap }
+    AW.ParkWord := 0;
+    { Loop: re-check GPoolShutdown, then GStop.  A next-batch wake has cleared
+      GStop, so McWorkerLoop runs; a shutdown wake sets GPoolShutdown, so we
+      exit. }
+  end;
+end;
+
+{ pthread entry trampoline: %rdi = the TWorker, cast from Pointer.  Peer threads
+  run the PERSISTENT outer loop so they survive across batches. }
 procedure McThreadEntry(Arg: Pointer);
 begin
-  McWorkerLoop(TWorker(Arg));
+  McPeerLoop(TWorker(Arg));
 end;
 
 function SchedulerIsMulticore: Boolean;
@@ -1219,16 +1353,48 @@ begin
   Result := GMulticore;
 end;
 
-procedure RunSchedulerMC(ANumWorkers: Integer);
+{ Migrate any fibers already spawned on the single-worker GWorker into the
+  multicore injector, returning the number moved.  This is the "spawn on the
+  main thread, then run" carry-over; it runs at the start of every batch so a
+  SECOND FiberPoolRun on the same pool picks up its freshly-spawned fibers. }
+function McMigratePending: Integer;
 var
-  N, I, MigI: Integer;
-  Threads: array of Int64;
+  MigI, Moved: Integer;
+begin
+  Moved := 0;
+  if GWorker <> nil then
+  begin
+    { Iterate forward and clear once — NOT Delete(0) per item, which is O(n)
+      each and makes migrating many pre-spawned tasks O(n^2). }
+    for MigI := 0 to GWorker.Tasks.Count - 1 do
+    begin
+      GAllTasks.Add(GWorker.Tasks[MigI]);
+      InjectorPush(GWorker.Tasks[MigI]);
+      Moved := Moved + 1;
+    end;
+    GWorker.Tasks.Clear();
+    GWorker.LiveCount := 0;
+    GWorker := nil;
+  end;
+  Result := Moved;
+end;
+
+{ --- pool primitives ------------------------------------------------------- }
+
+function FiberPoolIsActive: Boolean;
+begin
+  Result := GPoolActive;
+end;
+
+procedure FiberPoolStart(ANumWorkers: Integer);
+var
+  N, I: Integer;
   W: TWorker;
-  PrevLeak: Boolean;
-  PendingLive: Integer;
 begin
   if GMulticore then
-    raise Exception.Create('RunSchedulerMC: already running');
+    raise Exception.Create('FiberPoolStart: a multicore run is already active');
+  if GPoolActive then
+    raise Exception.Create('FiberPoolStart: pool already started');
 
   N := ANumWorkers;
   if N <= 0 then
@@ -1236,15 +1402,17 @@ begin
   if N < 1 then
     N := 1;
 
-  { Carry over any fibers already spawned on the single-worker GWorker (the
-    common pattern: spawn from the main thread, then RunSchedulerMC).  Their
-    handles and the ready tasks move into the multicore world. }
   GAllTasks := TList<TFiberTask>.Create();
   GInjectorHead := nil;
   GInjectorTail := nil;
   pthread_mutex_init(@GInjectorMtx[0], nil);
+  pthread_mutex_init(@GTaskMtx[0], nil);
   GGlobalLive := 0;
-  GStop := 0;
+  { Start with GStop = 1 so freshly-launched peers see "batch drained" and PARK
+    immediately in McPeerLoop, waiting for the first FiberPoolRun.  GPoolShutdown
+    = 0 keeps them alive. }
+  GStop := 1;
+  GPoolShutdown := 0;
   GCancelGen := 0;
   GNumWorkers := N;
   SetLength(GWorkers, N);
@@ -1256,69 +1424,118 @@ begin
     GWorkers[I] := W;
   end;
 
-  { Suspend the lockless leak tracker for the duration of the parallel run. }
-  PrevLeak := _LeakTrackerSuspend();
+  { Suspend the lockless leak tracker for the WHOLE pool lifetime — across every
+    batch, restored only at FiberPoolShutdown. }
+  GPoolPrevLeak := _LeakTrackerSuspend();
 
   GMulticore := True;
+  GPoolActive := True;
 
-  { Migrate pre-spawned single-worker tasks into the injector. }
-  PendingLive := 0;
-  if GWorker <> nil then
-  begin
-    { Iterate forward and clear once — NOT Delete(0) per item, which is O(n)
-      each and makes migrating many pre-spawned tasks O(n^2). }
-    for MigI := 0 to GWorker.Tasks.Count - 1 do
-    begin
-      GAllTasks.Add(GWorker.Tasks[MigI]);
-      InjectorPush(GWorker.Tasks[MigI]);
-      PendingLive := PendingLive + 1;
-    end;
-    GWorker.Tasks.Clear();
-    GGlobalLive := PendingLive;
-    GWorker.LiveCount := 0;
-    GWorker := nil;
-  end;
-
-  pthread_mutex_init(@GTaskMtx[0], nil);
-
-  { Launch workers 1..N-1 on their own threads; worker 0 runs on this thread. }
-  SetLength(Threads, N);
+  { Launch the persistent peer threads ONCE.  They run McPeerLoop and park until
+    the first FiberPoolRun submits work and wakes them. }
+  SetLength(GPoolThreads, N);
   for I := 1 to N - 1 do
   begin
-    Threads[I] := 0;
-    pthread_create(@Threads[I], nil, Pointer(@McThreadEntry), Pointer(GWorkers[I]));
+    GPoolThreads[I] := 0;
+    pthread_create(@GPoolThreads[I], nil, Pointer(@McThreadEntry),
+      Pointer(GWorkers[I]));
   end;
+end;
 
-  { If nothing is live, there is no work; still drive worker 0 once so it exits
-    cleanly. }
-  if GGlobalLive = 0 then
-  begin
-    GStop := 1;
-    WakeAllWorkers();
-  end;
+procedure FiberPoolRun;
+begin
+  if not GPoolActive then
+    raise Exception.Create('FiberPoolRun: no pool started');
 
+  { Two spawn routes feed a batch:
+      * spawns made BEFORE GMulticore was set (the legacy RunSchedulerMC
+        pattern: SpawnFiber -> single-worker GWorker) — migrated here, NOT yet
+        counted in GGlobalLive;
+      * spawns made AFTER FiberPoolStart, while GMulticore is already True — they
+        went straight to the injector and ALREADY bumped GGlobalLive in
+        McRegisterTask.
+    So ADD the migrated count to the already-published live total; never
+    overwrite it (overwriting would drop the pool-path injector spawns). }
+  _AtomicAddInt32(@GGlobalLive, McMigratePending());
+
+  if _AtomicAddInt32(@GGlobalLive, 0) = 0 then
+    { Nothing to run this batch — return without touching the peers. }
+    Exit;
+
+  { Open the batch: clear GStop so McWorkerLoop runs, THEN wake every peer.  The
+    ordering is the wake-race guard — a peer woken here re-checks GStop = 0 in
+    McPeerLoop and re-enters McWorkerLoop for this batch. }
+  GStop := 0;
+  _AtomicAddInt32(@GStop, 0);        { fence the publish before the wakes }
+  WakeAllWorkers();
+
+  { Drive worker 0 on THIS (the calling) thread until the batch drains.  The
+    last fiber to finish sets GStop = 1 and wakes all peers, so both worker 0
+    here and the peers in McPeerLoop return / park. }
+  GTLWorker := GWorkers[0];
   McWorkerLoop(GWorkers[0]);
   GTLWorker := nil;
+  { GStop is now 1; peers have parked in McPeerLoop for the next batch. }
 
-  { Join the peers. }
-  for I := 1 to N - 1 do
-    pthread_join(Threads[I], nil);
+  { Release this batch's task handles.  GAllTasks is only a keep-alive safety
+    net (each SpawnFiber returns the handle, so a caller that still wants to
+    query State/FailMessage holds its own ARC reference); every fiber of the
+    batch has finished, so dropping the net here lets the completed TFiberTask
+    objects (and their fiber stacks) be reclaimed.  Without this the handles
+    accrete for the pool's whole lifetime and the arena registry creeps ~one
+    arena per few-thousand-fiber batch — the SAME retained-handle growth the
+    per-call RunSchedulerMC hides by tearing everything down each call.  A
+    PERSISTENT pool must free per batch, not per pool. }
+  pthread_mutex_lock(@GTaskMtx[0]);
+  GAllTasks.Clear();
+  pthread_mutex_unlock(@GTaskMtx[0]);
+end;
+
+procedure FiberPoolShutdown;
+var
+  I: Integer;
+begin
+  if not GPoolActive then
+    raise Exception.Create('FiberPoolShutdown: no pool started');
+
+  { Tell the peers to LEAVE their loop, then wake them out of their park. }
+  GPoolShutdown := 1;
+  _AtomicAddInt32(@GPoolShutdown, 0);      { fence }
+  GStop := 1;                              { ensure they do not re-drive a batch }
+  _AtomicAddInt32(@GStop, 0);
+  WakeAllWorkers();
+
+  for I := 1 to GNumWorkers - 1 do
+    pthread_join(GPoolThreads[I], nil);
 
   pthread_mutex_destroy(@GTaskMtx[0]);
   pthread_mutex_destroy(@GInjectorMtx[0]);
 
-  { Tear down.  All fibers are finished (GGlobalLive = 0). }
   GMulticore := False;
-  _LeakTrackerResume(PrevLeak);
+  GPoolActive := False;
+  _LeakTrackerResume(GPoolPrevLeak);
 
-  for I := 0 to N - 1 do
+  for I := 0 to GNumWorkers - 1 do
   begin
     GWorkers[I].Deque.Free();
     GWorkers[I].Deque := nil;
   end;
   SetLength(GWorkers, 0);
+  SetLength(GPoolThreads, 0);
   GNumWorkers := 0;
   GAllTasks := nil;   { ARC cascades the handles }
+end;
+
+{ The per-call multicore run: create the pool, drive one batch, tear it down.
+  Preserves the exact create-run-teardown-per-call semantics existing callers
+  depend on, while reusing the same worker loop as the persistent pool. }
+procedure RunSchedulerMC(ANumWorkers: Integer);
+begin
+  if GMulticore then
+    raise Exception.Create('RunSchedulerMC: already running');
+  FiberPoolStart(ANumWorkers);
+  FiberPoolRun();
+  FiberPoolShutdown();
 end;
 
 end.
