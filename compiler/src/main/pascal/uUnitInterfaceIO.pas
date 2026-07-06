@@ -53,7 +53,13 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 8;  { v8 (this cycle): named integer subranges now round-trip.
+  IFACE_VERSION = 9;  { v9 (this cycle): free-routine external-name linkage now
+                          round-trips.  Each ROUT entry grew two trailing fields
+                          (IsExternal bool + ExternalName lpstr) after
+                          ResolvedQbeName, so a routine declared `external name
+                          'socket'` links to the C symbol from a cached .bif (not
+                          just from source).  v8 readers must reject and recompile.
+                        v8: named integer subranges now round-trip.
                           A `type TIdx = lo..hi;` alias carries IsSubrange + the
                           lo..hi bounds so `array[TIdx] of T` folds to
                           `array[lo..hi] of T` across separate compilation.  The
@@ -731,6 +737,14 @@ begin
         to the unmangled 'Unit_Name' for every overload, so a call site emits
         a reference to a symbol that does not exist in the cached .o. }
       Line := Line + EncodeLpstr(R.ResolvedQbeName);
+      { external-name linkage: a free routine declared `external name 'socket'`
+        emits NO Blaise wrapper symbol — the call site must link directly to the
+        C name.  ResolvedQbeName carries the mangled 'Unit_Name' (which does not
+        exist for an external), so IsExternal + ExternalName must round-trip or a
+        caller compiled against the cached .bif emits an undefined 'Unit_Name'
+        reference.  (Before v9 these were dropped; Net.Sockets.Socket linked from
+        source but not from cache.) }
+      Line := Line + EncodeBool(R.IsExternal) + EncodeLpstr(R.ExternalName);
       SB.AppendLine(Line);
     end;
     SB.AppendLine('END');
@@ -2404,6 +2418,8 @@ begin
     end;
     R.CallingConv := ReadLpstrAt(AText, APos);
     R.ResolvedQbeName := ReadLpstrAt(AText, APos);
+    R.IsExternal := DecodeBool(AText, APos);
+    R.ExternalName := ReadLpstrAt(AText, APos);
     AIface.AddRoutine(R);
   end;
   if ReadTag(AText, APos) <> 'END' then

@@ -982,6 +982,13 @@ begin
     Result.ResolvedQbeName := ASig.ResolvedQbeName
   else
     Result.ResolvedQbeName := MangleUnitPrefix(AOwningUnit) + ASig.Name;
+  { Carry external-name linkage: a free routine declared `external name 'x'`
+    has no Blaise wrapper symbol, so the call site must link to the C name.
+    Without these the codegen falls back to NativeMangle(ResolvedQbeName) — the
+    non-existent 'Unit_Name' — and a caller built against the cached .bif fails
+    to link (undefined symbol).  See WriteRoutines (IFACE v9). }
+  Result.IsExternal   := ASig.IsExternal;
+  Result.ExternalName := ASig.ExternalName;
   { Propagate the vtable-dispatch facts.  Without these, a call to a virtual
     method resolved from a cached .bif keeps VTableSlot = -1 (the TMethodDecl
     default) and codegen emits a DIRECT call to the base/abstract symbol

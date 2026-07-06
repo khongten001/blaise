@@ -2698,13 +2698,13 @@ begin
   Iface := TUnitInterface.Create('U');
   try
     Buf := WriteUnitInterface(Iface);
-    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 8 since
-      named integer subranges (IsSubrange + lo..hi bounds on the 'alias' TYPE
-      entry) were added (on top of v7's LinkLibs, v6's `overload` directive,
-      v5's member Visibility, v4's TRoutineSig.IsStatic, and v3's static-member
-      facts). }
+    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 9 since
+      free-routine external-name linkage (IsExternal + ExternalName on each ROUT
+      entry) was added (on top of v8's named integer subranges, v7's LinkLibs,
+      v6's `overload` directive, v5's member Visibility, v4's
+      TRoutineSig.IsStatic, and v3's static-member facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 8', Buf) = 0);
+      Pos('BLAISE-IFACE 9', Buf) = 0);
   finally
     Iface.Free();
   end;

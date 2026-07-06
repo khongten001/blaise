@@ -291,8 +291,8 @@ TRoutineSig.Params  serialise
 TRoutineSig.ReturnType  serialise
 TRoutineSig.IsInline  safe
 TRoutineSig.IsPublished  safe
-TRoutineSig.IsExternal  safe
-TRoutineSig.ExternalName  safe
+TRoutineSig.IsExternal  serialise
+TRoutineSig.ExternalName  serialise
 TRoutineSig.CallingConv  serialise
 TRoutineSig.VTableSlot  serialise
 TRoutineSig.ResolvedQbeName  serialise
