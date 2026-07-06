@@ -1122,6 +1122,19 @@ begin
                TUnitInterface(Loader.PrebuiltIfaces.Items[I]).LinkLibs.Strings[J]) < 0 then
             Opts.LinkLibs.Add(
               TUnitInterface(Loader.PrebuiltIfaces.Items[I]).LinkLibs.Strings[J]);
+    { Units compiled FROM SOURCE in this same invocation never land in
+      PrebuiltIfaces (that list holds only cached-.bif ifaces), so their
+      external 'lib' declarations must be unioned straight off the source
+      TUnit.LinkLibs — otherwise a program that uses a from-source unit binding
+      libssl links with no -lssl and fails with undefined references. }
+    if Units <> nil then
+      for I := 0 to Units.Count - 1 do
+        if TUnit(Units.Items[I]).LinkLibs <> nil then
+          for J := 0 to TUnit(Units.Items[I]).LinkLibs.Count - 1 do
+            if Opts.LinkLibs.IndexOf(
+                 TLinkLibDecl(TUnit(Units.Items[I]).LinkLibs.Items[J]).LibName) < 0 then
+              Opts.LinkLibs.Add(
+                TLinkLibDecl(TUnit(Units.Items[I]).LinkLibs.Items[J]).LibName);
     Units.Free();
     Loader.Free();
     SearchPaths.Free();

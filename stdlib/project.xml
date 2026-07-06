@@ -7,6 +7,10 @@
     <unitPaths>
       <path>../runtime/src/main/pascal</path>
     </unitPaths>
+    <bootstrapExclude>
+      <unit>Net.Tls.Provider</unit>
+      <unit>Net.Tls</unit>
+    </bootstrapExclude>
   </build>
 
   <test>
