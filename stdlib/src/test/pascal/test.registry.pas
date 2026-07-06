@@ -31,6 +31,7 @@ uses
   Guid.Tests,
   StrUtils.Tests,
   Scheduler.Tests,
+  Reactor.Tests,
   Deque.Tests,
   SchedulerMc.Tests,
   AsyncSync.Tests,
