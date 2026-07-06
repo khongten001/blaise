@@ -28,6 +28,8 @@ uses
   Sockets.Tests,
   WebSockets.Tests,
   HttpServer.Tests,
+  NetTcp.Tests,
+  HttpFiber.Tests,
   Guid.Tests,
   StrUtils.Tests,
   Scheduler.Tests,

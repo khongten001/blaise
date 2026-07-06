@@ -81,6 +81,11 @@ const
   { setsockopt(2) }
   SOL_SOCKET   = 1;
   SO_REUSEADDR = 2;
+  { SO_REUSEPORT lets several sockets bind the SAME address:port; the kernel
+    load-balances incoming connections across them.  This is how NGINX/Envoy —
+    and the fiber server's per-worker-listener path (design [#listener-scaling])
+    — eliminate the single-acceptor bottleneck.  LINUX x86_64 value. }
+  SO_REUSEPORT = 15;
 
   { send(2) flags.  MSG_NOSIGNAL makes a write to a peer-closed socket return
     EPIPE instead of raising SIGPIPE (whose default action terminates the
@@ -151,6 +156,12 @@ function TcpListen(AAddr: UInt32; APort: UInt16; ABacklog: Integer): Integer;
 
 { Convenience: TcpListen bound to 127.0.0.1 only (no external exposure). }
 function TcpListenLocal(APort: UInt16; ABacklog: Integer): Integer;
+
+{ Like TcpListen but ALSO sets SO_REUSEPORT, so several workers may each open
+  their own listening socket on the same AAddr:APort and let the kernel
+  load-balance accepts across them (design [#listener-scaling]).  Returns the
+  listening fd, or -1 on failure. }
+function TcpListenReusePort(AAddr: UInt32; APort: UInt16; ABacklog: Integer): Integer;
 
 { Connect to AAddr:APort (AAddr is a network-order IPv4).  Returns the
   connected fd, or -1 on failure. }
@@ -290,6 +301,38 @@ end;
 function TcpListenLocal(APort: UInt16; ABacklog: Integer): Integer;
 begin
   Result := TcpListen(INADDR_LOOPBACK, APort, ABacklog);
+end;
+
+function TcpListenReusePort(AAddr: UInt32; APort: UInt16; ABacklog: Integer): Integer;
+var
+  Fd, One: Integer;
+  SA: TSockAddrIn;
+begin
+  Fd := Socket(AF_INET, SOCK_STREAM, 0);
+  if Fd < 0 then
+  begin
+    Result := -1;
+    Exit;
+  end;
+
+  One := 1;
+  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEADDR, @One, 4);
+  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEPORT, @One, 4);
+
+  FillSockAddr(SA, AAddr, APort);
+  if Bind(Fd, @SA, 16) <> 0 then
+  begin
+    CloseSocket(Fd);
+    Result := -1;
+    Exit;
+  end;
+  if Listen(Fd, ABacklog) <> 0 then
+  begin
+    CloseSocket(Fd);
+    Result := -1;
+    Exit;
+  end;
+  Result := Fd;
 end;
 
 function TcpConnect(AAddr: UInt32; APort: UInt16): Integer;
