@@ -34,6 +34,7 @@ type
     { <= 32-member sets }
     procedure TestRun_Set_Include_Exclude;
     procedure TestRun_Set_InOperator;
+    procedure TestRun_Set_InArrayElementField;
     procedure TestRun_Set_UnionIntersect;
     procedure TestRun_Set_ValuedConstant;
     procedure TestRun_Set_LiteralArgument;
@@ -101,6 +102,29 @@ const
       if North in Horizontal then WriteLn('N');
       if East  in Horizontal then WriteLn('E');
       if West  in Horizontal then WriteLn('W')
+    end.
+    ''';
+
+  { Regression: `elem in <arrayElement>.<setField>`.  The native `in` codegen
+    kept the tested ordinal in %ecx across the RHS set evaluation; when the RHS
+    is an array-element field access its address computation clobbered %rcx, so
+    the shift used a garbage count and membership was always False.  The set is
+    stored correctly (a copy-out reads True) — only the direct-`in`-on-the-field
+    shape was wrong, and only on native (QBE was correct). }
+  SrcSetInArrayField = '''
+    program Prg;
+    type TDir = (North, South, East, West);
+         TDirs = set of TDir;
+         TRec = record Events: TDirs; end;
+    var A: array[0..1] of TRec;
+    begin
+      A[0].Events := [East];
+      A[1].Events := [North, West];
+      if East  in A[0].Events then WriteLn('0E');
+      if North in A[0].Events then WriteLn('0N');
+      if North in A[1].Events then WriteLn('1N');
+      if West  in A[1].Events then WriteLn('1W');
+      if South in A[1].Events then WriteLn('1S')
     end.
     ''';
 
@@ -313,6 +337,13 @@ procedure TE2ESetOpsTests.TestRun_Set_InOperator;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcSetIn, 'E' + LE + 'W' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_Set_InArrayElementField;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetInArrayField,
+    '0E' + LE + '1N' + LE + '1W' + LE, 0);
 end;
 
 procedure TE2ESetOpsTests.TestRun_Set_UnionIntersect;

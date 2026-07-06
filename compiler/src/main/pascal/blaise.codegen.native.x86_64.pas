@@ -6922,9 +6922,15 @@ begin
         Self.Emit(#9'callq _SetIn');
         Exit;
       end;
+      { Evaluate the ordinal and SAVE IT ON THE STACK, not in %ecx: the RHS set
+        expression may itself be an array-element field access whose address
+        computation clobbers %rcx (index scaling), which would destroy the
+        ordinal before the shift.  Push/pop keeps it live across the RHS eval —
+        the same discipline the jumbo path above already uses. }
       Self.EmitExprToEax(BE.Left);
-      Self.Emit(#9'movl %eax, %ecx');       { ordinal in %ecx (and %cl) }
+      Self.Emit(#9'pushq %rax');            { ordinal saved }
       Self.EmitExprToEax(BE.Right);
+      Self.Emit(#9'popq %rcx');             { ordinal -> %rcx (and %cl) }
       if TSetTypeDesc(BE.Right.ResolvedType).BitCount > 32 then
       begin
         Self.Emit(#9'shrq %cl, %rax');
