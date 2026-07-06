@@ -285,7 +285,7 @@ procedure FiberResume(ATask: TFiberTask);
 implementation
 
 uses
-  runtime.atomic, runtime.thread;
+  runtime.atomic, runtime.thread, async.reactor;
 
 { Linux-shaped libc bindings (same posture as the context unit's mmap set). }
 function _libc_clock_gettime(AClockId: Integer; ATs: Pointer): Integer;
@@ -556,6 +556,17 @@ var
   GTaskMtx: array[0..5] of Int64;   { pthread_mutex_t buffer }
   GCancelGen: Integer;         { atomic: bumped on every FiberCancel }
 
+var
+  { Multicore reactor-poller flag (atomic, 0/1).  At most ONE worker blocks in
+    GReactor.Wait at a time; the others use the futex idle-park.  A single
+    poller avoids the epoll thundering-herd and the ambiguity of the same
+    edge-triggered event being observed by several workers.  A cross-thread
+    wake (a spawn/resume) additionally calls GReactor.Wake so the poller
+    returns and re-derives its work.  POINTER-WIDTH (Int64): _AtomicCASPtr
+    operates on a full 64-bit word, so a 32-bit field would drag the adjacent
+    variable's bytes into the compare (the ParkState-width gotcha). }
+  GReactorPolling: Int64;
+
 threadvar
   { The worker whose scheduler loop is running on THIS OS thread.  Set by each
     multicore worker thread at start-up; nil off any worker thread.  The single
@@ -608,6 +619,12 @@ end;
 procedure McRegisterTask(AW: TWorker; ATask: TFiberTask); forward;
 procedure McSubmitReady(AW: TWorker; ATask: TFiberTask); forward;
 procedure McRequestCancelWake(ATask: TFiberTask); forward;
+
+{ Block in the reactor up to AMaxWaitNs (0/negative => poll) and resume the
+  fiber parked on every ready fd.  Returns the number of fibers resumed.  Used
+  by the idle-park path of both schedulers when fds are registered.  Defined
+  after FiberResume below. }
+function ServiceReactor(AMaxWaitNs: Int64): Integer; forward;
 
 procedure SchedFiberEntry(AArg: Pointer);
 var
@@ -709,14 +726,29 @@ begin
     T := W.RunQ.Pop();
     if T = nil then
     begin
+      { Nothing ready.  Where can a wake come from?
+          * a due timer (timer heap), and/or
+          * an fd becoming ready (the reactor), when L3 fiber I/O parked a
+            fiber on a registered fd (fsBlocked, off every queue).
+        Park on whichever applies; if BOTH are absent yet fibers are live,
+        nothing can ever wake them on a single worker — a real stall. }
+      if ReactorFdCount() > 0 then
+      begin
+        { Block in the reactor, bounded by the nearest timer deadline so our
+          own sleepers still fire on time (unbounded when no timer). }
+        if W.Timers.Count > 0 then
+          ServiceReactor(W.Timers.PeekMin().Deadline - MonotonicNowNs())
+        else
+          ServiceReactor(-1);
+        Continue;
+      end;
       if W.Timers.Count = 0 then
       begin
-        { No ready fiber, no timer, yet fibers are live: nothing can wake
-          them on a single worker.  Unreachable through the public L1 API
-          (the only park is FiberSleep); guard it loudly all the same. }
+        { No ready fiber, no timer, no reactor fd, yet fibers are live: nothing
+          can wake them on a single worker.  Guard it loudly. }
         W.Running := False;
         raise Exception.Create('RunScheduler: stalled - live fibers but ' +
-          'nothing ready and no timers');
+          'nothing ready, no timers and no I/O');
       end;
       { Never busy-wait: sleep until the nearest deadline. }
       OsSleepNs(W.Timers.PeekMin().Deadline - MonotonicNowNs());
@@ -802,6 +834,11 @@ begin
       is enough for both liveness and low overhead. }
     InjectorPush(ATask);
     WakeWorker(GWorkers[0]);
+    { A worker may be blocked in the reactor poll rather than the futex; wake it
+      too so it returns and drains the injector.  Harmless when no reactor
+      exists or no worker is polling (a one-shot eventfd post). }
+    if GReactor <> nil then
+      GReactor.Wake();
   end
   else if GWorker <> nil then
     GWorker.RunQ.Push(ATask);
@@ -882,6 +919,35 @@ begin
     { Otherwise the state changed under us (e.g. PARKING just became PARKED);
       loop and retry. }
   end;
+end;
+
+{ Idle-park via the reactor.  Convert the ns budget to an epoll timeout in ms
+  (rounding up so a sub-ms budget still yields a non-zero, promptly-returning
+  wait; a non-positive budget polls), block in GReactor.Wait, then FiberResume
+  the token of every ready fd.  The token IS a TFiberTask (what L3 registered
+  via CurrentFiberTask), so a readiness directly wakes the parked fiber.
+  Returns the number of fibers resumed. }
+function ServiceReactor(AMaxWaitNs: Int64): Integer;
+var
+  Ready: TReadyList;
+  N, I, TimeoutMs: Integer;
+  R: TReactor;
+begin
+  R := GReactor;
+  if R = nil then
+    Exit(0);
+  if AMaxWaitNs <= 0 then
+    TimeoutMs := 0
+  else
+  begin
+    TimeoutMs := Integer((AMaxWaitNs + Int64(999999)) div Int64(1000000));
+    if TimeoutMs <= 0 then
+      TimeoutMs := 1;
+  end;
+  N := R.Wait(TimeoutMs, Ready);
+  for I := 0 to N - 1 do
+    FiberResume(TFiberTask(Ready[I].Token));
+  Result := N;
 end;
 
 procedure FiberSleep(AMillis: Int64);
@@ -1274,6 +1340,20 @@ begin
       begin
         AW.ParkWord := 0;
         Continue;                { due timer now: re-loop without parking }
+      end;
+      { If fds are registered, exactly ONE worker becomes the reactor poller
+        and blocks in GReactor.Wait (bounded by the same WaitNs), resuming the
+        fibers whose fds are ready; every other worker keeps the futex park.
+        The poller flag is released before re-looping.  A pending local wake
+        (ParkWord<>0) skips the reactor so this worker re-checks its queues
+        promptly. }
+      if (ReactorFdCount() > 0) and (AW.ParkWord = 0) and
+         _AtomicCASPtr(@GReactorPolling, Pointer(0), Pointer(1)) then
+      begin
+        ServiceReactor(WaitNs);
+        _AtomicXchgPtr(@GReactorPolling, Pointer(0));
+        AW.ParkWord := 0;
+        Continue;
       end;
       { Consume any pending wake without sleeping; else futex-wait on 0. }
       if AW.ParkWord <> 0 then

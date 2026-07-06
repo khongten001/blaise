@@ -20,7 +20,7 @@ unit Reactor.Tests;
 interface
 
 uses
-  blaise.testing, SysUtils, async.reactor;
+  blaise.testing, SysUtils, async.reactor, async.fibers;
 
 type
   TReactorTests = class(TTestCase)
@@ -31,6 +31,16 @@ type
     procedure TestRemove_DropsInterest;
     procedure TestWake_InterruptsBlockedWait;
     procedure TestWake_DrainNoSpuriousDelivery;
+  end;
+
+  { Increment 2: scheduler <-> reactor integration.  A fiber registers read
+    interest on a socketpair fd with the GLOBAL reactor (token =
+    CurrentFiberTask), parks via FiberParkCurrent, and the single-worker
+    scheduler's idle-park blocks in the reactor.  When the peer end is written,
+    the reactor resumes the parked fiber. }
+  TReactorSchedulerTests = class(TTestCase)
+  published
+    procedure TestFiberParksOnFdThenResumes;
   end;
 
 implementation
@@ -212,7 +222,65 @@ begin
   c_close_fd(B);
 end;
 
+{ --- Increment 2: scheduler <-> reactor integration -------------------------- }
+
+var
+  GIntLog: string;
+  GRxA, GRxB: Integer;      { socketpair for the integration test }
+
+{ Fiber: register read interest on GRxA, park; on resume, read the byte. }
+procedure ReaderFiber(AArg: Pointer);
+var
+  R: TReactor;
+  RdOnly: TIoInterests;
+  B: Byte;
+begin
+  GIntLog := GIntLog + 'R1 ';
+  R := GetReactor();
+  RdOnly := [ioRead];
+  R.Add(GRxA, RdOnly, Pointer(CurrentFiberTask()));
+  FiberParkCurrent();             { scheduler idle-parks in the reactor }
+  GIntLog := GIntLog + 'R2 ';
+  R.Remove(GRxA);
+  B := 0;
+  if c_read_fd(GRxA, @B, 1) = 1 then
+    GIntLog := GIntLog + 'got' + IntToStr(Integer(B)) + ' ';
+end;
+
+{ Fiber: sleep briefly (so the reader parks first), then write the byte that
+  makes GRxA readable, waking the reader through the reactor. }
+procedure WriterFiber(AArg: Pointer);
+var
+  B: Byte;
+begin
+  FiberSleep(5);
+  B := 42;
+  c_write_fd(GRxB, @B, 1);
+  GIntLog := GIntLog + 'W ';
+end;
+
+procedure TReactorSchedulerTests.TestFiberParksOnFdThenResumes;
+var
+  TR, TW: TFiberTask;
+begin
+  AssertTrue('socketpair', MakePair(GRxA, GRxB));
+  GIntLog := '';
+  TR := SpawnFiber(@ReaderFiber, nil);
+  TW := SpawnFiber(@WriterFiber, nil);
+  RunScheduler();
+  { Reader started, parked; writer wrote; reader resumed via the reactor and
+    read the byte. }
+  AssertEquals('reader parked on fd and resumed on readiness',
+    'R1 W R2 got42 ', GIntLog);
+  AssertTrue('reader fiber done', TR.State = fsDone);
+  AssertTrue('writer fiber done', TW.State = fsDone);
+  ResetScheduler();
+  c_close_fd(GRxA);
+  c_close_fd(GRxB);
+end;
+
 initialization
   RegisterTest(TReactorTests);
+  RegisterTest(TReactorSchedulerTests);
 
 end.
