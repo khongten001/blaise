@@ -38,7 +38,6 @@ type
     FStdlibUnitPath: string;
     FScratch:     string;
     FCounter:     Integer;
-    function  ProjectRoot: string;
     function  RunProc(const AExe: string; const AArgs: array of string;
                       out AStdout: string): Integer;
     function  RunProcNoArgs(const AExe: string; out AStdout: string): Integer;
@@ -49,7 +48,15 @@ type
       Returns the cc exit code; AStdout carries any tool output. }
     function  LinkWithRTL(const AAsmFile, ABinFile: string;
                           out AStdout: string): Integer;
+    { As LinkWithRTL but appends extra -l libraries (e.g. 'ssl','crypto') so an
+      RTL program that binds an external library links via the external toolchain
+      path.  The internal linker cannot resolve external libraries; this e2e path
+      always links with cc, which can. }
+    function  LinkWithRTLLibs(const AAsmFile, ABinFile: string;
+                          const AExtraLibs: array of string;
+                          out AStdout: string): Integer;
   protected
+    function  ProjectRoot: string;
     function  ToolchainAvailable(): Boolean;
     function  ValgrindAvailable(): Boolean;
     procedure SetUpScratch(const ADirName: string);
@@ -251,6 +258,17 @@ end;
 function TE2ETestCase.LinkWithRTL(const AAsmFile, ABinFile: string;
                                  out AStdout: string): Integer;
 var
+  NoLibs: array[0..0] of string;
+begin
+  { No extra libraries beyond the RTL's own -lm/-lpthread. }
+  NoLibs[0] := '';
+  Result := Self.LinkWithRTLLibs(AAsmFile, ABinFile, NoLibs, AStdout);
+end;
+
+function TE2ETestCase.LinkWithRTLLibs(const AAsmFile, ABinFile: string;
+                                 const AExtraLibs: array of string;
+                                 out AStdout: string): Integer;
+var
   ProgObj, ObjDir, Compiler, ScriptOut: string;
   Objs: TStringList;
   Proc: TProcess;
@@ -275,8 +293,9 @@ begin
     Exit;
   end;
 
-  { 3. Link: cc -o Bin ProgObj <rtl objects> -lm -lpthread.  Build the TProcess
-       directly so the object list (variable length) can be appended. }
+  { 3. Link: cc -o Bin ProgObj <rtl objects> -lm -lpthread [extra -l...].  Build
+       the TProcess directly so the object list (variable length) can be
+       appended. }
   Objs := TStringList.Create();
   Proc := TProcess.Create(nil);
   try
@@ -290,6 +309,9 @@ begin
         Proc.Parameters.Add(Trim(Objs.Strings[I]));
     Proc.Parameters.Add('-lm');
     Proc.Parameters.Add('-lpthread');
+    for I := 0 to High(AExtraLibs) do
+      if Trim(AExtraLibs[I]) <> '' then
+        Proc.Parameters.Add('-l' + Trim(AExtraLibs[I]));
     Proc.Execute();
     AStdout := '';
     repeat
@@ -303,6 +325,7 @@ begin
     Objs.Free();
   end;
 end;
+
 
 function TE2ETestCase.RunProcNoArgs(const AExe: string;
                                     out AStdout: string): Integer;
