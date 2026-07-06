@@ -26,7 +26,8 @@ unit Net.Http.Server;
 interface
 
 uses
-  Generics.Collections;
+  Generics.Collections,
+  Net.Tcp;
 
 type
   { A parsed HTTP request.  Query parameters are decoded into a name->value
@@ -89,6 +90,43 @@ type
     property Port: Integer read FPort;
   end;
 
+  { A fiber-per-connection HTTP/1.1 server (design [#components], the rewritten
+    Net.Http.Server that supersedes the one-at-a-time THttpServer above).  The
+    accept loop runs on the fiber scheduler (via Net.Tcp.TTcpServer) spawning ONE
+    handler fiber per connection; each connection fiber loops reading requests
+    and honours HTTP/1.1 keep-alive until the client closes or a request asks to
+    close.  It REUSES ParseRequest / THttpRequest / THttpResponse /
+    IRequestHandler, so the SAME application handler works on both this server
+    and the baseline THttpServer.
+
+    Drive it from inside a fiber under a scheduler: create it, then spawn a fiber
+    that calls Serve(handler); stop it with Stop from another fiber.  For the
+    multicore per-worker-listener path, pass AReusePort=True and run one server
+    per worker on the same port.
+
+    NATIVE BACKEND ONLY (pulls in Net.Tcp -> async.io -> async.fibers). }
+  THttpFiberServer = class
+  private
+    FPort: Integer;
+    FReusePort: Boolean;
+    FServer: TTcpServer;       { ARC-owned; freed in Destroy }
+    FMaxKeepAlive: Integer;    { max requests served per connection (0 = no cap) }
+  public
+    constructor Create(APort: Integer; AReusePort: Boolean = False);
+    destructor Destroy; override;
+    { Bind + listen on 127.0.0.1:Port.  Returns False on failure. }
+    function Start: Boolean;
+    { Bind + listen on all interfaces (INADDR_ANY):Port. }
+    function StartAny: Boolean;
+    { Run the accept loop, spawning a keep-alive handler fiber per connection.
+      Returns when Stop is called.  Drive from inside a fiber. }
+    procedure Serve(AHandler: IRequestHandler);
+    { Stop the accept loop and close the listen socket. }
+    procedure Stop;
+    property Port: Integer read FPort;
+    property MaxKeepAlive: Integer read FMaxKeepAlive write FMaxKeepAlive;
+  end;
+
 { Parse a raw request head into a THttpRequest (caller owns the result). }
 function ParseRequest(const ARaw: string): THttpRequest;
 
@@ -101,7 +139,9 @@ uses
   SysUtils,
   StrUtils,
   Net.Sockets,
-  Net.WebSockets;
+  Net.WebSockets,
+  Net.Tcp,
+  async.fibers;
 
 const
   RECV_BUF = 8192;
@@ -497,6 +537,166 @@ begin
     FWsClients.Delete(FWsClients.IndexOf(Fd));
   end;
   Dead.Free();
+end;
+
+{ ---- THttpFiberServer (fiber-per-connection, keep-alive) ---- }
+
+{ Read one request head (up to CRLFCRLF) from a fiber TCP connection.  Returns
+  the raw head, or '' on EOF before any bytes (the keep-alive loop then ends). }
+function FiberReadHead(AConn: TTcpConn): string;
+var
+  Chunk, Acc: string;
+  SB: TStringBuilder;
+begin
+  SB := TStringBuilder.Create();
+  while True do
+  begin
+    Chunk := AConn.Read(RECV_BUF);
+    if Chunk = '' then
+      Break;                       { peer closed / error }
+    SB.Append(Chunk);
+    Acc := SB.ToString();
+    if PosEx(#13#10#13#10, Acc, 0) >= 0 then
+      Break;
+    if PosEx(#10#10, Acc, 0) >= 0 then
+      Break;
+    if Length(Acc) > 65536 then
+      Break;                       { runaway head guard }
+  end;
+  Result := SB.ToString();
+  SB.Free();
+end;
+
+{ True if the request's Connection header (or HTTP/1.1 default) keeps the
+  connection alive. }
+function WantsKeepAlive(AReq: THttpRequest): Boolean;
+var
+  I: Integer;
+  H: string;
+begin
+  { HTTP/1.1 default is keep-alive unless "Connection: close" is present.  We
+    do not distinguish 1.0 here (the load path is 1.1); treat "close" as the
+    only opt-out. }
+  Result := True;
+  for I := 0 to AReq.RawHeaders.Count - 1 do
+  begin
+    H := LowerCase(AReq.RawHeaders.Get(I));
+    if StartsStr('connection:', H) then
+    begin
+      if ContainsStr(H, 'close') then
+        Result := False;
+      Exit;
+    end;
+  end;
+end;
+
+{ Build the response head for a keep-alive connection.  AKeepAlive controls the
+  Connection header. }
+function FiberResponseHead(AResp: THttpResponse; AKeepAlive: Boolean): string;
+var
+  ConnHdr: string;
+begin
+  if AKeepAlive then
+    ConnHdr := 'keep-alive'
+  else
+    ConnHdr := 'close';
+  Result := 'HTTP/1.1 ' + IntToStr(AResp.Status) + ' ' +
+              StatusText(AResp.Status) + #13#10 +
+            'Content-Type: ' + AResp.ContentType + #13#10 +
+            'Content-Length: ' + IntToStr(Length(AResp.Body)) + #13#10 +
+            'Connection: ' + ConnHdr + #13#10 +
+            #13#10;
+end;
+
+type
+  { The IConnHandler the fiber TCP server runs per connection.  Loops over the
+    persistent connection: read a request head, parse, dispatch to the app
+    handler, write a keep-alive response, repeat until the client closes or a
+    request opts out.  Reuses the exact THttpServer parse + response contract. }
+  THttpKeepAliveHandler = class(IConnHandler)
+  private
+    FApp: IRequestHandler;
+    FMaxKeepAlive: Integer;
+  public
+    constructor Create(AApp: IRequestHandler; AMaxKeepAlive: Integer);
+    procedure Handle(AConn: TTcpConn);
+  end;
+
+constructor THttpKeepAliveHandler.Create(AApp: IRequestHandler; AMaxKeepAlive: Integer);
+begin
+  FApp := AApp;
+  FMaxKeepAlive := AMaxKeepAlive;
+end;
+
+procedure THttpKeepAliveHandler.Handle(AConn: TTcpConn);
+var
+  Raw: string;
+  Req: THttpRequest;
+  Resp: THttpResponse;
+  KeepAlive: Boolean;
+  Served: Integer;
+begin
+  Served := 0;
+  while True do
+  begin
+    Raw := FiberReadHead(AConn);
+    if Raw = '' then
+      Break;                       { connection closed by peer }
+    Req := ParseRequest(Raw);
+    KeepAlive := WantsKeepAlive(Req);
+    if (FMaxKeepAlive > 0) and (Served + 1 >= FMaxKeepAlive) then
+      KeepAlive := False;
+
+    Resp := THttpResponse.Create();
+    FApp.Handle(Req, Resp);
+    AConn.Write(FiberResponseHead(Resp, KeepAlive));
+    if Length(Resp.Body) > 0 then
+      AConn.Write(Resp.Body);
+    Resp.Free();
+    Req.Free();
+
+    Served := Served + 1;
+    if not KeepAlive then
+      Break;
+  end;
+  { The TCP server's connection trampoline closes+frees AConn after we return. }
+end;
+
+constructor THttpFiberServer.Create(APort: Integer; AReusePort: Boolean = False);
+begin
+  FPort := APort;
+  FReusePort := AReusePort;
+  FMaxKeepAlive := 0;
+  FServer := TTcpServer.Create(UInt16(APort), AReusePort);
+end;
+
+destructor THttpFiberServer.Destroy;
+begin
+  FServer.Free();
+  inherited Destroy();
+end;
+
+function THttpFiberServer.Start: Boolean;
+begin
+  Result := FServer.Start();
+end;
+
+function THttpFiberServer.StartAny: Boolean;
+begin
+  Result := FServer.StartOn(INADDR_ANY);
+end;
+
+procedure THttpFiberServer.Serve(AHandler: IRequestHandler);
+var
+  Conn: IConnHandler;
+begin
+  Conn := THttpKeepAliveHandler.Create(AHandler, FMaxKeepAlive);
+  FServer.Serve(Conn);
+end;
+
+procedure THttpFiberServer.Stop;
+begin
+  FServer.Stop();
 end;
 
 end.
