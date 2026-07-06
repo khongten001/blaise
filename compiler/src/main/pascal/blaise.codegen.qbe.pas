@@ -2776,12 +2776,39 @@ end;
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 var
   DeadLbl: string;
+  StmtMark: Integer;
 begin
   { An empty statement (e.g. the body of `for x := 0 to N do;`) parses to a nil
     statement — the parser's convention for "no statement here".  It is a valid,
     do-nothing body, so emit nothing rather than rejecting it. }
   if AStmt = nil then
     Exit;
+  { Statement-scoped deferred-release boundary for LEAF assignment/write
+    statements.  A `Call().ClassField` r-value must keep its owning transient
+    BASE alive until the field value has been consumed (stored), or the base's
+    release would free the field object mid-statement (a use-after-free) — so
+    the field-read emitter DEFERS the base release onto FPendingObjReleases.
+    Those must be flushed at the end of the enclosing leaf statement, AFTER the
+    store.  The call-shaped statements (TMethodCallStmt/TProcCall/etc.) and the
+    expression emitters already bracket their own work; here we cover the
+    assignment/field-write leaves, which did not.  Control-flow/compound
+    statements are NOT bracketed here — they recurse into leaf statements that
+    each flush their own, so a per-iteration base is released each iteration. }
+  if (AStmt is TAssignment) or (AStmt is TFieldAssignment) or
+     (AStmt is TStaticSubscriptAssign) or (AStmt is TPointerWriteStmt) then
+  begin
+    StmtMark := PendingReleaseMark();
+    if AStmt is TFieldAssignment then
+      EmitFieldAssignment(TFieldAssignment(AStmt))
+    else if AStmt is TStaticSubscriptAssign then
+      EmitStaticSubscriptAssign(TStaticSubscriptAssign(AStmt))
+    else if AStmt is TPointerWriteStmt then
+      EmitPointerWrite(TPointerWriteStmt(AStmt))
+    else
+      EmitAssignment(TAssignment(AStmt));
+    FlushPendingReleases(StmtMark);
+    Exit;
+  end;
   if AStmt is TAsmStmt then
     raise ECodeGenError.Create(
       'inline asm blocks require the native backend (--backend native); '
@@ -12438,7 +12465,14 @@ begin
       T         := AllocTemp();
       EmitLine(Format('  %s =%s %s %s', [T, QType, LoadInstr, Ptr]));
       if BaseReleaseTemp <> '' then
-        EmitLine(Format('  call $_ClassRelease(l %s)', [BaseReleaseTemp]));
+      begin
+        if FldAccess.FieldInfo.TypeDesc.Kind = tyClass then
+          { EXPERIMENT: defer the base release to statement end so the loaded
+            class field value (owned BY the base) stays alive through its use. }
+          FPendingObjReleases.Add(BaseReleaseTemp)
+        else
+          EmitLine(Format('  call $_ClassRelease(l %s)', [BaseReleaseTemp]));
+      end;
       Exit(T);
     end;
     { Static var read: TypeName.StaticVar — a plain global load of the mangled

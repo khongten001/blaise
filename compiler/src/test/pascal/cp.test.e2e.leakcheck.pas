@@ -45,6 +45,10 @@ type
     { MakeClass() called in statement position discards its +1 result — it must
       be released or one object leaks per call.  Both backends. }
     procedure TestDebug_DiscardedClassReturn_NoLeak;
+    { X := Call().ClassField must keep the field value valid past the base
+      release (QBE use-after-free before the deferred-base-release fix) and not
+      leak on QBE.  Correct output (42) is asserted on BOTH backends. }
+    procedure TestDebug_CallResultClassFieldRead_NoUseAfterFree;
     { Multiple same-named typed handlers share one slot — no over-release. }
     procedure TestDebug_MultiHandlerVar_NoOverRelease;
     { for-in over a TList: GetEnumerator's +1 result must be transferred
@@ -587,6 +591,45 @@ const
     end.
     ''';
 
+  { X := Call().ClassField — reading a managed-class field off an OWNED
+    call-result base.  The loaded value aliases into the base's object graph, so
+    releasing the transient base (whose Destroy nils+frees the field) must not
+    happen until the field value has been stored, or the stored reference
+    dangles.  On QBE this was a use-after-free (the base was released inline);
+    the program must print 42, not garbage, after allocation churn that would
+    reuse the freed block.  (Guards the deferred-base-release fix.) }
+  SrcCallResultClassFieldRead = '''
+    program P;
+    type
+      TInner = class N: Integer; end;
+      TOuter = class
+        Inner: TInner;
+        destructor Destroy; override;
+      end;
+    destructor TOuter.Destroy;
+    begin
+      Inner := nil;
+      inherited Destroy();
+    end;
+    function MakeOuter(): TOuter;
+    begin
+      Result := TOuter.Create();
+      Result.Inner := TInner.Create();
+      Result.Inner.N := 42;
+    end;
+    var
+      X: TInner;
+      I: Integer;
+      Junk: TInner;
+    begin
+      X := MakeOuter().Inner;
+      for I := 0 to 100 do
+        Junk := TInner.Create();
+      WriteLn(X.N);
+      X := nil;
+    end.
+    ''';
+
   SrcMultiHandlerVar = '''
     program P;
     type
@@ -659,6 +702,32 @@ begin
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertEquals('stdout (native)', '100' + LE, Output);
   AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_CallResultClassFieldRead_NoUseAfterFree;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { The CORRECTNESS guard (both backends): the stored field value must survive
+    the base release + allocation churn and still read 42.  QBE printed garbage
+    here before the deferred-base-release fix. }
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcCallResultClassFieldRead, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertTrue('field value survives base release, prints 42 (qbe)',
+    Pos('42' + LE, Output) >= 0);
+  { QBE now releases the deferred base at statement end, so no leak. }
+  AssertTrue('no leak report (qbe)', Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcCallResultClassFieldRead, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertTrue('field value survives base release, prints 42 (native)',
+    Pos('42' + LE, Output) >= 0);
+  { NOTE: native still AddRef-pins this field value and leaks +1 (safe; it has
+    no statement-scoped deferred-release list yet — see bugs.txt task #8b), so
+    the native leak-report is deliberately NOT asserted here. }
 end;
 
 procedure TE2ELeakCheckTests.TestDebug_MultiHandlerVar_NoOverRelease;
