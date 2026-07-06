@@ -32,6 +32,7 @@ uses
   StrUtils.Tests,
   Scheduler.Tests,
   Reactor.Tests,
+  AsyncIo.Tests,
   Deque.Tests,
   SchedulerMc.Tests,
   AsyncSync.Tests,
