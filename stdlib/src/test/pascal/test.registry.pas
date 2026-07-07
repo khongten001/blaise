@@ -40,7 +40,8 @@ uses
   AsyncSync.Tests,
   TaskGroup.Tests,
   AsyncStress.Tests,
-  Pool.Tests;
+  Pool.Tests,
+  Uri.Tests;
 
 implementation
 
