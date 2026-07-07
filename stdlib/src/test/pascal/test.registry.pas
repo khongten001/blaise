@@ -44,7 +44,8 @@ uses
   Uri.Tests,
   HttpClient.Tests,
   WebSocketServer.Tests,
-  WebSocketClient.Tests;
+  WebSocketClient.Tests,
+  Smtp.Tests;
 
 implementation
 
