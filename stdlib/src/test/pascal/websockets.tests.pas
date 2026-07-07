@@ -25,6 +25,10 @@ type
     procedure TestRoundTripUnmasked;
     procedure TestRoundTripMasked;
     procedure TestPartialBufferIsInvalid;
+    procedure TestEncodeMaskedRoundTrip;
+    procedure TestEncodeMaskedBitSet;
+    procedure TestEncodeMaskedKeysDiffer;
+    procedure TestEncodeMaskedBinaryOpcode;
   end;
 
 implementation
@@ -112,6 +116,60 @@ begin
   D := DecodeFrame(Partial);
   AssertFalse('not valid', D.Valid);
   AssertEquals('consumed 0', 0, D.Consumed);
+end;
+
+procedure TWebSocketsTests.TestEncodeMaskedRoundTrip;
+var
+  F: string;
+  D: TWsFrame;
+begin
+  { A client-masked frame must survive DecodeFrame back to the plaintext. }
+  F := EncodeMaskedTextFrame('hello world');
+  D := DecodeFrame(F);
+  AssertTrue('valid', D.Valid);
+  AssertTrue('fin', D.Fin);
+  AssertEquals('opcode', WS_OP_TEXT, D.Opcode);
+  AssertEquals('payload', 'hello world', D.Payload);
+  AssertEquals('consumed', Length(F), D.Consumed);
+end;
+
+procedure TWebSocketsTests.TestEncodeMaskedBitSet;
+var
+  F: string;
+begin
+  { The MASK bit (top bit of byte 1) must be set on a client frame, and the
+    header must carry 4 mask bytes + payload (2 + 4 + 5 = 11 for "abcde"). }
+  F := EncodeMaskedTextFrame('abcde');
+  AssertTrue('mask bit set', (Byte(F[1]) and $80) <> 0);
+  AssertEquals('len field', 5, Integer(Byte(F[1]) and $7F));
+  AssertEquals('total len', 2 + 4 + 5, Integer(Length(F)));
+end;
+
+procedure TWebSocketsTests.TestEncodeMaskedKeysDiffer;
+var
+  F1, F2, K1, K2: string;
+begin
+  { Two successive frames must use different masking keys (bytes 2..5). }
+  F1 := EncodeMaskedTextFrame('x');
+  F2 := EncodeMaskedTextFrame('x');
+  K1 := Copy(F1, 2, 4);
+  K2 := Copy(F2, 2, 4);
+  AssertTrue('per-frame keys differ', K1 <> K2);
+  { Both must still decode to the same payload. }
+  AssertEquals('decode f1', 'x', DecodeFrame(F1).Payload);
+  AssertEquals('decode f2', 'x', DecodeFrame(F2).Payload);
+end;
+
+procedure TWebSocketsTests.TestEncodeMaskedBinaryOpcode;
+var
+  F: string;
+  D: TWsFrame;
+begin
+  F := EncodeMaskedFrame(WS_OP_BINARY, 'raw');
+  D := DecodeFrame(F);
+  AssertTrue('valid', D.Valid);
+  AssertEquals('opcode binary', WS_OP_BINARY, D.Opcode);
+  AssertEquals('payload', 'raw', D.Payload);
 end;
 
 initialization

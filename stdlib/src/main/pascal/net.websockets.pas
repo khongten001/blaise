@@ -59,6 +59,16 @@ function EncodeTextFrame(const APayload: string): string;
   WS_OP_PING, WS_OP_CLOSE).  Server frames are never masked. }
 function EncodeFrame(AOpcode: Integer; const APayload: string): string;
 
+{ Build a MASKED frame with an explicit opcode (client->server).  RFC 6455 5.3
+  requires every client frame to be masked: the MASK bit is set, a fresh 4-byte
+  masking key is prepended, and the payload is XORed with it.  The key comes
+  from the kernel CSPRNG (getrandom) so it varies per frame; the value is only
+  used for framing, not confidentiality.  DecodeFrame reverses it. }
+function EncodeMaskedFrame(AOpcode: Integer; const APayload: string): string;
+
+{ Build a MASKED text frame (client->server) carrying APayload. }
+function EncodeMaskedTextFrame(const APayload: string): string;
+
 { Parse the first frame in ABuffer.  Returns Valid=False (Consumed=0) if the
   buffer does not yet hold a complete frame — read more bytes and retry. }
 function DecodeFrame(const ABuffer: string): TWsFrame;
@@ -71,6 +81,19 @@ uses
 const
   { the RFC 6455 magic GUID appended to the key before hashing }
   WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+{ getrandom(buf, buflen, flags): fill buf with buflen random bytes from the
+  kernel CSPRNG.  flags=0 reads from the same pool as /dev/urandom.  Used to
+  pick a per-frame masking key.  PORTING BOUNDARY: getrandom(2) is Linux/
+  FreeBSD; on other targets dispatch a per-platform CSPRNG here. }
+function c_getrandom(ABuf: Pointer; ALen: Int64; AFlags: Integer): Int64;
+  external name 'getrandom';
+
+{ A monotonically-increasing counter mixed into the masking key so that even if
+  getrandom ever short-reads (it should not for 4 bytes), successive frames on a
+  connection still get distinct keys. }
+var
+  GMaskCounter: UInt32 = $9E3779B9;   { golden-ratio seed }
 
 function WebSocketAccept(const AKey: string): string;
 begin
@@ -111,6 +134,75 @@ end;
 function EncodeTextFrame(const APayload: string): string;
 begin
   Result := EncodeFrame(WS_OP_TEXT, APayload);
+end;
+
+{ Fill AMask[0..3] with a fresh per-frame masking key.  Draws 4 bytes from the
+  kernel CSPRNG and mixes in an advancing counter as a belt-and-braces fallback,
+  so the key varies from frame to frame even if getrandom is unavailable. }
+procedure NextMaskKey(var AMask: array of Byte);
+var
+  Buf: array[0..3] of Byte;
+  I: Integer;
+  Got: Int64;
+begin
+  Got := c_getrandom(@Buf[0], 4, 0);
+  GMaskCounter := (GMaskCounter * 1664525) + 1013904223;   { LCG step }
+  if Got <> 4 then
+  begin
+    { getrandom failed: derive the key entirely from the counter. }
+    Buf[0] := Byte(GMaskCounter and $FF);
+    Buf[1] := Byte((GMaskCounter shr 8) and $FF);
+    Buf[2] := Byte((GMaskCounter shr 16) and $FF);
+    Buf[3] := Byte((GMaskCounter shr 24) and $FF);
+  end
+  else
+    { mix the counter into the random bytes so a repeated random draw still
+      yields distinct keys across frames }
+    Buf[0] := Buf[0] xor Byte(GMaskCounter and $FF);
+  for I := 0 to 3 do
+    AMask[I] := Buf[I];
+end;
+
+function EncodeMaskedFrame(AOpcode: Integer; const APayload: string): string;
+var
+  SB: TStringBuilder;
+  Len, I: Integer;
+  Mask: array[0..3] of Byte;
+begin
+  NextMaskKey(Mask);
+  SB := TStringBuilder.Create();
+  SB.AppendByte($80 or (AOpcode and $0F));   { FIN + opcode }
+  Len := Length(APayload);
+  if Len < 126 then
+    SB.AppendByte($80 or Len)                 { MASK bit + len }
+  else if Len <= 65535 then
+  begin
+    SB.AppendByte($80 or 126);
+    SB.AppendByte((Len shr 8) and $FF);
+    SB.AppendByte(Len and $FF);
+  end
+  else
+  begin
+    SB.AppendByte($80 or 127);
+    SB.AppendByte(0); SB.AppendByte(0); SB.AppendByte(0); SB.AppendByte(0);
+    SB.AppendByte((Len shr 24) and $FF);
+    SB.AppendByte((Len shr 16) and $FF);
+    SB.AppendByte((Len shr 8) and $FF);
+    SB.AppendByte(Len and $FF);
+  end;
+  { the 4-byte masking key }
+  for I := 0 to 3 do
+    SB.AppendByte(Mask[I]);
+  { XOR-masked payload }
+  for I := 0 to Len - 1 do
+    SB.AppendByte(Byte(APayload[I]) xor Mask[I and 3]);
+  Result := SB.ToString();
+  SB.Free();
+end;
+
+function EncodeMaskedTextFrame(const APayload: string): string;
+begin
+  Result := EncodeMaskedFrame(WS_OP_TEXT, APayload);
 end;
 
 function DecodeFrame(const ABuffer: string): TWsFrame;
