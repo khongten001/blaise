@@ -49,6 +49,11 @@ type
       release (QBE use-after-free before the deferred-base-release fix) and not
       leak on QBE.  Correct output (42) is asserted on BOTH backends. }
     procedure TestDebug_CallResultClassFieldRead_NoUseAfterFree;
+    { A deep chain MakeIt().A.B.N reads a scalar off a base that is itself two
+      field-reads off an owned transient.  EmitInstancePtr must defer each
+      intermediate owned transient's release to statement end so none leak,
+      while the value still survives (no UAF).  QBE half of BUG-003 (ii). }
+    procedure TestDebug_DeepChainFieldRead_NoLeak_Qbe;
     { Multiple same-named typed handlers share one slot — no over-release. }
     procedure TestDebug_MultiHandlerVar_NoOverRelease;
     { for-in over a TList: GetEnumerator's +1 result must be transferred
@@ -630,6 +635,39 @@ const
     end.
     ''';
 
+  { A DEEP chain field read: MakeIt().A.B.N reads a scalar field off a base that
+    is itself two field-reads-off-an-owned-transient.  EmitInstancePtr resolved
+    each intermediate hop's owned transient (the MakeIt() result, then .A, .B)
+    without releasing it, leaking every intermediate on QBE (3) and native (2).
+    The value 7 must still print (no use-after-free), and — once the base
+    releases are deferred to statement end — no transient should leak. }
+  SrcDeepChainFieldRead = '''
+    program P;
+    type
+      TB = class N: Integer; end;
+      TA = class B: TB; destructor Destroy; override; end;
+      TOuter = class A: TA; destructor Destroy; override; end;
+    destructor TA.Destroy; begin B := nil; inherited Destroy(); end;
+    destructor TOuter.Destroy; begin A := nil; inherited Destroy(); end;
+    function MakeIt(): TOuter;
+    begin
+      Result := TOuter.Create();
+      Result.A := TA.Create();
+      Result.A.B := TB.Create();
+      Result.A.B.N := 7;
+    end;
+    var
+      V: Integer;
+      I: Integer;
+      Junk: TB;
+    begin
+      V := MakeIt().A.B.N;
+      for I := 0 to 100 do
+        Junk := TB.Create();
+      WriteLn(V);
+    end.
+    ''';
+
   SrcMultiHandlerVar = '''
     program P;
     type
@@ -728,6 +766,24 @@ begin
   { NOTE: native still AddRef-pins this field value and leaks +1 (safe; it has
     no statement-scoped deferred-release list yet — see bugs.txt task #8b), so
     the native leak-report is deliberately NOT asserted here. }
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_DeepChainFieldRead_NoLeak_Qbe;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { QBE (BUG-003 ii): the deep chain's intermediate owned transients must be
+    deferred-released at statement end — value 7 survives (no UAF) AND no leak. }
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcDeepChainFieldRead, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertTrue('deep-chain value survives, prints 7 (qbe)',
+    Pos('7' + LE, Output) >= 0);
+  AssertTrue('no leak report (qbe)', Pos('leak', Output) < 0);
+  { NOTE: native still lacks a statement-scoped deferred-release list, so its
+    deep-chain leak is asserted separately once the native half of BUG-003 lands. }
 end;
 
 procedure TE2ELeakCheckTests.TestDebug_MultiHandlerVar_NoOverRelease;

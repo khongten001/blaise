@@ -385,7 +385,8 @@ type
     { Returns a QBE temp holding a pointer to the storage of a record or class
       instance referenced by AExpr.  Used by chained field access to traverse
       base nodes without loading record aggregates as scalars. }
-    function  EmitInstancePtr(AExpr: TASTExpr): string;
+    function  EmitInstancePtr(AExpr: TASTExpr;
+      ADeferOwnedTail: Boolean = False): string;
     function  FieldPtr(const ARecordVar: string; AOffset: Integer; AIsGlobal: Boolean = False): string;
     { Returns the QBE address token for a variable: '$Name' for globals,
       '%_var_Name' for locals.  The AOwner overload mangles a global's
@@ -5010,7 +5011,8 @@ begin
   end;
 end;
 
-function TCodeGenQBE.EmitInstancePtr(AExpr: TASTExpr): string;
+function TCodeGenQBE.EmitInstancePtr(AExpr: TASTExpr;
+  ADeferOwnedTail: Boolean): string;
 var
   Id:     TIdentExpr;
   Fld:    TFieldAccessExpr;
@@ -5087,7 +5089,10 @@ begin
     if Fld.IsStaticPropGet then
       Exit(EmitExpr(Fld));
     if Fld.Base <> nil then
-      Base := EmitInstancePtr(Fld.Base)
+      { Recurse into the chain base as an INTERMEDIATE hop: if that base is an
+        owned transient (MakeIt() in MakeIt().A.B.N), its release must be
+        deferred to statement end, not leaked here (see the tail below). }
+      Base := EmitInstancePtr(Fld.Base, True)
     else if Fld.IsImplicitSelf then
     begin
       { Leaf: RecordName is a field of Self — load through %_var_Self. }
@@ -5161,7 +5166,22 @@ begin
   if (AExpr.ResolvedType <> nil) and
      (AExpr.ResolvedType.Kind in [tyClass, tyInterface, tyPointer, tyRecord]) then
   begin
-    Exit(EmitExpr(AExpr));
+    Result := EmitExpr(AExpr);
+    { INTERMEDIATE-hop owned transient (ADeferOwnedTail): reached only via the
+      recursion above, i.e. this call/getter is the ROOT of a longer chain
+      (MakeIt() in MakeIt().A.B.N).  Its +1 must stay alive until the whole
+      chain is consumed, then be released — releasing it inline frees the .A/.B
+      object graph the rest of the chain dereferences (use-after-free), leaking
+      it grows the arena.  Defer onto FPendingObjReleases so the enclosing leaf
+      statement flushes it AFTER the field value is stored; its _FieldCleanup
+      then frees the intermediate hops too, so one deferred release nets out the
+      whole chain.  Direct (non-recursive) callers pass ADeferOwnedTail=False and
+      release the returned base themselves, so this never double-handles. }
+    if ADeferOwnedTail and
+       (AExpr.ResolvedType.Kind in [tyClass, tyInterface]) and
+       ExprOwnsRef(AExpr) then
+      FPendingObjReleases.Add(Result);
+    Exit;
   end;
   raise ECodeGenError.Create('EmitInstancePtr: unsupported base expression');
 end;
