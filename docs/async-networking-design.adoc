@@ -1294,3 +1294,110 @@ and remains outstanding under this bullet.
 * *Always-on runtime (Go model).* Rejected in favour of opt-in (Java VT model):
   zero cost for programs that do not use fibers, and no disruption to the
   existing single-threaded RTL/stdlib.
+
+[appendix]
+[#follow-up-work]
+== Follow-up work
+
+The L0-L5 stack is implemented and on `master`: allocator, fiber context switch,
+M:N work-stealing scheduler, fiber-aware sync + persistent pool, epoll reactor,
+fiber I/O, OpenSSL TLS, and the Indy-class protocol catalogue (HTTP/https
+client+server, WebSockets client+server, SMTP/POP3/IMAP, FTP client+server, NNTP
+client+server). The items below are the remaining follow-up work, ordered by
+importance. Tackle them one at a time and tick each box when landed and verified
+(fixpoints + both TestRunner arms green).
+
+=== A. Usability gaps (highest — visible to every consumer)
+
+* [ ] *`Net.Dns` resolver.* Every client protocol currently requires a numeric
+  IPv4 literal — the biggest practical wall for the Indy-class story. Offload
+  `getaddrinfo` on the blocking pool first; an async UDP resolver
+  (`Net.Dns`) as a follow-up so the static/libc-free build has a non-blocking
+  path. (Design: <<l3-fiber-io>> DNS note.)
+* [ ] *`ws://` -> `wss://` (TLS WebSocket).* `TWebSocketClient.Connect` rejects
+  `wss://` today (needs `Net.Tls`, forces the external linker). Dial a
+  `TTlsStream` in place of the `TTcpConn` and reuse the existing framing.
+* [ ] *TLS variants for the mail/file protocols* — SMTP (STARTTLS + SMTPS),
+  POP3 (STLS + POP3S), IMAP (STARTTLS + IMAPS), FTP (FTPS), NNTP (STARTTLS).
+  All need libssl, so all require `--linker external`; reuse the `Net.Tls`
+  `TTlsConn` pump.
+* [ ] *HTTP content-coding.* `gzip`/`deflate` response decode in
+  `Net.Http.Client` (`later` in the L5 table).
+
+=== B. Compiler / linker follow-ups (unblock toolchain independence)
+
+* [ ] *Internal linker multi-library `DT_NEEDED`.* The dynamic-linking machinery
+  (GOT/PLT, `.dynamic`/`.dynsym`, `R_X86_64_JUMP_SLOT`) already exists; only the
+  single hard-coded `libc.so.6` `DT_NEEDED` string is missing the plumbing from
+  `AOpts.LinkLibs`. Contained fix (a loop, not a rewrite): iterate `LinkLibs`,
+  add each versioned soname to `.dynstr`, emit one `DT_NEEDED` per library,
+  resolve `-lssl` -> `libssl.so.3`. Removes the "TLS needs `--linker external`"
+  restriction. (Full sketch in `BUGS.md`, BUG-006.)
+* [ ] *Generic-instance method pruning across separate compilation.*
+  `TOrderedDictionary<K,V>` `SetItem`/`GetKey` are pruned per-anchor (not
+  unioned) under warm-cache / separate-compile — whole-program is fine. Needs a
+  `pasbuild` two-phase repro. Benign; workaround is `.Add` + a parallel key list.
+* [ ] *QBE implicit `Integer`->`Int64` widening on a `P^` store* — insert `extsw`
+  in the semantic/codegen pass. Workaround: explicit `Int64()` cast.
+* [x] *Standing ARC follow-ups* — the native call-result-field-read `+1` footprint
+  leak and the QBE deep-chain leak (both the single-hop `X := Call().Field` and
+  the `MakeIt().A.B.N` chain). Fixed on both backends via a statement-scoped
+  deferred base-release (see `BUGS.md` BUG-003 history).
+
+=== C. Portability (new targets)
+
+* [ ] *FreeBSD dynamic fiber build.* `async.fibers.context.x86_64.pas` and
+  `async.fibers.pas` use Linux-shaped libc constants (`MAP_ANONYMOUS`,
+  `CLOCK_MONOTONIC`, `clock_gettime`/`nanosleep` bindings). Route them through
+  the platform seam so the FreeBSD *dynamic* (libc) arm gets correct flag values.
+* [ ] *`TKqueueReactor`* (FreeBSD/macOS) behind the `TReactor` port.
+* [ ] *AArch64 context leaf* — the `async.fibers.context` switch for arm64.
+* [ ] *Static / libc-free fiber path.* Kernel-leaf raw syscalls **and per-thread
+  `%fs`/TLS setup** for each libc-free worker thread — the unresolved blocker for
+  the freestanding reactor (P1 risk).
+* [ ] *Windows* — `TIocpReactor` + Win64 context leaf + SChannel-or-OpenSSL TLS.
+
+=== D. Performance & protocol depth (later)
+
+* [ ] *Hot-path allocation audit for the fiber HTTP server.* mORMot 2's
+  `mormot.net.async` (Arnaud Bouchez, blog.synopse.info 2026-07-06) argues that
+  for Object Pascal REST servers the decisive factor is *memory discipline*, not
+  the concurrency primitive: a static GET there costs a single allocation (the URI
+  string), with all headers/response/JSON buffers pre-allocated and reused, plus a
+  radix-tree router. Blaise's server currently leans on ARC (per-object refcount
+  traffic) on the request path and has known residual ARC leaks (see the compiler
+  `BUGS.md`). Audit the per-request allocation count of `THttpFiberServer` +
+  `Net.Http` under load (instrument the concurrent allocator's arena/alloc
+  counters), then drive it toward a near-zero-alloc hot path: reuse per-connection
+  read/write buffers, avoid transient string churn in header/response
+  construction, and consider a radix/trie router in place of linear route
+  matching. Benchmark against a zero-alloc baseline; the target is req/s parity
+  with a callback reactor at equal concurrency, keeping the synchronous fiber
+  programming model. *This is the single largest performance lever identified so
+  far* — the concurrency-model choice (stackful fibers over async/await or a
+  callback reactor) is sound and is not what this item revisits.
+* [ ] *`io_uring`* Linux reactor behind the `TReactor` port.
+* [ ] *HTTP/2* over ALPN (client and the routing server).
+* [ ] *FTP ACTIVE mode* (only PASV implemented today).
+* [ ] *IMAP depth* — IDLE, UID commands, extension capabilities, MIME body parse.
+* [ ] *NNTP AUTHINFO SASL.*
+* [ ] *Growable fiber stacks* (fixed stacks + guard pages today).
+
+=== E. Long-term (pure-Pascal + language)
+
+* [ ] *`TBlaiseTlsProvider`* — pure-Pascal TLS 1.3, no libssl dependency. (Design:
+  `docs/tls13-pure-pascal-design.adoc`.) Enables the fully toolchain-independent
+  secure build.
+* [ ] *ALPN / certificate-pinning* trust hooks on the TLS provider interface.
+* [ ] *async/await state-machine transform* — the orthogonal
+  `future-improvements.adoc` language feature, layered over this runtime for
+  non-networking use cases. (<<relationship-to-future-improvements>>.)
+* [ ] *OPDF fiber-aware debugging* — teach the debugger to walk a fiber's saved
+  `SP` so swapped stacks are inspectable (a genuine follow-on for the
+  first-class-debugger goal).
+
+=== F. Housekeeping (this cycle)
+
+* [ ] *`ws-e2e-followup` branch* — CI-validate + promote (or fold/discard if it
+  duplicates existing coverage) the WebSocket end-to-end test on commit
+  `28be8d79`.
