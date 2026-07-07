@@ -481,6 +481,12 @@ type
       paths.  Handles ARC (string/class AddRef/Release) and width-correct
       stores.  AElemInRax is True when the element value is already in %rax. }
     procedure EmitForInAssignElem(AStmt: TForInStmt);
+    { Copy an aggregate array element (record / inline array / jumbo set) into
+      the for-in loop variable by value.  %rax holds the element address on
+      entry.  Records go through retain/release + memcpy so managed fields are
+      ref-counted (issue #169); a scalar load would truncate to 8 bytes. }
+    procedure EmitForInAggAssignElem(AStmt: TForInStmt;
+      AElemType: TTypeDesc; AElemSize: Integer);
     { Count all try/finally and try/except statements nested inside AStmt
       (recursively) to pre-allocate exc frame slots in BuildFrame. }
     function CountTryStmts(AStmt: TASTStmt): Integer;
@@ -10386,6 +10392,31 @@ begin
     Self.EmitStoreVar(VarOp, AStmt.ResolvedVarType);
 end;
 
+procedure TX86_64Backend.EmitForInAggAssignElem(AStmt: TForInStmt;
+  AElemType: TTypeDesc; AElemSize: Integer);
+{ %rax = address of the current array element.  Copy the whole aggregate into
+  the loop variable, mirroring the record-var assignment path: retain the
+  source's managed fields, release the destination's old ones, then memcpy the
+  raw bytes.  A scalar load/store would truncate the element to its first 8
+  bytes and skip the managed-field ARC, leaving the tail stale (issue #169). }
+begin
+  Self.Emit(#9'pushq %r15');
+  Self.Emit(#9'pushq %rbx');
+  Self.Emit(#9'movq %rax, %rbx');            { src = element address }
+  Self.EmitVarAddr(AStmt.VarName, '%r15');   { dst = loop-var address }
+  if AElemType.Kind = tyRecord then
+  begin
+    Self.EmitRecordFieldRetains(TRecordTypeDesc(AElemType), '%rbx');
+    Self.EmitRecordFieldReleases(TRecordTypeDesc(AElemType), '%r15');
+  end;
+  Self.Emit(#9'movq %r15, %rdi');
+  Self.Emit(#9'movq %rbx, %rsi');
+  Self.Emit(Format(#9'movq $%d, %%rdx', [AElemSize]));
+  Self.Emit(#9'callq memcpy');
+  Self.Emit(#9'popq %rbx');
+  Self.Emit(#9'popq %r15');
+end;
+
 procedure TX86_64Backend.EmitForInStmt(AStmt: TForInStmt);
 var
   LCond, LBody, LNext, LEnd: string;
@@ -10436,21 +10467,27 @@ begin
       Self.Emit(Format(#9'subq $%d, %%rax', [AStmt.ArrayLow]));
     Self.Emit(Format(#9'imulq $%d, %%rax, %%rax', [ElemSize]));
     Self.Emit(#9'addq %rcx, %rax');
-    { Load element from (%rax) }
-    case ElemSize of
-      1: if IsUnsignedInt(SAT.ElementType) then
-           Self.Emit(#9'movzbq (%rax), %rax')
-         else
-           Self.Emit(#9'movsbq (%rax), %rax');
-      2: if IsUnsignedInt(SAT.ElementType) then
-           Self.Emit(#9'movzwq (%rax), %rax')
-         else
-           Self.Emit(#9'movswq (%rax), %rax');
-      4: Self.Emit(#9'movslq (%rax), %rax');
+    if (SAT.ElementType.Kind = tyRecord) or (SAT.ElementType.RawSize() > 8) then
+      { %rax = element address; copy the aggregate by value. }
+      Self.EmitForInAggAssignElem(AStmt, SAT.ElementType, ElemSize)
     else
-      Self.Emit(#9'movq (%rax), %rax');
+    begin
+      { Load element from (%rax) }
+      case ElemSize of
+        1: if IsUnsignedInt(SAT.ElementType) then
+             Self.Emit(#9'movzbq (%rax), %rax')
+           else
+             Self.Emit(#9'movsbq (%rax), %rax');
+        2: if IsUnsignedInt(SAT.ElementType) then
+             Self.Emit(#9'movzwq (%rax), %rax')
+           else
+             Self.Emit(#9'movswq (%rax), %rax');
+        4: Self.Emit(#9'movslq (%rax), %rax');
+      else
+        Self.Emit(#9'movq (%rax), %rax');
+      end;
+      Self.EmitForInAssignElem(AStmt);
     end;
-    Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
     FContinueExcDepths.Pop();
@@ -10505,20 +10542,26 @@ begin
     Self.Emit(Format(#9'movslq %s, %%rax', [IdxOp]));
     Self.Emit(Format(#9'imulq $%d, %%rax, %%rax', [ElemSize]));
     Self.Emit(#9'addq %rcx, %rax');
-    case ElemSize of
-      1: if IsUnsignedInt(DAT.ElementType) then
-           Self.Emit(#9'movzbq (%rax), %rax')
-         else
-           Self.Emit(#9'movsbq (%rax), %rax');
-      2: if IsUnsignedInt(DAT.ElementType) then
-           Self.Emit(#9'movzwq (%rax), %rax')
-         else
-           Self.Emit(#9'movswq (%rax), %rax');
-      4: Self.Emit(#9'movslq (%rax), %rax');
+    if (DAT.ElementType.Kind = tyRecord) or (DAT.ElementType.RawSize() > 8) then
+      { %rax = element address; copy the aggregate by value. }
+      Self.EmitForInAggAssignElem(AStmt, DAT.ElementType, ElemSize)
     else
-      Self.Emit(#9'movq (%rax), %rax');
+    begin
+      case ElemSize of
+        1: if IsUnsignedInt(DAT.ElementType) then
+             Self.Emit(#9'movzbq (%rax), %rax')
+           else
+             Self.Emit(#9'movsbq (%rax), %rax');
+        2: if IsUnsignedInt(DAT.ElementType) then
+             Self.Emit(#9'movzwq (%rax), %rax')
+           else
+             Self.Emit(#9'movswq (%rax), %rax');
+        4: Self.Emit(#9'movslq (%rax), %rax');
+      else
+        Self.Emit(#9'movq (%rax), %rax');
+      end;
+      Self.EmitForInAssignElem(AStmt);
     end;
-    Self.EmitForInAssignElem(AStmt);
 
     Self.EmitStmt(AStmt.Body);
     FContinueExcDepths.Pop();

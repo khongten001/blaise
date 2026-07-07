@@ -66,6 +66,12 @@ type
       width-correct.  This is the shape of TDecimal (Boolean flags before a
       string-bearing carrier), which blocked Numerics.Money on QBE. }
     procedure TestRun_RecordCopy_BooleanBeforeManagedField;
+    { Regression (issue #169): for..in over an array of records must copy the
+      whole record element into the loop variable by value.  The element
+      assignment did a single scalar load — truncating the record to its first
+      8 bytes and skipping managed-field ARC — so every field past the first
+      was stale.  On BOTH backends. }
+    procedure TestRun_ForInArrayOfRecords_CopiesWholeElement;
   end;
 
 implementation
@@ -1212,6 +1218,43 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'USD 99 5 True' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_ForInArrayOfRecords_CopiesWholeElement;
+const
+  { Initialise each array element through the index, then iterate with for..in
+    and print all three fields of the copied loop variable.  A truncating scalar
+    load would carry only the first 8 bytes (the string pointer) and leave
+    Number / Initialized stale; the by-value record copy round-trips every
+    field, ARC-correct for the managed string. }
+  Src = '''
+    program P;
+    type
+      TRec = record
+        Name: string;
+        Number: Integer;
+        Initialized: Boolean;
+      end;
+      TArr = array[0..2] of TRec;
+    var
+      A: TArr;
+      R: TRec;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+      begin
+        A[I].Name := 'N' + IntToStr(I);
+        A[I].Number := I * 10;
+        A[I].Initialized := (I <> 1)
+      end;
+      for R in A do
+        WriteLn(R.Name, '|', R.Number, '|', R.Initialized)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src,
+    'N0|0|True' + LE + 'N1|10|False' + LE + 'N2|20|True' + LE, 0);
 end;
 
 initialization

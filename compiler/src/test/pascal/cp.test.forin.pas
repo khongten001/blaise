@@ -69,6 +69,9 @@ type
     procedure TestCodegen_ArrayForIn_HasForInCondLabel;
     procedure TestCodegen_ArrayForIn_HasForInEndLabel;
     procedure TestCodegen_ArrayForIn_LoadsElement;
+    { Issue #169: a record loop variable is copied by value (managed field ARC),
+      not truncated to a scalar load. }
+    procedure TestCodegen_ArrayForIn_RecordElement_CopiesByValue;
     procedure TestCodegen_ArrayForIn_JumpsBackToCond;
     procedure TestCodegen_ArrayForIn_NonZeroBased_AdjustsIndex;
 
@@ -457,6 +460,24 @@ const
         end.
         ''';
 
+  { Issue #169: a record-typed loop variable must be copied by value, field by
+    field with ARC — not truncated to a scalar load.  The managed Name field
+    forces a _StringAddRef in the copy, which the old plain-storel scalar path
+    never emitted. }
+  SrcRecordArrayForIn =
+    '''
+        program P;
+        type
+          TRec = record Name: string; Number: Integer; end;
+        var
+          Arr: array[0..2] of TRec;
+          R:   TRec;
+        begin
+          for R in Arr do
+            WriteLn(R.Number)
+        end.
+        ''';
+
   SrcArrayForInNonZero =
     '''
         program P;
@@ -522,6 +543,18 @@ begin
   IR := GenIR(SrcArrayForIn);
   { Element load for Integer array: loadw from computed address }
   AssertTrue('loadw emitted for array element', Pos('loadw', IR) > 0);
+end;
+
+procedure TForInTests.TestCodegen_ArrayForIn_RecordElement_CopiesByValue;
+var IR: string;
+begin
+  IR := GenIR(SrcRecordArrayForIn);
+  { A record loop variable is copied by value through EmitRecordCopy, which
+    ref-counts the managed Name field — so the copy emits a _StringAddRef.  The
+    pre-fix scalar path did a bare 8-byte storel with no ARC (issue #169), so
+    the presence of the string retain proves the whole record is copied. }
+  AssertTrue('record for-in copies managed field with ARC',
+    Pos('_StringAddRef', IR) > 0);
 end;
 
 procedure TForInTests.TestCodegen_ArrayForIn_JumpsBackToCond;

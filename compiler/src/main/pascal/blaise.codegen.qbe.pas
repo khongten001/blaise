@@ -280,6 +280,8 @@ type
     procedure EmitRepeatStmt(AStmt: TRepeatStmt);
     procedure EmitForStmt(AStmt: TForStmt);
     procedure EmitForInStmt(AStmt: TForInStmt);
+    procedure EmitForInElemAssign(AStmt: TForInStmt;
+      const AQType, AQLoad, AElemPtr: string; AElemSize: Integer);
     procedure EmitTryFinallyStmt(AStmt: TTryFinallyStmt);
     procedure EmitTryExceptStmt(AStmt: TTryExceptStmt);
     procedure EmitRaiseStmt(AStmt: TRaiseStmt);
@@ -3258,6 +3260,66 @@ begin
   EmitLine('@' + LblEnd);
 end;
 
+procedure TCodeGenQBE.EmitForInElemAssign(AStmt: TForInStmt;
+  const AQType, AQLoad, AElemPtr: string; AElemSize: Integer);
+{ Assign the array element at AElemPtr into the for..in loop variable.
+  An aggregate element (record / inline fixed array / jumbo set) is copied by
+  value: a scalar load/store would truncate it to the first 8 bytes and skip
+  the managed-field retain/release, leaving the tail fields stale (issue #169).
+  A record goes through EmitRecordCopy so managed fields are ref-counted; other
+  inline aggregates are raw-copied. }
+var
+  CurT:    string;
+  OldVarT: string;
+begin
+  if AStmt.ResolvedVarType.Kind = tyRecord then
+  begin
+    EmitRecordCopy(TRecordTypeDesc(AStmt.ResolvedVarType),
+      VarRef(AStmt.VarName, AStmt.VarIsGlobal), AElemPtr);
+    Exit;
+  end;
+  if AStmt.ResolvedVarType.RawSize() > 8 then
+  begin
+    EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+      [VarRef(AStmt.VarName, AStmt.VarIsGlobal), AElemPtr, AElemSize]));
+    Exit;
+  end;
+
+  CurT := AllocTemp();
+  EmitLine(Format('  %s =%s %s %s', [CurT, AQType, AQLoad, AElemPtr]));
+  if AStmt.ResolvedVarType.IsString() then
+  begin
+    OldVarT := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s',
+      [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+    EmitLine(Format('  call $_StringAddRef(l %s)', [CurT]));
+    EmitLine(Format('  call $_StringRelease(l %s)', [OldVarT]));
+    EmitLine(Format('  storel %s, %s',
+      [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+  end
+  else if AStmt.ResolvedVarType.Kind = tyClass then
+  begin
+    OldVarT := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s',
+      [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+    EmitLine(Format('  call $_ClassAddRef(l %s)', [CurT]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldVarT]));
+    EmitLine(Format('  storel %s, %s',
+      [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+  end
+  else if AQType = 'w' then
+  begin
+    if not AStmt.VarIsGlobal and IsPromoted(AStmt.VarName) then
+      EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.VarName, CurT]))
+    else
+      EmitLine(Format('  storew %s, %s',
+        [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+  end
+  else
+    EmitLine(Format('  storel %s, %s',
+      [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+end;
+
 procedure TCodeGenQBE.EmitForInStmt(AStmt: TForInStmt);
 { Implements for..in for two collection kinds:
     - IsArrayIter=True:  static array, index-based iteration
@@ -3372,42 +3434,8 @@ begin
         EmitLine(Format('  %s =l mul %s, %d', [OffL, IdxL, ElemSize]));
       end;
       ElemPtr := AllocTemp();
-      CurT    := AllocTemp();
       EmitLine(Format('  %s =l add %s, %s', [ElemPtr, BasePtr, OffL]));
-      EmitLine(Format('  %s =%s %s %s', [CurT, QType, QLoad, ElemPtr]));
-
-      { Assign element to loop variable }
-      if AStmt.ResolvedVarType.IsString() then
-      begin
-        OldVarT := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s',
-          [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-        EmitLine(Format('  call $_StringAddRef(l %s)', [CurT]));
-        EmitLine(Format('  call $_StringRelease(l %s)', [OldVarT]));
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else if AStmt.ResolvedVarType.Kind = tyClass then
-      begin
-        OldVarT := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s',
-          [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-        EmitLine(Format('  call $_ClassAddRef(l %s)', [CurT]));
-        EmitLine(Format('  call $_ClassRelease(l %s)', [OldVarT]));
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else if QType = 'w' then
-      begin
-        if not AStmt.VarIsGlobal and IsPromoted(AStmt.VarName) then
-          EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.VarName, CurT]))
-        else
-          EmitLine(Format('  storew %s, %s',
-            [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+      EmitForInElemAssign(AStmt, QType, QLoad, ElemPtr, ElemSize);
 
       EmitStmt(AStmt.Body);
     finally
@@ -3492,42 +3520,8 @@ begin
       OffL := AllocTemp();
       EmitLine(Format('  %s =l mul %s, %d', [OffL, IdxL, ElemSize]));
       ElemPtr := AllocTemp();
-      CurT    := AllocTemp();
       EmitLine(Format('  %s =l add %s, %s', [ElemPtr, BasePtr, OffL]));
-      EmitLine(Format('  %s =%s %s %s', [CurT, QType, QLoad, ElemPtr]));
-
-      { Assign element to loop variable }
-      if AStmt.ResolvedVarType.IsString() then
-      begin
-        OldVarT := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s',
-          [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-        EmitLine(Format('  call $_StringAddRef(l %s)', [CurT]));
-        EmitLine(Format('  call $_StringRelease(l %s)', [OldVarT]));
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else if AStmt.ResolvedVarType.Kind = tyClass then
-      begin
-        OldVarT := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s',
-          [OldVarT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-        EmitLine(Format('  call $_ClassAddRef(l %s)', [CurT]));
-        EmitLine(Format('  call $_ClassRelease(l %s)', [OldVarT]));
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else if QType = 'w' then
-      begin
-        if not AStmt.VarIsGlobal and IsPromoted(AStmt.VarName) then
-          EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.VarName, CurT]))
-        else
-          EmitLine(Format('  storew %s, %s',
-            [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
-      end
-      else
-        EmitLine(Format('  storel %s, %s',
-          [CurT, VarRef(AStmt.VarName, AStmt.VarIsGlobal)]));
+      EmitForInElemAssign(AStmt, QType, QLoad, ElemPtr, ElemSize);
 
       EmitStmt(AStmt.Body);
     finally
