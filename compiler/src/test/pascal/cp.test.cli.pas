@@ -91,6 +91,15 @@ type
     { ---- a bare --output (no directory part) must not anchor per-unit
            .o/.bif artefacts at the filesystem root ---- }
     procedure TestBareOutput_UnitArtefacts_NotWrittenToRoot;
+    { ---- BLAISE_BACKEND environment variable ----
+      Backend precedence is: an explicit --backend flag first, then the
+      BLAISE_BACKEND env var, then the compiled-in default (native).  Observed
+      through the native-only --assembler flag: the QBE driver reports it as an
+      unknown flag, so a QBE selection fails while a native selection accepts. }
+    procedure TestBackendEnv_Qbe_RejectsNativeOnlyFlag;
+    procedure TestBackendEnv_Native_AcceptsNativeOnlyFlag;
+    procedure TestBackendEnv_ExplicitFlagBeatsEnv;
+    procedure TestBackendEnv_InvalidValue_WarnsAndFallsBack;
   end;
 
 implementation
@@ -701,6 +710,169 @@ begin
   AssertTrue('no worker exception: ' + Out_,
     Pos('Worker exception', Out_) < 0);
   AssertEquals('bare --output compile exits 0: ' + Out_, 0, EC);
+end;
+
+{ ---- BLAISE_BACKEND env-var precedence ----
+  These drive the real compiler binary with BLAISE_BACKEND set in the child's
+  inherited environment (setenv in this process; the child inherits it across
+  fork+exec).  The native-only --assembler flag is the observable: the QBE
+  driver reports it as an unknown flag, so a QBE selection fails at the arg
+  drain while a native selection compiles.  setenv/unsetenv are bound directly
+  to libc (already linked); no SetEnvironmentVariable builtin is needed. }
+function _setenv(Name, Value: Pointer; Overwrite: Integer): Integer;
+  external name 'setenv';
+function _unsetenv(Name: Pointer): Integer; external name 'unsetenv';
+
+procedure SetBackendEnv(const AValue: string);
+var
+  Key: string;
+begin
+  Key := 'BLAISE_BACKEND';
+  _setenv(PChar(Key), PChar(AValue), 1)
+end;
+
+procedure ClearBackendEnv;
+var
+  Key: string;
+begin
+  Key := 'BLAISE_BACKEND';
+  _unsetenv(PChar(Key))
+end;
+
+procedure TCLIContractTests.TestBackendEnv_Qbe_RejectsNativeOnlyFlag;
+var
+  Src, Out_: string;
+  EC: Integer;
+begin
+  if not CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  { BLAISE_BACKEND=qbe routes to the QBE driver, which rejects the native-only
+    --assembler flag as unknown — proving the env var selected the backend. }
+  Src := WriteScratchSource(
+    'program cli_env_qbe;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(1)' + LineEnding +
+    'end.');
+  SetBackendEnv('qbe');
+  try
+    EC := RunCompiler([
+      '--source', Src,
+      '--unit-path', FRTLPath,
+      '--unit-path', FStdlibPath,
+      '--assembler', 'internal',
+      '--output', FScratch + 'cli_env_qbe_bin'
+    ], Out_);
+  finally
+    ClearBackendEnv();
+  end;
+  AssertTrue('BLAISE_BACKEND=qbe must route to QBE (rejects --assembler): ' + Out_,
+    EC <> 0);
+end;
+
+procedure TCLIContractTests.TestBackendEnv_Native_AcceptsNativeOnlyFlag;
+var
+  Src, Out_: string;
+  EC: Integer;
+begin
+  if not CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  { BLAISE_BACKEND=native routes to the native driver, which owns --assembler
+    and compiles successfully. }
+  Src := WriteScratchSource(
+    'program cli_env_native;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(1)' + LineEnding +
+    'end.');
+  SetBackendEnv('native');
+  try
+    EC := RunCompiler([
+      '--source', Src,
+      '--unit-path', FRTLPath,
+      '--unit-path', FStdlibPath,
+      '--assembler', 'internal',
+      '--output', FScratch + 'cli_env_native_bin'
+    ], Out_);
+  finally
+    ClearBackendEnv();
+  end;
+  AssertEquals('BLAISE_BACKEND=native must route to native (accepts --assembler): '
+    + Out_, 0, EC);
+end;
+
+procedure TCLIContractTests.TestBackendEnv_ExplicitFlagBeatsEnv;
+var
+  Src, Out_: string;
+  EC: Integer;
+begin
+  if not CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  { An explicit --backend qbe outranks BLAISE_BACKEND=native, so the QBE driver
+    is selected and rejects the native-only --assembler flag. }
+  Src := WriteScratchSource(
+    'program cli_env_flag;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(1)' + LineEnding +
+    'end.');
+  SetBackendEnv('native');
+  try
+    EC := RunCompiler([
+      '--source', Src,
+      '--unit-path', FRTLPath,
+      '--unit-path', FStdlibPath,
+      '--backend', 'qbe',
+      '--assembler', 'internal',
+      '--output', FScratch + 'cli_env_flag_bin'
+    ], Out_);
+  finally
+    ClearBackendEnv();
+  end;
+  AssertTrue('explicit --backend qbe must outrank BLAISE_BACKEND=native: ' + Out_,
+    EC <> 0);
+end;
+
+procedure TCLIContractTests.TestBackendEnv_InvalidValue_WarnsAndFallsBack;
+var
+  Src, Out_: string;
+  EC: Integer;
+begin
+  if not CompilerAvailable() then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  { An unrecognised BLAISE_BACKEND value warns and falls back to the default
+    (native) rather than aborting — so the native-only --assembler still
+    compiles, and the warning names the offending value. }
+  Src := WriteScratchSource(
+    'program cli_env_bogus;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(1)' + LineEnding +
+    'end.');
+  SetBackendEnv('bogus');
+  try
+    EC := RunCompiler([
+      '--source', Src,
+      '--unit-path', FRTLPath,
+      '--unit-path', FStdlibPath,
+      '--assembler', 'internal',
+      '--output', FScratch + 'cli_env_bogus_bin'
+    ], Out_);
+  finally
+    ClearBackendEnv();
+  end;
+  AssertEquals('invalid BLAISE_BACKEND must fall back to default (compiles): '
+    + Out_, 0, EC);
+  AssertTrue('invalid BLAISE_BACKEND must warn and name the value: ' + Out_,
+    Pos('BLAISE_BACKEND=bogus', Out_) >= 0);
 end;
 
 { ---- Registration ---- }

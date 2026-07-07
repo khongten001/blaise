@@ -143,6 +143,11 @@ begin
   WriteLn('  per line: unit-path=<dir> (repeatable) and rtl-src=<dir>.  A relative');
   WriteLn('  path is resolved against the config file''s directory; --rtl-src on');
   WriteLn('  the command line overrides rtl-src= in the config.');
+  WriteLn('');
+  WriteLn('Environment:');
+  WriteLn('  BLAISE_BACKEND=<id>  selects the backend when --backend is not given');
+  WriteLn('  (' + BackendUsageLine() + ').  An explicit --backend flag takes');
+  WriteLn('  precedence; an unrecognised value warns and uses the default.');
 end;
 
 { Populate the two caller-constructed opts objects from the command line.
@@ -186,6 +191,7 @@ function ParseArgs(AFront: TFrontEndOpts; AOpts: TBackendOpts;
 var
   I: Integer;
   Arg, NextArg: string;
+  EnvBackend: string;
 begin
   Result := False;
   AFront.SourceFile     := '';
@@ -322,6 +328,22 @@ begin
         APendingArgs.Add('');
     end;
     Inc(I);
+  end;
+
+  { Backend selection precedence: an explicit --backend flag wins (it set
+    BackendExplicit above); otherwise the BLAISE_BACKEND environment variable
+    selects the backend; otherwise the compiled-in default (bkNative, set at the
+    top of this routine) stands.  An unrecognised env value warns and falls back
+    to the default rather than aborting — the variable is ambient and a hard
+    error would be surprising in invocations that never meant to set a backend. }
+  if not AFront.BackendExplicit then
+  begin
+    EnvBackend := GetEnvironmentVariable('BLAISE_BACKEND');
+    if EnvBackend <> '' then
+      if not ParseBackendName(EnvBackend, AFront.Backend) then
+        WriteLn(StdErr, 'Warning: BLAISE_BACKEND=', EnvBackend,
+          ' is not a registered backend (', BackendUsageLine(),
+          '); using the default');
   end;
 
   if AFront.SourceFile = '' then
