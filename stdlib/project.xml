@@ -10,6 +10,7 @@
     <bootstrapExclude>
       <unit>Net.Tls.Provider</unit>
       <unit>Net.Tls</unit>
+      <unit>Net.Http.Client.Tls</unit>
     </bootstrapExclude>
   </build>
 

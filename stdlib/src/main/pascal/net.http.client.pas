@@ -30,9 +30,29 @@ unit Net.Http.Client;
 // fiber under a running scheduler and fall back to blocking calls otherwise, so
 // the same client code works in a fiber and in a plain program.
 //
-// https: NOT handled by this unit (a TLS request needs Net.Tls, which pulls in
-// libssl and forces `--linker external`).  A dedicated https path is deferred;
-// Request on an https URL returns nil.  NATIVE BACKEND ONLY.
+// https: an https URL dials TLS through an installable dialer hook
+// (GHttpTlsDialer) that yields an IHttpTlsStream (Read/Write/Close/Closed).  The
+// encrypted stream is driven through the same buffered read/write path as
+// plaintext by wrapping it in a THttpConn transport.
+//
+// DECOUPLING FROM libssl: this unit does NOT `uses Net.Tls` — that would force
+// libssl (and `--linker external`) onto EVERY consumer of the plaintext client,
+// including the internally-linked stdlib test build.  Instead the concrete TLS
+// binding lives in the opt-in unit Net.Http.Client.Tls, which a program that
+// wants https `uses` to install GHttpTlsDialer.  Without that unit, an https
+// request fails cleanly (returns nil) rather than dragging in libssl.  A program
+// that issues https requests MUST therefore `uses Net.Http.Client.Tls` and be
+// built with `--backend native --linker external`; plaintext http needs neither.
+//
+// TRANSPORT ABSTRACTION: THttpConn wraps EITHER a plaintext TTcpConn OR an
+// IHttpTlsStream and presents a single buffered read/write surface
+// (Read/Write/ReadLine/ReadFull/Unread/Close/Closed).  The response readers and
+// the request writer operate on THttpConn, so exactly one code path serves both
+// schemes.  The keep-alive pool stores THttpConn, and because the pool key
+// includes the scheme, https (scheme:host:443) and plaintext (scheme:host:80)
+// origins pool separately.  Verification can be relaxed per-client via the
+// InsecureSkipVerify property (loud opt-out) and a private CA pinned via
+// TrustCaFile; both are passed to the installed dialer.
 //
 // Blaise strings are 0-based; Pos/PosEx return -1 when not found.
 
@@ -46,6 +66,67 @@ const
   DEFAULT_MAX_REDIRECTS = 5;
 
 type
+  { The minimal encrypted-stream surface the client needs from a TLS provider.
+    Net.Http.Client.Tls adapts Net.Tls's TTlsStream to this interface, so this
+    unit never references libssl-bound types directly.  Read returns '' on
+    EOF/close/error; Write returns True on full write; Close is idempotent. }
+  IHttpTlsStream = interface
+    function Read(AMaxBytes: Integer): string;
+    function Write(const AData: string): Boolean;
+    procedure Close;
+    function IsClosed: Boolean;
+  end;
+
+  { Installable TLS dialer.  Dial AHost:APort, completing a client TLS handshake
+    (SNI = AHost).  AVerify enables peer verification (True by default); ACaFile,
+    when non-empty, pins extra trusted CA cert(s).  Returns a connected stream or
+    nil on failure.  Net.Http.Client.Tls installs a concrete subclass backed by
+    TTlsClient.  (A dialer OBJECT rather than a proc-var: the native backend
+    supports method-call-returning-interface into a local, but not a
+    proc-var-call-returning-interface — see the workaround note in TakeConn.) }
+  THttpTlsDialer = class
+  public
+    function Dial(const AHost: string; APort: UInt16; AVerify: Boolean;
+      const ACaFile: string): IHttpTlsStream; virtual; abstract;
+  end;
+
+  { Transport abstraction for the client's read/write path.  A THttpConn owns
+    EITHER a plaintext TTcpConn OR an IHttpTlsStream (exactly one is set) and
+    presents a single buffered read/write surface used by the response readers
+    and request writer.  A small pushback buffer (FBuf) supports Unread and lets
+    ReadLine / ReadFull sit over the raw transport Read regardless of scheme. }
+  THttpConn = class
+  private
+    FTcp: TTcpConn;             { owned when non-nil (plaintext) }
+    FTls: IHttpTlsStream;       { held when non-nil (https) }
+    FBuf: string;           { pushed-back / over-read bytes, consumed first }
+    FClosed: Boolean;
+    { Pull up to AMaxBytes straight from the underlying transport. }
+    function RawRead(AMaxBytes: Integer): string;
+  public
+    { Wrap a plaintext connection (takes ownership). }
+    constructor CreateTcp(ATcp: TTcpConn);
+    { Wrap a TLS stream. }
+    constructor CreateTls(ATls: IHttpTlsStream);
+    destructor Destroy; override;
+
+    { Read up to AMaxBytes ('' on EOF/close).  Serves the pushback buffer first. }
+    function Read(AMaxBytes: Integer): string;
+    { Read exactly ACount bytes (fewer only on premature EOF). }
+    function ReadFull(ACount: Integer): string;
+    { Read one CRLF/LF-terminated line (terminator stripped) into ALine; False on
+      EOF with no data. }
+    function ReadLine(out ALine: string): Boolean;
+    { Push AData back so the next Read/ReadLine/ReadFull sees it first. }
+    procedure Unread(const AData: string);
+    { Write all of AData. }
+    function Write(const AData: string): Boolean;
+    { Close the underlying transport.  Idempotent. }
+    procedure Close;
+    { True once closed or the transport reports closed. }
+    function IsClosed: Boolean;
+  end;
+
   { A parsed HTTP response.  Owns its header map; Body holds the fully decoded
     entity body (chunked responses are reassembled).  Header names are stored
     lower-cased for case-insensitive lookup via Header(). }
@@ -75,11 +156,13 @@ type
     should own its client, or serialise access). }
   THttpClient = class
   private
-    FPool: TOrderedDictionary<string, TTcpConn>;   { scheme:host:port -> idle conn }
+    FPool: TOrderedDictionary<string, THttpConn>;  { scheme:host:port -> idle conn }
     FMaxRedirects: Integer;
+    FInsecureSkipVerify: Boolean;                  { loud opt-out of TLS verify }
+    FTrustCaFile: string;                          { pinned private CA (PEM), or '' }
     function PoolKey(AUri: TUri): string;
-    function TakeConn(AUri: TUri): TTcpConn;
-    procedure ReturnConn(const AKey: string; AConn: TTcpConn);
+    function TakeConn(AUri: TUri): THttpConn;
+    procedure ReturnConn(const AKey: string; AConn: THttpConn);
     function DoRequest(const AMethod: string; AUri: TUri;
       AHeaders: TList<string>; const ABody: string): THttpClientResponse;
   public
@@ -99,6 +182,16 @@ type
       const ABody: string): THttpClientResponse;
 
     property MaxRedirects: Integer read FMaxRedirects write FMaxRedirects;
+
+    { When True, https requests skip peer certificate verification (dev/self-
+      signed use).  Default False — verification is ON, the security default.
+      A loud, explicit opt-out. }
+    property InsecureSkipVerify: Boolean read FInsecureSkipVerify write FInsecureSkipVerify;
+
+    { PEM file of extra trusted CA certificate(s) for https verification.  When
+      set, verify=True can succeed against a private/self-signed CA without
+      disabling verification. }
+    property TrustCaFile: string read FTrustCaFile write FTrustCaFile;
   end;
 
 { Parse a raw HTTP response (status line + headers + a Content-Length or
@@ -107,7 +200,33 @@ type
   for testing. }
 function ParseResponse(const ARaw: string): THttpClientResponse;
 
+{ Install/replace the process-wide TLS dialer.  Net.Http.Client.Tls calls this
+  from its initialisation.  A setter (rather than a directly-assignable global)
+  because the native backend duplicates the definition of a cross-unit global
+  written from another unit; writing it inside its declaring unit avoids that. }
+procedure SetHttpTlsDialer(ADialer: THttpTlsDialer);
+
+{ The currently installed TLS dialer, or nil if none (https then fails cleanly). }
+function HttpTlsDialer: THttpTlsDialer;
+
 implementation
+
+var
+  { Installed TLS dialer instance.  nil until Net.Http.Client.Tls (or an
+    application) sets it via SetHttpTlsDialer; while nil, https requests fail
+    cleanly (Request returns nil) instead of forcing libssl onto plaintext
+    consumers. }
+  GHttpTlsDialer: THttpTlsDialer;
+
+procedure SetHttpTlsDialer(ADialer: THttpTlsDialer);
+begin
+  GHttpTlsDialer := ADialer;
+end;
+
+function HttpTlsDialer: THttpTlsDialer;
+begin
+  Result := GHttpTlsDialer;
+end;
 
 { ---- small helpers -------------------------------------------------------- }
 
@@ -215,6 +334,191 @@ begin
   end;
 end;
 
+{ ---- TLS-stream dispatch helpers -----------------------------------------
+
+  WORKAROUND for a native-backend codegen bug: an interface-method call on a
+  local/field interface variable inside a CLASS METHOD emits bogus `_obj`/
+  `_itab` global refs (see bugs.txt).  Calling through a STANDALONE function
+  that takes the interface as a PARAMETER avoids it.  THttpConn's methods route
+  every IHttpTlsStream call through these helpers. }
+
+function TlsRead(AStream: IHttpTlsStream; AMaxBytes: Integer): string;
+begin
+  if AStream = nil then
+    Exit('');
+  Result := AStream.Read(AMaxBytes);
+end;
+
+function TlsWrite(AStream: IHttpTlsStream; const AData: string): Boolean;
+begin
+  if AStream = nil then
+    Exit(False);
+  Result := AStream.Write(AData);
+end;
+
+procedure TlsClose(AStream: IHttpTlsStream);
+begin
+  if AStream <> nil then
+    AStream.Close();
+end;
+
+function TlsIsClosed(AStream: IHttpTlsStream): Boolean;
+begin
+  if AStream = nil then
+    Exit(True);
+  Result := AStream.IsClosed();
+end;
+
+{ ---- THttpConn (transport abstraction) ------------------------------------ }
+
+constructor THttpConn.CreateTcp(ATcp: TTcpConn);
+begin
+  FTcp := ATcp;
+  FTls := nil;
+  FBuf := '';
+  FClosed := False;
+end;
+
+constructor THttpConn.CreateTls(ATls: IHttpTlsStream);
+begin
+  FTcp := nil;
+  FTls := ATls;
+  FBuf := '';
+  FClosed := False;
+end;
+
+destructor THttpConn.Destroy;
+begin
+  Self.Close();
+  if FTcp <> nil then
+  begin
+    FTcp.Free();
+    FTcp := nil;
+  end;
+  FTls := nil;   { interface: released by ARC }
+  inherited Destroy();
+end;
+
+function THttpConn.RawRead(AMaxBytes: Integer): string;
+begin
+  if FTls <> nil then
+    Result := TlsRead(FTls, AMaxBytes)
+  else if FTcp <> nil then
+    Result := FTcp.Read(AMaxBytes)
+  else
+    Result := '';
+end;
+
+function THttpConn.Read(AMaxBytes: Integer): string;
+var
+  Take: Integer;
+begin
+  if FBuf <> '' then
+  begin
+    Take := AMaxBytes;
+    if Take > Length(FBuf) then
+      Take := Length(FBuf);
+    Result := Copy(FBuf, 0, Take);
+    FBuf := Copy(FBuf, Take, Length(FBuf) - Take);
+    Exit;
+  end;
+  Result := Self.RawRead(AMaxBytes);
+end;
+
+function THttpConn.ReadFull(ACount: Integer): string;
+var
+  SB: TStringBuilder;
+  Chunk: string;
+  Got: Integer;
+begin
+  SB := TStringBuilder.Create();
+  Got := 0;
+  while Got < ACount do
+  begin
+    Chunk := Self.Read(ACount - Got);
+    if Chunk = '' then
+      Break;
+    SB.Append(Chunk);
+    Got := Got + Length(Chunk);
+  end;
+  Result := SB.ToString();
+  SB.Free();
+end;
+
+function THttpConn.ReadLine(out ALine: string): Boolean;
+var
+  SB: TStringBuilder;
+  Acc, Chunk: string;
+  Nl: Integer;
+begin
+  SB := TStringBuilder.Create();
+  ALine := '';
+  Result := False;
+  while True do
+  begin
+    Acc := SB.ToString();
+    Nl := PosEx(#10, Acc, 0);
+    if Nl >= 0 then
+    begin
+      ALine := Copy(Acc, 0, Nl);
+      if (Length(ALine) > 0) and (Byte(ALine[Length(ALine) - 1]) = 13) then
+        ALine := Copy(ALine, 0, Length(ALine) - 1);
+      Self.Unread(Copy(Acc, Nl + 1, Length(Acc) - Nl - 1));
+      Result := True;
+      Break;
+    end;
+    Chunk := Self.Read(4096);
+    if Chunk = '' then
+    begin
+      { EOF: return whatever partial line accumulated (True if any bytes). }
+      ALine := Acc;
+      Result := Length(Acc) > 0;
+      Break;
+    end;
+    SB.Append(Chunk);
+  end;
+  SB.Free();
+end;
+
+procedure THttpConn.Unread(const AData: string);
+begin
+  if AData = '' then
+    Exit;
+  FBuf := AData + FBuf;
+end;
+
+function THttpConn.Write(const AData: string): Boolean;
+begin
+  if FTls <> nil then
+    Result := TlsWrite(FTls, AData)
+  else if FTcp <> nil then
+    Result := FTcp.Write(AData)
+  else
+    Result := False;
+end;
+
+procedure THttpConn.Close;
+begin
+  if FClosed then
+    Exit;
+  FClosed := True;
+  if FTls <> nil then
+    TlsClose(FTls);
+  if FTcp <> nil then
+    FTcp.Close();
+end;
+
+function THttpConn.IsClosed: Boolean;
+begin
+  if FClosed then
+    Exit(True);
+  if FTls <> nil then
+    Exit(TlsIsClosed(FTls));
+  if FTcp <> nil then
+    Exit(FTcp.Closed);
+  Result := True;
+end;
+
 { ---- THttpClientResponse -------------------------------------------------- }
 
 constructor THttpClientResponse.Create;
@@ -319,7 +623,7 @@ end;
 
 { Read the status line + header block from AConn.  Returns the head text (minus
   the CRLFCRLF); any over-read body bytes are pushed back onto AConn. }
-function ReadResponseHead(AConn: TTcpConn; out AHead: string): Boolean;
+function ReadResponseHead(AConn: THttpConn; out AHead: string): Boolean;
 var
   SB: TStringBuilder;
   Chunk, Acc: string;
@@ -350,7 +654,7 @@ begin
 end;
 
 { Read a chunked body: <hexsize CRLF> <data CRLF> until a 0-size chunk. }
-function ReadBodyChunked(AConn: TTcpConn): string;
+function ReadBodyChunked(AConn: THttpConn): string;
 var
   SB: TStringBuilder;
   SizeLine, Data, Crlf: string;
@@ -379,7 +683,7 @@ begin
   SB.Free();
 end;
 
-function ReadBodyToEof(AConn: TTcpConn): string;
+function ReadBodyToEof(AConn: THttpConn): string;
 var
   SB: TStringBuilder;
   Chunk: string;
@@ -444,14 +748,16 @@ end;
 
 constructor THttpClient.Create;
 begin
-  FPool := TOrderedDictionary<string, TTcpConn>.Create();
+  FPool := TOrderedDictionary<string, THttpConn>.Create();
   FMaxRedirects := DEFAULT_MAX_REDIRECTS;
+  FInsecureSkipVerify := False;
+  FTrustCaFile := '';
 end;
 
 destructor THttpClient.Destroy;
 var
   I: Integer;
-  Conn: TTcpConn;
+  Conn: THttpConn;
 begin
   for I := 0 to FPool.Count - 1 do
   begin
@@ -471,17 +777,20 @@ begin
   Result := AUri.Scheme + ':' + AUri.Host + ':' + IntToStr(AUri.Port);
 end;
 
-function THttpClient.TakeConn(AUri: TUri): TTcpConn;
+function THttpClient.TakeConn(AUri: TUri): THttpConn;
 var
   Key: string;
-  Conn: TTcpConn;
+  Conn: THttpConn;
   Cli: TTcpClient;
+  Tcp: TTcpConn;
+  Tls: IHttpTlsStream;
+  Verify: Boolean;
 begin
   Key := Self.PoolKey(AUri);
   if FPool.TryGetValue(Key, Conn) then
   begin
     FPool.Remove(Key);
-    if (Conn <> nil) and (not Conn.Closed) then
+    if (Conn <> nil) and (not Conn.IsClosed()) then
       Exit(Conn);
     if Conn <> nil then
     begin
@@ -489,16 +798,37 @@ begin
       Conn.Free();
     end;
   end;
+
+  if AUri.Scheme = 'https' then
+  begin
+    { TLS dial via the installed dialer object: SNI = host, verify ON by default
+      (loud opt-out via InsecureSkipVerify), optionally pinning a private CA.
+      With no dialer installed (Net.Http.Client.Tls not used), fail cleanly.
+      WORKAROUND: a method-call returning an interface into a local is fine on
+      the native backend; a proc-var call is not — hence a dialer object. }
+    if GHttpTlsDialer = nil then
+      Exit(nil);
+    Verify := not FInsecureSkipVerify;
+    Tls := GHttpTlsDialer.Dial(AUri.Host, UInt16(AUri.Port), Verify, FTrustCaFile);
+    if Tls = nil then
+      Exit(nil);
+    Result := THttpConn.CreateTls(Tls);
+    Exit;
+  end;
+
   Cli := TTcpClient.Create();
-  Result := Cli.Connect(AUri.Host, UInt16(AUri.Port));
+  Tcp := Cli.Connect(AUri.Host, UInt16(AUri.Port));
   Cli.Free();
+  if Tcp = nil then
+    Exit(nil);
+  Result := THttpConn.CreateTcp(Tcp);
 end;
 
-procedure THttpClient.ReturnConn(const AKey: string; AConn: TTcpConn);
+procedure THttpClient.ReturnConn(const AKey: string; AConn: THttpConn);
 var
-  Old: TTcpConn;
+  Old: THttpConn;
 begin
-  if (AConn = nil) or AConn.Closed then
+  if (AConn = nil) or AConn.IsClosed() then
   begin
     if AConn <> nil then
       AConn.Free();
@@ -520,13 +850,11 @@ function THttpClient.DoRequest(const AMethod: string; AUri: TUri;
   AHeaders: TList<string>; const ABody: string): THttpClientResponse;
 var
   Key, Head, Target, Te: string;
-  Conn: TTcpConn;
+  Conn: THttpConn;
   Resp: THttpClientResponse;
   ContentLen: Integer;
 begin
   Result := nil;
-  if AUri.Scheme = 'https' then
-    Exit;   { https deferred: needs Net.Tls + external linker }
 
   Key := Self.PoolKey(AUri);
   Conn := Self.TakeConn(AUri);
@@ -579,7 +907,7 @@ begin
   else
     Resp.Body := '';
 
-  if Resp.KeepAlive and (not Conn.Closed) then
+  if Resp.KeepAlive and (not Conn.IsClosed()) then
     Self.ReturnConn(Key, Conn)
   else
   begin

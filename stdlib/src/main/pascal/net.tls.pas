@@ -67,10 +67,14 @@ type
       handshake.  ASniHost is the name sent via SNI and matched against the
       certificate (typically the DNS name; for a numeric-IP dial pass the name
       you expect the cert to carry).  AVerify controls peer verification (the
-      security default is True).  Returns a connected TTlsStream (caller owns it)
+      security default is True).  ACaFile, when non-empty, is a PEM file of extra
+      trusted CA certificate(s) added to the trust store before the handshake —
+      this lets verify=True succeed against a private/self-signed CA without
+      disabling verification.  Returns a connected TTlsStream (caller owns it)
       or nil on TCP/handshake failure.  Raises ETlsError if no provider. }
     function Connect(const AHostIp: string; APort: UInt16;
-      const ASniHost: string; AVerify: Boolean = True): TTlsStream;
+      const ASniHost: string; AVerify: Boolean = True;
+      const ACaFile: string = ''): TTlsStream;
   end;
 
   { The application supplies this; the TLS server spawns one fiber per accepted
@@ -178,7 +182,8 @@ end;
   --------------------------------------------------------------------------- }
 
 function TTlsClient.Connect(const AHostIp: string; APort: UInt16;
-  const ASniHost: string; AVerify: Boolean = True): TTlsStream;
+  const ASniHost: string; AVerify: Boolean = True;
+  const ACaFile: string = ''): TTlsStream;
 var
   Tcp: TTcpClient;
   Conn: TTcpConn;
@@ -200,6 +205,8 @@ begin
     Conn.Free();
     Exit;
   end;
+  if ACaFile <> '' then
+    Ctx.TrustCertFile(ACaFile);    { trust a private/self-signed CA }
   Tls := Ctx.NewConn(Conn.Fd, ASniHost);
   if Tls = nil then
   begin

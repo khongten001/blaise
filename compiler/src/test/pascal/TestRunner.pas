@@ -119,6 +119,7 @@ uses
   cp.test.e2e.httpfiber,
   cp.test.e2e.httpclient,
   cp.test.e2e.tls,
+  cp.test.e2e.httpsclient,
   cp.test.e2e.openarray,
   cp.test.e2e.staticarray,
   cp.test.e2e.constarg,
