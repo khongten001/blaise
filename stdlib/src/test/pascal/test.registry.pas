@@ -48,7 +48,8 @@ uses
   Smtp.Tests,
   Pop3.Tests,
   Imap.Tests,
-  Ftp.Tests;
+  Ftp.Tests,
+  Nntp.Tests;
 
 implementation
 
