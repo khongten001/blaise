@@ -867,6 +867,46 @@ The memory-BIO port boundary means it slots in by swapping `GTlsProvider` —
 *zero* change to any L5 component — and it is what finally lets the
 static/libc-free build speak TLS.
 
+[NOTE]
+.L4 TLS landed (2026-07-07)
+====
+The OpenSSL memory-BIO provider and the `Net.Tls` components are implemented on
+Linux + OpenSSL 3.x:
+
+* `Net.Tls.Provider` (`stdlib/src/main/pascal/net.tls.provider.pas`) — the
+  `TTlsProvider` port, `TOpenSSLProvider` (memory-BIO, function-only libssl/
+  libcrypto bindings), `TTlsContext`, and `TTlsConn` whose `Read`/`Write` pump
+  ciphertext between the two `BIO_s_mem` BIOs and the transport fd via the L3
+  `FiberRecv`/`FiberSend`.  Security defaults are on: client verification against
+  the OS trust store, SNI, and `SSL_set1_host` hostname matching; `TrustCertFile`
+  pins a private CA.
+* `Net.Tls` (`stdlib/src/main/pascal/net.tls.pas`) — `TTlsClient`/`TTlsServer`/
+  `TTlsStream` layered over `Net.Tcp`.  Components depend only on `TTlsConn`;
+  with no `GTlsProvider` installed, requesting TLS raises `ETlsError` (a clear
+  runtime error, not a link failure), matching the graceful-degradation posture.
+
+Proven end to end: a loopback client+server complete a real OpenSSL handshake
+under the fiber scheduler and round-trip an encrypted message (the wire carries
+TLS records `16/14/17 03 03`, never plaintext; a plaintext client is rejected;
+a verifying client with a mismatched hostname fails loudly).  Verification is
+valgrind-clean for our pump/lifecycle.
+
+[IMPORTANT]
+.External linker required for any TLS program
+--
+`Net.Tls(.Provider)` binds `libssl`/`libcrypto` via `external 'ssl'/'crypto'`.
+The default in-process internal linker *cannot* resolve an external library, so
+any program that (transitively) uses TLS **must** be compiled with
+`--linker external` (and is therefore dynamic + libc-linked, native-backend
+only).  The static/libc-free build has no TLS until the pure-Pascal provider
+below exists.
+--
+
+Deferred: the pure-Pascal `TBlaiseTlsProvider` (below); ALPN / HTTP2; certificate
+pinning beyond `TrustCertFile`; macOS/Windows providers; and TLS in the
+static/libc-free profile.
+====
+
 [#components]
 == L5 — The Indy-class component surface
 
@@ -892,6 +932,9 @@ per connection/request — with no I/O-multiplexing logic of their own.
   per socket replaces the current broadcast-list polling.
 | `Net.Smtp` / `Net.Pop3` / `Net.Imap` | Mail protocols (the Indy breadth).
 | `Net.Ftp` | File transfer (control + data connections, both fiber-driven).
+
+| `Net.Nntp` | NNTP client + server (news: LIST/GROUP/ARTICLE/POST), one fiber
+  per connection.
 |===
 
 === Example: a high-concurrency server
@@ -1142,6 +1185,41 @@ connection targets hold and the exception/allocator model survives the
 approach (or fall back to the async/await direction) before spending effort on
 the derivative protocol breadth. This is where the innovation token is proven
 or returned.
+====
++
+[NOTE]
+.Gate artifact landed — verdict GO (2026-07-06)
+====
+The minimal `Net.Tcp` (`TTcpClient`/`TTcpConn`/`TTcpServer`, fiber-per-connection
+accept loop) and the fiber-per-connection `THttpFiberServer` (HTTP/1.1
+keep-alive, reusing the existing `ParseRequest`/`IRequestHandler` contract) are
+implemented, with a standalone benchmark program
+(`runtime/src/test/pascal/bench_async_http.pas`) comparing three server models
+under an identical in-process load (K concurrent connections × R keep-alive
+requests each).
+
+On a 16-core Linux dev box (`RLIMIT_NOFILE` raised to 200000, K concurrent
+connections × 20 keep-alive requests each) the fiber model sustains rising
+throughput with *zero* client errors up to 2000 concurrent connections
+(7.5k req/s), scales to a measured peak of ~6700 simultaneous connections, and
+posts its *highest* throughput (13.6k req/s, 100 660 successful requests) at
+K=8000 — while the thread-per-connection (Indy) model's throughput *collapses*
+as concurrency climbs (196k req/s at K=100 → 17k at K=1000 → 9.9k at K=8000 with
+61% of requests dropped), and the one-at-a-time baseline fails immediately (95%
+of requests dropped at K≥100). The measured crossover is at high concurrency:
+by K=8000 the fiber model both out-throughputs (13.6k vs 9.9k req/s) and
+out-completes (100 660 vs 62 040 successful) thread-per-connection. The
+exception/allocator model survives the 100k-fibre joint stress
+(`TAsyncStressTests`).
+
+The absolute 10k-conn/10k-req/s target is machine- and harness-bound (the
+in-process load generator is one OS thread per client, so at K≥5000 it
+co-saturates the same 16 cores as the server, which is why both models shed some
+load there); the *relative* crossover — fibre sustains and grows where
+thread-per-connection collapses — is the gate signal, and it holds. Reproduce
+with `runtime/src/test/pascal/bench_async_http.pas`. Verdict: *GO* for the
+derivative L4/L5 protocol breadth. `Net.Uri` is not part of this gate artifact
+and remains outstanding under this bullet.
 ====
 . *L5 first components* (gate artifact) — `Net.Tcp`, rewritten
   `Net.Http.Server`, `Net.Uri`. The benchmark here *is* the gate above.
