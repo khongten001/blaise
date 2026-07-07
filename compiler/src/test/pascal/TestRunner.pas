@@ -116,6 +116,7 @@ uses
   cp.test.e2e.fibers,
   cp.test.e2e.scheduler,
   cp.test.e2e.asyncio,
+  cp.test.e2e.websocket,
   cp.test.e2e.httpfiber,
   cp.test.e2e.mail,
   cp.test.e2e.ftp,
