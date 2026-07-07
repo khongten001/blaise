@@ -164,7 +164,11 @@ begin
       FBuf := FBuf + Chunk;
     end;
     Colon := PosEx(#13#10#13#10, FBuf, 0);
-    RespHead := Copy(FBuf, 0, Colon);
+    { Copy the head up to (but excluding) the terminating CRLFCRLF, then append a
+      trailing CRLF so the LAST header line (e.g. Sec-WebSocket-Accept) is
+      newline-terminated for the per-line scan below.  Without it the final line
+      carries no LF and the scan silently skips it, so the accept check fails. }
+    RespHead := Copy(FBuf, 0, Colon) + #13#10;
     { anything past the header terminator is WebSocket payload }
     FBuf := Copy(FBuf, Colon + 4, Length(FBuf) - Colon - 4);
 

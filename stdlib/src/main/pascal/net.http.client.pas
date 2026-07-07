@@ -334,41 +334,6 @@ begin
   end;
 end;
 
-{ ---- TLS-stream dispatch helpers -----------------------------------------
-
-  WORKAROUND for a native-backend codegen bug: an interface-method call on a
-  local/field interface variable inside a CLASS METHOD emits bogus `_obj`/
-  `_itab` global refs (see bugs.txt).  Calling through a STANDALONE function
-  that takes the interface as a PARAMETER avoids it.  THttpConn's methods route
-  every IHttpTlsStream call through these helpers. }
-
-function TlsRead(AStream: IHttpTlsStream; AMaxBytes: Integer): string;
-begin
-  if AStream = nil then
-    Exit('');
-  Result := AStream.Read(AMaxBytes);
-end;
-
-function TlsWrite(AStream: IHttpTlsStream; const AData: string): Boolean;
-begin
-  if AStream = nil then
-    Exit(False);
-  Result := AStream.Write(AData);
-end;
-
-procedure TlsClose(AStream: IHttpTlsStream);
-begin
-  if AStream <> nil then
-    AStream.Close();
-end;
-
-function TlsIsClosed(AStream: IHttpTlsStream): Boolean;
-begin
-  if AStream = nil then
-    Exit(True);
-  Result := AStream.IsClosed();
-end;
-
 { ---- THttpConn (transport abstraction) ------------------------------------ }
 
 constructor THttpConn.CreateTcp(ATcp: TTcpConn);
@@ -402,7 +367,7 @@ end;
 function THttpConn.RawRead(AMaxBytes: Integer): string;
 begin
   if FTls <> nil then
-    Result := TlsRead(FTls, AMaxBytes)
+    Result := FTls.Read(AMaxBytes)
   else if FTcp <> nil then
     Result := FTcp.Read(AMaxBytes)
   else
@@ -490,7 +455,7 @@ end;
 function THttpConn.Write(const AData: string): Boolean;
 begin
   if FTls <> nil then
-    Result := TlsWrite(FTls, AData)
+    Result := FTls.Write(AData)
   else if FTcp <> nil then
     Result := FTcp.Write(AData)
   else
@@ -503,7 +468,7 @@ begin
     Exit;
   FClosed := True;
   if FTls <> nil then
-    TlsClose(FTls);
+    FTls.Close();
   if FTcp <> nil then
     FTcp.Close();
 end;
@@ -513,7 +478,7 @@ begin
   if FClosed then
     Exit(True);
   if FTls <> nil then
-    Exit(TlsIsClosed(FTls));
+    Exit(FTls.IsClosed());
   if FTcp <> nil then
     Exit(FTcp.Closed);
   Result := True;

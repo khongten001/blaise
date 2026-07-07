@@ -42,7 +42,9 @@ uses
   AsyncStress.Tests,
   Pool.Tests,
   Uri.Tests,
-  HttpClient.Tests;
+  HttpClient.Tests,
+  WebSocketServer.Tests,
+  WebSocketClient.Tests;
 
 implementation
 
