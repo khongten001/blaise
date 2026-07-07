@@ -135,6 +135,10 @@ function Shutdown(AFd, AHow: Integer): Integer;
   external name 'shutdown';
 function Htons(AHostShort: UInt16): UInt16;
   external name 'htons';
+function Ntohs(ANetShort: UInt16): UInt16;
+  external name 'ntohs';
+function GetSockName(AFd: Integer; AAddr: Pointer; AAddrLen: Pointer): Integer;
+  external name 'getsockname';
 
 { --- address helpers --- }
 
@@ -162,6 +166,13 @@ function TcpListenLocal(APort: UInt16; ABacklog: Integer): Integer;
   load-balance accepts across them (design [#listener-scaling]).  Returns the
   listening fd, or -1 on failure. }
 function TcpListenReusePort(AAddr: UInt32; APort: UInt16; ABacklog: Integer): Integer;
+
+{ Open a listening socket on AAddr with an OS-chosen ephemeral port (bind to
+  port 0), then report the actual port the kernel assigned in APort (host byte
+  order).  Used by the FTP server's PASV path: the server needs a fresh data
+  port per transfer and must tell the client which one.  Returns the listening
+  fd, or -1 on failure (APort then 0). }
+function TcpListenEphemeral(AAddr: UInt32; ABacklog: Integer; out APort: UInt16): Integer;
 
 { Connect to AAddr:APort (AAddr is a network-order IPv4).  Returns the
   connected fd, or -1 on failure. }
@@ -332,6 +343,49 @@ begin
     Result := -1;
     Exit;
   end;
+  Result := Fd;
+end;
+
+function TcpListenEphemeral(AAddr: UInt32; ABacklog: Integer; out APort: UInt16): Integer;
+var
+  Fd, One: Integer;
+  SA: TSockAddrIn;
+  Bound: TSockAddrIn;
+  Len: Integer;
+begin
+  APort := 0;
+  Fd := Socket(AF_INET, SOCK_STREAM, 0);
+  if Fd < 0 then
+  begin
+    Result := -1;
+    Exit;
+  end;
+
+  One := 1;
+  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEADDR, @One, 4);
+
+  FillSockAddr(SA, AAddr, 0);            { port 0 => OS picks an ephemeral port }
+  if Bind(Fd, @SA, 16) <> 0 then
+  begin
+    CloseSocket(Fd);
+    Result := -1;
+    Exit;
+  end;
+  if Listen(Fd, ABacklog) <> 0 then
+  begin
+    CloseSocket(Fd);
+    Result := -1;
+    Exit;
+  end;
+  { read back the actual port the kernel assigned }
+  Len := 16;
+  if GetSockName(Fd, @Bound, @Len) <> 0 then
+  begin
+    CloseSocket(Fd);
+    Result := -1;
+    Exit;
+  end;
+  APort := Ntohs(Bound.sin_port);
   Result := Fd;
 end;
 

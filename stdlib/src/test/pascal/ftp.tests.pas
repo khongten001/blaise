@@ -27,13 +27,19 @@ unit Ftp.Tests;
 interface
 
 uses
-  blaise.testing, SysUtils, Net.Tcp, Net.Ftp, Net.Mail.Reply,
-  async.fibers, async.io, Net.Sockets;
+  blaise.testing, SysUtils, Net.Tcp, Net.Ftp, Net.Ftp.Server, Net.Mail.Reply,
+  async.fibers, async.io, Net.Sockets, Generics.Collections;
 
 type
   TFtpClientTests = class(TTestCase)
   published
     procedure TestLoginRetrStorList;
+  end;
+
+  { Client <-> real TFtpServer round-trip. }
+  TFtpServerTests = class(TTestCase)
+  published
+    procedure TestClientServerRoundTrip;
   end;
 
 implementation
@@ -230,7 +236,169 @@ begin
   GHandler := nil;
 end;
 
+{ ---------------------------------------------------------------------------
+  Client <-> real TFtpServer round-trip
+  --------------------------------------------------------------------------- }
+
+const
+  SRV_PORT = 29641;
+  STORE_BODY = 'roundtrip' + #13#10 + 'with' + #0 + 'nul' + #13#10 + 'tail';
+
+type
+  { A simple in-memory virtual filesystem backing the FTP server. }
+  TMemStore = class(IFtpFileStore)
+  private
+    FFiles: TOrderedDictionary<string, string>;
+    FNames: TList<string>;    { insertion-ordered key list (for List) }
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function Authenticate(const AUser: string; const APass: string): Boolean;
+    function GetFile(const ARemotePath: string; out AData: string): Boolean;
+    function PutFile(const ARemotePath: string; const AData: string): Boolean;
+    function DeleteFile(const ARemotePath: string): Boolean;
+    function List(const ADir: string): string;
+  end;
+
+constructor TMemStore.Create;
+begin
+  FFiles := TOrderedDictionary<string, string>.Create();
+  FNames := TList<string>.Create();
+end;
+
+destructor TMemStore.Destroy;
+begin
+  FFiles.Free();
+  FNames.Free();
+  inherited Destroy();
+end;
+
+function TMemStore.Authenticate(const AUser: string; const APass: string): Boolean;
+begin
+  Result := (AUser = 'bob') and (APass = 'pw');
+end;
+
+function TMemStore.GetFile(const ARemotePath: string; out AData: string): Boolean;
+var
+  V: string;
+begin
+  Result := FFiles.TryGetValue(ARemotePath, V);
+  if Result then
+    AData := V
+  else
+    AData := '';
+end;
+
+function TMemStore.PutFile(const ARemotePath: string; const AData: string): Boolean;
+begin
+  { TOrderedDictionary.Add overwrites an existing key in place (avoid the
+    default Items[] setter: SetItem is pruned from the xml.types-anchored
+    monomorphisation and cross-unit-referencing it fails to link). }
+  if FNames.IndexOf(ARemotePath) < 0 then
+    FNames.Add(ARemotePath);
+  FFiles.Add(ARemotePath, AData);
+  Result := True;
+end;
+
+function TMemStore.DeleteFile(const ARemotePath: string): Boolean;
+var
+  Idx: Integer;
+begin
+  Result := FFiles.ContainsKey(ARemotePath);
+  if Result then
+  begin
+    FFiles.Remove(ARemotePath);
+    Idx := FNames.IndexOf(ARemotePath);
+    if Idx >= 0 then
+      FNames.Delete(Idx);
+  end;
+end;
+
+function TMemStore.List(const ADir: string): string;
+var
+  I: Integer;
+  R: string;
+begin
+  R := '';
+  for I := 0 to FNames.Count - 1 do
+  begin
+    if R <> '' then
+      R := R + #10;
+    R := R + FNames[I];
+  end;
+  Result := R;
+end;
+
+var
+  GSrv: TFtpServer;
+  GStore: IFtpFileStore;
+  GRtLoginOk: Boolean;
+  GRtStorOk: Boolean;
+  GRtRetr: string;
+  GRtRetrOk: Boolean;
+  GRtList: string;
+  GRtListOk: Boolean;
+  GRtDeleteOk: Boolean;
+  GRtQuitOk: Boolean;
+
+procedure SrvServeFiber(AArg: Pointer);
+begin
+  GSrv.Serve(GStore);
+end;
+
+procedure RtClientFiber(AArg: Pointer);
+var
+  Cli: TFtpClient;
+begin
+  FiberSleep(2);
+  Cli := TFtpClient.Create();
+  if Cli.Connect('127.0.0.1', SRV_PORT) then
+  begin
+    GRtLoginOk := Cli.Login('bob', 'pw');
+    GRtStorOk := Cli.Store('file.bin', STORE_BODY);
+    GRtRetrOk := Cli.Retrieve('file.bin', GRtRetr);
+    GRtListOk := Cli.List('', GRtList);
+    GRtDeleteOk := Cli.Delete('file.bin');
+    GRtQuitOk := Cli.Quit();
+  end;
+  Cli.Free();
+  GSrv.Stop();
+end;
+
+procedure TFtpServerTests.TestClientServerRoundTrip;
+begin
+  GSrv := TFtpServer.Create(SRV_PORT);
+  AssertTrue('server start', GSrv.Start());
+  GStore := TMemStore.Create();
+  GRtLoginOk := False;
+  GRtStorOk := False;
+  GRtRetr := '';
+  GRtRetrOk := False;
+  GRtList := '';
+  GRtListOk := False;
+  GRtDeleteOk := False;
+  GRtQuitOk := False;
+
+  SpawnFiber(@SrvServeFiber, nil);
+  SpawnFiber(@RtClientFiber, nil);
+  RunScheduler();
+
+  AssertTrue('login', GRtLoginOk);
+  AssertTrue('STOR ok', GRtStorOk);
+  AssertTrue('RETR ok', GRtRetrOk);
+  AssertEquals('round-trip byte-exact', STORE_BODY, GRtRetr);
+  AssertTrue('LIST ok', GRtListOk);
+  AssertTrue('LIST shows uploaded file', Pos('file.bin', GRtList) >= 0);
+  AssertTrue('DELETE ok', GRtDeleteOk);
+  AssertTrue('QUIT', GRtQuitOk);
+
+  ResetScheduler();
+  GSrv.Free();
+  GStore := nil;
+end;
+
 initialization
   RegisterTest(TFtpClientTests);
+  RegisterTest(TFtpServerTests);
 
 end.
