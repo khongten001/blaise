@@ -49,7 +49,8 @@ unit uUnitInterfaceIO;
 interface
 
 uses
-  Classes, SysUtils, streams, strutils, uAST, uUnitInterface, uStrCompat;
+  Classes, SysUtils, streams, strutils, uAST, uUnitInterface, uStrCompat,
+  uCompilerId;
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
@@ -138,6 +139,17 @@ function  ReadUnitInterfaceFromFile(const APath: string): TUnitInterface;
   change-detection grade — sufficient for iface-vs-source freshness
   checks but NOT suitable for adversarial integrity. }
 function ContentHashFnv1a64(const AContent: string): string;
+
+{ The compiler-identity string stamped into every .bif and checked when a
+  cached .o is validated.  It is COMPILER_ID (the human-readable base) PLUS a
+  content hash of the RUNNING compiler binary (ParamStr(0)).  The binary-hash
+  suffix makes a .bif auto-invalidate whenever the compiler binary changes —
+  which is exactly what BUG-007 needs: a compiler-dev rebuild that alters
+  codegen/layout but not the hand-bumped COMPILER_ID no longer trusts a cached
+  .o emitted by the previous binary.  Fixpoint-stable: stage-2 and stage-3 are
+  byte-identical binaries, so their hash (and thus this id) is equal, so
+  warm-cache reuse still works.  Computed once and cached. }
+function EffectiveCompilerId: string;
 
 implementation
 
@@ -2491,6 +2503,38 @@ begin
     if Lo < 10 then Result := Result + Chr(Ord('0') + Lo)
               else Result := Result + Chr(Ord('a') + Lo - 10);
   end;
+end;
+
+var
+  GEffectiveCompilerId: string = '';   { memoised — see EffectiveCompilerId }
+
+function EffectiveCompilerId: string;
+var
+  Bin:  TStringList;
+  Hash: string;
+begin
+  if GEffectiveCompilerId <> '' then
+    Exit(GEffectiveCompilerId);
+  { Content-hash the running compiler binary.  A read failure (unknown path,
+    permissions) degrades to the bare COMPILER_ID — no worse than the old
+    behaviour, never a hard error. }
+  Hash := '';
+  Bin  := TStringList.Create();
+  try
+    try
+      Bin.LoadFromFile(ParamStr(0));
+      Hash := ContentHashFnv1a64(Bin.Text);
+    except
+      Hash := '';
+    end;
+  finally
+    Bin.Free();
+  end;
+  if Hash <> '' then
+    GEffectiveCompilerId := COMPILER_ID + '+bin' + Hash
+  else
+    GEffectiveCompilerId := COMPILER_ID;
+  Result := GEffectiveCompilerId;
 end;
 
 procedure WriteUnitInterfaceToFile(AIface: TUnitInterface; const APath: string);

@@ -36,7 +36,8 @@ unit uSemanticExport;
 interface
 
 uses
-  Classes, Contnrs, uAST, uSymbolTable, uUnitInterface, uCompilerId;
+  Classes, Contnrs, uAST, uSymbolTable, uUnitInterface, uCompilerId,
+  uUnitInterfaceIO;
 
 { Build a TUnitInterface from AUnit.  AUnit must have been semantically
   analysed already.  ADeps holds the already-exported interfaces of
@@ -500,7 +501,7 @@ function ExportUnitInterface(AUnit:        TUnit;
 begin
   Result := TUnitInterface.Create(AUnit.Name);
   Result.SourceFile    := AUnit.SourceFile;
-  Result.CompilerId    := COMPILER_ID;
+  Result.CompilerId    := EffectiveCompilerId();
   { mtime + hash get populated by the iface writer once it has a
     handle on the source path on disk.  Doing it here from AUnit
     alone is unsafe — AUnit may have been parsed from a string

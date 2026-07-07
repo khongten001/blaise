@@ -197,11 +197,23 @@ begin
       Src.Free();
     end;
     if Cur = '' then Exit;
-    Result := SameText(Cur, AIface.SourceHash);
-    if not Result then
+    if not SameText(Cur, AIface.SourceHash) then
+    begin
       WriteLn(StdErr,
               'note: ', AName,
               '.o iface stale vs source on path; recompiling from source');
+      Exit;
+    end;
+    { Source unchanged — but the cached .o must also have been emitted by THIS
+      compiler binary, not a previous one with different codegen/layout (BUG-007).
+      EffectiveCompilerId carries a hash of the running binary, so a compiler-dev
+      rebuild that changed codegen but not the source auto-invalidates the cache
+      here (fixpoint-stable: stage-2==stage-3 binaries hash equal). }
+    Result := SameText(AIface.CompilerId, EffectiveCompilerId());
+    if not Result then
+      WriteLn(StdErr,
+              'note: ', AName,
+              '.o iface compiled by a different blaise binary; recompiling from source');
     Exit;
   end;
   { No source available — CompilerId match is the only safe signal. }
@@ -212,12 +224,12 @@ begin
             '.o iface has no compiler id and no source on path; cannot use');
     Exit;
   end;
-  Result := SameText(AIface.CompilerId, COMPILER_ID);
+  Result := SameText(AIface.CompilerId, EffectiveCompilerId());
   if not Result then
     WriteLn(StdErr,
             'error: ', AName,
             '.o iface compiled by ''', AIface.CompilerId,
-            ''' (this compiler is ''', COMPILER_ID,
+            ''' (this compiler is ''', EffectiveCompilerId(),
             '''); source unavailable to rebuild');
 end;
 
