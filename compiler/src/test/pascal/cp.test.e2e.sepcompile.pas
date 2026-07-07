@@ -129,6 +129,18 @@ type
       both backends. }
     procedure TestStaticMembers_CrossUnit_QBE;
     procedure TestStaticMembers_CrossUnit_Native;
+    { Regression: two units EACH declaring a same-named unit-level `var` (and a
+      same-named `threadvar`) must emit DISTINCT global symbols on the native
+      backend (ua_GVal / ub_GVal), not one colliding bare `GVal`.  The native
+      backend previously emitted and referenced module globals under their BARE
+      name, so the internal linker silently merged the two units' slots (a shared-
+      storage hazard) and the EXTERNAL linker rejected the build with "multiple
+      definition of GVal".  The fix makes native honour the owning unit for module
+      globals, mirroring the QBE backend.  Built with `--linker external` so a
+      regression re-surfaces as a hard link failure, and the printed values prove
+      the two slots are genuinely independent. }
+    procedure TestSameNamedModuleVar_AcrossUnits_ExternalLink_Native;
+    procedure TestSameNamedModuleVar_AcrossUnits_QBE;
   end;
 
 implementation
@@ -1730,6 +1742,171 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('native build2 run exit', 0, Rc);
   AssertEquals('native build2 stdout', '1' + #10 + '2' + #10 + '3' + #10 + '7' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestSameNamedModuleVar_AcrossUnits_ExternalLink_Native;
+{ ua and ub each declare `var GVal: Integer` AND `threadvar GTls: Integer`.  On
+  the native backend these must become ua_GVal/ub_GVal and ua_GTls/ub_GTls, not a
+  single colliding GVal/GTls — proved by building with the EXTERNAL linker (which
+  hard-fails on a duplicate definition) and by the program printing all four
+  independent values. }
+const
+  UnitASrc =
+    '''
+    unit uaMV;
+    interface
+    procedure SetA(X: Integer);
+    function GetA: Integer;
+    procedure SetTlsA(X: Integer);
+    function GetTlsA: Integer;
+    implementation
+    var GVal: Integer;
+    threadvar GTls: Integer;
+    procedure SetA(X: Integer); begin GVal := X; end;
+    function GetA: Integer; begin Result := GVal; end;
+    procedure SetTlsA(X: Integer); begin GTls := X; end;
+    function GetTlsA: Integer; begin Result := GTls; end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit ubMV;
+    interface
+    procedure SetB(X: Integer);
+    function GetB: Integer;
+    procedure SetTlsB(X: Integer);
+    function GetTlsB: Integer;
+    implementation
+    var GVal: Integer;
+    threadvar GTls: Integer;
+    procedure SetB(X: Integer); begin GVal := X; end;
+    function GetB: Integer; begin Result := GVal; end;
+    procedure SetTlsB(X: Integer); begin GTls := X; end;
+    function GetTlsB: Integer; begin Result := GTls; end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program useMV;
+    uses uaMV, ubMV;
+    begin
+      SetA(11); SetB(22);
+      SetTlsA(33); SetTlsB(44);
+      WriteLn(GetA());
+      WriteLn(GetB());
+      WriteLn(GetTlsA());
+      WriteLn(GetTlsB());
+    end.
+    ''';
+var
+  UnitAPas, UnitBPas, ProgPas, ProgBin, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitAPas := FScratch + '/uaMV.pas';
+  UnitBPas := FScratch + '/ubMV.pas';
+  ProgPas  := FScratch + '/use_mv_native.pas';
+  ProgBin  := FScratch + '/use_mv_native';
+
+  WriteFile(UnitAPas, UnitASrc);
+  WriteFile(UnitBPas, UnitBSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'native', '--linker', 'external',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('native external link exit (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_mv_native exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_mv_native run exit', 0, Rc);
+  AssertEquals('use_mv_native stdout',
+    '11' + #10 + '22' + #10 + '33' + #10 + '44' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestSameNamedModuleVar_AcrossUnits_QBE;
+{ Same two-units-same-named-var shape on the QBE backend (module var only — the
+  QBE cross-unit threadvar TLS-reference path is a separate, pre-existing gap).
+  QBE already mangled module vars by owner; this pins that it keeps working and
+  that the two slots stay independent. }
+const
+  UnitASrc =
+    '''
+    unit uaMVq;
+    interface
+    procedure SetA(X: Integer);
+    function GetA: Integer;
+    implementation
+    var GVal: Integer;
+    procedure SetA(X: Integer); begin GVal := X; end;
+    function GetA: Integer; begin Result := GVal; end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit ubMVq;
+    interface
+    procedure SetB(X: Integer);
+    function GetB: Integer;
+    implementation
+    var GVal: Integer;
+    procedure SetB(X: Integer); begin GVal := X; end;
+    function GetB: Integer; begin Result := GVal; end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program useMVq;
+    uses uaMVq, ubMVq;
+    begin
+      SetA(11); SetB(22);
+      WriteLn(GetA());
+      WriteLn(GetB());
+    end.
+    ''';
+var
+  UnitAPas, UnitBPas, ProgPas, ProgBin, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitAPas := FScratch + '/uaMVq.pas';
+  UnitBPas := FScratch + '/ubMVq.pas';
+  ProgPas  := FScratch + '/use_mv_qbe.pas';
+  ProgBin  := FScratch + '/use_mv_qbe';
+
+  WriteFile(UnitAPas, UnitASrc);
+  WriteFile(UnitBPas, UnitBSrc);
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', 'qbe',
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('qbe build exit (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('use_mv_qbe exists', FileExists(ProgBin));
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('use_mv_qbe run exit', 0, Rc);
+  AssertEquals('use_mv_qbe stdout', '11' + #10 + '22' + #10, Captured)
 end;
 
 initialization

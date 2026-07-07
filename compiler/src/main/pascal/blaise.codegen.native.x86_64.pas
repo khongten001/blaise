@@ -100,6 +100,15 @@ type
       is the slot's static type so loads, stores, and the .data directive all
       pick the right width and signedness. }
     FDataGlobals: TOrderedDictionary<string, TTypeDesc>;
+    { Canonical global emit name → its owning unit (captured at AddGlobal time).
+      EmitDataSection and IsImportedGlobal consult this instead of re-looking-up
+      the (now-mangled) canonical key in the symbol table, which would miss. }
+    FGlobalOwners: TDictionary<string, string>;
+    { Bare names known to be MODULE-LEVEL variables (unit interface/implementation
+      section or program-level).  GlobalSymName consults this to decide whether an
+      unexported (Sym=nil at codegen) name may take the FCurrentUnitName context
+      prefix — keeping class-var ClassVarEmitName and internal labels verbatim. }
+    FModuleVarNames: TStringList;
     FGlobalInits: TDictionary<string, TConstDecl>;  { global name → initialiser (var G: T = value) }
     FThreadVarGlobals: TDictionary<string, Boolean>;
     FWeakGlobals:      TDictionary<string, Boolean>;
@@ -221,6 +230,20 @@ type
       (SkipDepCodegen): the cached object DEFINES the global, so this object
       must reference it only — emitting a definition here would clash at link. }
     function IsImportedGlobal(const AName: string): Boolean;
+    { The owner-correct emit symbol for a MODULE global (a unit-level var or
+      threadvar).  Mirrors the QBE backend's GlobalVarUnitPrefix + VarRef: a
+      plain module var owned by unit ua emits as 'ua_GVal'; a program var or an
+      RTL/runtime var stays bare.  Names that are NOT module vars in the symbol
+      table (class-var ClassVarEmitName, which is already fully mangled, and
+      internal labels such as _exc_frame_/_jset_scratch_) are returned verbatim
+      so they are never double-prefixed.  This is the native counterpart to the
+      QBE ResolvedOwnerUnit honouring — every module global is REGISTERED and
+      REFERENCED under this canonical name, so definition and reference always
+      agree, and same-named vars across units no longer collide. }
+    function GlobalSymName(const AName: string): string;
+    { Module-var owner→prefix, matching QBE.MangleGlobalOwner (program-name and
+      RTL units → bare).  NOT ClassOwnerPrefix (which prefixes runtime.* classes). }
+    function GlobalOwnerPrefix(const AOwner: string): string;
     { The static type of a frame-local slot, or nil if AName is not a local. }
     function LocalType(const AName: string): TTypeDesc;
     { The static type of a program global, or nil if AName is not registered. }
@@ -1027,6 +1050,11 @@ begin
   inherited Create(ATarget);
   FLabelCount          := 0;
   FDataGlobals         := TOrderedDictionary<string, TTypeDesc>.Create();
+  FGlobalOwners        := TDictionary<string, string>.Create();
+  FModuleVarNames      := TStringList.Create();
+  FModuleVarNames.CaseSensitive := True;
+  FModuleVarNames.Sorted := True;
+  FModuleVarNames.Duplicates := dupIgnore;
   FGlobalInits         := TDictionary<string, TConstDecl>.Create();
   FThreadVarGlobals    := TDictionary<string, Boolean>.Create();
   FWeakGlobals         := TDictionary<string, Boolean>.Create();
@@ -1077,6 +1105,8 @@ begin
   FWeakGlobals.Free();
   FThreadVarGlobals.Free();
   FGlobalInits.Free();
+  FModuleVarNames.Free();
+  FGlobalOwners.Free();
   FDataGlobals.Free();
   inherited Destroy();
 end;
@@ -1093,9 +1123,30 @@ begin
 end;
 
 procedure TX86_64Backend.AddGlobal(const AName: string; AType: TTypeDesc);
+var
+  Key:   string;
+  Sym:   TSymbol;
+  Owner: string;
 begin
-  if not FDataGlobals.ContainsKey(AName) then
-    FDataGlobals.Add(AName, AType);
+  { Register under the canonical owner-prefixed emit name so that same-named
+    module vars from different units occupy DISTINCT slots (ua_GVal vs ub_GVal)
+    instead of silently sharing one — and so that references (which apply the
+    same GlobalSymName) resolve to the matching definition.  Class-var and
+    internal names pass through unchanged. }
+  Key := Self.GlobalSymName(AName);
+  { Remember the owning unit so EmitDataSection / IsImportedGlobal can consult it
+    without re-looking-up the mangled canonical key (which is not a symbol). }
+  Owner := '';
+  if FSymTable <> nil then
+  begin
+    Sym := FSymTable.Lookup(AName);
+    if (Sym <> nil) and (Sym.Kind = skVariable) then
+      Owner := Sym.OwningUnit;
+  end;
+  if not FGlobalOwners.ContainsKey(Key) then
+    FGlobalOwners.Add(Key, Owner);
+  if not FDataGlobals.ContainsKey(Key) then
+    FDataGlobals.Add(Key, AType);
 end;
 
 { Register a shared data global for every STATIC (class-level) variable in a
@@ -1119,40 +1170,54 @@ begin
 end;
 
 procedure TX86_64Backend.MarkThreadVar(const AName: string);
+var
+  Key: string;
 begin
-  if not FThreadVarGlobals.ContainsKey(AName) then
-    FThreadVarGlobals.Add(AName, True);
+  { Keyed on the canonical owner-prefixed name, matching AddGlobal — the .tbss
+    definition and every %fs:...@tpoff reference use the same GlobalSymName. }
+  Key := Self.GlobalSymName(AName);
+  if not FThreadVarGlobals.ContainsKey(Key) then
+    FThreadVarGlobals.Add(Key, True);
 end;
 
 procedure TX86_64Backend.MarkWeakGlobal(const AName: string);
+var
+  Key: string;
 begin
-  if not FWeakGlobals.ContainsKey(AName) then
-    FWeakGlobals.Add(AName, True);
+  Key := Self.GlobalSymName(AName);
+  if not FWeakGlobals.ContainsKey(Key) then
+    FWeakGlobals.Add(Key, True);
 end;
 
 function TX86_64Backend.IsThreadVarGlobal(const AName: string): Boolean;
 var
   Dummy: Boolean;
 begin
-  Result := FThreadVarGlobals.TryGetValue(AName, Dummy);
+  { Accepts either a bare AST name or an already-canonical key; GlobalSymName is
+    idempotent on the canonical form (the mangled key is not a module-var
+    symbol, so it returns verbatim). }
+  Result := FThreadVarGlobals.TryGetValue(Self.GlobalSymName(AName), Dummy);
 end;
 
 function TX86_64Backend.IsWeakGlobal(const AName: string): Boolean;
 var
   Dummy: Boolean;
 begin
-  Result := FWeakGlobals.TryGetValue(AName, Dummy);
+  Result := FWeakGlobals.TryGetValue(Self.GlobalSymName(AName), Dummy);
 end;
 
 function TX86_64Backend.GlobalType(const AName: string): TTypeDesc;
 begin
-  if not FDataGlobals.TryGetValue(AName, Result) then
+  { Keyed on the canonical name; GlobalSymName is idempotent so a bare or an
+    already-canonical name both resolve to the same slot. }
+  if not FDataGlobals.TryGetValue(Self.GlobalSymName(AName), Result) then
     Result := nil;
 end;
 
 function TX86_64Backend.IsImportedGlobal(const AName: string): Boolean;
 var
-  Sym: TSymbol;
+  Sym:   TSymbol;
+  Owner: string;
 begin
   { A global whose owning unit was imported from a cached .bif/.o (incremental /
     separate compilation) is DEFINED by that unit's own object.  This object must
@@ -1161,11 +1226,70 @@ begin
     exported symbol. }
   Result := False;
   if FImportedUnits.Count = 0 then Exit;
+  { EmitDataSection passes a canonical (owner-prefixed) key — the owning unit is
+    recorded in FGlobalOwners, so consult that first (a symbol re-lookup of the
+    mangled key would miss). }
+  if FGlobalOwners.TryGetValue(AName, Owner) then
+  begin
+    if Owner = '' then Exit;
+    Result := FImportedUnits.IndexOf(Owner) >= 0;
+    Exit;
+  end;
+  if FGlobalOwners.TryGetValue(Self.GlobalSymName(AName), Owner) then
+  begin
+    if Owner = '' then Exit;
+    Result := FImportedUnits.IndexOf(Owner) >= 0;
+    Exit;
+  end;
   if FSymTable = nil then Exit;
   Sym := FSymTable.Lookup(AName);
   if Sym = nil then Exit;
   if Sym.OwningUnit = '' then Exit;
   Result := FImportedUnits.IndexOf(Sym.OwningUnit) >= 0;
+end;
+
+function TX86_64Backend.GlobalOwnerPrefix(const AOwner: string): string;
+begin
+  { The module-var owner→prefix, mirroring QBE.MangleGlobalOwner EXACTLY: the
+    program name and every unmangled RTL unit (System, rtl.*, runtime.*,
+    blaise_*) map to '' (bare); any other unit maps to its dotted-to-underscore
+    prefix.  Deliberately NOT ClassOwnerPrefix — that one prefixes runtime.*
+    class symbols, which is right for CLASS mangling but wrong for module vars,
+    where runtime.* globals must stay bare like the RTL routines they sit
+    beside. }
+  Result := '';
+  if AOwner = '' then Exit;
+  if (FProgramName <> '') and SameText(AOwner, FProgramName) then Exit;
+  Result := MangleUnitPrefix(AOwner);
+end;
+
+function TX86_64Backend.GlobalSymName(const AName: string): string;
+var
+  Sym: TSymbol;
+begin
+  Result := AName;
+  { Owner resolution mirrors QBE.GlobalVarUnitPrefix + VarRef:
+    (1) an EXPORTED symbol (interface-section module var) is in the symbol table
+        with a non-empty OwningUnit — a cross-unit reference must prefix by THAT
+        owner regardless of the emitting unit.
+    (2) an implementation-section PRIVATE module var is NOT reachable via
+        FSymTable.Lookup at codegen time (Sym=nil) and is only ever referenced
+        from within its own unit, so the emitting unit (FCurrentUnitName) IS the
+        owner — but only names KNOWN to be module vars (registered in
+        FModuleVarNames) may take this context prefix, so class-var
+        ClassVarEmitName and internal labels (.L*, _exc_frame_, __sN) are left
+        verbatim. }
+  if FSymTable <> nil then
+  begin
+    Sym := FSymTable.Lookup(AName);
+    if (Sym <> nil) and (Sym.Kind = skVariable) and (Sym.OwningUnit <> '') then
+    begin
+      Result := Self.GlobalOwnerPrefix(Sym.OwningUnit) + AName;
+      Exit;
+    end;
+  end;
+  if (FModuleVarNames <> nil) and (FModuleVarNames.IndexOf(AName) >= 0) then
+    Result := Self.GlobalOwnerPrefix(FCurrentUnitName) + AName;
 end;
 
 procedure TX86_64Backend.EmitDataSection;
@@ -3733,7 +3857,8 @@ begin
     if Self.IsLocal(AFA.RecordName) then
       Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AFA.RecordName), ADstReg]))
     else
-      Self.Emit(Format(#9'movq %s(%%rip), %s', [AFA.RecordName, ADstReg]));
+      Self.Emit(Format(#9'movq %s(%%rip), %s',
+        [Self.GlobalSymName(AFA.RecordName), ADstReg]));
     if AFA.IsVarParam then
       { var-param class: slot -> caller var -> instance }
       Self.Emit(Format(#9'movq (%s), %s', [ADstReg, ADstReg]));
@@ -3743,7 +3868,8 @@ begin
     if Self.IsLocal(AFA.RecordName) then
       Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AFA.RecordName), ADstReg]))
     else
-      Self.Emit(Format(#9'movq %s(%%rip), %s', [AFA.RecordName, ADstReg]));
+      Self.Emit(Format(#9'movq %s(%%rip), %s',
+        [Self.GlobalSymName(AFA.RecordName), ADstReg]));
   end
   else
     Self.EmitVarAddr(AFA.RecordName, ADstReg);
@@ -3918,7 +4044,9 @@ begin
   else if Self.IsLocal(AName) then
     Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AName), ADstReg]))
   else
-    Self.Emit(Format(#9'movq %s(%%rip), %s', [AName, ADstReg]));
+    { Global value load: VarOperand applies the owner prefix (and the %fs:@tpoff
+      form for a threadvar). }
+    Self.Emit(Format(#9'movq %s, %s', [Self.VarOperand(AName), ADstReg]));
 end;
 
 function TX86_64Backend.IsLocal(const AName: string): Boolean;
@@ -3939,9 +4067,14 @@ begin
       Result := Format('-%d(%%rbp)', [-Off])
   end
   else if Self.IsThreadVarGlobal(AName) then
-    Result := '%fs:' + AName + '@tpoff'
+    { Threadvars are unit-prefixed too (a same-named threadvar in two units would
+      otherwise collide); the .tbss definition and this %fs:...@tpoff reference
+      both apply GlobalSymName so they agree. }
+    Result := '%fs:' + Self.GlobalSymName(AName) + '@tpoff'
   else
-    Result := AName + '(%rip)';
+    { Module global: reference the owner-prefixed symbol so it binds to the
+      matching definition (mirrors QBE's VarRef honouring ResolvedOwnerUnit). }
+    Result := Self.GlobalSymName(AName) + '(%rip)';
 end;
 
 procedure TX86_64Backend.EmitLeaqGlobal(const AName: string; const ADstReg: string);
@@ -3949,10 +4082,12 @@ begin
   if Self.IsThreadVarGlobal(AName) then
   begin
     Self.Emit(Format(#9'movq %%fs:0, %s', [ADstReg]));
-    Self.Emit(Format(#9'leaq %s@tpoff(%s), %s', [AName, ADstReg, ADstReg]));
+    Self.Emit(Format(#9'leaq %s@tpoff(%s), %s',
+      [Self.GlobalSymName(AName), ADstReg, ADstReg]));
   end
   else
-    Self.Emit(Format(#9'leaq %s(%%rip), %s', [AName, ADstReg]));
+    Self.Emit(Format(#9'leaq %s(%%rip), %s',
+      [Self.GlobalSymName(AName), ADstReg]));
 end;
 
 procedure TX86_64Backend.EmitVarAddr(const AName: string; const ADstReg: string);
@@ -3977,7 +4112,8 @@ begin
   if (not AIsGlobal) and Self.IsLocal(AName) then
     Result := Self.VarOperand(AName)
   else
-    Result := AName + '_obj(%rip)';
+    { Owner-prefixed label matching EmitDataSection's <Name>_obj definition. }
+    Result := Self.GlobalSymName(AName) + '_obj(%rip)';
 end;
 
 { The itab half of an interface fat pointer.  Locals: 8 bytes above the obj
@@ -3994,7 +4130,7 @@ begin
     Result := Format('%d(%%rbp)', [Off + 8]);
   end
   else
-    Result := AName + '_itab(%rip)';
+    Result := Self.GlobalSymName(AName) + '_itab(%rip)';
 end;
 
 procedure TX86_64Backend.PushIntfIdentPair(AIdent: TIdentExpr);
@@ -7730,7 +7866,7 @@ begin
       { Non-threadvar offset-0 fast path: read the field directly off the
         PC-relative global.  Only applies to a genuine global (not local, not
         captured, not sret Result, not threadvar). }
-      Self.EmitLoadVar(FAE.RecordName + '(%rip)', FAE.FieldInfo.TypeDesc)
+      Self.EmitLoadVar(Self.GlobalSymName(FAE.RecordName) + '(%rip)', FAE.FieldInfo.TypeDesc)
     else
     begin
       { Compute the record base into %rcx, handling local / global / sret-Result
@@ -7872,7 +8008,7 @@ begin
           [NativeMangle(TMethodDecl(AOE.ResolvedFreeRoutine).ResolvedQbeName)]))
       else
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-          [TIdentExpr(AOE.Expr).Name]));
+          [Self.GlobalSymName(TIdentExpr(AOE.Expr).Name)]));
       Exit;
     end;
 
@@ -8558,7 +8694,8 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%r10', [ACall.ObjectName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%r10',
+            [Self.GlobalSymName(ACall.ObjectName)]));
       end;
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
@@ -8632,7 +8769,8 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rax',
+            [Self.GlobalSymName(ACall.ObjectName)]));
       end;
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
@@ -8722,7 +8860,8 @@ begin
           (AArg.ResolvedType.Kind = tyInterface) then
     { Global interface: there is no bare Name symbol — the 16-byte fat
       pointer block starts at the Name_obj label. }
-    Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax', [TIdentExpr(AArg).Name]))
+    Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax',
+      [Self.GlobalSymName(TIdentExpr(AArg).Name)]))
   else if AArg is TIdentExpr then
     Self.EmitLeaqGlobal(TIdentExpr(AArg).Name, '%rax')
   else if AArg is TFieldAccessExpr then
@@ -8987,7 +9126,7 @@ begin
     else if Self.IsLocal(ACall.ObjectName) then
       Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
     else
-      Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+      Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Self.GlobalSymName(ACall.ObjectName)]));
   end
   else
     Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
@@ -9523,12 +9662,12 @@ begin
       if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Self.GlobalSymName(ACall.ObjectName)]));
       Self.Emit(#9'callq _ClassRelease');
       if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq $0, %s(%%rip)', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq $0, %s(%%rip)', [Self.GlobalSymName(ACall.ObjectName)]));
     end;
     Exit;
   end;
@@ -9644,7 +9783,7 @@ begin
       if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%r10', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%r10', [Self.GlobalSymName(ACall.ObjectName)]));
     end
     else if ACall.ObjExpr <> nil then
     begin
@@ -9704,7 +9843,7 @@ begin
       if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Self.GlobalSymName(ACall.ObjectName)]));
     end
     else if ACall.ObjExpr <> nil then
       Self.EmitExprToEax(ACall.ObjExpr)
@@ -10109,7 +10248,7 @@ var
   VarOp: string;
 begin
   if AStmt.VarIsGlobal then
-    VarOp := AStmt.VarName + '(%rip)'
+    VarOp := Self.GlobalSymName(AStmt.VarName) + '(%rip)'
   else
     VarOp := Self.VarOperand(AStmt.VarName);
   if AStmt.ResolvedVarType.IsString() then
@@ -10970,12 +11109,12 @@ begin
         if Self.IsLocal(H.VarName) then
           Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(H.VarName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [H.VarName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Self.GlobalSymName(H.VarName)]));
         Self.Emit(#9'callq _ClassRelease');
         if Self.IsLocal(H.VarName) then
           Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand(H.VarName)]))
         else
-          Self.Emit(Format(#9'movq %%r15, %s(%%rip)', [H.VarName]));
+          Self.Emit(Format(#9'movq %%r15, %s(%%rip)', [Self.GlobalSymName(H.VarName)]));
       end;
       Self.EmitStmtList(H.Body.Stmts);
       Self.Emit(#9'jmp ' + LblEnd);
@@ -11332,7 +11471,7 @@ begin
       if Self.IsLocal(Asgn.Name) then
         Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(Asgn.Name)]))
       else
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [Asgn.Name]));
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rcx', [Self.GlobalSymName(Asgn.Name)]));
       { Store object pointer at offset 8 first — a virtual method reads its
         code pointer from THIS instance's vtable. }
       if FAE.Base <> nil then
@@ -11384,7 +11523,7 @@ begin
             [Self.VarOperand(TIdentExpr(TASTExpr(TFuncCallExpr(Asgn.Expr).Args.Items[0])).Name)]))
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rsi',
-            [TIdentExpr(TASTExpr(TFuncCallExpr(Asgn.Expr).Args.Items[0])).Name]));
+            [Self.GlobalSymName(TIdentExpr(TASTExpr(TFuncCallExpr(Asgn.Expr).Args.Items[0])).Name)]));
       end
       else
         raise ENativeCodeGenError.Create(
@@ -11418,7 +11557,7 @@ begin
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
         Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
-          Asgn.Name + '(%rip)', False);
+          Self.GlobalSymName(Asgn.Name) + '(%rip)', False);
       end;
       Exit;
     end;
@@ -11442,7 +11581,7 @@ begin
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
-          Asgn.Name + '(%rip)', False);
+          Self.GlobalSymName(Asgn.Name) + '(%rip)', False);
       end;
       Exit;
     end;
@@ -11474,7 +11613,7 @@ begin
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
         Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr),
-          Asgn.Name + '(%rip)', False);
+          Self.GlobalSymName(Asgn.Name) + '(%rip)', False);
       end;
       Exit;
     end;
@@ -11576,7 +11715,7 @@ begin
       begin
         Self.AddGlobal(Asgn.Name, Asgn.ResolvedLhsType);
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr),
-          Asgn.Name + '(%rip)', False);
+          Self.GlobalSymName(Asgn.Name) + '(%rip)', False);
       end;
       Exit;
     end;
@@ -11611,7 +11750,7 @@ begin
         Self.EmitInheritedRecordSret(
           TMethodDecl(TInheritedCallExpr(Asgn.Expr).ResolvedMethod),
           TInheritedCallExpr(Asgn.Expr).Args, TInheritedCallExpr(Asgn.Expr).Name,
-          Asgn.Name + '(%rip)', False);
+          Self.GlobalSymName(Asgn.Name) + '(%rip)', False);
       end;
       Exit;
     end;
@@ -11963,7 +12102,7 @@ begin
             [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rdi',
-            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+            [Self.GlobalSymName(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]));
         Self.Emit(#9'callq _StringRelease');
         Self.Emit(#9'popq %rax');
         if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
@@ -11971,7 +12110,7 @@ begin
             [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
         else
           Self.Emit(Format(#9'movq %%rax, %s(%%rip)',
-            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+            [Self.GlobalSymName(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]));
       end;
       Exit;
     end;
@@ -11997,7 +12136,7 @@ begin
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(FDynArgName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [FDynArgName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Self.GlobalSymName(FDynArgName)]));
         { Element size into %edx. }
         Self.Emit(Format(#9'movl $%d, %%edx', [FDynElemSz]));
         Self.Emit(#9'callq _DynArraySetLength');
@@ -12005,7 +12144,7 @@ begin
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(FDynArgName)]))
         else
-          Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [FDynArgName]));
+          Self.Emit(Format(#9'movq %%rax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end
       else
       begin
@@ -12052,7 +12191,7 @@ begin
             [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%rdi',
-            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+            [Self.GlobalSymName(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]));
         Self.Emit(#9'callq _StringRelease');
         Self.Emit(#9'popq %rax');
         if Self.IsLocal(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name) then
@@ -12060,7 +12199,7 @@ begin
             [Self.VarOperand(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]))
         else
           Self.Emit(Format(#9'movq %%rax, %s(%%rip)',
-            [TIdentExpr(TASTExpr(PC.Args.Items[0])).Name]));
+            [Self.GlobalSymName(TIdentExpr(TASTExpr(PC.Args.Items[0])).Name)]));
       end
       else
       begin
@@ -12116,7 +12255,7 @@ begin
           Self.Emit(Format(#9'orq %%rax, %s', [Self.VarOperand(FDynArgName)]));
         end
         else
-          Self.Emit(Format(#9'orq %%rax, %s(%%rip)', [FDynArgName]));
+          Self.Emit(Format(#9'orq %%rax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end
       else
       begin
@@ -12125,7 +12264,7 @@ begin
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'orl %%eax, %s', [Self.VarOperand(FDynArgName)]))
         else
-          Self.Emit(Format(#9'orl %%eax, %s(%%rip)', [FDynArgName]));
+          Self.Emit(Format(#9'orl %%eax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end;
       Exit;
     end;
@@ -12155,7 +12294,7 @@ begin
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'andq %%rax, %s', [Self.VarOperand(FDynArgName)]))
         else
-          Self.Emit(Format(#9'andq %%rax, %s(%%rip)', [FDynArgName]));
+          Self.Emit(Format(#9'andq %%rax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end
       else
       begin
@@ -12165,7 +12304,7 @@ begin
         if Self.IsLocal(FDynArgName) then
           Self.Emit(Format(#9'andl %%eax, %s', [Self.VarOperand(FDynArgName)]))
         else
-          Self.Emit(Format(#9'andl %%eax, %s(%%rip)', [FDynArgName]));
+          Self.Emit(Format(#9'andl %%eax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end;
       Exit;
     end;
@@ -13438,7 +13577,7 @@ begin
             Self.Emit(#9'movq (%rcx), %rcx');
         end
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [Self.GlobalSymName(SSA.ArrayName)]));
         Self.Emit(#9'addq %rcx, %rax');
         Self.Emit(#9'movq %rax, %rbx');
         Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%rbx');
@@ -13490,7 +13629,7 @@ begin
           Self.Emit(#9'movq (%rcx), %rcx');
       end
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [SSA.ArrayName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%rcx', [Self.GlobalSymName(SSA.ArrayName)]));
       Self.Emit(#9'addq %rcx, %rax');
       Self.Emit(#9'movq %rax, %rcx');
       if IsFloatFamily(DAElemType) then
@@ -14581,7 +14720,7 @@ begin
         else
         begin
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-            [ADecl.CapturedVars.Strings[I]]));
+            [Self.GlobalSymName(ADecl.CapturedVars.Strings[I])]));
           Self.Emit(#9'pushq %rax');
         end;
         OALPushed := OALPushed + 8;
@@ -14746,7 +14885,7 @@ begin
             [Self.VarOperand(ADecl.CapturedVars.Strings[I])]))
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
-            [ADecl.CapturedVars.Strings[I]]));
+            [Self.GlobalSymName(ADecl.CapturedVars.Strings[I])]));
         Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [SlotOff]));
         Inc(SlotOff, 8);
       end;
@@ -15900,7 +16039,7 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [ACall.ObjectName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Self.GlobalSymName(ACall.ObjectName)]));
       end;
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
@@ -16027,7 +16166,7 @@ begin
       else if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Self.GlobalSymName(ACall.ObjectName)]));
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
       Self.Emit(#9'movq %rbx, %rax')      { record-call receiver address }
@@ -16118,7 +16257,7 @@ begin
         if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand(ACall.ObjectName)]))
         else
-          Self.Emit(Format(#9'movq %s(%%rip), %%rsi', [ACall.ObjectName]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rsi', [Self.GlobalSymName(ACall.ObjectName)]));
       end;
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
@@ -16172,7 +16311,7 @@ begin
       if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(ACall.ObjectName)]))
       else
-        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [ACall.ObjectName]));
+        Self.Emit(Format(#9'movq %s(%%rip), %%rax', [Self.GlobalSymName(ACall.ObjectName)]));
     end
     else if (ACall.ObjExpr <> nil) and (RecvBufBytes > 0) then
       Self.Emit(#9'movq %rbx, %rax')      { record-call receiver address }
@@ -16820,7 +16959,7 @@ begin
     else if Self.IsLocal(ACall.ObjectName) then
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
     else
-      Self.Emit(Format(#9'movq %s(%%rip), %%r10', [ACall.ObjectName]));
+      Self.Emit(Format(#9'movq %s(%%rip), %%r10', [Self.GlobalSymName(ACall.ObjectName)]));
   end
   else if ACall.ObjExpr <> nil then
   begin
@@ -17683,13 +17822,16 @@ begin
                                   tyDynArray])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
+        { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
+          owning-unit prefix (this loop runs with FCurrentUnitName = the owner). }
+        FModuleVarNames.Add(VD.Names.Strings[J]);
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
         if VD.IsThreadVar then
           Self.MarkThreadVar(VD.Names.Strings[J]);
         if VD.IsWeak then
           Self.MarkWeakGlobal(VD.Names.Strings[J]);
         if VD.InitConst <> nil then
-          FGlobalInits.Add(VD.Names.Strings[J], VD.InitConst);
+          FGlobalInits.Add(Self.GlobalSymName(VD.Names.Strings[J]), VD.InitConst);
       end;
   end;
 
@@ -17836,11 +17978,14 @@ begin
                                   tyDynArray, tyInterface])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
+        { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
+          owning-unit prefix (this loop runs with FCurrentUnitName = the owner). }
+        FModuleVarNames.Add(VD.Names.Strings[J]);
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
         if VD.IsThreadVar then
           Self.MarkThreadVar(VD.Names.Strings[J]);
         if VD.InitConst <> nil then
-          FGlobalInits.Add(VD.Names.Strings[J], VD.InitConst);
+          FGlobalInits.Add(Self.GlobalSymName(VD.Names.Strings[J]), VD.InitConst);
       end;
   end;
   for I := 0 to AUnit.ImplBlock.Decls.Count - 1 do
@@ -17853,11 +17998,14 @@ begin
                                   tyDynArray, tyInterface])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
+        { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
+          owning-unit prefix (this loop runs with FCurrentUnitName = the owner). }
+        FModuleVarNames.Add(VD.Names.Strings[J]);
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
         if VD.IsThreadVar then
           Self.MarkThreadVar(VD.Names.Strings[J]);
         if VD.InitConst <> nil then
-          FGlobalInits.Add(VD.Names.Strings[J], VD.InitConst);
+          FGlobalInits.Add(Self.GlobalSymName(VD.Names.Strings[J]), VD.InitConst);
       end;
   end;
 
