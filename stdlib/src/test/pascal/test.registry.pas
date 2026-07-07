@@ -46,7 +46,8 @@ uses
   WebSocketServer.Tests,
   WebSocketClient.Tests,
   Smtp.Tests,
-  Pop3.Tests;
+  Pop3.Tests,
+  Imap.Tests;
 
 implementation
 
