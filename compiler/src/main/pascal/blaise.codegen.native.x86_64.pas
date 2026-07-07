@@ -1087,6 +1087,42 @@ begin
     Result := '';
 end;
 
+{ One kind code per declared parameter of AMD — third field of every
+  published-method table entry, read by the test runner's [TestCase]
+  typed dispatch.  Mirrors the QBE backend's MethodParamSig:
+    'i' 32-bit-or-smaller ordinal, 'I' Int64/UInt64, 'b' Boolean,
+    's' string, 'd' Double/Single (recorded, not dispatchable),
+    'x' anything else or var/out/open-array.  '' = parameterless. }
+function MethodParamSig(AMD: TMethodDecl): string;
+var
+  I:   Integer;
+  Par: TMethodParam;
+begin
+  Result := '';
+  for I := 0 to AMD.Params.Count - 1 do
+  begin
+    Par := TMethodParam(AMD.Params.Items[I]);
+    if Par.IsVarParam or Par.IsOutParam or Par.IsOpenArray or
+       (Par.ResolvedType = nil) then
+      Result := Result + 'x'
+    else
+      case Par.ResolvedType.Kind of
+        tyInteger, tyUInt32, tySmallInt, tyWord, tyByte, tyEnum:
+          Result := Result + 'i';
+        tyInt64, tyUInt64:
+          Result := Result + 'I';
+        tyBoolean:
+          Result := Result + 'b';
+        tyString:
+          Result := Result + 's';
+        tyDouble, tySingle:
+          Result := Result + 'd';
+      else
+        Result := Result + 'x';
+      end;
+  end;
+end;
+
 function FuncSymbolOf(ACall: TFuncCallExpr): string;
 begin
   Result := FuncSymbolFromDecl(TMethodDecl(ACall.ResolvedDecl));
@@ -2491,19 +2527,27 @@ begin
       the bare class name (what ClassName must return at runtime). }
     Self.EmitClassNameString(CSym, TD.Name);
 
-    { Published-method table: count, then (nameref, codeptr) pairs }
+    { Published-method table: count, then (nameref, codeptr, sigref)
+      triples.  The sig is an immortal string of per-param kind codes
+      (0 = parameterless — see MethodParamSig). }
     PubCount := 0;
     for J := 0 to CD.Methods.Count - 1 do
       if TMethodDecl(CD.Methods.Items[J]).IsPublished then
         Inc(PubCount);
     if PubCount > 0 then
     begin
-      { Emit name strings for published methods. }
+      { Emit name + param-sig strings for published methods.  The blobs
+        must precede the table so its .quad sequence is uninterrupted. }
       for J := 0 to CD.Methods.Count - 1 do
       begin
         MD := TMethodDecl(CD.Methods.Items[J]);
         if MD.IsPublished then
+        begin
           Self.EmitClassNameString(MD.Name, MD.Name);
+          if MethodParamSig(MD) <> '' then
+            Self.EmitClassNameString('__sig_' + TD.Name + '_' + MD.Name,
+              MethodParamSig(MD));
+        end;
       end;
       Self.Emit('.balign 8');
       Self.Emit('.globl methods_' + CSym);
@@ -2515,6 +2559,11 @@ begin
         if not MD.IsPublished then Continue;
         Self.Emit(Format(#9'.quad __cn_%s + 12', [NativeMangle(MD.Name)]));
         Self.Emit(Format(#9'.quad %s', [MethodEmitNameNative(MD, TD.Name, MD.Name)]));
+        if MethodParamSig(MD) <> '' then
+          Self.Emit(Format(#9'.quad __cn_%s + 12',
+            [NativeMangle('__sig_' + TD.Name + '_' + MD.Name)]))
+        else
+          Self.Emit(#9'.quad 0');
       end;
       MethStr := 'methods_' + CSym;
     end
@@ -17553,9 +17602,9 @@ begin
     end;
     for I := AArgs.Count - 1 downto 0 do
       Self.Emit(#9'popq ' + SysVArg64(I + 1));
-    Self.Emit(Format(#9'leaq %s, %%rcx', [APtrOperand]));
-    Self.Emit(#9'movq (%rcx), %r10');
-    Self.Emit(#9'movq 8(%rcx), %rdi');
+    Self.Emit(Format(#9'leaq %s, %%r11', [APtrOperand]));
+    Self.Emit(#9'movq (%r11), %r10');
+    Self.Emit(#9'movq 8(%r11), %rdi');
     Self.Emit(#9'callq *%r10');
     Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, 0, True);
   end

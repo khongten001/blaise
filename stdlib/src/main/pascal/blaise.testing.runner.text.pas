@@ -17,6 +17,7 @@
   CLI filtering (Step 15):
     --suite ClassName              run all tests in ClassName
     --suite ClassName.MethodName   run one specific test method
+    --exclude-category Name        skip suites/methods marked [Category('Name')]
 
   --suite may be passed multiple times, and each value may be a
   comma-delimited list.  These three invocations are equivalent:
@@ -141,7 +142,7 @@ begin
         { The wanted entry lives in this class's own table. }
         Entry := Methods + 8;
         for I := 0 to (AIndex - Seen) - 1 do
-          Entry := Pointer(Entry) + 16;     { skip name + addr pair }
+          Entry := Pointer(Entry) + 24;     { skip (name, addr, sig) triple }
         EntName := Entry^;
         Exit(string(PChar(EntName)));
       end;
@@ -150,6 +151,73 @@ begin
     Slot  := TInfo;
     TInfo := Slot^;
   end;
+end;
+
+{ Return the i'th published method's parameter-kind signature — the third
+  field of its methods-table triple (see MethodParamSig in the codegen:
+  'i'/'I'/'b'/'s'/'d'/'x' per param, '' = parameterless).  Drives the
+  [TestCase] typed dispatch in TTestCase.RunTest. }
+function PublishedMethodSig(ATestClass: TTestCaseClass;
+  AIndex: Integer): string;
+var
+  TInfo:   Pointer;
+  Slot:    ^Pointer;
+  Methods: Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  EntSig:  Pointer;
+  Local:   Integer;
+  Seen:    Integer;
+  I:       Integer;
+begin
+  Result := '';
+  Seen   := 0;
+  TInfo  := Pointer(ATestClass);
+  while TInfo <> nil do
+  begin
+    Slot    := TInfo + 24;
+    Methods := Slot^;
+    if Methods <> nil then
+    begin
+      Count := Methods;
+      Local := Integer(Count^);
+      if AIndex < Seen + Local then
+      begin
+        Entry := Methods + 8;
+        for I := 0 to (AIndex - Seen) - 1 do
+          Entry := Pointer(Entry) + 24;
+        Entry  := Pointer(Entry) + 16;      { third field of the triple }
+        EntSig := Entry^;
+        if EntSig = nil then Exit('');
+        Exit(string(PChar(EntSig)));
+      end;
+      Seen := Seen + Local;
+    end;
+    Slot  := TInfo;
+    TInfo := Slot^;
+  end;
+end;
+
+{ True when the method (or its class) carries [Category(ACat)].  Both the
+  method-level attributes and a class-level category are consulted. }
+function MethodInCategory(ATestClass: TTestCaseClass;
+  const AMethName, ACat: string): Boolean;
+var
+  I, N: Integer;
+  A:    TObject;
+begin
+  Result := False;
+  N := MethodAttributeCount(ATestClass, AMethName);
+  for I := 0 to N - 1 do
+  begin
+    A := GetMethodAttributeAt(ATestClass, AMethName, I);
+    if (A is CategoryAttribute) and
+       SameText(CategoryAttribute(A).Name, ACat) then
+      Exit(True);
+  end;
+  A := GetClassAttribute(ATestClass, CategoryAttribute);
+  if (A <> nil) and SameText(CategoryAttribute(A).Name, ACat) then
+    Result := True;
 end;
 
 { Return the class name of a TTestCaseClass by reading typeinfo[2]
@@ -277,17 +345,21 @@ begin
   Result := False;
 end;
 
-{ Parse --suite and --verbose from the process command line.
-  AFilters receives one entry per filter; --suite may appear multiple
+{ Parse --suite, --verbose and --exclude-category from the process command
+  line.  AFilters receives one entry per filter; --suite may appear multiple
   times and each --suite value may be comma-delimited.  Empty list
   means "run everything".  AVerbose is True when --verbose is present.
+  AExclCategory is the value of --exclude-category ('' = no exclusion) —
+  suites/methods carrying a matching [Category('...')] are skipped.
   AFilters must be created by the caller and is owned by the caller. }
-procedure ParseArgs(AFilters: TList<String>; out AVerbose: Boolean);
+procedure ParseArgs(AFilters: TList<String>; out AVerbose: Boolean;
+  out AExclCategory: string);
 var
   I:   Integer;
   Arg: string;
 begin
-  AVerbose := False;
+  AVerbose      := False;
+  AExclCategory := '';
   I := 1;
   while I <= ParamCount() do
   begin
@@ -298,6 +370,11 @@ begin
     begin
       I := I + 1;
       AppendSuiteFilter(AFilters, ParamStr(I));
+    end
+    else if (Arg = '--exclude-category') and (I < ParamCount()) then
+    begin
+      I := I + 1;
+      AExclCategory := ParamStr(I);
     end;
     I := I + 1;
   end;
@@ -378,7 +455,8 @@ end;
   parallel while non-threaded suites run in-process.  After in-process
   tests finish, remaining subprocess output is collected.
   When --suite is given, the named suite runs directly (no subprocess). }
-function RunFilteredTests(AFilters: TList<String>; AVerbose: Boolean): TTestResult;
+function RunFilteredTests(AFilters: TList<String>; AVerbose: Boolean;
+  const AExclCategory: string): TTestResult;
 var
   ClsIdx:    Integer;
   Cls:       TTestCaseClass;
@@ -398,6 +476,13 @@ var
   HasFilter: Boolean;
   ExitCode:  Integer;
   HasSummary: Boolean;
+  Attr:      TObject;
+  RepCount:  Integer;
+  Rep:       Integer;
+  AttrIdx:   Integer;
+  AttrCnt:   Integer;
+  CaseTotal: Integer;
+  Sig:       string;
 begin
   Result := TTestResult.Create();
   Result.Verbose := AVerbose;
@@ -409,6 +494,13 @@ begin
     CName := TestClassName(Cls);
     if not FiltersTouchSuite(AFilters, CName) then
       Continue;
+    { --exclude-category at class level: skip the whole suite. }
+    if (AExclCategory <> '') then
+    begin
+      Attr := GetClassAttribute(Cls, CategoryAttribute);
+      if (Attr <> nil) and SameText(CategoryAttribute(Attr).Name, AExclCategory) then
+        Continue;
+    end;
     if not HasFilter and IsThreadedClass(Cls) and (ProcCount < 64) then
     begin
       Proc := TProcess.Create(nil);
@@ -416,6 +508,11 @@ begin
       Proc.Parameters.Add('--suite');
       Proc.Parameters.Add(CName);
       Proc.Parameters.Add('--verbose');
+      if AExclCategory <> '' then
+      begin
+        Proc.Parameters.Add('--exclude-category');
+        Proc.Parameters.Add(AExclCategory);
+      end;
       Proc.Execute();
       Procs[ProcCount]     := Proc;
       ProcNames[ProcCount] := CName;
@@ -430,9 +527,67 @@ begin
         if MethName = '' then Continue;
         if not MatchesFilters(AFilters, CName, MethName) then
           Continue;
-        Inst := Cls.Create(MethName);
-        Inst.SetClassName(CName);
-        Inst.Run(Result);
+        { --exclude-category at method level. }
+        if (AExclCategory <> '') and
+           MethodInCategory(Cls, MethName, AExclCategory) then
+          Continue;
+        { [Ignore('reason')] — record as ignored without running. }
+        Attr := GetMethodAttribute(Cls, MethName, IgnoreAttribute);
+        if Attr <> nil then
+        begin
+          Result.StartTest(CName, MethName);
+          Result.AddIgnored(MethName, IgnoreAttribute(Attr).Reason);
+          Result.EndTest('IGNORED');
+          Continue;
+        end;
+        { [Retry(N)] runs every case N times (flake hunting). }
+        RepCount := 1;
+        Attr := GetMethodAttribute(Cls, MethName, RetryAttribute);
+        if Attr <> nil then
+          RepCount := RetryAttribute(Attr).Count;
+        if RepCount < 1 then RepCount := 1;
+        Sig := PublishedMethodSig(Cls, MethIdx);
+        { [TestCase('name', 'args')] — one fixture instance and one result
+          entry per case, reported as 'Method[name]'.  The method's typed
+          parameters are supplied by TTestCase.RunTest's sig-driven
+          dispatch (see MethodParamSig in the codegen). }
+        CaseTotal := 0;
+        AttrCnt := MethodAttributeCount(Cls, MethName);
+        for AttrIdx := 0 to AttrCnt - 1 do
+        begin
+          Attr := GetMethodAttributeAt(Cls, MethName, AttrIdx);
+          if not (Attr is TestCaseAttribute) then Continue;
+          CaseTotal := CaseTotal + 1;
+          for Rep := 1 to RepCount do
+          begin
+            Inst := Cls.Create(MethName);
+            Inst.SetClassName(CName);
+            Inst.SetCase(TestCaseAttribute(Attr).Name,
+                         TestCaseAttribute(Attr).Args, Sig);
+            Inst.Run(Result);
+          end;
+        end;
+        if CaseTotal = 0 then
+        begin
+          { A parameterised method without [TestCase] data cannot be
+            dispatched — surface it loudly instead of calling it with
+            garbage registers. }
+          if Sig <> '' then
+          begin
+            Result.StartTest(CName, MethName);
+            Result.AddError(MethName,
+              'published method has parameters — supply them with ' +
+              '[TestCase(''name'', ''args'')] attributes');
+            Result.EndTest('ERROR');
+            Continue;
+          end;
+          for Rep := 1 to RepCount do
+          begin
+            Inst := Cls.Create(MethName);
+            Inst.SetClassName(CName);
+            Inst.Run(Result);
+          end;
+        end;
       end;
     end;
   end;
@@ -475,7 +630,7 @@ end;
 
 function RunRegisteredTests: TTestResult;
 begin
-  Result := RunFilteredTests(nil, False);
+  Result := RunFilteredTests(nil, False, '');
 end;
 
 { -----------------------------------------------------------------------
@@ -520,13 +675,14 @@ end;
 
 function RunAll: Integer;
 var
-  R:       TTestResult;
-  Filters: TList<String>;
-  Verbose: Boolean;
+  R:        TTestResult;
+  Filters:  TList<String>;
+  Verbose:  Boolean;
+  ExclCat:  string;
 begin
   Filters := TList<String>.Create();
-  ParseArgs(Filters, Verbose);
-  R := RunFilteredTests(Filters, Verbose);
+  ParseArgs(Filters, Verbose, ExclCat);
+  R := RunFilteredTests(Filters, Verbose, ExclCat);
   PrintSummary(R);
   if (R.NumberOfFailures = 0) and (R.NumberOfErrors = 0) then
     Result := 0

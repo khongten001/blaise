@@ -43,6 +43,17 @@ type
     TRunMethod(M)(). }
   TRunMethod = procedure of object;
 
+  { TCaseMethod — the [TestCase] typed-dispatch trampoline.  On x86-64
+    SysV every dispatchable parameter kind (Integer-family ordinals,
+    Int64, Boolean, string-as-data-pointer) travels in an integer-class
+    register, and passing MORE register arguments than the callee reads is
+    harmless — so one five-slot cast covers every supported signature.
+    RunTest converts each [TestCase] token per the method's param-sig RTTI,
+    places it in its slot, and calls through this type.  Consequences:
+    at most 5 parameters, and no Double/Single params (those travel in
+    xmm registers, which this trick cannot fill). }
+  TCaseMethod = procedure(A1, A2, A3, A4, A5: PtrUInt) of object;
+
   { TTestResult is declared first so TTest.Run can name it without the
     forward-class-declaration form that Blaise does not yet support. }
   TTestResult = class(TObject)
@@ -148,17 +159,27 @@ type
   private
     FName:      string;
     FClassName: string;
+    FCaseName:  string;   { [TestCase] label; '' = plain run }
+    FCaseArgs:  string;   { [TestCase] raw comma-separated argument list }
+    FCaseSig:   string;   { published-method param-sig ('' = parameterless);
+                            drives RunTest's typed dispatch }
   protected
     procedure SetUp;    virtual;
     procedure TearDown; virtual;
   public
     constructor Create(AName: string);
     procedure   SetClassName(AClassName: string);
+    { Attach one [TestCase]'s data before Run: the case label, its raw
+      argument list, and the method's param-kind signature. }
+    procedure   SetCase(ACaseName, ACaseArgs, ACaseSig: string);
+    { 'TestAdd[simple]' for a parameterised run, else the method name. }
+    function    DisplayName: string;
     procedure   RunTest;            virtual;
     procedure   Run(AResult: TTestResult); override;
     function    CountTestCases: Integer; override;
     property    TestName:  string read FName;
     property    ClassName: string read FClassName;
+    property    CaseName:  string read FCaseName;
   end;
 
   { TTestCaseClass — class-of reference used by RegisterTest. }
@@ -168,6 +189,60 @@ type
     the test runner to execute that suite in a dedicated subprocess, enabling
     parallel execution of independent test suites. }
   ThreadedAttribute = class(TCustomAttribute)
+  end;
+
+  { TestCaseAttribute — one parameterised run of a published test method:
+
+        [TestCase('simple',   '2,2,4')]
+        [TestCase('negative', '-1,1,0')]
+        procedure TestAdd(A, B, Expected: Integer);
+
+    Args is a comma-separated value list converted to the method's declared
+    parameter types by the runner (via the published-method param-sig RTTI)
+    and passed as real arguments.  Supported parameter types: Integer-family
+    ordinals, Int64, Boolean, string (no commas inside string values).
+    Each case runs as its own test, reported as 'TestAdd[simple]'.  On a
+    parameterless method the attribute is a pure labelled run. }
+  TestCaseAttribute = class(TCustomAttribute)
+  private
+    FName: string;
+    FArgs: string;
+  public
+    constructor Create(AName: string); overload;
+    constructor Create(AName, AArgs: string); overload;
+    property Name: string read FName;
+    property Args: string read FArgs;
+  end;
+
+  { IgnoreAttribute — [Ignore('reason')] skips the method entirely; the
+    runner records it as ignored with the reason, without executing it. }
+  IgnoreAttribute = class(TCustomAttribute)
+  private
+    FReason: string;
+  public
+    constructor Create(AReason: string);
+    property Reason: string read FReason;
+  end;
+
+  { CategoryAttribute — [Category('slow')] on a method or a suite class.
+    The runner's --exclude-category flag skips matching tests. }
+  CategoryAttribute = class(TCustomAttribute)
+  private
+    FName: string;
+  public
+    constructor Create(AName: string);
+    property Name: string read FName;
+  end;
+
+  { RetryAttribute — [Retry(3)] runs the method (or each of its
+    [TestCase]s) N times; useful for flushing out flaky tests.
+    (Named Retry rather than Repeat: 'repeat' is a reserved word.) }
+  RetryAttribute = class(TCustomAttribute)
+  private
+    FCount: Integer;
+  public
+    constructor Create(ACount: Integer);
+    property Count: Integer read FCount;
   end;
 
   { EAssertionFailed — raised by Fail / Assert* on failure.  Descends
@@ -464,6 +539,85 @@ begin
 end;
 
 { -----------------------------------------------------------------------
+  Attribute classes
+  ----------------------------------------------------------------------- }
+
+constructor TestCaseAttribute.Create(AName: string);
+begin
+  inherited Create();
+  Self.FName := AName;
+  Self.FArgs := '';
+end;
+
+constructor TestCaseAttribute.Create(AName, AArgs: string);
+begin
+  inherited Create();
+  Self.FName := AName;
+  Self.FArgs := AArgs;
+end;
+
+constructor IgnoreAttribute.Create(AReason: string);
+begin
+  inherited Create();
+  Self.FReason := AReason;
+end;
+
+constructor CategoryAttribute.Create(AName: string);
+begin
+  inherited Create();
+  Self.FName := AName;
+end;
+
+constructor RetryAttribute.Create(ACount: Integer);
+begin
+  inherited Create();
+  Self.FCount := ACount;
+end;
+
+{ -----------------------------------------------------------------------
+  [TestCase] argument-list helpers — plain comma split with ASCII-space
+  trimming.  No quoting: a string argument must not contain a comma.
+  ----------------------------------------------------------------------- }
+
+function CaseArgCount(const AArgs: string): Integer;
+var
+  I: Integer;
+begin
+  if Length(AArgs) = 0 then Exit(0);
+  Result := 1;
+  for I := 0 to Length(AArgs) - 1 do
+    if AArgs[I] = ',' then
+      Result := Result + 1;
+end;
+
+function CaseArgAt(const AArgs: string; AIndex: Integer): string;
+var
+  I, Start, Seen: Integer;
+  Lo, Hi:         Integer;
+begin
+  Result := '';
+  Start  := 0;
+  Seen   := 0;
+  for I := 0 to Length(AArgs) do
+  begin
+    if (I = Length(AArgs)) or (AArgs[I] = ',') then
+    begin
+      if Seen = AIndex then
+      begin
+        { Trim leading/trailing spaces from AArgs[Start..I-1]. }
+        Lo := Start;
+        Hi := I - 1;
+        while (Lo <= Hi) and (AArgs[Lo] = ' ') do Lo := Lo + 1;
+        while (Hi >= Lo) and (AArgs[Hi] = ' ') do Hi := Hi - 1;
+        Exit(Copy(AArgs, Lo, Hi - Lo + 1));
+      end;
+      Seen  := Seen + 1;
+      Start := I + 1;
+    end;
+  end;
+end;
+
+{ -----------------------------------------------------------------------
   TTestCase
   ----------------------------------------------------------------------- }
 
@@ -472,11 +626,29 @@ begin
   inherited Create();
   Self.FName      := AName;
   Self.FClassName := '';
+  Self.FCaseName  := '';
+  Self.FCaseArgs  := '';
+  Self.FCaseSig   := '';
 end;
 
 procedure TTestCase.SetClassName(AClassName: string);
 begin
   Self.FClassName := AClassName;
+end;
+
+procedure TTestCase.SetCase(ACaseName, ACaseArgs, ACaseSig: string);
+begin
+  Self.FCaseName := ACaseName;
+  Self.FCaseArgs := ACaseArgs;
+  Self.FCaseSig  := ACaseSig;
+end;
+
+function TTestCase.DisplayName: string;
+begin
+  if Self.FCaseName <> '' then
+    Result := Self.FName + '[' + Self.FCaseName + ']'
+  else
+    Result := Self.FName;
 end;
 
 procedure TTestCase.SetUp;
@@ -493,27 +665,78 @@ begin
 end;
 
 { Hot path: dispatch via published-method address.  This is the line
-  that motivated Steps 11a/b/c. }
+  that motivated Steps 11a/b/c.
+
+  Parameterised dispatch ([TestCase]): when FCaseSig is non-empty the
+  method declares parameters; each comma-separated token of FCaseArgs is
+  converted per its sig code and placed in an integer-register slot, then
+  the method is invoked through the five-slot TCaseMethod trampoline (see
+  its declaration for the ABI argument).  String tokens are kept alive in
+  Toks[] across the call — the slot holds only the data pointer. }
 procedure TTestCase.RunTest;
 var
-  M:    TMethod;
-  Code: Pointer;
-  Run:  TRunMethod;
+  M:       TMethod;
+  Code:    Pointer;
+  Run:     TRunMethod;
+  CaseRun: TCaseMethod;
+  Slots:   array[0..4] of PtrUInt;
+  Toks:    array[0..4] of string;
+  N, I:    Integer;
 begin
   Code := MethodAddress(Self, Self.FName);
   if Code = nil then
     Self.Fail('Method ' + Self.FName + ' not found in published section');
   M.Code := Code;
   M.Data := Self;
-  Run    := TRunMethod(M);
-  Run();
+  if Self.FCaseSig = '' then
+  begin
+    Run := TRunMethod(M);
+    Run();
+    Exit;
+  end;
+  N := Length(Self.FCaseSig);
+  if N > 5 then
+    Self.Fail('[TestCase] dispatch supports at most 5 parameters, method ''' +
+      Self.FName + ''' declares ' + IntToStr(N));
+  if CaseArgCount(Self.FCaseArgs) <> N then
+    Self.Fail('[TestCase(''' + Self.FCaseName + ''')] supplies ' +
+      IntToStr(CaseArgCount(Self.FCaseArgs)) + ' argument(s) but method ''' +
+      Self.FName + ''' declares ' + IntToStr(N) + ' parameter(s)');
+  for I := 0 to 4 do
+    Slots[I] := 0;
+  for I := 0 to N - 1 do
+  begin
+    Toks[I] := CaseArgAt(Self.FCaseArgs, I);
+    if Self.FCaseSig[I] = 'i' then
+      Slots[I] := PtrUInt(StrToInt(Toks[I]))
+    else if Self.FCaseSig[I] = 'I' then
+      Slots[I] := PtrUInt(StrToInt64(Toks[I]))
+    else if Self.FCaseSig[I] = 'b' then
+    begin
+      if SameText(Toks[I], 'True') or (Toks[I] = '1') then
+        Slots[I] := 1
+      else
+        Slots[I] := 0;
+    end
+    else if Self.FCaseSig[I] = 's' then
+      Slots[I] := PtrUInt(PChar(Toks[I]))
+    else
+      Self.Fail('[TestCase] cannot dispatch parameter ' + IntToStr(I) +
+        ' of method ''' + Self.FName + ''' (kind ''' +
+        Copy(Self.FCaseSig, I, 1) +
+        '''): only Integer-family, Int64, Boolean and string are supported');
+  end;
+  CaseRun := TCaseMethod(M);
+  CaseRun(Slots[0], Slots[1], Slots[2], Slots[3], Slots[4]);
 end;
 
 procedure TTestCase.Run(AResult: TTestResult);
 var
   Outcome: string;
 begin
-  AResult.StartTest(Self.FClassName, Self.FName);
+  { DisplayName carries the [TestCase] label ('TestAdd[simple]') so each
+    parameterised case reports as its own test. }
+  AResult.StartTest(Self.FClassName, Self.DisplayName());
   Outcome := 'OK';
   try
     Self.SetUp();
@@ -524,22 +747,22 @@ begin
         on E: EAssertionFailed do
         begin
           Outcome := 'FAIL';
-          AResult.AddFailure(Self.FName, E.ToString());
+          AResult.AddFailure(Self.DisplayName(), E.ToString());
         end;
         on E: EIgnoredTest do
         begin
           Outcome := 'IGNORED';
-          AResult.AddIgnored(Self.FName, E.FMessage);
+          AResult.AddIgnored(Self.DisplayName(), E.FMessage);
         end;
         on E: Exception do
         begin
           Outcome := 'ERROR';
-          AResult.AddError(Self.FName, E.ClassName + ': ' + E.Message);
+          AResult.AddError(Self.DisplayName(), E.ClassName + ': ' + E.Message);
         end;
         on E: TObject do
         begin
           Outcome := 'ERROR';
-          AResult.AddError(Self.FName, 'Unhandled exception: ' + E.ClassName);
+          AResult.AddError(Self.DisplayName(), 'Unhandled exception: ' + E.ClassName);
         end;
       end;
     finally

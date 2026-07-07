@@ -183,6 +183,12 @@ type
       Used by the method-attrs table, which reuses the name blobs the
       published-method table has already emitted. }
     function  MethodNameRefExpr(const AClassName, AMethodName: string): string;
+    { Emit the '$__ms_<Class>_<Method>' immortal string blob holding a
+      published method's parameter-kind signature (see MethodParamSig) and
+      return its data expression, or '0' when the method is parameterless.
+      Third field of each published-method table entry — read by the test
+      runner's [TestCase] typed dispatch. }
+    function  EmitMethodSigRef(const AClassName: string; AMD: TMethodDecl): string;
     { QBE symbol (without '$') of an attribute use's synthesised factory
       thunk: the unit-mangled ResolvedQbeName when set, else the plain
       source name (program scope). }
@@ -997,6 +1003,62 @@ function TCodeGenQBE.MethodNameRefExpr(const AClassName, AMethodName: string): s
 begin
   Result := '$__mn_' + ClassUnitPrefix(AClassName) + QBEMangle(AClassName)
           + '_' + QBEMangle(AMethodName) + ' + 12';
+end;
+
+{ One kind code per declared parameter of AMD:
+    'i' 32-bit-or-smaller ordinal (Integer/Byte/SmallInt/Word/UInt32/enum/…)
+    'I' Int64 / UInt64
+    'b' Boolean
+    's' string (passed as its data pointer)
+    'd' Double / Single       (recorded; NOT dispatchable by the runner)
+    'x' anything else, or a var/out/open-array parameter (not dispatchable)
+  Empty string = parameterless.  The runner's [TestCase] trampoline places
+  'i'/'I'/'b'/'s' values in integer-register slots; 'd'/'x' make it fail
+  the test with a clear message. }
+function MethodParamSig(AMD: TMethodDecl): string;
+var
+  I:   Integer;
+  Par: TMethodParam;
+begin
+  Result := '';
+  for I := 0 to AMD.Params.Count - 1 do
+  begin
+    Par := TMethodParam(AMD.Params.Items[I]);
+    if Par.IsVarParam or Par.IsOutParam or Par.IsOpenArray or
+       (Par.ResolvedType = nil) then
+      Result := Result + 'x'
+    else
+      case Par.ResolvedType.Kind of
+        tyInteger, tyUInt32, tySmallInt, tyWord, tyByte, tyEnum:
+          Result := Result + 'i';
+        tyInt64, tyUInt64:
+          Result := Result + 'I';
+        tyBoolean:
+          Result := Result + 'b';
+        tyString:
+          Result := Result + 's';
+        tyDouble, tySingle:
+          Result := Result + 'd';
+      else
+        Result := Result + 'x';
+      end;
+  end;
+end;
+
+function TCodeGenQBE.EmitMethodSigRef(const AClassName: string;
+  AMD: TMethodDecl): string;
+var
+  Sig: string;
+  Sym: string;
+begin
+  Sig := MethodParamSig(AMD);
+  if Sig = '' then
+    Exit('0');
+  Sym := ClassUnitPrefix(AClassName) + QBEMangle(AClassName)
+       + '_' + QBEMangle(AMD.Name);
+  EmitLine(Format('%sdata $__ms_%s = { w -1, w %d, w %d, b "%s", b 0 }',
+    [ExportPrefix(), Sym, Length(Sig), Length(Sig), Sig]));
+  Result := '$__ms_' + Sym + ' + 12';
 end;
 
 function TCodeGenQBE.AttrThunkSym(AUse: TAttributeUse): string;
@@ -8449,7 +8511,10 @@ procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
     Slot 1 (offset  8): impllist pointer (0 = no interfaces)
     Slot 2 (offset 16): pointer to class name string literal
     Slot 3 (offset 24): pointer to published-method table (0 = none)
-                        Table holds count followed by (name, code) pairs.
+                        Table holds count followed by (name, code,
+                        param-sig) triples; param-sig is an immortal
+                        string of per-param kind codes (0 =
+                        parameterless — see MethodParamSig).
                         TObject.MethodAddress walks vtable[0] -> typeinfo
                         -> slot 3, then climbs the parent chain.
     Slot 4 (offset 32): total instance size in bytes (vptr + fields)
@@ -8533,7 +8598,8 @@ begin
       ImplStr := '0';
 
     { Emit the published-method table if any methods are flagged.
-      Each entry: l name-string-data-ptr, l method-code-ptr. }
+      Each entry: l name-string-data-ptr, l method-code-ptr,
+      l param-sig-string-ptr (0 = parameterless — see MethodParamSig). }
     PubCount := 0;
     for J := 0 to CD.Methods.Count - 1 do
       if TMethodDecl(CD.Methods.Items[J]).IsPublished then
@@ -8547,7 +8613,8 @@ begin
         if not MD.IsPublished then Continue;
         MethLine := MethLine +
                     ', l ' + EmitMethodNameRef(TD.Name, MD.Name) +
-                    ', l $' + MethodEmitName(MD, TD.Name, MD.Name);
+                    ', l $' + MethodEmitName(MD, TD.Name, MD.Name) +
+                    ', l ' + EmitMethodSigRef(TD.Name, MD);
       end;
       MethLine := MethLine + ' }';
       EmitLine(MethLine);
@@ -15242,7 +15309,8 @@ begin
               if not MDecl.IsPublished then Continue;
               MethLine := MethLine +
                           ', l ' + EmitMethodNameRef(TD.Name, MDecl.Name) +
-                          ', l $' + MethodEmitName(MDecl, TD.Name, MDecl.Name);
+                          ', l $' + MethodEmitName(MDecl, TD.Name, MDecl.Name) +
+                          ', l ' + EmitMethodSigRef(TD.Name, MDecl);
             end;
             MethLine := MethLine + ' }';
             EmitLine(MethLine);

@@ -142,6 +142,7 @@ uses
   cp.test.publishedrtti,
   cp.test.attributes,
   cp.test.anonmethods,
+  cp.test.testingfw,
   cp.test.proctypes_ofobject,
   cp.test.textblock,
   cp.test.tokenkindname,

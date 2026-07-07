@@ -670,7 +670,8 @@ end;
     vtable[0]    = typeinfo
     typeinfo[3]  = published-methods table (or 0)
     methods[0]   = count (Int64)
-    methods[1+]  = pairs of (name-string-data-ptr, code-ptr)
+    methods[1+]  = triples of (name-string-data-ptr, code-ptr,
+                   param-sig-string-data-ptr or 0)
   Returns nil when no match is found.  Equality on names uses
   _StringEquals so the caller passes a Blaise string. }
 function _MethodAddress(Self, Name: Pointer): Pointer;
@@ -705,7 +706,7 @@ begin
         EntName := Entry^;
         Entry   := Pointer(Entry) + 8;
         EntAddr := Entry^;
-        Entry   := Pointer(Entry) + 8;
+        Entry   := Pointer(Entry) + 16;  { skip code ptr + param-sig ptr }
         if _StringEquals(EntName, Name) <> 0 then
         begin
           Exit(EntAddr);
