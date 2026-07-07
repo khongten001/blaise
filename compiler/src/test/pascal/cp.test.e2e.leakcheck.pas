@@ -50,10 +50,10 @@ type
       leak on QBE.  Correct output (42) is asserted on BOTH backends. }
     procedure TestDebug_CallResultClassFieldRead_NoUseAfterFree;
     { A deep chain MakeIt().A.B.N reads a scalar off a base that is itself two
-      field-reads off an owned transient.  EmitInstancePtr must defer each
-      intermediate owned transient's release to statement end so none leak,
-      while the value still survives (no UAF).  QBE half of BUG-003 (ii). }
-    procedure TestDebug_DeepChainFieldRead_NoLeak_Qbe;
+      field-reads off an owned transient.  Each intermediate owned transient's
+      release must be deferred to statement end so none leak, while the value
+      still survives (no UAF).  Both backends (BUG-003). }
+    procedure TestDebug_DeepChainFieldRead_NoLeak;
     { Multiple same-named typed handlers share one slot — no over-release. }
     procedure TestDebug_MultiHandlerVar_NoOverRelease;
     { for-in over a TList: GetEnumerator's +1 result must be transferred
@@ -763,12 +763,12 @@ begin
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertTrue('field value survives base release, prints 42 (native)',
     Pos('42' + LE, Output) >= 0);
-  { NOTE: native still AddRef-pins this field value and leaks +1 (safe; it has
-    no statement-scoped deferred-release list yet — see bugs.txt task #8b), so
-    the native leak-report is deliberately NOT asserted here. }
+  { Native now defers the owned base release to statement end (BUG-003 native
+    half), so the field value's +1 no longer leaks. }
+  AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
 end;
 
-procedure TE2ELeakCheckTests.TestDebug_DeepChainFieldRead_NoLeak_Qbe;
+procedure TE2ELeakCheckTests.TestDebug_DeepChainFieldRead_NoLeak;
 var
   Output: string;
   ExitCode: Integer;
@@ -782,8 +782,14 @@ begin
   AssertTrue('deep-chain value survives, prints 7 (qbe)',
     Pos('7' + LE, Output) >= 0);
   AssertTrue('no leak report (qbe)', Pos('leak', Output) < 0);
-  { NOTE: native still lacks a statement-scoped deferred-release list, so its
-    deep-chain leak is asserted separately once the native half of BUG-003 lands. }
+  { Native now has a statement-scoped deferred-release list too, so the deep
+    chain's intermediate owned transients are released (BUG-003 native half). }
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcDeepChainFieldRead, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertTrue('deep-chain value survives, prints 7 (native)',
+    Pos('7' + LE, Output) >= 0);
+  AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
 end;
 
 procedure TE2ELeakCheckTests.TestDebug_MultiHandlerVar_NoOverRelease;
