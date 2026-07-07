@@ -63,6 +63,12 @@ type
       bytes arrived).  Buffers over-read bytes for the next call. }
     function ReadLine(out ALine: string): Boolean;
 
+    { Push AData back to the front of the read buffer so the next Read/ReadFull/
+      ReadLine sees it first.  Used by higher layers (e.g. Net.Http.Client) that
+      over-read past a framing boundary and must return the surplus bytes to the
+      stream. }
+    procedure Unread(const AData: string);
+
     { Close the underlying fd (idempotent). }
     procedure Close;
 
@@ -282,6 +288,12 @@ begin
     end;
     FPending := FPending + Chunk;
   end;
+end;
+
+procedure TTcpConn.Unread(const AData: string);
+begin
+  if AData <> '' then
+    FPending := AData + FPending;
 end;
 
 procedure TTcpConn.Close;

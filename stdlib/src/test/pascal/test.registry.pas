@@ -41,7 +41,8 @@ uses
   TaskGroup.Tests,
   AsyncStress.Tests,
   Pool.Tests,
-  Uri.Tests;
+  Uri.Tests,
+  HttpClient.Tests;
 
 implementation
 
