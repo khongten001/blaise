@@ -49,6 +49,7 @@ type
     procedure   Put(AIndex: Integer; AObject: Pointer);
     function    IndexOf(AObject: Pointer): Integer;
     procedure   Delete(AIndex: Integer);
+    function    Remove(AObject: Pointer): Integer;
     function    Extract(AObject: Pointer): Pointer;
     procedure   Clear;
     function    GetEnumerator: TObjectListEnumerator;
@@ -166,6 +167,16 @@ begin
     I    := I + 1
   end;
   Self.FCount := Self.FCount - 1
+end;
+
+{ Find AObject and delete it, returning the index it was found at (or -1 if it
+  was not present).  Delete releases the list's reference, so when the list owns
+  its objects the removed object is freed; matches TFPObjectList.Remove. }
+function TObjectList.Remove(AObject: Pointer): Integer;
+begin
+  Result := Self.IndexOf(AObject);
+  if Result >= 0 then
+    Self.Delete(Result)
 end;
 
 procedure TObjectList.Clear;
