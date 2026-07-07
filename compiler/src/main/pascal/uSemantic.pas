@@ -75,6 +75,8 @@ type
                                            analysis; drained in module scope by
                                            DrainPendingAnonDecls after the
                                            enclosing bodies complete }
+    FEnvTypeCount:        Integer;       { per-compilation counter for
+                                            synthetic '__env_<n>' records }
     FAnonMethodCount:     Integer;       { per-compilation counter for
                                            '__closure_<n>' thunk names }
     FGenericMethodTemplates: TStringList; { 'OwnerType.Method' → TMethodDecl template (not owned) — generic methods with method-level <T> }
@@ -378,6 +380,7 @@ type
     function  AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
+    procedure PromoteAnonCaptures(AThunk: TMethodDecl);
     procedure DrainPendingAnonDecls(ABlock: TBlock);
     procedure CoerceRoutineToClosure(AAssign: TAssignment);
     procedure ResolveProceduralTypeDef(ATD: TTypeDecl);
@@ -787,6 +790,7 @@ begin
   FPendingGenericIntfInstances   := TObjectList.Create(False);
   FPendingAnonDecls     := TObjectList.Create(False);
   FAnonMethodCount      := 0;
+  FEnvTypeCount         := 0;
   FLoopDepth            := 0;
 end;
 
@@ -7365,6 +7369,20 @@ begin
       end;
     end;
 
+    { Anonymous-method thunk (Phase 2): the captured enclosing names live in
+      the heap env record reached through the hidden '__env' parameter.
+      Define each as an ordinary local symbol typed from its env field so the
+      module-scope body analysis resolves it; codegen redirects the accesses
+      through __env by name (TMethodDecl.EnvCaptured). }
+    if ADecl.IsAnonThunk and (ADecl.EnvCaptured <> nil) then
+      for I := 0 to ADecl.EnvCaptured.Count - 1 do
+      begin
+        Sym := TSymbol.Create(ADecl.EnvCaptured.Strings[I], skVariable,
+          TRecordTypeDesc(ADecl.EnvType).FindField(
+            ADecl.EnvCaptured.Strings[I]).TypeDesc);
+        FTable.Define(Sym);
+      end;
+
     if (not ADecl.IsExternal) and (ADecl.Body <> nil) then
     begin
       AnalyseBlock(ADecl.Body);
@@ -7526,6 +7544,7 @@ begin
         end
         else if CurStmt is TForStmt then
         begin
+          MaybeCaptureName(ADecl, OuterVars, TForStmt(CurStmt).VarName);
           TodoExprs.Add(TForStmt(CurStmt).StartExpr);
           TodoExprs.Add(TForStmt(CurStmt).EndExpr);
           TodoStmts.Add(TForStmt(CurStmt).Body);
@@ -7534,6 +7553,43 @@ begin
         begin
           for J := 0 to TCompoundStmt(CurStmt).Stmts.Count - 1 do
             TodoStmts.Add(TCompoundStmt(CurStmt).Stmts.Items[J]);
+        end
+        else if CurStmt is TTryFinallyStmt then
+        begin
+          TodoStmts.Add(TTryFinallyStmt(CurStmt).TryBody);
+          TodoStmts.Add(TTryFinallyStmt(CurStmt).FinallyBody);
+        end
+        else if CurStmt is TTryExceptStmt then
+        begin
+          TodoStmts.Add(TTryExceptStmt(CurStmt).TryBody);
+          TodoStmts.Add(TTryExceptStmt(CurStmt).ExceptBody);
+          TodoStmts.Add(TTryExceptStmt(CurStmt).ElseBody);
+          if TTryExceptStmt(CurStmt).Handlers <> nil then
+            for J := 0 to TTryExceptStmt(CurStmt).Handlers.Count - 1 do
+              TodoStmts.Add(
+                TExceptHandlerClause(TTryExceptStmt(CurStmt).Handlers.Items[J]).Body);
+        end
+        else if CurStmt is TRaiseStmt then
+          TodoExprs.Add(TRaiseStmt(CurStmt).Expr)
+        else if CurStmt is TExitStmt then
+          TodoExprs.Add(TExitStmt(CurStmt).Value)
+        else if CurStmt is TCaseStmt then
+        begin
+          TodoExprs.Add(TCaseStmt(CurStmt).Selector);
+          TodoStmts.Add(TCaseStmt(CurStmt).ElseStmt);
+          for J := 0 to TCaseStmt(CurStmt).Branches.Count - 1 do
+            TodoStmts.Add(TCaseBranch(TCaseStmt(CurStmt).Branches.Items[J]).Stmt);
+        end
+        else if CurStmt is TForInStmt then
+        begin
+          MaybeCaptureName(ADecl, OuterVars, TForInStmt(CurStmt).VarName);
+          TodoExprs.Add(TForInStmt(CurStmt).CollExpr);
+          TodoStmts.Add(TForInStmt(CurStmt).Body);
+        end
+        else if CurStmt is TPointerWriteStmt then
+        begin
+          TodoExprs.Add(TPointerWriteStmt(CurStmt).PtrExpr);
+          TodoExprs.Add(TPointerWriteStmt(CurStmt).ValExpr);
         end
       end;
 
@@ -7578,6 +7634,27 @@ begin
         begin
           for J := 0 to TMethodCallExpr(CurExpr).Args.Count - 1 do
             TodoExprs.Add(TMethodCallExpr(CurExpr).Args.Items[J]);
+        end
+        else if CurExpr is TArrayLiteralExpr then
+        begin
+          for J := 0 to TArrayLiteralExpr(CurExpr).Elements.Count - 1 do
+            TodoExprs.Add(TArrayLiteralExpr(CurExpr).Elements.Items[J]);
+        end
+        else if CurExpr is TIsExpr then
+          TodoExprs.Add(TIsExpr(CurExpr).Obj)
+        else if CurExpr is TAsExpr then
+          TodoExprs.Add(TAsExpr(CurExpr).Obj)
+        else if CurExpr is TSupportsExpr then
+          TodoExprs.Add(TSupportsExpr(CurExpr).Obj)
+        else if CurExpr is TDerefExpr then
+          TodoExprs.Add(TDerefExpr(CurExpr).Expr)
+        else if CurExpr is TAddrOfExpr then
+          TodoExprs.Add(TAddrOfExpr(CurExpr).Expr)
+        else if CurExpr is TIndirectFuncCallExpr then
+        begin
+          TodoExprs.Add(TIndirectFuncCallExpr(CurExpr).CalleeExpr);
+          for J := 0 to TIndirectFuncCallExpr(CurExpr).Args.Count - 1 do
+            TodoExprs.Add(TIndirectFuncCallExpr(CurExpr).Args.Items[J]);
         end;
       end;
     end;
@@ -13597,11 +13674,120 @@ begin
     MD.IsImplOnly := FCurrentUnit <> nil;
     AExpr.LiftedName := MD.Name;
     AExpr.LiftedDecl := MD;
+    MD.IsAnonThunk := True;
     FPendingAnonDecls.Add(MD);
+    { Phase 2: capture promotion.  Runs NOW, while the enclosing routine's
+      scope is live, so captured names can be typed from their symbols. }
+    if FCurrentEnclosingDecl <> nil then
+      PromoteAnonCaptures(MD);
   end;
 
   AExpr.ResolvedType := ProcDesc;
   Result := ProcDesc;
+end;
+
+procedure TSemanticAnalyser.PromoteAnonCaptures(AThunk: TMethodDecl);
+{ Phase 2 of docs/anonymous-methods-design.adoc: determine which enclosing
+  locals/params the literal's body references, promote them into ONE shared
+  heap environment record per enclosing frame (TRecordTypeDesc '__env_<n>'
+  — field offsets, alignment and ARC cleanup come free from the record
+  machinery), and record the capture facts on both decls:
+
+    enclosing.EnvCaptured / EnvType — fields of the env the frame allocates
+    thunk.EnvCaptured / EnvType     — names the body reads via '__env'
+
+  Codegen redirects accesses by name (the '_cap_' mechanism generalised);
+  no AST rewriting.  Reuses the nested-proc capture walker CollectCaptures,
+  which deposits into CapturedVars — the result is MOVED to EnvCaptured so
+  the hidden-var-param nested-proc codegen path never sees it. }
+var
+  Encl:  TMethodDecl;
+  Env:   TRecordTypeDesc;
+  Name:  string;
+  Sym:   TSymbol;
+  Par:   TMethodParam;
+  VDecl: TVarDecl;
+  Own:   Boolean;
+  I, J:  Integer;
+begin
+  Encl := FCurrentEnclosingDecl;
+  if Encl.IsAnonThunk then
+    SemanticError('Capturing variables of an enclosing anonymous method ' +
+      'is not yet supported (nested closure environments are a later phase)',
+      AThunk.Line, AThunk.Col);
+
+  CollectCaptures(AThunk, Encl);
+  if AThunk.CapturedVars = nil then Exit;
+
+  { Drop names shadowed by the literal's own params or locals — the walker
+    only checks the OUTER name set, not the literal's own declarations. }
+  for I := AThunk.CapturedVars.Count - 1 downto 0 do
+  begin
+    Name := AThunk.CapturedVars.Strings[I];
+    Own := False;
+    for J := 0 to AThunk.Params.Count - 1 do
+      if SameText(TMethodParam(AThunk.Params.Items[J]).ParamName, Name) then
+        Own := True;
+    if AThunk.Body <> nil then
+      for J := 0 to AThunk.Body.Decls.Count - 1 do
+      begin
+        VDecl := TVarDecl(AThunk.Body.Decls.Items[J]);
+        if VDecl.Names.IndexOf(Name) >= 0 then Own := True;
+      end;
+    if Own then AThunk.CapturedVars.Delete(I);
+  end;
+  if AThunk.CapturedVars.Count = 0 then
+  begin
+    AThunk.CapturedVars.Free();
+    AThunk.CapturedVars := nil;
+    Exit;
+  end;
+
+  { v1 restriction: a var/out parameter's storage belongs to the CALLER
+    frame; capturing its address in an escaping closure dangles.  Escape
+    analysis is deferred — reject with a clear diagnostic (design doc,
+    Risks).  Capture a local copy instead. }
+  for I := 0 to AThunk.CapturedVars.Count - 1 do
+  begin
+    Name := AThunk.CapturedVars.Strings[I];
+    for J := 0 to Encl.Params.Count - 1 do
+    begin
+      Par := TMethodParam(Encl.Params.Items[J]);
+      if SameText(Par.ParamName, Name) and Par.IsVarParam then
+        SemanticError(Format('Cannot capture var/out parameter ''%s'' in ' +
+          'an anonymous method — capture a local copy instead', [Name]),
+          AThunk.Line, AThunk.Col);
+    end;
+  end;
+
+  { Build (or extend) the enclosing frame's shared env record. }
+  if Encl.EnvCaptured = nil then
+  begin
+    Encl.EnvCaptured := TStringList.Create();
+    FEnvTypeCount := FEnvTypeCount + 1;
+    Encl.EnvType := FTable.NewRecordType('__env_' + IntToStr(FEnvTypeCount));
+  end;
+  Env := TRecordTypeDesc(Encl.EnvType);
+
+  for I := 0 to AThunk.CapturedVars.Count - 1 do
+  begin
+    Name := AThunk.CapturedVars.Strings[I];
+    if Encl.EnvCaptured.IndexOf(Name) < 0 then
+    begin
+      Sym := FTable.Lookup(Name);
+      if (Sym = nil) or (Sym.TypeDesc = nil) then
+        SemanticError(Format('Cannot resolve captured variable ''%s''',
+          [Name]), AThunk.Line, AThunk.Col);
+      Env.AddField(Name, Sym.TypeDesc);
+      Encl.EnvCaptured.Add(Name);
+    end;
+  end;
+
+  { Hand the capture list to the env channel; CapturedVars must stay nil so
+    the nested-proc hidden-param path ignores the thunk. }
+  AThunk.EnvCaptured := AThunk.CapturedVars;
+  AThunk.CapturedVars := nil;
+  AThunk.EnvType := Env;
 end;
 
 procedure TSemanticAnalyser.DrainPendingAnonDecls(ABlock: TBlock);

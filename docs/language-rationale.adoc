@@ -1613,9 +1613,8 @@ signatures are *not* compatible.  Parameter names do not participate.
 ==== Rejected / deferred
 
 - *`reference to function/procedure`* (anonymous methods / closures) —
-  *deferred.* Closures need an environment record carrying captured
-  locals, far beyond what a (Code, Data) pair represents.  No current
-  Blaise feature needs them.
+  now IMPLEMENTED (Phases 0-2); see the dedicated *Anonymous Methods and
+  Closures* section below.
 - *Calling-convention markers* (`cdecl`, `stdcall`) on procedural types —
   *deferred.* The current self-hosting target uses the System V x86_64
   ABI uniformly; no use case yet requires non-default conventions on
@@ -1646,6 +1645,88 @@ references, which would push the design into territory that no current
 Blaise consumer requires.
 
 ---
+
+== Anonymous Methods and Closures (`reference to`)
+
+=== Decision
+
+Blaise implements Delphi-style anonymous methods: the
+`reference to procedure/function` type form and anonymous
+`procedure ... begin ... end` / `function ...: T begin ... end` literals in
+expression position.  A `reference to` value is a 16-byte fat value
+_(Code, Env)_ — the same shape as a method pointer, with the Data half
+holding an ARC-managed heap *environment record* instead of a `Self`
+receiver.  Full design: `docs/anonymous-methods-design.adoc`.
+
+Delivered in phases, each independently verified on both backends:
+
+- *Phase 0* — the `reference to` type form; assignment compatibility;
+  `@Routine` adapter coercion; `.bif` round-trip.
+- *Phase 1* — capture-free literals: the body is lifted to a hidden
+  module-level thunk `__closure_<n>` with a uniform closure ABI (hidden
+  `__env: Pointer` FIRST parameter, nil for capture-free closures).
+- *Phase 2* — strong capture of enclosing locals and value parameters.
+
+=== Capture semantics (Phase 2)
+
+Capture is *by reference*, matching Delphi: all captured variables of one
+enclosing frame are promoted into ONE shared, heap-allocated environment
+record (`__env_<n>`, a synthetic record type), allocated by `_ClassAlloc`
+at frame entry and ARC-managed exactly like a class instance.  The
+enclosing frame and every closure it creates access the same fields, so a
+write in one is visible in the others.  The frame holds one strong
+reference (dropped at frame exit); each closure's fat value holds another
+(dropped when the closure value is released).  The env dies when the frame
+AND all closures derived from it are gone — refcount-driven, no compiler
+lifetime analysis.
+
+Implementation follows the *codegen-redirection* model, not AST rewriting:
+the semantic pass records the captured-name set (`TMethodDecl.EnvCaptured`)
+and the synthetic env record (`EnvType`); both backends redirect every
+access to a promoted name through the env base + field offset (QBE:
+per-name `%_env_<Name>` address temps; native: the existing `_cap_<Name>`
+pointer-slot indirection, filled from the env instead of hidden
+parameters).  Captured ARC-managed values (strings, class references,
+dynamic arrays, records) are released exactly once, by the env record's
+field-cleanup function at last release — the frame's scope-exit ARC pass
+skips promoted names.
+
+A captured value PARAMETER is snapshotted into the env field at frame
+entry (with its own retain for managed types); the parameter slot's
+entry/exit retain-release pair remains independent.
+
+Consequence (documented trap, also Delphi's behaviour): a loop variable
+captured by closures created inside the loop is ONE shared env field —
+after the loop, every such closure observes the final value.  Per-iteration
+snapshots require a block-scoped fresh binding (Phase 4).
+
+=== Restrictions in this phase (clear compile-time errors)
+
+- Capturing a `var`/`out` parameter is rejected — the env would have to
+  store the caller frame's address, which dangles once the closure
+  escapes.  Escape analysis that could allow the non-escaping subset is
+  deferred; the documented idiom is capturing a local copy.
+- Capturing `Self` (literals inside methods capturing instance state) is
+  Phase 3; `[Weak]` capture lists are Phase 5.
+- A literal nested inside another literal cannot capture the outer
+  routine's variables through the intermediate closure (multi-level env
+  chains are a later phase); the reference fails with an
+  undeclared-identifier error at the thunk's module-scope analysis.
+
+=== Alternatives rejected
+
+- *AST rewriting* of captured references to explicit `env^.Field` nodes —
+  rejected in favour of codegen-level redirection: both backends already
+  funnel name→storage resolution through a single point (`VarRef` /
+  `EmitVarBaseToReg`), and the nested-procedure `_cap_` machinery provides
+  the exact indirection precedent.  Rewriting would duplicate type/ARC
+  logic already keyed off the resolved AST.
+- *Capture by value* — no Delphi precedent; by-reference sharing is
+  required for two closures in one scope to agree on state.  The
+  block-scoped `var` idiom provides per-iteration value capture without a
+  language qualifier.
+- *One environment per closure* — rejected: two closures in one frame must
+  observe each other's writes, which requires a single shared record.
 
 == File Path Manipulation Built-ins
 

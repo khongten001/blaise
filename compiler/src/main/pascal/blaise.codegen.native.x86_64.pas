@@ -181,6 +181,11 @@ type
       reads/writes are transparently redirected through that pointer.
       Nil when not inside a nested function. }
     FCapturedVars: TStringList;
+    { Phase-2 anonymous-method capture: names promoted into the current
+      function's heap environment record.  Each gets a '_cap_<Name>' pointer
+      slot filled by EmitEnvPrologue (env base + field offset), so every
+      IsCaptured access path redirects through it unchanged. }
+    FEnvVarNames: TStringList;
     { Locals of the current function that may not be borrowed as const-string
       arguments: address-taken (explicit @ or var/out arg) plus anything
       captured by a nested procedure.  Rebuilt per function in
@@ -311,6 +316,8 @@ type
       out AAttrsStr, AMethAttrsStr: string);
     { Emit the body of one $_FieldCleanup_<T> function.  Calls the
       destructor (if any), releases ARC-managed fields, then returns. }
+    procedure EmitEnvPrologue(ADecl: TMethodDecl);
+    procedure EmitEnvCleanupDefs(ABlock: TBlock);
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ART: TRecordTypeDesc);
     { Release every ARC-managed field of ART whose storage starts at the address
@@ -2249,6 +2256,135 @@ begin
       end;
     end;
     AMethAttrsStr := 'methattrs_' + ACSym;
+  end;
+end;
+
+procedure TX86_64Backend.EmitEnvPrologue(ADecl: TMethodDecl);
+{ Phase-2 anonymous-method capture (docs/anonymous-methods-design.adoc):
+  mirror of the QBE EmitEnvPrologue.  Enclosing frame: heap-allocate the env
+  via _ClassAlloc (zeroed — captured locals start at zero-init for free),
+  take the frame's own strong reference, then snapshot captured VALUE
+  parameters from their spilled slots into the env fields (managed values
+  take an extra retain — the env owns its copy independently of the param
+  slot, which the param-exit pass releases separately).  Thunk: the env
+  arrives through the hidden '__env' first parameter and is BORROWED.
+  Either way, each promoted name's '_cap_<Name>' slot receives the field's
+  heap address so every IsCaptured access path redirects unchanged. }
+var
+  Env:  TRecordTypeDesc;
+  I, J: Integer;
+  F:    TFieldInfo;
+  Name: string;
+  P:    TMethodParam;
+begin
+  Env := TRecordTypeDesc(ADecl.EnvType);
+  if ADecl.IsAnonThunk then
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__env')]))
+  else
+  begin
+    Self.Emit(Format(#9'movq $%d, %%rdi', [Env.TotalSize()]));
+    Self.Emit(Format(#9'leaq _FieldCleanup_%s(%%rip), %%rsi',
+      [NativeMangle(Env.Name)]));
+    Self.Emit(#9'callq _ClassAlloc');
+    Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand('__envp')]));
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__envp')]));
+  end;
+  for I := 0 to ADecl.EnvCaptured.Count - 1 do
+  begin
+    Name := ADecl.EnvCaptured.Strings[I];
+    F := Env.FindField(Name);
+    Self.Emit(Format(#9'leaq %d(%%rax), %%rcx', [F.Offset]));
+    Self.Emit(Format(#9'movq %%rcx, %s', [Self.VarOperand('_cap_' + Name)]));
+  end;
+  if ADecl.IsAnonThunk then Exit;
+  for J := 0 to ADecl.Params.Count - 1 do
+  begin
+    P := TMethodParam(ADecl.Params.Items[J]);
+    if ADecl.EnvCaptured.IndexOf(P.ParamName) < 0 then Continue;
+    F := Env.FindField(P.ParamName);
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      { Param slot holds a pointer to the local _data copy (repointed in the
+        phase-2 param pass above); deep-copy into the env field with a
+        per-managed-field retain (env owns its copy). }
+      Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand(P.ParamName)]));
+      Self.Emit(Format(#9'movq %s, %%rdi',
+        [Self.VarOperand('_cap_' + P.ParamName)]));
+      Self.Emit(Format(#9'movq $%d, %%rdx', [F.TypeDesc.RawSize()]));
+      Self.Emit(#9'callq memcpy');
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(Format(#9'movq %s, %%rbx',
+        [Self.VarOperand('_cap_' + P.ParamName)]));
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(F.TypeDesc), '%rbx');
+      Self.Emit(#9'popq %rbx');
+    end
+    else if IsFloatFamily(F.TypeDesc) then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand('_cap_' + P.ParamName)]));
+      if F.TypeDesc.Kind = tySingle then
+      begin
+        Self.Emit(Format(#9'movss %s, %%xmm0', [Self.VarOperand(P.ParamName)]));
+        Self.Emit(#9'movss %xmm0, (%rcx)');
+      end
+      else
+      begin
+        Self.Emit(Format(#9'movsd %s, %%xmm0', [Self.VarOperand(P.ParamName)]));
+        Self.Emit(#9'movsd %xmm0, (%rcx)');
+      end;
+    end
+    else if F.TypeDesc.Kind in [tyInteger, tyUInt32, tyBoolean, tyByte,
+                                tyEnum, tySmallInt, tyWord] then
+    begin
+      Self.Emit(Format(#9'movl %s, %%eax', [Self.VarOperand(P.ParamName)]));
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand('_cap_' + P.ParamName)]));
+      Self.Emit(#9'movl %eax, (%rcx)');
+    end
+    else
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(P.ParamName)]));
+      Self.Emit(Format(#9'movq %s, %%rcx',
+        [Self.VarOperand('_cap_' + P.ParamName)]));
+      Self.Emit(#9'movq %rax, (%rcx)');
+      if F.TypeDesc.IsString() then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+      end
+      else if F.TypeDesc.Kind = tyClass then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+      end
+      else if F.TypeDesc.Kind = tyDynArray then
+      begin
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _DynArrayAddRef');
+      end;
+    end;
+  end;
+end;
+
+procedure TX86_64Backend.EmitEnvCleanupDefs(ABlock: TBlock);
+{ Emit _FieldCleanup_<env> for every routine (at any nesting depth) whose
+  frame allocates an anonymous-method environment record.  Thunks share the
+  enclosing frame's EnvType — skipped to avoid duplicate definitions. }
+var
+  I:  Integer;
+  MD: TMethodDecl;
+begin
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+  begin
+    MD := TMethodDecl(ABlock.ProcDecls.Items[I]);
+    if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
+      Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
+        TRecordTypeDesc(MD.EnvType));
+    if MD.Body <> nil then
+      Self.EmitEnvCleanupDefs(MD.Body);
   end;
 end;
 
@@ -4195,7 +4331,8 @@ end;
 
 function TX86_64Backend.IsCaptured(const AName: string): Boolean;
 begin
-  Result := (FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0);
+  Result := ((FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0)) or
+            ((FEnvVarNames <> nil) and (FEnvVarNames.IndexOf(AName) >= 0));
 end;
 
 procedure TX86_64Backend.EmitVarBaseToReg(const AName: string;
@@ -4475,6 +4612,20 @@ begin
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
     for I := 0 to ADecl.CapturedVars.Count - 1 do
       Self.AddSlot('_cap_' + ADecl.CapturedVars.Strings[I], nil, Offset);
+
+  { Phase-2 anonymous-method capture: the env base slot plus one
+    '_cap_<Name>' pointer slot per promoted name.  These are NOT hidden
+    params (no IntIdx2 accounting) — EmitEnvPrologue fills them from the
+    env record.  The promoted locals keep their ordinary (now dead) slots:
+    zero-init writes them harmlessly and the scope-exit ARC pass releases
+    their permanently-nil values as a no-op, while all real accesses
+    redirect through IsCaptured. }
+  if ADecl.EnvCaptured <> nil then
+  begin
+    Self.AddSlot('__envp', nil, Offset);
+    for I := 0 to ADecl.EnvCaptured.Count - 1 do
+      Self.AddSlot('_cap_' + ADecl.EnvCaptured.Strings[I], nil, Offset);
+  end;
 
   { For class methods, Self is the implicit first integer param (%rdi).
     Allocate a pointer-size slot for it; normal params start at IntIdx=1.
@@ -5018,6 +5169,26 @@ begin
       V.Indirect := True;
       if V.TypeDesc = nil then
         V.TypeDesc := Self.OuterVarType(ADecl.CapturedVars.Strings[I]);
+    end;
+  { Env-promoted captures (anonymous methods, Phase 2): each '_cap_<Name>'
+    slot holds the heap env field's ADDRESS — present it as the variable
+    itself via the indirect location, typed from the env record field.  In
+    the enclosing routine the promoted local's ordinary slot is DEAD (all
+    accesses redirect through the env) — drop it so the debugger shows the
+    live env-backed value, not the stale frame slot. }
+  if ADecl.EnvCaptured <> nil then
+    for I := 0 to ADecl.EnvCaptured.Count - 1 do
+    begin
+      V := FDbgCur.FindVar(ADecl.EnvCaptured.Strings[I]);
+      if V <> nil then
+        FDbgCur.Vars.Delete(FDbgCur.Vars.IndexOf(V));
+      V := FDbgCur.FindVar('_cap_' + ADecl.EnvCaptured.Strings[I]);
+      if V = nil then Continue;
+      V.Name := ADecl.EnvCaptured.Strings[I];
+      V.Indirect := True;
+      if (V.TypeDesc = nil) and (ADecl.EnvType <> nil) then
+        V.TypeDesc := TRecordTypeDesc(ADecl.EnvType).FindField(
+          ADecl.EnvCaptured.Strings[I]).TypeDesc;
     end;
 end;
 
@@ -10574,13 +10745,31 @@ begin
   LNext := Self.NewLabel('fnext');
   LEnd  := Self.NewLabel('fend');
 
-  Self.EmitExprToEax(AFor.StartExpr);
-  Self.EmitStoreVar(VarOp, VarType);
+  { A captured loop counter (nested-proc or anonymous-method env) lives
+    behind its '_cap_' pointer slot — route every counter access through it
+    so closures and the loop agree on ONE storage location. }
+  if Self.IsCaptured(AFor.VarName) then
+  begin
+    Self.EmitExprToEax(AFor.StartExpr);
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
+    Self.EmitStoreVar('(%rcx)', VarType);
+  end
+  else
+  begin
+    Self.EmitExprToEax(AFor.StartExpr);
+    Self.EmitStoreVar(VarOp, VarType);
+  end;
   Self.EmitExprToEax(AFor.EndExpr);
   Self.EmitStoreVar(EndSlot, VarType);
 
   Self.Emit(LCond + ':');
-  Self.EmitLoadVar(VarOp, VarType);
+  if Self.IsCaptured(AFor.VarName) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
+    Self.EmitLoadVar('(%rcx)', VarType);
+  end
+  else
+    Self.EmitLoadVar(VarOp, VarType);
   Self.Emit(#9'pushq %rax');
   Self.EmitLoadVar(EndSlot, VarType);
   Self.Emit(#9'movq %rax, %rcx');
@@ -10604,12 +10793,24 @@ begin
   FBreakLabels.Pop();
 
   Self.Emit(LNext + ':');
-  Self.EmitLoadVar(VarOp, VarType);
+  if Self.IsCaptured(AFor.VarName) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
+    Self.EmitLoadVar('(%rcx)', VarType);
+  end
+  else
+    Self.EmitLoadVar(VarOp, VarType);
   if AFor.IsDownTo then
     Self.Emit(#9'subq $1, %rax')
   else
     Self.Emit(#9'addq $1, %rax');
-  Self.EmitStoreVar(VarOp, VarType);
+  if Self.IsCaptured(AFor.VarName) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
+    Self.EmitStoreVar('(%rcx)', VarType);
+  end
+  else
+    Self.EmitStoreVar(VarOp, VarType);
   Self.Emit(#9'jmp ' + LCond);
   Self.Emit(LEnd + ':');
 end;
@@ -10623,9 +10824,16 @@ end;
 procedure TX86_64Backend.EmitForInAssignElem(AStmt: TForInStmt);
 var
   VarOp: string;
+  Cap:   Boolean;
 begin
+  { A captured for-in variable (nested-proc or anonymous-method env) lives
+    behind its '_cap_' pointer slot.  %r11 (caller-saved, non-arg) carries
+    the storage address and is RELOADED after every runtime call below. }
+  Cap := (not AStmt.VarIsGlobal) and Self.IsCaptured(AStmt.VarName);
   if AStmt.VarIsGlobal then
     VarOp := Self.GlobalSymName(AStmt.VarName) + '(%rip)'
+  else if Cap then
+    VarOp := '(%r11)'
   else
     VarOp := Self.VarOperand(AStmt.VarName);
   if AStmt.ResolvedVarType.IsString() then
@@ -10633,9 +10841,13 @@ begin
     Self.Emit(#9'pushq %rax');
     Self.Emit(#9'movq %rax, %rdi');
     Self.Emit(#9'callq _StringAddRef');
+    if Cap then
+      Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('_cap_' + AStmt.VarName)]));
     Self.Emit(Format(#9'movq %s, %%rdi', [VarOp]));
     Self.Emit(#9'callq _StringRelease');
     Self.Emit(#9'popq %rax');
+    if Cap then
+      Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('_cap_' + AStmt.VarName)]));
     Self.Emit(Format(#9'movq %%rax, %s', [VarOp]));
   end
   else if AStmt.ResolvedVarType.Kind = tyClass then
@@ -10643,13 +10855,21 @@ begin
     Self.Emit(#9'pushq %rax');
     Self.Emit(#9'movq %rax, %rdi');
     Self.Emit(#9'callq _ClassAddRef');
+    if Cap then
+      Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('_cap_' + AStmt.VarName)]));
     Self.Emit(Format(#9'movq %s, %%rdi', [VarOp]));
     Self.Emit(#9'callq _ClassRelease');
     Self.Emit(#9'popq %rax');
+    if Cap then
+      Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('_cap_' + AStmt.VarName)]));
     Self.Emit(Format(#9'movq %%rax, %s', [VarOp]));
   end
   else
+  begin
+    if Cap then
+      Self.Emit(Format(#9'movq %s, %%r11', [Self.VarOperand('_cap_' + AStmt.VarName)]));
     Self.EmitStoreVar(VarOp, AStmt.ResolvedVarType);
+  end;
 end;
 
 procedure TX86_64Backend.EmitForInAggAssignElem(AStmt: TForInStmt;
@@ -11932,6 +12152,12 @@ begin
        (Asgn.ResolvedLhsType.Kind = tyProcedural) and
        TProceduralTypeDesc(Asgn.ResolvedLhsType).IsReference then
     begin
+      { ARC (Phase 2): the 'reference to' Data half is a strong reference to
+        an ARC env record — release the OLD value's env before overwrite
+        (addref-new first where the RHS is a borrow, so self-assignment is
+        safe).  A literal RHS takes a fresh retain for the slot it lands in.
+        _ClassRelease is nil-safe, so capture-free (Env = nil) values cost a
+        no-op call. }
       if Asgn.Expr is TAnonMethodExpr then
       begin
         MD := TMethodDecl(TAnonMethodExpr(Asgn.Expr).LiftedDecl);
@@ -11939,14 +12165,32 @@ begin
           raise ENativeCodeGenError.Create(
             'native backend: anonymous method not lifted — semantic pass required');
         Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq 8(%rcx), %rdi');
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rcx');
         Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [FuncSymbolFromDecl(MD)]));
         Self.Emit(#9'movq %rax, (%rcx)');
-        Self.Emit(#9'movq $0, 8(%rcx)');
+        if MD.EnvCaptured <> nil then
+        begin
+          { Capturing closure: store the enclosing frame's env and take the
+            fat value's own strong reference. }
+          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__envp')]));
+          Self.Emit(#9'movq %rax, 8(%rcx)');
+          Self.Emit(#9'movq %rax, %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+        end
+        else
+          Self.Emit(#9'movq $0, 8(%rcx)');
         Exit;
       end;
       if Asgn.Expr is TNilLiteral then
       begin
         Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq 8(%rcx), %rdi');
+        Self.Emit(#9'pushq %rcx');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rcx');
         Self.Emit(#9'movq $0, (%rcx)');
         Self.Emit(#9'movq $0, 8(%rcx)');
         Exit;
@@ -11956,13 +12200,22 @@ begin
          (Asgn.Expr.ResolvedType.Kind = tyProcedural) and
          TProceduralTypeDesc(Asgn.Expr.ResolvedType).IsReference then
       begin
-        Self.EmitVarAddr(Asgn.Name, '%rdi');
+        { Var-to-var copy: retain the incoming env, release the old one,
+          then copy the 16-byte block. }
         if Self.IsLocal(TIdentExpr(Asgn.Expr).Name) then
           Self.Emit(Format(#9'leaq %s, %%rsi',
             [Self.VarOperand(TIdentExpr(Asgn.Expr).Name)]))
         else
           Self.Emit(Format(#9'leaq %s(%%rip), %%rsi',
             [Self.GlobalSymName(TIdentExpr(Asgn.Expr).Name)]));
+        Self.Emit(#9'pushq %rsi');
+        Self.Emit(#9'movq 8(%rsi), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq 8(%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        Self.Emit(#9'popq %rsi');
+        Self.EmitVarAddr(Asgn.Name, '%rdi');
         Self.Emit(#9'movq $16, %rdx');
         Self.Emit(#9'callq memcpy');
         Exit;
@@ -17811,6 +18064,7 @@ begin
   { Set FCapturedVars for the duration of this function's emission so that
     variable-access paths redirect through the capture pointers. }
   FCapturedVars := ADecl.CapturedVars;
+  FEnvVarNames  := ADecl.EnvCaptured;
 
   { Rebuild the borrowed-argument blocklist for this function: address-taken
     locals (explicit @, var/out args) plus anything captured by a nested
@@ -17850,6 +18104,7 @@ begin
     Self.Emit('.type ' + Sym + ', @function');
     FExitLabel    := '';
     FCapturedVars := nil;
+    FEnvVarNames  := nil;
     Exit;
   end;
   Self.Emit(#9'pushq %rbp');
@@ -18181,6 +18436,10 @@ begin
     end;
   end;
   { Body.  FExitLabel directs Exit statements to the epilogue. }
+  { Phase-2 anonymous-method capture: allocate/receive the env record and
+    fill the '_cap_' pointer slots before any user statement runs. }
+  if ADecl.EnvCaptured <> nil then
+    Self.EmitEnvPrologue(ADecl);
   FExitLabel := Self.NewLabel('exit');
   if ADecl.Body <> nil then
     Self.EmitStmtList(ADecl.Body.Stmts);
@@ -18191,6 +18450,14 @@ begin
     params/locals.  For sret functions the caller's buffer already holds the
     result, so no load is needed. }
   Self.Emit(FExitLabel + ':');
+  { Anonymous-method env: the enclosing frame drops its strong reference on
+    exit; the env lives on iff an escaped closure still references it.  A
+    thunk BORROWS its env from the closure fat value — no release. }
+  if (ADecl.EnvCaptured <> nil) and (not ADecl.IsAnonThunk) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('__envp')]));
+    Self.Emit(#9'callq _ClassRelease');
+  end;
   { Release ARC-managed locals (not params, not Result).
     Result is returned to the caller who owns it. }
   if ADecl.Body <> nil then
@@ -18249,6 +18516,17 @@ begin
           Self.Emit(Format(#9'movq %s, %%rdi',
             [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
           Self.Emit(#9'callq _DynArrayRelease');
+        end
+      { 'reference to' locals: the Data half strong-references an ARC env
+        record (nil for capture-free closures — release is a nil-safe no-op). }
+      else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyProcedural)
+        and TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsReference then
+        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+        begin
+          Self.Emit(Format(#9'leaq %s, %%rcx',
+            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
+          Self.Emit(#9'movq 8(%rcx), %rdi');
+          Self.Emit(#9'callq _ClassRelease');
         end
       { Record locals with managed fields: release each ARC-managed field at
         scope exit.  The record block lives in the frame; its address goes into
@@ -18492,6 +18770,8 @@ begin
   { Class data section: typeinfo, vtables, field-cleanup functions. }
   Self.EmitClassSection(AProg.Block.TypeDecls, AProg.GenericInstances,
                         AProg.SymbolTable);
+  { Anonymous-method environment cleanup functions (Phase 2). }
+  Self.EmitEnvCleanupDefs(AProg.Block);
   { Interface data: typeinfo tokens, itabs, impllists.  Emitted after the class
     section so the class-name strings and method symbols it references exist. }
   Self.Emit('.data');
@@ -18675,6 +18955,8 @@ begin
   { Impl-section classes' typeinfo / vtable / _FieldCleanup (generics already
     emitted above — empty list here). }
   Self.EmitClassSection(AUnit.ImplBlock.TypeDecls, EmptyGen, UnitSym);
+  { Anonymous-method environment cleanup functions (Phase 2). }
+  Self.EmitEnvCleanupDefs(AUnit.ImplBlock);
   { Interface data: typeinfo tokens, itabs, impllists. }
   Self.Emit('.data');
   Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,

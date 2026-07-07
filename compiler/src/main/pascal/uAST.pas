@@ -964,6 +964,19 @@ type
       enclosing standalone proc/function (nil for top-level decls). }
     CapturedVars:  TStringList; { owned; nil when no captures }
     [Unretained] EnclosingDecl: TMethodDecl; { not owned — enclosing standalone proc, or nil }
+    { Anonymous-method capture (Phase 2, docs/anonymous-methods-design.adoc):
+      captured enclosing locals/params are promoted into ONE heap-allocated,
+      ARC-managed environment record per enclosing frame.  All three fields
+      are semantic-pass outputs (never serialised to .bif).
+      On the ENCLOSING routine: EnvCaptured is the union of names its
+      literals capture — the fields of the env record the frame allocates.
+      On a lifted THUNK (IsAnonThunk): EnvCaptured is the names the body
+      reads through the hidden '__env' first parameter. }
+    EnvCaptured: TStringList;      { owned; nil = no env involvement }
+    [Unretained] EnvType: TObject; { TRecordTypeDesc — synthetic env record,
+                                     table-owned; nil when EnvCaptured = nil }
+    IsAnonThunk: Boolean;          { set by uSemantic — lifted '__closure_<n>'
+                                     thunk; env arrives as hidden first param }
     IsInline: Boolean;    { set by uParser — 'inline' directive present }
     CallingConv: string;  { set by uParser — 'cdecl'/'stdcall'/'register'/'pascal'/
                             'safecall' directive (lowercased); '' = default }
@@ -1704,6 +1717,7 @@ begin
   TypeParamConstraints.Free();
   OwnerTypeParams.Free();
   CapturedVars.Free();
+  EnvCaptured.Free();
   if OwnBody then Body.Free();
   inherited Destroy();
 end;

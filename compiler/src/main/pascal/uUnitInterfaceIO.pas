@@ -913,6 +913,20 @@ begin
     Result := EncodeLpstr('inhc') +
               EncodeLpstr(TInheritedCallExpr(AE).Name) +
               EncodeExprList(TInheritedCallExpr(AE).Args)
+  else if AE is TAnonMethodExpr then
+  begin
+    { Anonymous-method literal inside a generic-body template: the literal's
+      declaration (signature) plus its body block travel as parsed AST; the
+      [Weak] capture-name list rides along.  Semantic outputs (LiftedName,
+      LiftedDecl, EnvType) are re-derived at the importer's monomorphisation
+      site and are NOT serialised. }
+    Result := EncodeLpstr('anonm') +
+              EncodeMethodDecl(TAnonMethodExpr(AE).Decl) +
+              EncodeBlock(TAnonMethodExpr(AE).Decl.Body) +
+              EncodeBool(TAnonMethodExpr(AE).WeakCaptures <> nil);
+    if TAnonMethodExpr(AE).WeakCaptures <> nil then
+      Result := Result + EncodeStringList(TAnonMethodExpr(AE).WeakCaptures);
+  end
   else
     raise EIfaceFormatError.Create(
       'EncodeExpr: unhandled expression node ' + AE.ClassName);
@@ -1446,6 +1460,7 @@ end;
 function ReadExpr(const AText: string; var APos: Integer): TASTExpr; forward;
 function ReadStmt(const AText: string; var APos: Integer): TASTStmt; forward;
 function ReadBlock(const AText: string; var APos: Integer): TBlock; forward;
+function ReadMethodDecl(const AText: string; var APos: Integer): TMethodDecl; forward;
 
 procedure ReadExprList(const AText: string; var APos: Integer;
                        ATarget: TObjectList);
@@ -1514,6 +1529,7 @@ var
   AsE:  TAsExpr;
   SuE:  TSupportsExpr;
   InhE: TInheritedCallExpr;
+  AME:  TAnonMethodExpr;
 begin
   Kind := ReadLpstrAt(AText, APos);
   if Kind = 'nil' then begin Result := nil; Exit; end;
@@ -1653,6 +1669,23 @@ begin
     InhE.Name := ReadLpstrAt(AText, APos);
     ReadExprList(AText, APos, InhE.Args);
     Result := InhE;
+  end
+  else if Kind = 'anonm' then
+  begin
+    { Anonymous-method literal (generic-body template).  Mirrors the
+      encoder: signature decl, body block, optional [Weak] name list.
+      LiftedName/LiftedDecl/EnvType are semantic outputs, re-derived at
+      the importer's monomorphisation site. }
+    AME := TAnonMethodExpr.Create();
+    AME.Decl := ReadMethodDecl(AText, APos);
+    AME.Decl.Body := ReadBlock(AText, APos);
+    AME.Decl.OwnBody := True;
+    if DecodeBool(AText, APos) then
+    begin
+      AME.WeakCaptures := TStringList.Create();
+      ReadStringListBlock(AText, APos, AME.WeakCaptures);
+    end;
+    Result := AME;
   end
   else
     raise EIfaceFormatError.Create(

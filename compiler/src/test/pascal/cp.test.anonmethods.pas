@@ -48,11 +48,16 @@ type
     { Semantic }
     procedure TestSemantic_ReferenceType_ResolvesTo16ByteDesc;
     procedure TestSemantic_LiteralSignatureMismatch_Fails;
-    procedure TestSemantic_Phase1_CaptureRejected;
+    procedure TestSemantic_Phase2_LocalCaptureAccepted;
+    procedure TestSemantic_Phase2_VarParamCaptureRejected;
 
     { Codegen }
     procedure TestCodegen_ThunkEmitted;
     procedure TestCodegen_LiteralMaterialisesFatValue;
+    procedure TestCodegen_Phase2_EnvAllocAndCleanupEmitted;
+    procedure TestCodegen_Phase2_CapturedAccessRedirected;
+    procedure TestCodegen_Phase2_ClosureCreationAddRefsEnv;
+    procedure TestCodegen_Phase2_FrameExitReleasesEnv;
 
     { End-to-end }
     procedure TestE2E_CaptureFreeLiteral_AssignAndCall;
@@ -351,11 +356,11 @@ begin
   AssertTrue('literal with mismatched signature is rejected', OK);
 end;
 
-procedure TAnonMethodTests.TestSemantic_Phase1_CaptureRejected;
+procedure TAnonMethodTests.TestSemantic_Phase2_LocalCaptureAccepted;
 const
-  { The literal references the enclosing routine's local 'Outer'.  Phase 1
-    lifts the body into module scope, so the reference fails to resolve —
-    the documented behaviour until capture promotion (Phase 2) lands. }
+  { Phase 2: the literal references the enclosing routine's local 'Outer'.
+    Capture promotion accepts it and records the captured name on the lifted
+    thunk so codegen can redirect through the environment record. }
   Src =
     '''
     program P;
@@ -378,6 +383,56 @@ const
     end.
     ''';
 var
+  Prog:  TProgram;
+  MD:    TMethodDecl;
+  Thunk: TMethodDecl;
+  I:     Integer;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    { Find the lifted thunk appended to the module's ProcDecls. }
+    Thunk := nil;
+    for I := 0 to Prog.Block.ProcDecls.Count - 1 do
+    begin
+      MD := TMethodDecl(Prog.Block.ProcDecls.Items[I]);
+      if MD.Name = '__closure_1' then Thunk := MD;
+    end;
+    AssertNotNull('lifted thunk registered', Thunk);
+    AssertNotNull('thunk records env captures', Thunk.EnvCaptured);
+    AssertEquals('one captured name', 1, Thunk.EnvCaptured.Count);
+    AssertEquals('captured name', 'Outer', Thunk.EnvCaptured.Strings[0]);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase2_VarParamCaptureRejected;
+const
+  { Capturing a var/out parameter is rejected in Phase 2: the env would have
+    to store the CALLER frame's address, which dangles once the closure
+    escapes (design doc, Risks).  A clear diagnostic is required. }
+  Src =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+    procedure Run(var X: Integer);
+    var
+      V: TProc;
+    begin
+      V := procedure
+      begin
+        WriteLn(X)
+      end;
+      V()
+    end;
+    var N: Integer;
+    begin
+      N := 5;
+      Run(N)
+    end.
+    ''';
+var
   Prog: TProgram;
   OK:   Boolean;
 begin
@@ -388,7 +443,7 @@ begin
   except
     on E: TObject do OK := True;
   end;
-  AssertTrue('capturing an enclosing local is rejected in Phase 1', OK);
+  AssertTrue('capturing a var parameter is rejected', OK);
 end;
 
 { ------------------------------------------------------------------ }
@@ -440,6 +495,72 @@ begin
   AssertTrue('16-byte fat value allocated', Pos('alloc8 16', IR) > 0);
   AssertTrue('thunk address stored into the Code half',
     Pos('storel $__closure_1', IR) > 0);
+end;
+
+const
+  { Shared source for the Phase-2 codegen tests: 'Run' has one captured
+    local (Outer) promoted into an env record, one non-captured local, and
+    a closure that both reads and writes the capture. }
+  Phase2CodegenSrc =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+    procedure Run;
+    var
+      Outer: Integer;
+      Plain: Integer;
+      V: TProc;
+    begin
+      Outer := 1;
+      Plain := 2;
+      V := procedure
+      begin
+        Outer := Outer + 1;
+        WriteLn(Outer)
+      end;
+      V();
+      WriteLn(Outer + Plain)
+    end;
+    begin
+      Run()
+    end.
+    ''';
+
+procedure TAnonMethodTests.TestCodegen_Phase2_EnvAllocAndCleanupEmitted;
+var IR: string;
+begin
+  IR := GenIR(Phase2CodegenSrc);
+  AssertTrue('env record heap-allocated via _ClassAlloc',
+    Pos('call $_ClassAlloc(', IR) > 0);
+  AssertTrue('env field-cleanup function defined',
+    Pos('__env_', IR) > 0);
+end;
+
+procedure TAnonMethodTests.TestCodegen_Phase2_CapturedAccessRedirected;
+var IR: string;
+begin
+  IR := GenIR(Phase2CodegenSrc);
+  AssertTrue('captured local redirected through the env pointer',
+    Pos('%_env_Outer', IR) > 0);
+  AssertTrue('non-captured local still a plain frame slot',
+    Pos('%_var_Plain', IR) > 0);
+end;
+
+procedure TAnonMethodTests.TestCodegen_Phase2_ClosureCreationAddRefsEnv;
+var IR: string;
+begin
+  IR := GenIR(Phase2CodegenSrc);
+  AssertTrue('closure creation retains the env',
+    Pos('call $_ClassAddRef(', IR) > 0);
+end;
+
+procedure TAnonMethodTests.TestCodegen_Phase2_FrameExitReleasesEnv;
+var IR: string;
+begin
+  IR := GenIR(Phase2CodegenSrc);
+  AssertTrue('enclosing frame releases its env reference on exit',
+    Pos('call $_ClassRelease(', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

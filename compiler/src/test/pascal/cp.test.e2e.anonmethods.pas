@@ -1,0 +1,351 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit cp.test.e2e.anonmethods;
+
+{ E2E tests for anonymous-method capture (Phase 2 of
+  docs/anonymous-methods-design.adoc): compile -> run on every backend
+  (QBE + native), asserting stdout/exit code.  Covers the behaviour the
+  IR-level tests in cp.test.anonmethods.pas cannot see: shared-environment
+  mutation, escape past the creating frame, the by-reference loop-capture
+  semantics, captured-parameter snapshots, and exception flow through a
+  closure body. }
+
+interface
+
+uses
+  classes, blaise.testing, cp.test.e2e.base;
+
+type
+  [Threaded]
+  TE2EAnonMethodTests = class(TE2ETestCase)
+  protected
+    procedure SetUp; override;
+  published
+    procedure TestRun_CaptureLocal_ReadInClosure;
+    procedure TestRun_ClosureWrite_VisibleInEnclosing;
+    procedure TestRun_TwoClosures_ShareOneEnv;
+    procedure TestRun_Escape_GlobalClosure_OutlivesFrame;
+    procedure TestRun_LoopCapture_SharesEnv_ByReference;
+    procedure TestRun_CapturedParam_InitialValueCopied;
+    procedure TestRun_FunctionLiteral_CapturesAccumulator;
+    procedure TestRun_CapturedString_Concat;
+    procedure TestRun_RaiseThroughFinally_InClosureBody;
+  end;
+
+implementation
+
+procedure TE2EAnonMethodTests.SetUp;
+begin
+  inherited SetUp();
+  SetUpScratch('compiler/target/test-e2e-anonmethods')
+end;
+
+procedure TE2EAnonMethodTests.TestRun_CaptureLocal_ReadInClosure;
+const Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run;
+  var
+    Outer: Integer;
+    V: TProc;
+  begin
+    Outer := 41;
+    V := procedure
+    begin
+      WriteLn(Outer + 1)
+    end;
+    V()
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_ClosureWrite_VisibleInEnclosing;
+const Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run;
+  var
+    Total: Integer;
+    V: TProc;
+  begin
+    Total := 10;
+    V := procedure
+    begin
+      Total := Total + 32
+    end;
+    V();
+    WriteLn(Total)
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_TwoClosures_ShareOneEnv;
+const
+  { Both literals in one frame capture the same 'Total' — by-reference
+    semantics require ONE shared environment, so the second closure sees
+    the first one's write. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run;
+  var
+    Total: Integer;
+    Inc10: TProc;
+    Show: TProc;
+  begin
+    Total := 32;
+    Inc10 := procedure
+    begin
+      Total := Total + 10
+    end;
+    Show := procedure
+    begin
+      WriteLn(Total)
+    end;
+    Inc10();
+    Show()
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_Escape_GlobalClosure_OutlivesFrame;
+const
+  { The closure is stored in a global and invoked AFTER Make has returned:
+    the captured local must live on in the heap env, not the dead frame. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  var
+    G: TProc;
+  procedure Make;
+  var
+    Secret: Integer;
+  begin
+    Secret := 42;
+    G := procedure
+    begin
+      WriteLn(Secret)
+    end
+  end;
+  begin
+    Make();
+    G()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_LoopCapture_SharesEnv_ByReference;
+const
+  { The documented Delphi-compatible trap: one env per FRAME, so all three
+    closures share the same 'I' and print its post-loop value 3.  Phase 4
+    (block-scoped environments) adds the fresh-binding idiom. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run;
+  var
+    A: TProc;
+    B: TProc;
+    C: TProc;
+    I: Integer;
+  begin
+    for I := 0 to 2 do
+    begin
+      if I = 0 then A := procedure begin WriteLn(I) end;
+      if I = 1 then B := procedure begin WriteLn(I) end;
+      if I = 2 then C := procedure begin WriteLn(I) end
+    end;
+    A();
+    B();
+    C()
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '3' + LineEnding + '3' + LineEnding + '3' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_CapturedParam_InitialValueCopied;
+const
+  { A captured VALUE parameter: its incoming value must be copied into the
+    env field at frame entry before any closure runs. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run(Base: Integer);
+  var
+    V: TProc;
+  begin
+    V := procedure
+    begin
+      Base := Base + 2;
+      WriteLn(Base)
+    end;
+    V()
+  end;
+  begin
+    Run(40)
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_FunctionLiteral_CapturesAccumulator;
+const Src =
+  '''
+  program P;
+  type
+    TStep = reference to function(AInc: Integer): Integer;
+  procedure Run;
+  var
+    Acc: Integer;
+    Step: TStep;
+  begin
+    Acc := 0;
+    Step := function(AInc: Integer): Integer
+    begin
+      Acc := Acc + AInc;
+      Result := Acc
+    end;
+    WriteLn(Step(20));
+    WriteLn(Step(22))
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '20' + LineEnding + '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_CapturedString_Concat;
+const
+  { A captured ARC-managed string: env field must go through the string
+    retain/release store path, and the env cleanup must release it. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  procedure Run;
+  var
+    Prefix: string;
+    V: TProc;
+  begin
+    Prefix := 'item-';
+    V := procedure
+    begin
+      Prefix := Prefix + '42';
+      WriteLn(Prefix)
+    end;
+    V()
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'item-42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_RaiseThroughFinally_InClosureBody;
+const
+  { A raise inside the closure body must run the body's finally block and
+    propagate to the invoker's except handler (design doc, Closures and
+    exceptions). }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    Exception = class
+    private
+      FMessage: string;
+    public
+      constructor Create(AMsg: string);
+      property Message: string read FMessage;
+    end;
+  constructor Exception.Create(AMsg: string);
+  begin
+    FMessage := AMsg;
+  end;
+  procedure Run;
+  var
+    Flag: Integer;
+    V: TProc;
+  begin
+    Flag := 0;
+    V := procedure
+    begin
+      try
+        raise Exception.Create('boom')
+      finally
+        Flag := Flag + 1
+      end
+    end;
+    try
+      V()
+    except
+      on E: Exception do WriteLn('caught ', E.Message)
+    end;
+    WriteLn(Flag)
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'caught boom' + LineEnding + '1' + LineEnding, 0);
+end;
+
+initialization
+  RegisterTest(TE2EAnonMethodTests);
+
+end.

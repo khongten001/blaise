@@ -85,6 +85,15 @@ type
       EmitWrite previously never released it, leaking one string per call.  The
       fix releases the owned string transient after the write (both backends). }
     procedure TestDebug_WriteLnCallArg_NoLeak;
+    { Anonymous-method capture (Phase 2): the heap environment record must be
+      allocated once and released exactly once — the enclosing frame drops its
+      reference at exit and the escaped closure drops the last one when the
+      closure slot is released. }
+    procedure TestDebug_ClosureEnv_ReleasedExactlyOnce;
+    { A captured string is an ARC slot inside the env record: the env cleanup
+      proc must release it, and closure-body reassignment must go through the
+      string retain/release store path. }
+    procedure TestDebug_ClosureCapturedString_NoLeak;
   end;
 
 implementation
@@ -1014,6 +1023,84 @@ begin
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertEquals('stdout (native)', 'bcd' + LE + 'bcd' + LE + 'bcd' + LE, Output);
   AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+const
+  { Escaping closure: env allocated in Make, last release when the global
+    closure slot is released at program exit. }
+  SrcClosureEnvOnce = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+    var
+      G: TProc;
+    procedure Make;
+    var
+      Secret: Integer;
+    begin
+      Secret := 7;
+      G := procedure
+      begin
+        WriteLn(Secret)
+      end
+    end;
+    begin
+      Make();
+      G();
+      G := nil;
+      WriteLn('done')
+    end.
+    ''';
+
+  { Captured string reassigned inside the closure body: the old value must be
+    released on reassignment and the final value by the env cleanup proc. }
+  SrcClosureCapturedString = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+    procedure Run;
+    var
+      S: string;
+      V: TProc;
+    begin
+      S := 'alpha';
+      V := procedure
+      begin
+        S := S + '-beta';
+        WriteLn(S)
+      end;
+      V()
+    end;
+    begin
+      Run();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_ClosureEnv_ReleasedExactlyOnce;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureEnvOnce, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', '7' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_ClosureCapturedString_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureCapturedString, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', 'alpha-beta' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
 end;
 
 initialization

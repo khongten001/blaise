@@ -113,6 +113,16 @@ type
       %_cap_<VarName>, and reads/writes are transparently redirected through
       that pointer.  Nil when not inside a nested function. }
     FCapturedVars: TStringList;
+    { Phase-2 anonymous-method capture (docs/anonymous-methods-design.adoc):
+      when the CURRENT function participates in env capture, FEnvFieldNames
+      lists the promoted variable names, FEnvType is the synthetic env
+      record (field offsets + cleanup), and FEnvIsThunk selects the env
+      base: a thunk loads it from its hidden '__env' parameter, the
+      enclosing frame allocates it via _ClassAlloc into %__envp.  VarRef
+      redirects every access to the per-name address temp %_env_<Name>. }
+    FEnvFieldNames: TStringList;
+    FEnvType: TRecordTypeDesc;
+    FEnvIsThunk: Boolean;
 
     { Nil-slot ARC tracking: set of local variable names whose class/string
       slot has already been written in the current function.  EmitVarAllocs
@@ -251,6 +261,9 @@ type
     function  StmtHasTry(AStmt: TASTStmt): Boolean;
     { Returns True if AName is currently a promoted SSA temp. }
     function  IsCaptured(const AName: string): Boolean;
+    function  IsEnvField(const AName: string): Boolean;
+    procedure EmitEnvPrologue(ADecl: TMethodDecl);
+    procedure EmitEnvCleanupDefsForBlock(ABlock: TBlock);
     function  IsPromoted(const AName: string): Boolean;
     { Returns True if the named local class/string slot is still provably nil
       at the current emit position.  Used to elide _ClassRelease/_StringRelease
@@ -1602,6 +1615,11 @@ begin
   Result := (FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0);
 end;
 
+function TCodeGenQBE.IsEnvField(const AName: string): Boolean;
+begin
+  Result := (FEnvFieldNames <> nil) and (FEnvFieldNames.IndexOf(AName) >= 0);
+end;
+
 function TCodeGenQBE.IsPromoted(const AName: string): Boolean;
 begin
   Result := FPromotedLocals.IndexOf(AName) >= 0;
@@ -1986,7 +2004,8 @@ begin
         begin
           VarName := Decl.Names.Strings[J];
           if IsPromotableKind(Decl.ResolvedType.Kind) and
-             (AddrTaken.IndexOf(VarName) < 0) then
+             (AddrTaken.IndexOf(VarName) < 0) and
+             (not IsEnvField(VarName)) then
           begin
             { tyProcedural method-pointers and 'reference to' closures are
               two-slot aggregates — not promotable }
@@ -2025,6 +2044,12 @@ begin
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names.Strings[J];
+
+      { Env-promoted local (anonymous-method capture): its storage is a
+        field of the heap env record — no frame slot; zero-init comes from
+        _ClassAlloc's memset. }
+      if IsEnvField(VarName) then
+        Continue;
 
       { Promoted locals: emit a zero initialisation as a direct copy into
         the temp.  QBE re-uses the same name across assignments (non-SSA
@@ -2679,6 +2704,7 @@ var
   Decl:    TVarDecl;
   VarName: string;
   ValTemp: string;
+  EnvValT: string;
   RelFn:   string;
   IsIntf:  Boolean;
 begin
@@ -2716,8 +2742,28 @@ begin
       for J := 0 to Decl.Names.Count - 1 do
       begin
         VarName := Decl.Names.Strings[J];
+        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
         EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal));
+      end;
+      Continue;
+    end
+    else if (Decl.ResolvedType.Kind = tyProcedural) and
+            TProceduralTypeDesc(Decl.ResolvedType).IsReference then
+    begin
+      { 'reference to' local: the Data half strong-references an ARC env
+        record (nil for capture-free closures — _ClassRelease is nil-safe).
+        Balance the reference the slot holds. }
+      for J := 0 to Decl.Names.Count - 1 do
+      begin
+        VarName := Decl.Names.Strings[J];
+        if IsEnvField(VarName) then Continue;
+        ValTemp := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8',
+          [ValTemp, VarRef(VarName, Decl.IsGlobal)]));
+        EnvValT := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [EnvValT, ValTemp]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [EnvValT]));
       end;
       Continue;
     end
@@ -2747,6 +2793,7 @@ begin
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names.Strings[J];
+      if IsEnvField(VarName) then Continue;  { env cleanup owns the field }
       ValTemp := AllocTemp();
       if IsIntf then
         EmitLine(Format('  %s =l loadl %s_obj', [ValTemp, VarRef(VarName, Decl.IsGlobal)]))
@@ -2877,6 +2924,7 @@ begin
       for J := 0 to Decl.Names.Count - 1 do
       begin
         VarName := Decl.Names.Strings[J];
+        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
         EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal));
       end;
@@ -2902,6 +2950,7 @@ begin
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names.Strings[J];
+      if IsEnvField(VarName) then Continue;  { env cleanup owns the field }
       ValTemp := AllocTemp();
       if IsIntf then
       begin
@@ -4425,6 +4474,7 @@ end;
 procedure TCodeGenQBE.EmitAssignment(AAssign: TAssignment);
 var
   ValTemp, OldTemp, QType, StoreInstr, PtrTemp: string;
+  ArgTemp, NewEnvT, NewEnvV: string;
   ObjAddr, ItabAddr: string;
   IntfDesc:  TInterfaceTypeDesc;
   ClassRT:   TRecordTypeDesc;
@@ -4925,10 +4975,45 @@ begin
       16-byte source block — another fat-value var, a TMethod record, or a
       materialised anonymous-method literal (same layout).  'nil' zeroes
       both halves directly (there is no 16-byte source to copy from).
-      Phase-1 ARC note: closures created so far are capture-free
-      (Env = nil), so no retain/release accompanies the copy; environment
-      refcounting arrives with capture support. }
-    if AAssign.Expr is TNilLiteral then
+
+      ARC (Phase 2): for a 'reference to' LHS the Data half is a strong
+      reference to an ARC env record — release the old value's env before
+      overwriting.  A literal RHS arrives OWNING its env ref (the creation
+      site retained it) so the ref MOVES into the slot; any other RHS is a
+      borrow, so retain the incoming env.  A method pointer's Data half is
+      a borrowed Self — never refcounted here. }
+    if TProceduralTypeDesc(AAssign.ResolvedLhsType).IsReference then
+    begin
+      OldTemp := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8',
+        [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [ValTemp, OldTemp]));
+      if AAssign.Expr is TNilLiteral then
+      begin
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+        EmitLine(Format('  storel 0, %s', [OldTemp]));
+        OldTemp := AllocTemp();
+        EmitLine(Format('  %s =l copy %s',
+          [OldTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
+        EmitLine(Format('  storel 0, %s', [OldTemp]));
+      end
+      else
+      begin
+        { addref-new before release-old: self-assignment safe. }
+        ArgTemp := EmitExpr(AAssign.Expr);
+        NewEnvT := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8', [NewEnvT, ArgTemp]));
+        NewEnvV := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [NewEnvV, NewEnvT]));
+        if not (AAssign.Expr is TAnonMethodExpr) then
+          EmitLine(Format('  call $_ClassAddRef(l %s)', [NewEnvV]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+        EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
+          [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ArgTemp]));
+      end;
+    end
+    else if AAssign.Expr is TNilLiteral then
     begin
       ValTemp := AllocTemp();
       EmitLine(Format('  %s =l copy %s',
@@ -5469,6 +5554,12 @@ begin
     else
       Result := '$' + Prefix + AName;
   end
+  { A variable promoted into the anonymous-method environment record lives
+    on the heap; %_env_<Name> is its address (env base + field offset),
+    computed once by EmitEnvPrologue.  Same shape as %_var_/%_cap_: an
+    address, so all deref logic applies unchanged. }
+  else if IsEnvField(AName) then
+    Result := '%_env_' + AName
   { A variable captured from an enclosing proc is reached through the hidden
     %_cap_<Name> pointer parameter, which holds the address of the enclosing
     slot — exactly what %_var_<Name> would be in the owning frame.  All the
@@ -9160,6 +9251,8 @@ begin
     RT := TRecordTypeDesc(GI.TypeDesc);
     EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT);
   end;
+  { Anonymous-method environment records (Phase 2). }
+  EmitEnvCleanupDefsForBlock(AProg.Block);
 end;
 
 procedure TCodeGenQBE.EmitMethodDefs(AProg: TProgram);
@@ -9242,6 +9335,108 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitEnvPrologue(ADecl: TMethodDecl);
+{ Phase-2 anonymous-method capture: establish the environment base and the
+  per-name field address temps for the current function.
+
+  Enclosing frame: heap-allocate the env (_ClassAlloc zeroes it — captured
+  locals start at their zero-init value for free) and take the frame's own
+  strong reference.  Captured VALUE parameters are then snapshotted from
+  their spilled %_var_ slots into the env fields (managed values take an
+  extra retain — the env owns its copy independently of the param slot,
+  which the param-exit pass releases separately).
+
+  Thunk: the env arrives through the hidden '__env' first parameter; the
+  thunk BORROWS it from the closure fat value (no retain/release here). }
+var
+  Env:  TRecordTypeDesc;
+  I, J: Integer;
+  F:    TFieldInfo;
+  Name: string;
+  ValT: string;
+  QT:   string;
+  Par:  TMethodParam;
+begin
+  Env := TRecordTypeDesc(ADecl.EnvType);
+  if ADecl.IsAnonThunk then
+    EmitLine('  %__envp =l loadl %_var___env')
+  else
+  begin
+    EmitLine(Format('  %%__envp =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)',
+      [Env.TotalSize(), QBEMangle(Env.Name)]));
+    EmitLine('  call $_ClassAddRef(l %__envp)');
+  end;
+  for I := 0 to ADecl.EnvCaptured.Count - 1 do
+  begin
+    Name := ADecl.EnvCaptured.Strings[I];
+    F := Env.FindField(Name);
+    EmitLine(Format('  %%_env_%s =l add %%__envp, %d', [Name, F.Offset]));
+  end;
+  if ADecl.IsAnonThunk then Exit;
+  for J := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[J]);
+    if ADecl.EnvCaptured.IndexOf(Par.ParamName) < 0 then Continue;
+    F := Env.FindField(Par.ParamName);
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      EmitRecordCopy(TRecordTypeDesc(F.TypeDesc),
+        '%_env_' + Par.ParamName, '%_var_' + Par.ParamName);
+      Continue;
+    end;
+    ValT := AllocTemp();
+    QT := QbeTypeOf(F.TypeDesc);
+    if QT = 'w' then
+    begin
+      EmitLine(Format('  %s =w loadw %%_var_%s', [ValT, Par.ParamName]));
+      EmitLine(Format('  storew %s, %%_env_%s', [ValT, Par.ParamName]));
+    end
+    else if QT = 'd' then
+    begin
+      EmitLine(Format('  %s =d loadd %%_var_%s', [ValT, Par.ParamName]));
+      EmitLine(Format('  stored %s, %%_env_%s', [ValT, Par.ParamName]));
+    end
+    else if QT = 's' then
+    begin
+      EmitLine(Format('  %s =s loads %%_var_%s', [ValT, Par.ParamName]));
+      EmitLine(Format('  stores %s, %%_env_%s', [ValT, Par.ParamName]));
+    end
+    else
+    begin
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValT, Par.ParamName]));
+      if F.TypeDesc.IsString() then
+        EmitLine(Format('  call $_StringAddRef(l %s)', [ValT]))
+      else if F.TypeDesc.Kind = tyClass then
+        EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]))
+      else if F.TypeDesc.Kind = tyDynArray then
+        EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValT]));
+      EmitLine(Format('  storel %s, %%_env_%s', [ValT, Par.ParamName]));
+    end;
+  end;
+end;
+
+procedure TCodeGenQBE.EmitEnvCleanupDefsForBlock(ABlock: TBlock);
+{ Emit the $_FieldCleanup___env_<n> function for every routine (at any
+  nesting depth) whose frame allocates an anonymous-method environment.
+  Thunks share the enclosing frame's EnvType — skipped to avoid duplicate
+  definitions.  The generic EmitFieldCleanupFn releases every ARC-managed
+  field, exactly as for class instances. }
+var
+  I:  Integer;
+  MD: TMethodDecl;
+begin
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.ProcDecls.Count - 1 do
+  begin
+    MD := TMethodDecl(ABlock.ProcDecls.Items[I]);
+    if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
+      EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
+        TRecordTypeDesc(MD.EnvType));
+    if MD.Body <> nil then
+      EmitEnvCleanupDefsForBlock(MD.Body);
+  end;
+end;
+
 procedure TCodeGenQBE.EmitFuncDef(ADecl: TMethodDecl; AExported: Boolean);
 var
   Sig:             string;
@@ -9256,6 +9451,9 @@ var
   Prefix:          string;
   SavedExitLbl:    string;
   SavedCaptures:   TStringList;
+  SavedEnvNames:   TStringList;
+  SavedEnvType:    TRecordTypeDesc;
+  SavedEnvThunk:   Boolean;
   NestedDecl:      TMethodDecl;
   CapName:         string;
   NestedFuncName:  string;
@@ -9540,16 +9738,43 @@ begin
 
   SavedExitLbl  := FExitLabel;
   SavedCaptures := FCapturedVars;
+  SavedEnvNames := FEnvFieldNames;
+  SavedEnvType  := FEnvType;
+  SavedEnvThunk := FEnvIsThunk;
   FExitLabel    := AllocLabel('func_exit');
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
     FCapturedVars := ADecl.CapturedVars
   else
     FCapturedVars := nil;
+  { Phase-2 anonymous-method capture: route accesses to promoted names
+    through the env record for the rest of this function's emission. }
+  if ADecl.EnvCaptured <> nil then
+  begin
+    FEnvFieldNames := ADecl.EnvCaptured;
+    FEnvType       := TRecordTypeDesc(ADecl.EnvType);
+    FEnvIsThunk    := ADecl.IsAnonThunk;
+  end
+  else
+  begin
+    FEnvFieldNames := nil;
+    FEnvType       := nil;
+    FEnvIsThunk    := False;
+  end;
   try
+    if ADecl.EnvCaptured <> nil then
+      EmitEnvPrologue(ADecl);
     EmitBlock(ADecl.Body);
+    { The enclosing frame drops its strong env reference on exit; the env
+      lives on iff an escaped closure still references it.  Thunks BORROW
+      the env from the closure fat value — no release. }
+    if (ADecl.EnvCaptured <> nil) and (not ADecl.IsAnonThunk) then
+      EmitLine('  call $_ClassRelease(l %__envp)');
   finally
-    FExitLabel    := SavedExitLbl;
-    FCapturedVars := SavedCaptures;
+    FExitLabel     := SavedExitLbl;
+    FCapturedVars  := SavedCaptures;
+    FEnvFieldNames := SavedEnvNames;
+    FEnvType       := SavedEnvType;
+    FEnvIsThunk    := SavedEnvThunk;
   end;
 
   { ARC: release string and class value params on exit (balances the
@@ -12458,7 +12683,15 @@ begin
       EmitLine(Format('  storel $%s, %s', [MDecl.Name, T]));
     ArgTemp := AllocTemp();
     EmitLine(Format('  %s =l add %s, 8', [ArgTemp, T]));
-    EmitLine(Format('  storel 0, %s', [ArgTemp]));
+    if MDecl.EnvCaptured <> nil then
+    begin
+      { Capturing closure: the fat value takes its own strong reference to
+        the enclosing frame's env record (Phase 2). }
+      EmitLine('  call $_ClassAddRef(l %__envp)');
+      EmitLine(Format('  storel %%__envp, %s', [ArgTemp]));
+    end
+    else
+      EmitLine(Format('  storel 0, %s', [ArgTemp]));
     Exit(T);
   end;
 
@@ -15196,6 +15429,10 @@ begin
           EmitMethodDefs and EmitFieldCleanupFns for AProg.GenericInstances.
           Method bodies are template clones — attribute allocation sites to
           the template's defining unit. }
+        { Anonymous-method environment records declared in this unit's
+          implementation routines (Phase 2). }
+        EmitEnvCleanupDefsForBlock(AUnit.ImplBlock);
+
         SavedUnit := FCurrentUnitName;
         for I := 0 to AUnit.GenericInstances.Count - 1 do
         begin
