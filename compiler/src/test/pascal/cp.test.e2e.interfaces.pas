@@ -57,6 +57,13 @@ type
       record-return ABI and corrupt memory (bug #5). }
     procedure TestRun_InterfaceMethod_ReturnsSretRecord;
     procedure TestRun_InterfaceMethod_ReturnsRegisterRecord;
+    { A value-returning interface-method call whose receiver is an interface
+      stored in a FIELD of Self (bare `FField.M()`), and one via a method-LOCAL
+      interface variable copied from that field.  On the native backend both used
+      to emit bogus bare _obj/_itab global operands (undefined-symbol link error
+      under --linker external, or a call-through-garbage SIGSEGV) instead of
+      loading the receiver's real fat pointer from Self+offset / the local slot. }
+    procedure TestRun_InterfaceField_ValueReturn_InMethod;
   end;
 
 implementation
@@ -483,6 +490,44 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src,
     'callee 5' + LE + 'assigned 5 10' + LE + 'callee 9' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceField_ValueReturn_InMethod;
+const
+  { CallField dispatches on the interface FIELD (FT.V()) inside a method;
+    CallLocal copies the field into a method-LOCAL interface var first (L := FT)
+    then dispatches on it.  Both are value-returning; on native they used to
+    resolve the receiver via bogus bare _obj/_itab labels. }
+  Src = '''
+    program P;
+    type
+      IThing = interface function V: Integer; end;
+      TThing = class(IThing) function V: Integer; begin Result := 42 end; end;
+      THold = class
+      private
+        FT: IThing;
+      public
+        procedure SetT(t: IThing);
+        function CallField: Integer;
+        function CallLocal: Integer;
+      end;
+    procedure THold.SetT(t: IThing); begin FT := t end;
+    function THold.CallField: Integer; begin Result := FT.V() end;
+    function THold.CallLocal: Integer;
+    var L: IThing;
+    begin L := FT; Result := L.V() end;
+    var H: THold; T: TThing;
+    begin
+      T := TThing.Create();
+      H := THold.Create();
+      H.SetT(T);
+      WriteLn('CallField=', H.CallField());
+      WriteLn('CallLocal=', H.CallLocal())
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'CallField=42' + LE + 'CallLocal=42' + LE, 0);
 end;
 
 initialization

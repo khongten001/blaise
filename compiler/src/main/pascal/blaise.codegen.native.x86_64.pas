@@ -2771,6 +2771,21 @@ begin
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
   end
+  else if (AObjExpr <> nil) and (AObjExpr is TIdentExpr) and
+          TIdentExpr(AObjExpr).IsImplicitSelf and
+          (TIdentExpr(AObjExpr).ImplicitFieldInfo <> nil) then
+  begin
+    { Interface-typed field of Self as receiver (bare `FField.M()` inside a
+      method): the fat pointer sits at Self + field offset (obj at +0,
+      itab at +8).  Guards against the named-global fallback emitting bogus
+      bare _obj/_itab labels. }
+    Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
+    if TFieldInfo(TIdentExpr(AObjExpr).ImplicitFieldInfo).Offset > 0 then
+      Self.Emit(Format(#9'addq $%d, %%r10',
+        [TFieldInfo(TIdentExpr(AObjExpr).ImplicitFieldInfo).Offset]));
+    Self.Emit(#9'movq 8(%r10), %rax');   { itab }
+    Self.Emit(#9'movq (%r10), %r10');    { obj }
+  end
   else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) then
   begin
     { Static-array interface element receiver (Arr[I].M()): the element is a
@@ -4140,6 +4155,21 @@ begin
     { sret interface Result: the slot holds the caller-buffer address —
       dereference for obj (+0) and itab (+8). }
     Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]));
+    Self.Emit(#9'movq 8(%rax), %rcx');
+    Self.Emit(#9'pushq %rcx');
+    Self.Emit(#9'movq (%rax), %rax');
+    Self.Emit(#9'pushq %rax');
+  end
+  else if AIdent.IsImplicitSelf and (AIdent.ImplicitFieldInfo <> nil) then
+  begin
+    { Interface-typed FIELD of Self referenced by bare name inside a method:
+      the contiguous fat pointer lives at Self + field offset (obj at +0,
+      itab at +8).  Without this branch the fallthrough would build bogus
+      <Name>_obj / <Name>_itab global labels from the field name. }
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+    if TFieldInfo(AIdent.ImplicitFieldInfo).Offset > 0 then
+      Self.Emit(Format(#9'addq $%d, %%rax',
+        [TFieldInfo(AIdent.ImplicitFieldInfo).Offset]));
     Self.Emit(#9'movq 8(%rax), %rcx');
     Self.Emit(#9'pushq %rcx');
     Self.Emit(#9'movq (%rax), %rax');
@@ -8478,9 +8508,10 @@ begin
      (ACall.ResolvedClassType.Kind = tyInterface) then
   begin
     { When the receiver is an expression (an interface stored in a field, e.g.
-      H.G.Greet()), ACall.ObjectName is empty — pass ACall.ObjExpr so the obj/
-      itab are loaded from the field's fat pointer rather than bogus _obj/_itab
-      operands. }
+      H.G.Greet(), or a bare `FField.M()` inside a method where semantic
+      synthesises ObjExpr = an implicit-Self field ident), ACall.ObjectName is
+      empty — pass ACall.ObjExpr so obj/itab are loaded from the field's fat
+      pointer rather than bogus _obj/_itab operands. }
     Self.EmitInterfaceCall(ACall.ObjectName, ACall.IsGlobal, ACall.IsVarParam,
       TInterfaceTypeDesc(ACall.ResolvedClassType), ACall.Name, ACall.Args,
       ACall.ObjExpr);

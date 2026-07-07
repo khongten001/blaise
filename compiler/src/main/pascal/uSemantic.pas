@@ -13259,11 +13259,24 @@ begin
     FSym := FTable.Lookup(IdentExpr.Name);
     if (FSym <> nil) and (FSym.Kind in [skFunction, skProcedure]) then
     begin
-      Idx := FProcIndex.IndexOf(IdentExpr.Name);
-      if Idx < 0 then
-        SemanticError(Format('Internal: function ''%s'' not in proc index',
-          [IdentExpr.Name]), AExpr.Line, AExpr.Col);
-      MD := TMethodDecl(FProcIndex.Objects[Idx]);
+      { Prefer the SCOPED symbol's own backing decl over a bare-name lookup in
+        the global FProcIndex: when two units each declare a same-named file-
+        local routine (e.g. two test units both defining ServerFiber), the
+        FProcIndex bare-name IndexOf returns the FIRST match, so @ServerFiber
+        in one unit would resolve to the OTHER unit's mangled symbol (an
+        undefined cross-object reference under separate compilation). FSym.Decl
+        already points at the correctly-scoped routine. }
+      MD := nil;
+      if FSym.Decl <> nil then
+        MD := TMethodDecl(FSym.Decl);
+      if MD = nil then
+      begin
+        Idx := FProcIndex.IndexOf(IdentExpr.Name);
+        if Idx < 0 then
+          SemanticError(Format('Internal: function ''%s'' not in proc index',
+            [IdentExpr.Name]), AExpr.Line, AExpr.Col);
+        MD := TMethodDecl(FProcIndex.Objects[Idx]);
+      end;
       ProcDesc := FTable.NewProceduralType('');
       for K := 0 to MD.Params.Count - 1 do
       begin
