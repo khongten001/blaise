@@ -141,6 +141,7 @@ uses
   cp.test.visibility,
   cp.test.publishedrtti,
   cp.test.attributes,
+  cp.test.anonmethods,
   cp.test.proctypes_ofobject,
   cp.test.textblock,
   cp.test.tokenkindname,

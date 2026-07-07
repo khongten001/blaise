@@ -1926,9 +1926,11 @@ begin
           if IsPromotableKind(Decl.ResolvedType.Kind) and
              (AddrTaken.IndexOf(VarName) < 0) then
           begin
-            { tyProcedural method-pointers are two-slot aggregates — not promotable }
+            { tyProcedural method-pointers and 'reference to' closures are
+              two-slot aggregates — not promotable }
             IsMethodPtr := (Decl.ResolvedType.Kind = tyProcedural) and
-                           TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr;
+                           (TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr or
+                            TProceduralTypeDesc(Decl.ResolvedType).IsReference);
             { Jumbo (>64-member) sets are inline byte-array aggregates, not
               register values — promoting one to a single SSA temp would
               silently truncate it to 8 bytes. }
@@ -2020,7 +2022,8 @@ begin
         tyPointer, tyProcedural, tyMetaClass:
           begin
             if (Decl.ResolvedType.Kind = tyProcedural) and
-               TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr then
+               (TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr or
+                TProceduralTypeDesc(Decl.ResolvedType).IsReference) then
             begin
               EmitLine(Format('  %%_var_%s =l alloc8 16', [VarName]));
               EmitLine(Format('  call $memset(l %%_var_%s, w 0, l 16)', [VarName]));
@@ -2189,7 +2192,8 @@ begin
         tyString, tyClass, tyPointer, tyPChar, tyMetaClass:
           EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
         tyProcedural:
-          if TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr then
+          if TProceduralTypeDesc(Decl.ResolvedType).IsMethodPtr or
+             TProceduralTypeDesc(Decl.ResolvedType).IsReference then
             EmitLine(Format('%s $%s = { z 16 }', [Pfx, VarName]))
           else
             EmitLine(Format('%s $%s = { l 0 }', [Pfx, VarName]));
@@ -4851,14 +4855,33 @@ begin
   end
   else if (AAssign.ResolvedLhsType <> nil) and
           (AAssign.ResolvedLhsType.Kind = tyProcedural) and
-          TProceduralTypeDesc(AAssign.ResolvedLhsType).IsMethodPtr then
+          (TProceduralTypeDesc(AAssign.ResolvedLhsType).IsMethodPtr or
+           TProceduralTypeDesc(AAssign.ResolvedLhsType).IsReference) then
   begin
-    { Method-pointer assignment: 16-byte block copy (Code at +0, Data at +8).
-      The RHS evaluates to the address of a 16-byte source block — either
-      another method-pointer var or a TMethod record (same layout). }
-    ValTemp := EmitExpr(AAssign.Expr);
-    EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
-      [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp]));
+    { Method-pointer / 'reference to' assignment: 16-byte block copy
+      (Code at +0, Data at +8).  The RHS evaluates to the address of a
+      16-byte source block — another fat-value var, a TMethod record, or a
+      materialised anonymous-method literal (same layout).  'nil' zeroes
+      both halves directly (there is no 16-byte source to copy from).
+      Phase-1 ARC note: closures created so far are capture-free
+      (Env = nil), so no retain/release accompanies the copy; environment
+      refcounting arrives with capture support. }
+    if AAssign.Expr is TNilLiteral then
+    begin
+      ValTemp := AllocTemp();
+      EmitLine(Format('  %s =l copy %s',
+        [ValTemp, VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit)]));
+      EmitLine(Format('  storel 0, %s', [ValTemp]));
+      OldTemp := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [OldTemp, ValTemp]));
+      EmitLine(Format('  storel 0, %s', [OldTemp]));
+    end
+    else
+    begin
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
+        [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ValTemp]));
+    end;
   end
   else if AAssign.Expr.ResolvedType.IsString() then
   begin
@@ -5816,12 +5839,14 @@ begin
   Result := RecretClassify(ARec, GTarget);
 end;
 
-{ True for an 'of object' method-pointer type — a 16-byte [Code; Data]
-  aggregate returned by the same ABI as a two-pointer record. }
+{ True for an 'of object' method-pointer type or a 'reference to' closure
+  type — both are 16-byte [Code; Data] aggregates returned by the same ABI
+  as a two-pointer record. }
 function IsMethodPtrType(AType: TTypeDesc): Boolean;
 begin
   Result := (AType <> nil) and (AType.Kind = tyProcedural)
-            and TProceduralTypeDesc(AType).IsMethodPtr;
+            and (TProceduralTypeDesc(AType).IsMethodPtr or
+                 TProceduralTypeDesc(AType).IsReference);
 end;
 
 { A method pointer is a 16-byte aggregate [Code; Data] of two raw pointers —
@@ -9658,9 +9683,12 @@ begin
     Self. }
   if ACall.IsIndirectCall then
   begin
-    if TProceduralTypeDesc(ACall.ResolvedProcType).IsMethodPtr then
+    if TProceduralTypeDesc(ACall.ResolvedProcType).IsMethodPtr or
+       TProceduralTypeDesc(ACall.ResolvedProcType).IsReference then
     begin
-      { Method-pointer dispatch: Code at slot+0, Data at slot+8. }
+      { Method-pointer / closure dispatch: Code at slot+0, Data at slot+8.
+        For a closure the Data half is the environment pointer (nil when
+        capture-free) — passed as the hidden first argument either way. }
       FPtrTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s',
         [FPtrTemp, VarRef(ACall.Name, ACall.IndirectCallIsGlobal)]));
@@ -11536,10 +11564,12 @@ begin
         type-cast branch below — indirect calls also have ResolvedDecl=nil. }
       if FC.IsIndirectCall then
       begin
-        if TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr then
+        if TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr or
+           TProceduralTypeDesc(FC.ResolvedProcType).IsReference then
         begin
-          { Method-pointer dispatch: 16-byte slot.  Code at +0, Data at +8;
-            pass Data as the implicit first arg. }
+          { Method-pointer / closure dispatch: 16-byte slot.  Code at +0,
+            Data at +8; pass Data (Self or environment) as the implicit
+            first arg. }
           FPtrTemp := AllocTemp();
           EmitLine(Format('  %s =l loadl %s',
             [FPtrTemp, VarRef(FC.Name, FC.IndirectCallIsGlobal)]));
@@ -12342,6 +12372,29 @@ begin
     Exit(T);
   end;
 
+  if AExpr is TAnonMethodExpr then
+  begin
+    { Anonymous-method literal: materialise the 16-byte (Code, Env) fat
+      value in a stack temp and return its address (record-style, like
+      method pointers).  Env is nil — Phase-1 literals are capture-free.
+      The lifted thunk '__closure_<n>' was appended to the module's
+      ProcDecls by uSemantic and is emitted like any standalone routine. }
+    MDecl := TMethodDecl(TAnonMethodExpr(AExpr).LiftedDecl);
+    if MDecl = nil then
+      raise ECodeGenError.Create(
+        'Anonymous method not lifted — semantic pass required');
+    T := AllocTemp();
+    EmitLine(Format('  %s =l alloc8 16', [T]));
+    if MDecl.ResolvedQbeName <> '' then
+      EmitLine(Format('  storel $%s, %s', [MDecl.ResolvedQbeName, T]))
+    else
+      EmitLine(Format('  storel $%s, %s', [MDecl.Name, T]));
+    ArgTemp := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ArgTemp, T]));
+    EmitLine(Format('  storel 0, %s', [ArgTemp]));
+    Exit(T);
+  end;
+
   if AExpr is TIndirectFuncCallExpr then
   begin
     { Call through an expression of procedural type: Expr(args).
@@ -12350,7 +12403,8 @@ begin
       an additional loadl.  For method pointers the value is the address of
       the 16-byte (Code, Data) block, so load both halves from it. }
     T := EmitExpr(TIndirectFuncCallExpr(AExpr).CalleeExpr);
-    if TProceduralTypeDesc(TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsMethodPtr then
+    if TProceduralTypeDesc(TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsMethodPtr or
+       TProceduralTypeDesc(TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsReference then
     begin
       FPtrTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [FPtrTemp, T]));

@@ -54,7 +54,14 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 9;  { v9 (this cycle): free-routine external-name linkage now
+  IFACE_VERSION = 10; { v10 (this cycle): 'reference to' anonymous-method
+                          types round-trip.  The PROC payload grew an
+                          IsReference bool after IsMethodPtr, so a
+                          `type T = reference to procedure(...)` survives
+                          export -> import.  v9 readers must reject and
+                          recompile (docs/anonymous-methods-design.adoc
+                          Phase 0).
+                        v9: free-routine external-name linkage now
                           round-trips.  Each ROUT entry grew two trailing fields
                           (IsExternal bool + ExternalName lpstr) after
                           ResolvedQbeName, so a routine declared `external name
@@ -602,6 +609,7 @@ begin
   Result :=
     EncodeBool (Def.IsFunction) +
     EncodeBool (Def.IsMethodPtr) +
+    EncodeBool (Def.IsReference) +
     EncodeLpstr(Def.ReturnTypeName) +
     EncodeCount(Def.Params.Count);
   for J := 0 to Def.Params.Count - 1 do
@@ -2289,6 +2297,7 @@ begin
   Def := TProceduralTypeDef.Create();
   Def.IsFunction     := DecodeBool(AText, APos);
   Def.IsMethodPtr    := DecodeBool(AText, APos);
+  Def.IsReference    := DecodeBool(AText, APos);
   Def.ReturnTypeName := ReadLpstrAt(AText, APos);
   Pc := DecodeCount(AText, APos);
   for J := 1 to Pc do

@@ -832,9 +832,12 @@ type
 
   { Procedural type definition: type T = function(...): X;  or
                                  type T = procedure(...);
-    Bare procedural pointers — not 'of object' (method pointers) and not
-    'reference to' (anonymous methods); both are out of scope for this
-    iteration. }
+    Three flavours (see docs/anonymous-methods-design.adoc):
+      bare procedural pointer          — 8-byte code pointer;
+      'of object' method pointer      — 16-byte (Code, Self) fat value;
+      'reference to' anonymous method — 16-byte (Code, Env) fat value whose
+        Data half is an ARC-managed environment record (nil for capture-free
+        closures and coerced plain routines). }
   TProceduralTypeDef = class(TASTTypeDef)
   public
     Params:         TObjectList;  { owned TMethodParam }
@@ -844,6 +847,9 @@ type
                                      suffix.  Method-pointer values carry a
                                      16-byte (Code, Data) pair instead of a
                                      bare code pointer. }
+    IsReference:    Boolean;       { True iff declared with the 'reference to'
+                                     prefix.  Mutually exclusive with
+                                     IsMethodPtr. }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -972,6 +978,30 @@ type
                                method declaration ('[TestCase(...)] procedure ...').
                                Reified into the typeinfo method-attrs table for
                                published methods. }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  { Anonymous procedure/function literal as an expression:
+      procedure(...) begin ... end   /   function(...): T begin ... end
+    (docs/anonymous-methods-design.adoc).  The literal produces a
+    'reference to' fat value (Code, Env).  Phase 1 supports CAPTURE-FREE
+    literals: uSemantic lifts Decl into the enclosing module's ProcDecls as
+    a hidden thunk '__closure_<n>' with a hidden 'AEnv: Pointer' first
+    parameter, and the creation site materialises (Code = @thunk,
+    Env = nil).  Capture analysis / environment records are Phase 2. }
+  TAnonMethodExpr = class(TASTExpr)
+  public
+    Decl:         TMethodDecl;   { owned — params, return type, Body }
+    WeakCaptures: TStringList;   { owned; names in a '[Weak a, b]' capture
+                                   list; nil = none.  Parsed now, used from
+                                   Phase 5. }
+    LiftedName:   string;        { set by uSemantic — source-level name of
+                                   the lifted thunk routine }
+    [Unretained] LiftedDecl: TObject; { TMethodDecl — not owned; the lifted
+                                   thunk appended to the module's ProcDecls
+                                   by uSemantic; codegen references it via
+                                   ResolvedQbeName }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -1642,6 +1672,20 @@ begin
   inherited Destroy();
 end;
 
+{ TAnonMethodExpr }
+
+constructor TAnonMethodExpr.Create;
+begin
+  inherited Create();
+  { Decl is assigned by the parser (or by CloneExpr). }
+end;
+
+destructor TAnonMethodExpr.Destroy;
+begin
+  { Owned class fields released by ARC field cleanup. }
+  inherited Destroy();
+end;
+
 { TMethodDecl }
 
 constructor TMethodDecl.Create;
@@ -2028,6 +2072,7 @@ var
   DE:  TDerefExpr;
   AoE: TAddrOfExpr;
   MCE: TMethodCallExpr;
+  AME: TAnonMethodExpr;
   I:   Integer;
 begin
   if AExpr = nil then
@@ -2167,6 +2212,19 @@ begin
     for I := 0 to TMethodCallExpr(AExpr).Args.Count - 1 do
       MCE.Args.Add(CloneExpr(TASTExpr(TMethodCallExpr(AExpr).Args.Items[I])));
     Result := MCE;
+  end
+  else if AExpr is TAnonMethodExpr then
+  begin
+    AME := TAnonMethodExpr.Create();
+    AME.Decl := CloneMethodDecl(TAnonMethodExpr(AExpr).Decl);
+    if TAnonMethodExpr(AExpr).WeakCaptures <> nil then
+    begin
+      AME.WeakCaptures := TStringList.Create();
+      for I := 0 to TAnonMethodExpr(AExpr).WeakCaptures.Count - 1 do
+        AME.WeakCaptures.Add(TAnonMethodExpr(AExpr).WeakCaptures.Strings[I]);
+    end;
+    { LiftedName/LiftedDecl are semantic products — NOT copied. }
+    Result := AME;
   end
   else
     raise Exception.CreateFmt('CloneExpr: unhandled expression node %s',
@@ -2769,6 +2827,7 @@ begin
   Result.ReturnTypeName := ASrc.ReturnTypeName;
   Result.IsFunction     := ASrc.IsFunction;
   Result.IsMethodPtr    := ASrc.IsMethodPtr;
+  Result.IsReference    := ASrc.IsReference;
   for I := 0 to ASrc.Params.Count - 1 do
     Result.Params.Add(CloneMethodParam(TMethodParam(ASrc.Params.Items[I])));
 end;

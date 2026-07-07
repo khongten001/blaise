@@ -138,6 +138,7 @@ type
     function  ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
     function  ParseCompoundStmt: TCompoundStmt;
     function  ParseExpr: TASTExpr;
+    function  ParseAnonMethodLiteral: TAnonMethodExpr;
     function  ParseSetOrArrayElement: TASTExpr;
     function  ParseAddSub: TASTExpr;
     function  ParseTerm: TASTExpr;
@@ -1103,6 +1104,28 @@ begin
         TD.Def := ParseSetDef()
       else if Check(tkFunction) or Check(tkProcedure) then
         TD.Def := ParseProceduralTypeDef()
+      { 'reference to procedure/function' — anonymous-method (closure) type.
+        'reference' is a soft keyword: it introduces a reference type only
+        when immediately followed by 'to'; a type alias to a type literally
+        named Reference still parses via the ident branch below. }
+      else if Check(tkIdent) and SameText(FCurrent.Value, 'reference') and
+              (PeekKind() = tkTo) then
+      begin
+        Advance();  { consume 'reference' }
+        Advance();  { consume 'to' }
+        if not (Check(tkFunction) or Check(tkProcedure)) then
+          raise EParseError.Create(Format(
+            'Expected ''procedure'' or ''function'' after ''reference to'' ' +
+            'at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        TD.Def := ParseProceduralTypeDef();
+        if TProceduralTypeDef(TD.Def).IsMethodPtr then
+          raise EParseError.Create(Format(
+            '''reference to'' and ''of object'' are mutually exclusive ' +
+            'at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        TProceduralTypeDef(TD.Def).IsReference := True;
+      end
       else if (Check(tkIntLit) or Check(tkMinus)) and SubrangeAhead() then
       begin
         { Named integer subrange:  type TByte = 0..255;  type TIdx = -10..10;
@@ -4915,6 +4938,87 @@ begin
   end;
 end;
 
+function TParser.ParseAnonMethodLiteral: TAnonMethodExpr;
+{ Anonymous procedure/function literal in expression position
+  (docs/anonymous-methods-design.adoc):
+
+    procedure [Weak a, b] (params) begin ... end
+    function (params): T begin ... end
+
+  The body is a full routine block — its own var/const/type sections and
+  nested decls are allowed (ParseBlock).  There is no name and no trailing
+  semicolon: the literal ends at the body's 'end', and the surrounding
+  expression context continues from there. }
+var
+  IsFunc: Boolean;
+  MD:     TMethodDecl;
+begin
+  Result := TAnonMethodExpr.Create();
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    IsFunc := Check(tkFunction);
+    Advance();  { consume 'procedure' / 'function' }
+    { Optional [Weak name, name, ...] capture-modifier list (used from the
+      [Weak]-capture phase; parsed and stored now).  NOTE: keep this comment
+      free of inner brace characters — a nested open-brace closes the comment
+      early and the lexer then mis-parses the rest of the line. }
+    if Check(tkLBracket) then
+    begin
+      Advance();
+      if not (Check(tkIdent) and SameText(FCurrent.Value, 'Weak')) then
+        raise EParseError.Create(Format(
+          'Expected ''Weak'' in anonymous-method capture-modifier list ' +
+          'at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      Advance();
+      Result.WeakCaptures := TStringList.Create();
+      if not Check(tkIdent) then
+        raise EParseError.Create(Format(
+          'Expected captured name after ''Weak'' at line %d col %d in %s',
+          [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+      Result.WeakCaptures.Add(FCurrent.Value);
+      Advance();
+      while Check(tkComma) do
+      begin
+        Advance();
+        if not Check(tkIdent) then
+          raise EParseError.Create(Format(
+            'Expected captured name after '','' at line %d col %d in %s',
+            [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+        Result.WeakCaptures.Add(FCurrent.Value);
+        Advance();
+      end;
+      Expect(tkRBracket);
+    end;
+    MD := TMethodDecl.Create();
+    MD.Line := Result.Line;
+    MD.Col  := Result.Col;
+    Result.Decl := MD;
+    if Check(tkLParen) then
+    begin
+      Advance();
+      if not Check(tkRParen) then
+        ParseParamList(MD.Params);
+      Expect(tkRParen);
+    end;
+    if IsFunc then
+    begin
+      Expect(tkColon);
+      MD.ReturnTypeName := ParseTypeName();
+    end;
+    if not (Check(tkBegin) or Check(tkVar) or Check(tkConst) or Check(tkType)) then
+      raise EParseError.Create(Format(
+        'Expected anonymous-method body (''begin'' or a local declaration ' +
+        'section) at line %d col %d in %s',
+        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+    MD.Body := ParseBlock();
+  except
+    Result.Free();
+    raise;
+  end;
+end;
+
 function TParser.ParseFactor: TASTExpr;
 var
   IntNode:    TIntLiteral;
@@ -4944,6 +5048,13 @@ var
   InhNode:      TInheritedCallExpr;
 begin
   case FCurrent.Kind of
+    tkProcedure, tkFunction:
+      begin
+        { Anonymous procedure/function literal — in expression position a
+          'procedure'/'function' keyword can only start a closure literal
+          (a type declaration is never an expression). }
+        Result := ParseAnonMethodLiteral();
+      end;
     tkInherited:
       begin
         { `inherited Method(args)` in expression position — the parent

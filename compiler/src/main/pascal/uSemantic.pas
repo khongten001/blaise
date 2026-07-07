@@ -70,6 +70,13 @@ type
     FPendingGenericRecordInstances: TObjectList; { TGenericRecordInstance — not owned }
     FPendingGenericIntfInstances:   TObjectList; { TGenericInterfaceInstance — not owned }
     FGenericFuncTemplates: TStringList;  { base name → TMethodDecl template (not owned) }
+    FPendingAnonDecls:    TObjectList;   { non-owning — lifted anonymous-method
+                                           thunks awaiting registration + body
+                                           analysis; drained in module scope by
+                                           DrainPendingAnonDecls after the
+                                           enclosing bodies complete }
+    FAnonMethodCount:     Integer;       { per-compilation counter for
+                                           '__closure_<n>' thunk names }
     FGenericMethodTemplates: TStringList; { 'OwnerType.Method' → TMethodDecl template (not owned) — generic methods with method-level <T> }
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
@@ -370,6 +377,9 @@ type
     function  AnalyseSupportsExpr(AExpr: TSupportsExpr): TTypeDesc;
     function  AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
+    function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
+    procedure DrainPendingAnonDecls(ABlock: TBlock);
+    procedure CoerceRoutineToClosure(AAssign: TAssignment);
     procedure ResolveProceduralTypeDef(ATD: TTypeDecl);
     function  AnalyseStringSubscriptExpr(AExpr: TStringSubscriptExpr): TTypeDesc;
     function  AnalyseArrayLiteralExpr(AExpr: TArrayLiteralExpr): TTypeDesc;
@@ -775,6 +785,8 @@ begin
   FPendingGenericInstances       := TObjectList.Create(False);
   FPendingGenericRecordInstances := TObjectList.Create(False);
   FPendingGenericIntfInstances   := TObjectList.Create(False);
+  FPendingAnonDecls     := TObjectList.Create(False);
+  FAnonMethodCount      := 0;
   FLoopDepth            := 0;
 end;
 
@@ -2012,6 +2024,12 @@ begin
     if AUnit.FinalStmts <> nil then
       for I := 0 to AUnit.FinalStmts.Count - 1 do
         AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
+
+    { Register + analyse anonymous-method thunks lifted during the body
+      passes above.  Must run at unit scope (inside this try) so thunk
+      bodies still see unit globals, and before codegen walks
+      ImplBlock.ProcDecls. }
+    DrainPendingAnonDecls(AUnit.ImplBlock);
   finally
     FTable.PopScope();
   end;
@@ -2357,6 +2375,12 @@ begin
     if AUnit.FinalStmts <> nil then
       for I := 0 to AUnit.FinalStmts.Count - 1 do
         AnalyseStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
+
+    { Register + analyse anonymous-method thunks lifted during the body
+      passes above.  Must run at unit scope (inside this try) so thunk
+      bodies still see unit globals, and before codegen walks
+      ImplBlock.ProcDecls. }
+    DrainPendingAnonDecls(AUnit.ImplBlock);
   finally
     FTable.PopScope();
   end;
@@ -4762,6 +4786,13 @@ begin
     AnalyseMethodBodies(ABlock);
     AnalyseStandaloneBodies(ABlock);
     AnalyseStmts(ABlock);
+    { Register + analyse anonymous-method thunks lifted during the body
+      passes above.  Program-top only: nested AnalyseBlock calls (routine
+      bodies) must NOT drain, or thunk bodies would be analysed with the
+      enclosing routine's locals still in scope and an unsupported capture
+      would silently type-check. }
+    if AIsProgramTop then
+      DrainPendingAnonDecls(ABlock);
     { After all bodies are analysed, mark inline candidates so codegen can
       decide whether to emit a call or inline the body at each call site. }
     MarkInlineCandidates(ABlock);
@@ -8998,6 +9029,12 @@ begin
 
   ResolveDiamond(AAssign.Expr, VarSym.TypeDesc);
 
+  { '@Routine' assigned to a 'reference to' variable coerces via a
+    forwarding adapter literal. }
+  if (VarSym.TypeDesc <> nil) and (VarSym.TypeDesc.Kind = tyProcedural) and
+     TProceduralTypeDesc(VarSym.TypeDesc).IsReference then
+    CoerceRoutineToClosure(AAssign);
+
   { Set-literal assignment: [elem, ...] on RHS when LHS is a set type }
   if (VarSym.TypeDesc.Kind = tySet) and (AAssign.Expr is TArrayLiteralExpr) then
   begin
@@ -12327,6 +12364,8 @@ begin
     Result := AnalyseDerefExpr(TDerefExpr(AExpr))
   else if AExpr is TAddrOfExpr then
     Result := AnalyseAddrOfExpr(TAddrOfExpr(AExpr))
+  else if AExpr is TAnonMethodExpr then
+    Result := AnalyseAnonMethodExpr(TAnonMethodExpr(AExpr))
   else if AExpr is TStringSubscriptExpr then
     Result := AnalyseStringSubscriptExpr(TStringSubscriptExpr(AExpr))
   else if AExpr is TArrayLiteralExpr then
@@ -13485,6 +13524,206 @@ begin
   Result := TPointerTypeDesc(PtrType).BaseType;
 end;
 
+function TSemanticAnalyser.AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
+{ Anonymous procedure/function literal (docs/anonymous-methods-design.adoc,
+  Phase 1: capture-free).  Two products:
+
+  1. The literal's structural signature: an unnamed TProceduralTypeDesc with
+     IsReference = True built from the declared params and return type.
+     CheckTypesMatch then accepts the literal against any identically-shaped
+     named 'reference to' type via IsCompatibleWith — no target-typing needed
+     because the literal is fully typed by the grammar.
+
+  2. The lifted thunk: a hidden module-level routine '__closure_<n>' with the
+     uniform closure ABI — the environment pointer arrives as a hidden
+     '__env: Pointer' FIRST parameter (unused by capture-free bodies; the
+     call site always passes the fat value's Env half).  The thunk shares
+     the literal's Body (OwnBody = False) and is queued on
+     FPendingAnonDecls; DrainPendingAnonDecls registers and analyses it in
+     MODULE scope after the enclosing bodies complete, so a body that
+     references an enclosing local fails with a clear undeclared-variable
+     error instead of silently miscompiling — capture promotion is Phase 2. }
+var
+  ProcDesc:  TProceduralTypeDesc;
+  MD:        TMethodDecl;
+  Par:       TMethodParam;
+  EnvPar:    TMethodParam;
+  ProcParam: TProcParamInfo;
+  I:         Integer;
+begin
+  if AExpr.ResolvedType <> nil then Exit(AExpr.ResolvedType);  { idempotent }
+  if AExpr.WeakCaptures <> nil then
+    SemanticError('[Weak] capture lists on anonymous methods are not yet ' +
+      'supported (capture promotion is a later phase)', AExpr.Line, AExpr.Col);
+
+  ProcDesc := FTable.NewProceduralType('');
+  ProcDesc.IsReference := True;
+  for I := 0 to AExpr.Decl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(AExpr.Decl.Params.Items[I]);
+    Par.ResolvedType := ResolveParamType(Par, AExpr.Line, AExpr.Col);
+    ProcParam := TProcParamInfo.Create();
+    ProcParam.Name         := Par.ParamName;
+    ProcParam.TypeDesc     := Par.ResolvedType;
+    ProcParam.IsVarParam   := Par.IsVarParam;
+    ProcParam.IsConstParam := Par.IsConstParam;
+    ProcDesc.Params.Add(ProcParam);
+  end;
+  if AExpr.Decl.ReturnTypeName <> '' then
+  begin
+    ProcDesc.ReturnType := FindTypeOrInstantiate(AExpr.Decl.ReturnTypeName);
+    if ProcDesc.ReturnType = nil then
+      SemanticError(Format(
+        'Unknown return type ''%s'' in anonymous method',
+        [AExpr.Decl.ReturnTypeName]), AExpr.Line, AExpr.Col);
+  end;
+
+  if AExpr.LiftedDecl = nil then
+  begin
+    FAnonMethodCount := FAnonMethodCount + 1;
+    MD := TMethodDecl.Create();
+    MD.Line := AExpr.Line;
+    MD.Col  := AExpr.Col;
+    MD.Name := '__closure_' + IntToStr(FAnonMethodCount);
+    MD.ReturnTypeName := AExpr.Decl.ReturnTypeName;
+    EnvPar := TMethodParam.Create();
+    EnvPar.ParamName := '__env';
+    EnvPar.TypeName  := 'Pointer';
+    MD.Params.Add(EnvPar);
+    for I := 0 to AExpr.Decl.Params.Count - 1 do
+      MD.Params.Add(CloneMethodParam(TMethodParam(AExpr.Decl.Params.Items[I])));
+    MD.Body       := AExpr.Decl.Body;
+    MD.OwnBody    := False;     { the literal's Decl keeps ownership }
+    MD.IsImplOnly := FCurrentUnit <> nil;
+    AExpr.LiftedName := MD.Name;
+    AExpr.LiftedDecl := MD;
+    FPendingAnonDecls.Add(MD);
+  end;
+
+  AExpr.ResolvedType := ProcDesc;
+  Result := ProcDesc;
+end;
+
+procedure TSemanticAnalyser.DrainPendingAnonDecls(ABlock: TBlock);
+{ Register and analyse every lifted anonymous-method thunk queued during
+  body analysis.  Runs in MODULE scope (the enclosing routine's locals are
+  no longer visible — see AnalyseAnonMethodExpr).  Appends each thunk to
+  ABlock.ProcDecls so both backends emit it like any standalone routine.
+  A while-loop because a literal nested inside another literal's body
+  queues further thunks during AnalyseStandaloneDecl. }
+var
+  MD:      TMethodDecl;
+  Par:     TMethodParam;
+  RetType: TTypeDesc;
+  I:       Integer;
+begin
+  while FPendingAnonDecls.Count > 0 do
+  begin
+    MD := TMethodDecl(FPendingAnonDecls.Get(0));
+    FPendingAnonDecls.Delete(0);
+    { The signature facts AnalyseStandaloneDecls would have computed. }
+    for I := 0 to MD.Params.Count - 1 do
+    begin
+      Par := TMethodParam(MD.Params.Items[I]);
+      Par.ResolvedType := ResolveParamType(Par, MD.Line, MD.Col);
+    end;
+    if MD.ReturnTypeName <> '' then
+    begin
+      RetType := FindTypeOrInstantiate(MD.ReturnTypeName);
+      if RetType = nil then
+        SemanticError(Format(
+          'Unknown return type ''%s'' in anonymous method',
+          [MD.ReturnTypeName]), MD.Line, MD.Col);
+      MD.ResolvedReturnType := RetType;
+    end;
+    MD.ResolvedQbeName := CurrentUnitPrefix() + MD.Name;
+    ABlock.ProcDecls.Add(MD);
+    AnalyseStandaloneDecl(MD);
+  end;
+end;
+
+procedure TSemanticAnalyser.CoerceRoutineToClosure(AAssign: TAssignment);
+{ '@Routine' assigned to a 'reference to' variable: desugar the RHS into a
+  capture-free anonymous-method literal that forwards to the routine — the
+  design's "adapter thunk" (docs/anonymous-methods-design.adoc,
+  Conversions).  The literal then flows through AnalyseAnonMethodExpr and
+  ordinary codegen, so both backends get the adapter for free and the
+  signature is validated by the forwarding call + CheckTypesMatch.
+  Method-pointer coercion (strong-retained receiver) is a later phase.
+  Callers guard: LHS type is tyProcedural with IsReference. }
+var
+  Sym:     TSymbol;
+  MD:      TMethodDecl;
+  AME:     TAnonMethodExpr;
+  NewDecl: TMethodDecl;
+  FCall:   TFuncCallExpr;
+  PCall:   TProcCall;
+  Asn:     TAssignment;
+  Idn:     TIdentExpr;
+  Par:     TMethodParam;
+  I:       Integer;
+begin
+  if not (AAssign.Expr is TAddrOfExpr) then Exit;
+  if not (TAddrOfExpr(AAssign.Expr).Expr is TIdentExpr) then Exit;
+  Sym := FTable.Lookup(TIdentExpr(TAddrOfExpr(AAssign.Expr).Expr).Name);
+  if (Sym = nil) or not (Sym.Kind in [skFunction, skProcedure]) then Exit;
+  if Sym.Decl = nil then Exit;
+  MD := TMethodDecl(Sym.Decl);
+
+  AME      := TAnonMethodExpr.Create();
+  AME.Line := AAssign.Line;
+  AME.Col  := AAssign.Col;
+  NewDecl  := TMethodDecl.Create();
+  NewDecl.Line := AAssign.Line;
+  NewDecl.Col  := AAssign.Col;
+  NewDecl.ReturnTypeName := MD.ReturnTypeName;
+  for I := 0 to MD.Params.Count - 1 do
+    NewDecl.Params.Add(CloneMethodParam(TMethodParam(MD.Params.Items[I])));
+  NewDecl.Body := TBlock.Create();
+  if MD.ReturnTypeName <> '' then
+  begin
+    FCall := TFuncCallExpr.Create();
+    FCall.Line := AAssign.Line;
+    FCall.Col  := AAssign.Col;
+    FCall.Name := MD.Name;
+    for I := 0 to MD.Params.Count - 1 do
+    begin
+      Par := TMethodParam(MD.Params.Items[I]);
+      Idn := TIdentExpr.Create();
+      Idn.Line := AAssign.Line;
+      Idn.Col  := AAssign.Col;
+      Idn.Name := Par.ParamName;
+      FCall.Args.Add(Idn);
+    end;
+    Asn := TAssignment.Create();
+    Asn.Line := AAssign.Line;
+    Asn.Col  := AAssign.Col;
+    Asn.Name := 'Result';
+    Asn.Expr := FCall;
+    NewDecl.Body.Stmts.Add(Asn);
+  end
+  else
+  begin
+    PCall := TProcCall.Create();
+    PCall.Line := AAssign.Line;
+    PCall.Col  := AAssign.Col;
+    PCall.Name := MD.Name;
+    for I := 0 to MD.Params.Count - 1 do
+    begin
+      Par := TMethodParam(MD.Params.Items[I]);
+      Idn := TIdentExpr.Create();
+      Idn.Line := AAssign.Line;
+      Idn.Col  := AAssign.Col;
+      Idn.Name := Par.ParamName;
+      PCall.Args.Add(Idn);
+    end;
+    NewDecl.Body.Stmts.Add(PCall);
+  end;
+  AME.Decl := NewDecl;
+  AAssign.Expr.Free();
+  AAssign.Expr := AME;
+end;
+
 function TSemanticAnalyser.AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
 var
   InnerType: TTypeDesc;
@@ -13637,6 +13876,7 @@ begin
       [ATD.Name]), ATD.Line, ATD.Col);
   ProcDesc := TProceduralTypeDesc(Sym.TypeDesc);
   ProcDesc.IsMethodPtr := Def.IsMethodPtr;
+  ProcDesc.IsReference := Def.IsReference;
   for K := 0 to Def.Params.Count - 1 do
   begin
     MParam := TMethodParam(Def.Params.Items[K]);

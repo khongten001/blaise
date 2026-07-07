@@ -934,12 +934,14 @@ var
   GNativeMethodPtrRec:  TRecordTypeDesc;
   GNativeMethodPtrLeaf: TTypeDesc;
 
-{ True for an 'of object' method-pointer type — a 16-byte [Code; Data]
-  aggregate returned by the same ABI as a two-pointer record. }
+{ True for an 'of object' method-pointer type or a 'reference to' closure
+  type — both are 16-byte [Code; Data] aggregates returned by the same ABI
+  as a two-pointer record. }
 function IsMethodPtrType(AType: TTypeDesc): Boolean;
 begin
   Result := (AType <> nil) and (AType.Kind = tyProcedural)
-            and TProceduralTypeDesc(AType).IsMethodPtr;
+            and (TProceduralTypeDesc(AType).IsMethodPtr or
+                 TProceduralTypeDesc(AType).IsReference);
 end;
 
 { Lazily-built canonical 16-byte [Code; Data] record for method pointers.
@@ -4363,8 +4365,9 @@ begin
   else if (AType <> nil) and (AType.Kind = tyInterface) then
     Sz := 16   { fat pointer: obj slot (+0) then itab slot (+8) }
   else if (AType <> nil) and (AType.Kind = tyProcedural) and
-          TProceduralTypeDesc(AType).IsMethodPtr then
-    Sz := 16   { method pointer: code slot (+0) and data/self slot (+8) }
+          (TProceduralTypeDesc(AType).IsMethodPtr or
+           TProceduralTypeDesc(AType).IsReference) then
+    Sz := 16   { method ptr / closure: code slot (+0) and data/env slot (+8) }
   else
     Sz := 8;
   Inc(AOffset, Sz);
@@ -7121,11 +7124,13 @@ begin
     if FC.IsIndirectCall then
     begin
       { Bare function-pointer call: load the pointer from the variable slot
-        and dispatch via callq *%r10.  Method pointers (of object) carry a
-        16-byte TMethod block — Data (Self) must be loaded from +8 and the
-        user args shifted right, exactly as in the statement path. }
+        and dispatch via callq *%r10.  Method pointers (of object) and
+        'reference to' closures carry a 16-byte block — Data (Self / env)
+        must be loaded from +8 and the user args shifted right, exactly as
+        in the statement path. }
       if (FC.ResolvedProcType <> nil) and
-         TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr then
+         (TProceduralTypeDesc(FC.ResolvedProcType).IsMethodPtr or
+          TProceduralTypeDesc(FC.ResolvedProcType).IsReference) then
         Self.EmitMethodPtrCall(
           Self.VarOperand(FC.Name),
           TProceduralTypeDesc(FC.ResolvedProcType),
@@ -8615,8 +8620,10 @@ begin
       e.g. Obj.GetFn()(args)) and dispatch through EmitMethodPtrCall, which
       loads Code into %r10 and Data (Self) into %rdi. }
     if (TIndirectFuncCallExpr(AExpr).ResolvedProcType <> nil) and
-       TProceduralTypeDesc(
-         TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsMethodPtr then
+       (TProceduralTypeDesc(
+          TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsMethodPtr or
+        TProceduralTypeDesc(
+          TIndirectFuncCallExpr(AExpr).ResolvedProcType).IsReference) then
     begin
       { Materialise the callee's 16-byte [Code; Data] block into a stack buffer
         and carry its address in callee-saved %rbx — EmitMethodPtrCall reads its
@@ -11864,6 +11871,54 @@ begin
       end;
       Exit;
     end;
+    { 'reference to' closure assignment (Phase 1): three direct RHS shapes.
+      An anonymous-method literal stores (Code = thunk, Env = nil); nil
+      zeroes both halves; another reference-typed variable is a plain
+      16-byte copy.  Capture-free closures carry no environment, so no
+      retain/release accompanies these stores yet — environment ARC arrives
+      with capture support.  A closure-returning call RHS falls through to
+      the IsMethodPtrType sret arms below (that predicate covers reference
+      types too). }
+    if (Asgn.ResolvedLhsType <> nil) and
+       (Asgn.ResolvedLhsType.Kind = tyProcedural) and
+       TProceduralTypeDesc(Asgn.ResolvedLhsType).IsReference then
+    begin
+      if Asgn.Expr is TAnonMethodExpr then
+      begin
+        MD := TMethodDecl(TAnonMethodExpr(Asgn.Expr).LiftedDecl);
+        if MD = nil then
+          raise ENativeCodeGenError.Create(
+            'native backend: anonymous method not lifted — semantic pass required');
+        Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [FuncSymbolFromDecl(MD)]));
+        Self.Emit(#9'movq %rax, (%rcx)');
+        Self.Emit(#9'movq $0, 8(%rcx)');
+        Exit;
+      end;
+      if Asgn.Expr is TNilLiteral then
+      begin
+        Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq $0, (%rcx)');
+        Self.Emit(#9'movq $0, 8(%rcx)');
+        Exit;
+      end;
+      if (Asgn.Expr is TIdentExpr) and
+         (Asgn.Expr.ResolvedType <> nil) and
+         (Asgn.Expr.ResolvedType.Kind = tyProcedural) and
+         TProceduralTypeDesc(Asgn.Expr.ResolvedType).IsReference then
+      begin
+        Self.EmitVarAddr(Asgn.Name, '%rdi');
+        if Self.IsLocal(TIdentExpr(Asgn.Expr).Name) then
+          Self.Emit(Format(#9'leaq %s, %%rsi',
+            [Self.VarOperand(TIdentExpr(Asgn.Expr).Name)]))
+        else
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rsi',
+            [Self.GlobalSymName(TIdentExpr(Asgn.Expr).Name)]));
+        Self.Emit(#9'movq $16, %rdx');
+        Self.Emit(#9'callq memcpy');
+        Exit;
+      end;
+    end;
     { Method-pointer assignment from @Obj.Method: directly store the
       [CodePtr, ObjPtr] pair into the destination's 16-byte slot. }
     if (Asgn.ResolvedLhsType <> nil) and
@@ -12865,7 +12920,8 @@ begin
     if PC.IsIndirectCall then
     begin
       if (PC.ResolvedProcType <> nil) and
-         TProceduralTypeDesc(PC.ResolvedProcType).IsMethodPtr then
+         (TProceduralTypeDesc(PC.ResolvedProcType).IsMethodPtr or
+          TProceduralTypeDesc(PC.ResolvedProcType).IsReference) then
         Self.EmitMethodPtrCall(Self.VarOperand(PC.Name),
           TProceduralTypeDesc(PC.ResolvedProcType), PC.Args)
       else
@@ -17990,9 +18046,11 @@ begin
 
         tyProcedural:
           for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-            if TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsMethodPtr then
+            if TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsMethodPtr or
+               TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsReference then
             begin
-              { Method pointer: two consecutive 8-byte slots (Code + Data).
+              { Method pointer / closure: two consecutive 8-byte slots
+                (Code + Data/Env).
                 VarOperand gives Code at the base; Data is 8 bytes above it. }
               Self.Emit(Format(#9'movq $0, %s',
                 [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));

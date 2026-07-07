@@ -208,6 +208,11 @@ type
     Params:      TObjectList;  { owned TProcParamInfo }
     [Unretained] ReturnType:  TTypeDesc;    { not owned; nil = procedure (no return) }
     IsMethodPtr: Boolean;      { True for 'procedure of object' types }
+    IsReference: Boolean;      { True for 'reference to' anonymous-method
+                                 types — a 16-byte (Code, Env) fat value
+                                 whose Data half is an ARC-managed
+                                 environment record (nil when capture-free).
+                                 Mutually exclusive with IsMethodPtr. }
     constructor Create(const AName: string);
     destructor  Destroy; override;
     { Two procedural types are compatible iff their return types match
@@ -808,7 +813,8 @@ begin
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
                  TStaticArrayTypeDesc(Self).ElementType.RawSize();
     tyProcedural:
-      if TProceduralTypeDesc(Self).IsMethodPtr then Result := 16
+      if TProceduralTypeDesc(Self).IsMethodPtr or
+         TProceduralTypeDesc(Self).IsReference then Result := 16
       else Result := 8;
     tyInterface: Result := 16;  { fat pointer: obj@+0, itab@+8 }
   else
@@ -837,7 +843,8 @@ begin
                  TStaticArrayTypeDesc(Self).LowBound + 1) *
                  TStaticArrayTypeDesc(Self).ElementType.RawSize();
     tyProcedural:
-      if TProceduralTypeDesc(Self).IsMethodPtr then Result := 16
+      if TProceduralTypeDesc(Self).IsMethodPtr or
+         TProceduralTypeDesc(Self).IsReference then Result := 16
       else Result := 8;
     tyInterface: Result := 16;  { fat pointer: obj@+0, itab@+8 }
   else
@@ -1484,6 +1491,7 @@ begin
   Result := False;
   if AOther = nil then Exit;
   if IsMethodPtr <> AOther.IsMethodPtr then Exit;
+  if IsReference <> AOther.IsReference then Exit;
   if (ReturnType = nil) <> (AOther.ReturnType = nil) then Exit;
   if (ReturnType <> nil) and (ReturnType <> AOther.ReturnType) then Exit;
   if Params.Count <> AOther.Params.Count then Exit;

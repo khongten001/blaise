@@ -255,6 +255,7 @@ type
     procedure TestRoundTrip_Interface;
     procedure TestRoundTrip_Interface_WithProperty;
     procedure TestRoundTrip_ProceduralType;
+    procedure TestRoundTrip_ReferenceToType;
     procedure TestRoundTrip_Metadata_UsedUnits_SourceFile;
     procedure TestRoundTrip_GenericClass_TemplateParams;
     procedure TestRoundTrip_GenericInterface_TemplateParams;
@@ -2698,13 +2699,13 @@ begin
   Iface := TUnitInterface.Create('U');
   try
     Buf := WriteUnitInterface(Iface);
-    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 9 since
-      free-routine external-name linkage (IsExternal + ExternalName on each ROUT
-      entry) was added (on top of v8's named integer subranges, v7's LinkLibs,
-      v6's `overload` directive, v5's member Visibility, v4's
+    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 10 since the
+      'reference to' anonymous-method procedural-type form was added (on top of
+      v9's free-routine external-name linkage, v8's named integer subranges,
+      v7's LinkLibs, v6's `overload` directive, v5's member Visibility, v4's
       TRoutineSig.IsStatic, and v3's static-member facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 9', Buf) = 0);
+      Pos('BLAISE-IFACE 10', Buf) = 0);
   finally
     Iface.Free();
   end;
@@ -3223,6 +3224,41 @@ begin
       AssertEquals('1 param', 1, Def.Params.Count);
       AssertEquals('param name', 'N',
         TMethodParam(Def.Params.Items[0]).ParamName);
+    finally
+      Round.Free();
+    end;
+  finally
+    Iface.Free();
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_ReferenceToType;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TOnDone = reference to function(N: Integer): Integer;' + #10 +
+    'implementation end.' + #10;
+var
+  Iface, Round: TUnitInterface;
+  Buf:          string;
+  E:            TTypeEntry;
+  Def:          TProceduralTypeDef;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  try
+    Buf   := WriteUnitInterface(Iface);
+    Round := ReadUnitInterface(Buf);
+    try
+      E := Round.FindType('TOnDone');
+      AssertTrue('TOnDone present', E <> nil);
+      AssertTrue('is procedural', E.Def is TProceduralTypeDef);
+      Def := TProceduralTypeDef(E.Def);
+      AssertTrue('is a function', Def.IsFunction);
+      AssertTrue('IsReference survives the round-trip', Def.IsReference);
+      AssertTrue('not a method ptr', not Def.IsMethodPtr);
+      AssertEquals('return type', 'Integer', Def.ReturnTypeName);
+      AssertEquals('1 param', 1, Def.Params.Count);
     finally
       Round.Free();
     end;
