@@ -115,7 +115,7 @@ type
     function  ParseClassDef: TClassTypeDef;
     function  ParseInterfaceDef: TInterfaceTypeDef;
     procedure ParseFieldDecl(AFields: TObjectList);
-    procedure ParseAttributeList(AAttrs: TStringList);
+    procedure ParseAttributeList(AAttrs: TStringList; AUses: TObjectList = nil);
     function  ParsePropertyDecl: TPropertyDecl;
     function  ParseMethodDecl(IsFunction: Boolean; ACanHaveNestedProcs: Boolean = False): TMethodDecl;
     procedure ParseParamList(AParams: TObjectList);
@@ -931,12 +931,16 @@ var
   IsGeneric:        Boolean;
   Constraint:       string;
   ClassAttrs:       TStringList;
+  ClassAttrUses:    TObjectList;  { non-owning transfer list; the class def's
+                                    owning AttrUses list adopts the items }
+  AUIdx:            Integer;
   SubLo:            Int64;
   SubHi:            Int64;
 begin
-  ClassAttrs := TStringList.Create();
+  ClassAttrs    := TStringList.Create();
+  ClassAttrUses := TObjectList.Create(False);
   try
-  ParseAttributeList(ClassAttrs);
+  ParseAttributeList(ClassAttrs, ClassAttrUses);
   TD := TTypeDecl.Create();
   TD.Line := FCurrent.Line;
   TD.Col  := FCurrent.Col;
@@ -1028,6 +1032,8 @@ begin
           GD.ParamConstraints.AddStrings(ParamConstraints);
           GD.ClassDef := ParseClassDef();
           GD.ClassDef.Attributes.AddStrings(ClassAttrs);
+          for AUIdx := 0 to ClassAttrUses.Count - 1 do
+            GD.ClassDef.AttrUses.Add(ClassAttrUses.Get(AUIdx));
           TD.Def := GD;
         end
         else
@@ -1086,6 +1092,8 @@ begin
       begin
         TD.Def := ParseClassDef();
         TClassTypeDef(TD.Def).Attributes.AddStrings(ClassAttrs);
+        for AUIdx := 0 to ClassAttrUses.Count - 1 do
+          TClassTypeDef(TD.Def).AttrUses.Add(ClassAttrUses.Get(AUIdx));
       end
       else if Check(tkIntf) then
         TD.Def := ParseInterfaceDef()
@@ -1131,6 +1139,7 @@ begin
   end;
   finally
     ClassAttrs.Free();
+    ClassAttrUses.Free();
   end;
 end;
 
@@ -2124,8 +2133,16 @@ var
   PropDecl:         TPropertyDecl;
   FieldCountBefore: Integer;
   FieldIdx:         Integer;
+  PendAttrNames:    TStringList; { attribute list captured at the top of the
+                                   member loop, attached to the next field or
+                                   method declaration }
+  PendAttrUses:     TObjectList; { non-owning; parallel TAttributeUse items }
+  AUIdx:            Integer;
 begin
+  PendAttrNames := TStringList.Create();
+  PendAttrUses  := TObjectList.Create(False);
   Result := TClassTypeDef.Create();
+  try
   try
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
@@ -2165,6 +2182,10 @@ begin
     CurrVisibility := mvPublic;
     CurrStatic     := False;
     repeat
+      { An attribute list may precede a field or a method declaration.
+        Capture it here and attach it to whichever member follows. }
+      if Check(tkLBracket) then
+        ParseAttributeList(PendAttrNames, PendAttrUses);
       { Optional `strict` soft keyword preceding `private`/`protected`.  `strict`
         is not a real token — recognise it only at section start, immediately
         before `private` or `protected`, so an ordinary identifier named `strict`
@@ -2297,6 +2318,11 @@ begin
         MethDecl.IsPublished := CurrPublished;
         MethDecl.IsStatic    := LocalStatic;
         MethDecl.Visibility  := CurrVisibility;
+        { Attach the pending attribute list, if any, to this method. }
+        for AUIdx := 0 to PendAttrUses.Count - 1 do
+          MethDecl.AttrUses.Add(PendAttrUses.Get(AUIdx));
+        PendAttrUses.Clear();
+        PendAttrNames.Clear();
         Result.Methods.Add(MethDecl);
       end
       else if Check(tkIdent) or Check(tkLBracket) then
@@ -2309,6 +2335,16 @@ begin
           if CurrStatic then
             TFieldDecl(Result.Fields.Items[FieldIdx]).IsClassVar := True;
           TFieldDecl(Result.Fields.Items[FieldIdx]).Visibility := CurrVisibility;
+        end;
+        { A pending attribute list captured at the loop top belongs to this
+          field decl ([Weak] etc.).  Field attributes stay name-driven — the
+          TAttributeUse items are discarded. }
+        if PendAttrNames.Count > 0 then
+        begin
+          for FieldIdx := FieldCountBefore to Result.Fields.Count - 1 do
+            TFieldDecl(Result.Fields.Items[FieldIdx]).Attributes.AddStrings(PendAttrNames);
+          PendAttrNames.Clear();
+          PendAttrUses.Clear();
         end;
       end
       else
@@ -2324,6 +2360,10 @@ begin
   except
     Result.Free();
     raise;
+  end;
+  finally
+    PendAttrNames.Free();
+    PendAttrUses.Free();
   end;
 end;
 
@@ -2856,15 +2896,20 @@ begin
   end;
 end;
 
-procedure TParser.ParseAttributeList(AAttrs: TStringList);
-{ Parse zero or more `[Ident]` or `[Ident(...)]` attributes and append the
-  bare identifier names to AAttrs.  Argument lists are consumed but
-  currently discarded — only the attribute name drives compiler behaviour
-  today.  Unknown attributes are accepted silently for forward
-  compatibility with user-defined attributes.  Call at sites where an
-  attribute list may legally appear (before var and field declarations).  }
+procedure TParser.ParseAttributeList(AAttrs: TStringList; AUses: TObjectList);
+{ Parse zero or more `[Ident]` or `[Ident(args)]` attributes.  Bare identifier
+  names are appended to AAttrs — the name list drives compiler-recognised
+  behaviour ([Weak], [Unretained]) and BIF export.  When AUses is non-nil a
+  TAttributeUse carrying the parsed argument expressions is additionally
+  appended for each attribute, so custom-attribute constructor calls can be
+  reified into typeinfo (class-level and method-level attribute sites pass a
+  list; var/field sites pass nil).  Arguments are constant expressions —
+  uSemantic type-checks them against the attribute class's constructor when
+  it synthesises the factory thunk.  Unknown attributes are accepted silently
+  here for forward compatibility with user-defined attributes. }
 var
-  Depth: Integer;
+  Use:  TAttributeUse;
+  Arg:  TASTExpr;
 begin
   while Check(tkLBracket) do
   begin
@@ -2874,21 +2919,32 @@ begin
         'Expected attribute name after ''['' at line %d col %d in %s',
         [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
     AAttrs.Add(FCurrent.Value);
+    Use := nil;
+    if AUses <> nil then
+    begin
+      Use := TAttributeUse.Create();
+      Use.Name := FCurrent.Value;
+      Use.Line := FCurrent.Line;
+      Use.Col  := FCurrent.Col;
+      AUses.Add(Use);
+    end;
     Advance();  { consume attribute name }
-    { Optional argument list: (args, ...).  We simply count parens until
-      balanced.  Expression-level parsing of attribute arguments is
-      deferred until RTTI lands; capturing the name is enough to drive
-      the compiler-recognised attribute set today. }
+    { Optional argument list: (expr, ...). }
     if Check(tkLParen) then
     begin
-      Depth := 1;
       Advance();
-      while (Depth > 0) and (FCurrent.Kind <> tkEOF) do
+      if not Check(tkRParen) then
       begin
-        if      Check(tkLParen) then Inc(Depth)
-        else if Check(tkRParen) then Dec(Depth);
-        Advance();
+        Arg := ParseExpr();
+        if Use <> nil then Use.Args.Add(Arg) else Arg.Free();
+        while Check(tkComma) do
+        begin
+          Advance();
+          Arg := ParseExpr();
+          if Use <> nil then Use.Args.Add(Arg) else Arg.Free();
+        end;
       end;
+      Expect(tkRParen);
     end;
     Expect(tkRBracket);
   end;

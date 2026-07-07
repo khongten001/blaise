@@ -301,6 +301,14 @@ type
       the label+12 expression that points to the character data.  ASymName
       names the data symbol; AText is the runtime-visible string content. }
     function EmitClassNameString(const ASymName, AText: string): string;
+    { Emit the 'attrs_<C>' (class) and 'methattrs_<C>' (method) attribute
+      tables for one class decl and return the typeinfo slot expressions
+      ('0' when a table is empty).  Class table entries are (attr typeinfo,
+      factory thunk) pairs; method table entries are (method name ptr, attr
+      typeinfo, factory thunk) triples for published methods.  Mirrors the
+      QBE backend's EmitAttrTables. }
+    procedure EmitAttrTables(ACD: TClassTypeDef; const ACSym: string;
+      out AAttrsStr, AMethAttrsStr: string);
     { Emit the body of one $_FieldCleanup_<T> function.  Calls the
       destructor (if any), releases ARC-managed fields, then returns. }
     procedure EmitFieldCleanupFn(const AMangledName: string;
@@ -2136,6 +2144,76 @@ begin
   Self.Emit(#9'.byte 0');
 end;
 
+procedure TX86_64Backend.EmitAttrTables(ACD: TClassTypeDef; const ACSym: string;
+  out AAttrsStr, AMethAttrsStr: string);
+var
+  J, K:  Integer;
+  Count: Integer;
+  AU:    TAttributeUse;
+  MD:    TMethodDecl;
+begin
+  AAttrsStr     := '0';
+  AMethAttrsStr := '0';
+
+  Count := 0;
+  for J := 0 to ACD.AttrUses.Count - 1 do
+    if TAttributeUse(ACD.AttrUses.Items[J]).ThunkDecl <> nil then
+      Inc(Count);
+  if Count > 0 then
+  begin
+    Self.Emit('.balign 8');
+    Self.Emit('attrs_' + ACSym + ':');
+    Self.Emit(Format(#9'.quad %d', [Count]));
+    for J := 0 to ACD.AttrUses.Count - 1 do
+    begin
+      AU := TAttributeUse(ACD.AttrUses.Items[J]);
+      if AU.ThunkDecl = nil then Continue;
+      Self.Emit(#9'.quad typeinfo_' + Self.ClassSymName(AU.ResolvedClassName));
+      Self.Emit(#9'.quad ' + FuncSymbolFromDecl(TMethodDecl(AU.ThunkDecl)));
+    end;
+    AAttrsStr := 'attrs_' + ACSym;
+  end;
+
+  Count := 0;
+  for J := 0 to ACD.Methods.Count - 1 do
+  begin
+    MD := TMethodDecl(ACD.Methods.Items[J]);
+    if not MD.IsPublished then Continue;
+    for K := 0 to MD.AttrUses.Count - 1 do
+      if TAttributeUse(MD.AttrUses.Items[K]).ThunkDecl <> nil then
+        Inc(Count);
+  end;
+  if Count > 0 then
+  begin
+    { Method-name blobs first (EmitClassNameString is idempotent, so names
+      already emitted for the published-method table are not duplicated) —
+      the table's .quad sequence below must not be interleaved with them. }
+    for J := 0 to ACD.Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(ACD.Methods.Items[J]);
+      if MD.IsPublished and (MD.AttrUses.Count > 0) then
+        Self.EmitClassNameString(MD.Name, MD.Name);
+    end;
+    Self.Emit('.balign 8');
+    Self.Emit('methattrs_' + ACSym + ':');
+    Self.Emit(Format(#9'.quad %d', [Count]));
+    for J := 0 to ACD.Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(ACD.Methods.Items[J]);
+      if not MD.IsPublished then Continue;
+      for K := 0 to MD.AttrUses.Count - 1 do
+      begin
+        AU := TAttributeUse(MD.AttrUses.Items[K]);
+        if AU.ThunkDecl = nil then Continue;
+        Self.Emit(Format(#9'.quad __cn_%s + 12', [NativeMangle(MD.Name)]));
+        Self.Emit(#9'.quad typeinfo_' + Self.ClassSymName(AU.ResolvedClassName));
+        Self.Emit(#9'.quad ' + FuncSymbolFromDecl(TMethodDecl(AU.ThunkDecl)));
+      end;
+    end;
+    AMethAttrsStr := 'methattrs_' + ACSym;
+  end;
+end;
+
 procedure TX86_64Backend.EmitFieldCleanupFn(const AMangledName: string;
                                             ART: TRecordTypeDesc);
 var
@@ -2362,11 +2440,12 @@ var
   CSym:      string;
   ParentStr: string;
   ImplStr:   string;
-  MethStr:   string;
-  AttrsStr:  string;
-  PubCount:  Integer;
-  Line:      string;
-  EmitSys:   Boolean;
+  MethStr:      string;
+  AttrsStr:     string;
+  MethAttrsStr: string;
+  PubCount:     Integer;
+  Line:         string;
+  EmitSys:      Boolean;
 begin
   { Fixed RTL class-name strings and stubs for TObject and TCustomAttribute.
     Emitted exactly once across the whole program (the first class section that
@@ -2465,6 +2544,7 @@ begin
     Self.Emit(#9'.quad _FieldCleanup_TObject');
     Self.Emit(#9'.quad vtable_TObject');
     Self.Emit(#9'.quad 0');          { attrs = nil }
+    Self.Emit(#9'.quad 0');          { method attrs = nil }
 
     Self.Emit('.balign 8');
     Self.Emit('.globl typeinfo_TCustomAttribute');
@@ -2476,6 +2556,7 @@ begin
     Self.Emit(#9'.quad 8');
     Self.Emit(#9'.quad _FieldCleanup_TCustomAttribute');
     Self.Emit(#9'.quad vtable_TCustomAttribute');
+    Self.Emit(#9'.quad 0');
     Self.Emit(#9'.quad 0');
   end;
 
@@ -2511,23 +2592,10 @@ begin
     else
       MethStr := '0';
 
-    { Class attribute RTTI table at typeinfo slot 7: a count word followed by
-      one typeinfo pointer per attribute.  Referenced by _HasClassAttribute.
-      Emitted before the typeinfo so the symbol is defined when slot 7
-      references it; nil when the class carries no attributes.  Mirrors the
-      QBE backend's attrs_<Class>. }
-    if RT.ClassAttributeCount() > 0 then
-    begin
-      Self.Emit('.balign 8');
-      Self.Emit('attrs_' + CSym + ':');
-      Self.Emit(Format(#9'.quad %d', [RT.ClassAttributeCount()]));
-      for J := 0 to RT.ClassAttributeCount() - 1 do
-        Self.Emit(#9'.quad typeinfo_' +
-          Self.ClassSymName(RT.ClassAttributeAt(J)));
-      AttrsStr := 'attrs_' + CSym;
-    end
-    else
-      AttrsStr := '0';
+    { Attribute RTTI tables at typeinfo slots 7 and 8.  Emitted before the
+      typeinfo so the symbols are defined when the slots reference them;
+      nil when the class carries no attributes.  Mirrors the QBE backend. }
+    Self.EmitAttrTables(CD, CSym, AttrsStr, MethAttrsStr);
 
     Self.Emit('.balign 8');
     Self.Emit('.globl typeinfo_' + CSym);
@@ -2539,7 +2607,8 @@ begin
     Self.Emit(Format(#9'.quad %d', [RT.TotalSize()]));
     Self.Emit(#9'.quad _FieldCleanup_' + CSym);
     Self.Emit(#9'.quad vtable_' + CSym);
-    Self.Emit(#9'.quad ' + AttrsStr);   { attrs }
+    Self.Emit(#9'.quad ' + AttrsStr);      { attrs }
+    Self.Emit(#9'.quad ' + MethAttrsStr);  { method attrs }
   end;
 
   { Typeinfo blocks for generic class instances. }
@@ -2566,6 +2635,7 @@ begin
     Self.Emit(Format(#9'.quad %d', [RT.TotalSize()]));
     Self.Emit(#9'.quad _FieldCleanup_' + MName);
     Self.Emit(#9'.quad vtable_' + MName);
+    Self.Emit(#9'.quad 0');
     Self.Emit(#9'.quad 0');
   end;
 
@@ -6106,6 +6176,34 @@ begin
       Self.Emit(#9'callq _HasClassAttribute');
       { Result Boolean in %al; normalise to a clean 0/1 in %rax. }
       Self.Emit(#9'movzbq %al, %rax');
+      Exit;
+    end;
+    { Attribute-RTTI builtins (GetClassAttribute, HasMethodAttribute,
+      GetMethodAttribute, MethodAttributeCount, GetMethodAttributeAt) —
+      args in %rdi/%rsi/%rdx, call the same-named runtime helper prefixed
+      '_'.  Get* return the attribute instance pointer in %rax;
+      HasMethodAttribute returns Boolean in %al (normalised);
+      MethodAttributeCount returns Integer in %eax (sign-extended). }
+    if FC.AttrRTTIBuiltin <> '' then
+    begin
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+      if FC.Args.Count = 3 then
+      begin
+        Self.Emit(#9'pushq %rax');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[2]));
+        Self.Emit(#9'movq %rax, %rdx');
+        Self.Emit(#9'popq %rsi');
+      end
+      else
+        Self.Emit(#9'movq %rax, %rsi');
+      Self.Emit(#9'popq %rdi');
+      Self.Emit(#9'callq _' + FC.AttrRTTIBuiltin);
+      if SameText(FC.AttrRTTIBuiltin, 'HasMethodAttribute') then
+        Self.Emit(#9'movzbq %al, %rax')
+      else if SameText(FC.AttrRTTIBuiltin, 'MethodAttributeCount') then
+        Self.Emit(#9'movslq %eax, %rax');
       Exit;
     end;
     { SizeOf(expr) → integer literal = byte size of the resolved type. }

@@ -178,6 +178,20 @@ type
       published methods of the same name in different classes don't collide.
       Returns '$__mn_<unit>_<class>_<method> + 12'. }
     function  EmitMethodNameRef(const AClassName, AMethodName: string): string;
+    { Reference-only counterpart of EmitMethodNameRef: returns the same
+      '$__mn_... + 12' data expression WITHOUT emitting the string blob.
+      Used by the method-attrs table, which reuses the name blobs the
+      published-method table has already emitted. }
+    function  MethodNameRefExpr(const AClassName, AMethodName: string): string;
+    { QBE symbol (without '$') of an attribute use's synthesised factory
+      thunk: the unit-mangled ResolvedQbeName when set, else the plain
+      source name (program scope). }
+    function  AttrThunkSym(AUse: TAttributeUse): string;
+    { Emit the '$attrs_<C>' (class) and '$methattrs_<C>' (method) attribute
+      tables for one class decl and return the typeinfo slot expressions
+      ('0' when a table is empty).  Shared by the program and unit paths. }
+    procedure EmitAttrTables(ATypeDecl: TTypeDecl; ACD: TClassTypeDef;
+      out AAttrsStr, AMethAttrsStr: string);
     procedure EmitLine(const ALine: string);
     procedure EmitPendingStrLits;
     procedure EmitDataSection;
@@ -976,7 +990,94 @@ begin
   Sym := ClassUnitPrefix(AClassName) + QBEMangle(AClassName) + '_' + QBEMangle(AMethodName);
   EmitLine(Format('%sdata $__mn_%s = { w -1, w %d, w %d, b "%s", b 0 }',
     [ExportPrefix(), Sym, Length(AMethodName), Length(AMethodName), AMethodName]));
-  Result := '$__mn_' + Sym + ' + 12';
+  Result := MethodNameRefExpr(AClassName, AMethodName);
+end;
+
+function TCodeGenQBE.MethodNameRefExpr(const AClassName, AMethodName: string): string;
+begin
+  Result := '$__mn_' + ClassUnitPrefix(AClassName) + QBEMangle(AClassName)
+          + '_' + QBEMangle(AMethodName) + ' + 12';
+end;
+
+function TCodeGenQBE.AttrThunkSym(AUse: TAttributeUse): string;
+var
+  MD: TMethodDecl;
+begin
+  MD := TMethodDecl(AUse.ThunkDecl);
+  if MD.ResolvedQbeName <> '' then
+    Result := MD.ResolvedQbeName
+  else
+    Result := MD.Name;
+end;
+
+procedure TCodeGenQBE.EmitAttrTables(ATypeDecl: TTypeDecl; ACD: TClassTypeDef;
+  out AAttrsStr, AMethAttrsStr: string);
+{ Class attrs table (typeinfo slot 7): count, then (attr typeinfo ptr,
+  factory thunk ptr) PAIRS — one per reified class attribute.  Read by
+  _HasClassAttribute / _GetClassAttribute.
+
+  Method-attrs table (typeinfo slot 8): count, then (published-method name
+  ptr, attr typeinfo ptr, factory thunk ptr) TRIPLES — one per attribute on
+  a published method.  Name pointers reuse the $__mn_ blobs emitted with the
+  published-method table.  Read by the _*MethodAttribute* runtime helpers. }
+var
+  J, K:  Integer;
+  Count: Integer;
+  AU:    TAttributeUse;
+  MD:    TMethodDecl;
+  Line:  string;
+begin
+  AAttrsStr     := '0';
+  AMethAttrsStr := '0';
+
+  Count := 0;
+  for J := 0 to ACD.AttrUses.Count - 1 do
+    if TAttributeUse(ACD.AttrUses.Items[J]).ThunkDecl <> nil then
+      Inc(Count);
+  if Count > 0 then
+  begin
+    Line := ExportPrefix() + 'data $attrs_' + ClassSymNameForDecl(ATypeDecl) + ' = { l ' + IntToStr(Count);
+    for J := 0 to ACD.AttrUses.Count - 1 do
+    begin
+      AU := TAttributeUse(ACD.AttrUses.Items[J]);
+      if AU.ThunkDecl = nil then Continue;
+      Line := Line + ', l $typeinfo_' + ClassSymName(AU.ResolvedClassName)
+                   + ', l $' + AttrThunkSym(AU);
+    end;
+    Line := Line + ' }';
+    EmitLine(Line);
+    AAttrsStr := '$attrs_' + ClassSymNameForDecl(ATypeDecl);
+  end;
+
+  Count := 0;
+  for J := 0 to ACD.Methods.Count - 1 do
+  begin
+    MD := TMethodDecl(ACD.Methods.Items[J]);
+    if not MD.IsPublished then Continue;
+    for K := 0 to MD.AttrUses.Count - 1 do
+      if TAttributeUse(MD.AttrUses.Items[K]).ThunkDecl <> nil then
+        Inc(Count);
+  end;
+  if Count > 0 then
+  begin
+    Line := ExportPrefix() + 'data $methattrs_' + ClassSymNameForDecl(ATypeDecl) + ' = { l ' + IntToStr(Count);
+    for J := 0 to ACD.Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(ACD.Methods.Items[J]);
+      if not MD.IsPublished then Continue;
+      for K := 0 to MD.AttrUses.Count - 1 do
+      begin
+        AU := TAttributeUse(MD.AttrUses.Items[K]);
+        if AU.ThunkDecl = nil then Continue;
+        Line := Line + ', l ' + MethodNameRefExpr(ATypeDecl.Name, MD.Name)
+                     + ', l $typeinfo_' + ClassSymName(AU.ResolvedClassName)
+                     + ', l $' + AttrThunkSym(AU);
+      end;
+    end;
+    Line := Line + ' }';
+    EmitLine(Line);
+    AMethAttrsStr := '$methattrs_' + ClassSymNameForDecl(ATypeDecl);
+  end;
 end;
 
 procedure TCodeGenQBE.EmitLine(const ALine: string);
@@ -8317,7 +8418,7 @@ end;
 
 procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
 { Emit one $typeinfo_T data item per class type.  Each typeinfo data
-  block has 7 l-slots, in order:
+  block has 9 l-slots, in order:
 
     Slot 0 (offset  0): parent typeinfo pointer (0 = root)
     Slot 1 (offset  8): impllist pointer (0 = no interfaces)
@@ -8329,6 +8430,11 @@ procedure TCodeGenQBE.EmitTypeInfoDefs(AProg: TProgram);
     Slot 4 (offset 32): total instance size in bytes (vptr + fields)
     Slot 5 (offset 40): pointer to $_FieldCleanup_<T> for this class
     Slot 6 (offset 48): pointer to $vtable_<T> for this class
+    Slot 7 (offset 56): pointer to class attrs table (0 = none) —
+                        count, then (attr typeinfo, factory thunk) pairs
+    Slot 8 (offset 64): pointer to method-attrs table (0 = none) —
+                        count, then (method name, attr typeinfo,
+                        factory thunk) triples for published methods
 
   Slots 4-6 are read by _ClassCreate(TInfo) to allocate, install the
   vtable, and arrange for ARC field cleanup on release — the runtime
@@ -8354,7 +8460,7 @@ var
   ImplStr:         string;
   MethStr:         string;
   AttrsStr:        string;
-  AttrsLine:       string;
+  MethAttrsStr:    string;
   MName:           string;
   MethLine:        string;
 begin
@@ -8366,11 +8472,11 @@ begin
   begin
     EmitLine('export data $typeinfo_TObject = { l 0, l 0, l ' +
              EmitClassNameRef('TObject') + ', l 0' +
-             ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
+             ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0, l 0 }');
     EmitLine('export data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
              EmitClassNameRef('TCustomAttribute') + ', l 0' +
              ', l 8, l $_FieldCleanup_TCustomAttribute' +
-             ', l $vtable_TCustomAttribute, l 0 }');
+             ', l $vtable_TCustomAttribute, l 0, l 0 }');
   end;
 
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
@@ -8425,17 +8531,7 @@ begin
     else
       MethStr := '0';
 
-    if RT.ClassAttributeCount() > 0 then
-    begin
-      AttrsLine := 'data $attrs_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
-      for J := 0 to RT.ClassAttributeCount() - 1 do
-        AttrsLine := AttrsLine + ', l $typeinfo_' + ClassSymName(RT.ClassAttributeAt(J));
-      AttrsLine := AttrsLine + ' }';
-      EmitLine(AttrsLine);
-      AttrsStr := '$attrs_' + ClassSymNameForDecl(TD);
-    end
-    else
-      AttrsStr := '0';
+    EmitAttrTables(TD, CD, AttrsStr, MethAttrsStr);
 
     EmitLine('data $typeinfo_' + ClassSymNameForDecl(TD) +
              ' = { l ' + ParentStr + ', l ' + ImplStr +
@@ -8444,7 +8540,8 @@ begin
              ', l ' + IntToStr(RT.TotalSize()) +
              ', l $_FieldCleanup_' + ClassSymNameForDecl(TD) +
              ', l $vtable_' + ClassSymNameForDecl(TD) +
-             ', l ' + AttrsStr + ' }');
+             ', l ' + AttrsStr +
+             ', l ' + MethAttrsStr + ' }');
   end;
 
   { Generic instances — no published-method table emission yet (the
@@ -8467,7 +8564,7 @@ begin
              ', l ' + EmitClassNameRef(GI.TypeName) + ', l 0' +
              ', l ' + IntToStr(RT.TotalSize()) +
              ', l $_FieldCleanup_' + MName +
-             ', l $vtable_' + MName + ', l 0 }');
+             ', l $vtable_' + MName + ', l 0, l 0 }');
   end;
 
   EmitLine('');
@@ -10975,6 +11072,36 @@ begin
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_HasClassAttribute(l %s, l %s)', [T, L, R]));
+        Exit(T);
+      end;
+
+      { Attribute-RTTI builtins (GetClassAttribute, HasMethodAttribute,
+        GetMethodAttribute, MethodAttributeCount, GetMethodAttributeAt) —
+        each lowers to the same-named runtime helper prefixed '_'.  Class
+        args and string args are l; GetMethodAttributeAt's index is w.
+        Has*/Count return w, Get* return the attribute instance as l. }
+      if FC.AttrRTTIBuiltin <> '' then
+      begin
+        L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
+        T2 := '';
+        if FC.Args.Count = 3 then
+        begin
+          T2 := EmitExpr(TASTExpr(FC.Args.Items[2]));
+          if SameText(FC.AttrRTTIBuiltin, 'GetMethodAttributeAt') then
+            T2 := CoerceArg(T2, TASTExpr(FC.Args.Items[2]), 'w');
+        end;
+        T := AllocTemp();
+        if SameText(FC.AttrRTTIBuiltin, 'GetClassAttribute') then
+          EmitLine(Format('  %s =l call $_GetClassAttribute(l %s, l %s)', [T, L, R]))
+        else if SameText(FC.AttrRTTIBuiltin, 'MethodAttributeCount') then
+          EmitLine(Format('  %s =w call $_MethodAttributeCount(l %s, l %s)', [T, L, R]))
+        else if SameText(FC.AttrRTTIBuiltin, 'HasMethodAttribute') then
+          EmitLine(Format('  %s =w call $_HasMethodAttribute(l %s, l %s, l %s)', [T, L, R, T2]))
+        else if SameText(FC.AttrRTTIBuiltin, 'GetMethodAttribute') then
+          EmitLine(Format('  %s =l call $_GetMethodAttribute(l %s, l %s, l %s)', [T, L, R, T2]))
+        else
+          EmitLine(Format('  %s =l call $_GetMethodAttributeAt(l %s, l %s, w %s)', [T, L, R, T2]));
         Exit(T);
       end;
 
@@ -14802,7 +14929,7 @@ var
   ImplStr:      string;
   MethStr:      string;
   AttrsStr:     string;
-  AttrsLine:    string;
+  MethAttrsStr: string;
   MethLine:     string;
   ItabLine:     string;
   ItabRef:      string;
@@ -15013,11 +15140,11 @@ begin
             begin
               EmitLine('export data $typeinfo_TObject = { l 0, l 0, l ' +
                        EmitClassNameRef('TObject') + ', l 0' +
-                       ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0 }');
+                       ', l 8, l $_FieldCleanup_TObject, l $vtable_TObject, l 0, l 0 }');
               EmitLine('export data $typeinfo_TCustomAttribute = { l $typeinfo_TObject, l 0, l ' +
                        EmitClassNameRef('TCustomAttribute') + ', l 0' +
                        ', l 8, l $_FieldCleanup_TCustomAttribute' +
-                       ', l $vtable_TCustomAttribute, l 0 }');
+                       ', l $vtable_TCustomAttribute, l 0, l 0 }');
               EmitLine('');
               EmitLine('export data $vtable_TObject = { l $typeinfo_TObject' +
                        ', l $TObject_Destroy, l $TObject_ToString }');
@@ -15029,7 +15156,7 @@ begin
             end;
           end;
 
-        { Class typeinfo blocks — full 8-slot layout matching EmitTypeInfoDefs }
+        { Class typeinfo blocks — full 9-slot layout matching EmitTypeInfoDefs }
         for I := 0 to AllTD.Count - 1 do
         begin
           TD := TTypeDecl(AllTD.Items[I]);
@@ -15070,17 +15197,7 @@ begin
           else
             MethStr := '0';
 
-          if RT.ClassAttributeCount() > 0 then
-          begin
-            AttrsLine := ExportPrefix() + 'data $attrs_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(RT.ClassAttributeCount());
-            for J := 0 to RT.ClassAttributeCount() - 1 do
-              AttrsLine := AttrsLine + ', l $typeinfo_' + ClassSymName(RT.ClassAttributeAt(J));
-            AttrsLine := AttrsLine + ' }';
-            EmitLine(AttrsLine);
-            AttrsStr := '$attrs_' + ClassSymNameForDecl(TD);
-          end
-          else
-            AttrsStr := '0';
+          EmitAttrTables(TD, CD, AttrsStr, MethAttrsStr);
 
           EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymNameForDecl(TD) +
                    ' = { l ' + ParentStr + ', l ' + ImplStr +
@@ -15089,7 +15206,8 @@ begin
                    ', l ' + IntToStr(RT.TotalSize()) +
                    ', l $_FieldCleanup_' + ClassSymNameForDecl(TD) +
                    ', l $vtable_' + ClassSymNameForDecl(TD) +
-                   ', l ' + AttrsStr + ' }');
+                   ', l ' + AttrsStr +
+                   ', l ' + MethAttrsStr + ' }');
         end;
 
         { Vtable data — abstract slots point at $__abstract_method_error
@@ -15155,7 +15273,7 @@ begin
                    ', l ' + EmitClassNameRef(GI.TypeName) + ', l 0' +
                    ', l ' + IntToStr(RT.TotalSize()) +
                    ', l $_FieldCleanup_' + MName +
-                   ', l $vtable_' + MName + ', l 0 }');
+                   ', l $vtable_' + MName + ', l 0, l 0 }');
 
           if RT.HasVTable() then
           begin

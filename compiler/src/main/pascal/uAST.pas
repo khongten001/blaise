@@ -542,6 +542,13 @@ type
     IsBuiltinHasClassAttr: Boolean; { set by uSemantic — HasClassAttribute builtin }
     HasClassAttrClass:     string;  { class name for arg 1 (class being queried) }
     HasClassAttrAttr:      string;  { attribute class name for arg 2 }
+    AttrRTTIBuiltin:       string;  { set by uSemantic — one of the attribute-RTTI
+                                      builtins: 'GetClassAttribute',
+                                      'HasMethodAttribute', 'GetMethodAttribute',
+                                      'MethodAttributeCount',
+                                      'GetMethodAttributeAt'.  '' = not one.
+                                      Codegen lowers to a call of the runtime
+                                      helper '_<name>'. }
     IsProcFieldCall:       Boolean; { set by uSemantic — unqualified Name is a
                                       procedural-typed field of the current class
                                       (implicit Self.Field), used as an expression }
@@ -852,6 +859,33 @@ type
     destructor Destroy; override;
   end;
 
+  { One attribute application '[Name]' or '[Name(args)]' captured together
+    with its constructor arguments, so custom attributes can be reified into
+    typeinfo.  The parallel name-only Attributes: TStringList remains the
+    source for name-driven compiler behaviour ([Weak], BIF export); this node
+    additionally carries the argument expressions and the semantic products
+    needed by codegen: the resolved attribute class and the synthesised
+    parameterless factory function ('thunk') whose body constructs the
+    attribute instance with the literal arguments baked in.  Typeinfo attrs
+    tables store (attr typeinfo ptr, thunk ptr) pairs; the runtime reifies an
+    attribute by calling the thunk. }
+  TAttributeUse = class(TASTNode)
+  public
+    Name: string;          { as written, e.g. 'TestCase' or 'Threaded' }
+    Args: TObjectList;     { owned TASTExpr — constructor arguments }
+    ResolvedClassName: string;   { set by uSemantic — resolved attribute class
+                                   (suffix convention applied), e.g.
+                                   'TestCaseAttribute'; '' when the name is not
+                                   a TCustomAttribute class ([Weak] etc.) }
+    [Unretained] ThunkDecl: TObject; { TMethodDecl — not owned; the synthesised
+                                   factory function appended to the enclosing
+                                   block's ProcDecls by uSemantic.  Codegen
+                                   references it by ResolvedQbeName in the
+                                   typeinfo attrs tables. }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   TMethodParam = class(TASTNode)
   public
     ParamName:    string;
@@ -934,6 +968,10 @@ type
                             unit's same-named impl-only routine as a competing candidate. }
     Visibility: TMemberVisibility; { set by uParser from the enclosing visibility section
                                      when this is a class/record method; default mvPublic. }
+    AttrUses:   TObjectList; { owned TAttributeUse — attributes applied to this
+                               method declaration ('[TestCase(...)] procedure ...').
+                               Reified into the typeinfo method-attrs table for
+                               published methods. }
     constructor Create;
     destructor Destroy; override;
   end;
@@ -990,6 +1028,9 @@ type
     Methods:         TObjectList;  { owned TMethodDecl }
     Properties:      TObjectList;  { owned TPropertyDecl }
     Attributes:      TStringList;  { owned — class-level custom attribute names e.g. 'Threaded' }
+    AttrUses:        TObjectList;  { owned TAttributeUse — class-level attribute
+                                     applications with argument expressions;
+                                     parallel to Attributes }
     IsForward:       Boolean;      { True for a forward decl 'TFoo = class;' (no ancestor,
                                      no body) — completed by the full decl later in scope }
     constructor Create;
@@ -1191,6 +1232,7 @@ function CloneMethodDecl(ASrc: TMethodDecl): TMethodDecl;
 function CloneMethodParam(ASrc: TMethodParam): TMethodParam;
 function CloneTypeDef(ASrc: TASTTypeDef): TASTTypeDef;
 function CloneClassTypeDef(ASrc: TClassTypeDef): TClassTypeDef;
+function CloneAttributeUse(ASrc: TAttributeUse): TAttributeUse;
 
 implementation
 
@@ -1606,6 +1648,7 @@ constructor TMethodDecl.Create;
 begin
   inherited Create();
   Params     := TObjectList.Create(True);
+  AttrUses   := TObjectList.Create(True);
   VTableSlot := -1;
   OwnBody    := True;
 end;
@@ -1646,6 +1689,7 @@ begin
   Methods         := TObjectList.Create(True);
   Properties      := TObjectList.Create(True);
   Attributes      := TStringList.Create();
+  AttrUses        := TObjectList.Create(True);
 end;
 
 destructor TClassTypeDef.Destroy;
@@ -1803,6 +1847,20 @@ begin
 end;
 
 destructor TBlock.Destroy;
+begin
+  { Owned class fields released by ARC field cleanup. }
+  inherited Destroy();
+end;
+
+{ TAttributeUse }
+
+constructor TAttributeUse.Create;
+begin
+  inherited Create();
+  Args := TObjectList.Create(True);
+end;
+
+destructor TAttributeUse.Destroy;
 begin
   { Owned class fields released by ARC field cleanup. }
   inherited Destroy();
@@ -2482,6 +2540,20 @@ begin
   Result.HasDefault   := ASrc.HasDefault;
 end;
 
+function CloneAttributeUse(ASrc: TAttributeUse): TAttributeUse;
+var
+  I: Integer;
+begin
+  Result := TAttributeUse.Create();
+  Result.Line := ASrc.Line;
+  Result.Col  := ASrc.Col;
+  Result.Name := ASrc.Name;
+  for I := 0 to ASrc.Args.Count - 1 do
+    Result.Args.Add(CloneExpr(TASTExpr(ASrc.Args.Items[I])));
+  { ResolvedClassName / ThunkDecl are semantic products — deliberately NOT
+    copied; the clone's consumer re-runs semantic analysis. }
+end;
+
 function CloneMethodDecl(ASrc: TMethodDecl): TMethodDecl;
 var
   I: Integer;
@@ -2527,6 +2599,8 @@ begin
     for I := 0 to ASrc.OwnerTypeParams.Count - 1 do
       Result.OwnerTypeParams.Add(ASrc.OwnerTypeParams.Strings[I]);
   end;
+  for I := 0 to ASrc.AttrUses.Count - 1 do
+    Result.AttrUses.Add(CloneAttributeUse(TAttributeUse(ASrc.AttrUses.Items[I])));
   if (ASrc.Body <> nil) and ASrc.OwnBody then
   begin
     Result.Body    := CloneBlock(ASrc.Body);
@@ -2629,6 +2703,8 @@ begin
     Result.Methods.Add(CloneMethodDecl(TMethodDecl(ASrc.Methods.Items[I])));
   for I := 0 to ASrc.Attributes.Count - 1 do
     Result.Attributes.Add(ASrc.Attributes.Strings[I]);
+  for I := 0 to ASrc.AttrUses.Count - 1 do
+    Result.AttrUses.Add(CloneAttributeUse(TAttributeUse(ASrc.AttrUses.Items[I])));
   for I := 0 to ASrc.Properties.Count - 1 do
     Result.Properties.Add(ClonePropertyDecl(TPropertyDecl(ASrc.Properties.Items[I])));
 end;

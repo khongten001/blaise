@@ -37,6 +37,10 @@ interface
 
 type
   TFieldCleanupProc = procedure(Self: Pointer);
+  { Signature of the compiler-synthesised attribute factory thunks stored in
+    the typeinfo attrs tables — each constructs one attribute instance with
+    its declared constructor arguments and returns it. }
+  TAttrThunk = function: Pointer;
   PPointer = ^Pointer;
   PInteger = ^Integer;
 
@@ -56,6 +60,17 @@ procedure _ClassRelease(UserPtr: Pointer);
 function  _ClassAlloc(Size: Int64; Cleanup: Pointer): Pointer;
 procedure _ClassFree(UserPtr: Pointer);
 function  _HasClassAttribute(AClassTI, AAttrTI: Pointer): Boolean;
+{ Attribute reification.  The Get* helpers construct a FRESH attribute
+  instance on every call by invoking the factory thunk stored next to the
+  attribute's typeinfo pointer in the class attrs table (typeinfo slot 7,
+  (typeinfo, thunk) pairs) or the method-attrs table (typeinfo slot 8,
+  (method name, typeinfo, thunk) triples).  All walk the parent chain.
+  AName is a Blaise string (data pointer); matching uses _StringEquals. }
+function  _GetClassAttribute(AClassTI, AAttrTI: Pointer): Pointer;
+function  _HasMethodAttribute(AClassTI, AName, AAttrTI: Pointer): Boolean;
+function  _GetMethodAttribute(AClassTI, AName, AAttrTI: Pointer): Pointer;
+function  _MethodAttributeCount(AClassTI, AName: Pointer): Integer;
+function  _GetMethodAttributeAt(AClassTI, AName: Pointer; AIndex: Integer): Pointer;
 procedure _AbstractMethodError;
 procedure _LeakTrackerEnable;
 procedure _LeakTrackerRegister(UserPtr: Pointer; ClassName: Pointer;
@@ -791,9 +806,9 @@ end;
   slot 7 (offset 56) for the attribute table, then walks the parent chain via
   slot 0 so attributes on a parent class are visible on derived classes.
 
-  Attribute table layout (emitted by EmitTypeInfoDefs):
+  Class attribute table layout (emitted by EmitTypeInfoDefs):
     table[0]  = count (Int64/l-slot)
-    table[1+] = typeinfo pointers, one per applied attribute }
+    table[1+] = (attr typeinfo ptr, factory thunk ptr) pairs }
 function _HasClassAttribute(AClassTI, AAttrTI: Pointer): Boolean;
 var
   Current: Pointer;
@@ -820,10 +835,217 @@ begin
         begin
           Exit(True);
         end;
-        Entry := Pointer(Entry) + 8;
+        Entry := Pointer(Entry) + 16;  { pair stride: typeinfo + thunk }
       end;
     end;
     Slot    := Current;      { typeinfo slot 0 = parent typeinfo ptr }
+    Current := Slot^;
+  end;
+end;
+
+{ _GetClassAttribute: reify the class attribute identified by AAttrTI — find
+  its (typeinfo, thunk) pair in the class attrs table (walking the parent
+  chain like _HasClassAttribute) and call the factory thunk, which constructs
+  the attribute instance with its declared constructor arguments.  Returns a
+  FRESH instance on every call, or nil when the attribute is absent. }
+function _GetClassAttribute(AClassTI, AAttrTI: Pointer): Pointer;
+var
+  Current: Pointer;
+  Slot:    ^Pointer;
+  Attrs:   Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  Thunk:   ^Pointer;
+  Make:    TAttrThunk;
+  I:       Integer;
+begin
+  Result := nil;
+  if (AClassTI = nil) or (AAttrTI = nil) then Exit;
+  Current := AClassTI;
+  while Current <> nil do
+  begin
+    Slot  := Current + 56;   { typeinfo slot 7 = attribute table ptr }
+    Attrs := Slot^;
+    if Attrs <> nil then
+    begin
+      Count := Attrs;
+      Entry := Attrs + 8;
+      for I := 0 to Integer(Count^) - 1 do
+      begin
+        if Entry^ = AAttrTI then
+        begin
+          Thunk := Pointer(Entry) + 8;
+          Make  := TAttrThunk(Thunk^);
+          Exit(Make());
+        end;
+        Entry := Pointer(Entry) + 16;
+      end;
+    end;
+    Slot    := Current;
+    Current := Slot^;
+  end;
+end;
+
+{ Method-attrs table lookups.  Table layout (typeinfo slot 8, offset 64):
+    table[0]  = count (Int64/l-slot)
+    table[1+] = (method name string-data ptr, attr typeinfo ptr,
+                 factory thunk ptr) triples
+  The name is compared with _StringEquals against the caller's Blaise
+  string.  The parent chain is walked so attributes on inherited published
+  methods remain visible on derived classes. }
+
+function _MethodAttributeCount(AClassTI, AName: Pointer): Integer;
+var
+  Current: Pointer;
+  Slot:    ^Pointer;
+  Attrs:   Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  I:       Integer;
+begin
+  Result := 0;
+  if (AClassTI = nil) or (AName = nil) then Exit;
+  Current := AClassTI;
+  while Current <> nil do
+  begin
+    Slot  := Current + 64;   { typeinfo slot 8 = method-attrs table ptr }
+    Attrs := Slot^;
+    if Attrs <> nil then
+    begin
+      Count := Attrs;
+      Entry := Attrs + 8;
+      for I := 0 to Integer(Count^) - 1 do
+      begin
+        if _StringEquals(Entry^, AName) <> 0 then
+          Result := Result + 1;
+        Entry := Pointer(Entry) + 24;  { triple stride }
+      end;
+    end;
+    Slot    := Current;
+    Current := Slot^;
+  end;
+end;
+
+function _HasMethodAttribute(AClassTI, AName, AAttrTI: Pointer): Boolean;
+var
+  Current: Pointer;
+  Slot:    ^Pointer;
+  Attrs:   Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  AttrPtr: ^Pointer;
+  I:       Integer;
+begin
+  Result := False;
+  if (AClassTI = nil) or (AName = nil) or (AAttrTI = nil) then Exit;
+  Current := AClassTI;
+  while Current <> nil do
+  begin
+    Slot  := Current + 64;
+    Attrs := Slot^;
+    if Attrs <> nil then
+    begin
+      Count := Attrs;
+      Entry := Attrs + 8;
+      for I := 0 to Integer(Count^) - 1 do
+      begin
+        AttrPtr := Pointer(Entry) + 8;
+        if (AttrPtr^ = AAttrTI) and (_StringEquals(Entry^, AName) <> 0) then
+        begin
+          Exit(True);
+        end;
+        Entry := Pointer(Entry) + 24;
+      end;
+    end;
+    Slot    := Current;
+    Current := Slot^;
+  end;
+end;
+
+function _GetMethodAttribute(AClassTI, AName, AAttrTI: Pointer): Pointer;
+var
+  Current: Pointer;
+  Slot:    ^Pointer;
+  Attrs:   Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  AttrPtr: ^Pointer;
+  Thunk:   ^Pointer;
+  Make:    TAttrThunk;
+  I:       Integer;
+begin
+  Result := nil;
+  if (AClassTI = nil) or (AName = nil) or (AAttrTI = nil) then Exit;
+  Current := AClassTI;
+  while Current <> nil do
+  begin
+    Slot  := Current + 64;
+    Attrs := Slot^;
+    if Attrs <> nil then
+    begin
+      Count := Attrs;
+      Entry := Attrs + 8;
+      for I := 0 to Integer(Count^) - 1 do
+      begin
+        AttrPtr := Pointer(Entry) + 8;
+        if (AttrPtr^ = AAttrTI) and (_StringEquals(Entry^, AName) <> 0) then
+        begin
+          Thunk := Pointer(Entry) + 16;
+          Make  := TAttrThunk(Thunk^);
+          Exit(Make());
+        end;
+        Entry := Pointer(Entry) + 24;
+      end;
+    end;
+    Slot    := Current;
+    Current := Slot^;
+  end;
+end;
+
+{ _GetMethodAttributeAt: reify the AIndex'th (0-based) attribute on the named
+  method, counting across the parent chain in declaration order (own class
+  first).  Pairs with _MethodAttributeCount for enumeration.  Returns nil
+  when AIndex is out of range. }
+function _GetMethodAttributeAt(AClassTI, AName: Pointer; AIndex: Integer): Pointer;
+var
+  Current: Pointer;
+  Slot:    ^Pointer;
+  Attrs:   Pointer;
+  Count:   ^Int64;
+  Entry:   ^Pointer;
+  Thunk:   ^Pointer;
+  Make:    TAttrThunk;
+  I:       Integer;
+  Seen:    Integer;
+begin
+  Result := nil;
+  if (AClassTI = nil) or (AName = nil) or (AIndex < 0) then Exit;
+  Seen    := 0;
+  Current := AClassTI;
+  while Current <> nil do
+  begin
+    Slot  := Current + 64;
+    Attrs := Slot^;
+    if Attrs <> nil then
+    begin
+      Count := Attrs;
+      Entry := Attrs + 8;
+      for I := 0 to Integer(Count^) - 1 do
+      begin
+        if _StringEquals(Entry^, AName) <> 0 then
+        begin
+          if Seen = AIndex then
+          begin
+            Thunk := Pointer(Entry) + 16;
+            Make  := TAttrThunk(Thunk^);
+            Exit(Make());
+          end;
+          Seen := Seen + 1;
+        end;
+        Entry := Pointer(Entry) + 24;
+      end;
+    end;
+    Slot    := Current;
     Current := Slot^;
   end;
 end;

@@ -412,6 +412,7 @@ type
     function  HasWeakAttribute(AAttrs: TStringList): Boolean;
     function  HasUnretainedAttribute(AAttrs: TStringList): Boolean;
     function  IsCustomAttributeClass(const ATypeName: string): Boolean;
+    procedure SynthesiseAttrThunk(AUse: TAttributeUse; const AThunkName: string);
     function  ResolveCustomAttrName(const ARawName: string): string;
 
     { Default-argument support.  MinArity returns the minimum number of
@@ -1154,6 +1155,63 @@ begin
   if (Sym <> nil) and (Sym.TypeDesc is TRecordTypeDesc) and
      IsCustomAttributeClass(ARawName + 'Attribute') then
     Result := ARawName + 'Attribute';
+end;
+
+procedure TSemanticAnalyser.SynthesiseAttrThunk(AUse: TAttributeUse;
+  const AThunkName: string);
+{ Synthesise the parameterless factory function ('thunk') for one resolved
+  attribute application:
+
+    function <AThunkName>: TObject;
+    begin
+      Result := <ResolvedClassName>.Create(<attribute args>);
+    end;
+
+  and append it to the enclosing module's standalone-proc list — the program
+  block, or the unit's IMPLEMENTATION block (impl-only: thunks are private
+  emission artefacts referenced from the typeinfo attrs tables, never
+  exported through the BIF).  AnalyseStandaloneDecls runs after
+  AnalyseTypeDecls in both the program and unit flows, so the thunk is
+  registered, type-checked (constructor overload resolution validates the
+  attribute arguments, with errors pointing at the attribute's source
+  position) and emitted by both backends like any ordinary function.
+  Idempotent via AUse.ThunkDecl. }
+var
+  Sink: TBlock;
+  MD:   TMethodDecl;
+  Asn:  TAssignment;
+  Call: TMethodCallExpr;
+  I:    Integer;
+begin
+  if AUse.ThunkDecl <> nil then Exit;
+  if FCurrentUnit <> nil then
+    Sink := FCurrentUnit.ImplBlock
+  else if FProg <> nil then
+    Sink := FProg.Block
+  else
+    Exit;
+  Call := TMethodCallExpr.Create();
+  Call.Line       := AUse.Line;
+  Call.Col        := AUse.Col;
+  Call.ObjectName := AUse.ResolvedClassName;
+  Call.Name       := 'Create';
+  for I := 0 to AUse.Args.Count - 1 do
+    Call.Args.Add(CloneExpr(TASTExpr(AUse.Args.Items[I])));
+  Asn := TAssignment.Create();
+  Asn.Line := AUse.Line;
+  Asn.Col  := AUse.Col;
+  Asn.Name := 'Result';
+  Asn.Expr := Call;
+  MD := TMethodDecl.Create();
+  MD.Line           := AUse.Line;
+  MD.Col            := AUse.Col;
+  MD.Name           := AThunkName;
+  MD.ReturnTypeName := 'TObject';
+  MD.IsImplOnly     := FCurrentUnit <> nil;
+  MD.Body           := TBlock.Create();
+  MD.Body.Stmts.Add(Asn);
+  Sink.ProcDecls.Add(MD);
+  AUse.ThunkDecl := MD;
 end;
 
 procedure TSemanticAnalyser.CheckTypeParamConstraint(
@@ -5699,6 +5757,7 @@ var
   AttrIdx:    Integer;
   RawAttr:    string;
   Resolved:   string;
+  AttrUse:    TAttributeUse;
   BaseSym:    TSymbol;
   MName:      string;
   Slot:       Integer;
@@ -6142,6 +6201,19 @@ begin
         else
           RT.AddClassAttribute(Resolved);
       end;
+      { Reify class-level attribute applications: resolve each captured
+        TAttributeUse and synthesise its factory thunk.  Unknown names were
+        already rejected by the name loop above, so a '' resolution here can
+        only be the skipped [Weak] intrinsic. }
+      for AttrIdx := 0 to TClassTypeDef(TD.Def).AttrUses.Count - 1 do
+      begin
+        AttrUse := TAttributeUse(TClassTypeDef(TD.Def).AttrUses.Items[AttrIdx]);
+        Resolved := ResolveCustomAttrName(AttrUse.Name);
+        if Resolved = '' then Continue;
+        AttrUse.ResolvedClassName := Resolved;
+        SynthesiseAttrThunk(AttrUse,
+          '__attr_' + TD.Name + '_c' + IntToStr(AttrIdx));
+      end;
 
       { Copy inherited fields and vtable from parent class first.
         The parser may store a generic interface name (e.g. IFoo<T>) as ParentName
@@ -6448,6 +6520,31 @@ begin
         if MDecl.IsOverload then
           MangledKey := MangledKey + '$' + MangleParamSig(MDecl);
         MDecl.ResolvedQbeName := CurrentUnitPrefix() + TD.Name + '_' + MangledKey;
+
+        { Resolve method-level custom attributes and reify them.  The name
+          must resolve to a TCustomAttribute descendant (the [Weak] field
+          intrinsic is meaningless on a method and errors as unknown).
+          Factory thunks are synthesised for PUBLISHED methods only — those
+          are the methods with entries in the typeinfo method-attrs table;
+          attributes on non-published methods are validated but carry no
+          runtime representation. }
+        for AttrIdx := 0 to MDecl.AttrUses.Count - 1 do
+        begin
+          AttrUse  := TAttributeUse(MDecl.AttrUses.Items[AttrIdx]);
+          Resolved := ResolveCustomAttrName(AttrUse.Name);
+          if Resolved = '' then
+            SemanticError(
+              Format('Unknown attribute ''%s'' on method ''%s.%s'': no class ' +
+                     '''%s'' or ''%sAttribute'' descending from ' +
+                     'TCustomAttribute found',
+                     [AttrUse.Name, TD.Name, MDecl.Name,
+                      AttrUse.Name, AttrUse.Name]),
+              AttrUse.Line, AttrUse.Col);
+          AttrUse.ResolvedClassName := Resolved;
+          if MDecl.IsPublished then
+            SynthesiseAttrThunk(AttrUse,
+              '__attr_' + TD.Name + '_m' + IntToStr(J) + '_' + IntToStr(AttrIdx));
+        end;
 
         { Reject duplicate-without-overload at registration time.  Walk
           existing FMethodIndex entries for this (TypeName.Name) — if
@@ -10414,6 +10511,100 @@ begin
         AExpr.Line, AExpr.Col);
     AExpr.IsBuiltinHasClassAttr := True;
     AExpr.ResolvedType := FTable.TypeBoolean;
+    Exit(AExpr.ResolvedType);
+  end;
+
+  { Attribute-RTTI builtins over the reified attribute tables in typeinfo
+    (class attrs at slot 7 as (typeinfo, thunk) pairs; method attrs at slot 8
+    as (name, typeinfo, thunk) triples):
+
+      GetClassAttribute(AClass, AAttrClass): TObject
+      HasMethodAttribute(AClass, AMethodName, AAttrClass): Boolean
+      GetMethodAttribute(AClass, AMethodName, AAttrClass): TObject
+      MethodAttributeCount(AClass, AMethodName): Integer
+      GetMethodAttributeAt(AClass, AMethodName, AIndex): TObject
+
+    Class arguments are metaclass expressions lowering to typeinfo pointers;
+    method names are ordinary strings compared against the published-method
+    name entries.  The Get* forms construct a FRESH attribute instance on
+    every call by invoking the stored factory thunk (nil when absent);
+    callers narrow the TObject result with 'is'/'as'.  Each lowers to the
+    same-named runtime helper prefixed '_'. }
+  if SameText(AExpr.Name, 'GetClassAttribute') or
+     SameText(AExpr.Name, 'HasMethodAttribute') or
+     SameText(AExpr.Name, 'GetMethodAttribute') or
+     SameText(AExpr.Name, 'MethodAttributeCount') or
+     SameText(AExpr.Name, 'GetMethodAttributeAt') then
+  begin
+    if SameText(AExpr.Name, 'GetClassAttribute') or
+       SameText(AExpr.Name, 'MethodAttributeCount') then
+      Idx := 2
+    else
+      Idx := 3;
+    if AExpr.Args.Count <> Idx then
+      SemanticError(Format('%s requires exactly %d arguments',
+        [AExpr.Name, Idx]), AExpr.Line, AExpr.Col);
+    for I := 0 to AExpr.Args.Count - 1 do
+      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    { Arg 0 is always the queried class. }
+    if (TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil) or
+       not (TASTExpr(AExpr.Args.Items[0]).ResolvedType.Kind in [tyClass, tyMetaClass]) then
+      SemanticError(AExpr.Name + ': first argument must be a class type reference',
+        AExpr.Line, AExpr.Col);
+    if SameText(AExpr.Name, 'GetClassAttribute') then
+    begin
+      if (TASTExpr(AExpr.Args.Items[1]).ResolvedType = nil) or
+         not (TASTExpr(AExpr.Args.Items[1]).ResolvedType.Kind in [tyClass, tyMetaClass]) then
+        SemanticError(AExpr.Name + ': second argument must be an attribute class reference',
+          AExpr.Line, AExpr.Col);
+    end
+    else
+    begin
+      { Method-attr forms: arg 1 is the method name string. }
+      if (TASTExpr(AExpr.Args.Items[1]).ResolvedType = nil) or
+         (TASTExpr(AExpr.Args.Items[1]).ResolvedType.Kind <> tyString) then
+        SemanticError(AExpr.Name + ': second argument must be a method name string',
+          AExpr.Line, AExpr.Col);
+      if SameText(AExpr.Name, 'HasMethodAttribute') or
+         SameText(AExpr.Name, 'GetMethodAttribute') then
+      begin
+        if (TASTExpr(AExpr.Args.Items[2]).ResolvedType = nil) or
+           not (TASTExpr(AExpr.Args.Items[2]).ResolvedType.Kind in [tyClass, tyMetaClass]) then
+          SemanticError(AExpr.Name + ': third argument must be an attribute class reference',
+            AExpr.Line, AExpr.Col);
+      end
+      else if SameText(AExpr.Name, 'GetMethodAttributeAt') then
+      begin
+        if (TASTExpr(AExpr.Args.Items[2]).ResolvedType = nil) or
+           not (TASTExpr(AExpr.Args.Items[2]).ResolvedType.Kind in
+                [tyInteger, tyInt64, tyByte, tySmallInt, tyWord, tyUInt32]) then
+          SemanticError(AExpr.Name + ': third argument must be an integer index',
+            AExpr.Line, AExpr.Col);
+      end;
+    end;
+    { Canonical spelling — codegen appends this to '_' to name the runtime
+      helper symbol, so the user's (case-insensitive) spelling must not
+      leak through. }
+    if SameText(AExpr.Name, 'GetClassAttribute') then
+      AExpr.AttrRTTIBuiltin := 'GetClassAttribute'
+    else if SameText(AExpr.Name, 'HasMethodAttribute') then
+      AExpr.AttrRTTIBuiltin := 'HasMethodAttribute'
+    else if SameText(AExpr.Name, 'GetMethodAttribute') then
+      AExpr.AttrRTTIBuiltin := 'GetMethodAttribute'
+    else if SameText(AExpr.Name, 'MethodAttributeCount') then
+      AExpr.AttrRTTIBuiltin := 'MethodAttributeCount'
+    else
+      AExpr.AttrRTTIBuiltin := 'GetMethodAttributeAt';
+    if SameText(AExpr.Name, 'HasMethodAttribute') then
+      AExpr.ResolvedType := FTable.TypeBoolean
+    else if SameText(AExpr.Name, 'MethodAttributeCount') then
+      AExpr.ResolvedType := FTable.TypeInteger
+    else
+    begin
+      AExpr.ResolvedType := FTable.FindType('TObject');
+      if AExpr.ResolvedType = nil then
+        SemanticError(AExpr.Name + ': TObject type not available', AExpr.Line, AExpr.Col);
+    end;
     Exit(AExpr.ResolvedType);
   end;
 

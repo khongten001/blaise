@@ -38,6 +38,8 @@ type
     procedure TestParse_AttributeOnClass_StoredOnClassTypeDef;
     procedure TestParse_MultipleAttributes_BothStored;
     procedure TestParse_AttributeWithArgs_NameStored;
+    procedure TestParse_AttributeArgs_CapturedAsExprs;
+    procedure TestParse_MethodAttribute_StoredOnMethodDecl;
     procedure TestParse_NoAttribute_EmptyList;
     procedure TestParse_AttributeOnGenericClass_Stored;
 
@@ -45,13 +47,16 @@ type
     procedure TestSemantic_KnownAttribute_Resolves;
     procedure TestSemantic_SuffixConvention_ThreadedResolvesToThreadedAttribute;
     procedure TestSemantic_UnknownAttribute_RaisesError;
+    procedure TestSemantic_UnknownMethodAttribute_RaisesError;
     procedure TestSemantic_WeakOnField_StillWorks;
 
     { Codegen }
-    procedure TestCodegen_TypeInfo_HasEightSlots;
+    procedure TestCodegen_TypeInfo_HasNineSlots;
     procedure TestCodegen_NoAttrs_AttrsSlotZero;
     procedure TestCodegen_WithAttrs_AttrsTableEmitted;
-    procedure TestCodegen_AttrsTable_CountAndTypeInfoPtrs;
+    procedure TestCodegen_AttrsTable_PairsWithFactoryThunk;
+    procedure TestCodegen_AttrThunk_FunctionEmitted;
+    procedure TestCodegen_MethodAttrs_TableEmitted;
     procedure TestCodegen_HasClassAttribute_EmitsRuntimeCall;
     procedure TestCodegen_TCustomAttribute_StubsEmitted;
 
@@ -60,6 +65,9 @@ type
     procedure TestE2E_HasClassAttribute_False;
     procedure TestE2E_HasClassAttribute_InheritedFromParent;
     procedure TestE2E_HasClassAttribute_MultipleAttributes;
+    procedure TestE2E_GetClassAttribute_ReifiesConstructorArgs;
+    procedure TestE2E_GetClassAttribute_AbsentReturnsNil;
+    procedure TestE2E_MethodAttributes_HasGetCountAt;
   end;
 
 implementation
@@ -295,6 +303,74 @@ begin
   end;
 end;
 
+procedure TCustomAttributeTests.TestParse_AttributeArgs_CapturedAsExprs;
+const
+  Src =
+    '''
+    program P;
+    type
+      [MyAttr(42, 'hello')]
+      TFoo = class(TObject) end;
+    begin end.
+    ''';
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  AU:   TAttributeUse;
+begin
+  Prog := ParseSrc(Src);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
+    AssertEquals('one attribute use captured', 1, CD.AttrUses.Count);
+    AU := TAttributeUse(CD.AttrUses.Items[0]);
+    AssertEquals('use name', 'MyAttr', AU.Name);
+    AssertEquals('two argument expressions', 2, AU.Args.Count);
+    AssertTrue('first arg is an integer literal',
+      TObject(AU.Args.Items[0]) is TIntLiteral);
+    AssertTrue('second arg is a string literal',
+      TObject(AU.Args.Items[1]) is TStringLiteral);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TCustomAttributeTests.TestParse_MethodAttribute_StoredOnMethodDecl;
+const
+  Src =
+    '''
+    program P;
+    type
+      TFoo = class(TObject)
+      published
+        [MyAttr('x')]
+        [Other]
+        procedure Run;
+      end;
+    begin end.
+    ''';
+var
+  Prog: TProgram;
+  CD:   TClassTypeDef;
+  MD:   TMethodDecl;
+begin
+  Prog := ParseSrc(Src);
+  try
+    CD := TClassTypeDef(TTypeDecl(Prog.Block.TypeDecls.Items[0]).Def);
+    AssertEquals('one method parsed', 1, CD.Methods.Count);
+    MD := TMethodDecl(CD.Methods.Items[0]);
+    AssertTrue('method is published', MD.IsPublished);
+    AssertEquals('two attribute uses on the method', 2, MD.AttrUses.Count);
+    AssertEquals('first use name', 'MyAttr',
+      TAttributeUse(MD.AttrUses.Items[0]).Name);
+    AssertEquals('first use arg count', 1,
+      TAttributeUse(MD.AttrUses.Items[0]).Args.Count);
+    AssertEquals('second use name', 'Other',
+      TAttributeUse(MD.AttrUses.Items[1]).Name);
+  finally
+    Prog.Free();
+  end;
+end;
+
 procedure TCustomAttributeTests.TestParse_NoAttribute_EmptyList;
 const
   Src =
@@ -412,6 +488,41 @@ begin
   AssertTrue('unknown attribute raises semantic error', OK);
 end;
 
+procedure TCustomAttributeTests.TestSemantic_UnknownMethodAttribute_RaisesError;
+const
+  Src =
+    '''
+    program P;
+    type
+      TFoo = class(TObject)
+      published
+        [NonExistent]
+        procedure Run;
+      end;
+    procedure TFoo.Run;
+    begin
+    end;
+    begin end.
+    ''';
+var
+  Prog: TProgram;
+  OK:   Boolean;
+begin
+  OK := False;
+  try
+    Prog := AnalyseSrc(Src);
+    Prog.Free();
+  except
+    on E: Exception do
+      if Pos('Unknown attribute', E.Message) >= 0 then
+        OK := True;
+    on E: TObject do
+      if Pos('Unknown attribute', E.ClassName) >= 0 then
+        OK := True;
+  end;
+  AssertTrue('unknown attribute on a method raises semantic error', OK);
+end;
+
 procedure TCustomAttributeTests.TestSemantic_WeakOnField_StillWorks;
 const
   Src =
@@ -435,7 +546,7 @@ end;
 { Codegen tests                                                         }
 { ------------------------------------------------------------------ }
 
-procedure TCustomAttributeTests.TestCodegen_TypeInfo_HasEightSlots;
+procedure TCustomAttributeTests.TestCodegen_TypeInfo_HasNineSlots;
 const
   Src =
     '''
@@ -446,9 +557,10 @@ const
 var IR: string;
 begin
   IR := GenIR(Src);
-  AssertTrue('typeinfo emits 8 l-slots (attrs slot = l 0 when no attributes)',
+  AssertTrue('typeinfo emits 9 l-slots (attrs + method-attrs slots = l 0 ' +
+             'when no attributes)',
     Pos('$typeinfo_TFoo = { l $typeinfo_TObject, l 0, l $__cn_TFoo + 12, l 0' +
-        ', l 8, l $_FieldCleanup_TFoo, l $vtable_TFoo, l 0 }', IR) > 0);
+        ', l 8, l $_FieldCleanup_TFoo, l $vtable_TFoo, l 0, l 0 }', IR) > 0);
 end;
 
 procedure TCustomAttributeTests.TestCodegen_NoAttrs_AttrsSlotZero;
@@ -462,8 +574,8 @@ const
 var IR: string;
 begin
   IR := GenIR(Src);
-  AssertTrue('attrs slot is l 0 when no attributes applied',
-    Pos(', l $vtable_TFoo, l 0 }', IR) > 0);
+  AssertTrue('attrs + method-attrs slots are l 0 when no attributes applied',
+    Pos(', l $vtable_TFoo, l 0, l 0 }', IR) > 0);
   AssertTrue('no $attrs_TFoo data block emitted', Pos('$attrs_TFoo', IR) < 0);
 end;
 
@@ -483,11 +595,11 @@ begin
   IR := GenIR(Src);
   AssertTrue('$attrs_TFoo data block emitted',
     Pos('$attrs_TFoo', IR) > 0);
-  AssertTrue('typeinfo refs $attrs_TFoo in slot 7',
-    Pos(', l $vtable_TFoo, l $attrs_TFoo }', IR) > 0);
+  AssertTrue('typeinfo refs $attrs_TFoo in slot 7 (method-attrs slot 8 = 0)',
+    Pos(', l $vtable_TFoo, l $attrs_TFoo, l 0 }', IR) > 0);
 end;
 
-procedure TCustomAttributeTests.TestCodegen_AttrsTable_CountAndTypeInfoPtrs;
+procedure TCustomAttributeTests.TestCodegen_AttrsTable_PairsWithFactoryThunk;
 const
   Src =
     '''
@@ -501,8 +613,54 @@ const
 var IR: string;
 begin
   IR := GenIR(Src);
-  AssertTrue('attrs table has count=1 and typeinfo ptr for MyAttr',
-    Pos('$attrs_TFoo = { l 1, l $typeinfo_MyAttr }', IR) > 0);
+  AssertTrue('attrs table has count=1 and (typeinfo, thunk) pair for MyAttr',
+    Pos('$attrs_TFoo = { l 1, l $typeinfo_MyAttr, l $__attr_TFoo_c0 }', IR) > 0);
+end;
+
+procedure TCustomAttributeTests.TestCodegen_AttrThunk_FunctionEmitted;
+const
+  Src =
+    '''
+    program P;
+    type
+      MyAttr = class(TCustomAttribute) end;
+      [MyAttr]
+      TFoo = class(TObject) end;
+    begin end.
+    ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('factory thunk $__attr_TFoo_c0 emitted as a function',
+    Pos('$__attr_TFoo_c0(', IR) > 0);
+end;
+
+procedure TCustomAttributeTests.TestCodegen_MethodAttrs_TableEmitted;
+const
+  Src =
+    '''
+    program P;
+    type
+      MyAttr = class(TCustomAttribute) end;
+      TFoo = class(TObject)
+      published
+        [MyAttr]
+        procedure Run;
+      end;
+    procedure TFoo.Run;
+    begin
+    end;
+    begin end.
+    ''';
+var IR: string;
+begin
+  IR := GenIR(Src);
+  AssertTrue('$methattrs_TFoo data block emitted with count=1',
+    Pos('$methattrs_TFoo = { l 1', IR) > 0);
+  AssertTrue('entry is (method name, attr typeinfo, thunk) triple',
+    Pos('l $__mn_TFoo_Run + 12, l $typeinfo_MyAttr, l $__attr_TFoo_m', IR) > 0);
+  AssertTrue('typeinfo refs $methattrs_TFoo in slot 8',
+    Pos(', l $methattrs_TFoo }', IR) > 0);
 end;
 
 procedure TCustomAttributeTests.TestCodegen_HasClassAttribute_EmitsRuntimeCall;
@@ -630,6 +788,124 @@ begin
   Output := CompileAndRun(Src);
   if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
   AssertEquals('stdout', 'True' + #10 + 'True' + #10, Output);
+end;
+
+procedure TCustomAttributeTests.TestE2E_GetClassAttribute_ReifiesConstructorArgs;
+const
+  Src =
+    '''
+    program P;
+    type
+      TestCaseAttribute = class(TCustomAttribute)
+      private
+        FName: string;
+        FArgs: string;
+      public
+        constructor Create(AName, AArgs: string);
+        property Name: string read FName;
+        property Args: string read FArgs;
+      end;
+      [TestCase('simple', '2,2,4')]
+      TFoo = class(TObject) end;
+    constructor TestCaseAttribute.Create(AName, AArgs: string);
+    begin
+      FName := AName;
+      FArgs := AArgs;
+    end;
+    var
+      A:  TObject;
+      TC: TestCaseAttribute;
+    begin
+      A := GetClassAttribute(TFoo, TestCaseAttribute);
+      if A = nil then
+        WriteLn('nil')
+      else
+      begin
+        TC := TestCaseAttribute(A);
+        WriteLn(TC.Name + '|' + TC.Args)
+      end
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', 'simple|2,2,4' + #10, Output);
+end;
+
+procedure TCustomAttributeTests.TestE2E_GetClassAttribute_AbsentReturnsNil;
+const
+  Src =
+    '''
+    program P;
+    type
+      MarkAttribute = class(TCustomAttribute) end;
+      TBar = class(TObject) end;
+    var
+      A: TObject;
+    begin
+      A := GetClassAttribute(TBar, MarkAttribute);
+      if A = nil then
+        WriteLn('nil')
+      else
+        WriteLn('instance')
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', 'nil' + #10, Output);
+end;
+
+procedure TCustomAttributeTests.TestE2E_MethodAttributes_HasGetCountAt;
+const
+  Src =
+    '''
+    program P;
+    type
+      MarkAttribute = class(TCustomAttribute)
+      private
+        FTag: string;
+      public
+        constructor Create(ATag: string);
+        property Tag: string read FTag;
+      end;
+      TFoo = class(TObject)
+      published
+        [Mark('alpha')]
+        [Mark('beta')]
+        procedure Run;
+      end;
+    constructor MarkAttribute.Create(ATag: string);
+    begin
+      FTag := ATag;
+    end;
+    procedure TFoo.Run;
+    begin
+    end;
+    var
+      A: TObject;
+      M: MarkAttribute;
+    begin
+      WriteLn(MethodAttributeCount(TFoo, 'Run'));
+      WriteLn(HasMethodAttribute(TFoo, 'Run', MarkAttribute));
+      WriteLn(HasMethodAttribute(TFoo, 'Missing', MarkAttribute));
+      A := GetMethodAttributeAt(TFoo, 'Run', 1);
+      M := MarkAttribute(A);
+      WriteLn(M.Tag);
+      A := GetMethodAttribute(TFoo, 'Run', MarkAttribute);
+      M := MarkAttribute(A);
+      WriteLn(M.Tag)
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout',
+    '2' + #10 + 'True' + #10 + 'False' + #10 + 'beta' + #10 + 'alpha' + #10,
+    Output);
 end;
 
 initialization
