@@ -81,6 +81,10 @@ type
     procedure TestE2E_Arrow_SingleIdent_ProcedureTarget;
     procedure TestE2E_Arrow_BlockBody;
     procedure TestE2E_Arrow_MinusGreaterStaysDistinct;
+    { Phase 9b — two-phase deferred inference: lambdas in ARGUMENT position. }
+    procedure TestE2E_Arrow_ArgPosition_Standalone;
+    procedure TestE2E_Arrow_ArgPosition_MethodWithCapture;
+    procedure TestE2E_Arrow_ArgPosition_OverloadByShape;
   end;
 
 implementation
@@ -1220,6 +1224,94 @@ begin
   Output := CompileAndRun(Src);
   if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
   AssertEquals('stdout', '42' + #10, Output)
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 9b — deferred inference in argument position                  }
+{ ------------------------------------------------------------------ }
+
+procedure TAnonMethodTests.TestE2E_Arrow_ArgPosition_Standalone;
+const
+  Src =
+    '''
+    program P;
+    type
+      TSel = reference to function(N: Integer): Integer;
+    function Twice(N: Integer; F: TSel): Integer;
+    begin
+      Result := F(F(N))
+    end;
+    begin
+      WriteLn(Twice(10, X -> X + 6))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '22' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_ArgPosition_MethodWithCapture;
+const
+  Src =
+    '''
+    program P;
+    type
+      TPred = reference to function(N: Integer): Boolean;
+      TC = class
+        function CountIf(A, B, C: Integer; P: TPred): Integer;
+        begin
+          Result := 0;
+          if P(A) then Result := Result + 1;
+          if P(B) then Result := Result + 1;
+          if P(C) then Result := Result + 1
+        end;
+      end;
+    var
+      C: TC;
+      Limit: Integer;
+    begin
+      C := TC.Create();
+      Limit := 10;
+      WriteLn(C.CountIf(5, 11, 20, N -> N > Limit))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '2' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_ArgPosition_OverloadByShape;
+const
+  { The lambda's SHAPE (one parameter, reference-typed formal) must steer
+    overload resolution: the Integer overload wins for 7, the lambda
+    overload wins for the arrow — mixing them must not regress plain args. }
+  Src =
+    '''
+    program P;
+    type
+      TSel = reference to function(N: Integer): Integer;
+    function Pick(N: Integer; V: Integer): string; overload;
+    begin
+      Result := 'int:' + IntToStr(V)
+    end;
+    function Pick(N: Integer; F: TSel): string; overload;
+    begin
+      Result := 'fn:' + IntToStr(F(N))
+    end;
+    begin
+      WriteLn(Pick(20, 7));
+      WriteLn(Pick(20, X -> X * 2 + 2))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', 'int:7' + #10 + 'fn:42' + #10, Output)
 end;
 
 initialization

@@ -1855,10 +1855,18 @@ untyped parameters and its return type are filled from the target
 `reference to` type where that target is known without overload resolution —
 assignment to a typed variable or field, `Result :=`, and block-scoped
 `var` initialisers.  A single-expression body desugars to `Result := E`
-for function targets and to a call statement for procedure targets.  An
-arrow in any other position (notably argument position,
-`List.Where((P) -> ...)`) is rejected with a directed diagnostic — that
-requires the two-phase deferred analysis of Phase 9b.
+for function targets and to a call statement for procedure targets.
+
+Phase 9b extends inference to ARGUMENT position with a two-phase deferred
+analysis: a `->` lambda argument is skipped by the bottom-up argument pass
+(it cannot be typed without the target), scored during overload resolution
+purely by SHAPE (it matches a `reference to` formal with the same
+parameter count), and analysed only after the winning candidate's parameter
+types are pushed in as its target.  `Obj.Method(x, N -> N > Limit)` and
+overload sets mixing lambda-taking and plain formals both resolve; two
+same-shape lambda-taking overloads remain ambiguous and are rejected.  An
+arrow in a position with no inferable target (e.g. immediately invoked)
+still gets the directed diagnostic.
 
 === Restrictions in this phase (clear compile-time errors)
 

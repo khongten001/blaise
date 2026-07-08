@@ -416,6 +416,13 @@ type
       for procedure targets).  No-op for non-arrow literals or when the
       arrow was already inferred. }
     procedure InferArrowFromTarget(AExpr: TASTExpr; ATarget: TTypeDesc);
+    { Phase 9b: argument-position lambda inference.  A '->' lambda argument
+      is DEFERRED during the pre-resolution argument pass (it cannot be
+      typed bottom-up), scored by SHAPE during overload resolution, and
+      analysed after the winning candidate's parameter types are known. }
+    function  IsPendingArrow(AExpr: TASTExpr): Boolean;
+    procedure AnalyseArgOrDeferArrow(AExpr: TASTExpr);
+    procedure ResolveDeferredArrowArgs(AArgs: TObjectList; AMDecl: TMethodDecl);
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
     procedure AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
     procedure PromoteAnonCaptures(AThunk: TMethodDecl);
@@ -9012,9 +9019,10 @@ begin
     end;
     HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
+    ResolveDeferredArrowArgs(ACall.Args, MDecl);
     if MDecl = nil then
     begin
       FldInfo := RT.FindField(ACall.Name);
@@ -9050,9 +9058,10 @@ begin
   begin
     RT := TRecordTypeDesc(ObjSym.TypeDesc);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
+    ResolveDeferredArrowArgs(ACall.Args, MDecl);
     if MDecl = nil then
       SemanticError(
         Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
@@ -9111,9 +9120,10 @@ begin
       end;
       HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
       MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
         ACall.Line, ACall.Col);
+      ResolveDeferredArrowArgs(ACall.Args, MDecl);
       if MDecl = nil then
         SemanticError(
           Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
@@ -9145,9 +9155,10 @@ begin
     RT := TRecordTypeDesc(TMetaClassTypeDesc(ObjSym.TypeDesc).BaseClass);
     HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
+    ResolveDeferredArrowArgs(ACall.Args, MDecl);
     if MDecl = nil then
       MDecl := FindMethodDecl(RT.Name, ACall.Name);
     ACall.ResolvedClassType   := RT;
@@ -9204,7 +9215,7 @@ begin
 
   HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
   for I := 0 to ACall.Args.Count - 1 do
-    AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
 
   { Direct invocation of a procedural-typed field (e.g. an event-handler
     field): F.Handler; or F.Handler();.  Resolve this before reporting a
@@ -9232,6 +9243,7 @@ begin
     SemanticError(
       Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
       ACall.Line, ACall.Col);
+  ResolveDeferredArrowArgs(ACall.Args, MDecl);
 
   AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
   EnforceMethodVisible(MDecl, ACall.Line, ACall.Col);
@@ -10245,6 +10257,20 @@ function TSemanticAnalyser.ArgMatchScore(AParam: TTypeDesc;
 begin
   Result := 0;
   if AParam = nil then Exit;
+  { Phase 9b: a deferred '->' lambda argument has no ResolvedType yet —
+    score it by SHAPE: it matches exactly one kind of parameter, a
+    'reference to' type with the same parameter count.  The body is
+    analysed only after the winning candidate supplies the types. }
+  if (AArgExpr is TAnonMethodExpr) and TAnonMethodExpr(AArgExpr).IsArrow and
+     (AArgExpr.ResolvedType = nil) then
+  begin
+    if (AParam.Kind = tyProcedural) and
+       TProceduralTypeDesc(AParam).IsReference and
+       (TProceduralTypeDesc(AParam).Params.Count =
+        TAnonMethodExpr(AArgExpr).Decl.Params.Count) then
+      Result := 2;
+    Exit;
+  end;
   { A bracket literal [a, b] against a `set of <enum>` parameter is a set
     constructor, even though (lacking set context) it was analysed as an
     open-array — or, for the empty literal [], left untyped.  Match it here,
@@ -10546,10 +10572,11 @@ begin
     MDecl := FindMethodDecl(FCurrentClass.Name, ACall.Name);
     if MDecl <> nil then
     begin
-      { Analyse args first so overload resolution can score by type. }
+      { Analyse args first so overload resolution can score by type
+        ('->' lambda args are deferred and scored by shape — Phase 9b). }
       HintBareEnumMethodArgs(FCurrentClass.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
       { Use overload resolution so the correct variant is chosen when
         multiple overloads exist (e.g. AssertEquals(string,string,string)
         vs AssertEquals(string,Integer,Integer)). }
@@ -10560,6 +10587,7 @@ begin
           Format('No matching overload for ''%s.%s'' with %d argument(s)',
             [FCurrentClass.Name, ACall.Name, ACall.Args.Count]),
           ACall.Line, ACall.Col);
+      ResolveDeferredArrowArgs(ACall.Args, MDecl);
       { Validate only var-param arguments (non-var compatibility was
         verified by the overload scorer). }
       for I := 0 to ACall.Args.Count - 1 do
@@ -10674,7 +10702,8 @@ begin
           [ACall.Name, MDecl.Params.Count, ACall.Args.Count]),
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+    ResolveDeferredArrowArgs(ACall.Args, MDecl);
     ACall.ResolvedDecl := MDecl;
     Exit;
   end;
@@ -10690,10 +10719,11 @@ begin
       bottom-up analysis pins it by last-wins. }
     HintBareEnumArgs(ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
 
     MDecl := ResolveStandaloneOverload(ACall.Name, ACall.Args.Count,
       ACall.Args, ACall.Line, ACall.Col);
+    ResolveDeferredArrowArgs(ACall.Args, MDecl);
     if MDecl = nil then
       SemanticError(
         Format('No matching overload for ''%s'' with %d argument(s)',
@@ -11150,10 +11180,11 @@ begin
     MDecl := FindMethodDecl(FCurrentClass.Name, AExpr.Name);
     if MDecl <> nil then
     begin
-      { Analyse args first so overload resolution can score by type. }
+      { Analyse args first so overload resolution can score by type
+        ('->' lambda args are deferred and scored by shape — Phase 9b). }
       HintBareEnumMethodArgs(FCurrentClass.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
       MDecl := ResolveMethodOverload(FCurrentClass.Name, AExpr.Name,
         AExpr.Args, AExpr.Line, AExpr.Col);
       if MDecl = nil then
@@ -11161,6 +11192,7 @@ begin
           Format('No matching overload for ''%s.%s'' with %d argument(s)',
             [FCurrentClass.Name, AExpr.Name, AExpr.Args.Count]),
           AExpr.Line, AExpr.Col);
+      ResolveDeferredArrowArgs(AExpr.Args, MDecl);
       for I := 0 to AExpr.Args.Count - 1 do
       begin
         Par := TMethodParam(MDecl.Params.Items[I]);
@@ -11936,7 +11968,7 @@ begin
     at its position, so the right ordinal is pinned before bottom-up analysis. }
   HintBareEnumArgs(AExpr.Name, AExpr.Args);
   for I := 0 to AExpr.Args.Count - 1 do
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
 
   MDecl := ResolveStandaloneOverload(AExpr.Name, AExpr.Args.Count,
     AExpr.Args, AExpr.Line, AExpr.Col);
@@ -11945,6 +11977,7 @@ begin
       Format('No matching overload for ''%s'' with %d argument(s)',
         [AExpr.Name, AExpr.Args.Count]),
       AExpr.Line, AExpr.Col);
+  ResolveDeferredArrowArgs(AExpr.Args, MDecl);
 
   RetypeSetLiteralArgs(AExpr.Args, MDecl);
   AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
@@ -12004,10 +12037,11 @@ begin
       Exit;
     end;
     RT := TRecordTypeDesc(ObjType);
-    { Analyse args first so overload resolution can score by type. }
+    { Analyse args first so overload resolution can score by type
+      ('->' lambda args are deferred and scored by shape — Phase 9b). }
     HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
     { Built-in TObject.ToString: virtual dispatch via vtable slot 1.
       Only applies to class receivers — record methods named ToString are
       resolved normally and dispatched statically. }
@@ -12045,6 +12079,7 @@ begin
         Format('Class ''%s'' has no method ''%s''', [RT.Name, AExpr.Name]),
         AExpr.Line, AExpr.Col);
     end;
+    ResolveDeferredArrowArgs(AExpr.Args, MDecl);
     AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedClassType := RT;
     AExpr.ResolvedMethod    := MDecl;
@@ -12339,10 +12374,11 @@ begin
   RT    := TRecordTypeDesc(ObjSym.TypeDesc);
   { Overload-aware resolution: pick the variant matching the argument list
     (merging overloads across the inheritance chain).  Args must be analysed
-    first so ResolveMethodOverload can score against their resolved types.
+    first so ResolveMethodOverload can score against their resolved types
+    ('->' lambda args are deferred and scored by shape — Phase 9b).
     Fall back to a plain chain lookup for the no-overload / single case. }
   for I := 0 to AExpr.Args.Count - 1 do
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
   { Generic method call obj.Pick<Integer>(...): the parser folded the explicit
     type args into AExpr.Name.  Instantiate the monomorphised method and use it
     directly (it is not part of the overload set). }
@@ -12360,6 +12396,7 @@ begin
         Format('Method ''%s.%s'' expects %d argument(s) but got %d',
           [RT.Name, AExpr.Name, MDecl.Params.Count, AExpr.Args.Count]),
         AExpr.Line, AExpr.Col);
+    ResolveDeferredArrowArgs(AExpr.Args, MDecl);
     for I := 0 to AExpr.Args.Count - 1 do
       CheckTypesMatch(TMethodParam(MDecl.Params.Items[I]).ResolvedType,
         TASTExpr(AExpr.Args.Items[I]).ResolvedType,
@@ -12381,6 +12418,7 @@ begin
       AExpr.Line, AExpr.Col);
   if MDecl = nil then
     MDecl := FindMethodDecl(RT.Name, AExpr.Name);
+  ResolveDeferredArrowArgs(AExpr.Args, MDecl);
   { Built-in TObject.ToString: virtual dispatch yielding string.
     Every class inherits this from TObject (vtable slot 1). }
   if (MDecl = nil) and SameText(AExpr.Name, 'ToString') and (AExpr.Args.Count = 0) and
@@ -13936,6 +13974,35 @@ begin
     Names.Free();
     Args.Free();
   end;
+end;
+
+function TSemanticAnalyser.IsPendingArrow(AExpr: TASTExpr): Boolean;
+begin
+  Result := (AExpr is TAnonMethodExpr) and TAnonMethodExpr(AExpr).IsArrow and
+            (AExpr.ResolvedType = nil);
+end;
+
+procedure TSemanticAnalyser.AnalyseArgOrDeferArrow(AExpr: TASTExpr);
+begin
+  if not IsPendingArrow(AExpr) then
+    AnalyseExpr(AExpr);
+end;
+
+procedure TSemanticAnalyser.ResolveDeferredArrowArgs(AArgs: TObjectList;
+  AMDecl: TMethodDecl);
+var
+  I:   Integer;
+  Par: TMethodParam;
+begin
+  if AMDecl = nil then Exit;
+  for I := 0 to AArgs.Count - 1 do
+    if IsPendingArrow(TASTExpr(AArgs.Items[I])) and
+       (I < AMDecl.Params.Count) then
+    begin
+      Par := TMethodParam(AMDecl.Params.Items[I]);
+      InferArrowFromTarget(TASTExpr(AArgs.Items[I]), Par.ResolvedType);
+      AnalyseExpr(TASTExpr(AArgs.Items[I]));
+    end;
 end;
 
 procedure TSemanticAnalyser.InferArrowFromTarget(AExpr: TASTExpr;
