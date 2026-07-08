@@ -66,6 +66,7 @@ type
     procedure EmitRuntimeHelper(AKind: Integer; const ASymbol: string);
     procedure EmitRuntimeHelpers;
     procedure EmitPointer(AType: TPointerTypeDesc);
+    procedure EmitOpaquePointer(AType: TTypeDesc);
     procedure EmitArray(AType: TTypeDesc);
     procedure EmitSet(AType: TSetTypeDesc);
     procedure EmitInterface(AType: TInterfaceTypeDesc);
@@ -428,8 +429,10 @@ begin
       EmitSet(TSetTypeDesc(AType));
     tyInterface:
       EmitInterface(TInterfaceTypeDesc(AType));
+    tyPChar:
+      EmitOpaquePointer(AType);
   else
-    { tyVoid, tyNil, tyPChar: no OPDF record }
+    { tyVoid, tyNil: no OPDF record }
   end;
 end;
 
@@ -900,6 +903,27 @@ begin
   EmitRecHdr(REC_POINTER, RecSize);
   L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
   L('    .int  ' + IntToStr(TargetID) + '  # TargetTypeID (0 = untyped)');
+  EmitStrField(CName);
+end;
+
+procedure TOPDFEmitter.EmitOpaquePointer(AType: TTypeDesc);
+var
+  CName: string;
+  RecSize: Integer;
+begin
+  { tyPChar is an opaque C pointer with no tracked element type (see
+    uSymbolTable.pas) — emit it as a recPointer with TargetTypeID = 0,
+    the same "untyped pointer" encoding EmitPointer uses for Pointer. }
+  CName := CanonicalName(AType);
+  if HasBeenEmitted(CName) then Exit;
+  MarkEmitted(CName);
+
+  RecSize := 10 + Length(CName);
+  L('');
+  L('    # recPointer: ' + CName);
+  EmitRecHdr(REC_POINTER, RecSize);
+  L('    .int  ' + IntToStr(GetOrAllocTypeID(CName)) + '  # TypeID');
+  L('    .int  0  # TargetTypeID (0 = untyped)');
   EmitStrField(CName);
 end;
 
