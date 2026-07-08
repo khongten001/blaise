@@ -22,6 +22,7 @@ interface
 
 uses
   Json.Tests,
+  Functional.Tests,
   Xml.Tests,
   Contnrs.Tests,
   Base64.Tests,

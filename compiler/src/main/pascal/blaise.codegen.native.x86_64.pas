@@ -19460,6 +19460,9 @@ begin
   Self.EmitClassSection(AUnit.ImplBlock.TypeDecls, EmptyGen, UnitSym);
   { Anonymous-method environment cleanup functions (Phase 2). }
   Self.EmitEnvCleanupDefs(AUnit.ImplBlock);
+  { Interface-section classes carry their method bodies after
+    LinkClassMethodImpls — emit their closures' env cleanups too. }
+  Self.EmitEnvCleanupDefs(AUnit.IntfBlock);
   Self.EmitEnvCleanupDefsForInstances(AUnit.GenericInstances,
                                       AUnit.GenericRecordInstances);
   { Interface data: typeinfo tokens, itabs, impllists. }

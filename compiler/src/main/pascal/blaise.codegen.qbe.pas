@@ -15900,6 +15900,11 @@ begin
         { Anonymous-method environment records declared in this unit's
           implementation routines (Phase 2). }
         EmitEnvCleanupDefsForBlock(AUnit.ImplBlock);
+        { Classes declared in the INTERFACE section carry their method bodies
+          after LinkClassMethodImpls — a closure inside such a method needs
+          its env cleanup emitted here too (interface ProcDecls are bodyless
+          declarations, so the walk is a no-op for them). }
+        EmitEnvCleanupDefsForBlock(AUnit.IntfBlock);
         EmitEnvCleanupDefsForInstances(AUnit.GenericInstances,
                                        AUnit.GenericRecordInstances);
 
