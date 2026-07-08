@@ -1591,8 +1591,17 @@ end;
 function TCodeGenQBE.IsAggregateAddrType(AType: TTypeDesc): Boolean;
 begin
   if AType = nil then Exit(False);
+  { Method pointers and 'reference to' closures are 16-byte (Code, Data)
+    aggregates: reading one yields the ADDRESS of its block, and a value
+    parameter receives that address (the callee memcpys into its own slot —
+    see EmitParamAllocs).  Before this, EmitExpr loaded only the CODE half
+    and a capturing closure argument arrived with a garbage env (BUG-008
+    family; surfaced by the TTaskGroup.Spawn closure overload). }
   Result := (AType.Kind in [tyRecord, tyStaticArray]) or
-            ((AType.Kind = tySet) and TSetTypeDesc(AType).IsJumbo());
+            ((AType.Kind = tySet) and TSetTypeDesc(AType).IsJumbo()) or
+            ((AType.Kind = tyProcedural) and
+             (TProceduralTypeDesc(AType).IsMethodPtr or
+              TProceduralTypeDesc(AType).IsReference));
 end;
 
 function TCodeGenQBE.IsPromotableKind(AKind: TTypeKind): Boolean;
@@ -4600,9 +4609,44 @@ begin
       and leave the Data half garbage — a later call then dispatches on a bad
       Self and crashes.  Mirrors the simple-variable method-ptr assignment. }
     if (ISFld.TypeDesc.Kind = tyProcedural) and
-       TProceduralTypeDesc(ISFld.TypeDesc).IsMethodPtr then
+       (TProceduralTypeDesc(ISFld.TypeDesc).IsMethodPtr or
+        TProceduralTypeDesc(ISFld.TypeDesc).IsReference) then
     begin
+      if AAssign.Expr is TNilLiteral then
+      begin
+        { nil RHS: release the old env (reference fields; _ClassRelease is
+          nil-safe) and zero both halves — no 16-byte source exists. }
+        if TProceduralTypeDesc(ISFld.TypeDesc).IsReference then
+        begin
+          ISAddrT := AllocTemp();
+          EmitLine(Format('  %s =l add %s, 8', [ISAddrT, ObjTemp]));
+          ValTemp := AllocTemp();
+          EmitLine(Format('  %s =l loadl %s', [ValTemp, ISAddrT]));
+          EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+        end;
+        EmitLine(Format('  storel 0, %s', [ObjTemp]));
+        ISAddrT := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8', [ISAddrT, ObjTemp]));
+        EmitLine(Format('  storel 0, %s', [ISAddrT]));
+        Exit;
+      end;
       ValTemp := EmitExpr(AAssign.Expr);
+      if TProceduralTypeDesc(ISFld.TypeDesc).IsReference then
+      begin
+        { Strong env field: retain the new env (a literal's own +1 is
+          transient — balanced by the statement-level pending flush) and
+          release the old before the copy. }
+        ISAddrT := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8', [ISAddrT, ValTemp]));
+        ExtTemp := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [ExtTemp, ISAddrT]));
+        EmitLine(Format('  call $_ClassAddRef(l %s)', [ExtTemp]));
+        ISAddrT := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8', [ISAddrT, ObjTemp]));
+        ExtTemp := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [ExtTemp, ISAddrT]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ExtTemp]));
+      end;
       EmitLine(Format('  call $memcpy(l %s, l %s, l 16)', [ObjTemp, ValTemp]));
       Exit;
     end;
@@ -5022,14 +5066,17 @@ begin
       end
       else
       begin
-        { addref-new before release-old: self-assignment safe. }
+        { addref-new before release-old: self-assignment safe.  The retain is
+          UNCONDITIONAL: a literal RHS's materialisation temp holds its own
+          +1, but that reference is transient — the statement-level pending
+          flush releases it after this statement (see the TAnonMethodExpr
+          arm of EmitExpr) — so the slot takes its own reference here. }
         ArgTemp := EmitExpr(AAssign.Expr);
         NewEnvT := AllocTemp();
         EmitLine(Format('  %s =l add %s, 8', [NewEnvT, ArgTemp]));
         NewEnvV := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [NewEnvV, NewEnvT]));
-        if not (AAssign.Expr is TAnonMethodExpr) then
-          EmitLine(Format('  call $_ClassAddRef(l %s)', [NewEnvV]));
+        EmitLine(Format('  call $_ClassAddRef(l %s)', [NewEnvV]));
         EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
         EmitLine(Format('  call $memcpy(l %s, l %s, l 16)',
           [VarRef(AAssign.Name, AAssign.IsGlobal, AAssign.ResolvedOwnerUnit), ArgTemp]));
@@ -6940,6 +6987,7 @@ end;
 procedure TCodeGenQBE.EmitFieldAssignment(AAssign: TFieldAssignment);
 var
   Ptr, PtrTemp, ValTemp, OldTemp, QType, StoreInstr, ExtTemp: string;
+  NewEnvT, NewEnvV, OldEnvV: string;
   IsArc: Boolean;
   IsStr: Boolean;
   SelfPtr: string;
@@ -7198,11 +7246,49 @@ begin
     Exit;
   end;
 
-  { Method-pointer field: 16-byte inline TMethod (Code+Data).  ValTemp is the
-    address of a 16-byte source block.  Mirrors the variable-assign path. }
+  { Method-pointer / 'reference to' field: 16-byte inline (Code+Data).
+    ValTemp is the address of a 16-byte source block.  Mirrors the
+    variable-assign path; for a 'reference to' field the Data half is a
+    strong env reference — retain the new env and release the old one
+    (a literal RHS's own +1 is transient, balanced by the statement-level
+    pending flush). }
   if (AAssign.FieldInfo.TypeDesc.Kind = tyProcedural) and
-     TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsMethodPtr then
+     (TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsMethodPtr or
+      TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsReference) then
   begin
+    if AAssign.Expr is TNilLiteral then
+    begin
+      { nil RHS: no 16-byte source block — release the old env (reference
+        fields only; _ClassRelease is nil-safe) and zero both halves. }
+      if TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsReference then
+      begin
+        OldTemp := AllocTemp();
+        EmitLine(Format('  %s =l add %s, 8', [OldTemp, Ptr]));
+        OldEnvV := AllocTemp();
+        EmitLine(Format('  %s =l loadl %s', [OldEnvV, OldTemp]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [OldEnvV]));
+      end;
+      EmitLine(Format('  storel 0, %s', [Ptr]));
+      OldTemp := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [OldTemp, Ptr]));
+      EmitLine(Format('  storel 0, %s', [OldTemp]));
+      if ObjReleaseTemp <> '' then
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ObjReleaseTemp]));
+      Exit;
+    end;
+    if TProceduralTypeDesc(AAssign.FieldInfo.TypeDesc).IsReference then
+    begin
+      NewEnvT := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [NewEnvT, ValTemp]));
+      NewEnvV := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [NewEnvV, NewEnvT]));
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [NewEnvV]));
+      OldTemp := AllocTemp();
+      EmitLine(Format('  %s =l add %s, 8', [OldTemp, Ptr]));
+      OldEnvV := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [OldEnvV, OldTemp]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [OldEnvV]));
+    end;
     EmitLine(Format('  call $memcpy(l %s, l %s, l 16)', [Ptr, ValTemp]));
     if ObjReleaseTemp <> '' then
       EmitLine(Format('  call $_ClassRelease(l %s)', [ObjReleaseTemp]));
@@ -7681,8 +7767,9 @@ begin
         SlotAddr := SelfTemp;
       FPtrTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SlotAddr]));
-      if PT.IsMethodPtr then
+      if PT.IsMethodPtr or PT.IsReference then
       begin
+        { Closure env travels like a method pointer's Self — hidden first arg. }
         ArgTemp := AllocTemp();
         EmitLine(Format('  %s =l add %s, 8', [ArgTemp, SlotAddr]));
         DataTemp := AllocTemp();
@@ -7892,8 +7979,9 @@ begin
       SlotAddr := SelfTemp;
     FPtrTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SlotAddr]));
-    if PT.IsMethodPtr then
+    if PT.IsMethodPtr or PT.IsReference then
     begin
+      { Closure env travels like a method pointer's Self — hidden first arg. }
       ArgTemp := AllocTemp();
       EmitLine(Format('  %s =l add %s, 8', [ArgTemp, SlotAddr]));
       DataTemp := AllocTemp();
@@ -8343,6 +8431,26 @@ begin
           EmitLine(Format('  storel %%_par_%s_obj, %%_var_%s_obj',
             [Par.ParamName, Par.ParamName]));
           EmitLine(Format('  storel %%_par_%s_itab, %%_var_%s_itab',
+            [Par.ParamName, Par.ParamName]));
+        end;
+      tyProcedural:
+        if IsMethodPtrType(Par.ResolvedType) then
+        begin
+          { Method-pointer / closure param: passed BY-REFERENCE as the address
+            of the caller's 16-byte (Code, Data) fat value (one 'l' slot — same
+            convention as jumbo sets).  Copy into an owned local block so the
+            callee's call-through / re-assignment / onward-pass paths all see a
+            genuine 16-byte value.  Before this the caller passed only the
+            CODE half and the callee read a garbage Data/env from past its
+            8-byte slot — any CAPTURING closure argument miscompiled. }
+          EmitLine(Format('  %%_var_%s =l alloc8 16', [Par.ParamName]));
+          EmitLine(Format('  call $memcpy(l %%_var_%s, l %%_par_%s, l 16)',
+            [Par.ParamName, Par.ParamName]));
+        end
+        else
+        begin
+          EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+          EmitLine(Format('  storel %%_par_%s, %%_var_%s',
             [Par.ParamName, Par.ParamName]));
         end;
     else
@@ -9941,6 +10049,20 @@ begin
             EmitLine(Format('  storel %%_par_%s_itab, %%_var_%s_itab',
               [Par.ParamName, Par.ParamName]));
           end;
+        tyProcedural:
+          if IsMethodPtrType(Par.ResolvedType) then
+          begin
+            { By-reference 16-byte fat value — see EmitParamAllocs. }
+            EmitLine(Format('  %%_var_%s =l alloc8 16', [Par.ParamName]));
+            EmitLine(Format('  call $memcpy(l %%_var_%s, l %%_par_%s, l 16)',
+              [Par.ParamName, Par.ParamName]));
+          end
+          else
+          begin
+            EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
+            EmitLine(Format('  storel %%_par_%s, %%_var_%s',
+              [Par.ParamName, Par.ParamName]));
+          end;
       else
         EmitLine(Format('  %%_var_%s =l alloc8 1', [Par.ParamName]));
         EmitLine(Format('  storel %%_par_%s, %%_var_%s',
@@ -11051,6 +11173,7 @@ end;
 function TCodeGenQBE.EmitExpr(AExpr: TASTExpr): string;
 var
   T, L, R, T2: string;
+  EnvT:        string;
   Op:          string;
   PropTgt:     string;
   BinExpr:     TBinaryExpr;
@@ -12570,8 +12693,9 @@ begin
         SlotAddr := SelfTemp;
       FPtrTemp := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [FPtrTemp, SlotAddr]));
-      if PT.IsMethodPtr then
+      if PT.IsMethodPtr or PT.IsReference then
       begin
+        { Closure env travels like a method pointer's Self — hidden first arg. }
         ArgTemp := AllocTemp();
         EmitLine(Format('  %s =l add %s, 8', [ArgTemp, SlotAddr]));
         DataTemp := AllocTemp();
@@ -13018,6 +13142,13 @@ begin
         EmitLine('  call $_ClassAddRef(l %__envp)');
         EmitLine(Format('  storel %%__envp, %s', [ArgTemp]));
       end;
+      { The temp's +1 on the env is transient — when the literal is consumed
+        as a VALUE (argument position), the statement-level flush releases
+        it after the call.  Assignment/Result stores never reach this arm
+        (they have dedicated move-semantics paths). }
+      EnvT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [EnvT, ArgTemp]));
+      FPendingObjReleases.Add(EnvT);
     end
     else
       EmitLine(Format('  storel 0, %s', [ArgTemp]));

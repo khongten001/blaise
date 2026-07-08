@@ -329,6 +329,13 @@ type
     procedure EmitEnvCleanupDefsForInstances(AInstances: TObjectList;
                                              ARecordInstances: TObjectList);
     procedure EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
+    { Materialise an anonymous-method literal's 16-byte (Code, Env) fat value
+      into its hidden '__anonv_*' frame slot (uSemantic reserves one per
+      literal) and leave the slot's ADDRESS in %rax.  Used when the literal is
+      consumed in VALUE position (argument passing).  The slot owns one env
+      reference, balanced by the reference-local scope-exit release; the old
+      value is released first so loop re-evaluation cannot leak. }
+    procedure EmitAnonValueToSlot(AME: TAnonMethodExpr);
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ART: TRecordTypeDesc;
                                  AWeak: Boolean);
@@ -2529,6 +2536,42 @@ begin
         Self.EmitEnvCleanupDefs(MD.Body);
     end;
   end;
+end;
+
+procedure TX86_64Backend.EmitAnonValueToSlot(AME: TAnonMethodExpr);
+var
+  MD: TMethodDecl;
+begin
+  MD := TMethodDecl(AME.LiftedDecl);
+  if MD = nil then
+    raise ENativeCodeGenError.Create(
+      'native backend: anonymous method not lifted — semantic pass required');
+  if AME.ValueSlotName = '' then
+    raise ENativeCodeGenError.Create(
+      'native backend: anonymous method has no value slot at line ' +
+      IntToStr(AME.Line));
+  Self.Emit(Format(#9'leaq %s, %%rcx', [Self.VarOperand(AME.ValueSlotName)]));
+  Self.Emit(#9'movq 8(%rcx), %rdi');
+  Self.Emit(#9'pushq %rcx');
+  Self.Emit(#9'callq _ClassRelease');
+  Self.Emit(#9'popq %rcx');
+  Self.Emit(Format(#9'leaq %s(%%rip), %%rax', [FuncSymbolFromDecl(MD)]));
+  Self.Emit(#9'movq %rax, (%rcx)');
+  if MD.EnvCaptured <> nil then
+  begin
+    if MD.EnvSlotName <> '' then
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(MD.EnvSlotName)]))
+    else
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__envp')]));
+    Self.Emit(#9'movq %rax, 8(%rcx)');
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'pushq %rcx');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(#9'popq %rcx');
+  end
+  else
+    Self.Emit(#9'movq $0, 8(%rcx)');
+  Self.Emit(#9'movq %rcx, %rax');
 end;
 
 procedure TX86_64Backend.EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
@@ -6471,6 +6514,7 @@ begin
           [TFieldInfo(TIdentExpr(AExpr).ImplicitFieldInfo).Offset]));
       if (TIdentExpr(AExpr).ResolvedType <> nil) and
          (IsJumboSet(TIdentExpr(AExpr).ResolvedType) or
+          IsMethodPtrType(TIdentExpr(AExpr).ResolvedType) or
           (TIdentExpr(AExpr).ResolvedType.Kind in [tyRecord, tyStaticArray])) then
         Self.Emit(#9'movq %rcx, %rax')
       else if (TIdentExpr(AExpr).ResolvedType <> nil) and
@@ -6482,8 +6526,11 @@ begin
     end;
     if (TIdentExpr(AExpr).ResolvedType <> nil) and
        (IsJumboSet(TIdentExpr(AExpr).ResolvedType) or
+          IsMethodPtrType(TIdentExpr(AExpr).ResolvedType) or
           (TIdentExpr(AExpr).ResolvedType.Kind in [tyRecord, tyStaticArray])) then
     begin
+      { Method-ptr / closure idents yield their block ADDRESS too — value
+        params receive the address and callees copy 16 bytes (Phase 2b). }
       if FSretFunc and (TIdentExpr(AExpr).Name = 'Result') then
         Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]))
       else if Self.IsCaptured(TIdentExpr(AExpr).Name) then
@@ -9183,6 +9230,13 @@ begin
     Exit;
   end;
 
+  if AExpr is TAnonMethodExpr then
+  begin
+    { Literal consumed in VALUE position: materialise into its hidden slot
+      and yield the slot ADDRESS (aggregate-style, like records). }
+    Self.EmitAnonValueToSlot(TAnonMethodExpr(AExpr));
+    Exit;
+  end;
   raise ENativeCodeGenError.Create(
     Format('native backend: unsupported expression form %s at line %d col %d in %s',
       [AExpr.ClassName, AExpr.Line, AExpr.Col, FCurrentUnitName]));
@@ -9829,6 +9883,23 @@ begin
       APar.ResolvedType.Kind = tySingle);
     Self.Emit(#9'subq $8, %rsp');
     Self.Emit(#9'movsd %xmm0, 0(%rsp)');
+  end
+  else if (APar <> nil) and IsMethodPtrType(APar.ResolvedType) then
+  begin
+    { Method-pointer / closure argument: pass the ADDRESS of the 16-byte fat
+      value (one slot); the callee copies it into its own slot (Phase 2b in
+      EmitFunctionDef).  Literals materialise into their hidden value slot. }
+    if AArg is TAnonMethodExpr then
+      Self.EmitAnonValueToSlot(TAnonMethodExpr(AArg))
+    else if (AArg is TIdentExpr) and (not TIdentExpr(AArg).IsImplicitSelf) and
+            (not Self.IsCaptured(TIdentExpr(AArg).Name)) then
+      Self.Emit(Format(#9'leaq %s, %%rax',
+        [Self.VarOperand(TIdentExpr(AArg).Name)]))
+    else
+      { Field access / captured / call-returning forms: EmitExprToEax yields
+        the block address for aggregate-style reads. }
+      Self.EmitExprToEax(AArg);
+    Self.Emit(#9'pushq %rax');
   end
   else
   begin
@@ -12086,6 +12157,7 @@ var
   RepS:  TRepeatStmt;
   Asgn:  TAssignment;
   FA:    TFieldAssignment;
+  LNilStore, LSkipAdd, LDone: string;
   CVStore: TAssignment;
   FAE:   TFieldAccessExpr;
   SSA:   TStaticSubscriptAssign;
@@ -12177,6 +12249,55 @@ begin
           Self.Emit(Format(#9'leaq %s(%%rip), %%rax',
             [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
         Self.Emit(#9'movq %rax, (%rcx)');
+        Exit;
+      end;
+      { General method-pointer / closure implicit-Self field store
+        (bare 'FProc := <ident|literal|nil>' inside a method): 16-byte copy
+        with env ARC for 'reference to' fields.  Mirrors the explicit-field
+        arm in the TFieldAssignment path. }
+      if IsMethodPtrType(ISFld.TypeDesc) then
+      begin
+        Self.Emit(#9'pushq %rbx');
+        Self.Emit(#9'pushq %r12');
+        if Asgn.Expr is TNilLiteral then
+          Self.Emit(#9'xorl %r12d, %r12d')
+        else
+        begin
+          if Asgn.Expr is TAnonMethodExpr then
+            Self.EmitAnonValueToSlot(TAnonMethodExpr(Asgn.Expr))
+          else
+            Self.EmitExprToEax(Asgn.Expr);
+          Self.Emit(#9'movq %rax, %r12');
+        end;
+        Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand('Self')]));
+        if ISFld.Offset > 0 then
+          Self.Emit(Format(#9'addq $%d, %%rbx', [ISFld.Offset]));
+        LNilStore := Self.NewLabel('fpnili');
+        LSkipAdd := Self.NewLabel('fpskipaddi');
+        LDone := Self.NewLabel('fpdonei');
+        if TProceduralTypeDesc(ISFld.TypeDesc).IsReference then
+        begin
+          Self.Emit(#9'testq %r12, %r12');
+          Self.Emit(Format(#9'jz %s', [LSkipAdd]));
+          Self.Emit(#9'movq 8(%r12), %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+          Self.Emit(LSkipAdd + ':');
+          Self.Emit(#9'movq 8(%rbx), %rdi');
+          Self.Emit(#9'callq _ClassRelease');
+        end;
+        Self.Emit(#9'testq %r12, %r12');
+        Self.Emit(Format(#9'jz %s', [LNilStore]));
+        Self.Emit(#9'movq (%r12), %rax');
+        Self.Emit(#9'movq %rax, (%rbx)');
+        Self.Emit(#9'movq 8(%r12), %rax');
+        Self.Emit(#9'movq %rax, 8(%rbx)');
+        Self.Emit(Format(#9'jmp %s', [LDone]));
+        Self.Emit(LNilStore + ':');
+        Self.Emit(#9'movq $0, (%rbx)');
+        Self.Emit(#9'movq $0, 8(%rbx)');
+        Self.Emit(LDone + ':');
+        Self.Emit(#9'popq %r12');
+        Self.Emit(#9'popq %rbx');
         Exit;
       end;
       { ARC-managed implicit-Self field: retain the new value (unless the RHS
@@ -14079,6 +14200,84 @@ begin
       if FA.FieldInfo.TypeDesc.Kind = tyRecord then
         Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
       Self.EmitFuncCallSret(TFuncCallExpr(FA.Expr), '(%rbx)', False);
+      Self.Emit(#9'popq %rbx');
+      Exit;
+    end;
+    { General method-pointer / closure field store: Field := <ident|literal>.
+      The RHS evaluates to the ADDRESS of a 16-byte (Code, Data) fat value
+      (EmitExprToEax yields block addresses for fat-proc idents and
+      materialised literals).  For a 'reference to' field the Data half is a
+      strong env reference: retain the new env, release the old one, then
+      copy both halves.  Mirrors the QBE EmitFieldAssignment arm. }
+    if IsMethodPtrType(FA.FieldInfo.TypeDesc) then
+    begin
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(#9'pushq %r12');
+      { RHS address -> %r12 (callee-saved; survives the ARC calls).  A nil
+        RHS has no source block: %r12 = 0 marks the zero-both-halves path. }
+      if FA.Expr is TNilLiteral then
+        Self.Emit(#9'xorl %r12d, %r12d')
+      else
+      begin
+        if FA.Expr is TAnonMethodExpr then
+          Self.EmitAnonValueToSlot(TAnonMethodExpr(FA.Expr))
+        else
+          Self.EmitExprToEax(FA.Expr);
+        Self.Emit(#9'movq %rax, %r12');
+      end;
+      { Field address -> %rbx. }
+      if FA.ObjExpr <> nil then
+      begin
+        Self.EmitExprToEax(FA.ObjExpr);
+        Self.Emit(#9'movq %rax, %rbx');
+      end
+      else if FSretFunc and (FA.RecordName = 'Result') then
+        Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand('Result')]))
+      else if FA.IsImplicitSelf then
+      begin
+        Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand('Self')]));
+        if (FA.ImplicitBaseInfo <> nil) and (FA.ImplicitBaseInfo.Offset > 0) then
+          Self.Emit(Format(#9'addq $%d, %%rbx', [FA.ImplicitBaseInfo.Offset]));
+        if FA.IsClassAccess then
+          Self.Emit(#9'movq (%rbx), %rbx');
+      end
+      else if FA.IsClassAccess then
+      begin
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rbx');
+        if FA.IsVarParam then
+          Self.Emit(#9'movq (%rbx), %rbx');
+      end
+      else if FA.IsVarParam then
+        Self.EmitVarBaseToReg(FA.RecordName, False, '%rbx')
+      else
+        Self.EmitVarBaseToReg(FA.RecordName, True, '%rbx');
+      if FA.FieldInfo.Offset > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rbx', [FA.FieldInfo.Offset]));
+      LNilStore := Self.NewLabel('fpnil');
+      LSkipAdd := Self.NewLabel('fpskipadd');
+      LDone := Self.NewLabel('fpdone');
+      if TProceduralTypeDesc(FA.FieldInfo.TypeDesc).IsReference then
+      begin
+        Self.Emit(#9'testq %r12, %r12');
+        Self.Emit(Format(#9'jz %s', [LSkipAdd]));
+        Self.Emit(#9'movq 8(%r12), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Self.Emit(LSkipAdd + ':');
+        Self.Emit(#9'movq 8(%rbx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+      end;
+      Self.Emit(#9'testq %r12, %r12');
+      Self.Emit(Format(#9'jz %s', [LNilStore]));
+      Self.Emit(#9'movq (%r12), %rax');
+      Self.Emit(#9'movq %rax, (%rbx)');
+      Self.Emit(#9'movq 8(%r12), %rax');
+      Self.Emit(#9'movq %rax, 8(%rbx)');
+      Self.Emit(Format(#9'jmp %s', [LDone]));
+      Self.Emit(LNilStore + ':');
+      Self.Emit(#9'movq $0, (%rbx)');
+      Self.Emit(#9'movq $0, 8(%rbx)');
+      Self.Emit(LDone + ':');
+      Self.Emit(#9'popq %r12');
       Self.Emit(#9'popq %rbx');
       Exit;
     end;
@@ -16394,7 +16593,10 @@ var
   HK:      TList<Integer>;
   HTotal:  Integer;
 begin
-  IsMeth := (AProcType <> nil) and AProcType.IsMethodPtr;
+  { 'reference to' closures carry their env in the Data half exactly like an
+    'of object' method pointer carries Self — both must load and pass it. }
+  IsMeth := (AProcType <> nil) and
+            (AProcType.IsMethodPtr or AProcType.IsReference);
   { A method pointer consumes %rdi for the captured Data (Self), leaving five
     argument registers; a plain function pointer leaves all six.  Anything
     larger would need the stack-overflow argument strategy — fail loudly
@@ -18519,6 +18721,23 @@ begin
       [Self.VarOperand(P.ParamName + '_data')]));
     Self.Emit(Format(#9'movq %%rax, %s',
       [Self.VarOperand(P.ParamName)]));
+  end;
+  { Phase 2b: method-pointer / closure value params arrive as a POINTER to the
+    caller's 16-byte (Code, Data) fat value (one register slot); replace the
+    pointer with a 16-byte copy IN the slot so call-through, re-assignment and
+    onward passing all see a real fat value.  Before this the caller passed
+    only the CODE half and a capturing closure argument read a garbage env. }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    P := TMethodParam(ADecl.Params.Items[I]);
+    if P.IsOpenArray or P.IsVarParam then Continue;
+    if not IsMethodPtrType(P.ResolvedType) then Continue;
+    Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand(P.ParamName)]));
+    Self.Emit(Format(#9'leaq %s, %%rdx', [Self.VarOperand(P.ParamName)]));
+    Self.Emit(#9'movq (%rsi), %rax');
+    Self.Emit(#9'movq 8(%rsi), %rcx');
+    Self.Emit(#9'movq %rax, (%rdx)');
+    Self.Emit(#9'movq %rcx, 8(%rdx)');
   end;
   { Initialise Result to 0 (defined default), like the QBE backend.
     For sret functions Result IS the caller's buffer (already zeroed by caller). }

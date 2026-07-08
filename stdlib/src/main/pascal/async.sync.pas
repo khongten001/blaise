@@ -117,10 +117,30 @@ type
       end;
 
     Must be driven from inside a fiber (it parks the caller in Wait). }
+  { Closure-typed child entry for the anonymous-method Spawn overload
+    (docs/anonymous-methods-design.adoc, Phase 7).  The closure's environment
+    lives on the heap, so a loop that spawns with a BLOCK-SCOPED var captures
+    a distinct per-iteration value; capturing the routine-level loop variable
+    shares one env and every child observes its final value (the documented
+    trap). }
+  TSpawnProc = reference to procedure;
+
+  TTaskGroup = class;   { forward — TSpawnBox back-references the group }
+
+  { Heap box holding a closure child's fat value: the ARC-managed field keeps
+    the closure's environment alive from Spawn until the group frees its box
+    list (the group always outlives its children by construction). }
+  TSpawnBox = class
+  public
+    [Unretained] Group: TTaskGroup;  { back-ref; the group owns the box }
+    Proc: TSpawnProc;
+  end;
+
   TTaskGroup = class
   private
     FMtx: array[0..5] of Int64;
     FChildren: TList<TFiberTask>;
+    FBoxes: TList<TSpawnBox>;     { closure children's boxes — retained until Destroy }
     FRemaining: Integer;          { real children not yet finished }
     FWaiter: TFiberTask;          { the fiber parked in Wait, or nil }
     FDeadlineMs: Int64;           { 0 = no deadline }
@@ -134,7 +154,11 @@ type
     constructor Create(ADeadlineMs: Int64 = 0);
     destructor Destroy; override;
     { Spawn a child fiber running AProc(AArg) under this group. }
-    function Spawn(AProc: TFiberProc; AArg: Pointer): TFiberTask;
+    function Spawn(AProc: TFiberProc; AArg: Pointer): TFiberTask; overload;
+    { Spawn a child fiber running the closure AProc under this group.  The
+      closure (and its captured environment) is kept alive by the group until
+      the group is freed. }
+    function Spawn(AProc: TSpawnProc): TFiberTask; overload;
     { Park until every child has finished, or cancel all children on the first
       failure or when the deadline elapses, then return.  Returns True if all
       children completed successfully, False if any failed or the deadline
@@ -429,8 +453,8 @@ end;
 { --- TTaskGroup ----------------------------------------------------------- }
 
 type
-  { Per-child closure captured for the trampoline (no anonymous methods, so we
-    box the group + user proc + arg on the heap). }
+  { Per-child record captured for the plain-procedure trampoline (boxes the
+    group + user proc + arg on the heap). }
   PTaskGroupChild = ^TTaskGroupChild;
   TTaskGroupChild = record
     Group: TTaskGroup;
@@ -456,6 +480,34 @@ begin
     on E: EFiberCancelled do
       ;   { the group finished first and cancelled us }
   end;
+end;
+
+{ The fiber body a CLOSURE child runs: AArg is the TSpawnBox (borrowed — the
+  group's box list holds the strong reference).  Failure reporting mirrors
+  TaskGroupChildEntry. }
+procedure TaskGroupClosureEntry(AArg: Pointer);
+var
+  Box: TSpawnBox;
+  G: TTaskGroup;
+  Failed: Boolean;
+  Msg: string;
+begin
+  Box := TSpawnBox(AArg);
+  G := Box.Group;
+  Failed := False;
+  Msg := '';
+  try
+    Box.Proc();
+  except
+    on E: EFiberCancelled do
+      ;   { cancellation is a normal, non-failing end for a child }
+    on E: Exception do
+    begin
+      Failed := True;
+      Msg := E.Message;
+    end;
+  end;
+  G.ChildFinished(Failed, Msg);
 end;
 
 { The fiber body every child runs: invoke the user proc under a root frame,
@@ -496,6 +548,7 @@ constructor TTaskGroup.Create(ADeadlineMs: Int64);
 begin
   pthread_mutex_init(@Self.FMtx[0], nil);
   Self.FChildren := TList<TFiberTask>.Create();
+  Self.FBoxes := TList<TSpawnBox>.Create();
   Self.FRemaining := 0;
   Self.FWaiter := nil;
   Self.FDeadlineMs := ADeadlineMs;
@@ -512,6 +565,7 @@ begin
   Self.CancelAll();
   pthread_mutex_destroy(@Self.FMtx[0]);
   Self.FChildren.Free();
+  Self.FBoxes.Free();
   inherited Destroy();
 end;
 
@@ -528,6 +582,25 @@ begin
   Self.FRemaining := Self.FRemaining + 1;
   pthread_mutex_unlock(@Self.FMtx[0]);
   T := SpawnFiber(@TaskGroupChildEntry, C);
+  pthread_mutex_lock(@Self.FMtx[0]);
+  Self.FChildren.Add(T);
+  pthread_mutex_unlock(@Self.FMtx[0]);
+  Result := T;
+end;
+
+function TTaskGroup.Spawn(AProc: TSpawnProc): TFiberTask;
+var
+  Box: TSpawnBox;
+  T: TFiberTask;
+begin
+  Box := TSpawnBox.Create();
+  Box.Group := Self;
+  Box.Proc := AProc;
+  pthread_mutex_lock(@Self.FMtx[0]);
+  Self.FBoxes.Add(Box);
+  Self.FRemaining := Self.FRemaining + 1;
+  pthread_mutex_unlock(@Self.FMtx[0]);
+  T := SpawnFiber(@TaskGroupClosureEntry, Pointer(Box));
   pthread_mutex_lock(@Self.FMtx[0]);
   Self.FChildren.Add(T);
   pthread_mutex_unlock(@Self.FMtx[0]);

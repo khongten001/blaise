@@ -1820,6 +1820,27 @@ accident).  The rule now is:
   lifetime semantics.  Implicit member access simply fails to resolve,
   because the nested body is analysed without the enclosing class context.
 
+=== Closure and method-pointer parameter passing (Phase 7)
+
+A `reference to` (or `of object`) value parameter is passed as the ADDRESS
+of the caller's 16-byte `(Code, Data)` fat value — one register slot, the
+same convention as jumbo sets — and the callee copies the 16 bytes into its
+own slot at entry.  Semantics are borrow-in: the callee takes no reference
+for the parameter itself (the caller's value outlives the call), while
+storing the parameter onward (into a variable or field) takes the normal
+strong retain.  An anonymous literal in argument position materialises into
+a hidden per-literal frame slot whose environment reference is balanced by
+the ordinary scope-exit release, so `Group.Spawn(procedure ... end)` in a
+loop passes N distinct per-iteration environments with no leak.
+
+This phase also delivers the structured-concurrency hookup: the closure-typed
+`TTaskGroup.Spawn` overload (`async.sync`).  The group keeps each spawned
+closure (and thus its captured environment) alive in an owned box list until
+the group is freed — the group outlives its children by construction.  The
+loop-spawn idiom with a block-scoped `var` spawns distinct snapshots; the
+routine-level shared-variable form remains the documented trap (every child
+observes the final value).
+
 === Restrictions in this phase (clear compile-time errors)
 
 - Capturing a `var`/`out` parameter is rejected — the env would have to

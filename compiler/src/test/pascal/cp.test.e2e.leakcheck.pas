@@ -90,6 +90,7 @@ type
       reference at exit and the escaped closure drops the last one when the
       closure slot is released. }
     procedure TestDebug_ClosureEnv_ReleasedExactlyOnce;
+    procedure TestDebug_ClosureArgBalance_NoLeak;
     { Phase 3: a closure capturing Self stored in the receiver's OWN field
       forms the documented strong cycle Self -> field -> env -> Self.  It
       MUST leak (asserted) until [Weak] capture (Phase 5) provides the
@@ -1041,6 +1042,41 @@ begin
 end;
 
 const
+  { Phase 7 closure-argument ABI: a capturing LITERAL passed as an argument
+    (by-address, borrow), stored into an object field (retain), invoked, then
+    nil'd and freed.  Guards the literal-temp transient release (pending
+    flush / value-slot scope release) + the field's retain/release balance —
+    the exact ARC choreography behind TTaskGroup.Spawn(closure). }
+  SrcClosureArgBalance = '''
+    program P;
+    type
+      TP = reference to procedure;
+      TBox = class
+      public
+        Proc: TP;
+      end;
+    procedure Stash(AProc: TP; ABox: TBox);
+    begin
+      ABox.Proc := AProc
+    end;
+    procedure Driver;
+    var
+      B: TBox;
+      N: Integer;
+    begin
+      B := TBox.Create();
+      N := 6;
+      Stash(procedure begin WriteLn(N + 1) end, B);
+      B.Proc();
+      B.Proc := nil;
+      B.Free()
+    end;
+    begin
+      Driver();
+      WriteLn('done')
+    end.
+    ''';
+
   { Escaping closure: env allocated in Make, last release when the global
     closure slot is released at program exit. }
   SrcClosureEnvOnce = '''
@@ -1261,6 +1297,18 @@ var
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureEnvOnce, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', '7' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_ClosureArgBalance_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureArgBalance, Output, ExitCode, True));
   AssertEquals('exit 0', 0, ExitCode);
   AssertEquals('stdout', '7' + LE + 'done' + LE, Output);
   AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);

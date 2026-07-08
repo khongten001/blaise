@@ -13950,6 +13950,7 @@ var
   Par:       TMethodParam;
   EnvPar:    TMethodParam;
   ProcParam: TProcParamInfo;
+  ValVD:     TVarDecl;
   I:         Integer;
 begin
   if AExpr.ResolvedType <> nil then Exit(AExpr.ResolvedType);  { idempotent }
@@ -14001,6 +14002,27 @@ begin
     AExpr.LiftedName := MD.Name;
     AExpr.LiftedDecl := MD;
     MD.IsAnonThunk := True;
+    { Hidden VALUE slot for argument-position materialisation: a 16-byte
+      local of this literal's reference type in the enclosing frame.  The
+      native backend builds the fat value here when the literal is consumed
+      as a call argument; the slot participates in the ordinary zero-init
+      and reference-local scope-exit release passes, so its env reference
+      is balanced without a bespoke cleanup path. }
+    AExpr.ValueSlotName := '__anonv_' + IntToStr(FAnonMethodCount);
+    ValVD := TVarDecl.Create();
+    ValVD.Names.Add(AExpr.ValueSlotName);
+    ValVD.TypeName := '';
+    ValVD.ResolvedType := ProcDesc;
+    if FCurrentEnclosingDecl <> nil then
+      FCurrentEnclosingDecl.Body.Decls.Add(ValVD)
+    else if FCurrentMethodDecl <> nil then
+      FCurrentMethodDecl.Body.Decls.Add(ValVD)
+    else if (FProg <> nil) and (FProg.Block <> nil) then
+      FProg.Block.Decls.Add(ValVD)
+    else if (FCurrentUnit <> nil) and (FCurrentUnit.ImplBlock <> nil) then
+      FCurrentUnit.ImplBlock.Decls.Add(ValVD)
+    else
+      ValVD.Free();
     { Phase 5: [Weak name] capture-modifier list.  v1 supports [Weak Self]
       only — the cycle-breaking case (closure stored in its own receiver).
       Validated and applied during capture promotion below. }

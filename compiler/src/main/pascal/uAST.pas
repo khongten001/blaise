@@ -1062,6 +1062,15 @@ type
                                    thunk appended to the module's ProcDecls
                                    by uSemantic; codegen references it via
                                    ResolvedQbeName }
+    ValueSlotName: string;       { set by uSemantic — name of the hidden
+                                   16-byte local reserved in the enclosing
+                                   frame for materialising this literal in
+                                   VALUE position (argument passing).  The
+                                   native backend builds the fat value there;
+                                   the slot's env reference is balanced by
+                                   the normal reference-local scope-exit
+                                   release.  Semantic product, not
+                                   serialised. }
     constructor Create;
     destructor Destroy; override;
   end;

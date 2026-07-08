@@ -28,6 +28,13 @@ type
     procedure SetUp; override;
   published
     procedure TestFiberEchoServerClient_RoundTrip;
+    { Phase 7 (anonymous methods x concurrency): the 'reference to'-typed
+      TTaskGroup.Spawn overload.  The loop-spawn pattern with a block-scoped
+      var spawns N DISTINCT captured values (per-iteration envs, Phase 4);
+      the routine-level shared-variable form is the documented trap — every
+      child observes the final value. }
+    procedure TestTaskGroup_SpawnClosure_BlockVarSnapshots;
+    procedure TestTaskGroup_SpawnClosure_SharedVarTrap;
   end;
 
 implementation
@@ -108,6 +115,93 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRTLRunsOnOne(beNative, 'asyncio-echo', SrcEchoServerClient,
     'ECHO:hello' + LE + 'DONE' + LE, 0)
+end;
+
+const
+  SrcSpawnClosureSnapshots =
+    '''
+    program tgclos;
+    uses SysUtils, async.fibers, async.sync;
+
+    procedure Driver(AArg: Pointer);
+    var
+      G: TTaskGroup;
+      I: Integer;
+    begin
+      G := TTaskGroup.Create();
+      try
+        for I := 0 to 2 do
+        begin
+          var Snap: Integer := I;
+          G.Spawn(procedure
+            begin
+              WriteLn(Snap)
+            end);
+        end;
+        if G.Wait() then
+          WriteLn('OK')
+        else
+          WriteLn('FAIL');
+      finally
+        G.Free();
+      end;
+    end;
+
+    begin
+      SpawnFiber(@Driver, nil);
+      RunScheduler();
+      WriteLn('DONE');
+    end.
+    ''';
+
+  SrcSpawnClosureSharedTrap =
+    '''
+    program tgtrap;
+    uses SysUtils, async.fibers, async.sync;
+
+    procedure Driver(AArg: Pointer);
+    var
+      G: TTaskGroup;
+      I: Integer;
+    begin
+      G := TTaskGroup.Create();
+      try
+        for I := 0 to 2 do
+          G.Spawn(procedure
+            begin
+              WriteLn(I)
+            end);
+        if G.Wait() then
+          WriteLn('OK')
+        else
+          WriteLn('FAIL');
+      finally
+        G.Free();
+      end;
+    end;
+
+    begin
+      SpawnFiber(@Driver, nil);
+      RunScheduler();
+      WriteLn('DONE');
+    end.
+    ''';
+
+procedure TAsyncIoE2ETests.TestTaskGroup_SpawnClosure_BlockVarSnapshots;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnOne(beNative, 'tg-closure-snap', SrcSpawnClosureSnapshots,
+    '0' + LE + '1' + LE + '2' + LE + 'OK' + LE + 'DONE' + LE, 0)
+end;
+
+procedure TAsyncIoE2ETests.TestTaskGroup_SpawnClosure_SharedVarTrap;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { All three children read the SAME captured I, which the loop has already
+    advanced to 3 by the time they run — the documented shared-env trap
+    (use a block-scoped var for per-iteration snapshots). }
+  AssertRTLRunsOnOne(beNative, 'tg-closure-trap', SrcSpawnClosureSharedTrap,
+    '3' + LE + '3' + LE + '3' + LE + 'OK' + LE + 'DONE' + LE, 0)
 end;
 
 initialization

@@ -275,12 +275,13 @@ TMethodCallStmt.IsProcFieldCall  safe
 TInheritedCallStmt.Name  serialise
 TInheritedCallStmt.Args  serialise
 
-# TAnonMethodExpr (uAST.pas:1049)
+# TAnonMethodExpr (uAST.pas:1053)
 TAnonMethodExpr.Decl  serialise
 TAnonMethodExpr.WeakCaptures  serialise
 TAnonMethodExpr.LiftedName  safe
+TAnonMethodExpr.ValueSlotName  safe
 
-# TMethodCallExpr (uAST.pas:1065)
+# TMethodCallExpr (uAST.pas:1078)
 TMethodCallExpr.ObjectName  serialise
 TMethodCallExpr.Name  serialise
 TMethodCallExpr.QualifierUnit  serialise
