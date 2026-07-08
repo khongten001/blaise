@@ -70,6 +70,7 @@ type
     procedure TestArrayConst_IntElements_Parses;
     procedure TestArrayConst_StringElements_InIR;
     procedure TestArrayConst_IntElements_InIR;
+    procedure TestArrayConst_Int64BitPattern_InIR;
     procedure TestArrayConst_IndexedByEnumVar;
     procedure TestArrayConst_WrongElementCount_Error;
     procedure TestArrayConst_InUnit;
@@ -801,6 +802,32 @@ begin
     ''');
   AssertTrue('IR non-empty', IR <> '');
   AssertTrue('DirCost in IR', IRContains(IR, 'DirCost'));
+end;
+
+procedure TConstTests.TestArrayConst_Int64BitPattern_InIR;
+var IR: string;
+begin
+  { Radix literals whose sign bit is set (above High(Int64)) are valid Int64
+    bit patterns inside an array const — the same rule the scalar typed-const
+    path follows since issue #133.  $8080808080808080 folds to the decimal
+    bit pattern -9187201950435737472; &1000000000000000000000 (octal 2^63)
+    folds to -9223372036854775808 (issue #159). }
+  IR := GenIR(
+    '''
+    program P;
+    const B: array[0..2] of Int64 = (
+      $4040404040404040,
+      $8080808080808080,
+      &1000000000000000000000
+    );
+    begin
+    end.
+    ''');
+  AssertTrue('IR non-empty', IR <> '');
+  AssertTrue('B in IR', IRContains(IR, 'B'));
+  AssertTrue('plain element folded', IRContains(IR, '4629771061636907072'));
+  AssertTrue('hex bit pattern folded', IRContains(IR, '-9187201950435737472'));
+  AssertTrue('octal bit pattern folded', IRContains(IR, '-9223372036854775808'));
 end;
 
 procedure TConstTests.TestArrayConst_IndexedByEnumVar;

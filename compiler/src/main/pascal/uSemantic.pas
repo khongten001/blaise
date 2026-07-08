@@ -5339,18 +5339,23 @@ function TSemanticAnalyser.ResolveConstArrayElem(const AElem: string;
 var
   Sym:     TSymbol;
   EnumRef: TEnumMemberRef;
+  RadixVal: Int64;
+  RadixIsU: Boolean;
 begin
   Result := AElem;
   if AElem = '' then Exit;
   { Radix-prefixed integer literal — $hex, %binary, &octal (with optional
     leading sign).  The lexer keeps the prefixed form in the token text, but
     the rest of the const-array pipeline (codegen, OPDF) expects a plain
-    decimal string.  Fold through ParseIntLiteral, the same canonical parser
-    the parser uses for scalar/typed consts, so all three radixes behave
-    identically inside an array initialiser. }
-  if AElem[0] = '$' then Exit(IntToStr(ParseIntLiteral(AElem)));
-  if AElem[0] = '%' then Exit(IntToStr(ParseIntLiteral(AElem)));
-  if AElem[0] = '&' then Exit(IntToStr(ParseIntLiteral(AElem)));
+    decimal string.  Fold through ParseIntOrUInt64Literal, the same tolerant
+    parser the scalar typed-const path uses (issue #133), so a sign-bit bit
+    pattern like $8080808080808080 is accepted here too (issue #159): the
+    folded decimal is the signed rendering of the same 64-bit image. }
+  if (AElem[0] = '$') or (AElem[0] = '%') or (AElem[0] = '&') then
+  begin
+    ParseIntOrUInt64Literal(AElem, RadixVal, RadixIsU);
+    Exit(IntToStr(RadixVal));
+  end;
   if (Length(AElem) > 1) and (AElem[0] = '-') and
      ((AElem[1] = '$') or (AElem[1] = '%') or (AElem[1] = '&')) then
     Exit(IntToStr(-ParseIntLiteral(StrCopyTail(AElem, 1))));

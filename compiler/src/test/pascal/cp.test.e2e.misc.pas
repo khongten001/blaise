@@ -170,6 +170,7 @@ type
     procedure TestRun_Const_Int64BitPattern;
     procedure TestRun_Const_UInt64BitPattern;
     procedure TestRun_Const_UntypedAboveInt64_IsUInt64;
+    procedure TestRun_ArrayConst_Int64BitPattern;
 
     { Conditional compilation (issue #131): predefined BLAISE, DEFINE/UNDEF,
       IFDEF/IFNDEF/ELSE/ENDIF, nesting. }
@@ -1922,6 +1923,28 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '9259542123273814144' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_ArrayConst_Int64BitPattern;
+const
+  { A sign-bit hex literal is a valid Int64 bit pattern inside an array
+    const, matching the scalar typed-const rule from issue #133.  This is
+    the issue #159 regression case: the array-const fold used the strict
+    ParseIntLiteral and rejected $8080808080808080. }
+  Src = '''
+    program P;
+    const B: array[0..1] of Int64 = (
+      $4040404040404040,
+      $8080808080808080
+    );
+    begin
+      WriteLn(B[0]);
+      WriteLn(B[1])
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '4629771061636907072' + LE + '-9187201950435737472' + LE, 0);
 end;
 
 procedure TE2EMiscTests.TestRun_Forward_MutualRecursion;
