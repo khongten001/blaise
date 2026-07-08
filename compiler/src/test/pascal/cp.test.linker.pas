@@ -71,6 +71,11 @@ type
     FScratch: string;
     function ProjectRoot: string;
     function RunBin(const AExe: string; out AStdout: string): Integer;
+    { Encoded `movq $imm32, %rax` = 48 C7 C0 <imm32-LE>.  These byte strings
+      must appear in the linked .text if the correct syscall number was
+      emitted.  (Was a nested helper in three tests — nested routines inside
+      method bodies are rejected since BUG-008.) }
+    function MovRaxImm(AImm: Integer): string;
   protected
     procedure SetUp; override;
   published
@@ -985,6 +990,13 @@ begin
   ForceDirectories(FScratch);
 end;
 
+function TLinkerE2ETests.MovRaxImm(AImm: Integer): string;
+begin
+  Result := Chr($48) + Chr($C7) + Chr($C0) +
+            Chr(AImm and $FF) + Chr((AImm shr 8) and $FF) +
+            Chr((AImm shr 16) and $FF) + Chr((AImm shr 24) and $FF);
+end;
+
 function TLinkerE2ETests.RunBin(const AExe: string;
   out AStdout: string): Integer;
 var
@@ -1222,14 +1234,6 @@ const
     '  negq %rax' + LineEnding +
     '.Lok_stat:' + LineEnding +
     '  ret' + LineEnding;
-  { Encoded `movq $imm32, %rax` = 48 C7 C0 <imm32-LE>.  These byte strings must
-    appear in the linked .text if the correct syscall number was emitted. }
-  function MovRaxImm(AImm: Integer): string;
-  begin
-    Result := Chr($48) + Chr($C7) + Chr($C0) +
-              Chr(AImm and $FF) + Chr((AImm shr 8) and $FF) +
-              Chr((AImm shr 16) and $FF) + Chr((AImm shr 24) and $FF);
-  end;
 var
   Lk: TLinker;
   Obj: TElfObjectFile;
@@ -1297,12 +1301,6 @@ const
     'mremap:' + LineEnding +
     '  movq $-1, %rax' + LineEnding +       { MAP_FAILED — no FreeBSD mremap }
     '  ret' + LineEnding;
-  function MovRaxImm(AImm: Integer): string;
-  begin
-    Result := Chr($48) + Chr($C7) + Chr($C0) +
-              Chr(AImm and $FF) + Chr((AImm shr 8) and $FF) +
-              Chr((AImm shr 16) and $FF) + Chr((AImm shr 24) and $FF);
-  end;
 var
   Lk: TLinker;
   Obj: TElfObjectFile;
@@ -1366,12 +1364,6 @@ const
     '  syscall' + LineEnding +
     '  ret' + LineEnding;
   { Encoded `movq $imm32, %rax` = 48 C7 C0 <imm32-LE>. }
-  function MovRaxImm(AImm: Integer): string;
-  begin
-    Result := Chr($48) + Chr($C7) + Chr($C0) +
-              Chr(AImm and $FF) + Chr((AImm shr 8) and $FF) +
-              Chr((AImm shr 16) and $FF) + Chr((AImm shr 24) and $FF);
-  end;
 var
   Lk: TLinker;
   Obj: TElfObjectFile;

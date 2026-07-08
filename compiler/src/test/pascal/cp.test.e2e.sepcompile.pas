@@ -159,6 +159,12 @@ type
       default-property setter (the name-based path that read the poisoned
       OwningUnit). }
     procedure TestGenericInstance_CrossUnitCache_DefaultPropSetter_Runs;
+    { Phase 6 (anonymous methods x generics): a generic class whose method
+      body contains a closure literal, exported through the .bif generic-body
+      template and monomorphised by a consumer that has no access to the
+      source.  Covers the TAnonMethodExpr round-trip inside EncodeBlock and
+      the per-instantiation thunk/env regeneration at the import site. }
+    procedure TestGenericBodyClosure_RoundTrip_WithoutSource;
   end;
 
 implementation
@@ -2117,6 +2123,88 @@ begin
   AssertEquals('prog2 run exit (loader must resolve all instance symbols)',
     0, Rc);
   AssertEquals('prog2 stdout', '42' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestGenericBodyClosure_RoundTrip_WithoutSource;
+const
+  DepSrc =
+    '''
+    unit uclosgen;
+    interface
+    type
+      TGetter<T> = reference to function(): T;
+      TBox<T> = class
+      public
+        FVal: T;
+        function Make(): TGetter<T>;
+      end;
+    implementation
+    function TBox<T>.Make(): TGetter<T>;
+    begin
+      Result := function(): T
+        begin
+          Result := FVal
+        end;
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program useclos;
+    uses uclosgen;
+    var
+      BI: TBox<Integer>;
+      BS: TBox<string>;
+      GI: TGetter<Integer>;
+      GS: TGetter<string>;
+    begin
+      BI := TBox<Integer>.Create();
+      BI.FVal := 41;
+      BS := TBox<string>.Create();
+      BS.FVal := 'boxed';
+      GI := BI.Make();
+      GS := BS.Make();
+      BS := nil;
+      WriteLn(GI() + 1);
+      WriteLn(GS())
+    end.
+    ''';
+var
+  DepPas, DepObj, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  DepPas  := FScratch + '/uclosgen.pas';
+  DepObj  := FScratch + '/uclosgen.o';
+  ProgPas := FScratch + '/useclos.pas';
+  ProgBin := FScratch + '/useclos';
+
+  WriteFile(DepPas, DepSrc);
+  Rc := RunBlaise(['--source', DepPas, '--output', DepObj], Captured);
+  AssertEquals('blaise(uclosgen) exit (out: ' + Captured + ')', 0, Rc);
+
+  DeleteFile(DepPas);
+  AssertFalse('uclosgen.pas hidden', FileExists(DepPas));
+
+  WriteFile(ProgPas, ProgSrc);
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('blaise(useclos) exit (out: ' + Captured + ')', 0, Rc);
+
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('useclos run exit', 0, Rc);
+  AssertEquals('useclos stdout', '42' + #10 + 'boxed' + #10, Captured)
 end;
 
 initialization

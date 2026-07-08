@@ -805,7 +805,8 @@ begin
   for I := 0 to AIface.Types.Count - 1 do
   begin
     Entry := TTypeEntry(AIface.Types.Items[I]);
-    if Entry.IsGeneric or (Entry.Def is TGenericInterfaceDef) then
+    if Entry.IsGeneric or (Entry.Def is TGenericInterfaceDef) or
+       (Entry.Def is TGenericProcDef) then
       Continue;
     if Entry.Def is TClassTypeDef then
     begin
@@ -834,7 +835,8 @@ begin
   begin
     Entry := TTypeEntry(AIface.Types.Items[I]);
 
-    if Entry.IsGeneric or (Entry.Def is TGenericInterfaceDef) then
+    if Entry.IsGeneric or (Entry.Def is TGenericInterfaceDef) or
+       (Entry.Def is TGenericProcDef) then
     begin
       { Record the declaring unit on class templates so allocation sites
         inside cloned method bodies are attributed to the template source. }

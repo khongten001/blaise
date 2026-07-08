@@ -238,10 +238,11 @@ TypeDecl
     | IDENT LESS TypeParamList GREATER EQUALS TypeDef SEMICOLON
     ;
 
-(* The second form declares a generic type template.  TypeDef must be either
- * RecordDef (→ TGenericRecordDef), ClassDef (→ TGenericTypeDef), or
- * InterfaceDef (→ TGenericInterfaceDef).  The parser rejects other TypeDef
- * kinds at that position. *)
+(* The second form declares a generic type template.  TypeDef must be
+ * RecordDef (→ TGenericRecordDef), ClassDef (→ TGenericTypeDef),
+ * InterfaceDef (→ TGenericInterfaceDef), or ProceduralType
+ * (→ TGenericProcDef, e.g. TGetter<T> = reference to function(): T).
+ * The parser rejects other TypeDef kinds at that position. *)
 
 TypeDef
     = RecordDef

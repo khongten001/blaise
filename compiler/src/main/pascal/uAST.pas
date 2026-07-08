@@ -1208,6 +1208,20 @@ type
     destructor Destroy; override;
   end;
 
+  { Generic procedural-type template:
+      type TGetter<T> = reference to function(): T;
+    Also covers plain 'procedure'/'function' and 'of object' forms.  There is
+    no instance list: a monomorphised procedural type is pure type metadata
+    (a TProceduralTypeDesc in the symbol table) — it emits no code. }
+  TGenericProcDef = class(TASTTypeDef)
+  public
+    ParamNames:       TStringList;         { owned — type parameter names }
+    ParamConstraints: TStringList;         { owned — parallel; '' = unconstrained }
+    ProcDef:          TProceduralTypeDef;  { owned — template with unresolved param types }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   { One concrete instantiation of a generic record — stored on TProgram.
     Codegen iterates this list to emit method bodies and field cleanup. }
   TGenericRecordInstance = class
@@ -1906,6 +1920,21 @@ begin
   inherited Destroy();
 end;
 
+{ TGenericProcDef }
+
+constructor TGenericProcDef.Create;
+begin
+  inherited Create();
+  ParamNames       := TStringList.Create();
+  ParamConstraints := TStringList.Create();
+  ProcDef          := nil;
+end;
+
+destructor TGenericProcDef.Destroy;
+begin
+  inherited Destroy();
+end;
+
 { TGenericRecordInstance }
 
 constructor TGenericRecordInstance.Create;
@@ -2103,6 +2132,7 @@ function CloneGenericTypeDef(ASrc: TGenericTypeDef): TGenericTypeDef; forward;
 function CloneInterfaceTypeDef(ASrc: TInterfaceTypeDef): TInterfaceTypeDef; forward;
 function CloneGenericInterfaceDef(ASrc: TGenericInterfaceDef): TGenericInterfaceDef; forward;
 function CloneProceduralTypeDef(ASrc: TProceduralTypeDef): TProceduralTypeDef; forward;
+function CloneGenericProcDef(ASrc: TGenericProcDef): TGenericProcDef; forward;
 function CloneExceptHandler(ASrc: TExceptHandlerClause): TExceptHandlerClause; forward;
 function CloneCaseBranch(ASrc: TCaseBranch): TCaseBranch; forward;
 function CloneCompound(ASrc: TCompoundStmt): TCompoundStmt; forward;
@@ -2812,6 +2842,10 @@ begin
   begin
     Result := CloneProceduralTypeDef(TProceduralTypeDef(ASrc));
   end
+  else if ASrc is TGenericProcDef then
+  begin
+    Result := CloneGenericProcDef(TGenericProcDef(ASrc));
+  end
   else
     raise Exception.CreateFmt(
       'CloneTypeDef: unsupported type def %s', [ASrc.ClassName]);
@@ -2893,6 +2927,15 @@ begin
   end;
   Result.IntfDef.Free();
   Result.IntfDef := CloneInterfaceTypeDef(ASrc.IntfDef);
+end;
+
+function CloneGenericProcDef(ASrc: TGenericProcDef): TGenericProcDef;
+begin
+  Result := TGenericProcDef.Create();
+  Result.ParamNames.AddStrings(ASrc.ParamNames);
+  Result.ParamConstraints.AddStrings(ASrc.ParamConstraints);
+  if ASrc.ProcDef <> nil then
+    Result.ProcDef := CloneProceduralTypeDef(ASrc.ProcDef);
 end;
 
 function CloneProceduralTypeDef(ASrc: TProceduralTypeDef): TProceduralTypeDef;

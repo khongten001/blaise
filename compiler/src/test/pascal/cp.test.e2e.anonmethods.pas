@@ -50,6 +50,21 @@ type
     { Phase 5 }
     procedure TestRun_WeakSelf_ReadsNilAfterReceiverDies;
     procedure TestRun_WeakSelf_WorksWhileReceiverAlive;
+    { Regression: a routine RETURNING a 'reference to' value must use the
+      16-byte (Code, Env) aggregate-return ABI.  AggRetRec classified
+      'of object' but not 'reference to', so the QBE definition returned a
+      plain 'l' while call sites read rax:rdx — the env half was garbage and
+      the assignment crashed in _ClassAddRef. }
+    procedure TestRun_MethodReturnsClosure_FatReturnABI;
+    { BUG-008 follow-up: nested routines inside METHOD bodies — the
+      self-contained and captured-local forms must compile AND run on both
+      backends (they previously miscompiled on v0.12.0 and segfaulted the
+      native codegen afterwards). }
+    procedure TestRun_NestedRoutineInMethod_CapturesLocal;
+    { Phase 6 — generics: reference-to aliases + closures in generic bodies }
+    procedure TestRun_GenericRefAlias_ClosureAtInteger;
+    procedure TestRun_GenericRefAlias_ClosureAtString;
+    procedure TestRun_GenericBody_CapturesTTypedLocal;
   end;
 
 implementation
@@ -735,6 +750,167 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, '21' + LineEnding + '42' + LineEnding, 0);
 end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_CapturesLocal;
+const Src =
+  '''
+  program P;
+  type
+    TC = class
+      procedure M();
+    end;
+  procedure TC.M();
+  var X: Integer;
+    procedure Inner(K: Integer);
+    begin
+      WriteLn(X + K)
+    end;
+  begin
+    X := 40;
+    Inner(2)
+  end;
+  var C: TC;
+  begin
+    C := TC.Create();
+    C.M()
+  end.
+  ''';
+begin
+  AssertRunsOnAll(Src, '42' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodReturnsClosure_FatReturnABI;
+const Src =
+  '''
+  program P;
+  type
+    TGetter = reference to function(): string;
+    TBox = class
+      FVal: string;
+      function Make(): TGetter;
+      begin
+        Result := function(): string
+          begin
+            Result := FVal
+          end;
+      end;
+    end;
+  var
+    B: TBox;
+    G: TGetter;
+  begin
+    B := TBox.Create();
+    B.FVal := 'x' + 'y';
+    G := B.Make();
+    B := nil;
+    WriteLn(G())
+  end.
+  ''';
+begin
+  AssertRunsOnAll(Src, 'xy' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_GenericRefAlias_ClosureAtInteger;
+const Src =
+  '''
+  program P;
+  type
+    TGetter<T> = reference to function(): T;
+    TBox<T> = class
+      FVal: T;
+      function Make(): TGetter<T>;
+      begin
+        Result := function(): T
+          begin
+            Result := FVal
+          end;
+      end;
+    end;
+  var
+    B: TBox<Integer>;
+    G: TGetter<Integer>;
+  begin
+    B := TBox<Integer>.Create();
+    B.FVal := 41;
+    G := B.Make();
+    WriteLn(G() + 1)
+  end.
+  ''';
+begin
+  AssertRunsOnAll(Src, '42' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_GenericRefAlias_ClosureAtString;
+const Src =
+  '''
+  program P;
+  type
+    TGetter<T> = reference to function(): T;
+    TBox<T> = class
+      FVal: T;
+      function Make(): TGetter<T>;
+      begin
+        Result := function(): T
+          begin
+            Result := FVal
+          end;
+      end;
+    end;
+  var
+    B: TBox<string>;
+    G: TGetter<string>;
+  begin
+    B := TBox<string>.Create();
+    B.FVal := 'mono' + 'morphised';
+    G := B.Make();
+    B := nil;
+    WriteLn(G())
+  end.
+  ''';
+begin
+  { The string instance's env holds a managed T — the closure must keep the
+    value alive after the box itself is released. }
+  AssertRunsOnAll(Src, 'monomorphised' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_GenericBody_CapturesTTypedLocal;
+const Src =
+  '''
+  program P;
+  type
+    TGetter<T> = reference to function(): T;
+    TDup<T> = class
+      function Snapshot(AVal: T): TGetter<T>;
+      var Copy: T;
+      begin
+        Copy := AVal;
+        Result := function(): T
+          begin
+            Result := Copy
+          end;
+      end;
+    end;
+  var
+    DI: TDup<Integer>;
+    DS: TDup<string>;
+    GI: TGetter<Integer>;
+    GS: TGetter<string>;
+  begin
+    DI := TDup<Integer>.Create();
+    DS := TDup<string>.Create();
+    GI := DI.Snapshot(7);
+    GS := DS.Snapshot('seven');
+    WriteLn(GI());
+    WriteLn(GS())
+  end.
+  ''';
+begin
+  { A T-typed LOCAL captured inside a generic method body: the env field is
+    typed T and monomorphised per instantiation (value at Integer, managed
+    at string). }
+  AssertRunsOnAll(Src, '7' + LineEnding + 'seven' + LineEnding, 0)
+end;
+
 
 initialization
   RegisterTest(TE2EAnonMethodTests);

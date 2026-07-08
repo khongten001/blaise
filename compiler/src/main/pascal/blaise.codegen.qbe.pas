@@ -276,6 +276,13 @@ type
     procedure EmitVarDeclStmt(AStmt: TVarDeclStmt);
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
     procedure EmitEnvCleanupDefsForBlock(ABlock: TBlock);
+    { Phase 6: closure envs inside generic-instance method bodies — the
+      instances' cloned methods live on GenericInstances/GenericRecord-
+      Instances lists, not in any TBlock, so the block walker above never
+      sees them. }
+    procedure EmitEnvCleanupDefsForInstances(AInstances: TObjectList;
+                                             ARecordInstances: TObjectList);
+    procedure EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
     function  IsPromoted(const AName: string): Boolean;
     { Returns True if the named local class/string slot is still provably nil
       at the current emit position.  Used to elide _ClassRelease/_StringRelease
@@ -6048,7 +6055,13 @@ begin
   else if AType.Kind = tyRecord then
     Result := TRecordTypeDesc(AType)
   else if (AType.Kind = tyProcedural) and
-          TProceduralTypeDesc(AType).IsMethodPtr then
+          (TProceduralTypeDesc(AType).IsMethodPtr or
+           TProceduralTypeDesc(AType).IsReference) then
+    { 'of object' AND 'reference to' values are both 16-byte (Code, Data)
+      aggregates.  The call-site predicate IsMethodPtrType already treats
+      them identically; missing IsReference HERE left a routine RETURNING a
+      closure declared as a plain 'l' while its callers read rax:rdx — the
+      env half was garbage and the assignment's _ClassAddRef crashed. }
     Result := MethodPtrReturnRec()
   else
     Result := nil;
@@ -8343,6 +8356,7 @@ end;
 procedure TCodeGenQBE.EmitMethodDef(const ATypeName: string;
   AMethod: TMethodDecl);
 var
+  NestedMD:      TMethodDecl;
   Sig:           string;
   ParSep:        string;
   I:             Integer;
@@ -8365,6 +8379,19 @@ begin
     FuncName := '$' + QBEMangle(AMethod.ResolvedQbeName)
   else
     FuncName := '$' + QBEMangle(ATypeName + '_' + AMethod.Name);
+
+  { Nested routines declared inside this method's body — mirrors the nested
+    emission in EmitFuncDef (they were previously never emitted for methods:
+    BUG-008).  Non-exported; mangled under the method's own symbol. }
+  if AMethod.Body <> nil then
+    for I := 0 to AMethod.Body.ProcDecls.Count - 1 do
+    begin
+      NestedMD := TMethodDecl(AMethod.Body.ProcDecls.Items[I]);
+      if NestedMD.Body = nil then Continue;
+      NestedMD.ResolvedQbeName :=
+        StrCopyTail(FuncName, 1) + '_' + NestedMD.Name;
+      EmitFuncDef(NestedMD, False);
+    end;
   IsFunc   := AMethod.ResolvedReturnType <> nil;
 
   { RetRec drives the by-aggregate return ABI for both real records and
@@ -9335,6 +9362,8 @@ begin
   end;
   { Anonymous-method environment records (Phase 2). }
   EmitEnvCleanupDefsForBlock(AProg.Block);
+  EmitEnvCleanupDefsForInstances(AProg.GenericInstances,
+                                 AProg.GenericRecordInstances);
 end;
 
 procedure TCodeGenQBE.EmitMethodDefs(AProg: TProgram);
@@ -9669,6 +9698,39 @@ begin
         EmitEnvCleanupDefsForBlock(MD.Body);
     end;
   end;
+end;
+
+procedure TCodeGenQBE.EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
+var
+  L: Integer;
+begin
+  if (AMD.EnvType <> nil) and (not AMD.IsAnonThunk) then
+    EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(AMD.EnvType).Name),
+      TRecordTypeDesc(AMD.EnvType), True);
+  if AMD.BlockEnvTypes <> nil then
+    for L := 0 to AMD.BlockEnvTypes.Count - 1 do
+      EmitFieldCleanupFn(
+        QBEMangle(TRecordTypeDesc(AMD.BlockEnvTypes.Items[L]).Name),
+        TRecordTypeDesc(AMD.BlockEnvTypes.Items[L]), True);
+  if AMD.Body <> nil then
+    EmitEnvCleanupDefsForBlock(AMD.Body);
+end;
+
+procedure TCodeGenQBE.EmitEnvCleanupDefsForInstances(AInstances: TObjectList;
+                                                     ARecordInstances: TObjectList);
+var
+  I, J: Integer;
+begin
+  if AInstances <> nil then
+    for I := 0 to AInstances.Count - 1 do
+      for J := 0 to TGenericInstance(AInstances.Items[I]).ClassDef.Methods.Count - 1 do
+        EmitEnvCleanupDefsForMethod(TMethodDecl(
+          TGenericInstance(AInstances.Items[I]).ClassDef.Methods.Items[J]));
+  if ARecordInstances <> nil then
+    for I := 0 to ARecordInstances.Count - 1 do
+      for J := 0 to TGenericRecordInstance(ARecordInstances.Items[I]).RecordDef.Methods.Count - 1 do
+        EmitEnvCleanupDefsForMethod(TMethodDecl(
+          TGenericRecordInstance(ARecordInstances.Items[I]).RecordDef.Methods.Items[J]));
 end;
 
 procedure TCodeGenQBE.EmitFuncDef(ADecl: TMethodDecl; AExported: Boolean);
@@ -15707,6 +15769,8 @@ begin
         { Anonymous-method environment records declared in this unit's
           implementation routines (Phase 2). }
         EmitEnvCleanupDefsForBlock(AUnit.ImplBlock);
+        EmitEnvCleanupDefsForInstances(AUnit.GenericInstances,
+                                       AUnit.GenericRecordInstances);
 
         SavedUnit := FCurrentUnitName;
         for I := 0 to AUnit.GenericInstances.Count - 1 do

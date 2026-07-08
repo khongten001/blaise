@@ -323,6 +323,12 @@ type
     procedure EmitVarDeclStmt(AStmt: TVarDeclStmt);
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
     procedure EmitEnvCleanupDefs(ABlock: TBlock);
+    { Phase 6: closure envs inside generic-instance method bodies (the
+      instances' cloned methods live on the Generic*Instances lists, not in
+      any TBlock). }
+    procedure EmitEnvCleanupDefsForInstances(AInstances: TObjectList;
+                                             ARecordInstances: TObjectList);
+    procedure EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ART: TRecordTypeDesc;
                                  AWeak: Boolean);
@@ -2523,6 +2529,39 @@ begin
         Self.EmitEnvCleanupDefs(MD.Body);
     end;
   end;
+end;
+
+procedure TX86_64Backend.EmitEnvCleanupDefsForMethod(AMD: TMethodDecl);
+var
+  L: Integer;
+begin
+  if (AMD.EnvType <> nil) and (not AMD.IsAnonThunk) then
+    Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(AMD.EnvType).Name),
+      TRecordTypeDesc(AMD.EnvType), True);
+  if AMD.BlockEnvTypes <> nil then
+    for L := 0 to AMD.BlockEnvTypes.Count - 1 do
+      Self.EmitFieldCleanupFn(
+        NativeMangle(TRecordTypeDesc(AMD.BlockEnvTypes.Items[L]).Name),
+        TRecordTypeDesc(AMD.BlockEnvTypes.Items[L]), True);
+  if AMD.Body <> nil then
+    Self.EmitEnvCleanupDefs(AMD.Body);
+end;
+
+procedure TX86_64Backend.EmitEnvCleanupDefsForInstances(AInstances: TObjectList;
+                                                        ARecordInstances: TObjectList);
+var
+  I, J: Integer;
+begin
+  if AInstances <> nil then
+    for I := 0 to AInstances.Count - 1 do
+      for J := 0 to TGenericInstance(AInstances.Items[I]).ClassDef.Methods.Count - 1 do
+        Self.EmitEnvCleanupDefsForMethod(TMethodDecl(
+          TGenericInstance(AInstances.Items[I]).ClassDef.Methods.Items[J]));
+  if ARecordInstances <> nil then
+    for I := 0 to ARecordInstances.Count - 1 do
+      for J := 0 to TGenericRecordInstance(ARecordInstances.Items[I]).RecordDef.Methods.Count - 1 do
+        Self.EmitEnvCleanupDefsForMethod(TMethodDecl(
+          TGenericRecordInstance(ARecordInstances.Items[I]).RecordDef.Methods.Items[J]));
 end;
 
 procedure TX86_64Backend.EmitFieldCleanupFn(const AMangledName: string;
@@ -19015,6 +19054,8 @@ begin
                         AProg.SymbolTable);
   { Anonymous-method environment cleanup functions (Phase 2). }
   Self.EmitEnvCleanupDefs(AProg.Block);
+  Self.EmitEnvCleanupDefsForInstances(AProg.GenericInstances,
+                                      AProg.GenericRecordInstances);
   { Interface data: typeinfo tokens, itabs, impllists.  Emitted after the class
     section so the class-name strings and method symbols it references exist. }
   Self.Emit('.data');
@@ -19200,6 +19241,8 @@ begin
   Self.EmitClassSection(AUnit.ImplBlock.TypeDecls, EmptyGen, UnitSym);
   { Anonymous-method environment cleanup functions (Phase 2). }
   Self.EmitEnvCleanupDefs(AUnit.ImplBlock);
+  Self.EmitEnvCleanupDefsForInstances(AUnit.GenericInstances,
+                                      AUnit.GenericRecordInstances);
   { Interface data: typeinfo tokens, itabs, impllists. }
   Self.Emit('.data');
   Self.EmitInterfaceDefs(AUnit.IntfBlock.TypeDecls, AUnit.GenericInstances,

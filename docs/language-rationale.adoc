@@ -1780,6 +1780,46 @@ env, so the stored closures observe their own iteration's values
 behaviour (`3, 3, 3`).  One closure may not mix block-scoped and
 routine-level (or `Self`) captures — environment chaining is deferred.
 
+=== Generics interaction (Phase 6)
+
+Blaise generics are reified/monomorphised, and closures compose with them:
+
+- A *generic procedural-type alias* is a first-class template:
+  `TGetter<T> = reference to function(): T;` registers a `TGenericProcDef`
+  and instantiates on demand exactly like class/record/interface templates.
+  A monomorphised procedural type is pure type metadata — it defines a
+  concrete `TProceduralTypeDesc` (e.g. `reference to function(): Integer`)
+  and emits no code.
+- A closure literal inside a generic class/record body is monomorphised
+  with the body: each instantiation gets its own thunk and environment
+  record, and a `T`-typed capture becomes a concrete env field whose ARC
+  treatment is decided after substitution (managed at `T = string`, plain
+  value at `T = Integer`).  Because the lifted thunk is analysed later in
+  module scope — where the instantiation's `T` binding is gone — the
+  literal's declared type names are substituted to their concrete forms at
+  analysis time, while the binding is still active.
+- Generic bodies containing closures serialise as `.bif` templates
+  (`TAnonMethodExpr` travels inside the encoded block) and are
+  re-monomorphised at the importing site, so closures work across unit
+  boundaries with no source available.
+
+=== Nested routines in method bodies (BUG-008 outcome)
+
+Nested routines declared inside a *method* body historically miscompiled
+(they were never emitted; only small inlinable nested functions worked by
+accident).  The rule now is:
+
+- Self-contained nested routines, and captures of the method's ordinary
+  locals and parameters, are fully supported on both backends.
+- `Self` — implicit or explicit — is not available inside a nested routine
+  of a method: there is no Self plumbing for nested routines, so the
+  compiler rejects it (`Self cannot be used inside nested routine ... —
+  use an anonymous method instead`).  Anonymous-method literals are the
+  supported vehicle for Self-capturing local behaviour; they carry the
+  receiver in their environment with defined (strong or `[Weak]`)
+  lifetime semantics.  Implicit member access simply fails to resolve,
+  because the nested body is analysed without the enclosing class context.
+
 === Restrictions in this phase (clear compile-time errors)
 
 - Capturing a `var`/`out` parameter is rejected — the env would have to

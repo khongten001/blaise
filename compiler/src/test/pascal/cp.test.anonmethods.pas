@@ -56,6 +56,10 @@ type
     procedure TestSemantic_Phase4_BlockVarDuplicateRejected;
     procedure TestSemantic_Phase4_MixedScopeCaptureRejected;
     procedure TestSemantic_Phase5_WeakNonSelfRejected;
+    procedure TestSemantic_NestedRoutineInMethod_SelfRejected;
+    procedure TestSemantic_NestedRoutineInMethod_SelfContainedAccepted;
+    procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtInteger;
+    procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtString;
 
     { Codegen }
     procedure TestCodegen_ThunkEmitted;
@@ -64,6 +68,7 @@ type
     procedure TestCodegen_Phase2_CapturedAccessRedirected;
     procedure TestCodegen_Phase2_ClosureCreationAddRefsEnv;
     procedure TestCodegen_Phase2_FrameExitReleasesEnv;
+    procedure TestCodegen_Phase6_GenericBodyClosure_ThunksPerInstance;
 
     { End-to-end }
     procedure TestE2E_CaptureFreeLiteral_AssignAndCall;
@@ -906,6 +911,181 @@ begin
   Output := CompileAndRun(Src);
   if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
   AssertEquals('stdout', 'lived' + #10 + 'done' + #10, Output);
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 6 — generics: reference-to aliases + closures in generic bodies }
+{ ------------------------------------------------------------------ }
+
+const
+  Phase6AliasSrc =
+    '''
+    program P;
+    type
+      TGetter<T> = reference to function(): T;
+    var
+      GI: TGetter<Integer>;
+      GS: TGetter<string>;
+    begin
+    end.
+    ''';
+
+procedure TAnonMethodTests.TestSemantic_NestedRoutineInMethod_SelfRejected;
+const
+  Src =
+    '''
+    program P;
+    type
+      TC = class
+        procedure Helper();
+        procedure M();
+      end;
+    procedure TC.Helper();
+    begin
+    end;
+    procedure TC.M();
+      procedure Inner();
+      begin
+        Self.Helper()
+      end;
+    begin
+      Inner()
+    end;
+    begin
+    end.
+    ''';
+var
+  Caught: Boolean;
+begin
+  { BUG-008: nested routines inside METHOD bodies have no Self plumbing —
+    any Self reference (explicit or via capture) must be rejected with a
+    clear diagnostic rather than miscompiling (v0.12.0 emitted a binary that
+    crashed at run time). }
+  Caught := False;
+  try
+    AnalyseSrc(Src).Free()
+  except
+    on E: Exception do
+    begin
+      Caught := True;
+      AssertTrue('diagnostic names Self',
+        Pos('Self cannot be used inside nested routine', E.Message) >= 0)
+    end
+  end;
+  AssertTrue('Self use in nested routine rejected', Caught)
+end;
+
+procedure TAnonMethodTests.TestSemantic_NestedRoutineInMethod_SelfContainedAccepted;
+const
+  Src =
+    '''
+    program P;
+    type
+      TC = class
+        procedure M();
+      end;
+    procedure TC.M();
+    var X: Integer;
+      procedure Inner(K: Integer);
+      begin
+        WriteLn(X + K)
+      end;
+    begin
+      X := 1;
+      Inner(2)
+    end;
+    begin
+    end.
+    ''';
+begin
+  { Self-contained nested routines (and captures of the method's LOCALS)
+    are supported — only Self access is not (BUG-008). }
+  AnalyseSrc(Src).Free()
+end;
+
+
+procedure TAnonMethodTests.TestSemantic_Phase6_GenericRefAlias_InstantiatesAtInteger;
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+  PD:   TProceduralTypeDesc;
+begin
+  Prog := AnalyseSrc(Phase6AliasSrc);
+  try
+    TD := Prog.SymbolTable.FindType('TGetter<Integer>');
+    AssertNotNull('TGetter<Integer> instantiated', TD);
+    AssertTrue('is procedural', TD is TProceduralTypeDesc);
+    PD := TProceduralTypeDesc(TD);
+    AssertTrue('IsReference set', PD.IsReference);
+    AssertNotNull('return type resolved', PD.ReturnType);
+    AssertEquals('return type is Integer', 'Integer', PD.ReturnType.Name)
+  finally
+    Prog.Free()
+  end
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase6_GenericRefAlias_InstantiatesAtString;
+var
+  Prog: TProgram;
+  TD:   TTypeDesc;
+  PD:   TProceduralTypeDesc;
+begin
+  Prog := AnalyseSrc(Phase6AliasSrc);
+  try
+    TD := Prog.SymbolTable.FindType('TGetter<string>');
+    AssertNotNull('TGetter<string> instantiated', TD);
+    PD := TProceduralTypeDesc(TD);
+    AssertTrue('IsReference set', PD.IsReference);
+    AssertEquals('return type is string', 'string', PD.ReturnType.Name)
+  finally
+    Prog.Free()
+  end
+end;
+
+procedure TAnonMethodTests.TestCodegen_Phase6_GenericBodyClosure_ThunksPerInstance;
+const
+  Src =
+    '''
+    program P;
+    type
+      TGetter<T> = reference to function(): T;
+      TBox<T> = class
+        FVal: T;
+        function Make(): TGetter<T>;
+        begin
+          Result := function(): T
+            begin
+              Result := FVal
+            end;
+        end;
+      end;
+    var
+      BI: TBox<Integer>;
+      BS: TBox<string>;
+      GI: TGetter<Integer>;
+      GS: TGetter<string>;
+    begin
+      BI := TBox<Integer>.Create();
+      BS := TBox<string>.Create();
+      GI := BI.Make();
+      GS := BS.Make();
+    end.
+    ''';
+var
+  IR: string;
+begin
+  { One monomorphised thunk + env per instantiation; env cleanup for the
+    string instance must release the managed captured Self (both instances
+    capture Self strongly), and the two instances must not share symbols. }
+  IR := GenIR(Src);
+  AssertTrue('Integer-instance Make body emitted',
+    Pos('TBox_Integer_Make', IR) > 0);
+  AssertTrue('string-instance Make body emitted',
+    Pos('TBox_string_Make', IR) > 0);
+  AssertTrue('closure thunk emitted for Integer instance',
+    Pos('__closure', IR) > 0);
+  AssertTrue('env cleanup functions emitted',
+    Pos('_FieldCleanup___env_', IR) > 0)
 end;
 
 initialization

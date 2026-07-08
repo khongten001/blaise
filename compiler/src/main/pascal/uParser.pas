@@ -927,6 +927,7 @@ var
   GD:               TGenericTypeDef;
   GRD:              TGenericRecordDef;
   GID:              TGenericInterfaceDef;
+  GPD:              TGenericProcDef;
   AD:               TTypeAliasDef;
   ParamNames:       TStringList;
   ParamConstraints: TStringList;
@@ -1038,9 +1039,44 @@ begin
             GD.ClassDef.AttrUses.Add(ClassAttrUses.Get(AUIdx));
           TD.Def := GD;
         end
+        else if Check(tkFunction) or Check(tkProcedure) or
+                (Check(tkIdent) and SameText(FCurrent.Value, 'reference') and
+                 (PeekKind() = tkTo)) then
+        begin
+          { Generic procedural-type alias:
+              TGetter<T> = reference to function(): T;
+            'reference' is the same soft keyword as in the non-generic
+            procedural-type branch of ParseTypeSection. }
+          GPD := TGenericProcDef.Create();
+          GPD.Line := TD.Line;
+          GPD.Col  := TD.Col;
+          GPD.ParamNames.AddStrings(ParamNames);
+          GPD.ParamConstraints.AddStrings(ParamConstraints);
+          if Check(tkIdent) then
+          begin
+            Advance();  { consume 'reference' }
+            Advance();  { consume 'to' }
+            if not (Check(tkFunction) or Check(tkProcedure)) then
+              raise EParseError.Create(Format(
+                'Expected ''procedure'' or ''function'' after ''reference to'' ' +
+                'at line %d col %d in %s',
+                [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+            GPD.ProcDef := ParseProceduralTypeDef();
+            if GPD.ProcDef.IsMethodPtr then
+              raise EParseError.Create(Format(
+                '''reference to'' and ''of object'' are mutually exclusive ' +
+                'at line %d col %d in %s',
+                [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+            GPD.ProcDef.IsReference := True;
+          end
+          else
+            GPD.ProcDef := ParseProceduralTypeDef();
+          TD.Def := GPD;
+        end
         else
           raise EParseError.Create(Format(
-            'Generic type must be a class, record, or interface at line %d col %d in %s',
+            'Generic type must be a class, record, or interface, or a ' +
+            'procedural type at line %d col %d in %s',
             [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
       finally
         ParamConstraints.Free();

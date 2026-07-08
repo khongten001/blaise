@@ -67,6 +67,10 @@ type
       GenericInstances moves them into the real owner once analysis begins so
       codegen still emits the instance's methods. }
     FPendingGenericInstances:       TObjectList; { TGenericInstance — not owned }
+    { True while analysing a nested routine declared inside a METHOD body:
+      the routine has no Self, so 'Self' references are rejected (BUG-008;
+      anonymous methods are the supported way to capture Self). }
+    FInNestedOfMethod: Boolean;
     FPendingGenericRecordInstances: TObjectList; { TGenericRecordInstance — not owned }
     FPendingGenericIntfInstances:   TObjectList; { TGenericInterfaceInstance — not owned }
     FGenericFuncTemplates: TStringList;  { base name → TMethodDecl template (not owned) }
@@ -227,6 +231,10 @@ type
     function  InstantiateGeneric(const ATypeName: string): TRecordTypeDesc;
     function  InstantiateGenericRecord(const ATypeName: string): TRecordTypeDesc;
     function  InstantiateGenericInterface(const ATypeName: string): TInterfaceTypeDesc;
+    { Generic procedural-type instantiation: resolves 'TGetter<Integer>' on
+      demand from a TGenericProcDef template.  Pure type metadata — defines a
+      TProceduralTypeDesc symbol, emits nothing. }
+    function  InstantiateGenericProcType(const ATypeName: string): TProceduralTypeDesc;
     function  SubstTypeParam(const ATypeName: string;
                 AParamNames, AArgs: TStringList): string;
 
@@ -389,6 +397,19 @@ type
     function  AnalyseSupportsExpr(AExpr: TSupportsExpr): TTypeDesc;
     function  AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
+    { Phase 6: inside a generic instantiation's body analysis, rewrite the
+      active type-param names (T -> Integer) in an anonymous-method literal's
+      declaration BEFORE lifting.  The lifted thunk is analysed later by
+      DrainPendingAnonDecls in module scope, where the instantiation's
+      type-param bindings are gone — so the names must be made concrete now.
+      Covers params, return type, body-level var declarations and
+      block-scoped var statements; nested anonymous literals inside the
+      body are deferred (consistent with the env-chaining deferral). }
+    procedure SubstActiveTypeParamsInAnonDecl(ADecl: TMethodDecl);
+    procedure SubstTypeParamsInStmt(AStmt: TASTStmt;
+                                    ANames, AArgs: TStringList);
+    procedure SubstTypeParamsInStmts(AStmts: TObjectList;
+                                     ANames, AArgs: TStringList);
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
     procedure AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
     procedure PromoteAnonCaptures(AThunk: TMethodDecl);
@@ -3633,6 +3654,8 @@ begin
       Result := InstantiateGenericRecord(CanonName);
     if Result = nil then
       Result := InstantiateGenericInterface(CanonName);
+    if Result = nil then
+      Result := InstantiateGenericProcType(CanonName);
   end;
 end;
 
@@ -4448,6 +4471,99 @@ begin
       FProg.GenericIntfInstances.Add(GII)
     else
       FPendingGenericIntfInstances.Add(GII);
+  finally
+    Args.Free();
+  end;
+end;
+
+function TSemanticAnalyser.InstantiateGenericProcType(
+  const ATypeName: string): TProceduralTypeDesc;
+var
+  BracPos:  Integer;
+  BaseName: string;
+  ArgsStr:  string;
+  Args:     TStringList;
+  Templ:    TGenericProcDef;
+  ProcDesc: TProceduralTypeDesc;
+  Sym:      TSymbol;
+  K:        Integer;
+  MParam:   TMethodParam;
+  ProcParam: TProcParamInfo;
+  SubstName: string;
+  SubstType: TTypeDesc;
+begin
+  Result := nil;
+
+  { Parse 'BaseName<Arg1,Arg2>' }
+  BracPos := StrPos('<', ATypeName);
+  if BracPos < 0 then Exit;
+  BaseName := StrHead(ATypeName, BracPos);
+  ArgsStr  := StrCopyFrom(ATypeName, BracPos + 1, Length(ATypeName) - BracPos - 2);
+
+  if not (FTable.FindGeneric(BaseName) is TGenericProcDef) then Exit;
+  Templ := TGenericProcDef(FTable.FindGeneric(BaseName));
+
+  Args := TStringList.Create();
+  try
+    while ArgsStr <> '' do
+    begin
+      BracPos := StrPos(',', ArgsStr);
+      if BracPos >= 0 then
+      begin
+        Args.Add(Trim(StrHead(ArgsStr, BracPos)));
+        ArgsStr := Trim(StrCopyTail(ArgsStr, BracPos + 1));
+      end
+      else
+      begin
+        Args.Add(Trim(ArgsStr));
+        ArgsStr := '';
+      end;
+    end;
+    if Args.Count <> Templ.ParamNames.Count then Exit;
+
+    for K := 0 to Args.Count - 1 do
+      if (Templ.ParamConstraints <> nil) and (K < Templ.ParamConstraints.Count) then
+        CheckTypeParamConstraint(Templ.ParamNames.Strings[K], Args.Strings[K],
+          Templ.ParamConstraints.Strings[K],
+          Format('instantiation ''%s''', [ATypeName]));
+
+    { Build the concrete procedural descriptor.  Param and return type names
+      are substituted, then resolved via FindTypeOrInstantiate so nested
+      generic arguments (TGetter<TList<Integer>>) instantiate on demand. }
+    ProcDesc := FTable.NewProceduralType(ATypeName);
+    ProcDesc.IsMethodPtr := Templ.ProcDef.IsMethodPtr;
+    ProcDesc.IsReference := Templ.ProcDef.IsReference;
+    for K := 0 to Templ.ProcDef.Params.Count - 1 do
+    begin
+      MParam    := TMethodParam(Templ.ProcDef.Params.Items[K]);
+      SubstName := SubstTypeParam(MParam.TypeName, Templ.ParamNames, Args);
+      SubstType := FindTypeOrInstantiate(SubstName);
+      if SubstType = nil then
+        SemanticError(Format(
+          'Unknown parameter type ''%s'' in generic procedural type ''%s''',
+          [SubstName, ATypeName]), Templ.Line, Templ.Col);
+      ProcParam := TProcParamInfo.Create();
+      ProcParam.Name         := MParam.ParamName;
+      ProcParam.TypeDesc     := SubstType;
+      ProcParam.IsVarParam   := MParam.IsVarParam;
+      ProcParam.IsConstParam := MParam.IsConstParam;
+      ProcDesc.Params.Add(ProcParam);
+    end;
+    if Templ.ProcDef.IsFunction then
+    begin
+      SubstName := SubstTypeParam(Templ.ProcDef.ReturnTypeName,
+                                  Templ.ParamNames, Args);
+      SubstType := FindTypeOrInstantiate(SubstName);
+      if SubstType = nil then
+        SemanticError(Format(
+          'Unknown return type ''%s'' in generic procedural type ''%s''',
+          [SubstName, ATypeName]), Templ.Line, Templ.Col);
+      ProcDesc.ReturnType := SubstType;
+    end;
+
+    Sym := TSymbol.Create(ATypeName, skType, ProcDesc);
+    FTable.DefineGlobal(Sym);
+    Result := ProcDesc;
   finally
     Args.Free();
   end;
@@ -5911,6 +6027,14 @@ begin
       FTable.RegisterGeneric(TD.Name, TD.Def);
       Continue;
     end
+    else if TD.Def is TGenericProcDef then
+    begin
+      { Register as template — instantiated on demand when used as type name.
+        A monomorphised procedural type is pure metadata (no code emission),
+        so there is no instance list. }
+      FTable.RegisterGeneric(TD.Name, TD.Def);
+      Continue;
+    end
     else if TD.Def is TInterfaceTypeDef then
     begin
       if TInterfaceTypeDef(TD.Def).IsForward then
@@ -6111,6 +6235,7 @@ begin
     if TD.Def is TGenericTypeDef then Continue;
     if TD.Def is TGenericRecordDef then Continue;
     if TD.Def is TGenericInterfaceDef then Continue;
+    if TD.Def is TGenericProcDef then Continue;
     if TD.Def is TEnumTypeDef then Continue;
     if TD.Def is TSetTypeDef then Continue;
     if TD.Def is TTypeAliasDef then Continue;
@@ -6897,6 +7022,7 @@ var
   SavedClass: TRecordTypeDesc;
   SavedMethodOwner: TRecordTypeDesc;
   SavedMethodDecl: TMethodDecl;
+  SavedEnclosing: TMethodDecl;
   TKey:       string;
 begin
   { Generic method (method-level <T>): its params/body reference the method's
@@ -6915,7 +7041,12 @@ begin
   SavedClass    := FCurrentClass;
   SavedMethodOwner := FCurrentMethodOwner;
   SavedMethodDecl := FCurrentMethodDecl;
+  SavedEnclosing := FCurrentEnclosingDecl;
   FCurrentMethodDecl := AMethod;
+  { Nested routines declared in this method's body record the method as
+    their EnclosingDecl (mirrors AnalyseStandaloneDecl) — the call-site
+    nested-proc resolution keys off it (BUG-008). }
+  FCurrentEnclosingDecl := AMethod;
   { A STATIC (class-level) method has no instance receiver.  Leave FCurrentClass
     at its saved value (do NOT bind it to AClassType) so that an implicit
     instance-member reference inside the body resolves as an undeclared
@@ -6986,6 +7117,7 @@ begin
     Dec(FScopeDepth);
     FTable.PopScope();
     FCurrentClass := SavedClass;
+    FCurrentEnclosingDecl := SavedEnclosing;
     FCurrentMethodOwner := SavedMethodOwner;
     FCurrentMethodDecl := SavedMethodDecl;
   end;
@@ -7445,6 +7577,9 @@ procedure TSemanticAnalyser.AnalyseStandaloneBodies(ABlock: TBlock);
 var
   I:     Integer;
   ADecl: TMethodDecl;
+  SavedClass:       TRecordTypeDesc;
+  SavedMethodOwner: TRecordTypeDesc;
+  SavedMethodDecl:  TMethodDecl;
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
@@ -7455,7 +7590,33 @@ begin
     if ADecl.TypeParams <> nil then Continue;
     { Forward declarations have no body; the later impl handles analysis }
     if ADecl.Body = nil then Continue;
-    AnalyseStandaloneDecl(ADecl);
+    { A nested routine declared inside a METHOD body has no Self: analyse it
+      with the class context CLEARED so an implicit-Self member access fails
+      with the ordinary undeclared-identifier error instead of silently
+      resolving against the enclosing class and miscompiling (BUG-008 — no
+      Self plumbing exists for nested routines).  Explicitly captured outer
+      locals — including 'Self' itself — still work through the normal
+      capture machinery. }
+    if FCurrentMethodDecl <> nil then
+    begin
+      SavedClass       := FCurrentClass;
+      SavedMethodOwner := FCurrentMethodOwner;
+      SavedMethodDecl  := FCurrentMethodDecl;
+      FCurrentClass       := nil;
+      FCurrentMethodOwner := nil;
+      FCurrentMethodDecl  := nil;
+      FInNestedOfMethod   := True;
+      try
+        AnalyseStandaloneDecl(ADecl);
+      finally
+        FCurrentClass       := SavedClass;
+        FCurrentMethodOwner := SavedMethodOwner;
+        FCurrentMethodDecl  := SavedMethodDecl;
+        FInNestedOfMethod   := False;
+      end;
+    end
+    else
+      AnalyseStandaloneDecl(ADecl);
   end;
 end;
 
@@ -7463,6 +7624,15 @@ procedure TSemanticAnalyser.MaybeCaptureName(ADecl: TMethodDecl;
   AOuterVars: TStringList; const AName: string);
 begin
   if AName = '' then Exit;
+  { A nested routine inside a METHOD has no Self plumbing — capturing the
+    method's Self miscompiles (BUG-008).  Anonymous methods are the
+    supported way to capture Self.  Checked BEFORE the outer-vars guard:
+    Self is an implicit parameter and never appears in AOuterVars. }
+  if FInNestedOfMethod and SameText(AName, 'Self') then
+    SemanticError(Format(
+      'Self cannot be used inside nested routine ''%s'' — ' +
+      'use an anonymous method instead', [ADecl.Name]),
+      ADecl.Line, ADecl.Col);
   if AOuterVars.IndexOf(AName) < 0 then Exit;
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.IndexOf(AName) >= 0) then
     Exit;
@@ -7514,7 +7684,10 @@ begin
       if OuterVars.IndexOf(VName) < 0 then
         OuterVars.Add(VName);
     end;
-    if OuterVars.Count = 0 then Exit;
+    { Nested-of-method: the walk must still run even when the method has no
+      capturable locals/params — MaybeCaptureName rejects a 'Self' reference
+      before consulting OuterVars (Self is implicit, never listed; BUG-008). }
+    if (OuterVars.Count = 0) and (not FInNestedOfMethod) then Exit;
 
     { Seed work-list with all statements in the inner body }
     for I := 0 to ADecl.Body.Stmts.Count - 1 do
@@ -7565,6 +7738,13 @@ begin
         end
         else if CurStmt is TMethodCallStmt then
         begin
+          { The RECEIVER is a name reference too — without this a nested
+            routine calling a method on a captured outer object (or on the
+            enclosing method's Self, which MaybeCaptureName rejects) never
+            registered the capture and read a garbage frame slot. }
+          MaybeCaptureName(ADecl, OuterVars, TMethodCallStmt(CurStmt).ObjectName);
+          if TMethodCallStmt(CurStmt).ObjExpr <> nil then
+            TodoExprs.Add(TMethodCallStmt(CurStmt).ObjExpr);
           for J := 0 to TMethodCallStmt(CurStmt).Args.Count - 1 do
             TodoExprs.Add(TMethodCallStmt(CurStmt).Args.Items[J]);
         end
@@ -13670,6 +13850,81 @@ begin
   Result := TPointerTypeDesc(PtrType).BaseType;
 end;
 
+procedure TSemanticAnalyser.SubstTypeParamsInStmt(AStmt: TASTStmt;
+                                                  ANames, AArgs: TStringList);
+begin
+  if AStmt = nil then Exit;
+  if (AStmt is TVarDeclStmt) and (TVarDeclStmt(AStmt).Decl <> nil) then
+    TVarDeclStmt(AStmt).Decl.TypeName :=
+      SubstTypeParam(TVarDeclStmt(AStmt).Decl.TypeName, ANames, AArgs)
+  else if AStmt is TCompoundStmt then
+    SubstTypeParamsInStmts(TCompoundStmt(AStmt).Stmts, ANames, AArgs)
+  else if AStmt is TIfStmt then
+  begin
+    SubstTypeParamsInStmt(TIfStmt(AStmt).ThenStmt, ANames, AArgs);
+    SubstTypeParamsInStmt(TIfStmt(AStmt).ElseStmt, ANames, AArgs);
+  end
+  else if AStmt is TWhileStmt then
+    SubstTypeParamsInStmt(TWhileStmt(AStmt).Body, ANames, AArgs)
+  else if AStmt is TForStmt then
+    SubstTypeParamsInStmt(TForStmt(AStmt).Body, ANames, AArgs);
+end;
+
+procedure TSemanticAnalyser.SubstTypeParamsInStmts(AStmts: TObjectList;
+                                                   ANames, AArgs: TStringList);
+var
+  I: Integer;
+begin
+  if AStmts = nil then Exit;
+  for I := 0 to AStmts.Count - 1 do
+    SubstTypeParamsInStmt(TASTStmt(AStmts.Items[I]), ANames, AArgs);
+end;
+
+procedure TSemanticAnalyser.SubstActiveTypeParamsInAnonDecl(ADecl: TMethodDecl);
+var
+  K:      Integer;
+  Names:  TStringList;
+  Args:   TStringList;
+  Sym:    TSymbol;
+  Par:    TMethodParam;
+  VD:     TVarDecl;
+begin
+  if (ADecl = nil) or (FActiveTypeParams.Count = 0) then Exit;
+  Names := TStringList.Create();
+  Args  := TStringList.Create();
+  try
+    for K := 0 to FActiveTypeParams.Count - 1 do
+    begin
+      Sym := FTable.Lookup(FActiveTypeParams.Strings[K]);
+      if (Sym <> nil) and (Sym.Kind = skType) and (Sym.TypeDesc <> nil) then
+      begin
+        Names.Add(FActiveTypeParams.Strings[K]);
+        Args.Add(Sym.TypeDesc.Name);
+      end;
+    end;
+    if Names.Count = 0 then Exit;
+
+    for K := 0 to ADecl.Params.Count - 1 do
+    begin
+      Par := TMethodParam(ADecl.Params.Items[K]);
+      Par.TypeName := SubstTypeParam(Par.TypeName, Names, Args);
+    end;
+    ADecl.ReturnTypeName := SubstTypeParam(ADecl.ReturnTypeName, Names, Args);
+    if ADecl.Body <> nil then
+    begin
+      for K := 0 to ADecl.Body.Decls.Count - 1 do
+      begin
+        VD := TVarDecl(ADecl.Body.Decls.Items[K]);
+        VD.TypeName := SubstTypeParam(VD.TypeName, Names, Args);
+      end;
+      SubstTypeParamsInStmts(ADecl.Body.Stmts, Names, Args);
+    end;
+  finally
+    Names.Free();
+    Args.Free();
+  end;
+end;
+
 function TSemanticAnalyser.AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
 { Anonymous procedure/function literal (docs/anonymous-methods-design.adoc,
   Phase 1: capture-free).  Two products:
@@ -13698,6 +13953,11 @@ var
   I:         Integer;
 begin
   if AExpr.ResolvedType <> nil then Exit(AExpr.ResolvedType);  { idempotent }
+
+  { Phase 6: make type-param names concrete while the instantiation's
+    bindings are still in scope (the lifted thunk is analysed later in
+    module scope, where they are gone). }
+  SubstActiveTypeParamsInAnonDecl(AExpr.Decl);
 
   ProcDesc := FTable.NewProceduralType('');
   ProcDesc.IsReference := True;
@@ -13746,7 +14006,12 @@ begin
       Validated and applied during capture promotion below. }
     if AExpr.WeakCaptures <> nil then
     begin
-      if FCurrentEnclosingDecl <> nil then
+      { Directly inside a method body FCurrentEnclosingDecl is now the
+        method itself (recorded for nested-routine resolution, BUG-008) —
+        only a DIFFERENT enclosing frame (nested routine, standalone proc)
+        disqualifies [Weak]. }
+      if (FCurrentEnclosingDecl <> nil) and
+         (FCurrentEnclosingDecl <> FCurrentMethodDecl) then
         SemanticError('[Weak] capture is only supported for Self inside ' +
           'an instance method body', AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.WeakCaptures.Count - 1 do
@@ -13866,7 +14131,12 @@ begin
     { Phase 3: the enclosing frame is an instance-method body. }
     Encl := FCurrentMethodDecl;
     InMethod := True;
-  end;
+  end
+  else if (FCurrentMethodDecl <> nil) and (Encl = FCurrentMethodDecl) then
+    { AnalyseMethodDecl records the method as FCurrentEnclosingDecl so its
+      NESTED ROUTINES resolve (BUG-008) — a literal directly inside the
+      method body is still the InMethod case (conservative Self capture). }
+    InMethod := True;
   if Encl.IsAnonThunk then
     SemanticError('Capturing variables of an enclosing anonymous method ' +
       'is not yet supported (nested closure environments are a later phase)',
@@ -13927,7 +14197,8 @@ begin
     if Site.EnvType = nil then
     begin
       FEnvTypeCount := FEnvTypeCount + 1;
-      Site.EnvType := FTable.NewRecordType('__env_' + IntToStr(FEnvTypeCount));
+      Site.EnvType := FTable.NewRecordType(
+        CurrentUnitPrefix() + '__env_' + IntToStr(FEnvTypeCount));
       Site.IsEnvAllocSite := True;
       if Encl.BlockEnvTypes = nil then
         Encl.BlockEnvTypes := TObjectList.Create(False);
@@ -14000,7 +14271,8 @@ begin
   begin
     Encl.EnvCaptured := TStringList.Create();
     FEnvTypeCount := FEnvTypeCount + 1;
-    Encl.EnvType := FTable.NewRecordType('__env_' + IntToStr(FEnvTypeCount));
+    Encl.EnvType := FTable.NewRecordType(
+      CurrentUnitPrefix() + '__env_' + IntToStr(FEnvTypeCount));
   end;
   Env := TRecordTypeDesc(Encl.EnvType);
 

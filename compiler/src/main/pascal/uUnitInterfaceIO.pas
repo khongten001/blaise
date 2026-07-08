@@ -54,7 +54,10 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 10; { v10 (this cycle): 'reference to' anonymous-method
+  IFACE_VERSION = 11; { v11 (this cycle): 'generic-proc' TYPE-block kind —
+                        generic procedural-type templates
+                        (TGetter<T> = reference to function(): T).
+                        v10: 'reference to' anonymous-method
                           types round-trip.  The PROC payload grew an
                           IsReference bool after IsMethodPtr, so a
                           `type T = reference to procedure(...)` survives
@@ -282,6 +285,7 @@ begin
   else if AEntry.Def is TProceduralTypeDef   then Result := 'proc'
   else if AEntry.Def is TGenericTypeDef      then Result := 'generic-class'
   else if AEntry.Def is TGenericInterfaceDef then Result := 'generic-interface'
+  else if AEntry.Def is TGenericProcDef      then Result := 'generic-proc'
   else                                            Result := '';
 end;
 
@@ -599,6 +603,29 @@ begin
     Result := Result + EncodeLpstr('') + EncodeCount(0) + EncodeCount(0);
 end;
 
+function WriteGenericProcPayload(AEntry: TTypeEntry): string;
+var
+  Def: TGenericProcDef;
+  J:   Integer;
+  P:   TMethodParam;
+begin
+  Def := TGenericProcDef(AEntry.Def);
+  Result := EncodeTypeParamList(Def.ParamNames, Def.ParamConstraints) +
+            EncodeBool (Def.ProcDef.IsFunction) +
+            EncodeBool (Def.ProcDef.IsMethodPtr) +
+            EncodeBool (Def.ProcDef.IsReference) +
+            EncodeLpstr(Def.ProcDef.ReturnTypeName) +
+            EncodeCount(Def.ProcDef.Params.Count);
+  for J := 0 to Def.ProcDef.Params.Count - 1 do
+  begin
+    P := TMethodParam(Def.ProcDef.Params.Items[J]);
+    Result := Result +
+              EncodeLpstr(P.ParamName) +
+              EncodeLpstr(P.TypeName) +
+              EncodeParamFlags(P);
+  end;
+end;
+
 function WriteProcPayload(AEntry: TTypeEntry): string;
 var
   Def: TProceduralTypeDef;
@@ -690,6 +717,10 @@ begin
         SB.AppendLine(EncodeLpstr('generic-class') +
                EncodeLpstr(E.Name) +
                WriteGenericClassPayload(E))
+      else if Kind = 'generic-proc' then
+        SB.AppendLine(EncodeLpstr('generic-proc') +
+               EncodeLpstr(E.Name) +
+               WriteGenericProcPayload(E))
       else { generic-interface }
         SB.AppendLine(EncodeLpstr('generic-interface') +
                EncodeLpstr(E.Name) +
@@ -2337,6 +2368,34 @@ begin
   AEntry.Def       := Def;
 end;
 
+procedure ReadGenericProcPayload(const AText: string; var APos: Integer;
+                                 AEntry: TTypeEntry);
+var
+  Def:      TGenericProcDef;
+  Pc, J:    Integer;
+  Param:    TMethodParam;
+  FlagsStr: string;
+begin
+  Def := TGenericProcDef.Create();
+  ReadTypeParamList(AText, APos, Def.ParamNames, Def.ParamConstraints);
+  Def.ProcDef := TProceduralTypeDef.Create();
+  Def.ProcDef.IsFunction     := DecodeBool(AText, APos);
+  Def.ProcDef.IsMethodPtr    := DecodeBool(AText, APos);
+  Def.ProcDef.IsReference    := DecodeBool(AText, APos);
+  Def.ProcDef.ReturnTypeName := ReadLpstrAt(AText, APos);
+  Pc := DecodeCount(AText, APos);
+  for J := 1 to Pc do
+  begin
+    Param := TMethodParam.Create();
+    Param.ParamName := ReadLpstrAt(AText, APos);
+    Param.TypeName  := ReadLpstrAt(AText, APos);
+    FlagsStr := ReadLpstrAt(AText, APos);
+    DecodeParamFlags(StrToInt(FlagsStr), Param);
+    Def.ProcDef.Params.Add(Param);
+  end;
+  AEntry.Def := Def;
+end;
+
 procedure ReadProcPayload(const AText: string; var APos: Integer;
                           AEntry: TTypeEntry);
 var
@@ -2432,6 +2491,8 @@ begin
       ReadGenericClassPayload(AText, APos, Entry)
     else if Kind = 'generic-interface' then
       ReadGenericInterfacePayload(AText, APos, Entry)
+    else if Kind = 'generic-proc' then
+      ReadGenericProcPayload(AText, APos, Entry)
     else
     begin
       Entry.Free();
