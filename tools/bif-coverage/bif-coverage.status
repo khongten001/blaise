@@ -214,11 +214,19 @@ TStaticSubscriptAssign.IsImplicitSelf  safe
 TStaticSubscriptAssign.PropOwnerType  safe
 TStaticSubscriptAssign.PropAccessorVSlot  safe
 
-# TPointerWriteStmt (uAST.pas:501)
+# TVarDeclStmt (uAST.pas:508)
+TVarDeclStmt.Decl  serialise
+TVarDeclStmt.DeclOwned  safe
+TVarDeclStmt.InitExpr  serialise
+TVarDeclStmt.InitAssign  safe
+TVarDeclStmt.IsEnvAllocSite  safe
+TVarDeclStmt.EnvSlotName  safe
+
+# TPointerWriteStmt (uAST.pas:528)
 TPointerWriteStmt.PtrExpr  serialise
 TPointerWriteStmt.ValExpr  serialise
 
-# TProcCall (uAST.pas:509)
+# TProcCall (uAST.pas:536)
 TProcCall.Name  serialise
 TProcCall.Args  serialise
 TProcCall.IsImplicitSelfMethod  safe
@@ -226,7 +234,7 @@ TProcCall.IsIndirectCall  safe
 TProcCall.IndirectCallIsGlobal  safe
 TProcCall.IsProcFieldCall  safe
 
-# TFuncCallExpr (uAST.pas:526)
+# TFuncCallExpr (uAST.pas:553)
 TFuncCallExpr.Name  serialise
 TFuncCallExpr.Args  serialise
 TFuncCallExpr.IsImplicitSelfMethod  safe
@@ -238,18 +246,18 @@ TFuncCallExpr.HasClassAttrAttr  safe
 TFuncCallExpr.AttrRTTIBuiltin  safe
 TFuncCallExpr.IsProcFieldCall  safe
 
-# TIndirectFuncCallExpr (uAST.pas:563)
+# TIndirectFuncCallExpr (uAST.pas:590)
 TIndirectFuncCallExpr.CalleeExpr  serialise
 TIndirectFuncCallExpr.Args  serialise
 
-# TDerefExpr (uAST.pas:573)
+# TDerefExpr (uAST.pas:600)
 TDerefExpr.Expr  serialise
 
-# TAddrOfExpr (uAST.pas:580)
+# TAddrOfExpr (uAST.pas:607)
 TAddrOfExpr.Expr  serialise
 TAddrOfExpr.ResolvedFreeRoutine  safe
 
-# TMethodCallStmt (uAST.pas:592)
+# TMethodCallStmt (uAST.pas:619)
 TMethodCallStmt.ObjectName  serialise
 TMethodCallStmt.Name  serialise
 TMethodCallStmt.Args  serialise
@@ -263,16 +271,16 @@ TMethodCallStmt.IsMetaclassDispatch  safe
 TMethodCallStmt.IsStaticCall  safe
 TMethodCallStmt.IsProcFieldCall  safe
 
-# TInheritedCallStmt (uAST.pas:629)
+# TInheritedCallStmt (uAST.pas:656)
 TInheritedCallStmt.Name  serialise
 TInheritedCallStmt.Args  serialise
 
-# TAnonMethodExpr (uAST.pas:1006)
+# TAnonMethodExpr (uAST.pas:1049)
 TAnonMethodExpr.Decl  serialise
 TAnonMethodExpr.WeakCaptures  serialise
 TAnonMethodExpr.LiftedName  safe
 
-# TMethodCallExpr (uAST.pas:1022)
+# TMethodCallExpr (uAST.pas:1065)
 TMethodCallExpr.ObjectName  serialise
 TMethodCallExpr.Name  serialise
 TMethodCallExpr.QualifierUnit  serialise
@@ -328,7 +336,7 @@ TUnitInterface.ImplUsedUnits  serialise
 TUnitInterface.LinkLibs  serialise
 TUnitInterface.HasInitialization  serialise
 
-# TMethodParam (uAST.pas:895)
+# TMethodParam (uAST.pas:925)
 TMethodParam.ParamName  serialise
 TMethodParam.TypeName  serialise
 TMethodParam.IsVarParam  serialise

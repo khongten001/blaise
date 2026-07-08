@@ -98,6 +98,10 @@ type
     { Phase 3: a coerced method pointer strong-retains its receiver; when
       the closure slot dies, the receiver must be released — no leak. }
     procedure TestDebug_MethodPtrCoercion_NoLeak;
+    { Phase 4: every loop iteration allocates a fresh BLOCK env; each must
+      be released exactly once (overwritten closure slot releases the
+      previous env; the tracking slot releases the last). }
+    procedure TestDebug_BlockEnvPerIteration_NoLeak;
     { A captured string is an ARC slot inside the env record: the env cleanup
       proc must release it, and closure-body reassignment must go through the
       string retain/release store path. }
@@ -1143,6 +1147,43 @@ const
       WriteLn('done')
     end.
     ''';
+
+const
+  SrcBlockEnvLoop = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+    procedure Run;
+    var
+      I: Integer;
+      V: TProc;
+    begin
+      for I := 0 to 2 do
+      begin
+        var S: Integer := I;
+        V := procedure begin WriteLn(S) end
+      end;
+      V();
+      V := nil
+    end;
+    begin
+      Run();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_BlockEnvPerIteration_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcBlockEnvLoop, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', '2' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
 
 procedure TE2ELeakCheckTests.TestDebug_ClosureSelfCycle_LeaksByDesign;
 var

@@ -52,6 +52,9 @@ type
     procedure TestSemantic_Phase2_VarParamCaptureRejected;
     procedure TestSemantic_Phase3_MethodLiteralCapturesSelf;
     procedure TestSemantic_Phase3_MethodPtrCoercionAccepted;
+    procedure TestSemantic_Phase4_BlockVarOutOfScopeAfterBlock;
+    procedure TestSemantic_Phase4_BlockVarDuplicateRejected;
+    procedure TestSemantic_Phase4_MixedScopeCaptureRejected;
 
     { Codegen }
     procedure TestCodegen_ThunkEmitted;
@@ -502,6 +505,114 @@ begin
   finally
     Prog.Free();
   end;
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase4_BlockVarOutOfScopeAfterBlock;
+const
+  { A block-scoped var is invisible after its enclosing block ends. }
+  Src =
+    '''
+    program P;
+    procedure Run;
+    begin
+      begin
+        var X: Integer := 1;
+        WriteLn(X)
+      end;
+      WriteLn(X)
+    end;
+    begin
+      Run()
+    end.
+    ''';
+var
+  Prog: TProgram;
+  OK:   Boolean;
+begin
+  OK := False;
+  try
+    Prog := AnalyseSrc(Src);
+    Prog.Free();
+  except
+    on E: TObject do OK := True;
+  end;
+  AssertTrue('block var out of scope after the block', OK);
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase4_BlockVarDuplicateRejected;
+const
+  { v1 restriction: a block var may not shadow an existing local. }
+  Src =
+    '''
+    program P;
+    procedure Run;
+    var
+      X: Integer;
+    begin
+      X := 1;
+      begin
+        var X: Integer := 2;
+        WriteLn(X)
+      end
+    end;
+    begin
+      Run()
+    end.
+    ''';
+var
+  Prog: TProgram;
+  OK:   Boolean;
+begin
+  OK := False;
+  try
+    Prog := AnalyseSrc(Src);
+    Prog.Free();
+  except
+    on E: TObject do OK := True;
+  end;
+  AssertTrue('shadowing block var is rejected', OK);
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase4_MixedScopeCaptureRejected;
+const
+  { v1 restriction: one closure may not capture BOTH a block-scoped var and
+    a routine-level var (environment chaining is deferred). }
+  Src =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+    var G: TProc;
+    procedure Run;
+    var
+      Outer: Integer;
+    begin
+      Outer := 1;
+      begin
+        var Inner: Integer := 2;
+        G := procedure
+        begin
+          WriteLn(Outer + Inner)
+        end
+      end
+    end;
+    begin
+      Run();
+      G()
+    end.
+    ''';
+var
+  Prog: TProgram;
+  OK:   Boolean;
+begin
+  OK := False;
+  try
+    Prog := AnalyseSrc(Src);
+    Prog.Free();
+  except
+    on E: TObject do OK := True;
+  end;
+  AssertTrue('mixed-scope capture is rejected in v1', OK);
 end;
 
 procedure TAnonMethodTests.TestSemantic_Phase3_MethodPtrCoercionAccepted;

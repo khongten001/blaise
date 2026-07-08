@@ -1059,6 +1059,13 @@ begin
   else if AStmt is TAsmStmt then
     Result := EncodeLpstr('asm') +
               EncodeLpstr(TAsmStmt(AStmt).Code)
+  else if AStmt is TVarDeclStmt then
+    { Block-scoped var declaration (Phase 4): name, type, optional init.
+      Semantic outputs (InitAssign, env facts) are re-derived on import. }
+    Result := EncodeLpstr('bvar') +
+              EncodeLpstr(TVarDeclStmt(AStmt).Decl.Names.Strings[0]) +
+              EncodeLpstr(TVarDeclStmt(AStmt).Decl.TypeName) +
+              EncodeExpr(TVarDeclStmt(AStmt).InitExpr)
   else
     raise EIfaceFormatError.Create(
       'EncodeStmt: unhandled statement node ' + AStmt.ClassName);
@@ -1711,6 +1718,7 @@ var
   SSAn: TStaticSubscriptAssign;
   PWSn: TPointerWriteStmt;
   PCn:  TProcCall;
+  VDSn: TVarDeclStmt;
   MCSn: TMethodCallStmt;
   ICSn: TInheritedCallStmt;
   ASMn: TAsmStmt;
@@ -1886,6 +1894,16 @@ begin
     ASMn := TAsmStmt.Create();
     ASMn.Code := ReadLpstrAt(AText, APos);
     Result := ASMn;
+  end
+  else if Kind = 'bvar' then
+  begin
+    VDSn := TVarDeclStmt.Create();
+    VDSn.Decl := TVarDecl.Create();
+    VDSn.Decl.IsBlockScoped := True;
+    VDSn.Decl.Names.Add(ReadLpstrAt(AText, APos));
+    VDSn.Decl.TypeName := ReadLpstrAt(AText, APos);
+    VDSn.InitExpr := ReadExpr(AText, APos);
+    Result := VDSn;
   end
   else
     raise EIfaceFormatError.Create(

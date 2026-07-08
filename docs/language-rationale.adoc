@@ -1668,6 +1668,8 @@ Delivered in phases, each independently verified on both backends:
 - *Phase 2* — strong capture of enclosing locals and value parameters.
 - *Phase 3* — capture inside instance-method bodies (including `Self`) and
   method-pointer → `reference to` coercion.
+- *Phase 4* — block-scoped `var` statements with per-execution environments
+  (the loop-snapshot idiom).
 
 === Capture semantics (Phase 2)
 
@@ -1734,6 +1736,33 @@ Consequence (documented trap, also Delphi's behaviour): a loop variable
 captured by closures created inside the loop is ONE shared env field —
 after the loop, every such closure observes the final value.  Per-iteration
 snapshots require a block-scoped fresh binding (Phase 4).
+
+=== Block-scoped `var` and per-iteration capture (Phase 4)
+
+Phase 4 adds a *block-scoped variable declaration statement* —
+`var Name: Type [:= Expr]` inside a `begin..end` block — reversing the
+earlier "no inline var" stance for exactly one reason: by-reference capture
+plus one-env-per-frame makes the loop-capture trap (`3,3,3`) unavoidable,
+and the standard Delphi remedy is a fresh per-iteration binding.  Without
+block scoping, per-iteration capture requires a factory-function detour.
+
+Deliberately minimal v1 surface (each restriction is a clear error):
+
+- one name per declaration, explicit NAMED type — no type inference and no
+  inline type constructions (`array of`, `^T`, …);
+- visible from the declaration to the end of the enclosing block; the
+  declaration statement RE-RUNS on every execution (zero-init or the `:=`
+  initialiser applies per iteration);
+- may not shadow an existing local or parameter;
+- only inside routine/method bodies (not the program main body).
+
+Capture semantics: a block-scoped variable captured by an anonymous method
+belongs to a per-EXECUTION environment allocated at the declaring
+statement — each loop iteration that creates closures gives them a fresh
+env, so the stored closures observe their own iteration's values
+(`0, 1, 2`), while routine-level captures keep the shared-env Delphi
+behaviour (`3, 3, 3`).  One closure may not mix block-scoped and
+routine-level (or `Self`) captures — environment chaining is deferred.
 
 === Restrictions in this phase (clear compile-time errors)
 

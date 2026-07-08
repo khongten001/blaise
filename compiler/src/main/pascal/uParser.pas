@@ -137,6 +137,7 @@ type
     function  ParseCaseStmt: TCaseStmt;
     function  ParseForwardDecl(IsFunction: Boolean): TMethodDecl;
     function  ParseCompoundStmt: TCompoundStmt;
+    function  ParseBlockVarDeclStmt: TASTStmt;
     function  ParseExpr: TASTExpr;
     function  ParseAnonMethodLiteral: TAnonMethodExpr;
     function  ParseSetOrArrayElement: TASTExpr;
@@ -3097,6 +3098,61 @@ begin
   end;
 end;
 
+function TParser.ParseBlockVarDeclStmt: TASTStmt;
+{ 'var Name: TypeName [:= Expr]' in statement position.  v1 deliberately
+  minimal: one name, a named type (no inline type constructions, no
+  inference).  The optional ':=' initialiser is re-evaluated every time the
+  statement executes. }
+var
+  VS:   TVarDeclStmt;
+  Line: Integer;
+  Col:  Integer;
+begin
+  Line := FCurrent.Line;
+  Col  := FCurrent.Col;
+  Expect(tkVar);
+  VS := TVarDeclStmt.Create();
+  VS.Line := Line;
+  VS.Col  := Col;
+  VS.Decl := TVarDecl.Create();
+  VS.Decl.Line := Line;
+  VS.Decl.Col  := Col;
+  VS.Decl.IsBlockScoped := True;
+  if not Check(tkIdent) then
+  begin
+    VS.Free();
+    raise EParseError.Create(Format(
+      'Expected variable name after ''var'' at line %d col %d in %s',
+      [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  end;
+  VS.Decl.Names.Add(FCurrent.Value);
+  Advance();
+  if not Check(tkColon) then
+  begin
+    VS.Free();
+    raise EParseError.Create(Format(
+      'Block-scoped ''var'' requires an explicit type: expected '':'' ' +
+      'at line %d col %d in %s',
+      [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  end;
+  Advance();
+  if not Check(tkIdent) then
+  begin
+    VS.Free();
+    raise EParseError.Create(Format(
+      'Expected type name at line %d col %d in %s',
+      [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+  end;
+  VS.Decl.TypeName := FCurrent.Value;
+  Advance();
+  if Check(tkAssign) then
+  begin
+    Advance();
+    VS.InitExpr := Self.ParseExpr();
+  end;
+  Result := VS;
+end;
+
 function TParser.ParseStmt: TASTStmt;
 var
   Name:        string;
@@ -3205,6 +3261,16 @@ begin
   if Check(tkBegin) then
   begin
     Exit(ParseCompoundStmt());
+  end;
+
+  { Block-scoped variable declaration statement (Phase 4):
+      var Name: TypeName [:= Expr]
+    Single name, explicit type (no inference), optional initialiser.  The
+    name is scoped to the enclosing block; the declaration re-runs per
+    execution.  docs/anonymous-methods-design.adoc + language-rationale. }
+  if Check(tkVar) then
+  begin
+    Exit(ParseBlockVarDeclStmt());
   end;
 
   { A statement that begins with '(' is an assignment whose lvalue is a

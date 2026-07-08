@@ -498,6 +498,33 @@ type
   end;
 
   { Write a value through a pointer: 'PtrExpr^ := ValueExpr' }
+  { Block-scoped variable declaration STATEMENT (Phase 4 of
+    docs/anonymous-methods-design.adoc):  'var Name: Type [:= Expr];'
+    inside a begin..end block.  The name is visible from this statement to
+    the end of the enclosing block.  The declaration statement re-runs on
+    every execution (each loop iteration re-initialises), and a variable
+    captured by an anonymous method gets a FRESH environment record per
+    execution of its block — the per-iteration snapshot idiom. }
+  TVarDeclStmt = class(TASTStmt)
+  public
+    Decl:     TVarDecl;   { single name + type; IsBlockScoped set.  Owned
+                            until the semantic pass MOVES it into the
+                            enclosing routine's Body.Decls for frame-slot
+                            allocation (DeclOwned tracks this). }
+    DeclOwned: Boolean;
+    InitExpr: TASTExpr;   { owned; nil = zero-initialised only }
+    { Semantic outputs (never serialised): }
+    InitAssign: TASTStmt; { owned — synthesised 'Name := InitExpr' (TAssignment) }
+    IsEnvAllocSite: Boolean; { first captured block-var decl of its block —
+                               codegen allocates the block's fresh env here }
+    [Unretained] EnvType: TObject; { TRecordTypeDesc — env this block allocates;
+                                     nil when no capture }
+    EnvSlotName: string;  { '__envp_b<i>' — the frame slot tracking the
+                            current env for release/refill }
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   TPointerWriteStmt = class(TASTStmt)
   public
     PtrExpr:  TASTExpr;  { owned — pointer expression }
@@ -723,6 +750,9 @@ type
 
   TVarDecl = class(TASTNode)
   public
+    IsBlockScoped: Boolean;     { set by uParser — declared by a block-scoped
+                                  'var' STATEMENT (TVarDeclStmt), not a decl
+                                  section; scoped to its enclosing block }
     Names:        TStringList;  { owned — one or more names: x, y: Integer }
     TypeName:     string;
     [Unretained] ResolvedType: TTypeDesc;    { set by uSemantic; nil until analysed }
@@ -977,6 +1007,19 @@ type
                                      table-owned; nil when EnvCaptured = nil }
     IsAnonThunk: Boolean;          { set by uSemantic — lifted '__closure_<n>'
                                      thunk; env arrives as hidden first param }
+    EnvSlotName: string;           { set by uSemantic on the THUNK — where the
+                                     creation site finds the env base in the
+                                     ENCLOSING frame: '' = the frame env
+                                     ('__envp'); '__envp_b<i>' = a block-scoped
+                                     env (Phase 4) }
+    BlockEnvCaptured: TStringList; { owned; nil = none — on the ENCLOSING
+                                     routine: names captured from block-scoped
+                                     declarations (redirected like EnvCaptured,
+                                     but allocated at the block, not the frame) }
+    BlockEnvTypes: TObjectList;    { owned list container, NON-owning items
+                                     (table-owned TRecordTypeDesc) — one entry
+                                     per block env this routine allocates;
+                                     index i ↔ slot '__envp_b<i>' }
     IsInline: Boolean;    { set by uParser — 'inline' directive present }
     CallingConv: string;  { set by uParser — 'cdecl'/'stdcall'/'register'/'pascal'/
                             'safecall' directive (lowercased); '' = default }
@@ -1483,6 +1526,20 @@ end;
 
 { TPointerWriteStmt }
 
+constructor TVarDeclStmt.Create;
+begin
+  inherited Create();
+  DeclOwned := True;
+end;
+
+destructor TVarDeclStmt.Destroy;
+begin
+  if DeclOwned then Decl.Free();
+  InitExpr.Free();
+  InitAssign.Free();
+  inherited Destroy();
+end;
+
 destructor TPointerWriteStmt.Destroy;
 begin
   { Owned class fields released by ARC field cleanup. }
@@ -1718,6 +1775,8 @@ begin
   OwnerTypeParams.Free();
   CapturedVars.Free();
   EnvCaptured.Free();
+  BlockEnvCaptured.Free();
+  BlockEnvTypes.Free();
   if OwnBody then Body.Free();
   inherited Destroy();
 end;

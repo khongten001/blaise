@@ -123,6 +123,10 @@ type
     FEnvFieldNames: TStringList;
     FEnvType: TRecordTypeDesc;
     FEnvIsThunk: Boolean;
+    { Phase-4 block-scoped envs: names captured from block-scoped 'var'
+      declarations in the CURRENT function; redirected like FEnvFieldNames
+      but allocated at the declaring block, not the frame prologue. }
+    FBlockEnvNames: TStringList;
 
     { Nil-slot ARC tracking: set of local variable names whose class/string
       slot has already been written in the current function.  EmitVarAllocs
@@ -262,6 +266,7 @@ type
     { Returns True if AName is currently a promoted SSA temp. }
     function  IsCaptured(const AName: string): Boolean;
     function  IsEnvField(const AName: string): Boolean;
+    procedure EmitVarDeclStmt(AStmt: TVarDeclStmt);
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
     procedure EmitEnvCleanupDefsForBlock(ABlock: TBlock);
     function  IsPromoted(const AName: string): Boolean;
@@ -1617,7 +1622,8 @@ end;
 
 function TCodeGenQBE.IsEnvField(const AName: string): Boolean;
 begin
-  Result := (FEnvFieldNames <> nil) and (FEnvFieldNames.IndexOf(AName) >= 0);
+  Result := ((FEnvFieldNames <> nil) and (FEnvFieldNames.IndexOf(AName) >= 0)) or
+            ((FBlockEnvNames <> nil) and (FBlockEnvNames.IndexOf(AName) >= 0));
 end;
 
 function TCodeGenQBE.IsPromoted(const AName: string): Boolean;
@@ -3066,6 +3072,8 @@ begin
     EmitCaseStmt(TCaseStmt(AStmt))
   else if AStmt is TProcCall then
     EmitProcCall(TProcCall(AStmt))
+  else if AStmt is TVarDeclStmt then
+    EmitVarDeclStmt(TVarDeclStmt(AStmt))
   else if AStmt is TExitStmt then
   begin
     { Exit(X) shorthand: emit the synthesised 'Result := X' (built by the
@@ -8341,6 +8349,7 @@ var
   SavedEnvNames: TStringList;
   SavedEnvType:  TRecordTypeDesc;
   SavedEnvThunk: Boolean;
+  SavedBlockNames: TStringList;
   ValTemp:       string;
   RC:            TRecReturnClass;
   RetRec:        TRecordTypeDesc;
@@ -8535,6 +8544,8 @@ begin
   SavedEnvNames := FEnvFieldNames;
   SavedEnvType  := FEnvType;
   SavedEnvThunk := FEnvIsThunk;
+  SavedBlockNames := FBlockEnvNames;
+  FBlockEnvNames := AMethod.BlockEnvCaptured;
   if AMethod.EnvCaptured <> nil then
   begin
     FEnvFieldNames := AMethod.EnvCaptured;
@@ -8550,14 +8561,28 @@ begin
   try
     if AMethod.EnvCaptured <> nil then
       EmitEnvPrologue(AMethod);
+    if AMethod.BlockEnvTypes <> nil then
+      for I := 0 to AMethod.BlockEnvTypes.Count - 1 do
+      begin
+        EmitLine(Format('  %%__envp_b%d_s =l alloc8 1', [I]));
+        EmitLine(Format('  storel 0, %%__envp_b%d_s', [I]));
+      end;
     EmitBlock(AMethod.Body);
     if AMethod.EnvCaptured <> nil then
       EmitLine('  call $_ClassRelease(l %__envp)');
+    if AMethod.BlockEnvTypes <> nil then
+      for I := 0 to AMethod.BlockEnvTypes.Count - 1 do
+      begin
+        ValTemp := AllocTemp();
+        EmitLine(Format('  %s =l loadl %%__envp_b%d_s', [ValTemp, I]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+      end;
   finally
     FExitLabel := SavedExitLbl;
     FEnvFieldNames := SavedEnvNames;
     FEnvType       := SavedEnvType;
     FEnvIsThunk    := SavedEnvThunk;
+    FBlockEnvNames := SavedBlockNames;
   end;
 
   { ARC: release string and class value params on exit. const params are
@@ -9365,6 +9390,100 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitVarDeclStmt(AStmt: TVarDeclStmt);
+{ Block-scoped 'var' declaration statement (Phase 4).  Re-runs on every
+  execution of its block:
+
+  1. Env-alloc site: drop the PREVIOUS execution's env reference (the slot
+     %<EnvSlotName>_s tracks it; escaped closures keep their own refs) and
+     allocate a fresh, zeroed env; define the %_env_<name> address temps.
+  2. Non-captured names: re-zero the frame slot (releasing a managed old
+     value first) so each execution starts from the declared state.
+  3. The optional initialiser runs as an ordinary (redirect-aware)
+     assignment. }
+var
+  Env:   TRecordTypeDesc;
+  Name:  string;
+  F:     TFieldInfo;
+  OldT:  string;
+  ValT:  string;
+  QT:    string;
+  I:     Integer;
+begin
+  if AStmt.IsEnvAllocSite then
+  begin
+    Env := TRecordTypeDesc(AStmt.EnvType);
+    OldT := AllocTemp();
+    EmitLine(Format('  %s =l loadl %%%s_s', [OldT, AStmt.EnvSlotName]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldT]));
+    EmitLine(Format('  %%%s =l call $_ClassAlloc(l %d, l $_FieldCleanup_%s)',
+      [AStmt.EnvSlotName, Env.TotalSize(), QBEMangle(Env.Name)]));
+    EmitLine(Format('  call $_ClassAddRef(l %%%s)', [AStmt.EnvSlotName]));
+    EmitLine(Format('  storel %%%s, %%%s_s',
+      [AStmt.EnvSlotName, AStmt.EnvSlotName]));
+    for I := 0 to Env.Fields.Count - 1 do
+    begin
+      F := TFieldInfo(Env.Fields.Items[I]);
+      EmitLine(Format('  %%_env_%s =l add %%%s, %d',
+        [F.Name, AStmt.EnvSlotName, F.Offset]));
+    end;
+  end;
+  Name := AStmt.Decl.Names.Strings[0];
+  if not IsEnvField(Name) then
+  begin
+    { Re-zero each execution (fresh-binding semantics).  A mem2reg-promoted
+      scalar is an SSA temp, not a slot — re-zero with a copy. }
+    if IsPromoted(Name) then
+    begin
+      QT := PromotedType(Name);
+      if QT = 'w' then
+        EmitLine(Format('  %%_var_%s =w copy 0', [Name]))
+      else if QT = 'd' then
+        EmitLine(Format('  %%_var_%s =d copy d_0', [Name]))
+      else if QT = 's' then
+        EmitLine(Format('  %%_var_%s =s copy s_0', [Name]))
+      else
+        EmitLine(Format('  %%_var_%s =l copy 0', [Name]));
+    end
+    { Managed kinds release the previous execution's value first. }
+    else if AStmt.Decl.ResolvedType.IsString() then
+    begin
+      ValT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValT, Name]));
+      EmitLine(Format('  call $_StringRelease(l %s)', [ValT]));
+      EmitLine(Format('  storel 0, %%_var_%s', [Name]));
+    end
+    else if AStmt.Decl.ResolvedType.Kind = tyClass then
+    begin
+      ValT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValT, Name]));
+      EmitLine(Format('  call $_ClassRelease(l %s)', [ValT]));
+      EmitLine(Format('  storel 0, %%_var_%s', [Name]));
+    end
+    else if AStmt.Decl.ResolvedType.Kind = tyDynArray then
+    begin
+      ValT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_var_%s', [ValT, Name]));
+      EmitLine(Format('  call $_DynArrayRelease(l %s)', [ValT]));
+      EmitLine(Format('  storel 0, %%_var_%s', [Name]));
+    end
+    else
+    begin
+      QT := QbeTypeOf(AStmt.Decl.ResolvedType);
+      if QT = 'w' then
+        EmitLine(Format('  storew 0, %%_var_%s', [Name]))
+      else if QT = 'd' then
+        EmitLine(Format('  stored d_0, %%_var_%s', [Name]))
+      else if QT = 's' then
+        EmitLine(Format('  stores s_0, %%_var_%s', [Name]))
+      else
+        EmitLine(Format('  storel 0, %%_var_%s', [Name]));
+    end;
+  end;
+  if AStmt.InitAssign <> nil then
+    EmitStmt(AStmt.InitAssign);
+end;
+
 procedure TCodeGenQBE.EmitEnvPrologue(ADecl: TMethodDecl);
 { Phase-2 anonymous-method capture: establish the environment base and the
   per-name field address temps for the current function.
@@ -9476,7 +9595,7 @@ procedure TCodeGenQBE.EmitEnvCleanupDefsForBlock(ABlock: TBlock);
   definitions.  The generic EmitFieldCleanupFn releases every ARC-managed
   field, exactly as for class instances. }
 var
-  I, J: Integer;
+  I, J, K: Integer;
   MD:   TMethodDecl;
   TD:   TTypeDecl;
 begin
@@ -9487,6 +9606,11 @@ begin
     if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
       EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
         TRecordTypeDesc(MD.EnvType));
+    if MD.BlockEnvTypes <> nil then
+      for J := 0 to MD.BlockEnvTypes.Count - 1 do
+        EmitFieldCleanupFn(
+          QBEMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[J]).Name),
+          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]));
     if MD.Body <> nil then
       EmitEnvCleanupDefsForBlock(MD.Body);
   end;
@@ -9502,6 +9626,11 @@ begin
       if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
         EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
           TRecordTypeDesc(MD.EnvType));
+      if MD.BlockEnvTypes <> nil then
+        for K := 0 to MD.BlockEnvTypes.Count - 1 do
+          EmitFieldCleanupFn(
+            QBEMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[K]).Name),
+            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]));
       if MD.Body <> nil then
         EmitEnvCleanupDefsForBlock(MD.Body);
     end;
@@ -9525,6 +9654,7 @@ var
   SavedEnvNames:   TStringList;
   SavedEnvType:    TRecordTypeDesc;
   SavedEnvThunk:   Boolean;
+  SavedBlockNames: TStringList;
   NestedDecl:      TMethodDecl;
   CapName:         string;
   NestedFuncName:  string;
@@ -9819,6 +9949,8 @@ begin
     FCapturedVars := nil;
   { Phase-2 anonymous-method capture: route accesses to promoted names
     through the env record for the rest of this function's emission. }
+  SavedBlockNames := FBlockEnvNames;
+  FBlockEnvNames  := ADecl.BlockEnvCaptured;
   if ADecl.EnvCaptured <> nil then
   begin
     FEnvFieldNames := ADecl.EnvCaptured;
@@ -9834,18 +9966,34 @@ begin
   try
     if ADecl.EnvCaptured <> nil then
       EmitEnvPrologue(ADecl);
+    { Phase-4 block envs: one tracking slot per block, zeroed at entry; the
+      declaring statement (re)allocates into it each execution. }
+    if ADecl.BlockEnvTypes <> nil then
+      for I := 0 to ADecl.BlockEnvTypes.Count - 1 do
+      begin
+        EmitLine(Format('  %%__envp_b%d_s =l alloc8 1', [I]));
+        EmitLine(Format('  storel 0, %%__envp_b%d_s', [I]));
+      end;
     EmitBlock(ADecl.Body);
     { The enclosing frame drops its strong env reference on exit; the env
       lives on iff an escaped closure still references it.  Thunks BORROW
       the env from the closure fat value — no release. }
     if (ADecl.EnvCaptured <> nil) and (not ADecl.IsAnonThunk) then
       EmitLine('  call $_ClassRelease(l %__envp)');
+    if ADecl.BlockEnvTypes <> nil then
+      for I := 0 to ADecl.BlockEnvTypes.Count - 1 do
+      begin
+        ValTemp := AllocTemp();
+        EmitLine(Format('  %s =l loadl %%__envp_b%d_s', [ValTemp, I]));
+        EmitLine(Format('  call $_ClassRelease(l %s)', [ValTemp]));
+      end;
   finally
     FExitLabel     := SavedExitLbl;
     FCapturedVars  := SavedCaptures;
     FEnvFieldNames := SavedEnvNames;
     FEnvType       := SavedEnvType;
     FEnvIsThunk    := SavedEnvThunk;
+    FBlockEnvNames := SavedBlockNames;
   end;
 
   { ARC: release string and class value params on exit (balances the
@@ -12757,9 +12905,18 @@ begin
     if MDecl.EnvCaptured <> nil then
     begin
       { Capturing closure: the fat value takes its own strong reference to
-        the enclosing frame's env record (Phase 2). }
-      EmitLine('  call $_ClassAddRef(l %__envp)');
-      EmitLine(Format('  storel %%__envp, %s', [ArgTemp]));
+        its env record — the frame env (%__envp) or, for a closure over
+        block-scoped vars (Phase 4), the current execution's block env. }
+      if MDecl.EnvSlotName <> '' then
+      begin
+        EmitLine(Format('  call $_ClassAddRef(l %%%s)', [MDecl.EnvSlotName]));
+        EmitLine(Format('  storel %%%s, %s', [MDecl.EnvSlotName, ArgTemp]));
+      end
+      else
+      begin
+        EmitLine('  call $_ClassAddRef(l %__envp)');
+        EmitLine(Format('  storel %%__envp, %s', [ArgTemp]));
+      end;
     end
     else
       EmitLine(Format('  storel 0, %s', [ArgTemp]));

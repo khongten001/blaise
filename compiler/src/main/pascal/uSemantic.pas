@@ -83,6 +83,11 @@ type
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
+    FCurrentBlockFirstSite: TObject;         { TVarDeclStmt — first block-scoped
+                                               var declaration of the compound
+                                               statement currently being analysed
+                                               (the block's env alloc site);
+                                               saved/restored per compound }
     FCurrentMethodDecl:    TMethodDecl;      { instance-method body being analysed
                                                (set in AnalyseMethodDecl alongside
                                                FCurrentClass) — the enclosing frame
@@ -385,6 +390,7 @@ type
     function  AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
     function  AnalyseAddrOfExpr(AExpr: TAddrOfExpr): TTypeDesc;
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
+    procedure AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
     procedure PromoteAnonCaptures(AThunk: TMethodDecl);
     procedure DrainPendingAnonDecls(ABlock: TBlock);
     procedure CoerceRoutineToClosure(AAssign: TAssignment);
@@ -8183,6 +8189,7 @@ procedure TSemanticAnalyser.AnalyseStmt(AStmt: TASTStmt);
 var
   IfS:    TIfStmt;
   CmpS:   TCompoundStmt;
+  SavedBlockSite: TObject;
   ForS:   TForStmt;
   ForInS: TForInStmt;
   WS:     TWhileStmt;
@@ -8636,10 +8643,23 @@ begin
   end
   else if AStmt is TCompoundStmt then
   begin
+    { Each begin..end block is a lexical scope for block-scoped 'var'
+      declarations (Phase 4): names declared inside are popped at the end,
+      and the block is a fresh env-alloc-site frame. }
     CmpS := TCompoundStmt(AStmt);
-    for I := 0 to CmpS.Stmts.Count - 1 do
-      AnalyseStmt(TASTStmt(CmpS.Stmts.Items[I]));
+    SavedBlockSite := FCurrentBlockFirstSite;
+    FCurrentBlockFirstSite := nil;
+    FTable.PushScope();
+    try
+      for I := 0 to CmpS.Stmts.Count - 1 do
+        AnalyseStmt(TASTStmt(CmpS.Stmts.Items[I]));
+    finally
+      FTable.PopScope();
+      FCurrentBlockFirstSite := SavedBlockSite;
+    end;
   end
+  else if AStmt is TVarDeclStmt then
+    AnalyseVarDeclStmt(TVarDeclStmt(AStmt))
   else if AStmt is TTryFinallyStmt then
   begin
     TFS := TTryFinallyStmt(AStmt);
@@ -13734,6 +13754,62 @@ begin
   Result := ProcDesc;
 end;
 
+procedure TSemanticAnalyser.AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
+{ Block-scoped 'var Name: Type [:= Expr]' statement (Phase 4).  The name is
+  defined in the CURRENT scope (pushed by the enclosing compound statement,
+  popped at its end).  Storage is a frame slot: the decl MOVES into the
+  enclosing routine's Body.Decls.  The optional initialiser becomes a
+  synthesised assignment (InitAssign) emitted each time the statement
+  executes; when the variable is captured, the block allocates a FRESH env
+  per execution at the first such declaration (the env-alloc site). }
+var
+  Frame: TMethodDecl;
+  Name:  string;
+  T:     TTypeDesc;
+  Sym:   TSymbol;
+  Asn:   TAssignment;
+begin
+  Frame := FCurrentEnclosingDecl;
+  if Frame = nil then Frame := FCurrentMethodDecl;
+  if Frame = nil then
+    SemanticError('Block-scoped ''var'' is only allowed inside a routine ' +
+      'or method body', AStmt.Line, AStmt.Col);
+  Name := AStmt.Decl.Names.Strings[0];
+  Sym := FTable.Lookup(Name);
+  if (Sym <> nil) and (not Sym.IsGlobal) then
+    SemanticError(Format('Duplicate identifier ''%s'' — a block-scoped ' +
+      'var may not shadow an existing local', [Name]), AStmt.Line, AStmt.Col);
+  T := FindTypeOrInstantiate(AStmt.Decl.TypeName);
+  if T = nil then
+    SemanticError(Format('Unknown type ''%s''', [AStmt.Decl.TypeName]),
+      AStmt.Line, AStmt.Col);
+  AStmt.Decl.ResolvedType := T;
+  if AStmt.DeclOwned then
+  begin
+    Frame.Body.Decls.Add(AStmt.Decl);
+    AStmt.DeclOwned := False;
+  end;
+  { This statement is the block's env-alloc site if it is the FIRST block
+    var of the current compound. }
+  if FCurrentBlockFirstSite = nil then
+    FCurrentBlockFirstSite := AStmt;
+  Sym := TSymbol.Create(Name, skVariable, T);
+  Sym.BlockSite := FCurrentBlockFirstSite;
+  FTable.Define(Sym);
+  if (AStmt.InitExpr <> nil) and (AStmt.InitAssign = nil) then
+  begin
+    Asn := TAssignment.Create();
+    Asn.Line := AStmt.Line;
+    Asn.Col  := AStmt.Col;
+    Asn.Name := Name;
+    Asn.Expr := AStmt.InitExpr;
+    AStmt.InitExpr := nil;   { ownership moves to the assignment }
+    AStmt.InitAssign := Asn;
+  end;
+  if AStmt.InitAssign <> nil then
+    AnalyseStmt(AStmt.InitAssign);
+end;
+
 procedure TSemanticAnalyser.PromoteAnonCaptures(AThunk: TMethodDecl);
 { Phase 2 of docs/anonymous-methods-design.adoc: determine which enclosing
   locals/params the literal's body references, promote them into ONE shared
@@ -13757,6 +13833,9 @@ var
   VDecl: TVarDecl;
   Own:   Boolean;
   InMethod: Boolean;
+  BlockSite: TObject;
+  HasFrameNames: Boolean;
+  Site:  TVarDeclStmt;
   I, J:  Integer;
 begin
   Encl := FCurrentEnclosingDecl;
@@ -13773,6 +13852,91 @@ begin
       AThunk.Line, AThunk.Col);
 
   CollectCaptures(AThunk, Encl);
+  if (AThunk.CapturedVars = nil) and (not InMethod) then Exit;
+
+  { Drop names shadowed by the literal's own params or locals — the walker
+    only checks the OUTER name set, not the literal's own declarations. }
+  if AThunk.CapturedVars <> nil then
+    for I := AThunk.CapturedVars.Count - 1 downto 0 do
+    begin
+      Name := AThunk.CapturedVars.Strings[I];
+      Own := False;
+      for J := 0 to AThunk.Params.Count - 1 do
+        if SameText(TMethodParam(AThunk.Params.Items[J]).ParamName, Name) then
+          Own := True;
+      if AThunk.Body <> nil then
+        for J := 0 to AThunk.Body.Decls.Count - 1 do
+        begin
+          VDecl := TVarDecl(AThunk.Body.Decls.Items[J]);
+          if VDecl.Names.IndexOf(Name) >= 0 then Own := True;
+        end;
+      if Own then AThunk.CapturedVars.Delete(I);
+    end;
+  { Classify captures: BLOCK-SCOPED names (declared by a 'var' statement,
+    Phase 4) belong to their declaring block's per-execution env; all other
+    names belong to the routine-level frame env.  v1 supports ONE scope per
+    closure — mixing block-scoped and routine-level (or Self) captures in a
+    single literal needs environment chaining, which is deferred. }
+  BlockSite := nil;
+  HasFrameNames := False;
+  if AThunk.CapturedVars <> nil then
+    for I := 0 to AThunk.CapturedVars.Count - 1 do
+    begin
+      Sym := FTable.Lookup(AThunk.CapturedVars.Strings[I]);
+      if (Sym <> nil) and (Sym.BlockSite <> nil) then
+      begin
+        if (BlockSite <> nil) and (BlockSite <> Sym.BlockSite) then
+          SemanticError('Capturing block-scoped variables from different ' +
+            'blocks in one anonymous method is not yet supported',
+            AThunk.Line, AThunk.Col);
+        BlockSite := Sym.BlockSite;
+      end
+      else
+        HasFrameNames := True;
+    end;
+  if (BlockSite <> nil) and HasFrameNames then
+    SemanticError('Capturing both block-scoped and routine-level variables ' +
+      'in one anonymous method is not yet supported — move the routine-level ' +
+      'value into a block-scoped var', AThunk.Line, AThunk.Col);
+
+  if BlockSite <> nil then
+  begin
+    { Per-execution BLOCK env: created/extended on the alloc-site stmt. }
+    Site := TVarDeclStmt(BlockSite);
+    if Site.EnvType = nil then
+    begin
+      FEnvTypeCount := FEnvTypeCount + 1;
+      Site.EnvType := FTable.NewRecordType('__env_' + IntToStr(FEnvTypeCount));
+      Site.IsEnvAllocSite := True;
+      if Encl.BlockEnvTypes = nil then
+        Encl.BlockEnvTypes := TObjectList.Create(False);
+      Site.EnvSlotName := '__envp_b' + IntToStr(Encl.BlockEnvTypes.Count);
+      Encl.BlockEnvTypes.Add(Site.EnvType);
+    end;
+    Env := TRecordTypeDesc(Site.EnvType);
+    if Encl.BlockEnvCaptured = nil then
+      Encl.BlockEnvCaptured := TStringList.Create();
+    for I := 0 to AThunk.CapturedVars.Count - 1 do
+    begin
+      Name := AThunk.CapturedVars.Strings[I];
+      if Env.FindField(Name) = nil then
+      begin
+        Sym := FTable.Lookup(Name);
+        if (Sym = nil) or (Sym.TypeDesc = nil) then
+          SemanticError(Format('Cannot resolve captured variable ''%s''',
+            [Name]), AThunk.Line, AThunk.Col);
+        Env.AddField(Name, Sym.TypeDesc);
+      end;
+      if Encl.BlockEnvCaptured.IndexOf(Name) < 0 then
+        Encl.BlockEnvCaptured.Add(Name);
+    end;
+    AThunk.EnvCaptured := AThunk.CapturedVars;
+    AThunk.CapturedVars := nil;
+    AThunk.EnvType := Env;
+    AThunk.EnvSlotName := Site.EnvSlotName;
+    Exit;
+  end;
+
   { Inside an instance method, Self is captured CONSERVATIVELY (whether or
     not the body names it): implicit member access cannot be detected
     syntactically before analysis, and the cost is one env field.  This
@@ -13786,24 +13950,6 @@ begin
       AThunk.CapturedVars.Add('Self');
   end;
   if AThunk.CapturedVars = nil then Exit;
-
-  { Drop names shadowed by the literal's own params or locals — the walker
-    only checks the OUTER name set, not the literal's own declarations. }
-  for I := AThunk.CapturedVars.Count - 1 downto 0 do
-  begin
-    Name := AThunk.CapturedVars.Strings[I];
-    Own := False;
-    for J := 0 to AThunk.Params.Count - 1 do
-      if SameText(TMethodParam(AThunk.Params.Items[J]).ParamName, Name) then
-        Own := True;
-    if AThunk.Body <> nil then
-      for J := 0 to AThunk.Body.Decls.Count - 1 do
-      begin
-        VDecl := TVarDecl(AThunk.Body.Decls.Items[J]);
-        if VDecl.Names.IndexOf(Name) >= 0 then Own := True;
-      end;
-    if Own then AThunk.CapturedVars.Delete(I);
-  end;
   if AThunk.CapturedVars.Count = 0 then
   begin
     AThunk.CapturedVars.Free();

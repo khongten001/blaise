@@ -186,6 +186,10 @@ type
       slot filled by EmitEnvPrologue (env base + field offset), so every
       IsCaptured access path redirects through it unchanged. }
     FEnvVarNames: TStringList;
+    { Phase-4 block-scoped envs: names captured from block-scoped 'var'
+      declarations in the CURRENT function (redirected via _cap_ slots
+      refilled at the declaring statement, per block execution). }
+    FBlockEnvVarNames: TStringList;
     { Locals of the current function that may not be borrowed as const-string
       arguments: address-taken (explicit @ or var/out arg) plus anything
       captured by a nested procedure.  Rebuilt per function in
@@ -316,6 +320,7 @@ type
       out AAttrsStr, AMethAttrsStr: string);
     { Emit the body of one $_FieldCleanup_<T> function.  Calls the
       destructor (if any), releases ARC-managed fields, then returns. }
+    procedure EmitVarDeclStmt(AStmt: TVarDeclStmt);
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
     procedure EmitEnvCleanupDefs(ABlock: TBlock);
     procedure EmitFieldCleanupFn(const AMangledName: string;
@@ -1428,10 +1433,14 @@ begin
       Self.EmitGlobalInitData(Name, Self.GlobalType(Name), InitCD);
       Continue;
     end;
-    { Method pointers (of-object): 16-byte Code+Data block, zero-initialised. }
+    { Method pointers (of-object) and 'reference to' closures: 16-byte
+      Code+Data fat values, zero-initialised.  (A reference global emitted
+      as a single .quad silently OVERLAPPED the next data symbol — its Env
+      half aliased the neighbour's first word.) }
     if (Self.GlobalType(Name) <> nil) and
        (Self.GlobalType(Name).Kind = tyProcedural) and
-       TProceduralTypeDesc(Self.GlobalType(Name)).IsMethodPtr then
+       (TProceduralTypeDesc(Self.GlobalType(Name)).IsMethodPtr or
+        TProceduralTypeDesc(Self.GlobalType(Name)).IsReference) then
     begin
       Self.Emit('.balign 8');
       if Copy(Name, 1, 2) <> '.L' then
@@ -2259,6 +2268,69 @@ begin
   end;
 end;
 
+procedure TX86_64Backend.EmitVarDeclStmt(AStmt: TVarDeclStmt);
+{ Block-scoped 'var' declaration statement (Phase 4) — native mirror of the
+  QBE emitter: (1) env-alloc site drops the previous execution's env and
+  allocates a fresh one, refilling the group's '_cap_' pointer slots;
+  (2) a non-captured name re-zeroes its frame slot (releasing a managed old
+  value); (3) the optional initialiser runs as a redirect-aware assignment. }
+var
+  Env:  TRecordTypeDesc;
+  F:    TFieldInfo;
+  Name: string;
+  I:    Integer;
+begin
+  if AStmt.IsEnvAllocSite then
+  begin
+    Env := TRecordTypeDesc(AStmt.EnvType);
+    Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(AStmt.EnvSlotName)]));
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(Format(#9'movq $%d, %%rdi', [Env.TotalSize()]));
+    Self.Emit(Format(#9'leaq _FieldCleanup_%s(%%rip), %%rsi',
+      [NativeMangle(Env.Name)]));
+    Self.Emit(#9'callq _ClassAlloc');
+    Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(AStmt.EnvSlotName)]));
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand(AStmt.EnvSlotName)]));
+    for I := 0 to Env.Fields.Count - 1 do
+    begin
+      F := TFieldInfo(Env.Fields.Items[I]);
+      Self.Emit(Format(#9'leaq %d(%%rax), %%rcx', [F.Offset]));
+      Self.Emit(Format(#9'movq %%rcx, %s', [Self.VarOperand('_cap_' + F.Name)]));
+    end;
+  end;
+  Name := AStmt.Decl.Names.Strings[0];
+  if not Self.IsCaptured(Name) then
+  begin
+    if AStmt.Decl.ResolvedType.IsString() then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Name)]));
+      Self.Emit(#9'callq _StringRelease');
+      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Name)]));
+    end
+    else if AStmt.Decl.ResolvedType.Kind = tyClass then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Name)]));
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Name)]));
+    end
+    else if AStmt.Decl.ResolvedType.Kind = tyDynArray then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand(Name)]));
+      Self.Emit(#9'callq _DynArrayRelease');
+      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Name)]));
+    end
+    else if AStmt.Decl.ResolvedType.Kind in [tyInteger, tyUInt32, tyBoolean,
+             tyByte, tyEnum, tySmallInt, tyWord] then
+      Self.Emit(Format(#9'movl $0, %s', [Self.VarOperand(Name)]))
+    else
+      Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(Name)]));
+  end;
+  if AStmt.InitAssign <> nil then
+    Self.EmitStmt(AStmt.InitAssign);
+end;
+
 procedure TX86_64Backend.EmitEnvPrologue(ADecl: TMethodDecl);
 { Phase-2 anonymous-method capture (docs/anonymous-methods-design.adoc):
   mirror of the QBE EmitEnvPrologue.  Enclosing frame: heap-allocate the env
@@ -2394,7 +2466,7 @@ procedure TX86_64Backend.EmitEnvCleanupDefs(ABlock: TBlock);
   frame allocates an anonymous-method environment record.  Thunks share the
   enclosing frame's EnvType — skipped to avoid duplicate definitions. }
 var
-  I, J: Integer;
+  I, J, K: Integer;
   MD:   TMethodDecl;
   TD:   TTypeDecl;
 begin
@@ -2405,6 +2477,11 @@ begin
     if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
       Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
         TRecordTypeDesc(MD.EnvType));
+    if MD.BlockEnvTypes <> nil then
+      for J := 0 to MD.BlockEnvTypes.Count - 1 do
+        Self.EmitFieldCleanupFn(
+          NativeMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[J]).Name),
+          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]));
     if MD.Body <> nil then
       Self.EmitEnvCleanupDefs(MD.Body);
   end;
@@ -2419,6 +2496,11 @@ begin
       if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
         Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
           TRecordTypeDesc(MD.EnvType));
+      if MD.BlockEnvTypes <> nil then
+        for K := 0 to MD.BlockEnvTypes.Count - 1 do
+          Self.EmitFieldCleanupFn(
+            NativeMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[K]).Name),
+            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]));
       if MD.Body <> nil then
         Self.EmitEnvCleanupDefs(MD.Body);
     end;
@@ -4369,7 +4451,8 @@ end;
 function TX86_64Backend.IsCaptured(const AName: string): Boolean;
 begin
   Result := ((FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0)) or
-            ((FEnvVarNames <> nil) and (FEnvVarNames.IndexOf(AName) >= 0));
+            ((FEnvVarNames <> nil) and (FEnvVarNames.IndexOf(AName) >= 0)) or
+            ((FBlockEnvVarNames <> nil) and (FBlockEnvVarNames.IndexOf(AName) >= 0));
 end;
 
 procedure TX86_64Backend.EmitVarBaseToReg(const AName: string;
@@ -4668,6 +4751,15 @@ begin
     if ADecl.IsAnonThunk and (ADecl.EnvCaptured.IndexOf('Self') >= 0) then
       Self.AddSlot('Self', nil, Offset);
   end;
+
+  { Phase-4 block-scoped envs: one tracking slot per block env, plus the
+    per-name '_cap_' pointer slots refilled at each block execution. }
+  if ADecl.BlockEnvTypes <> nil then
+    for I := 0 to ADecl.BlockEnvTypes.Count - 1 do
+      Self.AddSlot('__envp_b' + IntToStr(I), nil, Offset);
+  if ADecl.BlockEnvCaptured <> nil then
+    for I := 0 to ADecl.BlockEnvCaptured.Count - 1 do
+      Self.AddSlot('_cap_' + ADecl.BlockEnvCaptured.Strings[I], nil, Offset);
 
   { For class methods, Self is the implicit first integer param (%rdi).
     Allocate a pointer-size slot for it; normal params start at IntIdx=1.
@@ -12215,9 +12307,14 @@ begin
         Self.Emit(#9'movq %rax, (%rcx)');
         if MD.EnvCaptured <> nil then
         begin
-          { Capturing closure: store the enclosing frame's env and take the
-            fat value's own strong reference. }
-          Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__envp')]));
+          { Capturing closure: store its env — the frame env, or the block
+            env's current execution (Phase 4) — and take the fat value's
+            own strong reference. }
+          if MD.EnvSlotName <> '' then
+            Self.Emit(Format(#9'movq %s, %%rax',
+              [Self.VarOperand(MD.EnvSlotName)]))
+          else
+            Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('__envp')]));
           Self.Emit(#9'movq %rax, 8(%rcx)');
           Self.Emit(#9'movq %rax, %rdi');
           Self.Emit(#9'callq _ClassAddRef');
@@ -13497,6 +13594,11 @@ begin
     Exit;
   end;
 
+  if AStmt is TVarDeclStmt then
+  begin
+    Self.EmitVarDeclStmt(TVarDeclStmt(AStmt));
+    Exit;
+  end;
   if AStmt is TExitStmt then
   begin
     if TExitStmt(AStmt).ResultAssign <> nil then
@@ -18153,6 +18255,7 @@ begin
     variable-access paths redirect through the capture pointers. }
   FCapturedVars := ADecl.CapturedVars;
   FEnvVarNames  := ADecl.EnvCaptured;
+  FBlockEnvVarNames := ADecl.BlockEnvCaptured;
 
   { Rebuild the borrowed-argument blocklist for this function: address-taken
     locals (explicit @, var/out args) plus anything captured by a nested
@@ -18193,6 +18296,7 @@ begin
     FExitLabel    := '';
     FCapturedVars := nil;
     FEnvVarNames  := nil;
+    FBlockEnvVarNames := nil;
     Exit;
   end;
   Self.Emit(#9'pushq %rbp');
@@ -18528,6 +18632,12 @@ begin
     fill the '_cap_' pointer slots before any user statement runs. }
   if ADecl.EnvCaptured <> nil then
     Self.EmitEnvPrologue(ADecl);
+  { Phase-4 block envs: zero the tracking slots (the declaring statement
+    allocates into them per execution). }
+  if ADecl.BlockEnvTypes <> nil then
+    for I := 0 to ADecl.BlockEnvTypes.Count - 1 do
+      Self.Emit(Format(#9'movq $0, %s',
+        [Self.VarOperand('__envp_b' + IntToStr(I))]));
   FExitLabel := Self.NewLabel('exit');
   if ADecl.Body <> nil then
     Self.EmitStmtList(ADecl.Body.Stmts);
@@ -18546,6 +18656,13 @@ begin
     Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('__envp')]));
     Self.Emit(#9'callq _ClassRelease');
   end;
+  if ADecl.BlockEnvTypes <> nil then
+    for I := 0 to ADecl.BlockEnvTypes.Count - 1 do
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi',
+        [Self.VarOperand('__envp_b' + IntToStr(I))]));
+      Self.Emit(#9'callq _ClassRelease');
+    end;
   { Release ARC-managed locals (not params, not Result).
     Result is returned to the caller who owns it. }
   if ADecl.Body <> nil then

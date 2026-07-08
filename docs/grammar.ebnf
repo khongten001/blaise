@@ -908,6 +908,7 @@ Stmt
     | RaiseStmt
     | ExitStmt
     | CompoundStmt
+    | BlockVarDeclStmt
     | PointerWriteStmt
     | StaticSubscriptAssign
     | SubscriptFieldAssign
@@ -929,6 +930,18 @@ Stmt
  * grammar.  For a string the write is copy-on-write (the buffer is made
  * uniquely owned before the byte store) — see the "String Subscript S[N]"
  * section of language-rationale.adoc. *)
+(* Block-scoped variable declaration in statement position (anonymous-
+ * methods design, Phase 4).  Single name, explicit NAMED type (no inline
+ * type constructions, no inference), optional initialiser re-evaluated on
+ * every execution of the statement.  The name is visible from this
+ * statement to the end of the enclosing compound statement and may not
+ * shadow an existing local.  A block-scoped variable captured by an
+ * anonymous method gets a FRESH environment per execution of its block —
+ * the per-iteration loop-snapshot idiom (see language-rationale.adoc). *)
+BlockVarDeclStmt
+    = VAR IDENT COLON TypeName [ ASSIGN Expr ]
+    ;
+
 StaticSubscriptAssign
     = IDENT LBRACKET Expr { COMMA Expr } RBRACKET
             { LBRACKET Expr { COMMA Expr } RBRACKET } ASSIGN Expr

@@ -42,6 +42,11 @@ type
     procedure TestRun_MethodLiteral_EscapesMethodFrame;
     procedure TestRun_MethodPtrCoercion_DispatchesWithReceiver;
     procedure TestRun_MethodPtrCoercion_VirtualDispatch;
+    { Phase 4 — block-scoped var + per-iteration capture }
+    procedure TestRun_BlockVar_BasicScopeAndInit;
+    procedure TestRun_BlockVar_InitRunsPerIteration;
+    procedure TestRun_BlockVar_LoopSnapshotIdiom_012;
+    procedure TestRun_LoopCapture_RoutineVar_Still333;
   end;
 
 implementation
@@ -527,6 +532,126 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, 'LOUD' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_BlockVar_BasicScopeAndInit;
+const
+  Src =
+  '''
+  program P;
+  procedure Run;
+  begin
+    begin
+      var X: Integer := 40;
+      X := X + 2;
+      WriteLn(X)
+    end
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_BlockVar_InitRunsPerIteration;
+const
+  { The declaration statement re-initialises on every execution — each
+    iteration starts from 10, so the accumulating += prints 11 three times. }
+  Src =
+  '''
+  program P;
+  procedure Run;
+  var
+    I: Integer;
+  begin
+    for I := 0 to 2 do
+    begin
+      var Acc: Integer := 10;
+      Acc := Acc + 1;
+      WriteLn(Acc)
+    end
+  end;
+  begin
+    Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '11' + LineEnding + '11' + LineEnding + '11' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_BlockVar_LoopSnapshotIdiom_012;
+const
+  { THE Phase-4 headline (design doc, Capture): a block-scoped var inside
+    the loop body is a fresh binding per iteration — each closure gets its
+    own environment, so the stored closures print 0, 1, 2. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  var
+    A: TProc;
+    B: TProc;
+    C: TProc;
+  procedure Run;
+  var
+    I: Integer;
+  begin
+    for I := 0 to 2 do
+    begin
+      var Snapshot: Integer := I;
+      if I = 0 then A := procedure begin WriteLn(Snapshot) end;
+      if I = 1 then B := procedure begin WriteLn(Snapshot) end;
+      if I = 2 then C := procedure begin WriteLn(Snapshot) end
+    end
+  end;
+  begin
+    Run();
+    A();
+    B();
+    C()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '0' + LineEnding + '1' + LineEnding + '2' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_LoopCapture_RoutineVar_Still333;
+const
+  { Capturing the ROUTINE-level loop variable still shares one env — the
+    documented Delphi-compatible behaviour is unchanged by Phase 4. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+  var
+    A: TProc;
+    B: TProc;
+  procedure Run;
+  var
+    I: Integer;
+  begin
+    for I := 0 to 2 do
+    begin
+      if I = 0 then A := procedure begin WriteLn(I) end;
+      if I = 1 then B := procedure begin WriteLn(I) end
+    end
+  end;
+  begin
+    Run();
+    A();
+    B()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '3' + LineEnding + '3' + LineEnding, 0);
 end;
 
 initialization

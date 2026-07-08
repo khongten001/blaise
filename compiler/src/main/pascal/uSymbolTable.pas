@@ -435,6 +435,12 @@ type
                                 Empty = emit under Name. }
     IsThreadVar: Boolean;     { true for threadvar declarations; codegen emits
                                 TLS storage instead of plain global data }
+    [Unretained] BlockSite: TObject; { TVarDeclStmt — non-owning; set for a
+                                BLOCK-SCOPED var (Phase 4 of the anonymous-
+                                methods design): identifies the declaration
+                                site whose per-execution environment the
+                                variable belongs to when captured.  nil for
+                                ordinary symbols. }
     IsOverload:   Boolean;    { true when declared with the 'overload' directive;
                                 same-named overload symbols form a NextOverload chain }
     [Unretained] NextOverload: TSymbol;    { not owned — link to next overload in the chain;
