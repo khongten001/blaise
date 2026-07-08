@@ -1062,6 +1062,17 @@ type
                                    thunk appended to the module's ProcDecls
                                    by uSemantic; codegen references it via
                                    ResolvedQbeName }
+    IsArrow:      Boolean;       { True for the terse '->' form: params may
+                                   be untyped (TypeName = '') and the return
+                                   type is unknown until target-typed
+                                   inference fills them in (Phase 9a). }
+    ArrowExpr:    TASTExpr;      { owned; the single-expression body of an
+                                   arrow lambda ('(X) -> X + 1').  Desugared
+                                   by uSemantic into 'Result := ArrowExpr'
+                                   (function targets) or a call statement
+                                   (procedure targets) once the target type
+                                   is known.  nil when the arrow used a full
+                                   begin..end block (stored in Decl.Body). }
     ValueSlotName: string;       { set by uSemantic — name of the hidden
                                    16-byte local reserved in the enclosing
                                    frame for materialising this literal in
@@ -1779,6 +1790,7 @@ end;
 
 destructor TAnonMethodExpr.Destroy;
 begin
+  ArrowExpr.Free();
   { Owned class fields released by ARC field cleanup. }
   inherited Destroy();
 end;

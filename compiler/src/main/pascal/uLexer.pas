@@ -100,6 +100,7 @@ type
     tkGreaterThan,   { >  }
     tkLessEqual,     { <= }
     tkGreaterEqual,  { >= }
+    tkArrow,         { -> — terse lambda (ArrowLambda) }
     tkColon,         { :  }
     { Grouping and punctuation }
     tkLParen,
@@ -778,6 +779,7 @@ begin
         else if text = '..' then Result.Kind := tkDotDot
         else if text = '.'  then Result.Kind := tkDot
         else if text = '+'  then Result.Kind := tkPlus
+        else if text = '->' then Result.Kind := tkArrow
         else if text = '-'  then Result.Kind := tkMinus
         else if text = '*'  then Result.Kind := tkStar
         else if text = '/'  then Result.Kind := tkSlash
@@ -870,6 +872,7 @@ begin
     tkDiv:            Result := 'div';
     tkMod:            Result := 'mod';
     tkAssign:         Result := ':=';
+    tkArrow:          Result := '->';
     tkEquals:         Result := '=';
     tkNotEquals:      Result := '<>';
     tkLessThan:       Result := '<';

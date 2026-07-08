@@ -54,7 +54,9 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 11; { v11 (this cycle): 'generic-proc' TYPE-block kind —
+  IFACE_VERSION = 12; { v12 (this cycle): 'anonm' payload carries the '->'
+                        lambda facts (IsArrow + optional expression body).
+                        v11: 'generic-proc' TYPE-block kind —
                         generic procedural-type templates
                         (TGetter<T> = reference to function(): T).
                         v10: 'reference to' anonymous-method
@@ -957,6 +959,13 @@ begin
               EncodeBool(TAnonMethodExpr(AE).WeakCaptures <> nil);
     if TAnonMethodExpr(AE).WeakCaptures <> nil then
       Result := Result + EncodeStringList(TAnonMethodExpr(AE).WeakCaptures);
+    { Phase 9a: an un-desugared '->' lambda in a template body — its
+      expression body travels as parsed AST and is desugared when the
+      importer's instantiation supplies the target type. }
+    Result := Result + EncodeBool(TAnonMethodExpr(AE).IsArrow) +
+              EncodeBool(TAnonMethodExpr(AE).ArrowExpr <> nil);
+    if TAnonMethodExpr(AE).ArrowExpr <> nil then
+      Result := Result + EncodeExpr(TAnonMethodExpr(AE).ArrowExpr);
   end
   else
     raise EIfaceFormatError.Create(
@@ -1723,6 +1732,9 @@ begin
       AME.WeakCaptures := TStringList.Create();
       ReadStringListBlock(AText, APos, AME.WeakCaptures);
     end;
+    AME.IsArrow := DecodeBool(AText, APos);
+    if DecodeBool(AText, APos) then
+      AME.ArrowExpr := ReadExpr(AText, APos);
     Result := AME;
   end
   else

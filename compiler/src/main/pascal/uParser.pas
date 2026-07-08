@@ -140,6 +140,14 @@ type
     function  ParseBlockVarDeclStmt: TASTStmt;
     function  ParseExpr: TASTExpr;
     function  ParseAnonMethodLiteral: TAnonMethodExpr;
+    { Terse lambda: 'x -> expr', '(a, b) -> expr', '(a: T) -> begin ... end'.
+      Desugars to a TAnonMethodExpr with IsArrow set; untyped params and the
+      return type are filled by target-typed inference (Phase 9a). }
+    function  ParseArrowLambda: TAnonMethodExpr;
+    { True when the token stream at the current position starts an arrow
+      lambda: 'ident ->' or a parenthesised (possibly empty) parameter list
+      whose matching ')' is immediately followed by '->'. }
+    function  ArrowLambdaAhead: Boolean;
     function  ParseSetOrArrayElement: TASTExpr;
     function  ParseAddSub: TASTExpr;
     function  ParseTerm: TASTExpr;
@@ -5121,6 +5129,122 @@ begin
   end;
 end;
 
+function TParser.ArrowLambdaAhead: Boolean;
+var
+  N, Depth: Integer;
+  K: TTokenKind;
+begin
+  Result := False;
+  if Check(tkIdent) and (PeekKind() = tkArrow) then
+    Exit(True);
+  if not Check(tkLParen) then Exit;
+  { Scan to the matching ')' (param lists may nest parens in default-value
+    expressions) and test for a following '->'. }
+  N := 1;
+  Depth := 1;
+  while Depth > 0 do
+  begin
+    K := PeekKindAt(N);
+    if K = tkEOF then Exit;
+    if K = tkLParen then Depth := Depth + 1
+    else if K = tkRParen then Depth := Depth - 1;
+    N := N + 1;
+    { Defensive bound: a genuine lambda parameter list is short. }
+    if N > 64 then Exit;
+  end;
+  Result := PeekKindAt(N) = tkArrow;
+end;
+
+function TParser.ParseArrowLambda: TAnonMethodExpr;
+var
+  MD:       TMethodDecl;
+  Par:      TMethodParam;
+  TypedAhead: Boolean;
+  N: Integer;
+  K: TTokenKind;
+begin
+  Result := TAnonMethodExpr.Create();
+  try
+    Result.Line := FCurrent.Line;
+    Result.Col  := FCurrent.Col;
+    Result.IsArrow := True;
+    MD := TMethodDecl.Create();
+    MD.Line := Result.Line;
+    MD.Col  := Result.Col;
+    Result.Decl := MD;
+
+    if Check(tkIdent) then
+    begin
+      { Single inferred parameter: x -> ... }
+      Par := TMethodParam.Create();
+      Par.ParamName := FCurrent.Value;
+      Par.TypeName  := '';
+      MD.Params.Add(Par);
+      Advance();
+    end
+    else
+    begin
+      Expect(tkLParen);
+      if not Check(tkRParen) then
+      begin
+        { Distinguish the untyped ident list '(a, b)' from a fully typed
+          '(a: T; const b: U)': scan for a ':' before the closing ')'. }
+        TypedAhead := False;
+        N := 0;
+        while True do
+        begin
+          K := PeekKindAt(N);
+          if (K = tkRParen) or (K = tkEOF) then Break;
+          if K = tkColon then begin TypedAhead := True; Break; end;
+          N := N + 1;
+          if N > 64 then Break;
+        end;
+        if TypedAhead then
+          ParseParamList(MD.Params)
+        else
+        begin
+          if not Check(tkIdent) then
+            raise EParseError.Create(Format(
+              'Expected lambda parameter name at line %d col %d in %s',
+              [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+          Par := TMethodParam.Create();
+          Par.ParamName := FCurrent.Value;
+          Par.TypeName  := '';
+          MD.Params.Add(Par);
+          Advance();
+          while Check(tkComma) do
+          begin
+            Advance();
+            if not Check(tkIdent) then
+              raise EParseError.Create(Format(
+                'Expected lambda parameter name after '','' at line %d col %d in %s',
+                [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+            Par := TMethodParam.Create();
+            Par.ParamName := FCurrent.Value;
+            Par.TypeName  := '';
+            MD.Params.Add(Par);
+            Advance();
+          end;
+        end;
+      end;
+      Expect(tkRParen);
+    end;
+
+    Expect(tkArrow);
+
+    if Check(tkBegin) or Check(tkVar) or Check(tkConst) or Check(tkType) then
+      MD.Body := ParseBlock()
+    else
+      { Single-expression body — desugared by uSemantic once the target
+        type is known ('Result := expr' for function targets, a call
+        statement for procedure targets). }
+      Result.ArrowExpr := ParseExpr();
+  except
+    Result.Free();
+    raise;
+  end;
+end;
+
 function TParser.ParseFactor: TASTExpr;
 var
   IntNode:    TIntLiteral;
@@ -5149,6 +5273,10 @@ var
   ParseIntFlag: Boolean;
   InhNode:      TInheritedCallExpr;
 begin
+  { Terse lambda (Phase 9a): 'x -> ...' or '(params) -> ...' — must be
+    detected before the plain ident / parenthesised-expression arms. }
+  if ArrowLambdaAhead() then
+    Exit(ParseArrowLambda());
   case FCurrent.Kind of
     tkProcedure, tkFunction:
       begin

@@ -1841,6 +1841,25 @@ loop-spawn idiom with a block-scoped `var` spawns distinct snapshots; the
 routine-level shared-variable form remains the documented trap (every child
 observes the final value).
 
+=== Terse `->` lambdas (Phase 9a)
+
+`(A, B) -> A + B`, `x -> WriteLn(x)`, `() -> 'value'` and the block-bodied
+`(A, B) -> begin ... end` all parse as sugar over the anonymous-method
+literal — the parser produces the same `TAnonMethodExpr`, so capture, ARC
+and codegen are untouched.  `->` was chosen over `=>` because Blaise uses a
+single `=` for equality, so `=>` would sit one glyph from `=` and visually
+mirror `>=`/`<=`; `->` is entirely free (pointer dereference is `^`).
+
+Target-typed inference in this phase is deliberately *cheap*: an arrow's
+untyped parameters and its return type are filled from the target
+`reference to` type where that target is known without overload resolution —
+assignment to a typed variable or field, `Result :=`, and block-scoped
+`var` initialisers.  A single-expression body desugars to `Result := E`
+for function targets and to a call statement for procedure targets.  An
+arrow in any other position (notably argument position,
+`List.Where((P) -> ...)`) is rejected with a directed diagnostic — that
+requires the two-phase deferred analysis of Phase 9b.
+
 === Restrictions in this phase (clear compile-time errors)
 
 - Capturing a `var`/`out` parameter is rejected — the env would have to

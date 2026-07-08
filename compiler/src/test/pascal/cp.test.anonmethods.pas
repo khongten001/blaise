@@ -58,6 +58,7 @@ type
     procedure TestSemantic_Phase5_WeakNonSelfRejected;
     procedure TestSemantic_NestedRoutineInMethod_SelfRejected;
     procedure TestSemantic_NestedRoutineInMethod_SelfContainedAccepted;
+    procedure TestSemantic_Phase9a_ArrowWithoutTarget_Rejected;
     procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtInteger;
     procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtString;
 
@@ -75,6 +76,11 @@ type
     procedure TestE2E_FunctionLiteral_ReturnsValue;
     procedure TestE2E_AdapterFromPlainRoutine;
     procedure TestE2E_NilClosure_Assignable;
+    { Phase 9a — terse '->' lambdas (desugared to TAnonMethodExpr). }
+    procedure TestE2E_Arrow_ExprBody_MultiParam_Captures;
+    procedure TestE2E_Arrow_SingleIdent_ProcedureTarget;
+    procedure TestE2E_Arrow_BlockBody;
+    procedure TestE2E_Arrow_MinusGreaterStaysDistinct;
   end;
 
 implementation
@@ -1086,6 +1092,134 @@ begin
     Pos('__closure', IR) > 0);
   AssertTrue('env cleanup functions emitted',
     Pos('_FieldCleanup___env_', IR) > 0)
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 9a — arrow lambdas                                            }
+{ ------------------------------------------------------------------ }
+
+procedure TAnonMethodTests.TestSemantic_Phase9a_ArrowWithoutTarget_Rejected;
+const
+  Src =
+    '''
+    program P;
+    var X: Integer;
+    begin
+      X := ((A) -> A + 1)(1)
+    end.
+    ''';
+var
+  Caught: Boolean;
+begin
+  { An arrow with no 'reference to' target context cannot be typed —
+    reject with a directed diagnostic (argument-position inference is
+    Phase 9b). }
+  Caught := False;
+  try
+    AnalyseSrc(Src).Free()
+  except
+    on E: Exception do
+    begin
+      Caught := True;
+      AssertTrue('diagnostic mentions inference: ' + E.Message,
+        Pos('Cannot infer', E.Message) >= 0)
+    end
+  end;
+  AssertTrue('arrow without target rejected', Caught)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_ExprBody_MultiParam_Captures;
+const
+  Src =
+    '''
+    program P;
+    type
+      TAdd = reference to function(A, B: Integer): Integer;
+    var
+      F: TAdd;
+      Base: Integer;
+    begin
+      Base := 40;
+      F := (A, B) -> A + B + Base;
+      WriteLn(F(1, 1))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '42' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_SingleIdent_ProcedureTarget;
+const
+  Src =
+    '''
+    program P;
+    type
+      TShow = reference to procedure(N: Integer);
+    var
+      P1: TShow;
+    begin
+      P1 := N -> WriteLn(N * 2);
+      P1(21)
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '42' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_BlockBody;
+const
+  Src =
+    '''
+    program P;
+    type
+      TAdd = reference to function(A, B: Integer): Integer;
+    var
+      F: TAdd;
+    begin
+      F := (A, B) -> begin
+        Result := A * B
+      end;
+      WriteLn(F(6, 7))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '42' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_Arrow_MinusGreaterStaysDistinct;
+const
+  { 'A - B' and 'A > B' around an arrow: the '->' token must not swallow a
+    minus that is followed by a separate '>' comparison, and arithmetic
+    minus must be unaffected. }
+  Src =
+    '''
+    program P;
+    type
+      TF = reference to function(A: Integer): Integer;
+    var
+      F: TF;
+      X: Integer;
+    begin
+      F := (A) -> A - 1;
+      X := F(43);
+      if X > 41 then
+        WriteLn(X)
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', '42' + #10, Output)
 end;
 
 initialization

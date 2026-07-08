@@ -517,6 +517,7 @@ begin
   else if C = 60 then begin if (C2 = 62) or (C2 = 61) then Advance() end  { <>, <= }
   else if C = 62 then begin if C2 = 61 then Advance() end      { >= }
   else if C = 46 then begin if C2 = 46 then Advance() end      { .. }
+  else if C = 45 then begin if C2 = 62 then Advance() end      { -> }
   else if C = 42 then begin if C2 = 42 then Advance() end      { ** }
   else if C = 64 then begin if C2 = 64 then Advance() end      { @@ }
   ;

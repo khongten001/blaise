@@ -279,9 +279,11 @@ TInheritedCallStmt.Args  serialise
 TAnonMethodExpr.Decl  serialise
 TAnonMethodExpr.WeakCaptures  serialise
 TAnonMethodExpr.LiftedName  safe
+TAnonMethodExpr.IsArrow  serialise
+TAnonMethodExpr.ArrowExpr  serialise
 TAnonMethodExpr.ValueSlotName  safe
 
-# TMethodCallExpr (uAST.pas:1078)
+# TMethodCallExpr (uAST.pas:1089)
 TMethodCallExpr.ObjectName  serialise
 TMethodCallExpr.Name  serialise
 TMethodCallExpr.QualifierUnit  serialise

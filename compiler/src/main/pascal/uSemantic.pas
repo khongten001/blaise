@@ -410,6 +410,12 @@ type
                                     ANames, AArgs: TStringList);
     procedure SubstTypeParamsInStmts(AStmts: TObjectList;
                                      ANames, AArgs: TStringList);
+    { Phase 9a: fill an arrow lambda's untyped parameters and return type
+      from a known target 'reference to' type, and desugar its single-
+      expression body ('Result := E' for function targets, a call statement
+      for procedure targets).  No-op for non-arrow literals or when the
+      arrow was already inferred. }
+    procedure InferArrowFromTarget(AExpr: TASTExpr; ATarget: TTypeDesc);
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
     procedure AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
     procedure PromoteAnonCaptures(AThunk: TMethodDecl);
@@ -9288,6 +9294,7 @@ begin
     begin
       AAssign.ImplicitSelfField := FldInfo;
       AAssign.ResolvedLhsType   := FldInfo.TypeDesc;
+      InferArrowFromTarget(AAssign.Expr, FldInfo.TypeDesc);
       ResolveDiamond(AAssign.Expr, FldInfo.TypeDesc);
       { Bare enum member on the RHS resolves against the field's type. }
       if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
@@ -9342,6 +9349,9 @@ begin
   end;
 
   ResolveDiamond(AAssign.Expr, VarSym.TypeDesc);
+  { Phase 9a: a '->' lambda RHS takes its parameter/return types from the
+    LHS variable's 'reference to' type. }
+  InferArrowFromTarget(AAssign.Expr, VarSym.TypeDesc);
 
   { '@Routine' assigned to a 'reference to' variable coerces via a
     forwarding adapter literal. }
@@ -9711,6 +9721,9 @@ begin
         TSetTypeDesc(FldInfo.TypeDesc));
       Exit;
     end;
+    { Phase 9a: a '->' lambda RHS takes its types from the field's
+      'reference to' type. }
+    InferArrowFromTarget(AAssign.Expr, FldInfo.TypeDesc);
     ExprType := AnalyseExpr(AAssign.Expr);
     CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
       AAssign.Line, AAssign.Col);
@@ -13925,6 +13938,116 @@ begin
   end;
 end;
 
+procedure TSemanticAnalyser.InferArrowFromTarget(AExpr: TASTExpr;
+  ATarget: TTypeDesc);
+var
+  AME:   TAnonMethodExpr;
+  PT:    TProceduralTypeDesc;
+  Par:   TMethodParam;
+  PInfo: TProcParamInfo;
+  Blk:   TBlock;
+  Asn:   TAssignment;
+  PC:    TProcCall;
+  MCS:   TMethodCallStmt;
+  FCE:   TFuncCallExpr;
+  MCE:   TMethodCallExpr;
+  I:     Integer;
+begin
+  if not (AExpr is TAnonMethodExpr) then Exit;
+  AME := TAnonMethodExpr(AExpr);
+  if not AME.IsArrow then Exit;
+  if AME.ResolvedType <> nil then Exit;   { already analysed }
+
+  if (ATarget = nil) or (ATarget.Kind <> tyProcedural) or
+     (not TProceduralTypeDesc(ATarget).IsReference) then
+    SemanticError(
+      'Cannot infer the type of a ''->'' lambda here — the target must be ' +
+      'a named ''reference to'' type (use a full function/procedure literal ' +
+      'with explicit types instead)',
+      AME.Line, AME.Col);
+  PT := TProceduralTypeDesc(ATarget);
+
+  if AME.Decl.Params.Count <> PT.Params.Count then
+    SemanticError(Format(
+      '''->'' lambda has %d parameter(s) but the target type expects %d',
+      [AME.Decl.Params.Count, PT.Params.Count]), AME.Line, AME.Col);
+
+  for I := 0 to AME.Decl.Params.Count - 1 do
+  begin
+    Par   := TMethodParam(AME.Decl.Params.Items[I]);
+    PInfo := TProcParamInfo(PT.Params.Items[I]);
+    if Par.TypeName = '' then
+    begin
+      Par.TypeName     := PInfo.TypeDesc.Name;
+      Par.ResolvedType := PInfo.TypeDesc;
+      Par.IsVarParam   := PInfo.IsVarParam;
+      Par.IsConstParam := PInfo.IsConstParam;
+    end;
+  end;
+
+  { Single-expression body: desugar now that function-vs-procedure is known. }
+  if AME.ArrowExpr <> nil then
+  begin
+    Blk := TBlock.Create();
+    if PT.ReturnType <> nil then
+    begin
+      Asn := TAssignment.Create();
+      Asn.Line := AME.ArrowExpr.Line;
+      Asn.Col  := AME.ArrowExpr.Col;
+      Asn.Name := 'Result';
+      Asn.Expr := AME.ArrowExpr;
+      Blk.Stmts.Add(Asn);
+    end
+    else if AME.ArrowExpr is TFuncCallExpr then
+    begin
+      { Procedure target with a call body: re-shape the parsed call
+        expression into a call statement (ownership of the args moves). }
+      FCE := TFuncCallExpr(AME.ArrowExpr);
+      PC  := TProcCall.Create();
+      PC.Line := FCE.Line;
+      PC.Col  := FCE.Col;
+      PC.Name := FCE.Name;
+      while FCE.Args.Count > 0 do
+      begin
+        PC.Args.Add(FCE.Args.Items[0]);
+        FCE.Args.Delete(0);
+      end;
+      Blk.Stmts.Add(PC);
+      AME.ArrowExpr.Free();
+    end
+    else if AME.ArrowExpr is TMethodCallExpr then
+    begin
+      MCE := TMethodCallExpr(AME.ArrowExpr);
+      MCS := TMethodCallStmt.Create();
+      MCS.Line := MCE.Line;
+      MCS.Col  := MCE.Col;
+      MCS.ObjectName := MCE.ObjectName;
+      MCS.Name       := MCE.Name;
+      MCS.ObjExpr    := MCE.ObjExpr;
+      MCE.ObjExpr    := nil;
+      while MCE.Args.Count > 0 do
+      begin
+        MCS.Args.Add(MCE.Args.Items[0]);
+        MCE.Args.Delete(0);
+      end;
+      Blk.Stmts.Add(MCS);
+      AME.ArrowExpr.Free();
+    end
+    else
+      SemanticError(
+        'A ''->'' lambda for a procedure target must have a call body or ' +
+        'a begin..end block', AME.Line, AME.Col);
+    AME.ArrowExpr := nil;
+    AME.Decl.Body := Blk;
+    AME.Decl.OwnBody := True;
+  end;
+
+  if PT.ReturnType <> nil then
+    AME.Decl.ReturnTypeName := PT.ReturnType.Name;
+
+  AME.IsArrow := False;   { inferred — analyse as an ordinary literal }
+end;
+
 function TSemanticAnalyser.AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
 { Anonymous procedure/function literal (docs/anonymous-methods-design.adoc,
   Phase 1: capture-free).  Two products:
@@ -13954,6 +14077,15 @@ var
   I:         Integer;
 begin
   if AExpr.ResolvedType <> nil then Exit(AExpr.ResolvedType);  { idempotent }
+
+  { Phase 9a: an arrow lambda that reaches full analysis without a target
+    (no assignment/field/var-init context supplied one) cannot be typed. }
+  if AExpr.IsArrow then
+    SemanticError(
+      'Cannot infer the type of a ''->'' lambda here — assign it to a ' +
+      '''reference to''-typed variable/field first, or use a full ' +
+      'function/procedure literal with explicit types',
+      AExpr.Line, AExpr.Col);
 
   { Phase 6: make type-param names concrete while the instantiation's
     bindings are still in scope (the lifted thunk is analysed later in

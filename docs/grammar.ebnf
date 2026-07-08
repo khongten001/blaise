@@ -861,6 +861,23 @@ AnonMethod
       Block                               (* full begin..end body *)
     ;
 
+(* Terse lambda (Phase 9a) — desugars to AnonMethod once the target
+ * 'reference to' type is known (assignment / field / var-init position).
+ * A single-Expression body implies 'Result :=' of that expression for a
+ * function target, or a call statement for a procedure target; bare
+ * identifier parameters take their types from the target. *)
+ArrowLambda
+    = LambdaParams ARROW ( Expression | Block )
+    ;
+LambdaParams
+    = IDENT                               (* single inferred param *)
+    | LPAREN [ InferredOrTypedParams ] RPAREN
+    ;
+InferredOrTypedParams
+    = IDENT { COMMA IDENT }               (* types inferred from target *)
+    | ParamList                           (* or fully typed *)
+    ;
+
 WeakCaptureList
     = LBRACKET "Weak" Ident { COMMA Ident } RBRACKET
     ;
