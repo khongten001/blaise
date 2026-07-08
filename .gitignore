@@ -82,3 +82,6 @@ progress-native-backend.txt
 
 # Local design/FYI notes — kept untracked
 docs/opdf-emission-design.adoc
+
+# Local examples
+examples/
