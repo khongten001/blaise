@@ -1666,6 +1666,8 @@ Delivered in phases, each independently verified on both backends:
   module-level thunk `__closure_<n>` with a uniform closure ABI (hidden
   `__env: Pointer` FIRST parameter, nil for capture-free closures).
 - *Phase 2* — strong capture of enclosing locals and value parameters.
+- *Phase 3* — capture inside instance-method bodies (including `Self`) and
+  method-pointer → `reference to` coercion.
 
 === Capture semantics (Phase 2)
 
@@ -1695,6 +1697,39 @@ A captured value PARAMETER is snapshotted into the env field at frame
 entry (with its own retain for managed types); the parameter slot's
 entry/exit retain-release pair remains independent.
 
+=== `Self` capture and method-body literals (Phase 3)
+
+A literal inside an INSTANCE method body captures the method's locals and
+parameters through the same env machinery, plus `Self` — captured
+*conservatively* (whether or not the body names it): implicit member
+access cannot be detected syntactically before analysis, the cost is one
+pointer field, and the strong retain matches the lifetime rule that a
+callback keeps its receiver alive.  `Self` is an ordinary class-typed env
+field: the env's cleanup releases it, and the lifted thunk materialises a
+real `Self` slot from it at entry, so implicit member access and virtual
+dispatch inside the closure body behave exactly as inside the method.
+
+Consequence (documented, pinned by a leak test): a closure capturing
+`Self` stored in the receiver's OWN field forms a strong cycle
+(`Self → field → env → Self`) and leaks until `[Weak]` capture (Phase 5)
+provides the break — the same rule as `[Weak]` class fields.
+
+Literals inside RECORD methods and STATIC methods do not capture a
+receiver (records are caller-frame storage, not ARC instances; static
+methods have none); their member references fail with clear errors.
+
+=== Method-pointer → `reference to` coercion (Phase 3)
+
+An `of object` value of matching callable signature (flags aside) assigns
+directly into a `reference to` slot: the uniform closure ABI makes
+`code(env, args)` and `method(Self, args)` the SAME call shape, so NO
+adapter thunk is needed — `Code` is the method's code pointer
+(vtable-resolved for virtual/override methods, so `@Obj.M` captures the
+dynamic override) and `Env` is the receiver, which the closure slot
+STRONG-retains (unlike a bare method pointer).  This deliberately changes
+lifetime: the callback keeps its receiver alive, which is the correct ARC
+behaviour for an escaping callback.
+
 Consequence (documented trap, also Delphi's behaviour): a loop variable
 captured by closures created inside the loop is ONE shared env field —
 after the loop, every such closure observes the final value.  Per-iteration
@@ -1706,8 +1741,7 @@ snapshots require a block-scoped fresh binding (Phase 4).
   store the caller frame's address, which dangles once the closure
   escapes.  Escape analysis that could allow the non-escaping subset is
   deferred; the documented idiom is capturing a local copy.
-- Capturing `Self` (literals inside methods capturing instance state) is
-  Phase 3; `[Weak]` capture lists are Phase 5.
+- `[Weak]` capture lists are Phase 5.
 - A literal nested inside another literal cannot capture the outer
   routine's variables through the intermediate closure (multi-level env
   chains are a later phase); the reference fails with an

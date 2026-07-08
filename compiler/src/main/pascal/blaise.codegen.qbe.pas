@@ -8338,6 +8338,9 @@ var
   RetDeclType:   string;
   RetTemp:       string;
   SavedExitLbl:  string;
+  SavedEnvNames: TStringList;
+  SavedEnvType:  TRecordTypeDesc;
+  SavedEnvThunk: Boolean;
   ValTemp:       string;
   RC:            TRecReturnClass;
   RetRec:        TRecordTypeDesc;
@@ -8524,10 +8527,37 @@ begin
 
   SavedExitLbl := FExitLabel;
   FExitLabel   := AllocLabel('method_exit');
+  { Phase-3 anonymous-method capture inside method bodies: same env wiring
+    as EmitFuncDef.  'Self' is deliberately EXCLUDED from the redirect set
+    — the method keeps using its own %_var_Self param slot (Self never
+    changes, so both views agree); EmitEnvPrologue copies it into the env
+    field once, with the env's own retain. }
+  SavedEnvNames := FEnvFieldNames;
+  SavedEnvType  := FEnvType;
+  SavedEnvThunk := FEnvIsThunk;
+  if AMethod.EnvCaptured <> nil then
+  begin
+    FEnvFieldNames := AMethod.EnvCaptured;
+    FEnvType       := TRecordTypeDesc(AMethod.EnvType);
+    FEnvIsThunk    := False;
+  end
+  else
+  begin
+    FEnvFieldNames := nil;
+    FEnvType       := nil;
+    FEnvIsThunk    := False;
+  end;
   try
+    if AMethod.EnvCaptured <> nil then
+      EmitEnvPrologue(AMethod);
     EmitBlock(AMethod.Body);
+    if AMethod.EnvCaptured <> nil then
+      EmitLine('  call $_ClassRelease(l %__envp)');
   finally
     FExitLabel := SavedExitLbl;
+    FEnvFieldNames := SavedEnvNames;
+    FEnvType       := SavedEnvType;
+    FEnvIsThunk    := SavedEnvThunk;
   end;
 
   { ARC: release string and class value params on exit. const params are
@@ -9372,7 +9402,31 @@ begin
     F := Env.FindField(Name);
     EmitLine(Format('  %%_env_%s =l add %%__envp, %d', [Name, F.Offset]));
   end;
-  if ADecl.IsAnonThunk then Exit;
+  if ADecl.IsAnonThunk then
+  begin
+    { Thunk lifted from a method body (Phase 3): materialise a REAL
+      %_var_Self slot loaded from the env field, so every hardcoded
+      implicit-Self path (field access, method dispatch) works exactly as
+      inside the method.  Self is never reassigned, so the snapshot copy is
+      semantically identical to the by-ref env field. }
+    if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
+    begin
+      ValT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %%_env_Self', [ValT]));
+      EmitLine('  %_var_Self =l alloc8 1');
+      EmitLine(Format('  storel %s, %%_var_Self', [ValT]));
+    end;
+    Exit;
+  end;
+  { Enclosing METHOD frame (Phase 3): snapshot Self into its env field with
+    the env's own retain (the env cleanup releases it). }
+  if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
+  begin
+    ValT := AllocTemp();
+    EmitLine(Format('  %s =l loadl %%_var_Self', [ValT]));
+    EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]));
+    EmitLine(Format('  storel %s, %%_env_Self', [ValT]));
+  end;
   for J := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params.Items[J]);
@@ -9422,8 +9476,9 @@ procedure TCodeGenQBE.EmitEnvCleanupDefsForBlock(ABlock: TBlock);
   definitions.  The generic EmitFieldCleanupFn releases every ARC-managed
   field, exactly as for class instances. }
 var
-  I:  Integer;
-  MD: TMethodDecl;
+  I, J: Integer;
+  MD:   TMethodDecl;
+  TD:   TTypeDecl;
 begin
   if ABlock = nil then Exit;
   for I := 0 to ABlock.ProcDecls.Count - 1 do
@@ -9434,6 +9489,22 @@ begin
         TRecordTypeDesc(MD.EnvType));
     if MD.Body <> nil then
       EmitEnvCleanupDefsForBlock(MD.Body);
+  end;
+  { Enclosing frames that are METHOD bodies (Phase 3): walk each class's
+    method list too. }
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    for J := 0 to TClassTypeDef(TD.Def).Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[J]);
+      if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
+        EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
+          TRecordTypeDesc(MD.EnvType));
+      if MD.Body <> nil then
+        EmitEnvCleanupDefsForBlock(MD.Body);
+    end;
   end;
 end;
 

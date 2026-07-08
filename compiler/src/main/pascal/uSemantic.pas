@@ -83,6 +83,11 @@ type
     FLoopDepth:            Integer;      { depth of enclosing while/for — Break only legal if > 0 }
     FScopeDepth:           Integer;      { mirrors FTable scope depth; used to detect main-level globals }
     FCurrentClass:         TRecordTypeDesc;  { class being analysed (set in AnalyseMethodDecl) }
+    FCurrentMethodDecl:    TMethodDecl;      { instance-method body being analysed
+                                               (set in AnalyseMethodDecl alongside
+                                               FCurrentClass) — the enclosing frame
+                                               for anonymous-method capture inside
+                                               methods (Phase 3) }
     FCurrentMethodOwner:   TRecordTypeDesc;  { declaring type of the method body
                                                currently being analysed — set for
                                                BOTH instance and STATIC methods.
@@ -6878,6 +6883,7 @@ var
   Sym:        TSymbol;
   SavedClass: TRecordTypeDesc;
   SavedMethodOwner: TRecordTypeDesc;
+  SavedMethodDecl: TMethodDecl;
   TKey:       string;
 begin
   { Generic method (method-level <T>): its params/body reference the method's
@@ -6895,6 +6901,8 @@ begin
   end;
   SavedClass    := FCurrentClass;
   SavedMethodOwner := FCurrentMethodOwner;
+  SavedMethodDecl := FCurrentMethodDecl;
+  FCurrentMethodDecl := AMethod;
   { A STATIC (class-level) method has no instance receiver.  Leave FCurrentClass
     at its saved value (do NOT bind it to AClassType) so that an implicit
     instance-member reference inside the body resolves as an undeclared
@@ -6966,6 +6974,7 @@ begin
     FTable.PopScope();
     FCurrentClass := SavedClass;
     FCurrentMethodOwner := SavedMethodOwner;
+    FCurrentMethodDecl := SavedMethodDecl;
   end;
 end;
 
@@ -7338,10 +7347,29 @@ var
   Par:         TMethodParam;
   Sym:         TSymbol;
   SavedEncl:   TMethodDecl;
+  SavedClass:  TRecordTypeDesc;
+  SavedOwner:  TRecordTypeDesc;
+  SelfFld:     TFieldInfo;
 begin
   ADecl.EnclosingDecl := FCurrentEnclosingDecl;
   SavedEncl := FCurrentEnclosingDecl;
+  SavedClass := FCurrentClass;
+  SavedOwner := FCurrentMethodOwner;
   FCurrentEnclosingDecl := ADecl;
+  { Anonymous-method thunk lifted from an instance-method body (Phase 3):
+    re-establish the owning class as the implicit-Self context so bare
+    member references in the body resolve exactly as they did in the
+    method.  The class is recoverable from the env record's 'Self' field. }
+  if ADecl.IsAnonThunk and (ADecl.EnvCaptured <> nil) and
+     (ADecl.EnvCaptured.IndexOf('Self') >= 0) and (ADecl.EnvType <> nil) then
+  begin
+    SelfFld := TRecordTypeDesc(ADecl.EnvType).FindField('Self');
+    if (SelfFld <> nil) and (SelfFld.TypeDesc is TRecordTypeDesc) then
+    begin
+      FCurrentClass       := TRecordTypeDesc(SelfFld.TypeDesc);
+      FCurrentMethodOwner := TRecordTypeDesc(SelfFld.TypeDesc);
+    end;
+  end;
   FTable.PushScope();
   Inc(FScopeDepth);
   try
@@ -7395,6 +7423,8 @@ begin
     Dec(FScopeDepth);
     FTable.PopScope();
     FCurrentEnclosingDecl := SavedEncl;
+    FCurrentClass := SavedClass;
+    FCurrentMethodOwner := SavedOwner;
   end;
 end;
 
@@ -9134,6 +9164,18 @@ begin
     ExprType := AAssign.Expr.ResolvedType
   else
     ExprType := AnalyseExpr(AAssign.Expr);
+  { Method-pointer → 'reference to' coercion (Phase 3): an 'of object'
+    value of matching callable signature becomes a closure whose Env is
+    the strong-retained receiver (uniform closure ABI: code(env, args) is
+    the method call itself).  Accepted for @Obj.M and method-pointer
+    variables alike; codegen keys off the RHS shape/type. }
+  if (VarSym.TypeDesc <> nil) and (VarSym.TypeDesc.Kind = tyProcedural) and
+     TProceduralTypeDesc(VarSym.TypeDesc).IsReference and
+     (ExprType <> nil) and (ExprType.Kind = tyProcedural) and
+     TProceduralTypeDesc(ExprType).IsMethodPtr and
+     TProceduralTypeDesc(VarSym.TypeDesc).SignatureMatches(
+       TProceduralTypeDesc(ExprType)) then
+    Exit;
   CheckTypesMatch(VarSym.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
 end;
 
@@ -13676,9 +13718,15 @@ begin
     AExpr.LiftedDecl := MD;
     MD.IsAnonThunk := True;
     FPendingAnonDecls.Add(MD);
-    { Phase 2: capture promotion.  Runs NOW, while the enclosing routine's
-      scope is live, so captured names can be typed from their symbols. }
+    { Phase 2/3: capture promotion.  Runs NOW, while the enclosing frame's
+      scope is live, so captured names can be typed from their symbols.
+      Standalone routines (Phase 2) and instance-method bodies (Phase 3 —
+      Self is captured conservatively) are supported; record methods are
+      not (the receiver is a caller-frame record, not an ARC instance). }
     if FCurrentEnclosingDecl <> nil then
+      PromoteAnonCaptures(MD)
+    else if (FCurrentMethodDecl <> nil) and (FCurrentClass <> nil) and
+            (not FCurrentMethodDecl.IsRecordMethod) then
       PromoteAnonCaptures(MD);
   end;
 
@@ -13708,15 +13756,35 @@ var
   Par:   TMethodParam;
   VDecl: TVarDecl;
   Own:   Boolean;
+  InMethod: Boolean;
   I, J:  Integer;
 begin
   Encl := FCurrentEnclosingDecl;
+  InMethod := False;
+  if Encl = nil then
+  begin
+    { Phase 3: the enclosing frame is an instance-method body. }
+    Encl := FCurrentMethodDecl;
+    InMethod := True;
+  end;
   if Encl.IsAnonThunk then
     SemanticError('Capturing variables of an enclosing anonymous method ' +
       'is not yet supported (nested closure environments are a later phase)',
       AThunk.Line, AThunk.Col);
 
   CollectCaptures(AThunk, Encl);
+  { Inside an instance method, Self is captured CONSERVATIVELY (whether or
+    not the body names it): implicit member access cannot be detected
+    syntactically before analysis, and the cost is one env field.  This
+    also matches the strong-retain lifetime rule — a callback keeps its
+    receiver alive.  (The [Weak] escape is Phase 5.) }
+  if InMethod then
+  begin
+    if AThunk.CapturedVars = nil then
+      AThunk.CapturedVars := TStringList.Create();
+    if AThunk.CapturedVars.IndexOf('Self') < 0 then
+      AThunk.CapturedVars.Add('Self');
+  end;
   if AThunk.CapturedVars = nil then Exit;
 
   { Drop names shadowed by the literal's own params or locals — the walker

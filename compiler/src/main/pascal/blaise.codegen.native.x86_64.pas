@@ -2298,7 +2298,28 @@ begin
     Self.Emit(Format(#9'leaq %d(%%rax), %%rcx', [F.Offset]));
     Self.Emit(Format(#9'movq %%rcx, %s', [Self.VarOperand('_cap_' + Name)]));
   end;
-  if ADecl.IsAnonThunk then Exit;
+  if ADecl.IsAnonThunk then
+  begin
+    { Thunk from a method body (Phase 3): materialise the real Self slot
+      from the env field (Self is never reassigned — snapshot ≡ by-ref). }
+    if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_Self')]));
+      Self.Emit(#9'movq (%rcx), %rcx');
+      Self.Emit(Format(#9'movq %%rcx, %s', [Self.VarOperand('Self')]));
+    end;
+    Exit;
+  end;
+  { Enclosing METHOD frame (Phase 3): snapshot Self into its env field with
+    the env's own retain (the env cleanup releases it). }
+  if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_Self')]));
+    Self.Emit(#9'movq %rax, (%rcx)');
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+  end;
   for J := 0 to ADecl.Params.Count - 1 do
   begin
     P := TMethodParam(ADecl.Params.Items[J]);
@@ -2373,8 +2394,9 @@ procedure TX86_64Backend.EmitEnvCleanupDefs(ABlock: TBlock);
   frame allocates an anonymous-method environment record.  Thunks share the
   enclosing frame's EnvType — skipped to avoid duplicate definitions. }
 var
-  I:  Integer;
-  MD: TMethodDecl;
+  I, J: Integer;
+  MD:   TMethodDecl;
+  TD:   TTypeDecl;
 begin
   if ABlock = nil then Exit;
   for I := 0 to ABlock.ProcDecls.Count - 1 do
@@ -2385,6 +2407,21 @@ begin
         TRecordTypeDesc(MD.EnvType));
     if MD.Body <> nil then
       Self.EmitEnvCleanupDefs(MD.Body);
+  end;
+  { Enclosing frames that are METHOD bodies (Phase 3). }
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(ABlock.TypeDecls.Items[I]);
+    if not (TD.Def is TClassTypeDef) then Continue;
+    for J := 0 to TClassTypeDef(TD.Def).Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[J]);
+      if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
+        Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
+          TRecordTypeDesc(MD.EnvType));
+      if MD.Body <> nil then
+        Self.EmitEnvCleanupDefs(MD.Body);
+    end;
   end;
 end;
 
@@ -4625,6 +4662,11 @@ begin
     Self.AddSlot('__envp', nil, Offset);
     for I := 0 to ADecl.EnvCaptured.Count - 1 do
       Self.AddSlot('_cap_' + ADecl.EnvCaptured.Strings[I], nil, Offset);
+    { Thunk lifted from a method body (Phase 3): a REAL 'Self' slot, filled
+      from the env field by EmitEnvPrologue, so every hardcoded
+      implicit-Self path works exactly as inside the method. }
+    if ADecl.IsAnonThunk and (ADecl.EnvCaptured.IndexOf('Self') >= 0) then
+      Self.AddSlot('Self', nil, Offset);
   end;
 
   { For class methods, Self is the implicit first integer param (%rdi).
@@ -12195,13 +12237,59 @@ begin
         Self.Emit(#9'movq $0, 8(%rcx)');
         Exit;
       end;
+      { Method-pointer coercion, @Obj.M form (Phase 3): build the
+        [code, receiver] pair straight into the destination — identical
+        layout to a closure whose Env is the receiver — with the closure
+        slot taking a STRONG reference to the receiver.  Virtual methods
+        resolve through the instance's vtable (dynamic override), matching
+        the method-pointer assignment path. }
+      if (Asgn.Expr is TAddrOfExpr) and
+         (TAddrOfExpr(Asgn.Expr).Expr is TFieldAccessExpr) and
+         (TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType <> nil) and
+         (TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType.Kind = tyProcedural) and
+         TProceduralTypeDesc(TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr).ResolvedType).IsMethodPtr then
+      begin
+        FAE := TFieldAccessExpr(TAddrOfExpr(Asgn.Expr).Expr);
+        MD  := TMethodDecl(FAE.ResolvedMethod);
+        { Release the old env before overwrite. }
+        Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq 8(%rcx), %rdi');
+        Self.Emit(#9'callq _ClassRelease');
+        { Receiver -> %rax (evaluated fresh; %rcx recomputed after). }
+        if FAE.Base <> nil then
+          Self.EmitExprToEax(FAE.Base)
+        else
+          Self.EmitVarBaseToReg(FAE.RecordName, False, '%rax');
+        Self.EmitVarAddr(Asgn.Name, '%rcx');
+        Self.Emit(#9'movq %rax, 8(%rcx)');
+        { Code pointer: vtable-resolved for virtual/override methods. }
+        if MD.VTableSlot >= 0 then
+        begin
+          Self.Emit(#9'movq (%rax), %rdx');
+          Self.Emit(Format(#9'movq %d(%%rdx), %%rdx', [(MD.VTableSlot + 1) * 8]));
+          Self.Emit(#9'movq %rdx, (%rcx)');
+        end
+        else
+        begin
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rdx',
+            [MethodEmitNameNative(MD, MD.OwnerTypeName, FAE.FieldName)]));
+          Self.Emit(#9'movq %rdx, (%rcx)');
+        end;
+        { The closure slot owns a strong reference to the receiver. }
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+        Exit;
+      end;
       if (Asgn.Expr is TIdentExpr) and
          (Asgn.Expr.ResolvedType <> nil) and
          (Asgn.Expr.ResolvedType.Kind = tyProcedural) and
-         TProceduralTypeDesc(Asgn.Expr.ResolvedType).IsReference then
+         (TProceduralTypeDesc(Asgn.Expr.ResolvedType).IsReference or
+          TProceduralTypeDesc(Asgn.Expr.ResolvedType).IsMethodPtr) then
       begin
-        { Var-to-var copy: retain the incoming env, release the old one,
-          then copy the 16-byte block. }
+        { Var-to-var copy (reference source, or a method-pointer variable
+          coerced into a closure — same 16-byte layout, receiver retained):
+          retain the incoming env/receiver, release the old one, then copy
+          the 16-byte block. }
         if Self.IsLocal(TIdentExpr(Asgn.Expr).Name) then
           Self.Emit(Format(#9'leaq %s, %%rsi',
             [Self.VarOperand(TIdentExpr(Asgn.Expr).Name)]))

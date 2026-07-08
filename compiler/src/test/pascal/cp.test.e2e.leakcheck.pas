@@ -90,6 +90,14 @@ type
       reference at exit and the escaped closure drops the last one when the
       closure slot is released. }
     procedure TestDebug_ClosureEnv_ReleasedExactlyOnce;
+    { Phase 3: a closure capturing Self stored in the receiver's OWN field
+      forms the documented strong cycle Self -> field -> env -> Self.  It
+      MUST leak (asserted) until [Weak] capture (Phase 5) provides the
+      break; this pins the behaviour as intentional. }
+    procedure TestDebug_ClosureSelfCycle_LeaksByDesign;
+    { Phase 3: a coerced method pointer strong-retains its receiver; when
+      the closure slot dies, the receiver must be released — no leak. }
+    procedure TestDebug_MethodPtrCoercion_NoLeak;
     { A captured string is an ARC slot inside the env record: the env cleanup
       proc must release it, and closure-body reassignment must go through the
       string retain/release store path. }
@@ -1078,6 +1086,87 @@ const
       WriteLn('done')
     end.
     ''';
+
+const
+  SrcClosureSelfCycle = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+      TButton = class
+        FOnClick: TProc;
+        procedure Wire;
+      end;
+    procedure TButton.Wire;
+    begin
+      FOnClick := procedure
+      begin
+        Self.Wire()
+      end
+    end;
+    procedure Make;
+    var
+      B: TButton;
+    begin
+      B := TButton.Create();
+      B.Wire()
+    end;
+    begin
+      Make();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcMethodPtrCoercionClean = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+      TObj = class
+        procedure Ping;
+      end;
+    procedure TObj.Ping;
+    begin
+      WriteLn('ping')
+    end;
+    procedure Run;
+    var
+      O: TObj;
+      V: TProc;
+    begin
+      O := TObj.Create();
+      V := @O.Ping;
+      V()
+    end;
+    begin
+      Run();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_ClosureSelfCycle_LeaksByDesign;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureSelfCycle, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertTrue('strong Self-capture cycle leaks (documented until [Weak], ' +
+    'got: ' + Output + ')', Pos('leak', Output) >= 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_MethodPtrCoercion_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcMethodPtrCoercionClean, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', 'ping' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
 
 procedure TE2ELeakCheckTests.TestDebug_ClosureEnv_ReleasedExactlyOnce;
 var

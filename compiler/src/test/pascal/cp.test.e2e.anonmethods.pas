@@ -36,6 +36,12 @@ type
     procedure TestRun_FunctionLiteral_CapturesAccumulator;
     procedure TestRun_CapturedString_Concat;
     procedure TestRun_RaiseThroughFinally_InClosureBody;
+    { Phase 3 }
+    procedure TestRun_MethodLiteral_CapturesLocalAndSelf;
+    procedure TestRun_MethodLiteral_ExplicitSelfCall;
+    procedure TestRun_MethodLiteral_EscapesMethodFrame;
+    procedure TestRun_MethodPtrCoercion_DispatchesWithReceiver;
+    procedure TestRun_MethodPtrCoercion_VirtualDispatch;
   end;
 
 implementation
@@ -343,6 +349,184 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, 'caught boom' + LineEnding + '1' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodLiteral_CapturesLocalAndSelf;
+const
+  { A literal inside an instance method: implicit member access (FCount)
+    goes through the captured Self; the method local Step is env-promoted. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TCounter = class
+      FCount: Integer;
+      procedure Bump;
+    end;
+  procedure TCounter.Bump;
+  var
+    Step: Integer;
+    V: TProc;
+  begin
+    Step := 40;
+    V := procedure
+    begin
+      FCount := FCount + Step + 2
+    end;
+    V()
+  end;
+  var C: TCounter;
+  begin
+    C := TCounter.Create();
+    C.Bump();
+    WriteLn(C.FCount)
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodLiteral_ExplicitSelfCall;
+const
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TGreeter = class
+      FName: string;
+      procedure Say;
+      procedure Run;
+    end;
+  procedure TGreeter.Say;
+  begin
+    WriteLn('hello ', FName)
+  end;
+  procedure TGreeter.Run;
+  var
+    V: TProc;
+  begin
+    V := procedure
+    begin
+      Self.Say()
+    end;
+    V()
+  end;
+  var G: TGreeter;
+  begin
+    G := TGreeter.Create();
+    G.FName := 'world';
+    G.Run()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'hello world' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodLiteral_EscapesMethodFrame;
+const
+  { The closure escapes the method frame via a global; the env's strong Self
+    reference keeps the receiver alive and members readable after Wire
+    returned. }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TBox = class
+      FValue: Integer;
+      procedure Wire;
+    end;
+  var
+    G: TProc;
+  procedure TBox.Wire;
+  begin
+    G := procedure
+    begin
+      WriteLn(FValue)
+    end
+  end;
+  var B: TBox;
+  begin
+    B := TBox.Create();
+    B.FValue := 42;
+    B.Wire();
+    G()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodPtrCoercion_DispatchesWithReceiver;
+const
+  Src =
+  '''
+  program P;
+  type
+    TShow = reference to procedure(AValue: Integer);
+    TScaler = class
+      FFactor: Integer;
+      procedure Show(AValue: Integer);
+    end;
+  procedure TScaler.Show(AValue: Integer);
+  begin
+    WriteLn(AValue * FFactor)
+  end;
+  var
+    S: TScaler;
+    V: TShow;
+  begin
+    S := TScaler.Create();
+    S.FFactor := 2;
+    V := @S.Show;
+    V(21)
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_MethodPtrCoercion_VirtualDispatch;
+const
+  { @Obj.M on a virtual method must capture the DYNAMIC override, matching a
+    direct Obj.M() call (same rule as method-pointer assignment). }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TBase = class
+      procedure Speak; virtual;
+    end;
+    TLoud = class(TBase)
+      procedure Speak; override;
+    end;
+  procedure TBase.Speak;
+  begin
+    WriteLn('base')
+  end;
+  procedure TLoud.Speak;
+  begin
+    WriteLn('LOUD')
+  end;
+  var
+    B: TBase;
+    V: TProc;
+  begin
+    B := TLoud.Create();
+    V := @B.Speak;
+    V()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'LOUD' + LineEnding, 0);
 end;
 
 initialization

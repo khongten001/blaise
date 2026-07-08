@@ -50,6 +50,8 @@ type
     procedure TestSemantic_LiteralSignatureMismatch_Fails;
     procedure TestSemantic_Phase2_LocalCaptureAccepted;
     procedure TestSemantic_Phase2_VarParamCaptureRejected;
+    procedure TestSemantic_Phase3_MethodLiteralCapturesSelf;
+    procedure TestSemantic_Phase3_MethodPtrCoercionAccepted;
 
     { Codegen }
     procedure TestCodegen_ThunkEmitted;
@@ -444,6 +446,95 @@ begin
     on E: TObject do OK := True;
   end;
   AssertTrue('capturing a var parameter is rejected', OK);
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase3_MethodLiteralCapturesSelf;
+const
+  { Phase 3: a literal inside an INSTANCE method body captures the method's
+    locals AND Self (conservatively), so implicit and explicit member access
+    work through the env.  The lifted thunk's EnvCaptured must list both. }
+  Src =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+      TCounter = class
+        FCount: Integer;
+        procedure Bump;
+      end;
+    procedure TCounter.Bump;
+    var
+      Step: Integer;
+      V: TProc;
+    begin
+      Step := 2;
+      V := procedure
+      begin
+        FCount := FCount + Step
+      end;
+      V()
+    end;
+    var C: TCounter;
+    begin
+      C := TCounter.Create();
+      C.Bump();
+      WriteLn(C.FCount)
+    end.
+    ''';
+var
+  Prog:  TProgram;
+  MD:    TMethodDecl;
+  Thunk: TMethodDecl;
+  I:     Integer;
+begin
+  Prog := AnalyseSrc(Src);
+  try
+    Thunk := nil;
+    for I := 0 to Prog.Block.ProcDecls.Count - 1 do
+    begin
+      MD := TMethodDecl(Prog.Block.ProcDecls.Items[I]);
+      if MD.Name = '__closure_1' then Thunk := MD;
+    end;
+    AssertNotNull('lifted thunk registered', Thunk);
+    AssertNotNull('thunk records env captures', Thunk.EnvCaptured);
+    AssertTrue('Step captured', Thunk.EnvCaptured.IndexOf('Step') >= 0);
+    AssertTrue('Self captured', Thunk.EnvCaptured.IndexOf('Self') >= 0);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase3_MethodPtrCoercionAccepted;
+const
+  { Phase 3: an 'of object' method-pointer value coerces into a
+    'reference to' slot of the same signature (Env := receiver,
+    strong-retained). }
+  Src =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+      TObj = class
+        procedure Ping;
+      end;
+    procedure TObj.Ping;
+    begin
+      WriteLn('ping')
+    end;
+    var
+      O: TObj;
+      V: TProc;
+    begin
+      O := TObj.Create();
+      V := @O.Ping;
+      V()
+    end.
+    ''';
+var
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(Src);   { must not raise }
+  Prog.Free();
 end;
 
 { ------------------------------------------------------------------ }

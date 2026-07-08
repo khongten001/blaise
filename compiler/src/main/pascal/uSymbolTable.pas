@@ -221,6 +221,7 @@ type
       parameter mode (var/const/value).  Parameter names do not
       participate. }
     function    IsCompatibleWith(AOther: TProceduralTypeDesc): Boolean;
+    function    SignatureMatches(AOther: TProceduralTypeDesc): Boolean;
   end;
 
   { Field entry inside a record type descriptor. }
@@ -1503,6 +1504,38 @@ begin
     begin
       { Allow structural pointer equivalence: PSuite and ^TSuite are the same
         type conceptually — both are TPointerTypeDesc with the same BaseType. }
+      if (PA.TypeDesc = nil) or (PB.TypeDesc = nil) then Exit;
+      if (PA.TypeDesc.Kind <> tyPointer) or (PB.TypeDesc.Kind <> tyPointer) then Exit;
+      if TPointerTypeDesc(PA.TypeDesc).BaseType <>
+         TPointerTypeDesc(PB.TypeDesc).BaseType then Exit;
+    end;
+    if PA.IsVarParam <> PB.IsVarParam then Exit;
+    if PA.IsConstParam <> PB.IsConstParam then Exit;
+  end;
+  Result := True;
+end;
+
+function TProceduralTypeDesc.SignatureMatches(AOther: TProceduralTypeDesc): Boolean;
+{ Flag-agnostic signature comparison: params and return type must match,
+  but IsMethodPtr/IsReference may differ.  Used by the method-pointer →
+  'reference to' coercion (docs/anonymous-methods-design.adoc, Conversions):
+  a method pointer becomes a closure whose Env is the strong-retained
+  receiver, so only the CALLABLE shape has to agree. }
+var
+  I: Integer;
+  PA, PB: TProcParamInfo;
+begin
+  Result := False;
+  if AOther = nil then Exit;
+  if (ReturnType = nil) <> (AOther.ReturnType = nil) then Exit;
+  if (ReturnType <> nil) and (ReturnType <> AOther.ReturnType) then Exit;
+  if Params.Count <> AOther.Params.Count then Exit;
+  for I := 0 to Params.Count - 1 do
+  begin
+    PA := TProcParamInfo(Params.Items[I]);
+    PB := TProcParamInfo(AOther.Params.Items[I]);
+    if PA.TypeDesc <> PB.TypeDesc then
+    begin
       if (PA.TypeDesc = nil) or (PB.TypeDesc = nil) then Exit;
       if (PA.TypeDesc.Kind <> tyPointer) or (PB.TypeDesc.Kind <> tyPointer) then Exit;
       if TPointerTypeDesc(PA.TypeDesc).BaseType <>
