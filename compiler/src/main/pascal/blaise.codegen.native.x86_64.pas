@@ -324,7 +324,8 @@ type
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
     procedure EmitEnvCleanupDefs(ABlock: TBlock);
     procedure EmitFieldCleanupFn(const AMangledName: string;
-                                 ART: TRecordTypeDesc);
+                                 ART: TRecordTypeDesc;
+                                 AWeak: Boolean);
     { Release every ARC-managed field of ART whose storage starts at the address
       in the callee-saved register ABaseReg (an AT&T operand such as '%rbx').
       Strings, classes, dyn-arrays and interface obj-slots are released; weak
@@ -2095,7 +2096,13 @@ var
   Sym: TSymbol;
 begin
   Result := '';
-  if FSymTable <> nil then
+  { Generic instances are ALWAYS bare — never unit-prefixed.  The same
+    instance is materialised by every compilation process that touches it,
+    so its symbols must be unit-independent (per-unit codegen emits them
+    WEAK and the linker dedups; BUGS.md BUG-004).  The Sym.OwningUnit of an
+    import-triggered instance points at the RE-EXPORTING unit, which never
+    emitted a copy — mirrors the QBE backend's ClassUnitPrefix. }
+  if (Pos('<', AClassName) < 0) and (FSymTable <> nil) then
   begin
     Sym := FSymTable.Lookup(AClassName);
     if Sym <> nil then
@@ -2487,12 +2494,12 @@ begin
     MD := TMethodDecl(ABlock.ProcDecls.Items[I]);
     if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
       Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
-        TRecordTypeDesc(MD.EnvType));
+        TRecordTypeDesc(MD.EnvType), False);
     if MD.BlockEnvTypes <> nil then
       for J := 0 to MD.BlockEnvTypes.Count - 1 do
         Self.EmitFieldCleanupFn(
           NativeMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[J]).Name),
-          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]));
+          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]), False);
     if MD.Body <> nil then
       Self.EmitEnvCleanupDefs(MD.Body);
   end;
@@ -2506,12 +2513,12 @@ begin
       MD := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[J]);
       if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
         Self.EmitFieldCleanupFn(NativeMangle(TRecordTypeDesc(MD.EnvType).Name),
-          TRecordTypeDesc(MD.EnvType));
+          TRecordTypeDesc(MD.EnvType), False);
       if MD.BlockEnvTypes <> nil then
         for K := 0 to MD.BlockEnvTypes.Count - 1 do
           Self.EmitFieldCleanupFn(
             NativeMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[K]).Name),
-            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]));
+            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]), False);
       if MD.Body <> nil then
         Self.EmitEnvCleanupDefs(MD.Body);
     end;
@@ -2519,13 +2526,19 @@ begin
 end;
 
 procedure TX86_64Backend.EmitFieldCleanupFn(const AMangledName: string;
-                                            ART: TRecordTypeDesc);
+                                            ART: TRecordTypeDesc;
+                                            AWeak: Boolean);
 var
   Walk: TRecordTypeDesc;
   DestroyName: string;
 begin
   Self.Emit('.text');
-  Self.Emit('.globl _FieldCleanup_' + AMangledName);
+  { AWeak: generic-instance cleanup fns are bare-named and may be carried
+    by several objects in one link (BUG-004). }
+  if AWeak then
+    Self.Emit('.weak _FieldCleanup_' + AMangledName)
+  else
+    Self.Emit('.globl _FieldCleanup_' + AMangledName);
   Self.Emit('_FieldCleanup_' + AMangledName + ':');
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
@@ -2928,7 +2941,9 @@ begin
     Self.Emit(#9'.quad ' + MethAttrsStr);  { method attrs }
   end;
 
-  { Typeinfo blocks for generic class instances. }
+  { Typeinfo blocks for generic class instances.  All generic-instance
+    symbols are emitted WEAK: any number of objects in a link may carry the
+    identical bare-named copy and the linker keeps one (BUG-004). }
   for I := 0 to AGenericInstances.Count - 1 do
   begin
     GI := TGenericInstance(AGenericInstances.Items[I]);
@@ -2943,7 +2958,7 @@ begin
     else
       ImplStr := '0';
     Self.Emit('.balign 8');
-    Self.Emit('.globl typeinfo_' + MName);
+    Self.Emit('.weak typeinfo_' + MName);
     Self.Emit('typeinfo_' + MName + ':');
     Self.Emit(#9'.quad ' + ParentStr);
     Self.Emit(#9'.quad ' + ImplStr);
@@ -2959,8 +2974,8 @@ begin
   { Field cleanup functions for the fixed RTL classes (once). }
   if EmitSys then
   begin
-    Self.EmitFieldCleanupFn('TObject', nil);
-    Self.EmitFieldCleanupFn('TCustomAttribute', nil);
+    Self.EmitFieldCleanupFn('TObject', nil, False);
+    Self.EmitFieldCleanupFn('TCustomAttribute', nil, False);
   end;
   { Field cleanup for user classes. }
   for I := 0 to ATypeDecls.Count - 1 do
@@ -2970,14 +2985,14 @@ begin
     TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    Self.EmitFieldCleanupFn(Self.ClassSymNameForDecl(TD), RT);
+    Self.EmitFieldCleanupFn(Self.ClassSymNameForDecl(TD), RT, False);
   end;
   { Field cleanup for generic class instances. }
   for I := 0 to AGenericInstances.Count - 1 do
   begin
     GI := TGenericInstance(AGenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
-    Self.EmitFieldCleanupFn(Self.ClassSymName(GI.TypeName), RT);
+    Self.EmitFieldCleanupFn(Self.ClassSymName(GI.TypeName), RT, True);
   end;
 
   { Vtables — must be in .data (pointers to other data symbols). }
@@ -3031,7 +3046,7 @@ begin
     end;
   end;
 
-  { Vtables for generic class instances. }
+  { Vtables for generic class instances (WEAK — see typeinfo loop). }
   for I := 0 to AGenericInstances.Count - 1 do
   begin
     GI := TGenericInstance(AGenericInstances.Items[I]);
@@ -3039,7 +3054,7 @@ begin
     if not RT.HasVTable() then Continue;
     MName := Self.ClassSymName(GI.TypeName);
     Self.Emit('.balign 8');
-    Self.Emit('.globl vtable_' + MName);
+    Self.Emit('.weak vtable_' + MName);
     Self.Emit('vtable_' + MName + ':');
     Self.Emit(#9'.quad typeinfo_' + MName);
     for S := 0 to RT.VTableCount() - 1 do
@@ -3586,12 +3601,13 @@ begin
     Self.Emit(#9'.quad 0');
   end;
 
-  { Typeinfo blocks for generic interface instances. }
+  { Typeinfo blocks for generic interface instances (WEAK — bare-named,
+    any object may carry the copy; BUG-004). }
   for I := 0 to AGenericIntfInstances.Count - 1 do
   begin
     GII := TGenericInterfaceInstance(AGenericIntfInstances.Items[I]);
     Self.Emit('.balign 8');
-    Self.Emit('.globl typeinfo_' + GII.InstName);
+    Self.Emit('.weak typeinfo_' + GII.InstName);
     Self.Emit('typeinfo_' + GII.InstName + ':');
     Self.Emit(#9'.quad 0');
   end;
@@ -3684,7 +3700,7 @@ begin
       IntfDesc := ClassRT.ImplementsIntfAt(J);
       CSym := Self.IntfTypeInfoName(IntfDesc.Name);
       Self.Emit('.balign 8');
-      Self.Emit('.globl itab_' + MName + '_' + CSym);
+      Self.Emit('.weak itab_' + MName + '_' + CSym);
       Self.Emit('itab_' + MName + '_' + CSym + ':');
       for K := 0 to IntfDesc.MethodCount() - 1 do
       begin
@@ -3704,7 +3720,7 @@ begin
     end;
 
     Self.Emit('.balign 8');
-    Self.Emit('.globl impllist_' + MName);
+    Self.Emit('.weak impllist_' + MName);
     Self.Emit('impllist_' + MName + ':');
     for J := 0 to ClassRT.ImplementsCount() - 1 do
     begin
@@ -18292,7 +18308,18 @@ begin
 
   Self.Emit('.text');
   if AExported then
-    Self.Emit('.globl ' + Sym);
+  begin
+    { Generic-instance bodies (instance methods, monomorphised generic
+      functions/methods) are emitted WEAK: any number of objects in a link
+      may carry the identical copy and the linker keeps one (BUG-004).
+      The internal assembler gives .globl precedence over .weak, so emit
+      .weak INSTEAD OF .globl — gas treats a lone .weak the same way. }
+    if (StrPos('<', ADecl.OwnerTypeName) >= 0) or
+       (StrPos('<', ADecl.Name) >= 0) then
+      Self.Emit('.weak ' + Sym)
+    else
+      Self.Emit('.globl ' + Sym);
+  end;
   Self.Emit(Sym + ':');
   { nostackframe: the body is an inline-asm block that owns the entire frame
     (prologue, args-from-registers, ret).  Emit no compiler prologue/epilogue,

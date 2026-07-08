@@ -249,7 +249,6 @@ type
   TMemStore = class(IFtpFileStore)
   private
     FFiles: TOrderedDictionary<string, string>;
-    FNames: TList<string>;    { insertion-ordered key list (for List) }
   public
     constructor Create;
     destructor Destroy; override;
@@ -263,13 +262,11 @@ type
 constructor TMemStore.Create;
 begin
   FFiles := TOrderedDictionary<string, string>.Create();
-  FNames := TList<string>.Create();
 end;
 
 destructor TMemStore.Destroy;
 begin
   FFiles.Free();
-  FNames.Free();
   inherited Destroy();
 end;
 
@@ -291,27 +288,15 @@ end;
 
 function TMemStore.PutFile(const ARemotePath: string; const AData: string): Boolean;
 begin
-  { TOrderedDictionary.Add overwrites an existing key in place (avoid the
-    default Items[] setter: SetItem is pruned from the xml.types-anchored
-    monomorphisation and cross-unit-referencing it fails to link). }
-  if FNames.IndexOf(ARemotePath) < 0 then
-    FNames.Add(ARemotePath);
-  FFiles.Add(ARemotePath, AData);
+  FFiles[ARemotePath] := AData;
   Result := True;
 end;
 
 function TMemStore.DeleteFile(const ARemotePath: string): Boolean;
-var
-  Idx: Integer;
 begin
   Result := FFiles.ContainsKey(ARemotePath);
   if Result then
-  begin
     FFiles.Remove(ARemotePath);
-    Idx := FNames.IndexOf(ARemotePath);
-    if Idx >= 0 then
-      FNames.Delete(Idx);
-  end;
 end;
 
 function TMemStore.List(const ADir: string): string;
@@ -320,11 +305,11 @@ var
   R: string;
 begin
   R := '';
-  for I := 0 to FNames.Count - 1 do
+  for I := 0 to FFiles.Count - 1 do
   begin
     if R <> '' then
       R := R + #10;
-    R := R + FNames[I];
+    R := R + FFiles.Keys[I];
   end;
   Result := R;
 end;

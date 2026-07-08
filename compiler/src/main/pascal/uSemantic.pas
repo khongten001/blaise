@@ -3937,25 +3937,30 @@ begin
       end;
     end;
 
-    { Pre-pass: vtable slots (before fields so vptr is counted in offsets) }
+    { Pre-pass: vtable slots (before fields so vptr is counted in offsets).
+      Generic-instance symbols are ALWAYS bare (no unit prefix): the same
+      instance can be materialised by any compilation process, so its symbols
+      must be process- and unit-independent.  Per-unit codegen emits them as
+      WEAK symbols so multiple objects may carry the copy and the linker
+      dedups (BUGS.md BUG-004). }
     for J := 0 to ClonedCD.Methods.Count - 1 do
     begin
       NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
       if NewMDecl.IsVirtual then
-        RT.AddVTableSlot(NewMDecl.Name, '$' + CurrentUnitPrefix() + ATypeName + '_' + NewMDecl.Name)
+        RT.AddVTableSlot(NewMDecl.Name, '$' + ATypeName + '_' + NewMDecl.Name)
       else if NewMDecl.IsOverride then
         RT.OverrideVTableSlot(
           RT.FindVTableSlot(NewMDecl.Name),
-          '$' + CurrentUnitPrefix() + ATypeName + '_' + NewMDecl.Name)
+          '$' + ATypeName + '_' + NewMDecl.Name)
       else if (SameText(NewMDecl.Name, 'Create') or
                (StrPos('Create', NewMDecl.Name) = 0)) and
               (not NewMDecl.IsVirtual) and (not NewMDecl.IsOverride) then
       begin
         if RT.FindVTableSlot(NewMDecl.Name) >= 0 then
           RT.OverrideVTableSlot(RT.FindVTableSlot(NewMDecl.Name),
-            '$' + CurrentUnitPrefix() + ATypeName + '_' + NewMDecl.Name)
+            '$' + ATypeName + '_' + NewMDecl.Name)
         else
-          RT.AddVTableSlot(NewMDecl.Name, '$' + CurrentUnitPrefix() + ATypeName + '_' + NewMDecl.Name);
+          RT.AddVTableSlot(NewMDecl.Name, '$' + ATypeName + '_' + NewMDecl.Name);
       end;
     end;
 
@@ -3989,12 +3994,12 @@ begin
       { Pin the QBE symbol now so the def and call sites agree.  The
         instance's type symbol inherits OwningUnit from the analysing
         compilation (program/unit name) via DefineGlobal's auto-tag;
-        the same prefix has to appear on every method this loop clones
-        otherwise codegen emits 'TBox_Integer_Create' on one side and
-        'UseBox_TBox_Integer_Create' on the other. }
+        the emit name itself is BARE — never unit-prefixed — because the
+        same instance is materialised independently by every compilation
+        process that touches it, and all of them must agree on one symbol
+        (per-unit codegen emits it WEAK so the linker dedups; BUG-004). }
       NewMDecl.OwningUnit     := Sym.OwningUnit;
-      NewMDecl.ResolvedQbeName := CurrentUnitPrefix() +
-                                  ATypeName + '_' + NewMDecl.Name;
+      NewMDecl.ResolvedQbeName := ATypeName + '_' + NewMDecl.Name;
       if SameText(NewMDecl.Name, 'Destroy') then
       begin
         RT.HasDestroyMethod := True;
@@ -4278,8 +4283,8 @@ begin
       FMethodIndex.AddObject(Key, NewMDecl);
       AddGroupEntry(FMethodGroups, Key, NewMDecl);
       NewMDecl.OwningUnit      := Sym.OwningUnit;
-      NewMDecl.ResolvedQbeName := CurrentUnitPrefix() +
-                                  ATypeName + '_' + NewMDecl.Name;
+      { Bare, like class instances — see InstantiateGeneric (BUG-004). }
+      NewMDecl.ResolvedQbeName := ATypeName + '_' + NewMDecl.Name;
 
       for K := 0 to NewMDecl.Params.Count - 1 do
       begin
@@ -4691,9 +4696,11 @@ begin
     NewMDecl.Name         := AInstName;
     NewMDecl.OwnerTypeName := AOwnerType;
     NewMDecl.IsRecordMethod := Templ.IsRecordMethod;
-    { Mangled symbol: <unit><Owner>_<Method><args> -> QBEMangle drops the <>
-      and joins with '_', e.g. TUtil_Pick_Integer. }
-    NewMDecl.ResolvedQbeName := CurrentUnitPrefix() + AOwnerType + '_' + AInstName;
+    { Mangled symbol: <Owner>_<Method><args> -> QBEMangle drops the <>
+      and joins with '_', e.g. TUtil_Pick_Integer.  Bare (no unit prefix):
+      monomorphised on demand by any consumer, deduped by weak linkage in
+      per-unit mode — same rule as class instances (BUG-004). }
+    NewMDecl.ResolvedQbeName := AOwnerType + '_' + AInstName;
 
     if Templ.Body <> nil then
     begin

@@ -2570,25 +2570,32 @@ var
 
 function EffectiveCompilerId: string;
 var
-  Bin:  TStringList;
+  FIn:  TFileInputStream;
+  Bytes: string;
   Hash: string;
 begin
   if GEffectiveCompilerId <> '' then
     Exit(GEffectiveCompilerId);
-  { Content-hash the running compiler binary.  A read failure (unknown path,
+  { Content-hash the running compiler binary.  Read RAW BYTES via
+    TFileInputStream — TStringList.LoadFromFile drops content at the first
+    NUL byte of an ELF binary, so two DIFFERENT compiler builds hashed equal
+    (only the identical ELF-header prefix survived) and the BUG-007
+    invalidation silently never fired.  A read failure (unknown path,
     permissions) degrades to the bare COMPILER_ID — no worse than the old
     behaviour, never a hard error. }
   Hash := '';
-  Bin  := TStringList.Create();
   try
+    FIn := TFileInputStream.Create(ParamStr(0));
     try
-      Bin.LoadFromFile(ParamStr(0));
-      Hash := ContentHashFnv1a64(Bin.Text);
-    except
-      Hash := '';
+      SetLength(Bytes, Integer(FIn.Size()));
+      if Length(Bytes) > 0 then
+        FIn.Read(PChar(Bytes), Length(Bytes));
+      Hash := ContentHashFnv1a64(Bytes);
+    finally
+      FIn.Free();
     end;
-  finally
-    Bin.Free();
+  except
+    Hash := '';
   end;
   if Hash <> '' then
     GEffectiveCompilerId := COMPILER_ID + '+bin' + Hash

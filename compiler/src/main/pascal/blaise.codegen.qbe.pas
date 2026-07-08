@@ -239,8 +239,15 @@ type
     function  IsAbstractClassMethod(ARec: TRecordTypeDesc;
                                     const AMethName: string): Boolean;
     procedure EmitFieldCleanupDefs(AProg: TProgram);
+    { Emit a '# WEAKSYM <sym>' marker comment.  QBE IR cannot express
+      symbol binding; the backend driver scans the .ssa for these markers
+      and appends '.weak <sym>' directives to the qbe-produced .s before
+      assembling, so generic-instance symbols get WEAK binding and any
+      number of objects in a link may carry the identical copy (BUG-004). }
+    procedure MarkWeak(const ASym: string);
     procedure EmitFieldCleanupFn(const AMangledName: string;
-                                 ARec: TRecordTypeDesc);
+                                 ARec: TRecordTypeDesc;
+                                 AWeak: Boolean);
     procedure EmitMethodDef(const ATypeName: string; AMethod: TMethodDecl);
     procedure EmitStandaloneDefs(AProg: TProgram);
     procedure EmitStandaloneDef(ADecl: TMethodDecl);
@@ -8419,6 +8426,13 @@ begin
         [QbeParamTypeOf(Par.ResolvedType), Par.ParamName]);
   end;
 
+  { Generic-instance bodies (instance methods, monomorphised generic
+    methods) get WEAK binding via the driver's WEAKSYM post-step (BUG-004). }
+  if (StrPos('<', AMethod.OwnerTypeName) >= 0) or
+     (StrPos('<', ATypeName) >= 0) or
+     (StrPos('<', AMethod.Name) >= 0) then
+    MarkWeak(StrCopyTail(FuncName, 1));
+
   if IsFunc then
   begin
     RetQType := QbeTypeOf(AMethod.ResolvedReturnType);
@@ -8798,6 +8812,7 @@ begin
       ImplStr := '$impllist_' + MName
     else
       ImplStr := '0';
+    MarkWeak('typeinfo_' + MName);
     EmitLine('data $typeinfo_' + MName + ' = { l ' + ParentStr + ', l ' + ImplStr +
              ', l ' + EmitClassNameRef(GI.TypeName) + ', l 0' +
              ', l ' + IntToStr(RT.TotalSize()) +
@@ -8871,6 +8886,7 @@ begin
     RT    := TRecordTypeDesc(GI.TypeDesc);
     if not RT.HasVTable() then Continue;
     MName := QBEMangle(GI.TypeName);
+    MarkWeak('vtable_' + MName);
     Line  := VTableDataPrefix() + '$vtable_' + MName + ' = { l $typeinfo_' + MName;
     for S := 0 to RT.VTableCount() - 1 do
     begin
@@ -8985,6 +9001,7 @@ begin
   for I := 0 to AProg.GenericIntfInstances.Count - 1 do
   begin
     GII := TGenericInterfaceInstance(AProg.GenericIntfInstances.Items[I]);
+    MarkWeak('typeinfo_' + GII.InstName);
     EmitLine('data $typeinfo_' + GII.InstName + ' = { l 0 }');
   end;
 
@@ -9101,6 +9118,7 @@ begin
     begin
       IntfDesc   := ClassRT.ImplementsIntfAt(J);
       IntfMangle := QBEMangle(IntfDesc.Name);
+      MarkWeak('itab_' + MName + '_' + IntfMangle);
       ItabLine   := 'data $itab_' + MName + '_' + IntfMangle + ' = {';
       for K := 0 to IntfDesc.MethodCount() - 1 do
       begin
@@ -9128,6 +9146,7 @@ begin
     end;
 
     { One impllist per generic class instance }
+    MarkWeak('impllist_' + MName);
     ImplLine := 'data $impllist_' + MName + ' = {';
     for J := 0 to ClassRT.ImplementsCount() - 1 do
     begin
@@ -9164,8 +9183,14 @@ begin
     Result := ARec.VTableEntryAt(Slot).IsAbstract;
 end;
 
+procedure TCodeGenQBE.MarkWeak(const ASym: string);
+begin
+  EmitLine('# WEAKSYM ' + ASym);
+end;
+
 procedure TCodeGenQBE.EmitFieldCleanupFn(const AMangledName: string;
-                                         ARec: TRecordTypeDesc);
+                                         ARec: TRecordTypeDesc;
+                                         AWeak: Boolean);
 { Emit a QBE function $_FieldCleanup_<Name>(l %self) that releases every
   ARC-managed field the instance holds.  The function is invoked from
   _ClassRelease at refcount zero, before the backing block is freed.
@@ -9187,6 +9212,8 @@ var
   PtrT:   string;
   Walk:   TRecordTypeDesc;
 begin
+  if AWeak then
+    MarkWeak('_FieldCleanup_' + AMangledName);
   EmitLine(Format('%sfunction $_FieldCleanup_%s(l %%self) {', [ExportPrefix(), AMangledName]));
   EmitLine('@start');
   Walk := ARec;
@@ -9298,13 +9325,13 @@ begin
     if TDesc = nil then TDesc := AProg.SymbolTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT);
+    EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT, False);
   end;
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
     GI := TGenericInstance(AProg.GenericInstances.Items[I]);
     RT := TRecordTypeDesc(GI.TypeDesc);
-    EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT);
+    EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT, True);
   end;
   { Anonymous-method environment records (Phase 2). }
   EmitEnvCleanupDefsForBlock(AProg.Block);
@@ -9612,12 +9639,12 @@ begin
     MD := TMethodDecl(ABlock.ProcDecls.Items[I]);
     if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
       EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
-        TRecordTypeDesc(MD.EnvType));
+        TRecordTypeDesc(MD.EnvType), False);
     if MD.BlockEnvTypes <> nil then
       for J := 0 to MD.BlockEnvTypes.Count - 1 do
         EmitFieldCleanupFn(
           QBEMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[J]).Name),
-          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]));
+          TRecordTypeDesc(MD.BlockEnvTypes.Items[J]), False);
     if MD.Body <> nil then
       EmitEnvCleanupDefsForBlock(MD.Body);
   end;
@@ -9632,12 +9659,12 @@ begin
       MD := TMethodDecl(TClassTypeDef(TD.Def).Methods.Items[J]);
       if (MD.EnvType <> nil) and (not MD.IsAnonThunk) then
         EmitFieldCleanupFn(QBEMangle(TRecordTypeDesc(MD.EnvType).Name),
-          TRecordTypeDesc(MD.EnvType));
+          TRecordTypeDesc(MD.EnvType), False);
       if MD.BlockEnvTypes <> nil then
         for K := 0 to MD.BlockEnvTypes.Count - 1 do
           EmitFieldCleanupFn(
             QBEMangle(TRecordTypeDesc(MD.BlockEnvTypes.Items[K]).Name),
-            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]));
+            TRecordTypeDesc(MD.BlockEnvTypes.Items[K]), False);
       if MD.Body <> nil then
         EmitEnvCleanupDefsForBlock(MD.Body);
     end;
@@ -9736,6 +9763,11 @@ begin
     else
       Sig := Sig + Format('%s %%_par_%s', [QbeParamTypeOf(Par.ResolvedType), Par.ParamName]);
   end;
+
+  { Monomorphised generic free functions get WEAK binding (BUG-004). }
+  if (StrPos('<', ADecl.Name) >= 0) or
+     (StrPos('<', ADecl.OwnerTypeName) >= 0) then
+    MarkWeak(StrCopyTail(FuncName, 1));
 
   if IsFunc then
   begin
@@ -15179,6 +15211,12 @@ var
   Sym: TSymbol;
 begin
   Result := '';
+  { Generic instances are ALWAYS bare — never unit-prefixed.  Their symbol
+    must be identical in every compilation process that materialises them
+    (per-unit codegen emits them WEAK so the linker dedups), and the
+    Sym.OwningUnit of an import-triggered instance points at the RE-EXPORTING
+    unit, which never emitted a copy (BUGS.md BUG-004). }
+  if StrPos('<', AClassName) >= 0 then Exit;
   if FSymTable = nil then Exit;
   Sym := FSymTable.Lookup(AClassName);
   if Sym = nil then Exit;
@@ -15428,9 +15466,11 @@ begin
       begin
         GI := TGenericInstance(AUnit.GenericInstances.Items[I]);
         RT := TRecordTypeDesc(GI.TypeDesc);
+        MarkWeak('typeinfo_' + QBEMangle(GI.TypeName));
         EmitLine(Format('data $typeinfo_%s = { l 0 }', [QBEMangle(GI.TypeName)]));
         if RT.HasVTable() then
         begin
+          MarkWeak('vtable_' + QBEMangle(GI.TypeName));
           VLine := Format('%s$vtable_%s = { l $typeinfo_%s',
             [VTableDataPrefix(), QBEMangle(GI.TypeName), QBEMangle(GI.TypeName)]);
           for S := 0 to RT.VTableCount() - 1 do
@@ -15444,7 +15484,7 @@ begin
           VLine := VLine + ' }';
           EmitLine(VLine);
         end;
-        EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT);
+        EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)), RT, True);
       end;
       EmitFFIRecordTypeDecls();
       FOutput.AppendBuffer(Body);
@@ -15629,7 +15669,7 @@ begin
             if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
             if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
             RT := TRecordTypeDesc(TDesc);
-            EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT);
+            EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT, False);
           end;
 
         { System-unit (TObject / TCustomAttribute) FieldCleanup stubs.
@@ -15683,7 +15723,7 @@ begin
               EmitMethodDef(QBEMangle(GI.TypeName), MDecl);
           end;
           EmitFieldCleanupFn(ClassSymName(QBEMangle(GI.TypeName)),
-                             TRecordTypeDesc(GI.TypeDesc));
+                             TRecordTypeDesc(GI.TypeDesc), True);
         end;
         FCurrentUnitName := SavedUnit;
         for I := 0 to AUnit.GenericRecordInstances.Count - 1 do
@@ -15843,6 +15883,7 @@ begin
         for I := 0 to AUnit.GenericIntfInstances.Count - 1 do
         begin
           GII := TGenericInterfaceInstance(AUnit.GenericIntfInstances.Items[I]);
+          MarkWeak('typeinfo_' + GII.InstName);
           EmitLine(ExportPrefix() + 'data $typeinfo_' + GII.InstName + ' = { l 0 }');
         end;
 
@@ -15862,6 +15903,7 @@ begin
             ImplStr := '$impllist_' + MName
           else
             ImplStr := '0';
+          MarkWeak('typeinfo_' + MName);
           EmitLine(ExportPrefix() + 'data $typeinfo_' + MName +
                    ' = { l ' + ParentStr + ', l ' + ImplStr +
                    ', l ' + EmitClassNameRef(GI.TypeName) + ', l 0' +
@@ -15871,6 +15913,7 @@ begin
 
           if RT.HasVTable() then
           begin
+            MarkWeak('vtable_' + MName);
             VLine := ExportPrefix() + 'data $vtable_' + MName + ' = { l $typeinfo_' + MName;
             for S := 0 to RT.VTableCount() - 1 do
             begin
@@ -15892,6 +15935,7 @@ begin
             begin
               IntfDesc   := RT.ImplementsIntfAt(J);
               IntfMangle := QBEMangle(IntfDesc.Name);
+              MarkWeak('itab_' + MName + '_' + IntfMangle);
               ItabLine   := ExportPrefix() + 'data $itab_' + MName + '_' + IntfMangle + ' = {';
               for K := 0 to IntfDesc.MethodCount() - 1 do
               begin
@@ -15914,6 +15958,7 @@ begin
               ItabLine := ItabLine + ' }';
               EmitLine(ItabLine);
             end;
+            MarkWeak('impllist_' + MName);
             ImplLine := ExportPrefix() + 'data $impllist_' + MName + ' = {';
             for J := 0 to RT.ImplementsCount() - 1 do
             begin

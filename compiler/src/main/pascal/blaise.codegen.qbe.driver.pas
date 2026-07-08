@@ -46,12 +46,17 @@ type
     { qbe AIRFile -> AAsmFile.  Returns '' on success. }
     function LowerToAsm(const AIRFile, AAsmFile: string;
       AOpts: TBackendOpts): string;
+    { Scan AIRFile for '# WEAKSYM <sym>' markers and append matching
+      '.weak <sym>' directives to AAsmFile (generic-instance dedup,
+      BUGS.md BUG-004). }
+    procedure ApplyWeakSymbols(const AIRFile, AAsmFile: string);
   end;
 
 implementation
 
 uses
   SysUtils,
+  uStrCompat,
   uToolchain;
 
 function TQBEBackendDriver.Kind: TBackendKind;
@@ -135,7 +140,57 @@ begin
     Args.Free();
   end;
   if ExitCode <> 0 then
+  begin
     Result := 'qbe error (exit ' + IntToStr(ExitCode) + '): ' + Msg;
+    Exit;
+  end;
+  ApplyWeakSymbols(AIRFile, AAsmFile);
+end;
+
+procedure TQBEBackendDriver.ApplyWeakSymbols(const AIRFile,
+  AAsmFile: string);
+var
+  IR:     TStringList;
+  AsmSL:  TStringList;
+  I:      Integer;
+  Line:   string;
+  Syms:   TStringList;
+  Sym:    string;
+begin
+  { QBE IR cannot express symbol binding.  The QBE codegen marks every
+    generic-instance symbol with a '# WEAKSYM <sym>' comment in the .ssa;
+    this post-step appends '.weak <sym>' directives to the qbe-produced .s
+    (gas: a later .weak demotes an earlier .globl), so any number of objects
+    in a link may carry the identical bare-named instance copy and the
+    linker keeps one (BUGS.md BUG-004). }
+  Syms := TStringList.Create();
+  IR := TStringList.Create();
+  try
+    IR.LoadFromFile(AIRFile);
+    for I := 0 to IR.Count - 1 do
+    begin
+      Line := IR.Strings[I];
+      if Copy(Line, 0, 10) = '# WEAKSYM ' then
+      begin
+        Sym := Trim(StrCopyTail(Line, 10));
+        if (Sym <> '') and (Syms.IndexOf(Sym) < 0) then
+          Syms.Add(Sym);
+      end;
+    end;
+    if Syms.Count = 0 then Exit;
+    AsmSL := TStringList.Create();
+    try
+      AsmSL.LoadFromFile(AAsmFile);
+      for I := 0 to Syms.Count - 1 do
+        AsmSL.Add('.weak ' + Syms.Strings[I]);
+      AsmSL.SaveToFile(AAsmFile);
+    finally
+      AsmSL.Free();
+    end;
+  finally
+    IR.Free();
+    Syms.Free();
+  end;
 end;
 
 function TQBEBackendDriver.LowerToObject(const AIRFile, AObjFile: string;

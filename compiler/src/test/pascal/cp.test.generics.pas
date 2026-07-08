@@ -82,6 +82,7 @@ type
     procedure TestCodegen_UnitGeneric_VTableEmitted;
     procedure TestCodegen_UnitGeneric_TypeInfoEmitted;
     procedure TestCodegen_UnitGeneric_MethodBodyEmitted;
+    procedure TestCodegen_UnitGeneric_WeakSymMarkersEmitted;
 
     { ------------------------------------------------------------------ }
     { Multi-instance: same generic class with two different type args     }
@@ -831,8 +832,33 @@ var
   IR: string;
 begin
   IR := GenCombinedIR(SrcUnitWithGenericClass, SrcProgUsesUnitGeneric);
-  AssertTrue('constructor body emitted with mangled name',
-    Pos('function $UPair_TPair_Integer_Integer_Create', IR) > 0);
+  { Generic-instance symbols are BARE — never unit-prefixed (BUG-004): the
+    same instance may be materialised by any compilation process, so every
+    process must agree on one symbol (deduped via weak linkage). }
+  AssertTrue('constructor body emitted with bare instance name',
+    Pos('function $TPair_Integer_Integer_Create', IR) > 0);
+  AssertTrue('no unit-prefixed instance constructor',
+    Pos('$UPair_TPair_Integer_Integer_Create', IR) < 0);
+end;
+
+procedure TGenericsTests.TestCodegen_UnitGeneric_WeakSymMarkersEmitted;
+var
+  IR: string;
+begin
+  { The QBE driver turns '# WEAKSYM <sym>' markers into '.weak <sym>'
+    directives on the qbe-produced .s, giving generic-instance symbols WEAK
+    binding so several objects in one link may carry the identical copy
+    (BUG-004).  Assert the markers cover the method bodies, typeinfo, vtable
+    and the field-cleanup fn. }
+  IR := GenCombinedIR(SrcUnitWithGenericClass, SrcProgUsesUnitGeneric);
+  AssertTrue('WEAKSYM marker for instance constructor',
+    Pos('# WEAKSYM TPair_Integer_Integer_Create', IR) > 0);
+  AssertTrue('WEAKSYM marker for instance typeinfo',
+    Pos('# WEAKSYM typeinfo_TPair_Integer_Integer', IR) > 0);
+  AssertTrue('WEAKSYM marker for instance vtable',
+    Pos('# WEAKSYM vtable_TPair_Integer_Integer', IR) > 0);
+  AssertTrue('WEAKSYM marker for instance field cleanup',
+    Pos('# WEAKSYM _FieldCleanup_TPair_Integer_Integer', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }

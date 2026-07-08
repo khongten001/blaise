@@ -141,6 +141,24 @@ type
       the two slots are genuinely independent. }
     procedure TestSameNamedModuleVar_AcrossUnits_ExternalLink_Native;
     procedure TestSameNamedModuleVar_AcrossUnits_QBE;
+    { Regression (BUGS.md BUG-004): generic-instance symbols were mangled from
+      FOUR inconsistent sources — the instantiating unit's prefix (source
+      instantiation), bare (instantiated during .bif import), Sym.OwningUnit
+      (name-based codegen refs, poisoned to the re-exporting unit by import),
+      and forced-bare (desc-based refs).  A consumer unit compiled in a multi-
+      unit --unit-cache process could reference a copy under a prefix nobody
+      ever emitted (e.g. Xml_Types_TOrderedDictionary_string_string_SetItem in
+      the stdlib TestRunner) — the link succeeded lazily and the loader failed
+      at run time with an undefined symbol.  The fix mangles ALL generic-
+      instance symbols BARE at every site and emits them as WEAK symbols in
+      per-unit mode so any number of objects may carry the (identical) copy and
+      the linker dedups.  The scenario: uprovider instantiates TReg<Integer> in
+      cache1's process; ureexport carries it as an interface field; a second
+      process (cache2) compiles two consumers where the first-compiled one
+      inherits the pending instance and the second references it through the
+      default-property setter (the name-based path that read the poisoned
+      OwningUnit). }
+    procedure TestGenericInstance_CrossUnitCache_DefaultPropSetter_Runs;
   end;
 
 implementation
@@ -1907,6 +1925,198 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_mv_qbe run exit', 0, Rc);
   AssertEquals('use_mv_qbe stdout', '11' + #10 + '22' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestGenericInstance_CrossUnitCache_DefaultPropSetter_Runs;
+const
+  GenSrc =
+    '''
+    unit ugenBP;
+    interface
+    type
+      TReg<T> = class
+      private
+        FVal: T;
+        function GetItem(AKey: Integer): T;
+        procedure SetItem(AKey: Integer; AVal: T);
+      public
+        procedure Put(AVal: T);
+        function Get(): T;
+        property Items[AKey: Integer]: T read GetItem write SetItem; default;
+      end;
+    implementation
+    function TReg<T>.GetItem(AKey: Integer): T;
+    begin
+      Result := FVal
+    end;
+    procedure TReg<T>.SetItem(AKey: Integer; AVal: T);
+    begin
+      FVal := AVal
+    end;
+    procedure TReg<T>.Put(AVal: T);
+    begin
+      FVal := AVal
+    end;
+    function TReg<T>.Get(): T;
+    begin
+      Result := FVal
+    end;
+    end.
+    ''';
+  ProviderSrc =
+    '''
+    unit uproviderBP;
+    interface
+    uses ugenBP;
+    function ProvideReg(): TReg<Integer>;
+    implementation
+    function ProvideReg(): TReg<Integer>;
+    begin
+      Result := TReg<Integer>.Create();
+      Result[0] := 5
+    end;
+    end.
+    ''';
+  ReexportSrc =
+    '''
+    unit ureexportBP;
+    interface
+    uses ugenBP;
+    type
+      THolder = class
+      public
+        FReg: TReg<Integer>;
+        constructor Create();
+      end;
+    implementation
+    constructor THolder.Create();
+    begin
+      FReg := TReg<Integer>.Create()
+    end;
+    end.
+    ''';
+  Prog1Src =
+    '''
+    program prog1bp;
+    uses ugenBP, uproviderBP, ureexportBP;
+    var H: THolder;
+    begin
+      H := THolder.Create();
+      H.FReg.Put(ProvideReg().Get());
+      WriteLn(H.FReg.Get())
+    end.
+    ''';
+  Consumer1Src =
+    '''
+    unit uconsumer1BP;
+    interface
+    uses ugenBP, ureexportBP;
+    function ReadHolder(AH: THolder): Integer;
+    implementation
+    function ReadHolder(AH: THolder): Integer;
+    begin
+      Result := AH.FReg.Get()
+    end;
+    end.
+    ''';
+  Consumer2Src =
+    '''
+    unit uconsumer2BP;
+    interface
+    uses ugenBP, ureexportBP;
+    procedure WriteHolder(AH: THolder; AVal: Integer);
+    implementation
+    procedure WriteHolder(AH: THolder; AVal: Integer);
+    begin
+      AH.FReg[0] := AVal
+    end;
+    end.
+    ''';
+  Prog2Src =
+    '''
+    program prog2bp;
+    uses ugenBP, ureexportBP, uconsumer1BP, uconsumer2BP;
+    var H: THolder;
+    begin
+      H := THolder.Create();
+      WriteHolder(H, 42);
+      WriteLn(ReadHolder(H))
+    end.
+    ''';
+var
+  GenPas, ProviderPas, ReexportPas: string;
+  Consumer1Pas, Consumer2Pas: string;
+  Prog1Pas, Prog2Pas, Prog1Bin, Prog2Bin: string;
+  Cache1, Cache2: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  GenPas       := FScratch + '/ugenBP.pas';
+  ProviderPas  := FScratch + '/uproviderBP.pas';
+  ReexportPas  := FScratch + '/ureexportBP.pas';
+  Consumer1Pas := FScratch + '/uconsumer1BP.pas';
+  Consumer2Pas := FScratch + '/uconsumer2BP.pas';
+  Prog1Pas     := FScratch + '/prog1bp.pas';
+  Prog2Pas     := FScratch + '/prog2bp.pas';
+  Prog1Bin     := FScratch + '/prog1bp';
+  Prog2Bin     := FScratch + '/prog2bp';
+  Cache1       := FScratch + '/cache1bp';
+  Cache2       := FScratch + '/cache2bp';
+
+  WriteFile(GenPas, GenSrc);
+  WriteFile(ProviderPas, ProviderSrc);
+  WriteFile(ReexportPas, ReexportSrc);
+  WriteFile(Consumer1Pas, Consumer1Src);
+  WriteFile(Consumer2Pas, Consumer2Src);
+  WriteFile(Prog1Pas, Prog1Src);
+  WriteFile(Prog2Pas, Prog2Src);
+  ForceDirectories(Cache1);
+  ForceDirectories(Cache2);
+
+  { Process 1: populate cache1 with uprovider/ureexport compiled from source
+    (uprovider's compile is where TReg<Integer> is first instantiated). }
+  Rc := RunBlaise(['--source', Prog1Pas, '--output', Prog1Bin,
+                   '--unit-cache', Cache1,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('prog1 build exit (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(Prog1Bin, Captured);
+  AssertEquals('prog1 run exit', 0, Rc);
+  AssertEquals('prog1 stdout', '5' + #10, Captured);
+
+  { Hide the cached units' sources so process 2 must import their .bifs. }
+  DeleteFile(GenPas);
+  DeleteFile(ProviderPas);
+  DeleteFile(ReexportPas);
+
+  { Process 2: fresh cache, consumers compiled from source against cache1's
+    .bifs.  uconsumer1 (compiled first) inherits the import-time pending
+    instance; uconsumer2's default-property write must reference a SetItem
+    copy that actually exists in some linked object. }
+  Rc := RunBlaise(['--source', Prog2Pas, '--output', Prog2Bin,
+                   '--unit-cache', Cache2,
+                   '--unit-path', Cache1,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('prog2 build exit (out: ' + Captured + ')', 0, Rc);
+  AssertTrue('prog2 exists', FileExists(Prog2Bin));
+
+  { The historical failure mode is a LAZY link: the build succeeds and the
+    dynamic loader aborts at run time with
+    "undefined symbol: ureexportBP_TReg_Integer_SetItem". }
+  Rc := RunBinary(Prog2Bin, Captured);
+  AssertEquals('prog2 run exit (loader must resolve all instance symbols)',
+    0, Rc);
+  AssertEquals('prog2 stdout', '42' + #10, Captured)
 end;
 
 initialization
