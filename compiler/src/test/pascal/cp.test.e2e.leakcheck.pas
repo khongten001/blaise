@@ -91,6 +91,7 @@ type
       closure slot is released. }
     procedure TestDebug_ClosureEnv_ReleasedExactlyOnce;
     procedure TestDebug_ClosureArgBalance_NoLeak;
+    procedure TestDebug_LinqLite_ProducedLists_NoLeak;
     { Phase 3: a closure capturing Self stored in the receiver's OWN field
       forms the documented strong cycle Self -> field -> env -> Self.  It
       MUST leak (asserted) until [Weak] capture (Phase 5) provides the
@@ -1299,6 +1300,44 @@ begin
   AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureEnvOnce, Output, ExitCode, True));
   AssertEquals('exit 0', 0, ExitCode);
   AssertEquals('stdout', '7' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_LinqLite_ProducedLists_NoLeak;
+const
+  { Phase 10: Map/Where allocate NEW lists; a string-producing Map's
+    elements are ARC-managed.  Everything must balance once the produced
+    lists are freed. }
+  SrcLinqLeak = '''
+    program P;
+    uses Generics.Collections, Functional;
+    var
+      L: TList<Integer>;
+      M: TList<string>;
+      W: TList<Integer>;
+    begin
+      L := TList<Integer>.Create();
+      L.Add(1);
+      L.Add(2);
+      L.Add(3);
+      M := L.Map<string>(N -> 'v' + IntToStr(N));
+      W := L.Where(N -> N > 1);
+      WriteLn(M[2], ':', W.Count);
+      M.Clear();
+      M.Free();
+      W.Free();
+      L.Free();
+      WriteLn('done')
+    end.
+    ''';
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcLinqLeak, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', 'v3:2' + LE + 'done' + LE, Output);
   AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
 end;
 

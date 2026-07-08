@@ -33,6 +33,10 @@ type
   { One-argument function closure: R := F(Arg). }
   TFunc<T, R> = reference to function(AArg: T): R;
 
+  { Two-argument function closure: R := F(A, B) — accumulator shape for
+    TList<T>.Reduce. }
+  TFunc2<T1, T2, R> = reference to function(AArg1: T1; AArg2: T2): R;
+
   { Boolean test closure: True iff AValue satisfies the predicate. }
   TPredicate<T> = reference to function(AValue: T): Boolean;
 

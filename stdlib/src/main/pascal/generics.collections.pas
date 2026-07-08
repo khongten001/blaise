@@ -15,6 +15,9 @@ unit Generics.Collections;
 
 interface
 
+uses
+  Functional;
+
 type
   { Generic forward enumerator for TList<T>.  Holds a pointer to the list's
     backing buffer and the count at the time GetEnumerator was called.
@@ -42,6 +45,22 @@ type
     procedure Clear;
     procedure Destroy;
     function  GetEnumerator: TListEnumerator<T>;
+    { Eager LINQ-lite operators (docs/anonymous-methods-design.adoc,
+      Phase 10).  Map/Where allocate and return NEW lists the caller owns;
+      the source list is never modified except by Sort. }
+    function  Map<R>(F: TFunc<T, R>): TList<R>;
+    function  Where(P: TPredicate<T>): TList<T>;
+    function  Reduce<R>(AInit: R; F: TFunc2<R, T, R>): R;
+    procedure ForEach(A: TAction<T>);
+    function  Any(P: TPredicate<T>): Boolean;
+    function  All(P: TPredicate<T>): Boolean;
+    function  Find(P: TPredicate<T>; out AValue: T): Boolean;
+    { In-place STABLE sort (straight insertion) ordered by the three-way
+      comparison closure; BinarySearch requires the list already sorted by
+      the same comparison. }
+    procedure Sort(C: TComparison<T>);
+    function  BinarySearch(AItem: T; C: TComparison<T>;
+                           out AIndex: Integer): Boolean;
     property Count: Integer read FCount;
     { Default array property — enables List[i] for read and write. }
     property Items[AIndex: Integer]: T read Get write SetItem; default;
@@ -250,6 +269,120 @@ begin
   Self.FData     := ReallocMem(Self.FData, NewCap * SizeOf(T));
   ZeroMem(Self.FData + OldCap * SizeOf(T), (NewCap - OldCap) * SizeOf(T));
   Self.FCapacity := NewCap
+end;
+
+function TList<T>.Map<R>(F: TFunc<T, R>): TList<R>;
+var
+  I: Integer;
+begin
+  Result := TList<R>.Create();
+  for I := 0 to FCount - 1 do
+    Result.Add(F(Get(I)));
+end;
+
+function TList<T>.Where(P: TPredicate<T>): TList<T>;
+var
+  I: Integer;
+begin
+  Result := TList<T>.Create();
+  for I := 0 to FCount - 1 do
+    if P(Get(I)) then
+      Result.Add(Get(I));
+end;
+
+function TList<T>.Reduce<R>(AInit: R; F: TFunc2<R, T, R>): R;
+var
+  I: Integer;
+begin
+  Result := AInit;
+  for I := 0 to FCount - 1 do
+    Result := F(Result, Get(I));
+end;
+
+procedure TList<T>.ForEach(A: TAction<T>);
+var
+  I: Integer;
+begin
+  for I := 0 to FCount - 1 do
+    A(Get(I));
+end;
+
+function TList<T>.Any(P: TPredicate<T>): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to FCount - 1 do
+    if P(Get(I)) then
+      Exit(True);
+end;
+
+function TList<T>.All(P: TPredicate<T>): Boolean;
+var
+  I: Integer;
+begin
+  Result := True;
+  for I := 0 to FCount - 1 do
+    if not P(Get(I)) then
+      Exit(False);
+end;
+
+function TList<T>.Find(P: TPredicate<T>; out AValue: T): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to FCount - 1 do
+    if P(Get(I)) then
+    begin
+      AValue := Get(I);
+      Exit(True);
+    end;
+end;
+
+procedure TList<T>.Sort(C: TComparison<T>);
+var
+  I, J: Integer;
+  Cur: T;
+begin
+  { Straight insertion: stable (equal keys keep their relative order because
+    the inner loop shifts only strictly-greater items). }
+  for I := 1 to FCount - 1 do
+  begin
+    Cur := Get(I);
+    J := I - 1;
+    while (J >= 0) and (C(Get(J), Cur) > 0) do
+    begin
+      SetItem(J + 1, Get(J));
+      J := J - 1;
+    end;
+    SetItem(J + 1, Cur);
+  end;
+end;
+
+function TList<T>.BinarySearch(AItem: T; C: TComparison<T>;
+                               out AIndex: Integer): Boolean;
+var
+  Lo, Hi, Mid, Cmp: Integer;
+begin
+  Result := False;
+  Lo := 0;
+  Hi := FCount - 1;
+  while Lo <= Hi do
+  begin
+    Mid := (Lo + Hi) div 2;
+    Cmp := C(Get(Mid), AItem);
+    if Cmp = 0 then
+    begin
+      AIndex := Mid;
+      Exit(True);
+    end;
+    if Cmp < 0 then
+      Lo := Mid + 1
+    else
+      Hi := Mid - 1;
+  end;
+  AIndex := Lo;   { insertion point }
 end;
 
 procedure TList<T>.Add(Value: T);
