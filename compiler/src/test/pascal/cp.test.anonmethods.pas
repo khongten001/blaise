@@ -55,6 +55,7 @@ type
     procedure TestSemantic_Phase4_BlockVarOutOfScopeAfterBlock;
     procedure TestSemantic_Phase4_BlockVarDuplicateRejected;
     procedure TestSemantic_Phase4_MixedScopeCaptureRejected;
+    procedure TestSemantic_Phase5_WeakNonSelfRejected;
 
     { Codegen }
     procedure TestCodegen_ThunkEmitted;
@@ -613,6 +614,45 @@ begin
     on E: TObject do OK := True;
   end;
   AssertTrue('mixed-scope capture is rejected in v1', OK);
+end;
+
+procedure TAnonMethodTests.TestSemantic_Phase5_WeakNonSelfRejected;
+const
+  { v1: [Weak] capture is supported for Self only (the cycle-breaking use
+    case); weak capture of ordinary variables is a later extension. }
+  Src =
+    '''
+    program P;
+    type
+      TProc = reference to procedure;
+    procedure Run;
+    var
+      Outer: Integer;
+      V: TProc;
+    begin
+      Outer := 1;
+      V := procedure [Weak Outer]
+      begin
+        WriteLn(Outer)
+      end;
+      V()
+    end;
+    begin
+      Run()
+    end.
+    ''';
+var
+  Prog: TProgram;
+  OK:   Boolean;
+begin
+  OK := False;
+  try
+    Prog := AnalyseSrc(Src);
+    Prog.Free();
+  except
+    on E: TObject do OK := True;
+  end;
+  AssertTrue('[Weak] on a non-Self capture is rejected', OK);
 end;
 
 procedure TAnonMethodTests.TestSemantic_Phase3_MethodPtrCoercionAccepted;

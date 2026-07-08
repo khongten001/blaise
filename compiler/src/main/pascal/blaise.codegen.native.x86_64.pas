@@ -2383,14 +2383,25 @@ begin
     Exit;
   end;
   { Enclosing METHOD frame (Phase 3): snapshot Self into its env field with
-    the env's own retain (the env cleanup releases it). }
+    the env's own retain (the env cleanup releases it).  A [Weak Self]
+    capture (Phase 5) routes through _WeakAssign instead: registered in the
+    weak table, auto-nil'd when the receiver dies, no refcount taken. }
   if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
   begin
-    Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
-    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_Self')]));
-    Self.Emit(#9'movq %rax, (%rcx)');
-    Self.Emit(#9'movq %rax, %rdi');
-    Self.Emit(#9'callq _ClassAddRef');
+    if (Env.FindField('Self') <> nil) and Env.FindField('Self').IsWeak then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rdi', [Self.VarOperand('_cap_Self')]));
+      Self.Emit(Format(#9'movq %s, %%rsi', [Self.VarOperand('Self')]));
+      Self.Emit(#9'callq _WeakAssign');
+    end
+    else
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Self')]));
+      Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_Self')]));
+      Self.Emit(#9'movq %rax, (%rcx)');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+    end;
   end;
   for J := 0 to ADecl.Params.Count - 1 do
   begin

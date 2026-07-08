@@ -9538,13 +9538,20 @@ begin
     Exit;
   end;
   { Enclosing METHOD frame (Phase 3): snapshot Self into its env field with
-    the env's own retain (the env cleanup releases it). }
+    the env's own retain (the env cleanup releases it).  A [Weak Self]
+    capture (Phase 5) routes through _WeakAssign instead: registered in the
+    weak table, auto-nil'd when the receiver dies, no refcount taken. }
   if ADecl.EnvCaptured.IndexOf('Self') >= 0 then
   begin
     ValT := AllocTemp();
     EmitLine(Format('  %s =l loadl %%_var_Self', [ValT]));
-    EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]));
-    EmitLine(Format('  storel %s, %%_env_Self', [ValT]));
+    if (Env.FindField('Self') <> nil) and Env.FindField('Self').IsWeak then
+      EmitLine(Format('  call $_WeakAssign(l %%_env_Self, l %s)', [ValT]))
+    else
+    begin
+      EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]));
+      EmitLine(Format('  storel %s, %%_env_Self', [ValT]));
+    end;
   end;
   for J := 0 to ADecl.Params.Count - 1 do
   begin

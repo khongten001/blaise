@@ -1007,6 +1007,10 @@ type
                                      table-owned; nil when EnvCaptured = nil }
     IsAnonThunk: Boolean;          { set by uSemantic — lifted '__closure_<n>'
                                      thunk; env arrives as hidden first param }
+    WantsWeakSelf: Boolean;        { set by uSemantic on the THUNK — the
+                                     literal carried a '[Weak Self]' capture
+                                     list (Phase 5): the shared env's Self
+                                     field is weak }
     EnvSlotName: string;           { set by uSemantic on the THUNK — where the
                                      creation site finds the env base in the
                                      ENCLOSING frame: '' = the frame env

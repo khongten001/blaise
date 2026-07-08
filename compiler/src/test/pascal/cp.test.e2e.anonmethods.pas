@@ -47,6 +47,9 @@ type
     procedure TestRun_BlockVar_InitRunsPerIteration;
     procedure TestRun_BlockVar_LoopSnapshotIdiom_012;
     procedure TestRun_LoopCapture_RoutineVar_Still333;
+    { Phase 5 }
+    procedure TestRun_WeakSelf_ReadsNilAfterReceiverDies;
+    procedure TestRun_WeakSelf_WorksWhileReceiverAlive;
   end;
 
 implementation
@@ -652,6 +655,85 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, '3' + LineEnding + '3' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_WeakSelf_ReadsNilAfterReceiverDies;
+const
+  { [Weak Self]: the env's Self slot is registered in the weak table and
+    auto-nil'd when the receiver dies — the closure observes nil instead of
+    a dangling pointer (same contract as a [Weak] field). }
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TBox = class
+      FValue: Integer;
+      procedure Wire;
+    end;
+  var
+    G: TProc;
+  procedure TBox.Wire;
+  begin
+    G := procedure [Weak Self]
+    begin
+      if Self = nil then
+        WriteLn('gone')
+      else
+        WriteLn(FValue)
+    end
+  end;
+  procedure Run;
+  var
+    B: TBox;
+  begin
+    B := TBox.Create();
+    B.FValue := 42;
+    B.Wire();
+    G()
+  end;
+  begin
+    Run();
+    G()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding + 'gone' + LineEnding, 0);
+end;
+
+procedure TE2EAnonMethodTests.TestRun_WeakSelf_WorksWhileReceiverAlive;
+const
+  Src =
+  '''
+  program P;
+  type
+    TProc = reference to procedure;
+    TCounter = class
+      FCount: Integer;
+      procedure Wire;
+    end;
+  var
+    G: TProc;
+    C: TCounter;
+  procedure TCounter.Wire;
+  begin
+    G := procedure [Weak Self]
+    begin
+      FCount := FCount + 21;
+      WriteLn(FCount)
+    end
+  end;
+  begin
+    C := TCounter.Create();
+    C.Wire();
+    G();
+    G()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '21' + LineEnding + '42' + LineEnding, 0);
 end;
 
 initialization

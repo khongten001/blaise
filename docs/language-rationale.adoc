@@ -1670,6 +1670,7 @@ Delivered in phases, each independently verified on both backends:
   method-pointer → `reference to` coercion.
 - *Phase 4* — block-scoped `var` statements with per-execution environments
   (the loop-snapshot idiom).
+- *Phase 5* — `[Weak Self]` capture: the cycle-breaking escape.
 
 === Capture semantics (Phase 2)
 
@@ -1713,8 +1714,23 @@ dispatch inside the closure body behave exactly as inside the method.
 
 Consequence (documented, pinned by a leak test): a closure capturing
 `Self` stored in the receiver's OWN field forms a strong cycle
-(`Self → field → env → Self`) and leaks until `[Weak]` capture (Phase 5)
-provides the break — the same rule as `[Weak]` class fields.
+(`Self → field → env → Self`) and leaks — the same rule as `[Weak]` class
+fields, with the same escape:
+
+=== `[Weak Self]` capture (Phase 5)
+
+`procedure [Weak Self] begin ... end` inside an instance method promotes
+the shared env's `Self` field as WEAK: stored via the weak registry
+(`_WeakAssign`, no refcount), auto-nil'd when the receiver dies
+(`_WeakZeroSlots`), and skipped by the env cleanup (`_WeakClear`) — all
+inherited from the `[Weak]` class-field machinery unchanged.  A weakly
+captured `Self` that has died reads back as `nil`; the closure body is
+responsible for the `nil` check (same contract as any `[Weak]` field).
+The default remains STRONG capture — Blaise never infers weakness; the
+annotation is the explicit opt-in for the self-storing case, mirroring
+`[Weak]` fields.  Because the env's `Self` field is shared by every
+literal in one frame, all literals in that frame must agree on
+`[Weak Self]` (conflict = compile-time error).
 
 Literals inside RECORD methods and STATIC methods do not capture a
 receiver (records are caller-frame storage, not ARC instances; static
@@ -1770,7 +1786,9 @@ routine-level (or `Self`) captures — environment chaining is deferred.
   store the caller frame's address, which dangles once the closure
   escapes.  Escape analysis that could allow the non-escaping subset is
   deferred; the documented idiom is capturing a local copy.
-- `[Weak]` capture lists are Phase 5.
+- `[Weak]` capture applies to `Self` only (`procedure [Weak Self] ...`
+  inside an instance method).  Weak capture of ordinary variables is a
+  later extension.
 - A literal nested inside another literal cannot capture the outer
   routine's variables through the intermediate closure (multi-level env
   chains are a later phase); the reference fails with an

@@ -102,6 +102,9 @@ type
       be released exactly once (overwritten closure slot releases the
       previous env; the tracking slot releases the last). }
     procedure TestDebug_BlockEnvPerIteration_NoLeak;
+    { Phase 5: the same self-storing closure as the leaks-by-design test,
+      but with [Weak Self] — the cycle is broken, zero leaks. }
+    procedure TestDebug_ClosureWeakSelfCycle_NoLeak;
     { A captured string is an ARC slot inside the env record: the env cleanup
       proc must release it, and closure-body reassignment must go through the
       string retain/release store path. }
@@ -1182,6 +1185,48 @@ begin
   AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcBlockEnvLoop, Output, ExitCode, True));
   AssertEquals('exit 0', 0, ExitCode);
   AssertEquals('stdout', '2' + LE + 'done' + LE, Output);
+  AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+const
+  SrcClosureWeakSelfCycle = '''
+    program P;
+    uses runtime.arc;
+    type
+      TProc = reference to procedure;
+      TButton = class
+        FOnClick: TProc;
+        procedure Wire;
+      end;
+    procedure TButton.Wire;
+    begin
+      FOnClick := procedure [Weak Self]
+      begin
+        if Self <> nil then Self.Wire()
+      end
+    end;
+    procedure Make;
+    var
+      B: TButton;
+    begin
+      B := TButton.Create();
+      B.Wire()
+    end;
+    begin
+      Make();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_ClosureWeakSelfCycle_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run', CompileAndRunWithRTLDebug(SrcClosureWeakSelfCycle, Output, ExitCode, True));
+  AssertEquals('exit 0', 0, ExitCode);
+  AssertEquals('stdout', 'done' + LE, Output);
   AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
 end;
 

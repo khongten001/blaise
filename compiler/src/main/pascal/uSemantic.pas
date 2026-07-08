@@ -13691,9 +13691,6 @@ var
   I:         Integer;
 begin
   if AExpr.ResolvedType <> nil then Exit(AExpr.ResolvedType);  { idempotent }
-  if AExpr.WeakCaptures <> nil then
-    SemanticError('[Weak] capture lists on anonymous methods are not yet ' +
-      'supported (capture promotion is a later phase)', AExpr.Line, AExpr.Col);
 
   ProcDesc := FTable.NewProceduralType('');
   ProcDesc.IsReference := True;
@@ -13737,6 +13734,22 @@ begin
     AExpr.LiftedName := MD.Name;
     AExpr.LiftedDecl := MD;
     MD.IsAnonThunk := True;
+    { Phase 5: [Weak name] capture-modifier list.  v1 supports [Weak Self]
+      only — the cycle-breaking case (closure stored in its own receiver).
+      Validated and applied during capture promotion below. }
+    if AExpr.WeakCaptures <> nil then
+    begin
+      if FCurrentEnclosingDecl <> nil then
+        SemanticError('[Weak] capture is only supported for Self inside ' +
+          'an instance method body', AExpr.Line, AExpr.Col);
+      for I := 0 to AExpr.WeakCaptures.Count - 1 do
+        if not SameText(AExpr.WeakCaptures.Strings[I], 'Self') then
+          SemanticError(Format('[Weak] capture of ''%s'' is not yet ' +
+            'supported — only [Weak Self] (weak capture of ordinary ' +
+            'variables is a later extension)',
+            [AExpr.WeakCaptures.Strings[I]]), AExpr.Line, AExpr.Col);
+      MD.WantsWeakSelf := True;
+    end;
     FPendingAnonDecls.Add(MD);
     { Phase 2/3: capture promotion.  Runs NOW, while the enclosing frame's
       scope is live, so captured names can be typed from their symbols.
@@ -13833,6 +13846,7 @@ var
   VDecl: TVarDecl;
   Own:   Boolean;
   InMethod: Boolean;
+  SelfJustAdded: Boolean;
   BlockSite: TObject;
   HasFrameNames: Boolean;
   Site:  TVarDeclStmt;
@@ -13983,6 +13997,7 @@ begin
   end;
   Env := TRecordTypeDesc(Encl.EnvType);
 
+  SelfJustAdded := False;
   for I := 0 to AThunk.CapturedVars.Count - 1 do
   begin
     Name := AThunk.CapturedVars.Strings[I];
@@ -13994,7 +14009,23 @@ begin
           [Name]), AThunk.Line, AThunk.Col);
       Env.AddField(Name, Sym.TypeDesc);
       Encl.EnvCaptured.Add(Name);
+      if Name = 'Self' then SelfJustAdded := True;
     end;
+  end;
+
+  { Phase 5: [Weak Self] — mark the shared env's Self field weak so it is
+    stored via the weak registry, auto-nil'd when the receiver dies, and
+    skipped by the env cleanup (both behaviours come free from the [Weak]
+    class-field machinery).  The field is SHARED by every literal in the
+    frame, so all of them must agree on its weakness. }
+  if Env.FindField('Self') <> nil then
+  begin
+    if SelfJustAdded then
+      Env.FindField('Self').IsWeak := AThunk.WantsWeakSelf
+    else if Env.FindField('Self').IsWeak <> AThunk.WantsWeakSelf then
+      SemanticError('Conflicting Self capture: every anonymous method in ' +
+        'one frame must agree on [Weak Self] (the env''s Self field is ' +
+        'shared)', AThunk.Line, AThunk.Col);
   end;
 
   { Hand the capture list to the env channel; CapturedVars must stay nil so
