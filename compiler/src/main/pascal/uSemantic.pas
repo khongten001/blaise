@@ -3890,6 +3890,15 @@ begin
       NewMDecl.IsVirtual     := MDecl.IsVirtual;
       NewMDecl.IsOverride    := MDecl.IsOverride;
       NewMDecl.Visibility    := MDecl.Visibility;
+      { A generic METHOD on a generic class (TBox<T>.MapTo<R>) keeps its own
+        type-parameter list through class instantiation — the class's T is
+        substituted here, the method's R only when a call site instantiates
+        via InstantiateGenericMethod (Phase 10 gate). }
+      if MDecl.TypeParams <> nil then
+      begin
+        NewMDecl.TypeParams := TStringList.Create();
+        NewMDecl.TypeParams.AddStrings(MDecl.TypeParams);
+      end;
       if (MDecl.Body <> nil) and (not DeferBodies) then
       begin
         NewMDecl.Body    := CloneBlock(MDecl.Body);
@@ -3982,6 +3991,7 @@ begin
     for J := 0 to ClonedCD.Methods.Count - 1 do
     begin
       NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
+      if NewMDecl.TypeParams <> nil then Continue;  { generic method — no slot }
       if NewMDecl.IsVirtual then
         RT.AddVTableSlot(NewMDecl.Name, '$' + ATypeName + '_' + NewMDecl.Name)
       else if NewMDecl.IsOverride then
@@ -4024,6 +4034,10 @@ begin
     for J := 0 to ClonedCD.Methods.Count - 1 do
     begin
       NewMDecl := TMethodDecl(ClonedCD.Methods.Items[J]);
+      { A generic method's signature references its OWN type params (R) —
+        resolution happens per call-site instantiation; AnalyseMethodDecl
+        registers the template below. }
+      if NewMDecl.TypeParams <> nil then Continue;
       Key      := ATypeName + '.' + NewMDecl.Name;
       FMethodIndex.AddObject(Key, NewMDecl);
       AddGroupEntry(FMethodGroups, Key, NewMDecl);
@@ -4676,10 +4690,11 @@ begin
     end;
 
     { Substitute return type }
-    RetTypeName := Templ.ReturnTypeName;
-    for I := 0 to Templ.TypeParams.Count - 1 do
-      if SameText(RetTypeName, Templ.TypeParams.Strings[I]) then
-        RetTypeName := Args.Strings[I];
+    { Nested-aware substitution: type params may appear INSIDE generic
+      arguments (TSel<Integer, R> at R = string) — a whole-name compare
+      misses them (the Phase-10 gate failure). }
+    RetTypeName := Self.SubstTypeParam(Templ.ReturnTypeName,
+      Templ.TypeParams, Args);
     NewMDecl.ReturnTypeName := RetTypeName;
     if RetTypeName <> '' then
     begin
@@ -4697,10 +4712,8 @@ begin
       NewPar           := TMethodParam.Create();
       NewPar.ParamName  := OldPar.ParamName;
       NewPar.IsVarParam := OldPar.IsVarParam;
-      ParTypeName       := OldPar.TypeName;
-      for J := 0 to Templ.TypeParams.Count - 1 do
-        if SameText(ParTypeName, Templ.TypeParams.Strings[J]) then
-          ParTypeName := Args.Strings[J];
+      ParTypeName := Self.SubstTypeParam(OldPar.TypeName,
+        Templ.TypeParams, Args);
       NewPar.TypeName := ParTypeName;
       SubstType := FindTypeOrInstantiate(ParTypeName);
       if SubstType = nil then
@@ -4846,10 +4859,11 @@ begin
       NewMDecl.OwnBody := False;
     end;
 
-    RetTypeName := Templ.ReturnTypeName;
-    for I := 0 to Templ.TypeParams.Count - 1 do
-      if SameText(RetTypeName, Templ.TypeParams.Strings[I]) then
-        RetTypeName := Args.Strings[I];
+    { Nested-aware substitution: type params may appear INSIDE generic
+      arguments (TSel<Integer, R> at R = string) — a whole-name compare
+      misses them (the Phase-10 gate failure). }
+    RetTypeName := Self.SubstTypeParam(Templ.ReturnTypeName,
+      Templ.TypeParams, Args);
     NewMDecl.ReturnTypeName := RetTypeName;
     if RetTypeName <> '' then
     begin
@@ -4866,10 +4880,8 @@ begin
       NewPar            := TMethodParam.Create();
       NewPar.ParamName  := OldPar.ParamName;
       NewPar.IsVarParam := OldPar.IsVarParam;
-      ParTypeName       := OldPar.TypeName;
-      for J := 0 to Templ.TypeParams.Count - 1 do
-        if SameText(ParTypeName, Templ.TypeParams.Strings[J]) then
-          ParTypeName := Args.Strings[J];
+      ParTypeName := Self.SubstTypeParam(OldPar.TypeName,
+        Templ.TypeParams, Args);
       NewPar.TypeName := ParTypeName;
       SubstType := FindTypeOrInstantiate(ParTypeName);
       if SubstType = nil then
@@ -4879,8 +4891,27 @@ begin
       NewMDecl.Params.Add(NewPar);
     end;
 
-    { Analyse the body with Self (the owner) and concrete types in scope. }
-    AnalyseMethodDecl(NewMDecl, OwnerRT);
+    { Analyse the body with Self (the owner) and concrete types in scope.
+      The method's OWN type params (R) are bound as scoped type aliases so
+      body references like TList<R>.Create() canonicalise to the concrete
+      instantiation — mirrors InstantiateGeneric's body-analysis block. }
+    FTable.PushScope();
+    for I := 0 to Templ.TypeParams.Count - 1 do
+      FActiveTypeParams.Add(Templ.TypeParams.Strings[I]);
+    try
+      for I := 0 to Templ.TypeParams.Count - 1 do
+      begin
+        SubstType := FindTypeOrInstantiate(Args.Strings[I]);
+        if SubstType <> nil then
+          FTable.Define(TSymbol.Create(Templ.TypeParams.Strings[I],
+            skType, SubstType));
+      end;
+      AnalyseMethodDecl(NewMDecl, OwnerRT);
+    finally
+      for I := 0 to Templ.TypeParams.Count - 1 do
+        FActiveTypeParams.Delete(FActiveTypeParams.Count - 1);
+      FTable.PopScope();
+    end;
 
     GMI            := TGenericMethodInstance.Create();
     GMI.OwnerType  := AOwnerType;

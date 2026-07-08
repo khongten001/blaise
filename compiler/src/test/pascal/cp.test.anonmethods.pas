@@ -85,6 +85,9 @@ type
     procedure TestE2E_Arrow_ArgPosition_Standalone;
     procedure TestE2E_Arrow_ArgPosition_MethodWithCapture;
     procedure TestE2E_Arrow_ArgPosition_OverloadByShape;
+    { Phase 10 gate — a generic METHOD with its own type param on a generic
+      class monomorphises and runs (TBox<T>.MapTo<R>, two different R's). }
+    procedure TestE2E_GenericMethodOnGenericClass_Gate;
   end;
 
 implementation
@@ -1312,6 +1315,38 @@ begin
   Output := CompileAndRun(Src);
   if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
   AssertEquals('stdout', 'int:7' + #10 + 'fn:42' + #10, Output)
+end;
+
+procedure TAnonMethodTests.TestE2E_GenericMethodOnGenericClass_Gate;
+const
+  Src =
+    '''
+    program P;
+    type
+      TSel<T, R> = reference to function(AVal: T): R;
+      TBox<T> = class
+      public
+        FVal: T;
+        function MapTo<R>(F: TSel<T, R>): R;
+      end;
+    function TBox<T>.MapTo<R>(F: TSel<T, R>): R;
+    begin
+      Result := F(FVal)
+    end;
+    var
+      B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FVal := 42;
+      WriteLn(B.MapTo<string>(N -> 'v' + IntToStr(N)));
+      WriteLn(B.MapTo<Integer>(N -> N + 1))
+    end.
+    ''';
+var Output: string;
+begin
+  Output := CompileAndRun(Src);
+  if Output = '<toolchain-missing>' then begin Ignore('toolchain unavailable'); Exit end;
+  AssertEquals('stdout', 'v42' + #10 + '43' + #10, Output)
 end;
 
 initialization

@@ -239,6 +239,18 @@ begin
     are split across an imported class and its ancestor is not truncated by
     ResolveMethodOverload's hiding walk (which stops at a non-overload). }
   Result.IsOverload   := ASrc.IsOverload;
+  { Generic-method type params survive the .bif so the importer clones a
+    real template (Phase 10: TList<T>.Map<R>). }
+  if ASrc.TypeParams <> nil then
+  begin
+    Result.TypeParams := TStringList.Create();
+    Result.TypeParams.AddStrings(ASrc.TypeParams);
+    if ASrc.TypeParamConstraints <> nil then
+    begin
+      Result.TypeParamConstraints := TStringList.Create();
+      Result.TypeParamConstraints.AddStrings(ASrc.TypeParamConstraints);
+    end;
+  end;
   { Carry visibility so cross-unit member access enforces private/protected. }
   Result.Visibility   := ASrc.Visibility;
   Result.ReturnType   := ResolveTypeRef(ASrc.ReturnTypeName, AIface, ADeps);

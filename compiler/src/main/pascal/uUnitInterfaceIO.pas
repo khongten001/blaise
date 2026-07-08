@@ -403,6 +403,16 @@ begin
     EncodeBool (AR.IsOverload) +
     { member visibility ordinal }
     EncodeLpstr(IntToStr(Ord(AR.Visibility))) +
+    { generic-method type params (Phase 10) — nil means not generic }
+    EncodeBool (AR.TypeParams <> nil);
+  if AR.TypeParams <> nil then
+  begin
+    Result := Result + EncodeStringList(AR.TypeParams);
+    Result := Result + EncodeBool(AR.TypeParamConstraints <> nil);
+    if AR.TypeParamConstraints <> nil then
+      Result := Result + EncodeStringList(AR.TypeParamConstraints);
+  end;
+  Result := Result +
     EncodeCount(AR.Params.Count);
   for J := 0 to AR.Params.Count - 1 do
   begin
@@ -2087,6 +2097,17 @@ begin
   Result.IsStatic    := DecodeBool(AText, APos);
   Result.IsOverload  := DecodeBool(AText, APos);
   Result.Visibility  := TMemberVisibility(StrToInt(ReadLpstrAt(AText, APos)));
+  { Generic-method type params (Phase 10). }
+  if DecodeBool(AText, APos) then
+  begin
+    Result.TypeParams := TStringList.Create();
+    ReadStringListBlock(AText, APos, Result.TypeParams);
+    if DecodeBool(AText, APos) then
+    begin
+      Result.TypeParamConstraints := TStringList.Create();
+      ReadStringListBlock(AText, APos, Result.TypeParamConstraints);
+    end;
+  end;
   Pc := DecodeCount(AText, APos);
   for J := 1 to Pc do
   begin
@@ -2339,6 +2360,16 @@ begin
     MD.IsVirtual      := Sig.IsVirtual;
     MD.IsOverride     := Sig.IsOverride;
     MD.ReturnTypeName := Sig.ReturnType.TypeName;
+    if Sig.TypeParams <> nil then
+    begin
+      MD.TypeParams := TStringList.Create();
+      MD.TypeParams.AddStrings(Sig.TypeParams);
+      if Sig.TypeParamConstraints <> nil then
+      begin
+        MD.TypeParamConstraints := TStringList.Create();
+        MD.TypeParamConstraints.AddStrings(Sig.TypeParamConstraints);
+      end;
+    end;
     for K := 0 to Sig.Params.Count - 1 do
     begin
       SrcPar := TMethodParam(Sig.Params.Items[K]);

@@ -318,17 +318,19 @@ TRoutineSig.IsOverride  serialise
 TRoutineSig.IsStatic  serialise
 TRoutineSig.IsOverload  serialise
 TRoutineSig.Visibility  serialise
+TRoutineSig.TypeParams  serialise
+TRoutineSig.TypeParamConstraints  serialise
 
-# TConstEntry (uUnitInterface.pas:109)
+# TConstEntry (uUnitInterface.pas:116)
 TConstEntry.Decl  serialise
 TConstEntry.TypeRef  serialise
 
-# TVarEntry (uUnitInterface.pas:117)
+# TVarEntry (uUnitInterface.pas:124)
 TVarEntry.Name  serialise
 TVarEntry.TypeRef  serialise
 TVarEntry.IsThreadVar  serialise
 
-# TUnitInterface (uUnitInterface.pas:181)
+# TUnitInterface (uUnitInterface.pas:188)
 TUnitInterface.Name  serialise
 TUnitInterface.SourceFile  serialise
 TUnitInterface.SourceHash  serialise

@@ -101,6 +101,13 @@ type
                                    across an imported class and its ancestor is
                                    truncated to the more-derived level. }
     Visibility:   TMemberVisibility; { member access scope; default mvPublic }
+    TypeParams:   TStringList;   { owned; nil = not a generic method.  A
+                                   generic METHOD on a (possibly generic)
+                                   class keeps its own type-parameter list
+                                   through the .bif so the importer's
+                                   instantiation clones a real template
+                                   (Phase 10: TList<T>.Map<R>). }
+    TypeParamConstraints: TStringList; { owned; parallel; nil when none }
     constructor Create;
     destructor Destroy; override;
   end;

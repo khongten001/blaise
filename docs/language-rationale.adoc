@@ -1868,6 +1868,23 @@ same-shape lambda-taking overloads remain ambiguous and are rejected.  An
 arrow in a position with no inferable target (e.g. immediately invoked)
 still gets the directed diagnostic.
 
+=== Eager LINQ-lite on `TList<T>` (Phase 10)
+
+`TList<T>` gains closure-taking operators — `Map<R>`, `Where`, `Reduce<R>`,
+`ForEach`, `Any`, `All`, `Find` — plus a `TComparison<T>`-ordered in-place
+`Sort` and `BinarySearch`.  Operators are EAGER: `Map`/`Where` allocate and
+return new lists the caller owns (lazy pipelines are deferred).  `Sort` is
+a stable straight-insertion sort; `BinarySearch` reports the insertion
+point on a miss and requires the list already ordered by the same
+comparison.  The generic-method-on-generic-class machinery this needs
+(`TList<T>.Map<R>` — the design's gate probe) required: preserving
+method-level type parameters through class instantiation and the `.bif`
+template (TRoutineSig gains TypeParams), nested-aware type-argument
+substitution in method instantiation (`TSel<Integer, R>` at `R = string`),
+scoped binding of the method's own type params during instance body
+analysis (so `TList<R>.Create()` canonicalises), and skipping generic
+templates at emission on both backends.
+
 === Restrictions in this phase (clear compile-time errors)
 
 - Capturing a `var`/`out` parameter is rejected — the env would have to

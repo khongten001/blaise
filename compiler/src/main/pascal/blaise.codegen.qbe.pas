@@ -8483,6 +8483,9 @@ var
   RC:            TRecReturnClass;
   RetRec:        TRecordTypeDesc;
 begin
+  { Generic METHOD template (its own <R> type params): never emitted —
+    call sites emit monomorphised instances via GenericMethodInstances. }
+  if AMethod.TypeParams <> nil then Exit;
   if AMethod.ResolvedQbeName <> '' then
     FuncName := '$' + QBEMangle(AMethod.ResolvedQbeName)
   else

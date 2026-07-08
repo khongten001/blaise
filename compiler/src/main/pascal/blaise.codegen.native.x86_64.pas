@@ -18475,6 +18475,9 @@ var
   AddrTaken:   TStringList;
   SlotOff:     Integer;
 begin
+  { Generic templates (routine- or method-level type params) are never
+    emitted — call sites emit monomorphised instances. }
+  if ADecl.TypeParams <> nil then Exit;
   { Emit any nested procedures declared inside this function's body before
     emitting this function itself.  Each nested proc gets a mangled name
     OuterName_InnerName to avoid global symbol collisions.  FDbgOuterDecl
