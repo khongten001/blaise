@@ -52,6 +52,23 @@ type
   symbol. }
 procedure _RaiseDivByZero;
 
+{ StrToIntDef — convert a string to Integer; return ADefault on failure. }
+function StrToIntDef(const S: string; ADefault: Integer): Integer;
+
+{ StrToInt64Def — convert a string to Int64; return ADefault on failure. }
+function StrToInt64Def(const S: string; ADefault: Int64): Int64;
+
+{ _StrToIntChecked / _StrToInt64Checked — validating variants of the StrToInt /
+  StrToInt64 built-ins.  They raise EConvertError('...') when S is empty or
+  contains trailing non-digit characters, matching Delphi/FPC semantics.  The
+  code generator rewrites a StrToInt/StrToInt64 call to reference the
+  $SysUtils__StrToIntChecked symbol when SysUtils is in scope; without SysUtils
+  the lenient runtime _StrToInt is called (parses what it can, never raises).
+  Not intended for direct use — declared in the interface so codegen can link
+  them. }
+function _StrToIntChecked(const S: string): Integer;
+function _StrToInt64Checked(const S: string): Int64;
+
 { BoolToStr — not a compiler built-in; pure Pascal implementation }
 function BoolToStr(B: Boolean; AUseBoolStrs: Boolean = False): string;
 
@@ -86,6 +103,75 @@ end;
 procedure _RaiseDivByZero;
 begin
   raise EDivByZero.Create('Division by zero')
+end;
+
+function IsValidIntStr(const S: string): Boolean;
+var
+  I, Len, C: Integer;
+begin
+  Len := Length(S);
+  if Len = 0 then
+    Exit(False);
+  I := 0;
+  C := Ord(S[0]);
+  if (C = 43) or (C = 45) then
+  begin
+    I := 1;
+    if I >= Len then
+      Exit(False);
+  end;
+  if Ord(S[I]) = 36 then
+  begin
+    I := I + 1;
+    if I >= Len then
+      Exit(False);
+    while I < Len do
+    begin
+      C := Ord(S[I]);
+      if not (((C >= 48) and (C <= 57))
+           or ((C >= 65) and (C <= 70))
+           or ((C >= 97) and (C <= 102))) then
+        Exit(False);
+      I := I + 1;
+    end;
+    Exit(True);
+  end;
+  while I < Len do
+  begin
+    C := Ord(S[I]);
+    if (C < 48) or (C > 57) then
+      Exit(False);
+    I := I + 1;
+  end;
+  Result := True;
+end;
+
+function StrToIntDef(const S: string; ADefault: Integer): Integer;
+begin
+  if not IsValidIntStr(S) then
+    Exit(ADefault);
+  Result := StrToInt(S);
+end;
+
+function StrToInt64Def(const S: string; ADefault: Int64): Int64;
+begin
+  if not IsValidIntStr(S) then
+    Exit(ADefault);
+  Result := StrToInt64(S);
+end;
+
+function _StrToIntChecked(const S: string): Integer;
+begin
+  if not IsValidIntStr(S) then
+    raise EConvertError.Create('"' + S + '" is not a valid integer value');
+  Result := StrToInt(S);
+end;
+
+function _StrToInt64Checked(const S: string): Int64;
+begin
+  if not IsValidIntStr(S) then
+    raise EConvertError.Create('"' + S + '" is not a valid integer value');
+  Result := StrToInt64(S);
 end;
 
 function BoolToStr(B: Boolean; AUseBoolStrs: Boolean): string;

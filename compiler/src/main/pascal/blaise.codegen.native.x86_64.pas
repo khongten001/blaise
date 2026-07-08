@@ -247,6 +247,12 @@ type
       EDivByZero + _RaiseDivByZero, is in scope).  Gates the div/mod zero
       guard; without it a zero divisor traps in hardware as before. }
     function DivGuardAvailable(): Boolean;
+    { True when a StrToInt/StrToInt64 call should route to the validating
+      SysUtils wrapper (raises EConvertError on invalid input) rather than
+      the lenient runtime _StrToInt.  True iff SysUtils is in scope and the
+      unit being emitted is NOT SysUtils itself (the wrapper calls StrToInt
+      and would otherwise recurse forever). }
+    function StrToIntChecked(): Boolean;
     { Register a global integer slot of the given type (idempotent; the first
       registration's type wins).  The width and signedness drive both the
       .data directive and every load/store of the slot. }
@@ -1231,6 +1237,13 @@ end;
 function TX86_64Backend.DivGuardAvailable(): Boolean;
 begin
   Result := (FSymTable <> nil) and (FSymTable.Lookup('EDivByZero') <> nil);
+end;
+
+function TX86_64Backend.StrToIntChecked(): Boolean;
+begin
+  Result := (FSymTable <> nil)
+        and (FSymTable.Lookup('EConvertError') <> nil)
+        and (not SameText(FCurrentUnitName, 'SysUtils'));
 end;
 
 procedure TX86_64Backend.AddGlobal(const AName: string; AType: TTypeDesc);
@@ -6895,7 +6908,10 @@ begin
     begin
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
       Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StrToInt');
+      if Self.StrToIntChecked() then
+        Self.Emit(#9'callq SysUtils__StrToIntChecked')
+      else
+        Self.Emit(#9'callq _StrToInt');
       Self.Emit(#9'movslq %eax, %rax');
       Exit;
     end;
@@ -6903,7 +6919,10 @@ begin
     begin
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
       Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StrToInt64');
+      if Self.StrToIntChecked() then
+        Self.Emit(#9'callq SysUtils__StrToInt64Checked')
+      else
+        Self.Emit(#9'callq _StrToInt64');
       Exit;
     end;
     if SameText(FC.Name, 'PChar') and (FC.Args.Count = 1) then

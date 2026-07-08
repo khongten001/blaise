@@ -49,6 +49,10 @@ type
     procedure TestRun_PlatformConstants;
     procedure TestRun_GetCurrentDir_ReturnsNonEmpty;
     procedure TestRun_FileAge_ReturnsTimestamp;
+    procedure TestRun_StrToIntDef_ValidAndInvalid;
+    procedure TestRun_StrToInt64Def_ValidAndInvalid;
+    procedure TestRun_StrToInt_RaisesOnInvalid;
+    procedure TestRun_StrToInt64_RaisesOnInvalid;
   end;
 
 implementation
@@ -744,6 +748,171 @@ begin
     end;
   finally
     if FileExists(TmpFile) then DeleteFile(TmpFile);
+  end;
+end;
+
+const
+  SrcStrToIntDef =
+    '''
+        program P;
+        uses SysUtils;
+        begin
+          WriteLn(StrToIntDef('42', -1));
+          WriteLn(StrToIntDef('not-a-number', -1));
+          WriteLn(StrToIntDef('', 99));
+          WriteLn(StrToIntDef('-7', 0))
+        end.
+        ''';
+
+  SrcStrToInt64Def =
+    '''
+        program P;
+        uses SysUtils;
+        begin
+          WriteLn(StrToInt64Def('1234567890123', -1));
+          WriteLn(StrToInt64Def('bad', -1));
+          WriteLn(StrToInt64Def('', 77))
+        end.
+        ''';
+
+procedure TE2ESysUtilsTests.TestRun_StrToIntDef_ValidAndInvalid;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcStrToIntDef, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create();
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('valid int',     '42', Lines.Strings[0]);
+    AssertEquals('invalid int',   '-1', Lines.Strings[1]);
+    AssertEquals('empty string',  '99', Lines.Strings[2]);
+    AssertEquals('negative int',  '-7', Lines.Strings[3]);
+  finally
+    Lines.Free();
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_StrToInt64Def_ValidAndInvalid;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcStrToInt64Def, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create();
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('valid int64',   '1234567890123', Lines.Strings[0]);
+    AssertEquals('invalid int64', '-1',            Lines.Strings[1]);
+    AssertEquals('empty int64',   '77',            Lines.Strings[2]);
+  finally
+    Lines.Free();
+  end;
+end;
+
+const
+  SrcStrToIntRaises =
+    '''
+        program P;
+        uses SysUtils;
+        var
+          N: Integer;
+        begin
+          { valid input still parses }
+          WriteLn(StrToInt('42'));
+          WriteLn(StrToInt('-7'));
+          { trailing non-digit chars must raise }
+          try
+            N := StrToInt('42abc');
+            WriteLn('NO-RAISE ', N)
+          except
+            on E: EConvertError do WriteLn('caught: 42abc')
+          end;
+          { fully non-numeric must raise }
+          try
+            N := StrToInt('hello');
+            WriteLn('NO-RAISE ', N)
+          except
+            on E: EConvertError do WriteLn('caught: hello')
+          end;
+          { empty string must raise }
+          try
+            N := StrToInt('');
+            WriteLn('NO-RAISE ', N)
+          except
+            on E: EConvertError do WriteLn('caught: empty')
+          end
+        end.
+        ''';
+
+  SrcStrToInt64Raises =
+    '''
+        program P;
+        uses SysUtils;
+        var
+          N: Int64;
+        begin
+          WriteLn(StrToInt64('1234567890123'));
+          try
+            N := StrToInt64('99bad');
+            WriteLn('NO-RAISE ', N)
+          except
+            on E: EConvertError do WriteLn('caught: 99bad')
+          end;
+          try
+            N := StrToInt64('');
+            WriteLn('NO-RAISE ', N)
+          except
+            on E: EConvertError do WriteLn('caught: empty')
+          end
+        end.
+        ''';
+
+procedure TE2ESysUtilsTests.TestRun_StrToInt_RaisesOnInvalid;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcStrToIntRaises, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create();
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('valid int',      '42',           Lines.Strings[0]);
+    AssertEquals('negative int',   '-7',           Lines.Strings[1]);
+    AssertEquals('trailing chars', 'caught: 42abc', Lines.Strings[2]);
+    AssertEquals('non-numeric',    'caught: hello', Lines.Strings[3]);
+    AssertEquals('empty string',   'caught: empty', Lines.Strings[4]);
+  finally
+    Lines.Free();
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_StrToInt64_RaisesOnInvalid;
+var
+  Output: string;
+  RCode: Integer;
+  Lines: TStringList;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue('compile+run', CompileAndRunWithRTL(SrcStrToInt64Raises, Output, RCode));
+  AssertEquals('exit code 0', 0, RCode);
+  Lines := TStringList.Create();
+  try
+    Lines.Text := Trim(Output);
+    AssertEquals('valid int64',    '1234567890123', Lines.Strings[0]);
+    AssertEquals('trailing chars', 'caught: 99bad', Lines.Strings[1]);
+    AssertEquals('empty string',   'caught: empty', Lines.Strings[2]);
+  finally
+    Lines.Free();
   end;
 end;
 

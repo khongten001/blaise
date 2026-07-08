@@ -341,6 +341,12 @@ type
       (which declares EDivByZero + _RaiseDivByZero) is in scope.  When False
       the div/mod guard is omitted and a zero divisor traps in hardware. }
     function  DivGuardAvailable(): Boolean;
+    { Returns True when a StrToInt/StrToInt64 call should be routed to the
+      validating SysUtils wrapper (which raises EConvertError on invalid
+      input) instead of the lenient runtime _StrToInt.  True iff SysUtils is
+      in scope AND the unit currently being emitted is NOT SysUtils itself
+      (the wrapper body calls StrToInt and would otherwise recurse forever). }
+    function  StrToIntChecked(): Boolean;
     { Emit a divisor==0 check before an integer div/rem.  ADivisor is the QBE
       temp holding the right operand; AIsLong selects l vs w comparison. }
     procedure EmitDivZeroGuard(const ADivisor: string; AIsLong: Boolean);
@@ -3400,6 +3406,17 @@ begin
     linkable, so the guard can raise a catchable exception.  Otherwise the
     divisor-zero path must fall through to the hardware trap. }
   Result := (FSymTable <> nil) and (FSymTable.Lookup('EDivByZero') <> nil);
+end;
+
+function TCodeGenQBE.StrToIntChecked(): Boolean;
+begin
+  { EConvertError is declared in SysUtils; if it resolves, SysUtils is in
+    scope and $SysUtils__StrToIntChecked is linkable.  Never route SysUtils'
+    own body through the wrapper — its StrToInt call must reach the lenient
+    runtime _StrToInt, or _StrToIntChecked recurses infinitely. }
+  Result := (FSymTable <> nil)
+        and (FSymTable.Lookup('EConvertError') <> nil)
+        and (not SameText(FCurrentUnitName, 'SysUtils'));
 end;
 
 procedure TCodeGenQBE.EmitDivZeroGuard(const ADivisor: string; AIsLong: Boolean);
@@ -11816,7 +11833,10 @@ begin
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
-        EmitLine(Format('  %s =w call $_StrToInt(l %s)', [T, L]));
+        if Self.StrToIntChecked() then
+          EmitLine(Format('  %s =w call $SysUtils__StrToIntChecked(l %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =w call $_StrToInt(l %s)', [T, L]));
         Exit(T);
       end;
 
@@ -11915,7 +11935,10 @@ begin
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
-        EmitLine(Format('  %s =l call $_StrToInt64(l %s)', [T, L]));
+        if Self.StrToIntChecked() then
+          EmitLine(Format('  %s =l call $SysUtils__StrToInt64Checked(l %s)', [T, L]))
+        else
+          EmitLine(Format('  %s =l call $_StrToInt64(l %s)', [T, L]));
         Exit(T);
       end;
 
