@@ -163,16 +163,19 @@ end;
 
 { Bootstrap fallback: a binary built by a codegen that does not yet emit main's
   direct, strong, by-name call to rtl.platform.layout.<os>_init reaches the
-  layout through _SetArgs -> _BlaisePlatformInit instead.  Emitted WEAK so that
-  every concrete layout unit can define it without a duplicate-symbol link error
-  when more than one is linked (e.g. a test that imports a non-host layout): the
-  linker keeps the first-seen weak, which is the host layout BuildRTLUnitList
-  links first.  A tiny asm trampoline that tail-calls AssignLayout. }
+  layout through _SetArgs -> _BlaisePlatformInit instead.  A tiny asm
+  trampoline that tail-calls AssignLayout.  Kept WEAK, but ALSO target-guarded
+  like the flat functions below: first-seen-weak depends on object link order,
+  and a loose test-unit object (a test importing a foreign layout) precedes
+  the archived host copy — the guard, not the weakness, is what guarantees
+  exactly one trampoline per link. }
+{$IFDEF LINUX}
 procedure _BlaisePlatformInit; assembler; nostackframe;
 asm
     .weak _BlaisePlatformInit
     jmp AssignLayoutLinux
 end;
+{$ENDIF}
 
 {$IFDEF LINUX}
 function _MapAnonFlag: Integer;
@@ -242,6 +245,11 @@ end;
 {$ENDIF}
 
 initialization
+{ Target-guarded like the FreeBSD twin: only the unit matching the build
+  target may claim GPlatformLayout — the nil-guard in AssignLayout is no
+  protection when a foreign layout unit's init happens to run first. }
+{$IFDEF LINUX}
   AssignLayoutLinux();
+{$ENDIF}
 
 end.

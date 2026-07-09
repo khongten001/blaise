@@ -167,23 +167,26 @@ end;
 
 { Assign GPlatformLayout to the FreeBSD layout, once.  Called from this unit's
   initialization (rtl.platform.layout.freebsd_init, which main invokes by-name
-  for a FreeBSD --target) and from the weak _BlaisePlatformInit trampoline.  The
-  nil-guard keeps it a no-op on a host build that merely imports this unit (e.g.
-  cp.test.platformlayout.freebsd), so it never clobbers the host layout. }
+  for a FreeBSD --target) and from the weak _BlaisePlatformInit trampoline. }
 procedure AssignLayoutFreeBSD;
 begin
   if GPlatformLayout = nil then
     GPlatformLayout := TPlatformLayoutFreeBSDX86_64.Create();
 end;
 
+{$IFDEF FREEBSD}
 { Weak bootstrap-fallback trampoline — see the twin in rtl.platform.layout.linux
-  for the full rationale.  Defined WEAK so the linker keeps the first-seen (host)
-  layout's copy when both units are linked. }
+  for the full rationale.  Target-guarded like the flat functions above: on a
+  host build that links both layout units, only the host unit may provide the
+  trampoline (the nil-guard in AssignLayout is no protection — it just hands
+  the layout to whichever init runs FIRST, and unit-init order put this unit
+  before the host one, breaking every O_CREAT open in the process). }
 procedure _BlaisePlatformInit; assembler; nostackframe;
 asm
     .weak _BlaisePlatformInit
     jmp AssignLayoutFreeBSD
 end;
+{$ENDIF}
 
 {$IFDEF FREEBSD}
 function _MapAnonFlag: Integer;
@@ -261,6 +264,14 @@ end;
 {$ENDIF}
 
 initialization
+{ Target-guarded: on a host (Linux) build this unit is linked only for its
+  class API (cp.test.platformlayout.freebsd), and its unit-init runs BEFORE
+  the host layout's — an unguarded assign here would claim GPlatformLayout
+  first and hand the host process FreeBSD O_* flag values (observed: every
+  harness O_CREAT open failed ENOENT because FreeBSD $0200|$0400 decodes as
+  Linux O_TRUNC|O_APPEND). }
+{$IFDEF FREEBSD}
   AssignLayoutFreeBSD();
+{$ENDIF}
 
 end.

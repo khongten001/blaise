@@ -596,6 +596,13 @@ begin
       try
         Args.Add('--backend');     Args.Add('native');
         Args.Add('--assembler');   Args.Add('internal');
+        { Propagate the target: the OS conditional-compilation defines follow
+          --target, and the per-OS layout units carry target-guarded sections
+          (flat leaves + initialization).  Without this the child compiles the
+          FreeBSD layout unit with the HOST defines, its guarded sections drop
+          out, and the cross link dies with an undefined
+          rtl.platform.layout.freebsd_init / _MapAnonFlag. }
+        Args.Add('--target');      Args.Add(TargetName(AOpts.Target));
         Args.Add('--source');      Args.Add(SrcFile);
         Args.Add('--unit-path');   Args.Add(SrcDir);
         Args.Add('--unit-cache');  Args.Add(BuildDir);
