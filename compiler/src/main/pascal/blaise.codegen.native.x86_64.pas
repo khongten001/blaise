@@ -6897,6 +6897,16 @@ begin
         Self.Emit(#9'movq %rax, %rdi');
         Self.Emit(#9'callq _UInt64ToStr');
       end
+      else if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+              (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt32) then
+      begin
+        { A Cardinal does not fit _IntToStr's signed Integer parameter —
+          route to _Int64ToStr so a value >= 2^31 keeps its magnitude.
+          %rax already holds the zero-extended value (32-bit loads/ops
+          clear the upper 32 bits on x86-64). }
+        Self.Emit(#9'movq %rax, %rdi');
+        Self.Emit(#9'callq _Int64ToStr');
+      end
       else
       begin
         Self.Emit(#9'movl %eax, %edi');

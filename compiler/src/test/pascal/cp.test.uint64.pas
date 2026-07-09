@@ -47,6 +47,9 @@ type
     procedure TestCodegen_WriteLn_UInt64_CallsSysWriteUInt64;
     procedure TestCodegen_IntToStr_UInt64_CallsUInt64ToStr;
     procedure TestCodegen_Int64LargeLiteralCast_UsesLType;
+    procedure TestCodegen_CardinalToInt64Var_EmitsExtuw;
+    procedure TestCodegen_CardinalToInt64Field_EmitsExtuw;
+    procedure TestCodegen_Int64CastOfCardinal_EmitsExtuw;
   end;
 
   [Threaded]
@@ -66,6 +69,17 @@ type
       positions.  The QBE backend once emitted a 'w'-typed operand here and
       QBE rejected the IR ("invalid type for first operand ... in arg"). }
     procedure TestRun_Int64_LargeLiteralCast;
+    { BUG-026: an unsigned 32-bit RHS (Cardinal) stored into a 64-bit slot
+      must ZERO-extend (extuw), not sign-extend — otherwise a Cardinal >= 2^31
+      is smeared to a negative Int64.  Covers variable, field, array-element,
+      and argument-coercion store sites (QBE previously wrong; native correct). }
+    procedure TestRun_CardinalToInt64_AllStoreSites;
+    { BUG-026 (expression sites): a Cardinal >= 2^31 must also keep its
+      magnitude through Format args, the explicit Int64() cast, Int64
+      comparisons, Int64 arithmetic, Int64 bitwise ops (QBE previously
+      sign-extended each), and IntToStr (both backends previously routed
+      to the signed 32-bit _IntToStr). }
+    procedure TestRun_CardinalToInt64_ExprSites;
   end;
 
 implementation
@@ -361,6 +375,67 @@ begin
     Pos('=w copy 922337203685477580', IR) <> -1);
 end;
 
+procedure TUInt64Tests.TestCodegen_CardinalToInt64Var_EmitsExtuw;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        var
+          V: Int64;
+          C: Cardinal;
+        begin
+          C := 4000000000;
+          V := C
+        end.
+        ''');
+  { An unsigned 32-bit source must zero-extend (extuw), never sign-extend. }
+  AssertTrue('Cardinal -> Int64 var store must zero-extend (extuw)',
+    Pos('extuw', IR) > 0);
+end;
+
+procedure TUInt64Tests.TestCodegen_CardinalToInt64Field_EmitsExtuw;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        type TRec = record V: Int64; end;
+        var
+          R: TRec;
+          C: Cardinal;
+        begin
+          C := 4000000000;
+          R.V := C
+        end.
+        ''');
+  AssertTrue('Cardinal -> Int64 field store must zero-extend (extuw)',
+    Pos('extuw', IR) > 0);
+end;
+
+procedure TUInt64Tests.TestCodegen_Int64CastOfCardinal_EmitsExtuw;
+var
+  IR: string;
+begin
+  IR := GenIR(
+    '''
+        program P;
+        var
+          V: Int64;
+          C: Cardinal;
+        begin
+          C := 4000000000;
+          V := Int64(C)
+        end.
+        ''');
+  { The explicit cast Int64(aCardinal) must zero-extend the unsigned
+    source, never sign-extend it. }
+  AssertTrue('Int64(Cardinal) cast must zero-extend (extuw)',
+    Pos('extuw', IR) > 0);
+end;
+
 procedure TUInt64Tests.TestCodegen_WriteLn_UInt64_CallsSysWriteUInt64;
 var
   IR: string;
@@ -490,6 +565,62 @@ const
     end.
     ''';
 
+  { BUG-026: Cardinal 4000000000 (>= 2^31) stored into Int64 slots through
+    every store site must keep its unsigned value, not become negative.
+    QBE previously emitted extsw at each site and printed -294967296. }
+  SrcCardinalToInt64AllSites =
+    '''
+    program P;
+    type TRec = record V: Int64; end;
+    procedure Show(N: Int64);
+    begin WriteLn(N) end;
+    var
+      C:   Cardinal;
+      V:   Int64;
+      R:   TRec;
+      Arr: array[0..1] of Int64;
+    begin
+      C := 4000000000;
+      V := C;         { scalar variable store }
+      WriteLn(V);
+      R.V := C;       { record field store }
+      WriteLn(R.V);
+      Arr[0] := C;    { array-element store }
+      WriteLn(Arr[0]);
+      Show(C)         { argument coercion w -> l }
+    end.
+    ''';
+
+  { BUG-026 expression sites: Cardinal 4000000000 through Format args, the
+    Int64() cast, Int64 comparison/arithmetic/bitwise operands, and IntToStr
+    must keep its unsigned magnitude on both backends. }
+  SrcCardinalToInt64ExprSites =
+    '''
+    program P;
+    uses sysutils;
+    var
+      C:   Cardinal;
+      I64: Int64;
+    begin
+      C := 4000000000;
+      WriteLn(Format('%d', [C]));       { Format arg boxing }
+      I64 := Int64(C);                  { explicit cast }
+      WriteLn(I64);
+      I64 := 3999999999;
+      if C > I64 then                   { comparison operand }
+        WriteLn('gt-ok')
+      else
+        WriteLn('gt-BAD');
+      I64 := 0;
+      I64 := I64 + C;                   { arithmetic operand }
+      WriteLn(I64);
+      I64 := -1;
+      I64 := I64 and C;                 { bitwise operand }
+      WriteLn(I64);
+      WriteLn(IntToStr(C))              { IntToStr routing }
+    end.
+    ''';
+
 procedure TUInt64E2ETests.TestRun_UInt64_RoundTrip;
 var Output: string; RCode: Integer;
 begin
@@ -555,6 +686,32 @@ begin
     '922337203685477580' + LE +
     '92233720368547758' + LE +
     '922337203685477580' + LE, 0);
+end;
+
+procedure TUInt64E2ETests.TestRun_CardinalToInt64_AllStoreSites;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { All four store sites must preserve the unsigned magnitude on both backends. }
+  AssertRunsOnAll(SrcCardinalToInt64AllSites,
+    '4000000000' + LE +
+    '4000000000' + LE +
+    '4000000000' + LE +
+    '4000000000' + LE, 0);
+end;
+
+procedure TUInt64E2ETests.TestRun_CardinalToInt64_ExprSites;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Every expression site must preserve the unsigned magnitude on both
+    backends: Format, Int64() cast, comparison, arithmetic, bitwise,
+    IntToStr. }
+  AssertRunsOnAll(SrcCardinalToInt64ExprSites,
+    '4000000000' + LE +
+    '4000000000' + LE +
+    'gt-ok' + LE +
+    '4000000000' + LE +
+    '4000000000' + LE +
+    '4000000000' + LE, 0);
 end;
 
 initialization

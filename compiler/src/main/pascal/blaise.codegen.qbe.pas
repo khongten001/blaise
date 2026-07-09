@@ -871,11 +871,17 @@ begin
   ArgT := AArgExpr.ResolvedType;
   ArgQ := QbeTypeOf(ArgT);
   if ArgQ = AParamQType then Exit;
-  { Integer widening: w → l. }
+  { Integer widening: w → l.  Widen by the SOURCE type's signedness so an
+    unsigned 32-bit argument (Cardinal) zero-extends (extuw) and keeps its
+    value >= 2^31, while a signed argument sign-extends (extsw).  Matches the
+    native backend. }
   if (AParamQType = 'l') and (ArgQ = 'w') then
   begin
     ExtTemp := AllocTemp();
-    EmitLine(Format('  %s =l extsw %s', [ExtTemp, AArgTemp]));
+    if ArgT.Kind = tyUInt32 then
+      EmitLine(Format('  %s =l extuw %s', [ExtTemp, AArgTemp]))
+    else
+      EmitLine(Format('  %s =l extsw %s', [ExtTemp, AArgTemp]));
     Exit(ExtTemp);
   end;
   { Integer/Single → Double. }
@@ -4711,8 +4717,14 @@ begin
     begin
       if QbeTypeOf(AAssign.Expr.ResolvedType) = 'w' then
       begin
+        { Widen by the SOURCE type's signedness: an unsigned 32-bit RHS
+          zero-extends (extuw) so a Cardinal >= 2^31 keeps its value; a
+          signed RHS sign-extends (extsw). Matches the native backend. }
         ExtTemp := AllocTemp();
-        EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
+        if AAssign.Expr.ResolvedType.Kind = tyUInt32 then
+          EmitLine(Format('  %s =l extuw %s', [ExtTemp, ValTemp]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
         ValTemp := ExtTemp;
       end;
       { ARC for class/string field stored via implicit Self.Field }
@@ -5337,8 +5349,13 @@ begin
       ValTemp := EmitExpr(AAssign.Expr);
       if QbeTypeOf(AAssign.Expr.ResolvedType) = 'w' then
       begin
+        { Widen by SOURCE signedness: unsigned 32-bit zero-extends (extuw)
+          so a Cardinal >= 2^31 keeps its value; signed sign-extends. }
         ExtTemp := AllocTemp();
-        EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
+        if AAssign.Expr.ResolvedType.Kind = tyUInt32 then
+          EmitLine(Format('  %s =l extuw %s', [ExtTemp, ValTemp]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
         ValTemp := ExtTemp;
       end;
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
@@ -6971,13 +6988,17 @@ begin
     ValTemp := EmitByteRhs(AAssign.Expr)
   else
     ValTemp := EmitExpr(AAssign.Expr);
-  { Extend w-typed values into 8-byte integer elements. }
+  { Extend w-typed values into 8-byte integer elements.  Widen by the SOURCE
+    type's signedness, not the destination's: an unsigned 32-bit source
+    (Cardinal) zero-extends (extuw) so it keeps its value even into an Int64
+    element; every signed source sign-extends (extsw) so Integer(-1) fills all
+    64 bits even into a UInt64 element.  Matches the native backend. }
   if (ElemT.Kind in [tyInt64, tyUInt64]) and
      (AAssign.Expr.ResolvedType <> nil) and
      not (AAssign.Expr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
   begin
     Adj := AllocTemp();
-    if ElemT.Kind = tyUInt64 then
+    if AAssign.Expr.ResolvedType.Kind = tyUInt32 then
       EmitLine(Format('  %s =l extuw %s', [Adj, ValTemp]))
     else
       EmitLine(Format('  %s =l extsw %s', [Adj, ValTemp]));
@@ -7406,11 +7427,16 @@ begin
     end
     else if QType <> 'w' then
     begin
-      { Integer/pointer field wider than word: sign-extend a word RHS to l. }
+      { Integer/pointer field wider than word: widen a word RHS to l by the
+        SOURCE type's signedness — unsigned 32-bit zero-extends (extuw) so a
+        Cardinal >= 2^31 keeps its value; signed sign-extends (extsw). }
       if QbeTypeOf(AAssign.Expr.ResolvedType) = 'w' then
       begin
         ExtTemp := AllocTemp();
-        EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
+        if AAssign.Expr.ResolvedType.Kind = tyUInt32 then
+          EmitLine(Format('  %s =l extuw %s', [ExtTemp, ValTemp]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
         ValTemp := ExtTemp;
       end;
     end;
@@ -10675,7 +10701,13 @@ begin
     ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     SizeTemp := AllocTemp();
-    EmitLine(Format('  %s =l extsw %s', [SizeTemp, ArgTemp2]));
+    { An unsigned 32-bit size (Cardinal) zero-extends so a size >= 2^31
+      stays positive; signed sizes sign-extend. }
+    if (TASTExpr(ACall.Args.Items[1]).ResolvedType <> nil) and
+       (TASTExpr(ACall.Args.Items[1]).ResolvedType.Kind = tyUInt32) then
+      EmitLine(Format('  %s =l extuw %s', [SizeTemp, ArgTemp2]))
+    else
+      EmitLine(Format('  %s =l extsw %s', [SizeTemp, ArgTemp2]));
     EmitLine(Format('  call $memset(l %s, w 0, l %s)', [ArgTemp, SizeTemp]));
   end
   else if UCaseName = '_CLASSADDREF' then
@@ -11531,7 +11563,10 @@ begin
       begin
         { Route to _Int64ToStr / _UInt64ToStr / _IntToStr based on the
           argument's resolved type.  Matches FPC's overloaded
-          IntToStr(Int64) / IntToStr(QWord) / IntToStr(Integer). }
+          IntToStr(Int64) / IntToStr(QWord) / IntToStr(Integer).
+          A Cardinal (unsigned 32-bit) does not fit _IntToStr's signed
+          Integer parameter — zero-extend it and route to _Int64ToStr so
+          a value >= 2^31 keeps its magnitude. }
         if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
            (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt64) then
         begin
@@ -11543,6 +11578,16 @@ begin
                 (QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType) = 'l') then
         begin
           L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+          T := AllocTemp();
+          EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', [T, L]));
+        end
+        else if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
+                (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt32) then
+        begin
+          L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+          T := AllocTemp();
+          EmitLine(Format('  %s =l extuw %s', [T, L]));
+          L := T;
           T := AllocTemp();
           EmitLine(Format('  %s =l call $_Int64ToStr(l %s)', [T, L]));
         end
@@ -12037,12 +12082,19 @@ begin
               ArgTemp := EmitExpr(FmtArgElem);
               if IsIntArg then
               begin
-                { Integer args may be w-typed; widen to l for storel. }
+                { Integer args may be w-typed; widen to l for storel.  Widen
+                  by the SOURCE type's signedness: an unsigned 32-bit arg
+                  (Cardinal) zero-extends (extuw) so a value >= 2^31 keeps
+                  its magnitude; signed args sign-extend (extsw).  Matches
+                  the native backend. }
                 QType := QbeTypeOf(FmtArgElem.ResolvedType);
                 if QType = 'w' then
                 begin
                   FmtSlotTemp := AllocTemp();
-                  EmitLine(Format('  %s =l extsw %s', [FmtSlotTemp, ArgTemp]));
+                  if FmtArgElem.ResolvedType.Kind = tyUInt32 then
+                    EmitLine(Format('  %s =l extuw %s', [FmtSlotTemp, ArgTemp]))
+                  else
+                    EmitLine(Format('  %s =l extsw %s', [FmtSlotTemp, ArgTemp]));
                   ArgTemp := FmtSlotTemp;
                 end;
               end;
@@ -12470,12 +12522,15 @@ begin
           EmitLine(Format('  %s =w copy %s', [T, ArgTemp]))
         else
         begin
-          { Widening from w to l: zero-extend for pointer/unsigned targets,
-            sign-extend otherwise (QBE rejects 'l copy w'). }
+          { Widening from w to l: zero-extend for pointer/unsigned targets
+            and for an unsigned 32-bit SOURCE (Int64(aCardinal) must keep a
+            value >= 2^31 — matches the native backend), sign-extend
+            otherwise (QBE rejects 'l copy w'). }
           if (TASTExpr(FC.Args.Items[0]).ResolvedType <> nil) and
              (QbeTypeOf(TASTExpr(FC.Args.Items[0]).ResolvedType) = 'w') then
           begin
-            if FC.ResolvedType.Kind in [tyUInt64, tyPointer, tyPChar] then
+            if (FC.ResolvedType.Kind in [tyUInt64, tyPointer, tyPChar]) or
+               (TASTExpr(FC.Args.Items[0]).ResolvedType.Kind = tyUInt32) then
               EmitLine(Format('  %s =l extuw %s', [T, ArgTemp]))
             else
               EmitLine(Format('  %s =l extsw %s', [T, ArgTemp]));
@@ -14423,12 +14478,17 @@ begin
       if BinExpr.ResolvedType.Kind in [tyInt64, tyUInt64] then
       begin
         { Extend w operands to l before the l-typed instruction.
-          Sign-extend for tyInt64, zero-extend for tyUInt64. }
+          Zero-extend for tyUInt64 results and for an unsigned 32-bit
+          SOURCE operand (a Cardinal >= 2^31 must keep its magnitude even
+          in a tyInt64 expression — matches the native backend);
+          sign-extend otherwise. }
         if (BinExpr.Left.ResolvedType = nil) or
            not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp();
-          if BinExpr.ResolvedType.Kind = tyUInt64 then
+          if (BinExpr.ResolvedType.Kind = tyUInt64) or
+             ((BinExpr.Left.ResolvedType <> nil) and
+              (BinExpr.Left.ResolvedType.Kind = tyUInt32)) then
             EmitLine(Format('  %s =l extuw %s', [ArgTemp, L]))
           else
             EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
@@ -14438,7 +14498,9 @@ begin
            not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp();
-          if BinExpr.ResolvedType.Kind = tyUInt64 then
+          if (BinExpr.ResolvedType.Kind = tyUInt64) or
+             ((BinExpr.Right.ResolvedType <> nil) and
+              (BinExpr.Right.ResolvedType.Kind = tyUInt32)) then
             EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
           else
             EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
@@ -14519,8 +14581,14 @@ begin
        (BinExpr.Left.ResolvedType <> nil) and
        (BinExpr.Left.ResolvedType.Kind in [tyPointer, tyPChar]) then
     begin
+      { An unsigned 32-bit offset (Cardinal) zero-extends so an offset
+        >= 2^31 stays positive; signed offsets sign-extend. }
       ArgTemp := AllocTemp();
-      EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+      if (BinExpr.Right.ResolvedType <> nil) and
+         (BinExpr.Right.ResolvedType.Kind = tyUInt32) then
+        EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
+      else
+        EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
       if BinExpr.Op = boAdd then
         EmitLine(Format('  %s =l add %s, %s', [T, L, ArgTemp]))
       else
@@ -14712,19 +14780,31 @@ begin
              ((BinExpr.Right.ResolvedType <> nil) and
               (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]))) then
     begin
+      { Widen w operands by the SOURCE type's signedness: an unsigned 32-bit
+        operand (Cardinal) zero-extends (extuw) so a value >= 2^31 compares
+        by its magnitude; signed operands sign-extend (extsw).  Matches the
+        native backend. }
       ArgTemp := '';  { silence "uninitialised" hint }
       if (BinExpr.Left.ResolvedType = nil) or
          not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp();
-        EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
+        if (BinExpr.Left.ResolvedType <> nil) and
+           (BinExpr.Left.ResolvedType.Kind = tyUInt32) then
+          EmitLine(Format('  %s =l extuw %s', [ArgTemp, L]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
         L := ArgTemp;
       end;
       if (BinExpr.Right.ResolvedType = nil) or
          not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp();
-        EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
+        if (BinExpr.Right.ResolvedType <> nil) and
+           (BinExpr.Right.ResolvedType.Kind = tyUInt32) then
+          EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
+        else
+          EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
         R := ArgTemp;
       end;
       if ((BinExpr.Left.ResolvedType <> nil) and
@@ -14760,11 +14840,17 @@ begin
     else if (BinExpr.ResolvedType <> nil) and
             (BinExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
     begin
+      { Widen w operands by the SOURCE type's signedness as well as the
+        result type: an unsigned 32-bit operand (Cardinal) zero-extends
+        (extuw) so a value >= 2^31 keeps its magnitude even in a tyInt64
+        expression — matches the native backend. }
       if (BinExpr.Left.ResolvedType = nil) or
          not (BinExpr.Left.ResolvedType.Kind in [tyInt64, tyUInt64]) then
       begin
         ArgTemp := AllocTemp();
-        if BinExpr.ResolvedType.Kind = tyUInt64 then
+        if (BinExpr.ResolvedType.Kind = tyUInt64) or
+           ((BinExpr.Left.ResolvedType <> nil) and
+            (BinExpr.Left.ResolvedType.Kind = tyUInt32)) then
           EmitLine(Format('  %s =l extuw %s', [ArgTemp, L]))
         else
           EmitLine(Format('  %s =l extsw %s', [ArgTemp, L]));
@@ -14778,7 +14864,9 @@ begin
            not (BinExpr.Right.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           ArgTemp := AllocTemp();
-          if BinExpr.ResolvedType.Kind = tyUInt64 then
+          if (BinExpr.ResolvedType.Kind = tyUInt64) or
+             ((BinExpr.Right.ResolvedType <> nil) and
+              (BinExpr.Right.ResolvedType.Kind = tyUInt32)) then
             EmitLine(Format('  %s =l extuw %s', [ArgTemp, R]))
           else
             EmitLine(Format('  %s =l extsw %s', [ArgTemp, R]));
@@ -17023,13 +17111,15 @@ begin
       begin
         StoreInstr := 'storel';
         { Extend w-typed value to l if needed (e.g. integer literals into
-          Int64/UInt64 slots).  Signed for tyInt64, unsigned for tyUInt64. }
+          Int64/UInt64 slots).  Widen by the SOURCE type's signedness:
+          unsigned 32-bit (Cardinal) zero-extends (extuw); every signed source
+          sign-extends (extsw).  Matches the native backend. }
         if (ElemVal <> '') and (ElemType.Kind in [tyInt64, tyUInt64]) and
            (AStmt.ValueExpr.ResolvedType <> nil) and
            not (AStmt.ValueExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
         begin
           Adj := AllocTemp();
-          if ElemType.Kind = tyUInt64 then
+          if AStmt.ValueExpr.ResolvedType.Kind = tyUInt32 then
             EmitLine(Format('  %s =l extuw %s', [Adj, ElemVal]))
           else
             EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
@@ -17177,8 +17267,11 @@ begin
      (AStmt.ValueExpr.ResolvedType <> nil) and
      not (AStmt.ValueExpr.ResolvedType.Kind in [tyInt64, tyUInt64]) then
   begin
+    { Widen by the SOURCE type's signedness: unsigned 32-bit (Cardinal)
+      zero-extends (extuw); every signed source sign-extends (extsw).
+      Matches the native backend. }
     Adj := AllocTemp();
-    if ElemType.Kind = tyUInt64 then
+    if AStmt.ValueExpr.ResolvedType.Kind = tyUInt32 then
       EmitLine(Format('  %s =l extuw %s', [Adj, ElemVal]))
     else
       EmitLine(Format('  %s =l extsw %s', [Adj, ElemVal]));
@@ -17382,7 +17475,13 @@ begin
           Tag := 0;   { vtInteger }
           ElemVal := EmitExpr(Elem);
           Widened := AllocTemp();
-          EmitLine(Format('  %s =l extsw %s', [Widened, ElemVal]));
+          { Unsigned 32-bit (Cardinal) zero-extends so a value >= 2^31 keeps
+            its magnitude in the 64-bit variant slot; narrower/signed sources
+            sign-extend. }
+          if EK = tyUInt32 then
+            EmitLine(Format('  %s =l extuw %s', [Widened, ElemVal]))
+          else
+            EmitLine(Format('  %s =l extsw %s', [Widened, ElemVal]));
           EmitLine(Format('  storel %s, %s', [Widened, ValPtr]));
         end;
       tyBoolean:
