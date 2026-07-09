@@ -15,7 +15,8 @@ interface
 
 uses
   Classes, SysUtils, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe,
+  blaise.codegen.native, blaise.codegen.native.backend, blaise.codegen.target;
 
 type
   TPointerTests = class(TTestCase)
@@ -23,6 +24,8 @@ type
     function ParseSrc(const ASrc: string): TProgram;
     function AnalyseSrc(const ASrc: string): TProgram;
     function GenIR(const ASrc: string): string;
+    procedure AnalyseExpectError(const ASrc: string);
+    procedure GenNativeExpectCodeGenError(const ASrc: string);
   published
     { ------------------------------------------------------------------ }
     { Parser — pointer type names and expressions                          }
@@ -41,6 +44,21 @@ type
     procedure TestSemantic_FreeMem_IsCallable;
     procedure TestSemantic_Deref_ResolvedType;
     procedure TestSemantic_PointerWrite_AcceptsMatchingType;
+
+    { ------------------------------------------------------------------ }
+    { BUG-035 — unsupported memory-builtin forms must be rejected cleanly }
+    { (the native backend used to segfault on the nil ResolvedDecl)       }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_GetMem_StatementForm_Rejected;
+    procedure TestSemantic_ReallocMem_StatementForm_Rejected;
+    procedure TestSemantic_FreeMem_TwoArgs_Rejected;
+    procedure TestSemantic_GetMem_WrongArity_Rejected;
+    procedure TestSemantic_ReallocMem_WrongArity_Rejected;
+    { A builtin FUNCTION in statement position that semantic still lets
+      through must raise the backend's clean 'Unknown procedure' error on
+      BOTH backends — never dereference the nil decl. }
+    procedure TestNative_BuiltinFuncStatement_RaisesCleanly;
+    procedure TestQBE_BuiltinFuncStatement_RaisesCleanly;
 
     { ------------------------------------------------------------------ }
     { Codegen — emit malloc / free / load / store / pointer arithmetic     }
@@ -258,6 +276,43 @@ begin
   end;
 end;
 
+procedure TPointerTests.AnalyseExpectError(const ASrc: string);
+var
+  Prog: TProgram;
+begin
+  try
+    Prog := AnalyseSrc(ASrc);
+    Prog.Free();
+    Fail('Expected ESemanticError');
+  except
+    on E: ESemanticError do ; { expected }
+  end;
+end;
+
+procedure TPointerTests.GenNativeExpectCodeGenError(const ASrc: string);
+var
+  CG:   TCodeGenNative;
+  Prog: TProgram;
+begin
+  Prog := AnalyseSrc(ASrc);
+  try
+    CG := TCodeGenNative.Create();
+    try
+      CG.SetTarget(HostTarget());
+      try
+        CG.Generate(Prog);
+        Fail('Expected ENativeCodeGenError');
+      except
+        on E: ENativeCodeGenError do ; { expected }
+      end;
+    finally
+      CG.Free();
+    end;
+  finally
+    Prog.Free();
+  end;
+end;
+
 { ------------------------------------------------------------------ }
 { Parser tests                                                         }
 { ------------------------------------------------------------------ }
@@ -411,6 +466,110 @@ begin
     AssertEquals('BaseTy should be Integer', 'Integer', PtrWrite.BaseTy.Name);
   finally
     Prog.Free();
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ BUG-035 — unsupported memory-builtin forms                           }
+{ ------------------------------------------------------------------ }
+
+procedure TPointerTests.TestSemantic_GetMem_StatementForm_Rejected;
+begin
+  { The classic Delphi/FPC two-arg procedure form is deliberately not
+    supported — GetMem is a function in Blaise (P := GetMem(N)). }
+  AnalyseExpectError(
+    '''
+        program Prg;
+        var P: Pointer;
+        begin
+          GetMem(P, 8)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestSemantic_ReallocMem_StatementForm_Rejected;
+begin
+  AnalyseExpectError(
+    '''
+        program Prg;
+        var P: Pointer;
+        begin
+          P := GetMem(8);
+          ReallocMem(P, 16)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestSemantic_FreeMem_TwoArgs_Rejected;
+begin
+  { The Delphi FreeMem(P, Size) form is not supported either. }
+  AnalyseExpectError(
+    '''
+        program Prg;
+        var P: Pointer;
+        begin
+          P := GetMem(8);
+          FreeMem(P, 8)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestSemantic_GetMem_WrongArity_Rejected;
+begin
+  AnalyseExpectError(
+    '''
+        program Prg;
+        var P: Pointer;
+        begin
+          P := GetMem(1, 2)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestSemantic_ReallocMem_WrongArity_Rejected;
+begin
+  AnalyseExpectError(
+    '''
+        program Prg;
+        var P: Pointer;
+        begin
+          P := ReallocMem(P)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestNative_BuiltinFuncStatement_RaisesCleanly;
+begin
+  { Length is a builtin FUNCTION; in statement position the semantic pass
+    lets it through and no codegen case matches.  The backend must raise a
+    clean 'Unknown procedure' error — the nil-ResolvedDecl fall-through
+    used to segfault the compiler (BUG-035). }
+  GenNativeExpectCodeGenError(
+    '''
+        program Prg;
+        var S: String;
+        begin
+          S := 'x';
+          Length(S)
+        end.
+        ''');
+end;
+
+procedure TPointerTests.TestQBE_BuiltinFuncStatement_RaisesCleanly;
+begin
+  try
+    GenIR(
+      '''
+          program Prg;
+          var S: String;
+          begin
+            S := 'x';
+            Length(S)
+          end.
+          ''');
+    Fail('Expected ECodeGenError');
+  except
+    on E: ECodeGenError do ; { expected }
   end;
 end;
 

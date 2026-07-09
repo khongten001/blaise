@@ -13712,6 +13712,14 @@ begin
       PCHK.Free();
       Exit;
     end;
+    { No intrinsic case above matched and the semantic pass attached no
+      declaration: a builtin this backend cannot lower in statement position
+      (e.g. a builtin FUNCTION used as a statement).  Raise the same
+      diagnostic the QBE backend gives instead of dereferencing the nil
+      decl below, which crashed the compiler (BUG-035). }
+    if PC.ResolvedDecl = nil then
+      raise ENativeCodeGenError.Create(Format(
+        'Unknown procedure ''%s'' at line %d', [PC.Name, PC.Line]));
     { User procedure call (result, if any, ignored in statement position). }
     Self.EmitCall(FuncSymbolFromDecl(TMethodDecl(PC.ResolvedDecl)),
       TMethodDecl(PC.ResolvedDecl), PC.Args);

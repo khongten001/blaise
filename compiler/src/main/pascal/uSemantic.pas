@@ -11090,6 +11090,23 @@ begin
   end
   else
   begin
+    { GetMem / ReallocMem are FUNCTIONS in Blaise (BUG-035): the classic
+      Delphi/FPC procedure forms — GetMem(P, N), ReallocMem(P, N) — are
+      deliberately not supported, and calling either in statement position
+      always discards the pointer it returns.  Reject here so neither
+      backend ever sees the call (the QBE backend raised a generic
+      'Unknown procedure'; the native backend dereferenced the nil
+      ResolvedDecl and crashed the compiler). }
+    if SameText(ACall.Name, 'GetMem') or SameText(ACall.Name, 'ReallocMem') then
+      SemanticError(
+        Format('''%s'' is a function — assign its result, e.g. P := %s(...)',
+          [ACall.Name, ACall.Name]),
+        ACall.Line, ACall.Col);
+    { FreeMem takes exactly one argument; the Delphi FreeMem(P, Size) form
+      is not supported (the allocator's block header knows the size). }
+    if SameText(ACall.Name, 'FreeMem') and (ACall.Args.Count <> 1) then
+      SemanticError('FreeMem requires exactly 1 argument',
+        ACall.Line, ACall.Col);
     { Inc(x) / Inc(x, n) / Dec(x) / Dec(x, n) — in-place add/sub }
     if SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec') then
     begin
@@ -11660,9 +11677,18 @@ begin
       Format('''%s'' is not a function', [AExpr.Name]),
       AExpr.Line, AExpr.Col);
 
-  { Built-in memory functions: GetMem / ReallocMem }
+  { Built-in memory functions: GetMem / ReallocMem.  Arity-checked here
+    (BUG-035): a wrong-arity call used to sail through to the backends,
+    where no intrinsic case matched and the fall-through misfired. }
   if SameText(AExpr.Name, 'GetMem') or SameText(AExpr.Name, 'ReallocMem') then
   begin
+    if SameText(AExpr.Name, 'GetMem') and (AExpr.Args.Count <> 1) then
+      SemanticError('GetMem requires exactly 1 argument (the byte count)',
+        AExpr.Line, AExpr.Col);
+    if SameText(AExpr.Name, 'ReallocMem') and (AExpr.Args.Count <> 2) then
+      SemanticError(
+        'ReallocMem requires exactly 2 arguments (pointer, new byte count)',
+        AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
     Result := FTable.TypePointer;
