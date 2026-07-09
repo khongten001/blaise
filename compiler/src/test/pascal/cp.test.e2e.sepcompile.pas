@@ -172,7 +172,15 @@ implementation
 procedure TSepCompileTests.SetUp;
 begin
   inherited SetUp();
-  SetUpScratch('compiler/target/test-e2e-sepcompile')
+  { BUG-019: every method in this class compiles with '--unit-path FScratch',
+    so a dependency unit (.pas/.bif/.o) written by a PRIOR method into the
+    SHARED scratch dir could be resolved instead of this test's own — the
+    cause of the rare full-run-only failure of
+    TestDuplicateExternalAcrossUnits_Compiles. Give each test its OWN scratch
+    subdirectory (keyed on the test method name) so unit resolution only ever
+    sees files this test wrote. Non-destructive and race-free — no shared
+    directory to clean between tests. }
+  SetUpScratch('compiler/target/test-e2e-sepcompile/' + TestName)
 end;
 
 function TSepCompileTests.BlaisePath(): string;
