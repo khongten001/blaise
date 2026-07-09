@@ -51,6 +51,9 @@ type
     procedure TestCodegen_PointerWrite_EmitsStore;
     procedure TestCodegen_DoublePointerWrite_EmitsStored;
     procedure TestCodegen_SinglePointerWrite_EmitsStores;
+    procedure TestCodegen_Int64PointerWrite_IntegerRhs_EmitsExtsw;
+    procedure TestCodegen_Int64PointerWrite_CardinalRhs_EmitsExtuw;
+    procedure TestCodegen_DoublePointerWrite_IntegerRhs_EmitsSwtof;
     procedure TestCodegen_PointerArith_EmitsAdd;
 
     { ------------------------------------------------------------------ }
@@ -149,6 +152,48 @@ const
         begin
           PS := @S;
           PS^ := 1.25
+        end.
+        ''';
+
+  { BUG-020: a 32-bit Integer RHS stored through an ^Int64 must be widened
+    with extsw before the storel, or QBE rejects "storel <w>, ...". }
+  SrcInt64PtrIntRhs =
+    '''
+        program Prg;
+        var
+          Ptr: ^Int64;
+          I:   Integer;
+        begin
+          I := 42;
+          Ptr^ := I
+        end.
+        ''';
+
+  { BUG-020: an unsigned 32-bit RHS must be ZERO-extended (extuw) — extsw
+    would smear the sign bit and corrupt Cardinal values >= 2^31. }
+  SrcInt64PtrCardRhs =
+    '''
+        program Prg;
+        var
+          Ptr: ^Int64;
+          C:   Cardinal;
+        begin
+          C := 4000000000;
+          Ptr^ := C
+        end.
+        ''';
+
+  { An integer RHS stored through a float pointer must be CONVERTED (swtof),
+    not stored raw — 'stored <w>, ...' is rejected by QBE. }
+  SrcDoublePtrIntRhs =
+    '''
+        program Prg;
+        var
+          Ptr: ^Double;
+          I:   Integer;
+        begin
+          I := 3;
+          Ptr^ := I
         end.
         ''';
 
@@ -427,6 +472,39 @@ begin
     Pos('stores', IR) > 0);
   AssertFalse('PSingle^ write must not use storel',
     Pos('storel %_t', IR) > 0);
+end;
+
+procedure TPointerTests.TestCodegen_Int64PointerWrite_IntegerRhs_EmitsExtsw;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcInt64PtrIntRhs);
+  AssertTrue('Integer RHS through ^Int64 must be sign-extended (extsw) before storel',
+    Pos('extsw', IR) > 0);
+  AssertTrue('the widened value must be stored with storel',
+    Pos('storel', IR) > 0);
+end;
+
+procedure TPointerTests.TestCodegen_Int64PointerWrite_CardinalRhs_EmitsExtuw;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcInt64PtrCardRhs);
+  AssertTrue('Cardinal RHS through ^Int64 must be zero-extended (extuw) before storel',
+    Pos('extuw', IR) > 0);
+  AssertTrue('the widened value must be stored with storel',
+    Pos('storel', IR) > 0);
+end;
+
+procedure TPointerTests.TestCodegen_DoublePointerWrite_IntegerRhs_EmitsSwtof;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcDoublePtrIntRhs);
+  AssertTrue('Integer RHS through ^Double must be converted (swtof) before stored',
+    Pos('swtof', IR) > 0);
+  AssertTrue('the converted value must be stored with stored',
+    Pos('stored', IR) > 0);
 end;
 
 procedure TPointerTests.TestCodegen_PointerArith_EmitsAdd;

@@ -11043,8 +11043,31 @@ begin
     StoreInstr := StoreInstrFor(AStmt.BaseTy)
   else
     StoreInstr := 'storel';
-  if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tySingle) and
-     (QbeTypeOf(AStmt.ValExpr.ResolvedType) = 'd') then
+  if (AStmt.BaseTy <> nil) and AStmt.BaseTy.IsFloat() and
+     (AStmt.ValExpr.ResolvedType <> nil) and
+     not AStmt.ValExpr.ResolvedType.IsFloat() and
+     (QbeTypeOf(AStmt.ValExpr.ResolvedType) = 'w') then
+  begin
+    { Float base with an integer RHS: convert (swtof), don't just store —
+      otherwise 'P^ := SomeInteger' through a ^Double emits 'stored <w>, ...'
+      which QBE rejects. Mirrors the scalar-field assignment path. }
+    ExtTemp := AllocTemp();
+    EmitLine(Format('  %s =%s swtof %s',
+      [ExtTemp, QbeTypeOf(AStmt.BaseTy), ValTemp]));
+    ValTemp := ExtTemp;
+  end
+  else if (AStmt.BaseTy <> nil) and AStmt.BaseTy.IsFloat() and
+          (AStmt.ValExpr.ResolvedType <> nil) and
+          not AStmt.ValExpr.ResolvedType.IsFloat() and
+          (QbeTypeOf(AStmt.ValExpr.ResolvedType) = 'l') then
+  begin
+    ExtTemp := AllocTemp();
+    EmitLine(Format('  %s =%s sltof %s',
+      [ExtTemp, QbeTypeOf(AStmt.BaseTy), ValTemp]));
+    ValTemp := ExtTemp;
+  end
+  else if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tySingle) and
+          (QbeTypeOf(AStmt.ValExpr.ResolvedType) = 'd') then
   begin
     ExtTemp := AllocTemp();
     EmitLine(Format('  %s =s truncd %s', [ExtTemp, ValTemp]));
@@ -11055,6 +11078,24 @@ begin
   begin
     ExtTemp := AllocTemp();
     EmitLine(Format('  %s =d exts %s', [ExtTemp, ValTemp]));
+    ValTemp := ExtTemp;
+  end
+  else if (AStmt.BaseTy <> nil) and not AStmt.BaseTy.IsFloat() and
+          (QbeTypeOf(AStmt.BaseTy) = 'l') and
+          (AStmt.ValExpr.ResolvedType <> nil) and
+          (QbeTypeOf(AStmt.ValExpr.ResolvedType) = 'w') then
+  begin
+    { Integer/pointer base wider than a word: a word-sized RHS must be
+      extended to l before a storel — otherwise 'P^ := SomeInteger'
+      through an ^Int64 emits 'storel <w>, ...' which QBE rejects. Widen
+      by the SOURCE type's signedness: an unsigned 32-bit RHS zero-extends
+      (extuw) so 'P^ := SomeCardinal' keeps its value, matching the native
+      backend; everything else sign-extends (extsw). }
+    ExtTemp := AllocTemp();
+    if (AStmt.ValExpr.ResolvedType.Kind = tyUInt32) then
+      EmitLine(Format('  %s =l extuw %s', [ExtTemp, ValTemp]))
+    else
+      EmitLine(Format('  %s =l extsw %s', [ExtTemp, ValTemp]));
     ValTemp := ExtTemp;
   end;
   EmitLine(Format('  %s %s, %s', [StoreInstr, ValTemp, PtrTemp]));

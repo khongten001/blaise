@@ -30,6 +30,9 @@ type
     procedure TestRun_StaticArrayOfPChar_ElementPreservesAllBits;
     procedure TestRun_DoublePointerWrite_PreservesValue;
     procedure TestRun_SinglePointerWrite_NoAdjacentSlotClobber;
+    procedure TestRun_Int64PointerWrite_IntegerRhsWidened;
+    procedure TestRun_Int64PointerWrite_CardinalRhsZeroExtended;
+    procedure TestRun_DoublePointerWrite_IntegerRhsConverted;
     { Added by the hardening sweep — run on BOTH backends. }
     procedure TestRun_PointerToRecordField;
     procedure TestRun_PointerParam;
@@ -178,6 +181,60 @@ const
     end.
     ''';
 
+  { BUG-020: storing a 32-bit Integer RHS through an ^Int64 must sign-extend
+    (extsw) the value before the 64-bit storel; without it QBE rejects the IR
+    ("invalid type for first operand ... in storel"). Uses a negative value so
+    a truncation/missing sign-extend would corrupt the high word. }
+  SrcInt64PtrIntRhsE2E = '''
+    program P;
+    var
+      V:   Int64;
+      Ptr: ^Int64;
+      I:   Integer;
+    begin
+      V := 0;
+      Ptr := @V;
+      I := -42;
+      Ptr^ := I;
+      WriteLn(Ptr^)
+    end.
+    ''';
+
+  { BUG-020 follow-up: an UNSIGNED 32-bit RHS must be zero-extended (extuw),
+    not sign-extended — extsw smears the sign bit and turns Cardinal values
+    >= 2^31 negative (observed: 4000000000 stored as -294967296). }
+  SrcInt64PtrCardRhsE2E = '''
+    program P;
+    var
+      V:   Int64;
+      Ptr: ^Int64;
+      C:   Cardinal;
+    begin
+      V := 0;
+      Ptr := @V;
+      C := 4000000000;
+      Ptr^ := C;
+      WriteLn(Ptr^)
+    end.
+    ''';
+
+  { An integer RHS through a ^Double must be converted (swtof), not stored
+    raw — QBE previously rejected the 'stored <w>, ...' outright. }
+  SrcDoublePtrIntRhsE2E = '''
+    program P;
+    var
+      D:   Double;
+      Ptr: ^Double;
+      I:   Integer;
+    begin
+      D := 0.0;
+      Ptr := @D;
+      I := 3;
+      Ptr^ := I;
+      WriteLn(D)
+    end.
+    ''';
+
 procedure TE2EPointersTests.TestRun_Pointer_GetMem_WriteRead_FreeMem;
 var Output: string; RCode: Integer;
 begin
@@ -251,6 +308,29 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('PSingle^ write must not clobber adjacent Single B',
     '9.5' + LE, Output);
+end;
+
+procedure TE2EPointersTests.TestRun_Int64PointerWrite_IntegerRhsWidened;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Must compile (QBE previously rejected the storel) and print the sign-extended
+    value on BOTH backends. }
+  AssertRunsOnAll(SrcInt64PtrIntRhsE2E, '-42' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_Int64PointerWrite_CardinalRhsZeroExtended;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { The stored value must keep its unsigned magnitude on BOTH backends. }
+  AssertRunsOnAll(SrcInt64PtrCardRhsE2E, '4000000000' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_DoublePointerWrite_IntegerRhsConverted;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Must compile (QBE previously rejected the stored) and print the converted
+    value on BOTH backends. }
+  AssertRunsOnAll(SrcDoublePtrIntRhsE2E, '3' + LE, 0);
 end;
 
 const
