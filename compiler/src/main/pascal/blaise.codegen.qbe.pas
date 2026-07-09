@@ -17510,6 +17510,14 @@ begin
         begin
           Tag := 3;   { vtExtended — heap-box the double }
           ElemVal := EmitExpr(Elem);
+          { A tySingle element evaluates to an 's' temp; 'stored' requires a
+            double, so widen first (QBE rejects the IR otherwise). }
+          if EK = tySingle then
+          begin
+            Widened := AllocTemp();
+            EmitLine(Format('  %s =d exts %s', [Widened, ElemVal]));
+            ElemVal := Widened;
+          end;
           BoxPtr := AllocTemp();
           EmitLine(Format('  %s =l call $_BlaiseGetMem(w 8)', [BoxPtr]));
           EmitLine(Format('  stored %s, %s', [ElemVal, BoxPtr]));

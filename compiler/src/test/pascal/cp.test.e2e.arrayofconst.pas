@@ -30,6 +30,11 @@ type
     procedure TestRun_HomogeneousList;
     procedure TestRun_StringVariableBorrow;
     procedure TestRun_Count;
+    { BUG-027 class: a tySingle element must be WIDENED to Double before the
+      vtExtended box is written.  Native stored the raw single bit-pattern
+      via movsd (garbage double); QBE emitted 'stored' on an 's' temp, which
+      qbe rejected outright. }
+    procedure TestRun_SingleElement_BoxedAsDouble;
   end;
 
 implementation
@@ -168,6 +173,29 @@ const Src =
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, '5' + LineEnding, 0);
+end;
+
+procedure TE2EArrayOfConstTests.TestRun_SingleElement_BoxedAsDouble;
+const Src =
+  '''
+  program P;
+  type PDouble = ^Double;
+  procedure Dump(args: array of const);
+  var i: Integer;
+  begin
+    for i := 0 to High(args) do
+      if args[i].VType = vtExtended then
+        WriteLn(PDouble(args[i].VValue)^)
+  end;
+  var S: Single;
+  begin
+    S := 2.5;
+    Dump([S])
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '2.5' + LineEnding, 0);
 end;
 
 initialization

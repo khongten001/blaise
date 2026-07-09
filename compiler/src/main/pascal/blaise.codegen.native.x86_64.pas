@@ -15198,6 +15198,10 @@ begin
             (TPointerWriteStmt(AStmt).BaseTy.Kind = tyDouble) then
     begin
       Self.EmitExprToXmm0(TPointerWriteStmt(AStmt).ValExpr);
+      { EmitExprToXmm0 leaves a Single for a tySingle RHS; widen it to the
+        Double slot (cvtss2sd) so 'PDouble^ := SomeSingle' stores the value,
+        not the low 32 bits of the single bit-pattern. }
+      Self.EmitXmm0WidthAdjust(TPointerWriteStmt(AStmt).ValExpr.ResolvedType, False);
       Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'movsd %xmm0, (%rsp)');
       Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
@@ -15210,6 +15214,11 @@ begin
             (TPointerWriteStmt(AStmt).BaseTy.Kind = tySingle) then
     begin
       Self.EmitExprToXmm0(TPointerWriteStmt(AStmt).ValExpr);
+      { EmitExprToXmm0 leaves a Double for a Double/integer RHS; narrow it to
+        the Single slot (cvtsd2ss) so 'PSingle^ := SomeInteger' stores the
+        value, not the low 32 bits of the double bit-pattern (which are 0 for
+        small integers — the BUG-027 wrong-0). }
+      Self.EmitXmm0WidthAdjust(TPointerWriteStmt(AStmt).ValExpr.ResolvedType, True);
       Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'movss %xmm0, (%rsp)');
       Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
@@ -15317,6 +15326,9 @@ begin
         begin
           Tag := 3;   { vtExtended — heap-box the double }
           Self.EmitExprToXmm0(Elem);
+          { A tySingle element leaves a SINGLE in %xmm0; the box always holds
+            a Double, so widen (cvtss2sd) before the movsd (BUG-027 class). }
+          Self.EmitXmm0WidthAdjust(Elem.ResolvedType, False);
           Self.Emit(#9'subq $8, %rsp');
           Self.Emit(#9'movsd %xmm0, (%rsp)');   { stash the double }
           Self.Emit(#9'movl $8, %edi');
@@ -17032,6 +17044,12 @@ begin
       else if IsFloatFamily(ParamType) and not IsVar then
       begin
         Self.EmitExprToXmm0(Arg);
+        { Match the value width to the PARAM width before spilling: an
+          integer/Double arg into a Single param narrows (cvtsd2ss), a Single
+          arg into a Double param widens (cvtss2sd).  Without this the movss/
+          movsd below deposits the wrong-width bit-pattern (BUG-027 class). }
+        Self.EmitXmm0WidthAdjust(Arg.ResolvedType,
+          (ParamType <> nil) and (ParamType.Kind = tySingle));
         if (ParamType <> nil) and (ParamType.Kind = tySingle) then
           Self.Emit(Format(#9'movss %%xmm0, %d(%%rsp)', [(I + 1) * 8]))
         else
@@ -17435,6 +17453,10 @@ begin
                    TMethodParam(MD.Params.Items[I]).IsVarParam) then
       begin
         Self.EmitExprToXmm0(Arg);
+        { Match the value width to the PARAM width before spilling — see the
+          same adjust in EmitSretCall (BUG-027 class). }
+        Self.EmitXmm0WidthAdjust(Arg.ResolvedType,
+          (ParamType <> nil) and (ParamType.Kind = tySingle));
         if (ParamType <> nil) and (ParamType.Kind = tySingle) then
           Self.Emit(Format(#9'movss %%xmm0, %d(%%rsp)', [(I + 2) * 8]))
         else

@@ -33,6 +33,8 @@ type
     procedure TestRun_Int64PointerWrite_IntegerRhsWidened;
     procedure TestRun_Int64PointerWrite_CardinalRhsZeroExtended;
     procedure TestRun_DoublePointerWrite_IntegerRhsConverted;
+    procedure TestRun_SinglePointerWrite_IntegerRhsConverted;
+    procedure TestRun_DoublePointerWrite_SingleRhsWidened;
     { Added by the hardening sweep — run on BOTH backends. }
     procedure TestRun_PointerToRecordField;
     procedure TestRun_PointerParam;
@@ -235,6 +237,41 @@ const
     end.
     ''';
 
+  { BUG-027: an integer RHS through a ^Single must be CONVERTED to single
+    (cvtsd2ss), not stored as the low 32 bits of the double bit-pattern —
+    native previously wrote 0.0 for a small integer. }
+  SrcSinglePtrIntRhsE2E = '''
+    program P;
+    var
+      F:   Single;
+      Ptr: ^Single;
+      I:   Integer;
+    begin
+      F := 0.0;
+      Ptr := @F;
+      I := 5;
+      Ptr^ := I;
+      WriteLn(F)
+    end.
+    ''';
+
+  { BUG-027 mirror: a Single RHS through a ^Double must be WIDENED
+    (cvtss2sd) before the movsd — native previously stored garbage. }
+  SrcDoublePtrSingleRhsE2E = '''
+    program P;
+    var
+      D:   Double;
+      Ptr: ^Double;
+      S:   Single;
+    begin
+      D := 0.0;
+      Ptr := @D;
+      S := 2.5;
+      Ptr^ := S;
+      WriteLn(D)
+    end.
+    ''';
+
 procedure TE2EPointersTests.TestRun_Pointer_GetMem_WriteRead_FreeMem;
 var Output: string; RCode: Integer;
 begin
@@ -331,6 +368,20 @@ begin
   { Must compile (QBE previously rejected the stored) and print the converted
     value on BOTH backends. }
   AssertRunsOnAll(SrcDoublePtrIntRhsE2E, '3' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_SinglePointerWrite_IntegerRhsConverted;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Native previously stored 0.0 (low 32 bits of the double); must print 5. }
+  AssertRunsOnAll(SrcSinglePtrIntRhsE2E, '5' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_DoublePointerWrite_SingleRhsWidened;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Native previously stored a garbage double; must print 2.5. }
+  AssertRunsOnAll(SrcDoublePtrSingleRhsE2E, '2.5' + LE, 0);
 end;
 
 const

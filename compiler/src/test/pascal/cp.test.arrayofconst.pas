@@ -39,6 +39,7 @@ type
     { Codegen: TVarRec boxing. }
     procedure TestCodegen_TagStoredPerElement;
     procedure TestCodegen_DoubleElement_HeapBoxed;
+    procedure TestCodegen_SingleElement_WidenedBeforeBox;
     procedure TestCodegen_SixteenByteStride;
   end;
 
@@ -187,6 +188,19 @@ begin
     'begin Foo([3.5]) end.');
   AssertTrue('double heap-boxed', IRHas(IR, '$_BlaiseGetMem'));
   AssertTrue('double stored', IRHas(IR, 'stored'));
+end;
+
+procedure TArrayOfConstTests.TestCodegen_SingleElement_WidenedBeforeBox;
+var IR: string;
+begin
+  { A tySingle element evaluates to an 's' temp; it must be widened to a
+    double (exts) before the vtExtended box's 'stored' — qbe rejects a
+    'stored' whose operand is single-typed. }
+  IR := GenIR(
+    'program X; procedure Foo(args: array of const); begin end; ' +
+    'var S: Single; begin S := 2.5; Foo([S]) end.');
+  AssertTrue('single widened to double', IRHas(IR, '=d exts'));
+  AssertTrue('boxed value stored as double', IRHas(IR, 'stored'));
 end;
 
 procedure TArrayOfConstTests.TestCodegen_SixteenByteStride;

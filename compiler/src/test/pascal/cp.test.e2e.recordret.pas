@@ -86,6 +86,13 @@ type
     procedure TestRun_FloatArg_ManagedRecordReturn_Func;
     procedure TestRun_TwoFloatArgs_ManagedRecordReturn_Func;
     procedure TestRun_FloatArg_ManagedRecordReturn_Method;
+    { BUG-027 class: the sret float-arg spill stored %xmm0 by PARAM width
+      without matching the VALUE width first — an integer arg into a Single
+      param spilled the low 32 bits of a double (0 for small ints), and a
+      Single arg into a Double param spilled a garbage double.  Both the
+      standalone-function and method sret paths are covered. }
+    procedure TestRun_SretFloatArgs_WidthMismatch_Func;
+    procedure TestRun_SretFloatArgs_WidthMismatch_Method;
     { Regression: a method call whose RECEIVER is itself a record-returning
       call — A.Plus(B).Val().  The native backend used the record VALUE (the
       reg-return payload, or the sret buffer's first bytes) as the Self POINTER,
@@ -1317,6 +1324,83 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src,
     'item 1' + LE + 'item 2' + LE + 'item 3' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_SretFloatArgs_WidthMismatch_Func;
+const
+  Src =
+    '''
+    program P;
+    type
+      TBig = record
+        A: Double;
+        B: Double;
+        C: Double;
+        D: Double;
+      end;
+    function Make(S: Single; D: Double): TBig;
+    begin
+      Result.A := S;
+      Result.B := D;
+      Result.C := 0;
+      Result.D := 0
+    end;
+    var
+      R: TBig;
+      Sng: Single;
+    begin
+      Sng := 2.5;
+      R := Make(7, Sng);
+      WriteLn(R.A);
+      WriteLn(R.B)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Native previously printed 0 (int arg through a Single param) and a
+    garbage double (Single arg through a Double param). }
+  AssertRunsOnAll(Src, '7' + LE + '2.5' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_SretFloatArgs_WidthMismatch_Method;
+const
+  Src =
+    '''
+    program P;
+    type
+      TBig = record
+        A: Double;
+        B: Double;
+        C: Double;
+        D: Double;
+      end;
+      TMaker = class
+      public
+        function Make(S: Single; D: Double): TBig;
+      end;
+    function TMaker.Make(S: Single; D: Double): TBig;
+    begin
+      Result.A := S;
+      Result.B := D;
+      Result.C := 0;
+      Result.D := 0
+    end;
+    var
+      M: TMaker;
+      R: TBig;
+      Sng: Single;
+    begin
+      M := TMaker.Create();
+      Sng := 2.5;
+      R := M.Make(7, Sng);
+      WriteLn(R.A);
+      WriteLn(R.B);
+      M.Free()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '7' + LE + '2.5' + LE, 0);
 end;
 
 initialization
