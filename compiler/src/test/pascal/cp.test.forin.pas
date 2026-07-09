@@ -23,6 +23,9 @@ type
     function AnalyseSrc(const ASrc: string): TProgram;
     function GenIR(const ASrc: string): string;
     procedure AnalyseExpectError(const ASrc: string);
+    { Analyse ASrc and return the concatenated semantic warnings (one per line).
+      Used to assert the BUG-001 for-in write diagnostics fire (or don't). }
+    function AnalyseWarnings(const ASrc: string): string;
   published
     { ------------------------------------------------------------------ }
     { Parser                                                               }
@@ -40,6 +43,20 @@ type
     procedure TestSemantic_ForIn_NoCurrent_RaisesError;
     procedure TestSemantic_ForIn_VarTypeMismatch_RaisesError;
     procedure TestSemantic_ForIn_CollNotClass_RaisesError;
+
+    { ------------------------------------------------------------------ }
+    { BUG-001 — writing a for-in loop variable is diagnosed              }
+    { ------------------------------------------------------------------ }
+    procedure TestSemantic_ForIn_AssignLoopVar_Warns;
+    procedure TestSemantic_ForIn_RecordFieldWrite_Warns;
+    procedure TestSemantic_ForIn_ClassFieldWrite_NoWarn;
+    procedure TestSemantic_ForIn_ReadOnly_NoWarn;
+    procedure TestSemantic_IndexedFor_ElementWrite_NoWarn;
+    procedure TestSemantic_ForIn_VarParamArg_Warns;
+    procedure TestSemantic_ForIn_IncLoopVar_Warns;
+    procedure TestSemantic_ForIn_ValueParamArg_NoWarn;
+    procedure TestSemantic_ForIn_NestedRecordFieldWrite_Warns;
+    procedure TestSemantic_ForIn_ClassNestedRecordWrite_NoWarn;
 
     { ------------------------------------------------------------------ }
     { Codegen — class enumerator                                           }
@@ -160,6 +177,22 @@ begin
     A.Analyse(Result);
   finally
     A.Free();
+  end;
+end;
+
+function TForInTests.AnalyseWarnings(const ASrc: string): string;
+var
+  Prog: TProgram;
+  A:    TSemanticAnalyser;
+begin
+  Prog := ParseSrc(ASrc);
+  A := TSemanticAnalyser.Create();
+  try
+    A.Analyse(Prog);
+    Result := A.GetWarnings().Text;
+  finally
+    A.Free();
+    Prog.Free();
   end;
 end;
 
@@ -380,6 +413,231 @@ begin
             X := X + 1
         end.
         ''');
+end;
+
+{ ------------------------------------------------------------------ }
+{ BUG-001 — writing a for-in loop variable is diagnosed              }
+{ ------------------------------------------------------------------ }
+
+procedure TForInTests.TestSemantic_ForIn_AssignLoopVar_Warns;
+var W: string;
+begin
+  W := AnalyseWarnings(
+    '''
+        program P;
+        var
+          A: array[0..2] of Integer;
+          R: Integer;
+        begin
+          A[0] := 1;
+          for R in A do
+            R := 99
+        end.
+        ''');
+  AssertTrue('assigning a for-in loop variable must warn',
+    Pos('for-in loop variable', W) > 0);
+end;
+
+procedure TForInTests.TestSemantic_ForIn_RecordFieldWrite_Warns;
+var W: string;
+begin
+  W := AnalyseWarnings(
+    '''
+        program P;
+        type
+          TRec = record N: Integer; end;
+        var
+          A: array[0..2] of TRec;
+          R: TRec;
+        begin
+          for R in A do
+            R.N := 7
+        end.
+        ''');
+  AssertTrue('writing a field of a record for-in loop variable must warn',
+    Pos('is discarded', W) > 0);
+end;
+
+procedure TForInTests.TestSemantic_ForIn_ClassFieldWrite_NoWarn;
+var W: string;
+begin
+  { A for-in over class references binds the loop variable to the live object,
+    so 'T.Field := x' legitimately mutates it — must NOT warn. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        type
+          TThing = class
+            Value: Integer;
+          end;
+        var
+          A: array[0..1] of TThing;
+          T: TThing;
+        begin
+          A[0] := TThing.Create();
+          A[1] := TThing.Create();
+          for T in A do
+            T.Value := 42
+        end.
+        ''');
+  AssertEquals('class for-in field write must not warn', '', Trim(W));
+end;
+
+procedure TForInTests.TestSemantic_ForIn_ReadOnly_NoWarn;
+var W: string;
+begin
+  W := AnalyseWarnings(
+    '''
+        program P;
+        var
+          A: array[0..2] of Integer;
+          R: Integer;
+          S: Integer;
+        begin
+          S := 0;
+          for R in A do
+            S := S + R
+        end.
+        ''');
+  AssertEquals('read-only for-in use must not warn', '', Trim(W));
+end;
+
+procedure TForInTests.TestSemantic_IndexedFor_ElementWrite_NoWarn;
+var W: string;
+begin
+  { An indexed for loop writing A[I] is the correct way to mutate — no warning. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        type
+          TRec = record N: Integer; end;
+        var
+          A: array[0..1] of TRec;
+          I: Integer;
+        begin
+          for I := 0 to 1 do
+            A[I].N := I
+        end.
+        ''');
+  AssertEquals('indexed-for element write must not warn', '', Trim(W));
+end;
+
+procedure TForInTests.TestSemantic_ForIn_VarParamArg_Warns;
+var W: string;
+begin
+  { BUG-001, by-ref arm: the callee mutates the per-iteration copy through
+    the var reference — the change never reaches the collection element. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        var
+          A: array[0..2] of Integer;
+          R: Integer;
+
+        procedure Bump(var X: Integer);
+        begin
+          X := X + 1
+        end;
+
+        begin
+          for R in A do
+            Bump(R)
+        end.
+        ''');
+  AssertTrue('passing a for-in loop variable to a var parameter must warn',
+    Pos('for-in loop variable', W) > 0);
+end;
+
+procedure TForInTests.TestSemantic_ForIn_IncLoopVar_Warns;
+var W: string;
+begin
+  W := AnalyseWarnings(
+    '''
+        program P;
+        var
+          A: array[0..2] of Integer;
+          R: Integer;
+        begin
+          for R in A do
+            Inc(R)
+        end.
+        ''');
+  AssertTrue('Inc on a for-in loop variable must warn',
+    Pos('for-in loop variable', W) > 0);
+end;
+
+procedure TForInTests.TestSemantic_ForIn_ValueParamArg_NoWarn;
+var W: string;
+begin
+  { Passing the loop variable by VALUE is a read — must NOT warn. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        var
+          A: array[0..2] of Integer;
+          R: Integer;
+
+        procedure Show(X: Integer);
+        begin
+          WriteLn(X)
+        end;
+
+        begin
+          for R in A do
+            Show(R)
+        end.
+        ''');
+  AssertEquals('value-param use of a for-in loop variable must not warn',
+    '', Trim(W));
+end;
+
+procedure TForInTests.TestSemantic_ForIn_NestedRecordFieldWrite_Warns;
+var W: string;
+begin
+  { Deep path: every link from the loop variable to the receiver is a value
+    record, so the write lands in the per-iteration copy — must warn. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        type
+          TInner = record N: Integer; end;
+          TOuter = record Inner: TInner; end;
+        var
+          A: array[0..1] of TOuter;
+          R: TOuter;
+        begin
+          for R in A do
+            R.Inner.N := 7
+        end.
+        ''');
+  AssertTrue('nested record field write through a for-in loop variable must warn',
+    Pos('is discarded', W) > 0);
+end;
+
+procedure TForInTests.TestSemantic_ForIn_ClassNestedRecordWrite_NoWarn;
+var W: string;
+begin
+  { The loop variable is a class reference: the embedded record lives in the
+    live heap object, so the write DOES mutate it — must NOT warn. }
+  W := AnalyseWarnings(
+    '''
+        program P;
+        type
+          TInner = record N: Integer; end;
+          TThing = class
+            Inner: TInner;
+          end;
+        var
+          A: array[0..0] of TThing;
+          T: TThing;
+        begin
+          A[0] := TThing.Create();
+          for T in A do
+            T.Inner.N := 7
+        end.
+        ''');
+  AssertEquals('record field write through a class for-in loop variable must not warn',
+    '', Trim(W));
 end;
 
 { ------------------------------------------------------------------ }

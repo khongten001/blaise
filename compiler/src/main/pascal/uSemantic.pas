@@ -112,6 +112,11 @@ type
       variable may legitimately share a name with one (var t: T).  The
       shadow-a-type-name check skips names found here. }
     FActiveTypeParams:     TStringList;
+    FForInLoopVars:        TStringList;  { stack of active for-in loop-variable names (nested loops
+                                           push/pop); a write to one of these is diagnosed — the
+                                           mutation goes to a per-iteration copy and is discarded }
+    FWarnings:             TStringList;  { non-fatal diagnostics collected during analysis; each is
+                                           also written to StdErr as it is raised (see SemanticWarning) }
     FCurrentLocalBlock:    TBlock;       { block currently being stmt-analysed; for-in injects synthetic TVarDecl here }
     FForInCounter:         Integer;      { counter for generating unique __forin_N variable names }
     FArrayConstCounter:    Integer;      { counter for generating unique array-const data labels }
@@ -383,6 +388,11 @@ type
       l-value): a variable, a field access, a pointer deref, or an array
       element subscript a[i]. }
     function  IsVarArgLValue(AExpr: TASTExpr): Boolean;
+    { BUG-001: warn when a bare for-in loop variable is passed where the callee
+      mutates it by reference (var/out parameter, Inc/Dec, SetLength, ...) —
+      the mutation writes the per-iteration copy and never reaches the
+      collection element.  Call at each site that accepts a by-ref actual. }
+    procedure WarnIfVarArgIsForInLoopVar(AExpr: TASTExpr);
     procedure AnalyseCaseStmt(AStmt: TCaseStmt);
     function  AnalyseMethodCallExpr(AExpr: TMethodCallExpr): TTypeDesc;
     function  AnalyseFuncCallExpr(AExpr: TFuncCallExpr): TTypeDesc;
@@ -493,6 +503,10 @@ type
       const AContext: string; ALine, ACol: Integer);
 
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
+    { Emit a non-fatal diagnostic to StdErr (compilation continues).  Includes
+      the source position and, when known, the current unit name — mirroring
+      SemanticError's message shape. }
+    procedure SemanticWarning(const AMsg: string; ALine, ACol: Integer);
     procedure CheckTypesMatch(AExpected, AActual: TTypeDesc;
       const AContext: string; ALine, ACol: Integer);
     { Returns True if AActual is AExpected or a subclass of AExpected. }
@@ -518,6 +532,10 @@ type
       Also used by uSemanticExport.ExportUnitInterface to look up resolved
       types (e.g. for InstanceSize).  Non-owning — do not free. }
     function  GetSymbolTable: TSymbolTable;
+    { Non-fatal diagnostics accumulated during analysis (see SemanticWarning).
+      Each entry is also written to StdErr as it is raised.  Non-owning handle —
+      do not free.  Used by tests to assert a warning was produced. }
+    function  GetWarnings: TStringList;
     { Returns MangleUnitPrefix(FCurrentUnitName) when analysing a unit
       via AnalyseUnitForExport (FProg=nil), '' otherwise.  Used by
       ResolvedQbeName generation to prefix cross-unit symbol names. }
@@ -830,6 +848,9 @@ begin
   FUnitSymbols.CaseSensitive := False;
   FActiveTypeParams     := TStringList.Create();
   FActiveTypeParams.CaseSensitive := False;
+  FForInLoopVars        := TStringList.Create();
+  FForInLoopVars.CaseSensitive := False;
+  FWarnings             := TStringList.Create();
   FPendingGenericInstances       := TObjectList.Create(False);
   FPendingGenericRecordInstances := TObjectList.Create(False);
   FPendingGenericIntfInstances   := TObjectList.Create(False);
@@ -845,6 +866,8 @@ begin
   FPendingGenericRecordInstances.Free();
   FPendingGenericInstances.Free();
   FActiveTypeParams.Free();
+  FForInLoopVars.Free();
+  FWarnings.Free();
   FUnitSymbols.Free();
   FUnitIfaces.Free();
   FCurrentUsesChain.Free();
@@ -869,6 +892,24 @@ begin
     raise ESemanticError.Create(Format('%s at line %d col %d in %s', [AMsg, ALine, ACol, FCurrentUnitName]))
   else
     raise ESemanticError.Create(Format('%s at line %d col %d', [AMsg, ALine, ACol]));
+end;
+
+procedure TSemanticAnalyser.SemanticWarning(const AMsg: string; ALine, ACol: Integer);
+var
+  Full: string;
+begin
+  if FCurrentUnitName <> '' then
+    Full := Format('Warning: %s at line %d col %d in %s',
+      [AMsg, ALine, ACol, FCurrentUnitName])
+  else
+    Full := Format('Warning: %s at line %d col %d', [AMsg, ALine, ACol]);
+  FWarnings.Add(Full);
+  WriteLn(StdErr, Full);
+end;
+
+function TSemanticAnalyser.GetWarnings: TStringList;
+begin
+  Result := FWarnings;
 end;
 
 procedure TSemanticAnalyser.RegisterEnumMember(const AName: string;
@@ -8794,9 +8835,15 @@ begin
         ForInS.Line, ForInS.Col);
 
     Inc(FLoopDepth);
+    { Track the loop variable so a write to it inside the body is diagnosed
+      (BUG-001): the mutation goes to a per-iteration copy and is discarded.
+      Nested for-in loops push/pop, so an inner loop's variable does not mask
+      an outer one. }
+    FForInLoopVars.Add(ForInS.VarName);
     try
       AnalyseStmt(ForInS.Body);
     finally
+      FForInLoopVars.Delete(FForInLoopVars.Count - 1);
       Dec(FLoopDepth);
     end;
   end
@@ -9330,6 +9377,20 @@ var
   ExprType: TTypeDesc;
 begin
   VarSym := FTable.Lookup(AAssign.Name);
+  { BUG-001: assigning to a for-in loop variable writes a per-iteration COPY
+    that never reaches the collection element — almost always a mistake.
+    Standard Pascal (FPC/Delphi) treats for-in as read-only, so the behaviour
+    is correct; warn so the discarded write is not silent.  The name is only in
+    FForInLoopVars while inside that loop's body, and it holds the resolved
+    loop-variable name, so a match here IS the loop variable (a program-level
+    for-in variable is still a discarded write). }
+  if (FForInLoopVars.IndexOf(AAssign.Name) >= 0) and
+     (VarSym <> nil) and (VarSym.Kind = skVariable) then
+    SemanticWarning(
+      Format('assignment to for-in loop variable ''%s'' is discarded (the loop '
+        + 'variable is a per-iteration copy) — use an indexed ''for'' loop to '
+        + 'mutate the collection', [AAssign.Name]),
+      AAssign.Line, AAssign.Col);
   { Inside a method, class fields shadow same-named globals.  Mirror the
     priority of the expression read path (see TIdentExpr handling): try the
     class field when there is no local/param match (VarSym=nil) OR when the
@@ -9537,6 +9598,29 @@ begin
   Result := False;
 end;
 
+procedure TSemanticAnalyser.WarnIfVarArgIsForInLoopVar(AExpr: TASTExpr);
+var
+  Sym: TSymbol;
+begin
+  { BUG-001, by-ref arm: passing a for-in loop variable to a var/out parameter
+    (or a mutating built-in such as Inc/SetLength) writes the per-iteration
+    copy, so the mutation never reaches the collection element.  Mirrors the
+    direct-assignment diagnostic in AnalyseAssignment.  Only the bare-ident
+    form is diagnosed here; a field of a record loop variable passed by ref
+    is covered by neither arm yet (documented follow-up). }
+  if not (AExpr is TIdentExpr) then
+    Exit;
+  if FForInLoopVars.IndexOf(TIdentExpr(AExpr).Name) < 0 then
+    Exit;
+  Sym := FTable.Lookup(TIdentExpr(AExpr).Name);
+  if (Sym <> nil) and (Sym.Kind = skVariable) then
+    SemanticWarning(
+      Format('by-ref mutation of for-in loop variable ''%s'' is discarded '
+        + '(the loop variable is a per-iteration copy) — use an indexed '
+        + '''for'' loop to mutate the collection', [TIdentExpr(AExpr).Name]),
+      AExpr.Line, AExpr.Col);
+end;
+
 function TSemanticAnalyser.AnalyseInheritedCallExpr(
   ACall: TInheritedCallExpr): TTypeDesc;
 var
@@ -9725,6 +9809,7 @@ var
   ObjType:  TTypeDesc;
   IntfDesc: TInterfaceTypeDesc;
   VarSym:   TSymbol;
+  BaseE:    TASTExpr;
 begin
   { ObjExpr path: receiver is an arbitrary expression (e.g. typecast result) }
   if AAssign.ObjExpr <> nil then
@@ -9735,6 +9820,32 @@ begin
         Format('Field assignment: expression is not a record or class (got %s)',
           [ObjType.Name]),
         AAssign.Line, AAssign.Col);
+    { BUG-001, deep-path arm: 'R.Inner.Field := x' where every link from the
+      root identifier to the receiver is a value RECORD writes the loop
+      variable's per-iteration copy — discarded.  Any class link in the chain
+      (or a non-record root) means the write reaches a live heap object, so
+      the walk stops there and no warning is issued. }
+    if ObjType.Kind = tyRecord then
+    begin
+      BaseE := AAssign.ObjExpr;
+      while (BaseE is TFieldAccessExpr) and
+            (BaseE.ResolvedType <> nil) and
+            (BaseE.ResolvedType.Kind = tyRecord) do
+        BaseE := TFieldAccessExpr(BaseE).Base;
+      if (BaseE is TIdentExpr) and
+         (FForInLoopVars.IndexOf(TIdentExpr(BaseE).Name) >= 0) then
+      begin
+        VarSym := FTable.Lookup(TIdentExpr(BaseE).Name);
+        if (VarSym <> nil) and (VarSym.Kind = skVariable) and
+           (VarSym.TypeDesc <> nil) and (VarSym.TypeDesc.Kind = tyRecord) then
+          SemanticWarning(
+            Format('write to field ''%s'' of for-in loop variable ''%s'' is '
+              + 'discarded (the loop variable is a per-iteration copy) — use '
+              + 'an indexed ''for'' loop to mutate the collection',
+              [AAssign.FieldName, TIdentExpr(BaseE).Name]),
+            AAssign.Line, AAssign.Col);
+      end;
+    end;
     RT      := TRecordTypeDesc(ObjType);
     FldInfo := RT.FindField(AAssign.FieldName);
     if FldInfo = nil then
@@ -9778,6 +9889,19 @@ begin
     Exit;
   end;
   RecSym := FTable.Lookup(AAssign.RecordName);
+  { BUG-001: a field write through a for-in loop variable whose element type is
+    a RECORD (a per-iteration value copy) is discarded — it never reaches the
+    collection element.  A for-in over an array/list of CLASS references binds
+    the loop variable to the live object, so 'obj.Field := x' DOES mutate it;
+    only warn for value-copy (record) loop variables. }
+  if (FForInLoopVars.IndexOf(AAssign.RecordName) >= 0) and
+     (RecSym <> nil) and
+     (RecSym.TypeDesc <> nil) and (RecSym.TypeDesc.Kind = tyRecord) then
+    SemanticWarning(
+      Format('write to field ''%s'' of for-in loop variable ''%s'' is discarded '
+        + '(the loop variable is a per-iteration copy) — use an indexed ''for'' '
+        + 'loop to mutate the collection', [AAssign.FieldName, AAssign.RecordName]),
+      AAssign.Line, AAssign.Col);
   if RecSym = nil then
   begin
     { Implicit Self.Field.Subfield — RecordName is a field of current class }
@@ -10635,6 +10759,7 @@ begin
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('var argument %d of ''%s''', [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
+          WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[I]));
         end;
       end;
       AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
@@ -10665,6 +10790,8 @@ begin
             Format('var argument %d of ''%s'' must be a variable',
               [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
+        if PPar.IsVarParam then
+          WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[I]));
         CheckTypesMatch(PPar.TypeDesc, ArgType,
           Format('argument %d of ''%s''', [I + 1, ACall.Name]),
           ACall.Line, ACall.Col);
@@ -10712,6 +10839,8 @@ begin
           Format('var argument %d of ''%s'' must be a variable',
             [I + 1, ACall.Name]),
           ACall.Line, ACall.Col);
+      if PPar.IsVarParam then
+        WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[I]));
       CheckTypesMatch(PPar.TypeDesc, ArgType,
         Format('argument %d of ''%s''', [I + 1, ACall.Name]),
         ACall.Line, ACall.Col);
@@ -10778,6 +10907,7 @@ begin
             Format('var argument %d of ''%s'' must be a variable',
               [I + 1, ACall.Name]),
             ACall.Line, ACall.Col);
+        WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[I]));
         ArgType := TASTExpr(ACall.Args.Items[I]).ResolvedType;
         CheckTypesMatch(Par.ResolvedType, ArgType,
           Format('var argument %d of ''%s''', [I + 1, ACall.Name]),
@@ -10800,6 +10930,7 @@ begin
           Format('''%s'' requires 1 or 2 arguments', [ACall.Name]),
           ACall.Line, ACall.Col);
       AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       if ACall.Args.Count = 2 then
         AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
     end
@@ -10817,6 +10948,7 @@ begin
           Format('First argument of ''%s'' must be a set variable, got ''%s''',
             [ACall.Name, ArgType.Name]),
           ACall.Line, ACall.Col);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       if ACall.Args.Count >= 2 then
       begin
         ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
@@ -10862,6 +10994,7 @@ begin
               (TASTExpr(ACall.Args.Items[0]) is TFieldAccessExpr)) then
         SemanticError('First argument of ''Delete'' must be an assignable string',
           ACall.Line, ACall.Col);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
       AnalyseExpr(TASTExpr(ACall.Args.Items[2]));
     end
@@ -10883,6 +11016,7 @@ begin
       if not IsVarArgLValue(TASTExpr(ACall.Args.Items[0])) then
         SemanticError('First argument of ''SetLength'' must be an assignable variable',
           ACall.Line, ACall.Col);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
     end
     else
@@ -11270,6 +11404,8 @@ begin
             Format('var argument %d of ''%s'' must be a variable',
               [I + 1, AExpr.Name]),
             AExpr.Line, AExpr.Col);
+        if PPar.IsVarParam then
+          WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
         CheckTypesMatch(PPar.TypeDesc, ArgType,
           Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
           AExpr.Line, AExpr.Col);
@@ -11332,6 +11468,8 @@ begin
           Format('var argument %d of ''%s'' must be a variable',
             [I + 1, AExpr.Name]),
           AExpr.Line, AExpr.Col);
+      if PPar.IsVarParam then
+        WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
       CheckTypesMatch(PPar.TypeDesc, ArgType,
         Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
         AExpr.Line, AExpr.Col);
