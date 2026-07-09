@@ -61,36 +61,22 @@ unit Net.Sockets;
 
 interface
 
-{ ponytail: PORTING BOUNDARY — the constants and the sockaddr_in layout below
-  are LINUX x86_64 values.  Other targets differ and need a per-platform layer:
-    * macOS/BSD: SO_REUSEADDR=4, O_NONBLOCK=4 (impl section), and TSockAddrIn
-      starts with a sin_len:Byte before sin_family; MSG_NOSIGNAL does not exist
-      (use the SO_NOSIGPIPE socket option, or keep IgnoreSigPipe).
+{ PORTING BOUNDARY (resolved for Linux + FreeBSD) — the OS-divergent socket
+  constants and the sockaddr_in fill are supplied by the per-target
+  rtl.platform.layout.<os> unit (the `_So*`/`_SockAddrIn4Fill` seam), chosen
+  at link time by the resolved --target, so this unit stays IFDEF-free.
+  Still pending here:
     * Windows: a separate Winsock backend (ws2_32, WSAStartup, closesocket,
       SOCKET handles, WSAGetLastError).
   The helper API (TcpListen*/TcpConnect*/AcceptConn/RecvString/SendAll/Close/
-  MakeNonBlocking/IgnoreSigPipe) is the stable surface — callers never touch
-  these constants — so a future port changes only the implementation, not
-  consumers.  Add the platform split when a second target lands. }
+  MakeNonBlocking/FillSockAddr/IgnoreSigPipe) is the stable surface — callers
+  never touch raw constants — so further ports change only the seam, not
+  consumers. }
 
 const
-  { address families / socket types }
+  { address families / socket types (identical on Linux and the BSDs) }
   AF_INET     = 2;
   SOCK_STREAM = 1;
-
-  { setsockopt(2) }
-  SOL_SOCKET   = 1;
-  SO_REUSEADDR = 2;
-  { SO_REUSEPORT lets several sockets bind the SAME address:port; the kernel
-    load-balances incoming connections across them.  This is how NGINX/Envoy —
-    and the fiber server's per-worker-listener path (design [#listener-scaling])
-    — eliminate the single-acceptor bottleneck.  LINUX x86_64 value. }
-  SO_REUSEPORT = 15;
-
-  { send(2) flags.  MSG_NOSIGNAL makes a write to a peer-closed socket return
-    EPIPE instead of raising SIGPIPE (whose default action terminates the
-    process). }
-  MSG_NOSIGNAL = 16384;   { 0x4000 on Linux }
 
   { shutdown(2) how }
   SHUT_RD   = 0;
@@ -101,9 +87,26 @@ const
   INADDR_ANY      = 0;          { 0.0.0.0  — all interfaces }
   INADDR_LOOPBACK = 16777343;   { 127.0.0.1 = htonl($7F000001) }
 
+{ OS-divergent socket constants, resolved by the linked
+  rtl.platform.layout.<os> seam (e.g. SOL_SOCKET is 1 on Linux but $FFFF on
+  FreeBSD).  Functions rather than consts so ONE compiled unit serves every
+  target. }
+function SOL_SOCKET: Integer;   external name '_SolSocket';
+function SO_REUSEADDR: Integer; external name '_SoReuseAddr';
+{ SO_REUSEPORT lets several sockets bind the SAME address:port; the kernel
+  load-balances incoming connections across them.  This is how NGINX/Envoy —
+  and the fiber server's per-worker-listener path (design [#listener-scaling])
+  — eliminate the single-acceptor bottleneck. }
+function SO_REUSEPORT: Integer; external name '_SoReusePort';
+{ send(2) flag: a write to a peer-closed socket returns EPIPE instead of
+  raising SIGPIPE (whose default action terminates the process). }
+function MSG_NOSIGNAL: Integer; external name '_MsgNoSignal';
+
 type
-  { struct sockaddr_in, Linux x86_64 — exactly 16 bytes.
-    sin_port and sin_addr are in network byte order. }
+  { struct sockaddr_in — exactly 16 bytes on Linux and FreeBSD.  The first two
+    bytes differ per OS (Linux: u16 sin_family; BSD: u8 sin_len + u8
+    sin_family), so build it with FillSockAddr below rather than assigning
+    sin_family directly.  sin_port and sin_addr are in network byte order. }
   TSockAddrIn = record
     sin_family: UInt16;
     sin_port:   UInt16;
@@ -150,6 +153,11 @@ function IPv4(A, B, C, D: Byte): UInt32;
   Returns True on success.  Does not resolve host names (no DNS); pass a
   literal IP, or use INADDR_ANY / INADDR_LOOPBACK. }
 function ParseIPv4(const AText: string; out AAddr: UInt32): Boolean;
+
+{ Fill AAddr for AF_INET with AIp (network order) and APort (HOST order) via
+  the per-OS layout seam — the only correct way to build a TSockAddrIn (see
+  the type's note on the OS-divergent first two bytes). }
+procedure FillSockAddr(var AAddr: TSockAddrIn; AIp: UInt32; APort: UInt16);
 
 { --- server / client helpers --- }
 
@@ -215,12 +223,17 @@ uses
 
 const
   F_SETFL    = 4;
-  O_NONBLOCK = 2048;   { Linux x86_64: 0x800 }
   SIGPIPE    = 13;
   SIG_IGN    = 1;      { (void*)1 }
 
 function c_fcntl(AFd, ACmd, AArg: Integer): Integer; external name 'fcntl';
 function c_signal(ASignum: Integer; AHandler: Pointer): Pointer; external name 'signal';
+
+{ Per-OS layout seam: O_NONBLOCK (Linux $800, FreeBSD 4) and the sockaddr_in
+  fill (the OS-divergent first two bytes). }
+function _ONonBlock: Integer; external name '_ONonBlock';
+procedure _SockAddrIn4Fill(P: Pointer; APortN: UInt16; AAddrN: UInt32);
+  external name '_SockAddrIn4Fill';
 
 function IPv4(A, B, C, D: Byte): UInt32;
 begin
@@ -268,14 +281,8 @@ begin
 end;
 
 procedure FillSockAddr(var AAddr: TSockAddrIn; AIp: UInt32; APort: UInt16);
-var
-  I: Integer;
 begin
-  AAddr.sin_family := AF_INET;
-  AAddr.sin_port   := Htons(APort);
-  AAddr.sin_addr   := AIp;
-  for I := 0 to 7 do
-    AAddr.sin_zero[I] := 0;
+  _SockAddrIn4Fill(@AAddr, Htons(APort), AIp);
 end;
 
 function TcpListen(AAddr: UInt32; APort: UInt16; ABacklog: Integer): Integer;
@@ -291,7 +298,7 @@ begin
   end;
 
   One := 1;
-  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEADDR, @One, 4);
+  SetSockOpt(Fd, SOL_SOCKET(), SO_REUSEADDR(), @One, 4);
 
   FillSockAddr(SA, AAddr, APort);
   if Bind(Fd, @SA, 16) <> 0 then
@@ -327,8 +334,8 @@ begin
   end;
 
   One := 1;
-  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEADDR, @One, 4);
-  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEPORT, @One, 4);
+  SetSockOpt(Fd, SOL_SOCKET(), SO_REUSEADDR(), @One, 4);
+  SetSockOpt(Fd, SOL_SOCKET(), SO_REUSEPORT(), @One, 4);
 
   FillSockAddr(SA, AAddr, APort);
   if Bind(Fd, @SA, 16) <> 0 then
@@ -362,7 +369,7 @@ begin
   end;
 
   One := 1;
-  SetSockOpt(Fd, SOL_SOCKET, SO_REUSEADDR, @One, 4);
+  SetSockOpt(Fd, SOL_SOCKET(), SO_REUSEADDR(), @One, 4);
 
   FillSockAddr(SA, AAddr, 0);            { port 0 => OS picks an ephemeral port }
   if Bind(Fd, @SA, 16) <> 0 then
@@ -447,7 +454,7 @@ end;
 procedure MakeNonBlocking(AFd: Integer);
 begin
   if AFd >= 0 then
-    c_fcntl(AFd, F_SETFL, O_NONBLOCK);
+    c_fcntl(AFd, F_SETFL, _ONonBlock());
 end;
 
 function SendAll(AFd: Integer; const S: string): Boolean;
@@ -464,7 +471,7 @@ begin
   P := PChar(S);
   while Total > 0 do
   begin
-    N := Send(AFd, P, Total, MSG_NOSIGNAL);
+    N := Send(AFd, P, Total, MSG_NOSIGNAL());
     if N <= 0 then
     begin
       Result := False;

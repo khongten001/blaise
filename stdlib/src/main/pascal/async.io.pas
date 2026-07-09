@@ -22,8 +22,10 @@ unit async.io;
 // instead of hanging.  Cancellation observed on resume raises EFiberCancelled
 // (the L1 contract).
 //
-// NATIVE BACKEND ONLY (depends on async.fibers).  Linux epoll/errno for now;
-// kqueue and the static path are deferred (design [#reactor]).
+// NATIVE BACKEND ONLY (depends on async.fibers).  OS divergences resolve at
+// link time: the reactor via async.fibers' adapter seam (epoll/kqueue), errno
+// via runtime.errno.*, and the socket/fcntl constants below via the
+// rtl.platform.layout.<os> seam.
 
 interface
 
@@ -79,10 +81,13 @@ function c_getsockopt(AFd, ALevel, AOptName: Integer; AOptVal, AOptLen: Pointer)
 const
   F_GETFL     = 3;
   F_SETFL     = 4;
-  O_NONBLOCK  = $800;       { Linux x86_64 }
-  SOCK_NONBLOCK = $800;     { accept4 flag }
-  SOL_SOCKET_ = 1;
-  SO_ERROR_   = 4;
+
+{ OS-divergent socket/fcntl constants from the per-target
+  rtl.platform.layout.<os> seam (Linux/FreeBSD values differ for all four). }
+function O_NONBLOCK: Integer;    external name '_ONonBlock';
+function SOCK_NONBLOCK: Integer; external name '_SockNonBlock';  { accept4 flag }
+function SOL_SOCKET_: Integer;   external name '_SolSocket';
+function SO_ERROR_: Integer;     external name '_SoError';
 
 type
   PInteger = ^Integer;
@@ -96,7 +101,7 @@ begin
   Fl := c_fcntl3(AFd, F_GETFL, 0);
   if Fl < 0 then
     Fl := 0;
-  c_fcntl3(AFd, F_SETFL, Fl or O_NONBLOCK);
+  c_fcntl3(AFd, F_SETFL, Fl or O_NONBLOCK());
 end;
 
 { ---------------------------------------------------------------------------
@@ -205,7 +210,7 @@ begin
       end;
       { No scheduler: true blocking fallback via a blocking read.  Clear
         O_NONBLOCK so the kernel blocks us. }
-      c_fcntl3(AFd, F_SETFL, c_fcntl3(AFd, F_GETFL, 0) and (not O_NONBLOCK));
+      c_fcntl3(AFd, F_SETFL, c_fcntl3(AFd, F_GETFL, 0) and (not O_NONBLOCK()));
       Continue;
     end;
     Exit(N);                         { real error }
@@ -225,7 +230,7 @@ begin
   WrOnly := [ioWrite];
   while True do
   begin
-    N := Send(AFd, ABuf, ALen, MSG_NOSIGNAL);
+    N := Send(AFd, ABuf, ALen, MSG_NOSIGNAL());
     if N >= 0 then
       Exit(N);
     if Interrupted(N) then
@@ -238,7 +243,7 @@ begin
           Exit(IO_ETIMEDOUT);
         Continue;
       end;
-      c_fcntl3(AFd, F_SETFL, c_fcntl3(AFd, F_GETFL, 0) and (not O_NONBLOCK));
+      c_fcntl3(AFd, F_SETFL, c_fcntl3(AFd, F_GETFL, 0) and (not O_NONBLOCK()));
       Continue;
     end;
     Exit(N);
@@ -258,7 +263,7 @@ begin
   RdOnly := [ioRead];
   while True do
   begin
-    Fd := c_accept4(AListenFd, nil, nil, SOCK_NONBLOCK);
+    Fd := c_accept4(AListenFd, nil, nil, SOCK_NONBLOCK());
     if Fd >= 0 then
       Exit(Fd);
     if Interrupted(Int64(Fd)) then
@@ -272,7 +277,7 @@ begin
         Continue;
       end;
       c_fcntl3(AListenFd, F_SETFL,
-        c_fcntl3(AListenFd, F_GETFL, 0) and (not O_NONBLOCK));
+        c_fcntl3(AListenFd, F_GETFL, 0) and (not O_NONBLOCK()));
       Continue;
     end;
     Exit(Fd);
@@ -303,7 +308,7 @@ begin
       { Writable: check SO_ERROR to learn if the connect succeeded. }
       SoErr := 0;
       OptLen := 4;
-      if c_getsockopt(AFd, SOL_SOCKET_, SO_ERROR_, @SoErr, @OptLen) <> 0 then
+      if c_getsockopt(AFd, SOL_SOCKET_(), SO_ERROR_(), @SoErr, @OptLen) <> 0 then
         Exit(-1);
       if SoErr = 0 then
         Exit(0);

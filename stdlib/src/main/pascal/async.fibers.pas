@@ -29,9 +29,10 @@ unit async.fibers;
 // context-switch leaf is inline asm; the QBE backend rejects it with a clear
 // diagnostic (the design's compile-time guard).
 //
-// Clock and idle-sleep bindings are Linux-shaped libc calls
-// (clock_gettime/nanosleep), the same posture as the context unit's mmap
-// bindings.
+// Clock and idle-sleep bindings are portable libc calls
+// (clock_gettime/nanosleep); the OS-specific pieces — the park/wake
+// primitive and the monotonic clockid — come from the link-time seam in
+// rtl.platform.layout.<os>, same posture as the context unit's mmap flag.
 
 interface
 
@@ -285,20 +286,35 @@ procedure FiberResume(ATask: TFiberTask);
 implementation
 
 uses
-  runtime.atomic, runtime.thread, async.reactor;
+  runtime.atomic, runtime.thread, async.reactor,
+  { The project's ONE target-driven conditional: pull in the reactor adapter
+    for the RESOLVED --target (OS defines follow --target, not the build
+    host, so cross-compilation picks the right adapter in both directions).
+    The adapter's initialization registers itself in GReactorFactory. }
+  {$IFDEF FREEBSD}
+  async.reactor.kqueue;
+  {$ELSE}
+  async.reactor.epoll;
+  {$ENDIF}
 
-{ Linux-shaped libc bindings (same posture as the context unit's mmap set). }
+{ Portable libc bindings — same names on Linux and FreeBSD. }
 function _libc_clock_gettime(AClockId: Integer; ATs: Pointer): Integer;
   external name 'clock_gettime';
 function _libc_nanosleep(AReq, ARem: Pointer): Integer;
   external name 'nanosleep';
 
-{ Raw Linux futex(2) via libc's syscall(3) — the park/wake primitive for idle
-  workers.  We use the private-futex ops.  syscall returns 0 / a wake count on
-  success or -1 (with errno) on error; the scheduler ignores the result (a
-  spurious wake just re-checks the run queues). }
-function _libc_syscall6(ANum: Int64; A1, A2, A3, A4, A5, A6: Int64): Int64;
-  external name 'syscall';
+{ Park/wake primitives for idle workers — the link-time per-OS seam from
+  rtl.platform.layout.<os> (Linux: raw futex(2) private ops; FreeBSD:
+  _umtx_op(2)).  _ParkWait blocks while the 32-bit word at AAddr equals
+  AExpected, bounded by the RELATIVE timespec at ATs (never nil).  Results
+  are ignored by the scheduler (a spurious wake just re-checks the queues). }
+procedure _ParkWait(AAddr: Pointer; AExpected: Integer; ATs: Pointer);
+  external name '_ParkWait';
+procedure _ParkWake(AAddr: Pointer; ACount: Integer);
+  external name '_ParkWake';
+
+{ The target's CLOCK_MONOTONIC clockid (Linux 1, FreeBSD 4) — same seam. }
+function _ClockMonotonicId: Integer; external name '_ClockMonotonicId';
 
 { Exception-state and leak-tracker hooks from the RTL. }
 function _LeakTrackerSuspend: Boolean; external name '_LeakTrackerSuspend';
@@ -306,13 +322,6 @@ procedure _LeakTrackerResume(APrev: Boolean);
   external name '_LeakTrackerResume';
 
 const
-  SYS_futex = 202;             { x86-64 }
-  FUTEX_WAIT_PRIVATE = 128;    { FUTEX_WAIT | FUTEX_PRIVATE_FLAG }
-  FUTEX_WAKE_PRIVATE = 129;    { FUTEX_WAKE | FUTEX_PRIVATE_FLAG }
-
-const
-  CLOCK_MONOTONIC = 1;
-
 { Park handshake states (async.sync park/resume).  A cross-thread waker must
   never enqueue a task while its fiber is still executing on its own stack
   (between committing to park and the FiberSwitch that saves the context) —
@@ -341,7 +350,7 @@ var
 begin
   Ts.Sec := 0;
   Ts.NSec := 0;
-  _libc_clock_gettime(CLOCK_MONOTONIC, @Ts);
+  _libc_clock_gettime(_ClockMonotonicId(), @Ts);
   Result := Ts.Sec * Int64(1000000000) + Ts.NSec;
 end;
 
@@ -1065,9 +1074,8 @@ end;
 procedure FutexWait(AAddr: Pointer; AExpected: Integer; ATimeoutNs: Int64);
 var
   Ts: TTimeSpec;
-  TsPtr: Pointer;
 begin
-  { A finite timeout is ALWAYS used: FUTEX_WAIT with a NULL timeout blocks
+  { A finite timeout is ALWAYS used: a park with a NULL timeout blocks
     forever, so a single lost wake would hang the worker.  A non-positive
     request is coerced to a short bound (the caller already handles the
     "due now" case; this is a belt-and-braces floor). }
@@ -1075,16 +1083,12 @@ begin
     ATimeoutNs := Int64(1000000);   { 1 ms floor }
   Ts.Sec := ATimeoutNs div Int64(1000000000);
   Ts.NSec := ATimeoutNs mod Int64(1000000000);
-  TsPtr := @Ts;
-  _libc_syscall6(SYS_futex, Int64(PtrUInt(AAddr)),
-    Int64(FUTEX_WAIT_PRIVATE), Int64(AExpected),
-    Int64(PtrUInt(TsPtr)), 0, 0);
+  _ParkWait(AAddr, AExpected, @Ts);
 end;
 
 procedure FutexWake(AAddr: Pointer; ACount: Integer);
 begin
-  _libc_syscall6(SYS_futex, Int64(PtrUInt(AAddr)),
-    Int64(FUTEX_WAKE_PRIVATE), Int64(ACount), 0, 0, 0);
+  _ParkWake(AAddr, ACount);
 end;
 
 { Wake one specific worker: publish a pending-wake on its park word and futex

@@ -56,13 +56,37 @@ function execvp(File_: PChar; Argv: Pointer): Integer;
   via sysctl(hw.ncpu). }
 function sysconf(Name: Integer): Int64;
 
+{ setenv: insert or replace "Name=Value" in `environ`.  When the key exists a
+  new entry string replaces the slot in place (Overwrite=0 leaves it alone);
+  when it does not, a fresh NULL-terminated pointer array (old count + 2) is
+  mmap-ed, the pointers copied, and `environ` repointed at it.  Entry strings
+  and arrays are mmap-ed and never freed — setenv traffic is test-harness
+  scale, not allocator scale.  Children see changes because execvp/execve pass
+  the current `environ`. }
+function setenv(Name, Value: PChar; Overwrite: Integer): Integer;
+
+{ unsetenv: remove every "Name=..." entry by shifting the tail of the pointer
+  array down one slot (the array — original stack envp or our mmap-ed copy —
+  is writable either way). }
+function unsetenv(Name: PChar): Integer;
+
 implementation
 
 type
   PPointer = ^Pointer;
   PInt64   = ^Int64;
+  PByte    = ^Byte;
 
 const
+  { mmap protection/flags for the tiny env allocations below.  MAP_ANON is the
+    FreeBSD value ($1000) — this unit is the FreeBSD leaf, selected at link
+    time, so the constant lives here (never IFDEF-ed). }
+  PROT_READ    = 1;
+  PROT_WRITE   = 2;
+  MAP_PRIVATE  = 2;
+  MAP_ANON_OS  = $1000;
+  PAGE_SIZE    = 4096;
+
   { The token runtime.thread passes for the CPU-count query.  It is an internal
     RTL contract value (runtime.thread hardcodes 84 on every target), NOT
     FreeBSD's libc _SC_NPROCESSORS_ONLN (58) — we never reach FreeBSD's libc. }
@@ -224,6 +248,150 @@ begin
     DirStart := DirStart + DirLen + 1;
   end;
   Result := -1;
+end;
+
+{ --- env mutation helpers (setenv/unsetenv) --- }
+
+{ Page-rounded anonymous mmap; nil on failure.  Mirrors runtime.mem's
+  MmapAlloc but stays self-contained — this unit must not depend on the
+  allocator (it links into the earliest freestanding layer). }
+function EnvAlloc(Size: Int64): Pointer;
+begin
+  Size := (Size + Int64(PAGE_SIZE - 1)) and Int64($FFFFFFFFFFFFF000);
+  Result := mmap(nil, Size, PROT_READ or PROT_WRITE,
+                 MAP_PRIVATE or MAP_ANON_OS, -1, 0);
+  if (Result = nil) or (PtrUInt(Result) = PtrUInt(Int64(-1))) then
+    Result := nil;
+end;
+
+{ Slot I of the environ pointer array (the RTL idiom: no [] on typed ptrs). }
+function EnvSlot(I: Int64): PPointer;
+begin
+  Result := PPointer(Pointer(PChar(environ) + I * 8));
+end;
+
+{ Number of entries before the NULL terminator (0 when environ is nil). }
+function EnvCount: Int64;
+begin
+  Result := 0;
+  if environ = nil then Exit;
+  while EnvSlot(Result)^ <> nil do Result := Result + 1;
+end;
+
+{ Index of the entry whose key is Name (length NLen), or -1. }
+function EnvFind(Name: PChar; NLen: Int64): Int64;
+var I: Int64;
+begin
+  Result := -1;
+  if environ = nil then Exit;
+  I := 0;
+  while EnvSlot(I)^ <> nil do
+  begin
+    if EnvKeyMatches(PChar(EnvSlot(I)^), Name, NLen) then Exit(I);
+    I := I + 1;
+  end;
+end;
+
+function setenv(Name, Value: PChar; Overwrite: Integer): Integer;
+var
+  NLen, VLen, Idx, Cnt, I: Int64;
+  Entry: PChar;
+  NewArr: Pointer;
+  B: PByte;
+  S: PPointer;
+begin
+  Result := -1;
+  if (Name = nil) or (Value = nil) then Exit;
+  NLen := CStrLen(Name);
+  if NLen = 0 then Exit;
+  { A '=' inside the key is invalid (POSIX EINVAL). }
+  I := 0;
+  while I < NLen do
+  begin
+    if (Name[I] and $FF) = Ord('=') then Exit;
+    I := I + 1;
+  end;
+
+  Idx := EnvFind(Name, NLen);
+  if (Idx >= 0) and (Overwrite = 0) then Exit(0);
+
+  { Build the "Name=Value" entry string. }
+  VLen := CStrLen(Value);
+  Entry := PChar(EnvAlloc(NLen + 1 + VLen + 1));
+  if Entry = nil then Exit;
+  I := 0;
+  while I < NLen do
+  begin
+    B := PByte(Pointer(PChar(Entry) + I));
+    B^ := Name[I] and $FF;
+    I := I + 1;
+  end;
+  B := PByte(Pointer(PChar(Entry) + NLen));
+  B^ := Ord('=');
+  I := 0;
+  while I < VLen do
+  begin
+    B := PByte(Pointer(PChar(Entry) + NLen + 1 + I));
+    B^ := Value[I] and $FF;
+    I := I + 1;
+  end;
+  B := PByte(Pointer(PChar(Entry) + NLen + 1 + VLen));
+  B^ := 0;
+
+  if Idx >= 0 then
+  begin
+    S := EnvSlot(Idx);                   { replace in place }
+    S^ := Pointer(Entry);
+  end
+  else
+  begin
+    { Append: fresh array with room for the new entry + NULL terminator. }
+    Cnt := EnvCount();
+    NewArr := EnvAlloc((Cnt + 2) * 8);
+    if NewArr = nil then Exit;
+    I := 0;
+    while I < Cnt do
+    begin
+      S := PPointer(Pointer(PChar(NewArr) + I * 8));
+      S^ := EnvSlot(I)^;
+      I := I + 1;
+    end;
+    S := PPointer(Pointer(PChar(NewArr) + Cnt * 8));
+    S^ := Pointer(Entry);
+    S := PPointer(Pointer(PChar(NewArr) + (Cnt + 1) * 8));
+    S^ := nil;
+    environ := NewArr;
+  end;
+  Result := 0;
+end;
+
+function unsetenv(Name: PChar): Integer;
+var
+  NLen, I, J: Int64;
+  S: PPointer;
+begin
+  Result := -1;
+  if Name = nil then Exit;
+  NLen := CStrLen(Name);
+  if NLen = 0 then Exit;
+  Result := 0;
+  if environ = nil then Exit;
+  I := 0;
+  while EnvSlot(I)^ <> nil do
+  begin
+    if EnvKeyMatches(PChar(EnvSlot(I)^), Name, NLen) then
+    begin
+      { Shift the tail (including the NULL) down one slot; re-test index I. }
+      J := I;
+      repeat
+        S := EnvSlot(J);
+        S^ := EnvSlot(J + 1)^;
+        J := J + 1;
+      until EnvSlot(J - 1)^ = nil;
+    end
+    else
+      I := I + 1;
+  end;
 end;
 
 function sysconf(Name: Integer): Int64;

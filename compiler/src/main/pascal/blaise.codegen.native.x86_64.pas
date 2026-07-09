@@ -1470,7 +1470,7 @@ begin
         TProceduralTypeDesc(Self.GlobalType(Name)).IsReference) then
     begin
       Self.Emit('.balign 8');
-      if Copy(Name, 1, 2) <> '.L' then
+      if Copy(Name, 0, 2) <> '.L' then
         Self.Emit('.globl ' + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.quad 0');
@@ -1481,7 +1481,7 @@ begin
        (Self.GlobalType(Name).Kind = tyInterface) then
     begin
       Self.Emit('.balign 8');
-      if Copy(Name, 1, 2) <> '.L' then
+      if Copy(Name, 0, 2) <> '.L' then
       begin
         Self.Emit('.globl ' + Name + '_obj');
         Self.Emit('.globl ' + Name + '_itab');
@@ -1498,7 +1498,7 @@ begin
     begin
       Sz := Self.GlobalType(Name).RawSize();
       Self.Emit('.balign 8');
-      if Copy(Name, 1, 2) <> '.L' then
+      if Copy(Name, 0, 2) <> '.L' then
         Self.Emit('.globl ' + Name);
       Self.Emit(Name + ':');
       Self.Emit(Format(#9'.skip %d', [Sz]));
@@ -1508,7 +1508,7 @@ begin
        (Self.GlobalType(Name).Kind = tyDouble) then
     begin
       Self.Emit('.balign 8');
-      if Copy(Name, 1, 2) <> '.L' then
+      if Copy(Name, 0, 2) <> '.L' then
         Self.Emit('.globl ' + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.double 0.0');
@@ -1518,7 +1518,7 @@ begin
        (Self.GlobalType(Name).Kind = tySingle) then
     begin
       Self.Emit('.balign 4');
-      if Copy(Name, 1, 2) <> '.L' then
+      if Copy(Name, 0, 2) <> '.L' then
         Self.Emit('.globl ' + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.float 0.0');
@@ -1532,7 +1532,7 @@ begin
     else
       begin Directive := #9'.long 0'; Self.Emit('.balign 4'); end;
     end;
-    if Copy(Name, 1, 2) <> '.L' then
+    if Copy(Name, 0, 2) <> '.L' then
       Self.Emit('.globl ' + Name);
     Self.Emit(Name + ':');
     Self.Emit(Directive);
@@ -1874,7 +1874,7 @@ begin
         Lbl := CD.Name;
       Self.Emit('.data');
       Self.Emit('.balign 8');
-      if Copy(Lbl, 1, 2) <> '.L' then
+      if Copy(Lbl, 0, 2) <> '.L' then
         Self.Emit('.globl ' + Lbl);
       Self.Emit(Lbl + ':');
       for J := 0 to CD.ConstSetBytes.Count - 1 do

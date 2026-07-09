@@ -12,7 +12,7 @@ interface
 
 uses
   SysUtils, Classes, Process, blaise.testing,
-  blaise.elfwriter, blaise.assembler.x86_64;
+  blaise.elfwriter, blaise.elfreader, blaise.assembler.x86_64;
 
 type
   { ---- Instruction/directive encoding regression tests ----
@@ -26,6 +26,7 @@ type
     procedure TestBareMemOperand_LoadViaReg;
     procedure TestQuadSymbol_EmitsReloc;
     procedure TestTLSPrefix_PrecedesRex;
+    procedure TestTbssSymbol_TypedSttTls;
     procedure TestRipRelImmStore_AddendMinus8;
     procedure TestBranchUndefined_EmitsReloc;
     procedure TestNoteGnuStack_Present;
@@ -378,6 +379,40 @@ begin
   Obj := AssembleToBytes('movq %fs:tv@tpoff, %rax' + LineEnding);
   AssertTrue('64 48 8B prefix order wrong',
     ContainsBytes(Obj, Chr($64) + Chr($48) + Chr($8B) + Chr($04) + Chr($25)));
+end;
+
+procedure TAsmEncodingTests.TestTbssSymbol_TypedSttTls;
+var
+  Obj: string;
+  Parsed: TElfObjectFile;
+  I: Integer;
+  Found: Boolean;
+begin
+  { A symbol defined in .tbss must carry STT_TLS (GNU as infers it from the
+    "T" section flag).  External linkers (lld, GNU ld) resolve @tpoff against
+    a non-TLS symbol as a plain vaddr, yielding a wild positive thread-pointer
+    offset — threadvars in RTL objects then crash (FreeBSD libthr) or silently
+    alias across threads (glibc) in the cc-linked profile. }
+  Obj := AssembleToBytes(
+    '.section .tbss,"awT",@nobits' + LineEnding +
+    '.balign 8' + LineEnding +
+    '.globl tv' + LineEnding +
+    'tv:' + LineEnding +
+    #9'.skip 8' + LineEnding);
+  Parsed := ParseElfObject(Obj, 'tbss-test');
+  try
+    Found := False;
+    for I := 0 to Parsed.Symbols.Count - 1 do
+      if Parsed.Symbols[I].Name = 'tv' then
+      begin
+        Found := True;
+        AssertEquals('.tbss symbol must be STT_TLS',
+          STT_TLS, Parsed.Symbols[I].SymType);
+      end;
+    AssertTrue('symbol tv not found in symtab', Found);
+  finally
+    Parsed.Free();
+  end;
 end;
 
 procedure TAsmEncodingTests.TestRipRelImmStore_AddendMinus8;

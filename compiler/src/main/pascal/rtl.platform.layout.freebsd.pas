@@ -77,6 +77,37 @@ type
   Linux allocator FreeBSD's MAP_ANON. }
 {$IFDEF FREEBSD}
 function _MapAnonFlag: Integer;
+
+{ Flat park/wake primitives for the fiber scheduler (async.fibers).  The
+  FreeBSD futex analogue is _umtx_op(2); issued as a raw syscall so the same
+  unit serves both the libc and --static profiles.  _ParkWait blocks while
+  the 32-bit word at AAddr equals AExpected, bounded by the RELATIVE timeout
+  in ATs (a plain struct timespec — never nil; callers always bound the
+  wait).  _ParkWake wakes up to ACount waiters on AAddr. }
+procedure _ParkWait(AAddr: Pointer; AExpected: Integer; ATs: Pointer);
+procedure _ParkWake(AAddr: Pointer; ACount: Integer);
+
+{ The target's CLOCK_MONOTONIC clockid for clock_gettime: FreeBSD 4.
+  (Linux is 1; FreeBSD's 1 is CLOCK_VIRTUAL — using it would give process
+  CPU time, silently breaking the fiber timer heap.) }
+function _ClockMonotonicId: Integer;
+
+{ Socket-layer OS constants (Net.Sockets / async.io) — the per-platform layer
+  the Net.Sockets PORTING BOUNDARY note calls for.  FreeBSD values from
+  sys/socket.h / sys/fcntl.h. }
+function _SolSocket: Integer;      { SOL_SOCKET   = $FFFF }
+function _SoReuseAddr: Integer;    { SO_REUSEADDR = $0004 }
+function _SoReusePort: Integer;    { SO_REUSEPORT = $0200 }
+function _SoError: Integer;        { SO_ERROR     = $1007 }
+function _MsgNoSignal: Integer;    { MSG_NOSIGNAL = $20000 }
+function _ONonBlock: Integer;      { O_NONBLOCK   = $0004 }
+function _SockNonBlock: Integer;   { SOCK_NONBLOCK = $20000000 (accept4) }
+
+{ Fill a 16-byte struct sockaddr_in at P for AF_INET.  APortN/AAddrN are
+  ALREADY in network byte order.  FreeBSD layout: sin_len (u8, = 16),
+  sin_family (u8, = AF_INET), sin_port (u16), sin_addr (u32), sin_zero[8].
+  (Linux has no sin_len; its sin_family is a u16 — hence the seam.) }
+procedure _SockAddrIn4Fill(P: Pointer; APortN: UInt16; AAddrN: UInt32);
 {$ENDIF}
 
 implementation
@@ -158,6 +189,74 @@ end;
 function _MapAnonFlag: Integer;
 begin
   Result := $1000;
+end;
+
+const
+  UMTX_OP_WAIT_UINT_PRIVATE = 15;
+  UMTX_OP_WAKE_PRIVATE      = 16;
+
+{ _umtx_op(obj, op, val, uaddr, uaddr2) — SYS 454; arg4 (%rcx) -> %r10.
+  Same shape as the runtime.syscall.freebsd leaf, duplicated here because
+  that unit is only linked under --static and these primitives must exist
+  on both profiles. }
+function _park_umtx_op(Obj: Pointer; Op, Val: Integer;
+  Uaddr, Uaddr2: Pointer): Integer; assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $454, %rax          { SYS__umtx_op }
+    syscall
+    jae  .Lok_parkumtx
+    negq %rax
+.Lok_parkumtx:
+    ret
+end;
+
+procedure _ParkWait(AAddr: Pointer; AExpected: Integer; ATs: Pointer);
+begin
+  { uaddr = sizeof(struct timespec) selects the plain-timespec RELATIVE
+    timeout form of _umtx_op's WAIT (uaddr2 points at the timespec). }
+  _park_umtx_op(AAddr, UMTX_OP_WAIT_UINT_PRIVATE, AExpected,
+    Pointer(16), ATs);
+end;
+
+procedure _ParkWake(AAddr: Pointer; ACount: Integer);
+begin
+  _park_umtx_op(AAddr, UMTX_OP_WAKE_PRIVATE, ACount, nil, nil);
+end;
+
+function _ClockMonotonicId: Integer;
+begin
+  Result := 4;
+end;
+
+function _SolSocket: Integer;    begin Result := $FFFF;     end;
+function _SoReuseAddr: Integer;  begin Result := $0004;     end;
+function _SoReusePort: Integer;  begin Result := $0200;     end;
+function _SoError: Integer;      begin Result := $1007;     end;
+function _MsgNoSignal: Integer;  begin Result := $20000;    end;
+function _ONonBlock: Integer;    begin Result := $0004;     end;
+function _SockNonBlock: Integer; begin Result := $20000000; end;
+
+procedure _SockAddrIn4Fill(P: Pointer; APortN: UInt16; AAddrN: UInt32);
+var
+  PB: ^Byte;
+  PW: ^UInt16;
+  PD: ^UInt32;
+  I: Integer;
+begin
+  PB := P;
+  PB^ := 16;                               { sin_len = sizeof(sockaddr_in) }
+  PB := Pointer(PChar(P) + 1);
+  PB^ := 2;                                { sin_family = AF_INET }
+  PW := Pointer(PChar(P) + 2);
+  PW^ := APortN;                           { sin_port (network order) }
+  PD := Pointer(PChar(P) + 4);
+  PD^ := AAddrN;                           { sin_addr (network order) }
+  for I := 8 to 15 do
+  begin
+    PB := Pointer(PChar(P) + I);
+    PB^ := 0;                              { sin_zero }
+  end;
 end;
 {$ENDIF}
 

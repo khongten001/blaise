@@ -137,7 +137,7 @@ end;
 
 procedure LoopbackClient(AArg: Pointer);
 var
-  Fd, Rc, I: Integer;
+  Fd, Rc: Integer;
   SA: TSockAddrIn;
   Buf: array[0..15] of Byte;
   N: Int64;
@@ -145,11 +145,7 @@ begin
   FiberSleep(3);                 { let the server accept-park first }
   Fd := Socket(AF_INET, SOCK_STREAM, 0);
   SetNonBlocking(Fd);
-  SA.sin_family := AF_INET;
-  SA.sin_port := Htons(TEST_PORT);
-  SA.sin_addr := INADDR_LOOPBACK;
-  for I := 0 to 7 do
-    SA.sin_zero[I] := 0;
+  FillSockAddr(SA, INADDR_LOOPBACK, TEST_PORT);
   Rc := FiberConnect(Fd, @SA, 16);
   if Rc <> 0 then
   begin

@@ -313,7 +313,7 @@ end;
 
 function TTcpClient.Connect(const AHostIp: string; APort: UInt16): TTcpConn;
 var
-  Fd, Rc, I: Integer;
+  Fd, Rc: Integer;
   Ip: UInt32;
   SA: TSockAddrIn;
 begin
@@ -324,11 +324,7 @@ begin
   if Fd < 0 then
     Exit;
   SetNonBlocking(Fd);
-  SA.sin_family := AF_INET;
-  SA.sin_port := Htons(APort);
-  SA.sin_addr := Ip;
-  for I := 0 to 7 do
-    SA.sin_zero[I] := 0;
+  FillSockAddr(SA, Ip, APort);
   Rc := FiberConnect(Fd, @SA, 16);
   if Rc <> 0 then
   begin

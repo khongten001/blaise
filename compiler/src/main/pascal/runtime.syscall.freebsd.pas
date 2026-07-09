@@ -81,6 +81,48 @@ function pipe(Fds: Pointer): Integer;
   0x800): callers must pass FreeBSD flag values, this leaf does not translate. }
 function fcntl(Fd, Cmd, Arg: Integer): Integer;
 
+{ Event notification — the readiness reactor's kernel surface.  The libc
+  profile binds the same names in libc; these leaves give the --static
+  profile the design's link-time swap (async-networking-design.adoc,
+  "Freestanding (static) builds"). }
+function kqueue: Integer;
+{ kevent(kq, changelist, nchanges, eventlist, nevents, timeout) — the
+  FreeBSD-12+ kevent (64-byte struct kevent with ext[4]). }
+function kevent(Kq: Integer; Changes: Pointer; NChanges: Integer;
+                Events: Pointer; NEvents: Integer; Timeout: Pointer): Integer;
+
+{ Sockets — Net.Sockets binds these flat C names; in the libc profile libc
+  provides them, here the --static profile gets raw leaves (same link-time
+  swap as kqueue/kevent above).  FreeBSD has NO recv/send syscalls: libc
+  defines recv(fd,buf,len,flags) = recvfrom(...,nil,nil) and send =
+  sendto(...,nil,0), so those two leaves zero the address arguments before
+  entering the kernel.  htons/ntohs are not syscalls at all — plain 16-bit
+  byte swaps exported under their libc names. }
+function socket(Domain, Typ, Protocol: Integer): Integer;
+function bind(Fd: Integer; Addr: Pointer; AddrLen: Integer): Integer;
+function listen(Fd, Backlog: Integer): Integer;
+function accept(Fd: Integer; Addr: Pointer; AddrLen: Pointer): Integer;
+{ accept4(2) — accept with flags (SOCK_NONBLOCK etc.); FreeBSD SYS 541. }
+function accept4(Fd: Integer; Addr: Pointer; AddrLen: Pointer;
+                 Flags: Integer): Integer;
+function connect(Fd: Integer; Addr: Pointer; AddrLen: Integer): Integer;
+function setsockopt(Fd, Level, OptName: Integer; OptVal: Pointer;
+                    OptLen: Integer): Integer;
+function getsockopt(Fd, Level, OptName: Integer; OptVal: Pointer;
+                    OptLen: Pointer): Integer;
+function getsockname(Fd: Integer; Addr: Pointer; AddrLen: Pointer): Integer;
+function shutdown(Fd, How: Integer): Integer;
+function recv(Fd: Integer; Buf: Pointer; Len: Int64; Flags: Integer): Int64;
+function send(Fd: Integer; Buf: Pointer; Len: Int64; Flags: Integer): Int64;
+function htons(HostShort: UInt16): UInt16;
+function ntohs(NetShort: UInt16): UInt16;
+
+{ signal(3) — libc's simplified handler install; on FreeBSD it is a wrapper
+  over sigaction(2) (SYS_sigaction = 416), so the leaf builds the struct and
+  returns the previous handler.  Net.Sockets binds this name for its
+  process-wide SIGPIPE ignore. }
+function signal(SigNum: Integer; Handler: Pointer): Pointer;
+
 { Memory. }
 function mmap(Addr: Pointer; Length: Int64; Prot, Flags, Fd: Integer;
              Offset: Int64): Pointer;
@@ -199,6 +241,21 @@ const
   SYS_sysarch       = 165;   { %fs-base setup for TLS (AMD64_SET_FSBASE) }
   SYS_thr_exit      = 431;   { terminate ONE thread (NOT exit(2)) }
   SYS_umtx_op       = 454;   { the FreeBSD futex analogue }
+  SYS_kqueue        = 362;
+  SYS_kevent        = 560;   { FreeBSD-12+ 64-byte kevent (freebsd11_kevent = 363) }
+  SYS_socket        = 97;
+  SYS_bind          = 104;
+  SYS_listen        = 106;
+  SYS_accept        = 30;
+  SYS_accept4       = 541;
+  SYS_connect       = 98;
+  SYS_setsockopt    = 105;
+  SYS_getsockopt    = 118;
+  SYS_getsockname   = 32;
+  SYS_shutdown      = 134;
+  SYS_recvfrom      = 29;    { recv = recvfrom with nil address }
+  SYS_sendto        = 133;   { send = sendto with nil address }
+  SYS_sigaction     = 416;   { signal(3) is a libc wrapper over this }
   SYS_thr_new       = 455;   { the FreeBSD clone(2) analogue }
   AT_FDCWD          = -100;  { dirfd for path-relative *at() syscalls at cwd }
 { The asm bodies use literal immediates (the assembler needs a literal, not a
@@ -452,6 +509,233 @@ asm
     negq %rax
 .Lok_fcntl:
     ret
+end;
+
+function kqueue: Integer;
+  assembler; nostackframe;
+asm
+    movq $362, %rax          { SYS_kqueue }
+    syscall
+    jae  .Lok_kqueue
+    negq %rax
+.Lok_kqueue:
+    ret
+end;
+
+{ kevent has 6 args; arg4 (Events) arrives in %rcx -> move to %r10. }
+function kevent(Kq: Integer; Changes: Pointer; NChanges: Integer;
+                Events: Pointer; NEvents: Integer; Timeout: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $560, %rax          { SYS_kevent (FreeBSD-12+ 64-byte struct) }
+    syscall
+    jae  .Lok_kevent
+    negq %rax
+.Lok_kevent:
+    ret
+end;
+
+{ --- sockets (interface note above: the --static profile's Net.Sockets
+      surface; recv/send are recvfrom/sendto with nil addresses) --- }
+
+function socket(Domain, Typ, Protocol: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $97, %rax           { SYS_socket }
+    syscall
+    jae  .Lok_socket
+    negq %rax
+.Lok_socket:
+    ret
+end;
+
+function bind(Fd: Integer; Addr: Pointer; AddrLen: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $104, %rax          { SYS_bind }
+    syscall
+    jae  .Lok_bind
+    negq %rax
+.Lok_bind:
+    ret
+end;
+
+function listen(Fd, Backlog: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $106, %rax          { SYS_listen }
+    syscall
+    jae  .Lok_listen
+    negq %rax
+.Lok_listen:
+    ret
+end;
+
+function accept(Fd: Integer; Addr: Pointer; AddrLen: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $30, %rax           { SYS_accept }
+    syscall
+    jae  .Lok_accept
+    negq %rax
+.Lok_accept:
+    ret
+end;
+
+{ accept4 has 4 args; arg4 (Flags) arrives in %rcx -> move to %r10. }
+function accept4(Fd: Integer; Addr: Pointer; AddrLen: Pointer;
+                 Flags: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $541, %rax          { SYS_accept4 }
+    syscall
+    jae  .Lok_accept4
+    negq %rax
+.Lok_accept4:
+    ret
+end;
+
+function connect(Fd: Integer; Addr: Pointer; AddrLen: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $98, %rax           { SYS_connect }
+    syscall
+    jae  .Lok_connect
+    negq %rax
+.Lok_connect:
+    ret
+end;
+
+{ setsockopt has 5 args, all in registers already (rdi rsi rdx rcx r8);
+  arg4 (OptVal) arrives in %rcx -> move to %r10. }
+function setsockopt(Fd, Level, OptName: Integer; OptVal: Pointer;
+                    OptLen: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $105, %rax          { SYS_setsockopt }
+    syscall
+    jae  .Lok_setsockopt
+    negq %rax
+.Lok_setsockopt:
+    ret
+end;
+
+{ getsockopt has 5 args; arg4 (OptVal) arrives in %rcx -> move to %r10. }
+function getsockopt(Fd, Level, OptName: Integer; OptVal: Pointer;
+                    OptLen: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $118, %rax          { SYS_getsockopt }
+    syscall
+    jae  .Lok_getsockopt
+    negq %rax
+.Lok_getsockopt:
+    ret
+end;
+
+function getsockname(Fd: Integer; Addr: Pointer; AddrLen: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $32, %rax           { SYS_getsockname }
+    syscall
+    jae  .Lok_getsockname
+    negq %rax
+.Lok_getsockname:
+    ret
+end;
+
+function shutdown(Fd, How: Integer): Integer;
+  assembler; nostackframe;
+asm
+    movq $134, %rax          { SYS_shutdown }
+    syscall
+    jae  .Lok_shutdown
+    negq %rax
+.Lok_shutdown:
+    ret
+end;
+
+{ recv(fd,buf,len,flags) = recvfrom(fd,buf,len,flags,nil,nil): arg4 (Flags)
+  arrives in %rcx -> %r10, then zero the from-address pair (%r8/%r9). }
+function recv(Fd: Integer; Buf: Pointer; Len: Int64; Flags: Integer): Int64;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    xorq %r8, %r8
+    xorq %r9, %r9
+    movq $29, %rax           { SYS_recvfrom }
+    syscall
+    jae  .Lok_recv
+    negq %rax
+.Lok_recv:
+    ret
+end;
+
+{ send(fd,buf,len,flags) = sendto(fd,buf,len,flags,nil,0). }
+function send(Fd: Integer; Buf: Pointer; Len: Int64; Flags: Integer): Int64;
+  assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    xorq %r8, %r8
+    xorq %r9, %r9
+    movq $133, %rax          { SYS_sendto }
+    syscall
+    jae  .Lok_send
+    negq %rax
+.Lok_send:
+    ret
+end;
+
+function htons(HostShort: UInt16): UInt16;
+begin
+  Result := UInt16(((HostShort and $FF) shl 8) or (HostShort shr 8));
+end;
+
+function ntohs(NetShort: UInt16): UInt16;
+begin
+  Result := UInt16(((NetShort and $FF) shl 8) or (NetShort shr 8));
+end;
+
+{ Raw sigaction(2): sigaction(sig, act, oact). }
+function _sys_sigaction(Sig: Integer; Act, OAct: Pointer): Integer;
+  assembler; nostackframe;
+asm
+    movq $416, %rax          { SYS_sigaction }
+    syscall
+    jae  .Lok_sigaction
+    negq %rax
+.Lok_sigaction:
+    ret
+end;
+
+{ FreeBSD struct sigaction: handler @0 (8), sa_flags @8 (4), sa_mask @12
+  (sigset_t = 4 x uint32).  signal(3) = sigaction with an empty mask and no
+  flags; returns the previous handler (SIG_ERR = -1 cast on failure). }
+type
+  PPointer = ^Pointer;
+
+function signal(SigNum: Integer; Handler: Pointer): Pointer;
+var
+  Act: array[0..31] of Byte;
+  OAct: array[0..31] of Byte;
+  I: Integer;
+  P: PPointer;
+begin
+  for I := 0 to 31 do
+  begin
+    Act[I] := 0;
+    OAct[I] := 0;
+  end;
+  P := PPointer(@Act[0]);
+  P^ := Handler;
+  if _sys_sigaction(SigNum, @Act[0], @OAct[0]) <> 0 then
+    Exit(Pointer(-1));
+  P := PPointer(@OAct[0]);
+  Result := P^;
 end;
 
 { mremap: no FreeBSD in-place-remap syscall.  Always return MAP_FAILED (-1) so

@@ -30,8 +30,8 @@ unit async.fibers.context.x86_64;
 // avoid mmap/munmap churn on hot spawn paths.
 //
 // Adding a CPU is one new async.fibers.context.<cpu>.pas leaf; nothing here
-// is OS-specific beyond the mmap flag convention (Linux-shaped constants,
-// which the FreeBSD syscall leaf translates — same convention as runtime.mem).
+// is OS-specific beyond the anonymous-mmap flag, which comes from the
+// _MapAnonFlag link-time seam (rtl.platform.layout.<os>) — same as runtime.mem.
 
 interface
 
@@ -124,6 +124,12 @@ function _libc_mprotect(Addr: Pointer; Length: Int64; Prot: Integer): Integer;
   external name 'mprotect';
 procedure _libc_abort; external name 'abort';
 
+{ Per-OS anonymous-mapping flag (Linux $20, FreeBSD $1000), resolved at link
+  time from rtl.platform.layout.<os> — the same seam runtime.mem uses.  The
+  libc profile binds the real libc mmap, so the flag must be OS-correct here
+  (the static-profile syscall leaf would translate, but libc does not). }
+function _MapAnonFlag: Integer; external name '_MapAnonFlag';
+
 { Exception-state snapshot hooks exported by runtime.exc (design P1). }
 function _ExcGetTop: Pointer; external name '_ExcGetTop';
 procedure _ExcSetTop(AFrame: Pointer); external name '_ExcSetTop';
@@ -135,7 +141,6 @@ const
   PROT_READ = 1;
   PROT_WRITE = 2;
   MAP_PRIVATE = 2;
-  MAP_ANONYMOUS = 32;    { Linux-shaped; the FreeBSD syscall leaf translates }
   POOL_MAX = 16;
 
 type
@@ -220,7 +225,7 @@ begin
 
   { Fresh mapping: RW everywhere, then revoke the low page as the guard. }
   Base := _libc_mmap(nil, Total, PROT_READ or PROT_WRITE,
-    MAP_PRIVATE or MAP_ANONYMOUS, -1, 0);
+    MAP_PRIVATE or _MapAnonFlag(), -1, 0);
   if (Base = nil) or (Base = Pointer(-1)) then
     Exit(nil);
   if _libc_mprotect(Base, FiberPageSize, PROT_NONE) <> 0 then

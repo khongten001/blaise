@@ -3366,7 +3366,16 @@ begin
         Bind := esbLocal;
 
       if not Types.TryGetValue(LabelKey, SType) then
-        SType := estNone;
+      begin
+        { GNU as infers STT_TLS for any symbol defined in a TLS ("T"-flagged)
+          section; mirror that.  External linkers resolve @tpoff against a
+          non-TLS symbol as a plain vaddr, which puts threadvars at a wild
+          positive thread-pointer offset in cc-linked binaries. }
+        if LabelVal.Section = eskTbss then
+          SType := estTLS
+        else
+          SType := estNone;
+      end;
 
       Writer.DefineSymbol(LabelKey, LabelVal.Section,
                           LabelVal.Offset, 0, Bind, SType);

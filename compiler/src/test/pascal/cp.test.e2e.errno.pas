@@ -71,7 +71,11 @@ const
         Halt(1);
       end;
       Flags := fcntl(Fds[0], 3, 0);           { F_GETFL }
-      fcntl(Fds[0], 4, Flags or 2048);        { F_SETFL, O_NONBLOCK (Linux) }
+      { F_SETFL, O_NONBLOCK: Linux $800, FreeBSD $4.  Both bits are set so the
+        probe is host-portable: the foreign bit is not a settable status flag
+        on the other OS (FreeBSD $800 = O_EXCL, Linux $4 = unused) and F_SETFL
+        ignores it. }
+      fcntl(Fds[0], 4, Flags or 2048 or 4);
       N := xread(Fds[0], @Buf[0], 8);
       if WouldBlock(N) then WriteLn('WOULDBLOCK') else WriteLn('NOTWB');
       if Interrupted(N) then WriteLn('INTR') else WriteLn('NOINTR');

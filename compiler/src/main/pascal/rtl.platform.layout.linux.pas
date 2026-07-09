@@ -65,6 +65,35 @@ type
   conditional. }
 {$IFDEF LINUX}
 function _MapAnonFlag: Integer;
+
+{ Flat park/wake primitives for the fiber scheduler (async.fibers): raw
+  futex(2), issued as a raw syscall so the same unit serves both the libc
+  and --static profiles.  _ParkWait blocks while the 32-bit word at AAddr
+  equals AExpected, bounded by the RELATIVE timeout in ATs (a plain struct
+  timespec — never nil; callers always bound the wait).  _ParkWake wakes up
+  to ACount waiters on AAddr.  The FreeBSD twin maps these onto _umtx_op(2). }
+procedure _ParkWait(AAddr: Pointer; AExpected: Integer; ATs: Pointer);
+procedure _ParkWake(AAddr: Pointer; ACount: Integer);
+
+{ The target's CLOCK_MONOTONIC clockid for clock_gettime: Linux 1.
+  (FreeBSD is 4 — its 1 is CLOCK_VIRTUAL.) }
+function _ClockMonotonicId: Integer;
+
+{ Socket-layer OS constants (Net.Sockets / async.io) — the per-platform layer
+  the Net.Sockets PORTING BOUNDARY note calls for.  Linux x86_64 values. }
+function _SolSocket: Integer;      { SOL_SOCKET   = 1 }
+function _SoReuseAddr: Integer;    { SO_REUSEADDR = 2 }
+function _SoReusePort: Integer;    { SO_REUSEPORT = 15 }
+function _SoError: Integer;        { SO_ERROR     = 4 }
+function _MsgNoSignal: Integer;    { MSG_NOSIGNAL = $4000 }
+function _ONonBlock: Integer;      { O_NONBLOCK   = $800 }
+function _SockNonBlock: Integer;   { SOCK_NONBLOCK = $800 (accept4) }
+
+{ Fill a 16-byte struct sockaddr_in at P for AF_INET.  APortN/AAddrN are
+  ALREADY in network byte order.  Linux layout: sin_family (u16, = AF_INET),
+  sin_port (u16), sin_addr (u32), sin_zero[8].  (FreeBSD splits the first
+  u16 into sin_len + a u8 sin_family — hence the seam.) }
+procedure _SockAddrIn4Fill(P: Pointer; APortN: UInt16; AAddrN: UInt32);
 {$ENDIF}
 
 implementation
@@ -149,6 +178,66 @@ end;
 function _MapAnonFlag: Integer;
 begin
   Result := $20;
+end;
+
+const
+  FUTEX_WAIT_PRIVATE = 128;   { FUTEX_WAIT | FUTEX_PRIVATE_FLAG }
+  FUTEX_WAKE_PRIVATE = 129;   { FUTEX_WAKE | FUTEX_PRIVATE_FLAG }
+
+{ futex(uaddr, op, val, timeout) — SYS 202; arg4 (%rcx) -> %r10.  Same shape
+  as the runtime.syscall.linux leaf, duplicated here because that unit is
+  only linked under --static and these primitives must exist on both
+  profiles.  uaddr2/val3 are ignored by WAIT/WAKE. }
+function _park_futex(Uaddr: Pointer; Op, Val: Integer;
+  Timeout: Pointer): Int64; assembler; nostackframe;
+asm
+    movq %rcx, %r10
+    movq $202, %rax          { SYS_futex }
+    syscall
+    ret
+end;
+
+procedure _ParkWait(AAddr: Pointer; AExpected: Integer; ATs: Pointer);
+begin
+  _park_futex(AAddr, FUTEX_WAIT_PRIVATE, AExpected, ATs);
+end;
+
+procedure _ParkWake(AAddr: Pointer; ACount: Integer);
+begin
+  _park_futex(AAddr, FUTEX_WAKE_PRIVATE, ACount, nil);
+end;
+
+function _ClockMonotonicId: Integer;
+begin
+  Result := 1;
+end;
+
+function _SolSocket: Integer;    begin Result := 1;    end;
+function _SoReuseAddr: Integer;  begin Result := 2;    end;
+function _SoReusePort: Integer;  begin Result := 15;   end;
+function _SoError: Integer;      begin Result := 4;    end;
+function _MsgNoSignal: Integer;  begin Result := $4000; end;
+function _ONonBlock: Integer;    begin Result := $800; end;
+function _SockNonBlock: Integer; begin Result := $800; end;
+
+procedure _SockAddrIn4Fill(P: Pointer; APortN: UInt16; AAddrN: UInt32);
+var
+  PB: ^Byte;
+  PW: ^UInt16;
+  PD: ^UInt32;
+  I: Integer;
+begin
+  PW := P;
+  PW^ := 2;                                { sin_family = AF_INET }
+  PW := Pointer(PChar(P) + 2);
+  PW^ := APortN;                           { sin_port (network order) }
+  PD := Pointer(PChar(P) + 4);
+  PD^ := AAddrN;                           { sin_addr (network order) }
+  for I := 8 to 15 do
+  begin
+    PB := Pointer(PChar(P) + I);
+    PB^ := 0;                              { sin_zero }
+  end;
 end;
 {$ENDIF}
 

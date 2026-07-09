@@ -35,11 +35,13 @@ function xread(Fd: Integer; Buf: Pointer; Count: Int64): Int64;
 function WouldBlock(N: Int64): Boolean; external name 'WouldBlock';
 function Interrupted(N: Int64): Boolean; external name 'Interrupted';
 function GetOsErrno: Integer; external name 'GetOsErrno';
+{ O_NONBLOCK differs per OS (Linux $800, FreeBSD 4); the rtl.platform.layout
+  seam supplies the linked target's value. }
+function O_NONBLOCK: Integer; external name '_ONonBlock';
 
 const
   F_GETFL = 3;
   F_SETFL = 4;
-  O_NONBLOCK = 2048;   { Linux; the punit runtime tests run on the dev host }
 
 var
   GReadRet: Int64;
@@ -59,7 +61,7 @@ begin
     Exit;
   end;
   Flags := fcntl(Fds[0], F_GETFL, 0);
-  fcntl(Fds[0], F_SETFL, Flags or O_NONBLOCK);
+  fcntl(Fds[0], F_SETFL, Flags or O_NONBLOCK());
   GReadRet := xread(Fds[0], @Buf[0], 8);
 end;
 

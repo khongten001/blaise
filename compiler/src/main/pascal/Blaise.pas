@@ -406,6 +406,15 @@ type
     Error: string;
     Driver: TBackendDriver;   { set by dispatcher; supplies CreateUnitCodeGen + lowering }
     Opts: TBackendOpts;       { shared read-only opts bag, set by dispatcher }
+    { Every OTHER unit in this incremental build (source-loaded siblings and
+      prebuilt cached ifaces).  Each is compiled into its own object, so this
+      worker's codegen must reference their globals externally instead of
+      re-defining them (a unit that assigns an imported unit's global — e.g.
+      the reactor adapters' GReactorFactory registration — would otherwise
+      emit a second definition and the external link fails with a duplicate
+      symbol).  Read-only shared lists, set by the dispatcher. }
+    AllUnits: TObjectList;         { TUnit siblings, includes WorkUnit itself }
+    PrebuiltIfaces: TObjectList;   { TUnitInterface, may be nil }
   protected
     procedure Execute; override;
   end;
@@ -419,6 +428,7 @@ var
   WSource: TStringList;
   WFacts: TDbgFacts;
   WOPDF: TOPDFEmitter;
+  WI: Integer;
 begin
   Self.Error := '';
   try
@@ -432,6 +442,21 @@ begin
       Exit;
     end;
     WCG.SetSymbolTable(Self.SymTable);
+    { Note every dependency compiled into its OWN object (all sibling units in
+      this incremental build plus any cached prebuilt ifaces) so globals they
+      own are emitted as external references, not re-defined here — mirrors the
+      standalone unit-mode path's NoteDepInitUnit calls. }
+    if Self.AllUnits <> nil then
+      for WI := 0 to Self.AllUnits.Count - 1 do
+        if TUnit(Self.AllUnits.Items[WI]) <> Self.WorkUnit then
+          WCG.NoteDepInitUnit(TUnit(Self.AllUnits.Items[WI]).Name,
+            (TUnit(Self.AllUnits.Items[WI]).InitStmts <> nil) and
+            (TUnit(Self.AllUnits.Items[WI]).InitStmts.Count > 0));
+    if Self.PrebuiltIfaces <> nil then
+      for WI := 0 to Self.PrebuiltIfaces.Count - 1 do
+        WCG.NoteDepInitUnit(
+          TUnitInterface(Self.PrebuiltIfaces.Items[WI]).Name,
+          TUnitInterface(Self.PrebuiltIfaces.Items[WI]).HasInitialization);
     WCG.AppendUnit(Self.WorkUnit);
     WIR := WCG.GetOutput();
 
@@ -968,6 +993,11 @@ begin
           Worker.OPath := UnitOPath;
           Worker.Driver := WorkerDriver;
           Worker.Opts := Opts;
+          Worker.AllUnits := Units;
+          if Loader <> nil then
+            Worker.PrebuiltIfaces := Loader.PrebuiltIfaces
+          else
+            Worker.PrebuiltIfaces := nil;
           Workers.Add(Worker);
           PrebuiltObjPaths.Add(UnitOPath);
         end;

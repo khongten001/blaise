@@ -94,7 +94,7 @@ var
 begin
   Tv.TvSec := AMillis div 1000;
   Tv.TvUsec := (Int64(AMillis) mod 1000) * 1000;
-  SetSockOpt(AFd, SOL_SOCKET, SO_RCVTIMEO, @Tv, 16);
+  SetSockOpt(AFd, SOL_SOCKET(), SO_RCVTIMEO, @Tv, 16);
 end;
 
 { Raise the soft NOFILE limit toward the hard limit (or ADesired, whichever is

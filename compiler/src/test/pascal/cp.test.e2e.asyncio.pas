@@ -78,10 +78,7 @@ const
       FiberSleep(3);
       Fd := Socket(AF_INET, SOCK_STREAM, 0);
       SetNonBlocking(Fd);
-      SA.sin_family := AF_INET;
-      SA.sin_port := Htons(PORT);
-      SA.sin_addr := INADDR_LOOPBACK;
-      for I := 0 to 7 do SA.sin_zero[I] := 0;
+      FillSockAddr(SA, INADDR_LOOPBACK, PORT);
       Rc := FiberConnect(Fd, @SA, 16);
       if Rc <> 0 then begin WriteLn('CONNFAIL'); Exit; end;
       FiberSend(Fd, PChar('hello'), 5);
