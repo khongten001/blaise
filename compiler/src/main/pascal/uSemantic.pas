@@ -393,6 +393,20 @@ type
       the mutation writes the per-iteration copy and never reaches the
       collection element.  Call at each site that accepts a by-ref actual. }
     procedure WarnIfVarArgIsForInLoopVar(AExpr: TASTExpr);
+    { Enforce the lvalue constraint on every var/out actual of a resolved method
+      call, and emit the BUG-001 for-in warning for each.  Method-call paths
+      (unlike standalone-proc calls) historically skipped IsVarArgLValue, so a
+      non-lvalue (e.g. a function-call result) passed to a var parameter slipped
+      through the semantic pass and crashed codegen with 'var/out argument must
+      be a variable or field' (BUG-011).  Call after AppendDefaultArgs. }
+    procedure ValidateMethodVarArgs(AArgs: TObjectList; AMDecl: TMethodDecl;
+      const AName: string; ALine, ACol: Integer);
+    { Interface-dispatch arm of the same check: no TMethodDecl is available at
+      an interface call site, but the descriptor records per-param var flags,
+      which is enough to enforce the lvalue constraint (types are not
+      validated at interface-dispatch sites — Phase 3 limitation). }
+    procedure ValidateIntfMethodVarArgs(AArgs: TObjectList;
+      AIntf: TInterfaceTypeDesc; const AName: string; ALine, ACol: Integer);
     procedure AnalyseCaseStmt(AStmt: TCaseStmt);
     function  AnalyseMethodCallExpr(AExpr: TMethodCallExpr): TTypeDesc;
     function  AnalyseFuncCallExpr(AExpr: TFuncCallExpr): TTypeDesc;
@@ -9086,6 +9100,8 @@ begin
           ACall.Line, ACall.Col);
       for I := 0 to ACall.Args.Count - 1 do
         AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      ValidateIntfMethodVarArgs(ACall.Args, TInterfaceTypeDesc(ObjType),
+        ACall.Name, ACall.Line, ACall.Col);
       ACall.ResolvedClassType := ObjType;
       ACall.ResolvedMethod    := nil;
       ACall.ResolvedReturnTypeDesc :=
@@ -9124,6 +9140,7 @@ begin
         ACall.Line, ACall.Col);
     end;
     AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
+    ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedClassType := RT;
     ACall.ResolvedMethod    := MDecl;
     if (MDecl.ResolvedReturnType <> nil) and
@@ -9155,6 +9172,7 @@ begin
           [RT.Name, ACall.Name]),
         ACall.Line, ACall.Col);
     AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
+    ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     EnforceMethodVisible(MDecl, ACall.Line, ACall.Col);
     ACall.ResolvedClassType := RT;
     ACall.ResolvedMethod    := MDecl;
@@ -9187,6 +9205,9 @@ begin
             ACall.Line, ACall.Col);
         for I := 0 to ACall.Args.Count - 1 do
           AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        ValidateIntfMethodVarArgs(ACall.Args,
+          TInterfaceTypeDesc(ACall.ImplicitBaseInfo.TypeDesc),
+          ACall.Name, ACall.Line, ACall.Col);
         ACall.ResolvedClassType := ACall.ImplicitBaseInfo.TypeDesc;
         ACall.ResolvedMethod    := nil;
         ACall.ResolvedReturnTypeDesc := ResolveIntfMethodReturn(
@@ -9212,6 +9233,7 @@ begin
           Format('Class ''%s'' has no method ''%s''', [RT.Name, ACall.Name]),
           ACall.Line, ACall.Col);
       AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
+      ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
       ACall.ResolvedClassType := RT;
       ACall.ResolvedMethod    := MDecl;
       if (MDecl.ResolvedReturnType <> nil) and
@@ -9244,6 +9266,7 @@ begin
     ResolveDeferredArrowArgs(ACall.Args, MDecl);
     if MDecl = nil then
       MDecl := FindMethodDecl(RT.Name, ACall.Name);
+    ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedClassType   := RT;
     ACall.ResolvedMethod      := MDecl;
     ACall.IsConstructorCall   := True;
@@ -9275,6 +9298,8 @@ begin
       argument. }
     for I := 0 to ACall.Args.Count - 1 do
       AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    ValidateIntfMethodVarArgs(ACall.Args, TInterfaceTypeDesc(ObjSym.TypeDesc),
+      ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedClassType := ObjSym.TypeDesc;
     ACall.ResolvedMethod    := nil;  { nil = interface dispatch, not class dispatch }
     ACall.IsGlobal          := ObjSym.IsGlobal;
@@ -9329,6 +9354,7 @@ begin
   ResolveDeferredArrowArgs(ACall.Args, MDecl);
 
   AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
+  ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
   EnforceMethodVisible(MDecl, ACall.Line, ACall.Col);
   ACall.ResolvedClassType := RT;
   ACall.ResolvedMethod    := MDecl;
@@ -9573,6 +9599,7 @@ begin
       Format('argument %d of inherited ''%s''', [I + 1, ACall.Name]),
       ACall.Line, ACall.Col);
   end;
+  ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
 
   ACall.ResolvedParentType := ParentType;
   ACall.ResolvedMethod     := MDecl;
@@ -9619,6 +9646,56 @@ begin
         + '(the loop variable is a per-iteration copy) — use an indexed '
         + '''for'' loop to mutate the collection', [TIdentExpr(AExpr).Name]),
       AExpr.Line, AExpr.Col);
+end;
+
+procedure TSemanticAnalyser.ValidateMethodVarArgs(AArgs: TObjectList;
+  AMDecl: TMethodDecl; const AName: string; ALine, ACol: Integer);
+var
+  I: Integer;
+  Par: TMethodParam;
+begin
+  if AMDecl = nil then
+    Exit;
+  { Only validate the explicit parameters that received an actual — variadic
+    defaults were appended already, but an omitted trailing param has no arg. }
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    if I >= AMDecl.Params.Count then
+      Break;
+    Par := TMethodParam(AMDecl.Params.Items[I]);
+    if Par.IsVarParam then
+    begin
+      if not IsVarArgLValue(TASTExpr(AArgs.Items[I])) then
+        SemanticError(
+          Format('var argument %d of ''%s'' must be a variable', [I + 1, AName]),
+          ALine, ACol);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(AArgs.Items[I]));
+    end;
+  end;
+end;
+
+procedure TSemanticAnalyser.ValidateIntfMethodVarArgs(AArgs: TObjectList;
+  AIntf: TInterfaceTypeDesc; const AName: string; ALine, ACol: Integer);
+var
+  I: Integer;
+  MIdx: Integer;
+begin
+  if AIntf = nil then
+    Exit;
+  MIdx := AIntf.MethodIndex(AName);
+  if MIdx < 0 then
+    Exit;
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    if AIntf.MethodParamIsVar(MIdx, I) then
+    begin
+      if not IsVarArgLValue(TASTExpr(AArgs.Items[I])) then
+        SemanticError(
+          Format('var argument %d of ''%s'' must be a variable', [I + 1, AName]),
+          ALine, ACol);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(AArgs.Items[I]));
+    end;
+  end;
 end;
 
 function TSemanticAnalyser.AnalyseInheritedCallExpr(
@@ -9671,6 +9748,7 @@ begin
       Format('argument %d of inherited ''%s''', [I + 1, ACall.Name]),
       ACall.Line, ACall.Col);
   end;
+  ValidateMethodVarArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
 
   ACall.ResolvedParentType := ParentType;
   ACall.ResolvedMethod     := MDecl;
@@ -10755,6 +10833,11 @@ begin
         Par := TMethodParam(MDecl.Params.Items[I]);
         if Par.IsVarParam then
         begin
+          if not IsVarArgLValue(TASTExpr(ACall.Args.Items[I])) then
+            SemanticError(
+              Format('var argument %d of ''%s'' must be a variable',
+                [I + 1, ACall.Name]),
+              ACall.Line, ACall.Col);
           ArgType := TASTExpr(ACall.Args.Items[I]).ResolvedType;
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('var argument %d of ''%s''', [I + 1, ACall.Name]),
@@ -11368,10 +11451,16 @@ begin
         Par := TMethodParam(MDecl.Params.Items[I]);
         if Par.IsVarParam then
         begin
+          if not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
+            SemanticError(
+              Format('var argument %d of ''%s'' must be a variable',
+                [I + 1, AExpr.Name]),
+              AExpr.Line, AExpr.Col);
           ArgType := TASTExpr(AExpr.Args.Items[I]).ResolvedType;
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('var argument %d of ''%s''', [I + 1, AExpr.Name]),
             AExpr.Line, AExpr.Col);
+          WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
         end;
       end;
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
@@ -12118,10 +12207,16 @@ begin
       Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
       begin
+        if not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
+          SemanticError(
+            Format('var argument %d of ''%s'' must be a variable',
+              [I + 1, AExpr.Name]),
+            AExpr.Line, AExpr.Col);
         ArgType := TASTExpr(AExpr.Args.Items[I]).ResolvedType;
         CheckTypesMatch(Par.ResolvedType, ArgType,
           Format('var argument %d of ''%s''', [I + 1, AExpr.Name]),
           AExpr.Line, AExpr.Col);
+        WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
       end;
     end;
     RetypeSetLiteralArgs(AExpr.Args, MDecl);
@@ -12152,6 +12247,27 @@ begin
         [AExpr.Name, AExpr.Args.Count]),
       AExpr.Line, AExpr.Col);
   ResolveDeferredArrowArgs(AExpr.Args, MDecl);
+
+  { Var-param actuals must be L-values with exactly matching types — mirrors
+    the statement form (AnalyseProcCall); the expression form skipped this,
+    so a non-lvalue slipped through to codegen (BUG-011). }
+  for I := 0 to AExpr.Args.Count - 1 do
+  begin
+    Par := TMethodParam(MDecl.Params.Items[I]);
+    if Par.IsVarParam then
+    begin
+      if not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
+        SemanticError(
+          Format('var argument %d of ''%s'' must be a variable',
+            [I + 1, AExpr.Name]),
+          AExpr.Line, AExpr.Col);
+      WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
+      ArgType := TASTExpr(AExpr.Args.Items[I]).ResolvedType;
+      CheckTypesMatch(Par.ResolvedType, ArgType,
+        Format('var argument %d of ''%s''', [I + 1, AExpr.Name]),
+        AExpr.Line, AExpr.Col);
+    end;
+  end;
 
   RetypeSetLiteralArgs(AExpr.Args, MDecl);
   AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
@@ -12202,6 +12318,8 @@ begin
           AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.Args.Count - 1 do
         AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
+        AExpr.Name, AExpr.Line, AExpr.Col);
       AExpr.ResolvedClassType := ObjType;
       AExpr.ResolvedMethod    := nil;
       Result := FindTypeOrInstantiate(
@@ -12255,6 +12373,7 @@ begin
     end;
     ResolveDeferredArrowArgs(AExpr.Args, MDecl);
     AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedClassType := RT;
     AExpr.ResolvedMethod    := MDecl;
     Result := MDecl.ResolvedReturnType;
@@ -12326,6 +12445,8 @@ begin
             AExpr.Line, AExpr.Col);
         for I := 0 to AExpr.Args.Count - 1 do
           AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
+          AExpr.Name, AExpr.Line, AExpr.Col);
         AExpr.ResolvedClassType := ObjType;
         AExpr.ResolvedMethod    := nil;
         Result := FindTypeOrInstantiate(
@@ -12370,10 +12491,16 @@ begin
         Par := TMethodParam(MDecl.Params.Items[I]);
         if Par.IsVarParam then
         begin
+          if not IsVarArgLValue(TASTExpr(AExpr.Args.Items[I])) then
+            SemanticError(
+              Format('var argument %d of ''%s'' must be a variable',
+                [I + 1, AExpr.Name]),
+              AExpr.Line, AExpr.Col);
           ArgType := TASTExpr(AExpr.Args.Items[I]).ResolvedType;
           CheckTypesMatch(Par.ResolvedType, ArgType,
             Format('var argument %d of ''%s''', [I + 1, AExpr.Name]),
             AExpr.Line, AExpr.Col);
+          WarnIfVarArgIsForInLoopVar(TASTExpr(AExpr.Args.Items[I]));
         end;
       end;
       AExpr.ResolvedClassType := RT;
@@ -12421,6 +12548,7 @@ begin
           [ObjSym.Name, AExpr.Name]),
         AExpr.Line, AExpr.Col);
     AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     EnforceMethodVisible(MDecl, AExpr.Line, AExpr.Col);
     AExpr.ResolvedMethod    := MDecl;
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
@@ -12458,6 +12586,7 @@ begin
       MDecl := FindMethodDecl(ObjSym.Name, AExpr.Name);
     if MDecl <> nil then
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedMethod    := MDecl;
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
     AExpr.IsConstructorCall := True;
@@ -12504,6 +12633,7 @@ begin
       MDecl := FindMethodDecl(RT.Name, AExpr.Name);
     if MDecl <> nil then
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedMethod      := MDecl;
     AExpr.ResolvedClassType   := RT;
     AExpr.IsConstructorCall   := True;
@@ -12529,6 +12659,8 @@ begin
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
       AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
+      AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
     AExpr.ResolvedMethod    := nil;  { nil = interface dispatch }
     AExpr.IsGlobal          := ObjSym.IsGlobal;
@@ -12576,6 +12708,7 @@ begin
         TASTExpr(AExpr.Args.Items[I]).ResolvedType,
         Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
         AExpr.Line, AExpr.Col);
+    ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedClassType := RT;
     AExpr.ResolvedMethod    := MDecl;
     AExpr.IsGlobal          := ObjSym.IsGlobal;
@@ -12655,6 +12788,7 @@ begin
       Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
       AExpr.Line, AExpr.Col);
   end;
+  ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
 
   EnforceMethodVisible(MDecl, AExpr.Line, AExpr.Col);
   AExpr.ResolvedClassType := RT;
