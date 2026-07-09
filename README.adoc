@@ -43,8 +43,9 @@ full source-level debugging of incrementally-compiled multi-unit programs.
 == 🚀 Project Status
 
 * **Self-Hosting:** Yes. Blaise bootstraps and recompiles itself with byte-for-byte fixpoint. FPC is no longer required — the entire toolchain runs on Blaise alone.
-* **Testing:** 3800+ tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise.
+* **Testing:** 4250+ tests and growing (Test-Driven Development from day one). The test suite itself compiles under Blaise, and runs in CI on both Linux and FreeBSD.
 * **Backends:** Two code-generation backends — a direct native x86-64 backend (the default since v0.12.0) and QBE (opt-in via `--backend qbe`). Both pass the full fixpoint and test suite.
+* **Targets:** Two targets — Linux x86_64 and FreeBSD x86_64 — with cross-compilation between them in either direction using no external tools or packages: the internal assembler and linker produce the foreign binary directly, and the self-hosting fixpoint is verified on both operating systems.
 * **Standard library:** A growing opt-in stdlib — generics collections, JSON (DOM + parser + writer), SHA-1 and Base64, RFC 4122 GUIDs, TCP sockets, WebSockets, a minimal HTTP/1.1 server, and a `blaise.testing` unit-test framework.
 
 
@@ -81,14 +82,18 @@ full source-level debugging of incrementally-compiled multi-unit programs.
 | Complete ✅
 
 | 8
+| FreeBSD x86_64 target — self-hosting fixpoint + full test suite on FreeBSD, bidirectional cross-compilation
+| Complete ✅
+
+| 9
 | Windows + macOS ARM64 targets
 | Planned
 
-| 9
+| 10
 | LSP + VS Code extension
 | Planned
 
-| 10
+| 11
 | Migration analyser for FPC/Delphi codebases
 | Planned
 |===
@@ -142,20 +147,20 @@ project.xml                       Root aggregator (packaging=pom)
 │   ├── project.xml
 │   └── src/
 │       ├── main/pascal/          uLexer, uParser, uAST, blaise.codegen.qbe, blaise.codegen.native.*, ...
+│       │                         plus the RTL units (runtime.*.pas, rtl.platform.*.pas)
 │       └── test/pascal/          Test suite (blaise.testing, compiled by Blaise)
 │
-├── runtime/                      Always-linked runtime (packaging=library)
+├── runtime/                      RTL build module (packaging=library)
 │   ├── project.xml
-│   ├── Makefile
+│   ├── Makefile                  Builds blaise_rtl.a from the RTL units in compiler/src/main/pascal
 │   └── src/
-│       ├── main/asm/              Platform assembly (setjmp, atomics, UTF-8)
-│       ├── main/pascal/          system.pas, blaise_str.pas, blaise_arc.pas, ...
 │       └── test/pascal/          Runtime tests (punit, compiled by Blaise)
 │
 ├── stdlib/                       Standard library — opt-in via uses clause
 │   ├── project.xml
 │   └── src/
-│       └── main/pascal/          sysutils.pas, classes.pas, math.pas, ...
+│       ├── main/pascal/          sysutils.pas, classes.pas, math.pas, ...
+│       └── test/pascal/          Stdlib tests (blaise.testing, compiled by Blaise)
 │
 ├── tools/
 │   └── migration-analyser/       FPC/Delphi migration report tool (packaging=application)
@@ -178,7 +183,10 @@ never committed to the repository.
 * A previously released Blaise binary (see `releases/`)
 * https://github.com/graemeg/pasbuild[PasBuild]
 * A C compiler (`gcc` or `clang`) for building the vendored QBE backend and linking
-* GNU `make` for the runtime build
+* GNU `make` — developer workflow only: it builds the transitional
+  `blaise_rtl.a` archive consumed by the fixpoint scripts and the runtime test
+  module. The compiler itself builds and links its RTL from source, so plain
+  compiler use needs no `make` at all.
 
 NOTE: FPC is *not* required. Blaise is fully self-hosting — each release binary
 compiles the next version. The bootstrap chain starts from the binary in
@@ -186,10 +194,11 @@ compiles the next version. The bootstrap chain starts from the binary in
 
 === Bootstrap from a release
 
-The runtime build compiles its Pascal units (`blaise_str.pas`, `blaise_arc.pas`,
-`blaise_sys.pas`) using the Blaise binary at `compiler/target/blaise`. On a
-clean checkout that binary does not exist yet, so the release binary must be
-passed explicitly via the `BLAISE` make variable.
+The runtime build compiles the RTL units (`runtime.str.pas`, `runtime.arc.pas`,
+`runtime.mem.pas`, ... under `compiler/src/main/pascal`) into `blaise_rtl.a`
+using the Blaise binary at `compiler/target/blaise`. On a clean checkout that
+binary does not exist yet, so the release binary must be passed explicitly via
+the `BLAISE` make variable.
 
 [source,shell]
 ----
