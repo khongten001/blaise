@@ -4852,8 +4852,17 @@ begin
     params before Self and normal params.  Each captured var gets a pointer-size
     slot named '_cap_<VarName>' in the frame. }
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
+  begin
     for I := 0 to ADecl.CapturedVars.Count - 1 do
       Self.AddSlot('_cap_' + ADecl.CapturedVars.Strings[I], nil, Offset);
+    { A nested routine that captured the enclosing METHOD's Self (BUG-008)
+      also gets a REAL 'Self' slot, filled in the prologue by loading through
+      _cap_Self, so every hardcoded implicit-Self path works exactly as
+      inside the method (mirrors the anon-thunk Self slot below). }
+    if (ADecl.OwnerTypeName = '') and
+       (ADecl.CapturedVars.IndexOf('Self') >= 0) then
+      Self.AddSlot('Self', nil, Offset);
+  end;
 
   { Phase-2 anonymous-method capture: the env base slot plus one
     '_cap_<Name>' pointer slot per promoted name.  These are NOT hidden
@@ -5351,6 +5360,7 @@ var
   V: TDbgVar;
   DV: TDbgVar;
   Sym: TSymbol;
+  MDEncl: TMethodDecl;
 begin
   if (FDbgCur = nil) or (ADecl = nil) then Exit;
   V := FDbgCur.FindVar('Self');
@@ -5419,6 +5429,30 @@ begin
   if ADecl.CapturedVars <> nil then
     for I := 0 to ADecl.CapturedVars.Count - 1 do
     begin
+      if ADecl.CapturedVars.Strings[I] = 'Self' then
+      begin
+        { Captured METHOD Self (BUG-008): the routine has a REAL 'Self' slot,
+          filled in the prologue by loading through _cap_Self.  Present that
+          direct slot as Self, typed as the enclosing method's class, and
+          drop the raw capture pointer. }
+        V := FDbgCur.FindVar('_cap_Self');
+        if V <> nil then
+          FDbgCur.Vars.Delete(FDbgCur.Vars.IndexOf(V));
+        V := FDbgCur.FindVar('Self');
+        if (V <> nil) and (V.TypeDesc = nil) and (FSymTable <> nil) then
+        begin
+          MDEncl := FDbgOuterDecl;
+          while (MDEncl <> nil) and (MDEncl.OwnerTypeName = '') do
+            MDEncl := TMethodDecl(MDEncl.EnclosingDecl);
+          if MDEncl <> nil then
+          begin
+            Sym := FSymTable.Lookup(MDEncl.OwnerTypeName);
+            if (Sym <> nil) and (Sym.TypeDesc <> nil) then
+              V.TypeDesc := Sym.TypeDesc;
+          end;
+        end;
+        Continue;
+      end;
       V := FDbgCur.FindVar('_cap_' + ADecl.CapturedVars.Strings[I]);
       if V = nil then Continue;
       V.Name := ADecl.CapturedVars.Strings[I];
@@ -18646,6 +18680,7 @@ begin
   XmmIdx := 0;
   { Spill captured-var pointer params into their _cap_ slots. }
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
+  begin
     for I := 0 to ADecl.CapturedVars.Count - 1 do
     begin
       Self.Emit(Format(#9'movq %s, %s',
@@ -18653,6 +18688,18 @@ begin
          Self.VarOperand('_cap_' + ADecl.CapturedVars.Strings[I])]));
       Inc(IntIdx);
     end;
+    { Captured METHOD Self (BUG-008): _cap_Self holds the address of the
+      enclosing method's Self slot — load the receiver through it into this
+      frame's real 'Self' slot so hardcoded implicit-Self paths work. }
+    if (ADecl.OwnerTypeName = '') and
+       (ADecl.CapturedVars.IndexOf('Self') >= 0) then
+    begin
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand('_cap_Self')]));
+      Self.Emit(#9'movq (%rax), %rax');
+      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand('Self')]));
+    end;
+  end;
   if FSretFunc then
   begin
     { Save the sret buffer pointer from %rdi into the Result slot. }

@@ -61,6 +61,17 @@ type
       backends (they previously miscompiled on v0.12.0 and segfaulted the
       native codegen afterwards). }
     procedure TestRun_NestedRoutineInMethod_CapturesLocal;
+    { BUG-008 remaining gap: Self inside a nested routine of a method —
+      captured and threaded as a hidden by-pointer param like other outer
+      vars.  Covers explicit Self.Field/Self.Method(), implicit member
+      access, field writes, and record methods. }
+    procedure TestRun_NestedRoutineInMethod_ExplicitSelf;
+    procedure TestRun_NestedRoutineInMethod_ImplicitSelf;
+    procedure TestRun_NestedRoutineInMethod_SelfInRecordMethod;
+    procedure TestRun_NestedRoutineInMethod_SelfVirtualDispatch;
+    procedure TestRun_NestedRoutineInMethod_InheritedCall;
+    procedure TestRun_NestedRoutineInMethod_ExprCallCapture;
+    procedure TestRun_NestedRoutineInMethod_BlockVarInitFromSelf;
     { Phase 6 — generics: reference-to aliases + closures in generic bodies }
     procedure TestRun_GenericRefAlias_ClosureAtInteger;
     procedure TestRun_GenericRefAlias_ClosureAtString;
@@ -777,6 +788,276 @@ const Src =
   ''';
 begin
   AssertRunsOnAll(Src, '42' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_ExplicitSelf;
+const Src =
+  '''
+  program P;
+  type
+    TC = class
+      FVal: Integer;
+      procedure Bump();
+      procedure M();
+    end;
+  procedure TC.Bump();
+  begin
+    FVal := FVal + 1
+  end;
+  procedure TC.M();
+    procedure Inner();
+    begin
+      Self.FVal := Self.FVal + 10;
+      Self.Bump()
+    end;
+  begin
+    Inner();
+    Inner();
+    WriteLn(FVal)
+  end;
+  var C: TC;
+  begin
+    C := TC.Create();
+    C.FVal := 5;
+    C.M()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '27' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_ImplicitSelf;
+const Src =
+  '''
+  program P;
+  type
+    TC = class
+      FVal: Integer;
+      FName: string;
+      function Suffix(): string;
+      procedure M();
+    end;
+  function TC.Suffix(): string;
+  begin
+    Result := '!'
+  end;
+  procedure TC.M();
+  var K: Integer;
+    procedure Inner();
+    begin
+      FVal := FVal + K;
+      FName := FName + Suffix()
+    end;
+  begin
+    K := 3;
+    Inner();
+    Inner();
+    WriteLn(FName, FVal)
+  end;
+  var C: TC;
+  begin
+    C := TC.Create();
+    C.FVal := 1;
+    C.FName := 'ok';
+    C.M()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'ok!!7' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_SelfInRecordMethod;
+const Src =
+  '''
+  program P;
+  type
+    TR = record
+      X: Integer;
+      procedure M();
+    end;
+  procedure TR.M();
+    procedure Inner();
+    begin
+      Self.X := Self.X + 20;
+      X := X + 1
+    end;
+  begin
+    Inner();
+    WriteLn(X)
+  end;
+  var R: TR;
+  begin
+    R.X := 4;
+    R.M();
+    WriteLn(R.X)
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '25' + LineEnding + '25' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_SelfVirtualDispatch;
+const Src =
+  '''
+  program P;
+  type
+    TBase = class
+      function Tag(): string; virtual;
+      procedure M();
+    end;
+    TSub = class(TBase)
+      function Tag(): string; override;
+    end;
+  function TBase.Tag(): string;
+  begin
+    Result := 'base'
+  end;
+  function TSub.Tag(): string;
+  begin
+    Result := 'sub'
+  end;
+  procedure TBase.M();
+    procedure Inner();
+    begin
+      WriteLn(Self.Tag())
+    end;
+  begin
+    Inner()
+  end;
+  var B: TBase;
+  begin
+    B := TSub.Create();
+    B.M()
+  end.
+  ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'sub' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_InheritedCall;
+const Src =
+  '''
+  program P;
+  type
+    TBase = class
+      FVal: Integer;
+      function Tag(): string; virtual;
+      procedure Bump();
+    end;
+    TSub = class(TBase)
+      function Tag(): string; override;
+      procedure M();
+    end;
+  function TBase.Tag(): string;
+  begin
+    Result := 'base' + IntToStr(FVal)
+  end;
+  procedure TBase.Bump();
+  begin
+    FVal := FVal + 1
+  end;
+  function TSub.Tag(): string;
+  begin
+    Result := 'sub'
+  end;
+  procedure TSub.M();
+    procedure Inner();
+    begin
+      inherited Bump();
+      WriteLn(inherited Tag())
+    end;
+  begin
+    Inner()
+  end;
+  var S: TSub;
+  begin
+    S := TSub.Create();
+    S.FVal := 4;
+    S.M()
+  end.
+  ''';
+begin
+  { 'inherited' inside a nested routine dispatches on the captured Self —
+    the capture walker must register it (statement AND expression forms). }
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, 'base5' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_ExprCallCapture;
+const Src =
+  '''
+  program P;
+  type
+    TC = class
+      FVal: Integer;
+      procedure M();
+    end;
+  procedure TC.M();
+  var X: Integer;
+    function GetVal(): Integer;
+    var I: Integer;
+    begin
+      Result := 0;
+      I := 0;
+      while I < 2 do
+      begin
+        Result := Result + Self.FVal;
+        I := I + 1
+      end
+    end;
+  begin
+    X := GetVal() + 2;
+    WriteLn(X)
+  end;
+  var C: TC;
+  begin
+    C := TC.Create();
+    C.FVal := 20;
+    C.M()
+  end.
+  ''';
+begin
+  { Expression-position call to a NON-INLINABLE (loop body) nested function
+    that captures Self — the QBE TFuncCallExpr path must prepend the hidden
+    capture args just like statement calls do. }
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '42' + LineEnding, 0)
+end;
+
+procedure TE2EAnonMethodTests.TestRun_NestedRoutineInMethod_BlockVarInitFromSelf;
+const Src =
+  '''
+  program P;
+  type
+    TC = class
+      FVal: Integer;
+      procedure M();
+    end;
+  procedure TC.M();
+    procedure Inner();
+    begin
+      var K: Integer := Self.FVal + 1;
+      WriteLn(K)
+    end;
+  begin
+    Inner()
+  end;
+  var C: TC;
+  begin
+    C := TC.Create();
+    C.FVal := 8;
+    C.M()
+  end.
+  ''';
+begin
+  { Block-scoped 'var K := <expr referencing Self>' inside a nested routine:
+    the capture walker must descend the synthesised initialiser assignment. }
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertRunsOnAll(Src, '9' + LineEnding, 0)
 end;
 
 procedure TE2EAnonMethodTests.TestRun_MethodReturnsClosure_FatReturnABI;

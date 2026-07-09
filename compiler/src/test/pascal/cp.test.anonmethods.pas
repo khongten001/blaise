@@ -56,8 +56,10 @@ type
     procedure TestSemantic_Phase4_BlockVarDuplicateRejected;
     procedure TestSemantic_Phase4_MixedScopeCaptureRejected;
     procedure TestSemantic_Phase5_WeakNonSelfRejected;
-    procedure TestSemantic_NestedRoutineInMethod_SelfRejected;
+    procedure TestSemantic_NestedRoutineInMethod_ImplicitSelfAccepted;
     procedure TestSemantic_NestedRoutineInMethod_SelfContainedAccepted;
+    procedure TestCodegen_NestedRoutineInMethod_SelfCapturedIR;
+    procedure TestCodegen_NestedSretFuncInMethod_SelfCapturedIR;
     procedure TestSemantic_Phase9a_ArrowWithoutTarget_Rejected;
     procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtInteger;
     procedure TestSemantic_Phase6_GenericRefAlias_InstantiatesAtString;
@@ -943,13 +945,14 @@ const
     end.
     ''';
 
-procedure TAnonMethodTests.TestSemantic_NestedRoutineInMethod_SelfRejected;
+procedure TAnonMethodTests.TestSemantic_NestedRoutineInMethod_ImplicitSelfAccepted;
 const
   Src =
     '''
     program P;
     type
       TC = class
+        FVal: Integer;
         procedure Helper();
         procedure M();
       end;
@@ -959,7 +962,8 @@ const
     procedure TC.M();
       procedure Inner();
       begin
-        Self.Helper()
+        FVal := FVal + 1;
+        Helper()
       end;
     begin
       Inner()
@@ -967,25 +971,48 @@ const
     begin
     end.
     ''';
-var
-  Caught: Boolean;
 begin
-  { BUG-008: nested routines inside METHOD bodies have no Self plumbing —
-    any Self reference (explicit or via capture) must be rejected with a
-    clear diagnostic rather than miscompiling (v0.12.0 emitted a binary that
-    crashed at run time). }
-  Caught := False;
-  try
-    AnalyseSrc(Src).Free()
-  except
-    on E: Exception do
+  { BUG-008: a nested routine inside a METHOD body captures the method's
+    Self like any other outer variable — implicit member access (bare field
+    names, bare method calls) resolves against the enclosing class. }
+  AnalyseSrc(Src).Free()
+end;
+
+procedure TAnonMethodTests.TestCodegen_NestedRoutineInMethod_SelfCapturedIR;
+const
+  Src =
+    '''
+    program P;
+    type
+      TC = class
+        FVal: Integer;
+        procedure M();
+      end;
+    procedure TC.M();
+      procedure Inner();
+      begin
+        Self.FVal := 7
+      end;
     begin
-      Caught := True;
-      AssertTrue('diagnostic names Self',
-        Pos('Self cannot be used inside nested routine', E.Message) >= 0)
-    end
-  end;
-  AssertTrue('Self use in nested routine rejected', Caught)
+      Inner()
+    end;
+    var C: TC;
+    begin
+      C := TC.Create();
+      C.M()
+    end.
+    ''';
+var
+  IR: string;
+begin
+  { BUG-008: Self is threaded into the nested routine as a hidden
+    '_cap_Self' pointer param (the address of the method's Self slot); the
+    call site inside the method passes %_var_Self. }
+  IR := GenIR(Src);
+  AssertTrue('nested func takes hidden l %_cap_Self param',
+    Pos('l %_cap_Self', IR) >= 0);
+  AssertTrue('call site passes the Self slot address',
+    Pos('l %_var_Self', IR) >= 0)
 end;
 
 procedure TAnonMethodTests.TestSemantic_NestedRoutineInMethod_SelfContainedAccepted;
@@ -1016,6 +1043,59 @@ begin
   AnalyseSrc(Src).Free()
 end;
 
+
+procedure TAnonMethodTests.TestCodegen_NestedSretFuncInMethod_SelfCapturedIR;
+const
+  Src =
+    '''
+    program P;
+    type
+      TBig = record
+        A: Int64;
+        B: Int64;
+        C: Int64;
+        D: Int64;
+        E: Int64;
+      end;
+      TC = class
+        FVal: Int64;
+        procedure M();
+      end;
+    procedure TC.M();
+      function MakeBig(): TBig;
+      var I: Integer;
+      begin
+        I := 0;
+        while I < 1 do
+        begin
+          Result.A := Self.FVal;
+          I := I + 1
+        end
+      end;
+    var B: TBig;
+    begin
+      B := MakeBig();
+      WriteLn(B.A)
+    end;
+    var C: TC;
+    begin
+      C := TC.Create();
+      C.M()
+    end.
+    ''';
+var
+  IR: string;
+begin
+  { A record-returning (sret) nested function that captures Self must receive
+    the hidden capture pointer at the sret call site too — the sret path has
+    its own arg-assembly loop (EmitRecordCallSret), which used to omit the
+    capture args entirely. }
+  IR := GenIR(Src);
+  AssertTrue('nested sret func takes hidden l %_cap_Self param',
+    Pos('l %_cap_Self', IR) >= 0);
+  AssertTrue('sret call site passes the Self slot address',
+    Pos(', l %_var_Self', IR) >= 0)
+end;
 
 procedure TAnonMethodTests.TestSemantic_Phase6_GenericRefAlias_InstantiatesAtInteger;
 var

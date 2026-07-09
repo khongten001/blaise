@@ -6539,6 +6539,19 @@ begin
       else
         FuncName := '$' + QBEMangle(FCallExpr.Name);
       VisArgs  := '';
+      { Nested record-returning function with captured outer vars (incl. a
+        method's Self): prepend the hidden capture pointers, mirroring
+        EmitProcCall. }
+      if (MDecl <> nil) and (MDecl.CapturedVars <> nil) and
+         (MDecl.CapturedVars.Count > 0) then
+        for I := 0 to MDecl.CapturedVars.Count - 1 do
+        begin
+          if VisArgs <> '' then VisArgs := VisArgs + ', ';
+          if IsCaptured(MDecl.CapturedVars.Strings[I]) then
+            VisArgs := VisArgs + Format('l %%_cap_%s', [MDecl.CapturedVars.Strings[I]])
+          else
+            VisArgs := VisArgs + Format('l %%_var_%s', [MDecl.CapturedVars.Strings[I]]);
+        end;
     end;
     for I := 0 to FCallExpr.Args.Count - 1 do
     begin
@@ -10016,6 +10029,14 @@ begin
 
   EmitLine('@start');
 
+  { A nested routine that captured the enclosing METHOD's Self (BUG-008)
+    receives %_cap_Self = the address of the method's %_var_Self slot.
+    Alias %_var_Self to it so every hardcoded implicit-Self emission path
+    (field reads/writes, method dispatch) works exactly as in the method. }
+  if (ADecl.CapturedVars <> nil) and
+     (ADecl.CapturedVars.IndexOf('Self') >= 0) then
+    EmitLine('  %_var_Self =l copy %_cap_Self');
+
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params.Items[I]);
@@ -12670,7 +12691,20 @@ begin
         FuncName := '$' + QBEMangle(MDecl.ResolvedQbeName)
       else
         FuncName := '$' + QBEMangle(FC.Name);
-      ArgLine  := '';
+      ArgLine := '';
+      { Nested function with captured outer vars (incl. a method's Self):
+        prepend the hidden capture pointers, mirroring EmitProcCall.  If we
+        are ourselves nested and the var is one of our own captures, forward
+        the pointer we received. }
+      if (MDecl.CapturedVars <> nil) and (MDecl.CapturedVars.Count > 0) then
+        for I := 0 to MDecl.CapturedVars.Count - 1 do
+        begin
+          if ArgLine <> '' then ArgLine := ArgLine + ', ';
+          if IsCaptured(MDecl.CapturedVars.Strings[I]) then
+            ArgLine := ArgLine + Format('l %%_cap_%s', [MDecl.CapturedVars.Strings[I]])
+          else
+            ArgLine := ArgLine + Format('l %%_var_%s', [MDecl.CapturedVars.Strings[I]]);
+        end;
       ArgTemps := TStringList.Create();
       try
         for I := 0 to FC.Args.Count - 1 do

@@ -68,8 +68,9 @@ type
       codegen still emits the instance's methods. }
     FPendingGenericInstances:       TObjectList; { TGenericInstance — not owned }
     { True while analysing a nested routine declared inside a METHOD body:
-      the routine has no Self, so 'Self' references are rejected (BUG-008;
-      anonymous methods are the supported way to capture Self). }
+      the enclosing method's Self is capturable like any other outer name
+      (BUG-008) — CollectCaptures lists it in the outer-vars set and the
+      hidden by-pointer capture params thread it into the nested routine. }
     FInNestedOfMethod: Boolean;
     FPendingGenericRecordInstances: TObjectList; { TGenericRecordInstance — not owned }
     FPendingGenericIntfInstances:   TObjectList; { TGenericInterfaceInstance — not owned }
@@ -7694,20 +7695,17 @@ begin
     if ADecl.TypeParams <> nil then Continue;
     { Forward declarations have no body; the later impl handles analysis }
     if ADecl.Body = nil then Continue;
-    { A nested routine declared inside a METHOD body has no Self: analyse it
-      with the class context CLEARED so an implicit-Self member access fails
-      with the ordinary undeclared-identifier error instead of silently
-      resolving against the enclosing class and miscompiling (BUG-008 — no
-      Self plumbing exists for nested routines).  Explicitly captured outer
-      locals — including 'Self' itself — still work through the normal
-      capture machinery. }
+    { A nested routine declared inside a METHOD body captures the method's
+      Self like any other outer variable (BUG-008): the class context stays
+      SET so 'Self' and implicit member access resolve against the enclosing
+      class, and CollectCaptures threads Self through the hidden by-pointer
+      capture params.  Only FCurrentMethodDecl is cleared — the nested
+      routine is emitted as a standalone function, not a method body. }
     if FCurrentMethodDecl <> nil then
     begin
       SavedClass       := FCurrentClass;
       SavedMethodOwner := FCurrentMethodOwner;
       SavedMethodDecl  := FCurrentMethodDecl;
-      FCurrentClass       := nil;
-      FCurrentMethodOwner := nil;
       FCurrentMethodDecl  := nil;
       FInNestedOfMethod   := True;
       try
@@ -7728,15 +7726,6 @@ procedure TSemanticAnalyser.MaybeCaptureName(ADecl: TMethodDecl;
   AOuterVars: TStringList; const AName: string);
 begin
   if AName = '' then Exit;
-  { A nested routine inside a METHOD has no Self plumbing — capturing the
-    method's Self miscompiles (BUG-008).  Anonymous methods are the
-    supported way to capture Self.  Checked BEFORE the outer-vars guard:
-    Self is an implicit parameter and never appears in AOuterVars. }
-  if FInNestedOfMethod and SameText(AName, 'Self') then
-    SemanticError(Format(
-      'Self cannot be used inside nested routine ''%s'' — ' +
-      'use an anonymous method instead', [ADecl.Name]),
-      ADecl.Line, ADecl.Col);
   if AOuterVars.IndexOf(AName) < 0 then Exit;
   if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.IndexOf(AName) >= 0) then
     Exit;
@@ -7788,10 +7777,24 @@ begin
       if OuterVars.IndexOf(VName) < 0 then
         OuterVars.Add(VName);
     end;
-    { Nested-of-method: the walk must still run even when the method has no
-      capturable locals/params — MaybeCaptureName rejects a 'Self' reference
-      before consulting OuterVars (Self is implicit, never listed; BUG-008). }
-    if (OuterVars.Count = 0) and (not FInNestedOfMethod) then Exit;
+    { Nested-of-method: the enclosing method's Self is capturable like any
+      other outer name (BUG-008).  It is an implicit parameter, so it never
+      appears in the local/param sets above — list it explicitly.  Implicit
+      member references (bare fields, bare method calls) count as Self uses;
+      the walker registers those below via the IsImplicitSelf annotations. }
+    if FInNestedOfMethod then
+    begin
+      OuterVars.Add('Self');
+      { Transitive Self plumbing: a nested-of-nested routine that captured
+        Self needs THIS routine to receive and forward the Self pointer,
+        even when this body never touches Self itself.  (The inner decls
+        were analysed — and their captures collected — before this call.) }
+      for I := 0 to ADecl.Body.ProcDecls.Count - 1 do
+        if (TMethodDecl(ADecl.Body.ProcDecls.Items[I]).CapturedVars <> nil) and
+           (TMethodDecl(ADecl.Body.ProcDecls.Items[I]).CapturedVars.IndexOf('Self') >= 0) then
+          MaybeCaptureName(ADecl, OuterVars, 'Self');
+    end;
+    if OuterVars.Count = 0 then Exit;
 
     { Seed work-list with all statements in the inner body }
     for I := 0 to ADecl.Body.Stmts.Count - 1 do
@@ -7809,18 +7812,23 @@ begin
 
         if CurStmt is TAssignment then
         begin
-          { LHS name — check if it's an outer var (direct assign) }
+          { LHS name — check if it's an outer var (direct assign).  An
+            implicit-Self field write is a use of the method's Self. }
           if TAssignment(CurStmt).ImplicitSelfField = nil then
-            MaybeCaptureName(ADecl, OuterVars, TAssignment(CurStmt).Name);
+            MaybeCaptureName(ADecl, OuterVars, TAssignment(CurStmt).Name)
+          else
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           TodoExprs.Add(TAssignment(CurStmt).Expr);
         end
         else if CurStmt is TFieldAssignment then
         begin
           { 'R.Field := ...' — the receiver R may be an outer var/var-param.
-            (Implicit-Self writes have RecordName naming a field of Self, not an
-            outer var; those resolve through Self, never captured.) }
+            Implicit-Self writes (RecordName names a field of Self) resolve
+            through Self — that is a Self use (BUG-008). }
           if not TFieldAssignment(CurStmt).IsImplicitSelf then
-            MaybeCaptureName(ADecl, OuterVars, TFieldAssignment(CurStmt).RecordName);
+            MaybeCaptureName(ADecl, OuterVars, TFieldAssignment(CurStmt).RecordName)
+          else
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           TodoExprs.Add(TFieldAssignment(CurStmt).ObjExpr);
           TodoExprs.Add(TFieldAssignment(CurStmt).PropIndexExpr);
           TodoExprs.Add(TFieldAssignment(CurStmt).Expr);
@@ -7828,15 +7836,21 @@ begin
         else if CurStmt is TStaticSubscriptAssign then
         begin
           { 'A[i] := ...' — the array A may be an outer var/var-param.
-            (Implicit-Self array writes resolve through Self.) }
+            Implicit-Self array writes resolve through Self. }
           if not TStaticSubscriptAssign(CurStmt).IsImplicitSelf then
-            MaybeCaptureName(ADecl, OuterVars, TStaticSubscriptAssign(CurStmt).ArrayName);
+            MaybeCaptureName(ADecl, OuterVars, TStaticSubscriptAssign(CurStmt).ArrayName)
+          else
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           TodoExprs.Add(TStaticSubscriptAssign(CurStmt).BaseExpr);
           TodoExprs.Add(TStaticSubscriptAssign(CurStmt).IndexExpr);
           TodoExprs.Add(TStaticSubscriptAssign(CurStmt).ValueExpr);
         end
         else if CurStmt is TProcCall then
         begin
+          { A bare call that resolved to a method of the enclosing class is
+            an implicit Self.Method() dispatch. }
+          if TProcCall(CurStmt).IsImplicitSelfMethod then
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           for J := 0 to TProcCall(CurStmt).Args.Count - 1 do
             TodoExprs.Add(TProcCall(CurStmt).Args.Items[J]);
         end
@@ -7844,8 +7858,10 @@ begin
         begin
           { The RECEIVER is a name reference too — without this a nested
             routine calling a method on a captured outer object (or on the
-            enclosing method's Self, which MaybeCaptureName rejects) never
-            registered the capture and read a garbage frame slot. }
+            enclosing method's Self) never registered the capture and read
+            a garbage frame slot. }
+          if TMethodCallStmt(CurStmt).IsImplicitSelf then
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           MaybeCaptureName(ADecl, OuterVars, TMethodCallStmt(CurStmt).ObjectName);
           if TMethodCallStmt(CurStmt).ObjExpr <> nil then
             TodoExprs.Add(TMethodCallStmt(CurStmt).ObjExpr);
@@ -7918,6 +7934,21 @@ begin
           TodoExprs.Add(TPointerWriteStmt(CurStmt).PtrExpr);
           TodoExprs.Add(TPointerWriteStmt(CurStmt).ValExpr);
         end
+        else if CurStmt is TInheritedCallStmt then
+        begin
+          { 'inherited M(...)' dispatches on the method's Self. }
+          MaybeCaptureName(ADecl, OuterVars, 'Self');
+          for J := 0 to TInheritedCallStmt(CurStmt).Args.Count - 1 do
+            TodoExprs.Add(TInheritedCallStmt(CurStmt).Args.Items[J]);
+        end
+        else if CurStmt is TVarDeclStmt then
+        begin
+          { Block-scoped 'var X := Expr' — the initialiser may reference
+            outer vars (or Self).  The analysed form holds it in the
+            synthesised InitAssign. }
+          TodoExprs.Add(TVarDeclStmt(CurStmt).InitExpr);
+          TodoStmts.Add(TVarDeclStmt(CurStmt).InitAssign);
+        end
       end;
 
       { Process one expr }
@@ -7928,14 +7959,24 @@ begin
         if CurExpr = nil then Continue;
 
         if CurExpr is TIdentExpr then
-          MaybeCaptureName(ADecl, OuterVars, TIdentExpr(CurExpr).Name)
+        begin
+          { A bare ident that resolved as an implicit Self member (field
+            read or zero-arg method call) is a use of the method's Self. }
+          if TIdentExpr(CurExpr).IsImplicitSelf or
+             TIdentExpr(CurExpr).IsImplicitSelfMethod then
+            MaybeCaptureName(ADecl, OuterVars, 'Self')
+          else
+            MaybeCaptureName(ADecl, OuterVars, TIdentExpr(CurExpr).Name);
+        end
         else if CurExpr is TFieldAccessExpr then
         begin
           { 'R.Field' read — the base R may be an outer var/var-param.  When the
             base is a sub-expression (chain), descend; when it is a bare name,
-            capture it. }
+            capture it.  Implicit-Self reads resolve through Self. }
           if TFieldAccessExpr(CurExpr).Base <> nil then
             TodoExprs.Add(TFieldAccessExpr(CurExpr).Base)
+          else if TFieldAccessExpr(CurExpr).IsImplicitSelf then
+            MaybeCaptureName(ADecl, OuterVars, 'Self')
           else
             MaybeCaptureName(ADecl, OuterVars, TFieldAccessExpr(CurExpr).RecordName);
           TodoExprs.Add(TFieldAccessExpr(CurExpr).PropIndexExpr);
@@ -7954,11 +7995,20 @@ begin
           TodoExprs.Add(TNotExpr(CurExpr).Expr)
         else if CurExpr is TFuncCallExpr then
         begin
+          { A bare function call that resolved to a method of the enclosing
+            class dispatches on the method's Self. }
+          if TFuncCallExpr(CurExpr).IsImplicitSelfMethod then
+            MaybeCaptureName(ADecl, OuterVars, 'Self');
           for J := 0 to TFuncCallExpr(CurExpr).Args.Count - 1 do
             TodoExprs.Add(TFuncCallExpr(CurExpr).Args.Items[J]);
         end
         else if CurExpr is TMethodCallExpr then
         begin
+          { The receiver of 'Obj.M()' in expression position may be an outer
+            var — or the enclosing method's Self. }
+          MaybeCaptureName(ADecl, OuterVars, TMethodCallExpr(CurExpr).ObjectName);
+          if TMethodCallExpr(CurExpr).ObjExpr <> nil then
+            TodoExprs.Add(TMethodCallExpr(CurExpr).ObjExpr);
           for J := 0 to TMethodCallExpr(CurExpr).Args.Count - 1 do
             TodoExprs.Add(TMethodCallExpr(CurExpr).Args.Items[J]);
         end
@@ -7982,6 +8032,13 @@ begin
           TodoExprs.Add(TIndirectFuncCallExpr(CurExpr).CalleeExpr);
           for J := 0 to TIndirectFuncCallExpr(CurExpr).Args.Count - 1 do
             TodoExprs.Add(TIndirectFuncCallExpr(CurExpr).Args.Items[J]);
+        end
+        else if CurExpr is TInheritedCallExpr then
+        begin
+          { 'inherited F(...)' in expression position dispatches on Self. }
+          MaybeCaptureName(ADecl, OuterVars, 'Self');
+          for J := 0 to TInheritedCallExpr(CurExpr).Args.Count - 1 do
+            TodoExprs.Add(TInheritedCallExpr(CurExpr).Args.Items[J]);
         end;
       end;
     end;
@@ -14672,6 +14729,15 @@ begin
       AThunk.Line, AThunk.Col);
 
   CollectCaptures(AThunk, Encl);
+  { An anonymous method inside a CLASSIC NESTED ROUTINE of a method cannot
+    capture Self yet: the nested routine holds Self behind a hidden by-
+    pointer capture param (BUG-008), and the env-fill machinery has no path
+    from that to a heap env field.  Reject cleanly rather than miscompile. }
+  if (not InMethod) and FInNestedOfMethod and
+     (AThunk.CapturedVars <> nil) and
+     (AThunk.CapturedVars.IndexOf('Self') >= 0) then
+    SemanticError('Self cannot be captured by an anonymous method declared ' +
+      'inside a nested routine of a method', AThunk.Line, AThunk.Col);
   if (AThunk.CapturedVars = nil) and (not InMethod) then Exit;
 
   { Drop names shadowed by the literal's own params or locals — the walker
