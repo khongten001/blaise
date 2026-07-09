@@ -1,8 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build the implicit RTL object files from source, mirroring the compiler's
 # own TBackendDriver.EnsureRTLObjects.  Used by the fixpoint / bootstrap
 # scripts to link a self-hosted compiler binary WITHOUT the legacy
 # blaise_rtl.a archive (RTL-unification Stage 3).
+#
+# POSIX sh on purpose: the e2e suite runs this on FreeBSD, whose base system
+# has no bash (and the FreeBSD CI VM deliberately installs no packages).
 #
 # Usage:
 #   scripts/build-rtl-objects.sh <blaise-binary> <out-dir> [options]
@@ -56,7 +59,7 @@ fi
 # Resolve the RTL source relative to THIS script (scripts/ is a sibling of
 # compiler/), so the script works regardless of the caller's CWD — the fixpoint
 # scripts run from the project root, the test runner from compiler/.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SRC="$SCRIPT_DIR/../compiler/src/main/pascal"
 if [ ! -f "$SRC/runtime.arc.pas" ]; then
   # Fall back to a CWD-relative path (e.g. an unusual invocation layout).
@@ -79,23 +82,26 @@ case "$(uname -s)" in
   *)       LAYOUT_UNIT=rtl.platform.layout.linux
            ERRNO_UNIT=runtime.errno.linux ;;
 esac
-RTL_UNITS=(
-  rtl.platform
-  runtime.start runtime.atomic runtime.setjmp runtime.utf8
-  runtime.mem runtime.str runtime.set runtime.arc
-  runtime.weak runtime.float runtime.thread runtime.exc
-  "$ERRNO_UNIT"
-  "$LAYOUT_UNIT" rtl.platform.posix
-)
+RTL_UNITS="rtl.platform
+runtime.start runtime.atomic runtime.setjmp runtime.utf8
+runtime.mem runtime.str runtime.set runtime.arc
+runtime.weak runtime.float runtime.thread runtime.exc
+$ERRNO_UNIT
+$LAYOUT_UNIT rtl.platform.posix"
 
 # Symbols the main program object already defines (for --exclude-defined-by).
-EXCL_DEFS=""
+# Written to a temp file so the per-object comm(1) below stays POSIX (no
+# process substitution) and safe under parallel suite runs (unique name).
+EXCL_FILE=""
 if [ -n "$EXCLUDE_OBJ" ]; then
-  EXCL_DEFS=$(nm "$EXCLUDE_OBJ" 2>/dev/null | grep -E ' [TDBR] ' | awk '{print $3}' | sort -u)
+  EXCL_FILE=$(mktemp "${TMPDIR:-/tmp}/rtlexcl.XXXXXX")
+  trap 'rm -f "$EXCL_FILE"' EXIT
+  nm "$EXCLUDE_OBJ" 2>/dev/null | grep -E ' [TDBR] ' | awk '{print $3}' | sort -u \
+    > "$EXCL_FILE"
 fi
 
-OBJS=()
-for u in "${RTL_UNITS[@]}"; do
+OBJS=""
+for u in $RTL_UNITS; do
   obj="$OUTDIR/$u.o"
   src="$SRC/$u.pas"
   # Rebuild only when the cached object is missing or older than its source, so
@@ -119,12 +125,14 @@ for u in "${RTL_UNITS[@]}"; do
   fi
   # Drop this object if it re-defines any symbol the main program already owns
   # (it was inlined into the program) — otherwise the loose .o collides.
-  if [ -n "$EXCL_DEFS" ] && [ -f "$obj.syms" ] && [ -s "$obj.syms" ]; then
-    if [ -n "$(comm -12 "$obj.syms" <(printf '%s\n' "$EXCL_DEFS"))" ]; then
+  if [ -n "$EXCL_FILE" ] && [ -s "$EXCL_FILE" ] && \
+     [ -f "$obj.syms" ] && [ -s "$obj.syms" ]; then
+    if [ -n "$(comm -12 "$obj.syms" "$EXCL_FILE")" ]; then
       continue
     fi
   fi
-  OBJS+=("$obj")
+  OBJS="$OBJS$obj
+"
 done
 
-printf '%s\n' "${OBJS[@]}"
+printf '%s' "$OBJS"
