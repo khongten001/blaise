@@ -284,16 +284,36 @@ jobs:
   # TInternalLinkerE2ETests.TestCompile_FreeBSDTarget_EmitsStaticFreeBSDExe).
   # Those cannot catch a wrong FreeBSD struct-stat offset or syscall number —
   # only running the binary on a real FreeBSD kernel does.  This job
-  # cross-compiles the fixtures on the Linux runner, then boots a FreeBSD VM
-  # (vmactions/freebsd-vm) and executes them there.
+  # cross-compiles on the Linux runner, then boots a FreeBSD VM
+  # (vmactions/freebsd-vm) and executes there.
   #
-  # The FreeBSD output is a static, freestanding raw-syscall ET_EXEC (no libc,
-  # no rtld), so the VM needs no extra packages to run it.
+  # Two tiers:
+  #   - branches (validate-only): quick fixture smoke — cross-compile the
+  #     compiler/src/it/freebsd fixtures and run them in the VM.
+  #   - master + workflow_dispatch: additionally cross-compile a FreeBSD
+  #     blaise with the -pre binary, prove the self-host fixpoint inside the
+  #     VM (stage1 == stage2 == stage3), build the TestRunner with it, run the
+  #     FULL test suite on FreeBSD, and publish the fixpoint-verified binary
+  #     as a downloadable artifact.  This is not duplication of the Linux
+  #     suite: the STT_TLS .tbss bug shipped green on Linux-only CI and only
+  #     crashed on FreeBSD/libthr.
+  #
+  # The FreeBSD default output is a static, freestanding raw-syscall ET_EXEC
+  # (no libc, no rtld), so the VM needs no packages: the base system already
+  # has cc/lld (e2e cc-link profile), make (vendored QBE builds with bmake —
+  # its Makefile is .POSIX), and openssl.  valgrind is NOT in base; the
+  # valgrind tests self-Ignore when the binary is absent (ValgrindAvailable).
   # ======================================================================
   freebsd-crosscheck:
     needs: bootstrap
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Fixture smoke fits in 30 min; the full in-VM suite (self-host x2 + 4262
+    # tests under emulation) gets a bigger budget.
+    timeout-minutes: ${{ (github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch') && 120 || 30 }}
+    env:
+      # Full tier gate: master pushes and manual dispatches run the in-VM
+      # fixpoint + full suite; branch pre-flights keep the quick smoke only.
+      FREEBSD_FULL: ${{ (github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch') && '1' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -316,22 +336,52 @@ jobs:
           echo "Cross-built FreeBSD binaries:"
           ls -l target/freebsd-crosscheck
 
+      # Full tier only: cross-compile a FreeBSD-hosted blaise with the -pre
+      # binary.  HostTarget is a COMPILE-TIME property, so this binary defaults
+      # to FreeBSD output — inside the VM it self-hosts with no --target flag.
+      # This stage1 binary is what gets published as the FreeBSD artifact; the
+      # VM proves it is the fixpoint binary (stage1 == stage2 == stage3) before
+      # the upload step runs.
+      - name: Cross-compile FreeBSD blaise (Linux host)
+        if: env.FREEBSD_FULL == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p target/freebsd-blaise
+          .pre/blaise \
+            --source compiler/src/main/pascal/Blaise.pas \
+            --backend native \
+            --target freebsd-x86_64 \
+            --unit-path compiler/src/main/pascal \
+            --unit-path runtime/src/main/pascal \
+            --unit-path stdlib/src/main/pascal \
+            --output target/freebsd-blaise/blaise
+          osabi="$(readelf -hW target/freebsd-blaise/blaise | awk -F: '/OS\/ABI/ {print $2}' | xargs)"
+          case "$osabi" in
+            *FreeBSD*) : ;;
+            *) echo "::error::not a FreeBSD binary (OS/ABI=$osabi)"; exit 1 ;;
+          esac
+          ls -l target/freebsd-blaise/blaise
+
       # Boot a FreeBSD VM and run the cross-compiled binaries there.  The
-      # workspace is rsync-mounted into the VM, so target/freebsd-crosscheck/*
-      # is available inside.  release pinned to a 14.x line: the struct-stat
-      # offsets in rtl.platform.layout.freebsd are verified against FreeBSD 14
-      # (stable since FreeBSD 12).  Bump when 15.x is validated.
-      - name: Run FreeBSD binaries under emulation
+      # workspace is rsync-mounted into the VM, so target/* is available
+      # inside.  release pinned to a 14.x line: the struct-stat offsets in
+      # rtl.platform.layout.freebsd are verified against FreeBSD 14 (stable
+      # since FreeBSD 12).  Bump when 15.x is validated.
+      - name: Run FreeBSD checks under emulation
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.2"
           usesh: true
           copyback: false
+          envs: 'FREEBSD_FULL'
           run: |
             set -e
-            cd target/freebsd-crosscheck
+            WS="$PWD"
             echo "=== uname ==="
             uname -a
+
+            echo "=== fixture smoke ==="
+            cd target/freebsd-crosscheck
 
             echo "=== hello ==="
             OUT="$(./hello)"
@@ -348,5 +398,86 @@ jobs:
               echo "FAIL: fileio output '$GOT' != 'file-io-ok|exists-ok|done'"
               exit 1
             }
+            cd "$WS"
+
+            if [ -n "$FREEBSD_FULL" ]; then
+              # QBE is vendored and its Makefile is .POSIX — base-system bmake
+              # builds it.  With it present + BLAISE_QBE set below, the QBE
+              # backend arm of the e2e suite runs instead of Ignoring.
+              echo "=== build vendored QBE (FreeBSD native) ==="
+              make -C vendor/qbe
+
+              # ToolchainAvailable() expects the compiler at
+              # compiler/target/blaise; the normal source layout around it also
+              # gives the binary-relative RTL-source resolution for free.
+              echo "=== install cross-built compiler ==="
+              mkdir -p compiler/target
+              cp target/freebsd-blaise/blaise compiler/target/blaise
+              chmod +x compiler/target/blaise
+
+              # stage2/stage3 land outside compiler/target, so their RTL-source
+              # resolution needs the explicit override (binary-relative lookup
+              # only works beside the compiler tree).
+              export BLAISE_RTL_SRC="$WS/compiler/src/main/pascal"
+
+              echo "=== self-host fixpoint: stage2 ==="
+              compiler/target/blaise \
+                --source compiler/src/main/pascal/Blaise.pas \
+                --backend native \
+                --unit-path "$WS/compiler/src/main/pascal" \
+                --unit-path "$WS/stdlib/src/main/pascal" \
+                --output target/freebsd-blaise/stage2
+
+              echo "=== self-host fixpoint: stage3 ==="
+              target/freebsd-blaise/stage2 \
+                --source compiler/src/main/pascal/Blaise.pas \
+                --backend native \
+                --unit-path "$WS/compiler/src/main/pascal" \
+                --unit-path "$WS/stdlib/src/main/pascal" \
+                --output target/freebsd-blaise/stage3
+
+              S1="$(md5 -q compiler/target/blaise)"
+              S2="$(md5 -q target/freebsd-blaise/stage2)"
+              S3="$(md5 -q target/freebsd-blaise/stage3)"
+              echo "stage1 (cross-compiled) : $S1"
+              echo "stage2 (built by stage1): $S2"
+              echo "stage3 (built by stage2): $S3"
+              [ "$S2" = "$S3" ] || { echo "FAIL: stage2 != stage3 — no self-host fixpoint"; exit 1; }
+              # stage1 == stage2 proves the Linux-hosted cross-compile is
+              # byte-identical to the FreeBSD-hosted self-compile, i.e. the
+              # artifact uploaded from the host IS the fixpoint binary.
+              [ "$S1" = "$S2" ] || { echo "FAIL: cross-compiled stage1 != stage2 — cross/self-host divergence"; exit 1; }
+              echo "FREEBSD_FIXPOINT_OK"
+
+              echo "=== build TestRunner ==="
+              compiler/target/blaise \
+                --source compiler/src/test/pascal/TestRunner.pas \
+                --unit-path "$WS/compiler/src/test/pascal" \
+                --unit-path "$WS/compiler/src/main/pascal" \
+                --unit-path "$WS/stdlib/src/main/pascal" \
+                --output compiler/target/TestRunner
+
+              # Same env contract as the Linux job: BLAISE_QBE points the e2e
+              # suite at the vendored QBE, BLAISE_QBE_COMPILER at the compiler
+              # under test.  valgrind tests Ignore (not installed in the VM).
+              echo "=== run full test suite (FreeBSD) ==="
+              BLAISE_QBE="$WS/vendor/qbe/qbe" \
+              BLAISE_QBE_COMPILER="$WS/compiler/target/blaise" \
+              compiler/target/TestRunner
+              echo "FREEBSD_FULL_SUITE_OK"
+            fi
 
             echo "FREEBSD_EMULATION_OK"
+
+      # Publish the fixpoint-verified FreeBSD binary.  No copyback needed: the
+      # VM step just proved the host-built cross-compile is byte-identical to
+      # the in-VM self-hosted fixpoint binary (stage1 == stage2 == stage3), so
+      # the host copy is the real thing.  Like the Linux artifact, pull-only.
+      - name: Upload FreeBSD -pre binary artifact
+        if: success() && env.FREEBSD_FULL == '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: blaise-pre-freebsd-${{ github.sha }}
+          path: target/freebsd-blaise/blaise
+          retention-days: 30
+          if-no-files-found: error
