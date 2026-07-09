@@ -165,6 +165,22 @@ type
       source.  Covers the TAnonMethodExpr round-trip inside EncodeBlock and
       the per-instantiation thunk/env regeneration at the import site. }
     procedure TestGenericBodyClosure_RoundTrip_WithoutSource;
+    { Colliding generic declarations: generic-instance symbols are mangled
+      BARE (no unit prefix) and emitted WEAK so the linker folds the copies
+      that multiple units materialise of the SAME instance (the BUG-004
+      COMDAT model).  The flip side: two DIFFERENT generics with the same
+      base name declared in two different units produce byte-identical
+      instance symbols (e.g. TBox_Integer) and the linker would silently
+      keep one and drop the other.  The front end cannot represent that
+      case either (the template registry is keyed by bare base name), so
+      it must be REJECTED with a diagnostic naming both units — at source
+      analysis and on the cached-.bif import path alike. }
+    procedure TestCollidingGenerics_TwoSourceUnits_Rejected;
+    procedure TestCollidingGenerics_CachedIface_Rejected;
+    { NOTE: drives the cached-.bif path only — a cross-unit generic FUNCTION
+      call cannot resolve on the whole-program source path at all (BUGS.md
+      BUG-034); extend to the source path when that gap is fixed. }
+    procedure TestCollidingGenericRoutines_CachedIface_Rejected;
   end;
 
 implementation
@@ -2213,6 +2229,269 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('useclos run exit', 0, Rc);
   AssertEquals('useclos stdout', '42' + #10 + 'boxed' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestCollidingGenerics_TwoSourceUnits_Rejected;
+const
+  UnitASrc =
+    '''
+    unit GdupA;
+    interface
+    type
+      TBox<T> = class
+      public
+        FValue: T;
+      end;
+    function MakeA(): Integer;
+    implementation
+    function MakeA(): Integer;
+    var B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FValue := 41;
+      Result := B.FValue;
+      B.Free()
+    end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit GdupB;
+    interface
+    type
+      TBox<T> = class
+      public
+        FTag: Integer;
+        FValue: T;
+      end;
+    function MakeB(): Integer;
+    implementation
+    function MakeB(): Integer;
+    var B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FValue := 1;
+      Result := B.FValue;
+      B.Free()
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseDup;
+    uses GdupA, GdupB;
+    begin
+      WriteLn(MakeA() + MakeB())
+    end.
+    ''';
+var
+  ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  WriteFile(FScratch + '/GdupA.pas', UnitASrc);
+  WriteFile(FScratch + '/GdupB.pas', UnitBSrc);
+  ProgPas := FScratch + '/use_dup.pas';
+  ProgBin := FScratch + '/use_dup';
+  WriteFile(ProgPas, ProgSrc);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-path', FScratch], Captured);
+  AssertTrue('compile must FAIL (colliding generic TBox), out: ' + Captured,
+             Rc <> 0);
+  AssertTrue('error names the colliding generic, out: ' + Captured,
+             Pos('TBox', Captured) >= 0);
+  AssertTrue('error says declared in both, out: ' + Captured,
+             Pos('is declared in both', Captured) >= 0);
+  AssertTrue('error names unit GdupA, out: ' + Captured,
+             Pos('GdupA', Captured) >= 0);
+  AssertTrue('error names unit GdupB, out: ' + Captured,
+             Pos('GdupB', Captured) >= 0)
+end;
+
+procedure TSepCompileTests.TestCollidingGenerics_CachedIface_Rejected;
+{ Same collision, but each unit is first compiled to its own .o (each is
+  fine in isolation) and the sources are hidden — the consumer build sees
+  only the cached .bif ifaces, so the conflict must be caught on the
+  uSemanticImport registration path, not the source-analysis one. }
+const
+  UnitASrc =
+    '''
+    unit GcacA;
+    interface
+    type
+      TBox<T> = class
+      public
+        FValue: T;
+      end;
+    function MakeA(): Integer;
+    implementation
+    function MakeA(): Integer;
+    var B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FValue := 41;
+      Result := B.FValue;
+      B.Free()
+    end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit GcacB;
+    interface
+    type
+      TBox<T> = class
+      public
+        FTag: Integer;
+        FValue: T;
+      end;
+    function MakeB(): Integer;
+    implementation
+    function MakeB(): Integer;
+    var B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FValue := 1;
+      Result := B.FValue;
+      B.Free()
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseCac;
+    uses GcacA, GcacB;
+    begin
+      WriteLn(MakeA() + MakeB())
+    end.
+    ''';
+var
+  UnitAPas, UnitBPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitAPas := FScratch + '/GcacA.pas';
+  UnitBPas := FScratch + '/GcacB.pas';
+  ProgPas  := FScratch + '/use_cac.pas';
+  ProgBin  := FScratch + '/use_cac';
+
+  WriteFile(UnitAPas, UnitASrc);
+  Rc := RunBlaise(['--source', UnitAPas,
+                   '--output', FScratch + '/GcacA.o'], Captured);
+  AssertEquals('blaise(GcacA) exit code 0' + #10 + Captured, 0, Rc);
+  WriteFile(UnitBPas, UnitBSrc);
+  Rc := RunBlaise(['--source', UnitBPas,
+                   '--output', FScratch + '/GcacB.o'], Captured);
+  AssertEquals('blaise(GcacB) exit code 0' + #10 + Captured, 0, Rc);
+
+  DeleteFile(UnitAPas);
+  DeleteFile(UnitBPas);
+
+  WriteFile(ProgPas, ProgSrc);
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-path', FScratch], Captured);
+  AssertTrue('compile must FAIL (colliding cached generic TBox), out: '
+             + Captured, Rc <> 0);
+  AssertTrue('error names the colliding generic, out: ' + Captured,
+             Pos('TBox', Captured) >= 0);
+  AssertTrue('error says declared in both, out: ' + Captured,
+             Pos('is declared in both', Captured) >= 0)
+end;
+
+procedure TSepCompileTests.TestCollidingGenericRoutines_CachedIface_Rejected;
+const
+  UnitASrc =
+    '''
+    unit GfnA;
+    interface
+    function Pick<T>(AVal: T): T;
+    implementation
+    function Pick<T>(AVal: T): T;
+    begin
+      Result := AVal
+    end;
+    end.
+    ''';
+  UnitBSrc =
+    '''
+    unit GfnB;
+    interface
+    function Pick<T>(AVal: T): T;
+    implementation
+    function Pick<T>(AVal: T): T;
+    begin
+      Result := AVal
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseFn;
+    uses GfnA, GfnB;
+    begin
+      WriteLn(Pick<Integer>(7))
+    end.
+    ''';
+var
+  UnitAPas, UnitBPas, ProgPas, ProgBin: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  UnitAPas := FScratch + '/GfnA.pas';
+  UnitBPas := FScratch + '/GfnB.pas';
+  ProgPas  := FScratch + '/use_fn.pas';
+  ProgBin  := FScratch + '/use_fn';
+
+  WriteFile(UnitAPas, UnitASrc);
+  Rc := RunBlaise(['--source', UnitAPas,
+                   '--output', FScratch + '/GfnA.o'], Captured);
+  AssertEquals('blaise(GfnA) exit code 0' + #10 + Captured, 0, Rc);
+  WriteFile(UnitBPas, UnitBSrc);
+  Rc := RunBlaise(['--source', UnitBPas,
+                   '--output', FScratch + '/GfnB.o'], Captured);
+  AssertEquals('blaise(GfnB) exit code 0' + #10 + Captured, 0, Rc);
+
+  DeleteFile(UnitAPas);
+  DeleteFile(UnitBPas);
+
+  WriteFile(ProgPas, ProgSrc);
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-path', FScratch], Captured);
+  AssertTrue('compile must FAIL (colliding generic routine Pick), out: '
+             + Captured, Rc <> 0);
+  AssertTrue('error names the colliding routine, out: ' + Captured,
+             Pos('Pick', Captured) >= 0);
+  AssertTrue('error says declared in both, out: ' + Captured,
+             Pos('is declared in both', Captured) >= 0)
 end;
 
 initialization

@@ -5870,3 +5870,70 @@ properties) than to write first and revisit when `static` arrives.
 * *Bundle visibility enforcement into the static-members commit.* Rejected —
   the two are independent axes; sequencing them keeps each commit focused and
   lets the codegen-touching feature accumulate field exposure first.
+
+== Generic Base Names are Unique Program-wide
+
+=== Decision
+
+A generic template's base name (the identifier before the `<`) may be declared
+by at most ONE unit in any program. Two different units each declaring a
+same-named generic — `unit A` with `TBox<T>` and `unit B` with an unrelated
+`TBox<T>`, or two units each declaring a generic free routine `Pick<T>` — is a
+compile-time error, reported the moment the second declaration is registered:
+
+    Generic type 'TBox' is declared in both 'GdupA' and 'GdupB': generic
+    instances share one program-wide symbol per instantiation, so same-named
+    generics from different units would silently alias at link time; rename
+    one of them
+
+The rule applies to every template kind (generic classes, records, interfaces,
+procedural types, and free routines) and is enforced on both front-end paths:
+source analysis (`uSemantic`) and cached-interface import (`uSemanticImport`),
+so whole-program builds and `--unit-cache` builds diagnose identically.
+
+Ordinary (non-generic) types are unaffected — they are unit-prefixed and two
+units may freely declare same-named classes.
+
+=== Rationale
+
+Generic-instance symbols are deliberately mangled *bare* — no unit prefix —
+and emitted with weak binding (the C++ COMDAT model, adopted for BUG-004).
+The same instance (`TList<Integer>`) can be materialised by any compilation
+process, so its symbols must be process- and unit-independent for the linker
+to fold the copies to one; runtime type identity (`is`/`as` across units)
+also depends on the whole program agreeing on a single typeinfo symbol per
+instance.
+
+The flip side of a spelling-keyed symbol scheme is that it is not injective:
+two *different* templates with the same base name would produce byte-identical
+instance symbols (`typeinfo_TBox_Integer`, `vtable_TBox_Integer`, method
+bodies), and the weak-linkage dedup would silently keep one definition and
+drop the other — a wrong-layout/wrong-vtable footgun with no diagnostic at
+any stage. The front end cannot represent the situation either: the template
+registry is keyed by bare base name, so the second template silently aliased
+the first even before link. Rejecting the second declaration outright turns
+a silent wrong-code hazard into an immediate, actionable error, exactly as
+C++ treats ODR violations — except diagnosed instead of undefined.
+
+=== Alternatives considered
+
+* *Prefix generic-instance symbols by the instantiating unit.* Rejected —
+  this is precisely the BUG-004 failure: the instantiating (or re-exporting)
+  unit varies per compilation process, the N copies stop being byte-identical,
+  and cross-object references dangle. It also breaks `is`/`as` identity,
+  which needs one typeinfo symbol per instance program-wide.
+* *Prefix by the DECLARING unit of the template and (recursively) of every
+  type argument.* Correct in principle — the declaring unit is an intrinsic
+  fact about the type, so dedup still works and the mangling becomes
+  injective (`foo.TBox<Integer>` vs `bar.TBox<Integer>` get distinct
+  symbols). Deferred, not rejected: it is an ABI/wire-format change that
+  must land in the shared front-end mangling for all backends, the `.bif`
+  cache format, and the bootstrap chain in lockstep. Tracked as a future
+  coordinated change; the uniqueness rule above closes the hazard until
+  then, and relaxing a hard error later is backwards-compatible.
+* *Detect the collision in the internal linker instead.* Rejected as the
+  primary mechanism — the bare symbols carry no declaring-unit information,
+  so the linker cannot distinguish legitimate same-instance copies from a
+  genuine collision without new marker metadata in every object; and builds
+  that link through the external toolchain would bypass the check entirely.
+  The registration-time check covers every build shape the front end sees.

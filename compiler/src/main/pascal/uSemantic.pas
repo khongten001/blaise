@@ -518,6 +518,10 @@ type
       const AContext: string; ALine, ACol: Integer);
 
     procedure SemanticError(const AMsg: string; ALine, ACol: Integer);
+    { Register a generic template on FTable, rejecting a same-named template
+      already registered by a DIFFERENT unit (bare instance symbols would
+      silently alias at link time — see TSymbolTable.RegisterGeneric). }
+    procedure CheckedRegisterGeneric(ATD: TTypeDecl);
     { Emit a non-fatal diagnostic to StdErr (compilation continues).  Includes
       the source position and, when known, the current unit name — mirroring
       SemanticError's message shape. }
@@ -907,6 +911,20 @@ begin
     raise ESemanticError.Create(Format('%s at line %d col %d in %s', [AMsg, ALine, ACol, FCurrentUnitName]))
   else
     raise ESemanticError.Create(Format('%s at line %d col %d', [AMsg, ALine, ACol]));
+end;
+
+procedure TSemanticAnalyser.CheckedRegisterGeneric(ATD: TTypeDecl);
+var
+  CurUnit, PrevUnit: string;
+begin
+  if FCurrentUnitName <> '' then
+    CurUnit := FCurrentUnitName
+  else
+    CurUnit := '<program>';
+  PrevUnit := FTable.RegisterGeneric(ATD.Name, ATD.Def, CurUnit);
+  if PrevUnit <> '' then
+    SemanticError(GenericCollisionMsg('Generic type', ATD.Name, PrevUnit, CurUnit),
+      ATD.Line, ATD.Col);
 end;
 
 procedure TSemanticAnalyser.SemanticWarning(const AMsg: string; ALine, ACol: Integer);
@@ -6118,18 +6136,18 @@ begin
         Record the declaring unit so allocation sites inside cloned method
         bodies are attributed to the template's source, not the instantiator. }
       TGenericTypeDef(TD.Def).DefUnitName := FCurrentUnitName;
-      FTable.RegisterGeneric(TD.Name, TD.Def);
+      CheckedRegisterGeneric(TD);
       Continue;
     end
     else if TD.Def is TGenericRecordDef then
     begin
-      FTable.RegisterGeneric(TD.Name, TD.Def);
+      CheckedRegisterGeneric(TD);
       Continue;
     end
     else if TD.Def is TGenericInterfaceDef then
     begin
       { Register as template — instantiated on demand when used as type name }
-      FTable.RegisterGeneric(TD.Name, TD.Def);
+      CheckedRegisterGeneric(TD);
       Continue;
     end
     else if TD.Def is TGenericProcDef then
@@ -6137,7 +6155,7 @@ begin
       { Register as template — instantiated on demand when used as type name.
         A monomorphised procedural type is pure metadata (no code emission),
         so there is no instance list. }
-      FTable.RegisterGeneric(TD.Name, TD.Def);
+      CheckedRegisterGeneric(TD);
       Continue;
     end
     else if TD.Def is TInterfaceTypeDef then
@@ -7506,6 +7524,8 @@ var
   ParType: TTypeDesc;
   RetType: TTypeDesc;
   Sym:     TSymbol;
+  CurUnit:  string;
+  PrevUnit: string;
 begin
   for I := 0 to ABlock.ProcDecls.Count - 1 do
   begin
@@ -7518,7 +7538,15 @@ begin
     if ADecl.TypeParams <> nil then
     begin
       FGenericFuncTemplates.AddObject(ADecl.Name, ADecl);
-      FTable.RegisterGenericRoutine(ADecl.Name, ADecl);
+      if FCurrentUnitName <> '' then
+        CurUnit := FCurrentUnitName
+      else
+        CurUnit := '<program>';
+      PrevUnit := FTable.RegisterGenericRoutine(ADecl.Name, ADecl, CurUnit);
+      if PrevUnit <> '' then
+        SemanticError(
+          GenericCollisionMsg('Generic routine', ADecl.Name, PrevUnit, CurUnit),
+          ADecl.Line, ADecl.Col);
       Continue;
     end;
 

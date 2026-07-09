@@ -538,6 +538,15 @@ type
                                      by AnalyseStandaloneDecl and by
                                      uSemanticImport when registering a unit
                                      interface's generic free routines) }
+    { Declaring unit of each FGenerics / FGenericRoutines entry (lockstep
+      indices).  Generic-instance symbols are mangled BARE (the BUG-004
+      COMDAT model), so one template base name may only ever come from ONE
+      unit program-wide — a same-named template in a second unit would
+      produce byte-identical instance symbols that the linker silently
+      folds.  Register* returns the earlier unit on a cross-unit conflict
+      so the caller can diagnose. }
+    FGenericDeclUnits: TStringList;
+    FGenericRoutineDeclUnits: TStringList;
     FImportedDecls:   TObjectList; { owned TMethodDecl — synthesised by
                                      uSemanticImport when materialising
                                      routines / methods that came in via a
@@ -696,10 +705,16 @@ type
     function NewDynArrayType(AElementType: TTypeDesc): TDynArrayTypeDesc;
 
     { Generic template registry — stores TGenericTypeDef as TObject to avoid
-      circular unit dependency with uAST. Callers cast the result. }
-    procedure RegisterGeneric(const AName: string; ATempl: TObject);
+      circular unit dependency with uAST. Callers cast the result.
+      ADeclUnit is the unit DECLARING the template ('<program>' for a
+      program-level declaration).  Returns '' on success, or the name of the
+      unit that already registered the same base name — a cross-unit
+      collision the caller must report (see FGenericDeclUnits above). }
+    function  RegisterGeneric(const AName: string; ATempl: TObject;
+                              const ADeclUnit: string): string;
     function  FindGeneric(const AName: string): TObject;
-    procedure RegisterGenericRoutine(const AName: string; ATempl: TObject);
+    function  RegisterGenericRoutine(const AName: string; ATempl: TObject;
+                                     const ADeclUnit: string): string;
     function  FindGenericRoutine(const AName: string): TObject;
     { Take ownership of a synthesised TMethodDecl produced during
       .bif import.  Lifetime tracks the symbol table; callers do
@@ -737,6 +752,12 @@ function IsUnmangledUnit(const AUnitName: string): Boolean;
   symbol-using site (call/reference in another unit), so they always
   agree on the QBE global name. }
 function MangleUnitPrefix(const AUnitName: string): string;
+
+{ Shared diagnostic text for a cross-unit generic-template collision, so the
+  source-analysis path (uSemantic) and the cached-.bif import path
+  (uSemanticImport) report identically.  AKind is 'Generic type' or
+  'Generic routine'. }
+function GenericCollisionMsg(const AKind, AName, APrevUnit, ANewUnit: string): string;
 
 const
   { Sentinel owning-unit value meaning "this global's emit name is ALREADY a
@@ -1567,8 +1588,10 @@ begin
   { Owns (retains) registered generic templates so FGenerics' references stay
     valid even after the originating AST is torn down. }
   FGenericTemplates := TObjectList.Create(True);
+  FGenericDeclUnits := TStringList.Create();
   FGenericRoutines := TStringList.Create();
   FGenericRoutines.CaseSensitive := False;
+  FGenericRoutineDeclUnits := TStringList.Create();
   FImportedDecls   := TObjectList.Create(True);
   { Global scope — parent = nil }
   FScopeStack.Add(TScope.Create(nil));
@@ -1691,9 +1714,22 @@ begin
   FAllTypes.Add(Result);
 end;
 
-procedure TSymbolTable.RegisterGeneric(const AName: string; ATempl: TObject);
+function TSymbolTable.RegisterGeneric(const AName: string; ATempl: TObject;
+                                      const ADeclUnit: string): string;
+var
+  Idx: Integer;
 begin
+  Result := '';
+  Idx := FGenerics.IndexOf(AName);
+  if (Idx >= 0) and (not SameText(FGenericDeclUnits.Strings[Idx], ADeclUnit)) then
+  begin
+    { Cross-unit collision: the first registration stays authoritative and
+      the caller reports the conflict (compilation aborts). }
+    Result := FGenericDeclUnits.Strings[Idx];
+    Exit;
+  end;
   FGenerics.AddObject(AName, ATempl);
+  FGenericDeclUnits.Add(ADeclUnit);
   FGenericTemplates.Add(ATempl);
 end;
 
@@ -1708,9 +1744,29 @@ begin
     Result := nil;
 end;
 
-procedure TSymbolTable.RegisterGenericRoutine(const AName: string; ATempl: TObject);
+function TSymbolTable.RegisterGenericRoutine(const AName: string; ATempl: TObject;
+                                             const ADeclUnit: string): string;
+var
+  Idx: Integer;
 begin
+  Result := '';
+  Idx := FGenericRoutines.IndexOf(AName);
+  if (Idx >= 0) and (not SameText(FGenericRoutineDeclUnits.Strings[Idx], ADeclUnit)) then
+  begin
+    Result := FGenericRoutineDeclUnits.Strings[Idx];
+    Exit;
+  end;
   FGenericRoutines.AddObject(AName, ATempl);
+  FGenericRoutineDeclUnits.Add(ADeclUnit);
+end;
+
+function GenericCollisionMsg(const AKind, AName, APrevUnit, ANewUnit: string): string;
+begin
+  Result := Format(
+    '%s ''%s'' is declared in both ''%s'' and ''%s'': generic instances ' +
+    'share one program-wide symbol per instantiation, so same-named ' +
+    'generics from different units would silently alias at link time; ' +
+    'rename one of them', [AKind, AName, APrevUnit, ANewUnit]);
 end;
 
 function TSymbolTable.FindGenericRoutine(const AName: string): TObject;

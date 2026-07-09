@@ -798,6 +798,7 @@ var
   I: Integer;
   Entry: TTypeEntry;
   Sym: TSymbol;
+  PrevUnit: string;
 begin
   { Pass 1: pre-register class, record, and interface names so
     forward references (field types pointing at later types in the
@@ -842,7 +843,10 @@ begin
         inside cloned method bodies are attributed to the template source. }
       if Entry.Def is TGenericTypeDef then
         TGenericTypeDef(Entry.Def).DefUnitName := AIface.Name;
-      ATable.RegisterGeneric(Entry.Name, Entry.Def);
+      PrevUnit := ATable.RegisterGeneric(Entry.Name, Entry.Def, AIface.Name);
+      if PrevUnit <> '' then
+        raise EImportError.Create(
+          GenericCollisionMsg('Generic type', Entry.Name, PrevUnit, AIface.Name));
       Continue;
     end;
 
@@ -1088,13 +1092,17 @@ procedure RegisterGenericRoutines(AIface: TUnitInterface; ATable: TSymbolTable);
 var
   I: Integer;
   G: TGenericBody;
+  PrevUnit: string;
 begin
   for I := 0 to AIface.GenericBodies.Count - 1 do
   begin
     G := TGenericBody(AIface.GenericBodies.Items[I]);
     if G.IsType then Continue;
     if G.MethodDecl = nil then Continue;
-    ATable.RegisterGenericRoutine(G.Name, G.MethodDecl);
+    PrevUnit := ATable.RegisterGenericRoutine(G.Name, G.MethodDecl, AIface.Name);
+    if PrevUnit <> '' then
+      raise EImportError.Create(
+        GenericCollisionMsg('Generic routine', G.Name, PrevUnit, AIface.Name));
   end;
 end;
 
