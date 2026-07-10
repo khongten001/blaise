@@ -40,6 +40,7 @@ type
     procedure TestRun_Set_UnionIntersect;
     procedure TestRun_Set_ValuedConstant;
     procedure TestRun_Set_LiteralArgument;
+    procedure TestRun_Set_LiteralArgumentToConstructor;
     procedure TestRun_Set_EqualityWithLiteral;
     procedure TestRun_Set_ForIn_PrintsMembers;
     procedure TestRun_Set_RangeLiteral_Membership;
@@ -261,6 +262,36 @@ const
     end.
     ''';
 
+  { Regression (issue #165): a set literal passed directly as a CONSTRUCTOR
+    argument.  The free-proc / function-call paths re-type a bracket literal
+    bound to a `set of` parameter to that parameter's set type, but the
+    constructor path did not — so the literal kept the open-array type it was
+    analysed with (no set context), and native codegen rejected it as an
+    unsupported array literal.  Verifies the constructed set value round-trips
+    (the constructor stores its set arg into a field we read back). }
+  SrcSetLiteralCtorArg = '''
+    program Prg;
+    type
+      TColor = (cRed, cGreen, cBlue);
+      TColors = set of TColor;
+      TThing = class
+        FC: TColors;
+        constructor Create(const S: string; C: TColors);
+      end;
+    constructor TThing.Create(const S: string; C: TColors);
+    begin
+      FC := C
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create('x', [cRed, cBlue]);
+      if cRed   in T.FC then WriteLn('R') else WriteLn('no-R');
+      if cGreen in T.FC then WriteLn('G') else WriteLn('no-G');
+      if cBlue  in T.FC then WriteLn('B') else WriteLn('no-B');
+      T.Free()
+    end.
+    ''';
+
   { Set equality: S = [] and S = [literal] comparisons. }
   SrcSetEquality = '''
     program Prg;
@@ -459,6 +490,13 @@ begin
   { Report([East,West]): no-N, E.  Report([]): no-N, no-E. }
   AssertRunsOnAll(SrcSetLiteralArg,
     'no-N' + LE + 'E' + LE + 'no-N' + LE + 'no-E' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_Set_LiteralArgumentToConstructor;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetLiteralCtorArg,
+    'R' + LE + 'no-G' + LE + 'B' + LE, 0);
 end;
 
 procedure TE2ESetOpsTests.TestRun_Set_EqualityWithLiteral;

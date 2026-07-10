@@ -12833,7 +12833,15 @@ begin
     if MDecl = nil then
       MDecl := FindMethodDecl(ObjSym.Name, AExpr.Name);
     if MDecl <> nil then
+    begin
+      { Re-type a bracket-literal argument bound to a `set of` parameter to that
+        parameter's set type, exactly as the free-proc / function-call paths do.
+        Without this the literal keeps the open-array type it was analysed with
+        (no set context at analysis time), and codegen rejects it as an
+        unsupported array literal in constructor-argument position. }
+      RetypeSetLiteralArgs(AExpr.Args, MDecl);
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    end;
     ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedMethod    := MDecl;
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
@@ -12880,7 +12888,10 @@ begin
     if MDecl = nil then
       MDecl := FindMethodDecl(RT.Name, AExpr.Name);
     if MDecl <> nil then
+    begin
+      RetypeSetLiteralArgs(AExpr.Args, MDecl);
       AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
+    end;
     ValidateMethodVarArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedMethod      := MDecl;
     AExpr.ResolvedClassType   := RT;
