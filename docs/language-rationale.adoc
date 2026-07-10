@@ -2868,6 +2868,82 @@ using rather than just being "FPC with a different name".
 
 ---
 
+== Unit Initialization — `initialization` Only, No Bare `begin` Block
+
+=== Decision
+
+A unit's startup code must be placed in an explicit `initialization`
+section.  The legacy Turbo Pascal / ISO form — a bare `begin ... end.`
+compound statement standing in for the initialization section — is *not*
+supported.  Cleanup code, symmetrically, goes in a `finalization` section.
+
+Supported:
+
+[source,pascal]
+----
+unit MyUnit;
+interface
+var x: Integer;
+implementation
+initialization
+  x := 1;
+finalization
+  x := 0;
+end.
+----
+
+Rejected (issue #172):
+
+[source,pascal]
+----
+unit MyUnit;
+interface
+var x: Integer;
+implementation
+begin          // ERROR: bare 'begin' block not permitted in a unit body
+  x := 1;
+end.
+----
+
+The parser rejects the bare-`begin` form with a targeted diagnostic that
+names the replacement:
+
+----
+A unit body cannot use a bare 'begin' block; use an 'initialization'
+section instead (the legacy Turbo Pascal unit-initialization form is not
+supported)
+----
+
+=== Rationale
+
+The bare-`begin` unit body is exactly the kind of redundant, legacy
+ambiguity Blaise removes elsewhere (the `with` statement, old `object`
+types, multiple string types).  It is objectionable on three counts:
+
+* *Redundancy.* It expresses nothing that `initialization` does not.
+  Two spellings for one concept is the ambiguity Blaise is built to avoid.
+* *Asymmetry.* The `begin` form has no `finalization` counterpart, so a
+  unit that needs cleanup must mix a bare `begin` block with a
+  `finalization` keyword — an inconsistent, surprising pairing.  The
+  `initialization` / `finalization` pair is symmetric and self-documenting.
+* *Misleading shape.* A `begin ... end.` block at the foot of a file reads
+  as a program's main body.  A unit has no "main"; the keyword sections
+  make that explicit at a glance.
+
+Requiring `initialization` costs the author nothing and makes unit startup
+unambiguous to every reader.
+
+=== Alternatives rejected
+
+* *Accept `begin` as an alias for `initialization`* (FPC/Delphi
+  compatibility) — reintroduces the redundant spelling Blaise exists to
+  remove; rejected on the same grounds as `with`.
+* *Accept but warn* — Blaise has no general hint/warning framework for
+  style nudges, and a hard error with a clear replacement is more useful
+  than a warning the author can ignore.
+
+---
+
 == `Supports()` — Runtime Interface Membership Test
 
 Blaise provides `Supports()` as a compiler intrinsic with two overloaded forms:

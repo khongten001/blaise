@@ -83,6 +83,8 @@ PROGRAM        = "program"        ;
 UNIT           = "unit"           ;
 INTERFACE      = "interface"      ;
 IMPLEMENTATION = "implementation" ;
+INITIALIZATION = "initialization" ;
+FINALIZATION   = "finalization"   ;
 USES           = "uses"           ;
 TYPE           = "type"           ;
 RECORD         = "record"         ;
@@ -183,7 +185,9 @@ Unit
     = UNIT UnitName SEMICOLON
       InterfaceSection
       ImplementationSection
-      DOT
+      [ InitializationSection ]
+      [ FinalizationSection ]
+      END DOT
     ;
 
 InterfaceSection
@@ -197,6 +201,21 @@ ImplementationSection
       [ UsesClause ]
       { ConstSection | StandaloneDecl }
     ;
+
+InitializationSection
+    = INITIALIZATION StmtList
+    ;
+
+FinalizationSection
+    = FINALIZATION StmtList
+    ;
+
+(* Unit startup/cleanup code lives ONLY in the INITIALIZATION /
+ * FINALIZATION sections.  The legacy Turbo Pascal / ISO form — a bare
+ * `BEGIN StmtList END DOT` compound statement in place of the
+ * INITIALIZATION section — is deliberately NOT a valid Unit production;
+ * the parser rejects it with a diagnostic pointing at INITIALIZATION.
+ * See language-rationale.adoc, "Unit Initialization" (issue #172). *)
 
 UsesClause
     = USES UnitName { COMMA UnitName } SEMICOLON

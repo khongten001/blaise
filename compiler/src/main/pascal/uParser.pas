@@ -4874,6 +4874,19 @@ begin
       end;
     end;
 
+    { Issue #172: reject the legacy Turbo Pascal unit-initialization form
+      (`implementation ... begin ... end.`).  Blaise deliberately drops this
+      redundant, asymmetric spelling in favour of an explicit
+      'initialization' section (see docs/language-rationale.adoc).  Give a
+      clear, actionable error instead of the raw 'Expected end but got begin'. }
+    if Check(tkBegin) then
+      raise EParseError.Create(Format(
+        'A unit body cannot use a bare ''begin'' block; use an ' +
+        '''initialization'' section instead ' +
+        '(the legacy Turbo Pascal unit-initialization form is not supported) ' +
+        'at line %d col %d in %s',
+        [FCurrent.Line, FCurrent.Col, FLexer.Filename]));
+
     Expect(tkEnd);
     Expect(tkDot);
 

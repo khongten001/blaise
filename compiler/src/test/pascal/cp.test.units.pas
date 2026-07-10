@@ -49,6 +49,12 @@ type
     procedure TestParse_Unit_IntfTypeDecl;
     procedure TestParse_Unit_ForwardDeclParamCount;
     procedure TestParse_Unit_MultipleForwardDecls;
+    { Issue #172: the legacy Turbo Pascal unit-initialization form
+      `implementation ... begin ... end.` is deliberately unsupported.
+      Blaise requires an explicit `initialization` section.  A bare
+      `begin` block at unit-body position must give a clear, actionable
+      error, not the raw `Expected 'end' but got 'begin'`. }
+    procedure TestParse_Unit_LegacyBeginBody_Rejected;
 
     { ------------------------------------------------------------------ }
     { Semantic                                                             }
@@ -397,6 +403,31 @@ begin
     AssertEquals('intf has 1 forward decl', 1, U.IntfBlock.ProcDecls.Count);
     AssertEquals('impl has 2 full decls',   2, U.ImplBlock.ProcDecls.Count);
   finally U.Free(); end;
+end;
+
+procedure TUnitTests.TestParse_Unit_LegacyBeginBody_Rejected;
+const
+  SrcLegacyBegin =
+    '''
+    unit tunit;
+    interface
+    var x: Integer;
+    implementation
+    begin
+      x := 1;
+    end.
+    ''';
+begin
+  { Issue #172: legacy Turbo Pascal unit-init form is rejected with a
+    clear message pointing the user at 'initialization'. }
+  try
+    ParseUnit(SrcLegacyBegin).Free();
+    Fail('Expected EParseError for legacy begin-body unit');
+  except
+    on E: EParseError do
+      AssertTrue('mentions initialization',
+        Pos('initialization', E.Message) >= 0);
+  end;
 end;
 
 { ------------------------------------------------------------------ }
