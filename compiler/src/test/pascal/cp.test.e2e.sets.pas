@@ -36,6 +36,7 @@ type
     procedure TestRun_Set_IncludeExcludeOnField;
     procedure TestRun_Set_InOperator;
     procedure TestRun_Set_InArrayElementField;
+    procedure TestRun_Set_InObjectField;
     procedure TestRun_Set_UnionIntersect;
     procedure TestRun_Set_ValuedConstant;
     procedure TestRun_Set_LiteralArgument;
@@ -171,6 +172,37 @@ const
       if North in A[1].Events then WriteLn('1N');
       if West  in A[1].Events then WriteLn('1W');
       if South in A[1].Events then WriteLn('1S')
+    end.
+    ''';
+
+  { Regression (issue #164): `elem in Obj.SetField` on a plain class field
+    (distinct from the array-element-record-field shape above).  On the native
+    backend the tested ordinal was kept in %ecx while the RHS field address was
+    computed, which clobbered it, so membership read wrong — every test after the
+    first could report the wrong answer.  Copying the field to a local read
+    correctly, and QBE was correct throughout.  Both a chain and a single
+    isolated test are checked. }
+  SrcSetInObjectField = '''
+    program Prg;
+    type
+      TColor = (cRed, cGreen, cBlue);
+      TColors = set of TColor;
+      TThing = class
+        Colors: TColors;
+      end;
+    var T: TThing; chain, one: string;
+    begin
+      T := TThing.Create();
+      T.Colors := [cRed];
+      chain := '';
+      if cRed   in T.Colors then chain := chain + 'R';
+      if cGreen in T.Colors then chain := chain + 'G';
+      if cBlue  in T.Colors then chain := chain + 'B';
+      WriteLn('chain=[', chain, ']');
+      one := '';
+      if cGreen in T.Colors then one := 'in' else one := 'out';
+      WriteLn('one=[', one, ']');
+      T.Free()
     end.
     ''';
 
@@ -397,6 +429,13 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcSetInArrayField,
     '0E' + LE + '1N' + LE + '1W' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_Set_InObjectField;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetInObjectField,
+    'chain=[R]' + LE + 'one=[out]' + LE, 0);
 end;
 
 procedure TE2ESetOpsTests.TestRun_Set_UnionIntersect;
