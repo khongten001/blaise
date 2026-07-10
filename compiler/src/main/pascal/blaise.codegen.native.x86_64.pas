@@ -13026,6 +13026,8 @@ var
   LCond, LBody:          string;
   FDynArgName: string;
   FDynElemSz:  Integer;
+  SetLValAddr: TAddrOfExpr;
+  SetWide:     Boolean;
   ISFld:   TFieldInfo;
   IntfArgs: TObjectList;
   PCUserSlots, PCTotalSlots, PCOverflow, PCCleanUp, PCAllocSz, PCDest: Integer;
@@ -14268,30 +14270,41 @@ begin
         Self.Emit(#9'callq _SetInclude');
         Exit;
       end;
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+      { Small set (<=64 bits): mask = 1 shl ord(elem), then OR it into the set
+        lvalue's memory.  Take the set's ADDRESS via a transient @-wrapper so
+        every lvalue shape works — a plain var (local/global/threadvar), a field
+        of Self or another object, or an array element — not only a bare
+        identifier.  The previous form hard-cast Args[0] to TIdentExpr and, for a
+        set-typed FIELD, emitted `orl %eax, <FieldName>(%rip)` against a
+        non-existent global, crashing at run time. }
+      SetWide := (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
+                 (TSetTypeDesc(TASTExpr(PC.Args.Items[0]).ResolvedType).BitCount > 32);
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));   { ordinal -> %eax }
       Self.Emit(#9'movl %eax, %ecx');
-      FDynArgName := TIdentExpr(TASTExpr(PC.Args.Items[0])).Name;
-      if (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
-         (TSetTypeDesc(TASTExpr(PC.Args.Items[0]).ResolvedType).BitCount > 32) then
+      if SetWide then
       begin
         Self.Emit(#9'movq $1, %rax');
         Self.Emit(#9'shlq %cl, %rax');
-        if Self.IsLocal(FDynArgName) then
-        begin
-          Self.Emit(Format(#9'orq %%rax, %s', [Self.VarOperand(FDynArgName)]));
-        end
-        else
-          Self.Emit(Format(#9'orq %%rax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end
       else
       begin
         Self.Emit(#9'movl $1, %eax');
         Self.Emit(#9'shll %cl, %eax');
-        if Self.IsLocal(FDynArgName) then
-          Self.Emit(Format(#9'orl %%eax, %s', [Self.VarOperand(FDynArgName)]))
-        else
-          Self.Emit(Format(#9'orl %%eax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end;
+      Self.Emit(#9'pushq %rax');                        { save mask across addr eval }
+      SetLValAddr := TAddrOfExpr.Create();
+      try
+        SetLValAddr.Expr := TASTExpr(PC.Args.Items[0]);
+        Self.EmitExprToEax(SetLValAddr);                { set lvalue addr -> %rax }
+      finally
+        SetLValAddr.Expr := nil;   { Args[0] is owned by the call node }
+        SetLValAddr.Free();
+      end;
+      Self.Emit(#9'popq %rcx');                         { mask -> %rcx }
+      if SetWide then
+        Self.Emit(#9'orq %rcx, (%rax)')
+      else
+        Self.Emit(#9'orl %ecx, (%rax)');
       Exit;
     end;
     { Exclude(S, elem): S := S and (not (1 shl ord(elem))) }
@@ -14308,30 +14321,39 @@ begin
         Self.Emit(#9'callq _SetExclude');
         Exit;
       end;
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
+      { Small set: clear-mask = not (1 shl ord(elem)), AND'd into the set
+        lvalue's memory.  Address-based, mirroring Include above, so a set
+        FIELD (or element) is handled correctly rather than as a bogus global. }
+      SetWide := (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
+                 (TSetTypeDesc(TASTExpr(PC.Args.Items[0]).ResolvedType).BitCount > 32);
+      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));   { ordinal -> %eax }
       Self.Emit(#9'movl %eax, %ecx');
-      FDynArgName := TIdentExpr(TASTExpr(PC.Args.Items[0])).Name;
-      if (TASTExpr(PC.Args.Items[0]).ResolvedType <> nil) and
-         (TSetTypeDesc(TASTExpr(PC.Args.Items[0]).ResolvedType).BitCount > 32) then
+      if SetWide then
       begin
         Self.Emit(#9'movq $1, %rax');
         Self.Emit(#9'shlq %cl, %rax');
         Self.Emit(#9'notq %rax');
-        if Self.IsLocal(FDynArgName) then
-          Self.Emit(Format(#9'andq %%rax, %s', [Self.VarOperand(FDynArgName)]))
-        else
-          Self.Emit(Format(#9'andq %%rax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end
       else
       begin
         Self.Emit(#9'movl $1, %eax');
         Self.Emit(#9'shll %cl, %eax');
         Self.Emit(#9'notl %eax');
-        if Self.IsLocal(FDynArgName) then
-          Self.Emit(Format(#9'andl %%eax, %s', [Self.VarOperand(FDynArgName)]))
-        else
-          Self.Emit(Format(#9'andl %%eax, %s(%%rip)', [Self.GlobalSymName(FDynArgName)]));
       end;
+      Self.Emit(#9'pushq %rax');                        { save clear-mask }
+      SetLValAddr := TAddrOfExpr.Create();
+      try
+        SetLValAddr.Expr := TASTExpr(PC.Args.Items[0]);
+        Self.EmitExprToEax(SetLValAddr);                { set lvalue addr -> %rax }
+      finally
+        SetLValAddr.Expr := nil;   { Args[0] is owned by the call node }
+        SetLValAddr.Free();
+      end;
+      Self.Emit(#9'popq %rcx');                         { clear-mask -> %rcx }
+      if SetWide then
+        Self.Emit(#9'andq %rcx, (%rax)')
+      else
+        Self.Emit(#9'andl %ecx, (%rax)');
       Exit;
     end;
     if SameText(PC.Name, 'Halt') and (PC.Args.Count = 1) then

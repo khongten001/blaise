@@ -33,6 +33,7 @@ type
   published
     { <= 32-member sets }
     procedure TestRun_Set_Include_Exclude;
+    procedure TestRun_Set_IncludeExcludeOnField;
     procedure TestRun_Set_InOperator;
     procedure TestRun_Set_InArrayElementField;
     procedure TestRun_Set_UnionIntersect;
@@ -89,6 +90,51 @@ const
       if Blue in S then WriteLn('blue');
       Exclude(S, Red);
       if Red in S then WriteLn('red2')
+    end.
+    ''';
+
+  { Regression (issue #163): Include/Exclude applied to a set-typed FIELD.  The
+    native codegen hard-cast the set argument to a bare identifier and emitted an
+    OR/AND against a bogus global named after the field, crashing at run time.
+    Exercises a small (<=32-bit) field mutated through Self inside a method and
+    through Obj.Field directly, and a 33..64-bit ("Set64") field via Self. }
+  SrcSetIncExclField = '''
+    program Prg;
+    type
+      TColor = (cRed, cGreen, cBlue);
+      TColors = set of TColor;
+      TBig = (
+        w00, w01, w02, w03, w04, w05, w06, w07,
+        w08, w09, w10, w11, w12, w13, w14, w15,
+        w16, w17, w18, w19, w20, w21, w22, w23,
+        w24, w25, w26, w27, w28, w29, w30, w31,
+        w32, w33, w34, w35, w36, w37, w38, w39, w40);
+      TBigSet = set of TBig;
+      TThing = class
+        Colors: TColors;
+        Big: TBigSet;
+        procedure Mark;
+      end;
+    procedure TThing.Mark;
+    begin
+      Include(Colors, cRed);
+      Include(Colors, cBlue);
+      Exclude(Colors, cRed);
+      Include(Big, w40);
+      Include(Big, w02);
+      Exclude(Big, w02);
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create();
+      T.Mark();
+      if cRed  in T.Colors then WriteLn('R') else WriteLn('no-R');
+      if cBlue in T.Colors then WriteLn('B') else WriteLn('no-B');
+      if w40 in T.Big then WriteLn('w40') else WriteLn('no-w40');
+      if w02 in T.Big then WriteLn('w02') else WriteLn('no-w02');
+      Include(T.Colors, cGreen);
+      if cGreen in T.Colors then WriteLn('G');
+      T.Free()
     end.
     ''';
 
@@ -331,6 +377,13 @@ procedure TE2ESetOpsTests.TestRun_Set_Include_Exclude;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcSetIncludeExclude, 'red' + LE + 'blue' + LE, 0);
+end;
+
+procedure TE2ESetOpsTests.TestRun_Set_IncludeExcludeOnField;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcSetIncExclField,
+    'no-R' + LE + 'B' + LE + 'w40' + LE + 'no-w02' + LE + 'G' + LE, 0);
 end;
 
 procedure TE2ESetOpsTests.TestRun_Set_InOperator;
