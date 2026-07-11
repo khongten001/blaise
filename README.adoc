@@ -314,6 +314,25 @@ compiler/target/blaise --source MyApp.pas \
 compiler/target/blaise --source Hello.pas --emit-ir
 ----
 
+== Examples
+
+Standalone Blaise projects that show the language, the async/fibre runtime, and
+the standard library used in real applications:
+
+* https://github.com/graemeg/blaise-microservice-demo[blaise-microservice-demo] —
+  a port of the Java Virtual Threads "API aggregator" demo. An HTTP server whose
+  `/aggregate` endpoint fans out three concurrent downstream calls that complete
+  in ~2 s wall-clock (not 6 s) via the fibre `TTaskGroup` nursery and the M:N
+  scheduler, plus a mini-Gatling load generator that ramps to 6000 concurrent
+  virtual users on a handful of OS threads — no framework, no GC. Includes a
+  side-by-side Blaise-vs-Java comparison.
+
+* https://github.com/graemeg/luhmann[luhmann] — a
+  https://en.wikipedia.org/wiki/Zettelkasten[Zettelkasten] note server. Turns a
+  directory of AsciiDoc notes into a linked web of pages served over HTTP, with
+  an interactive note graph and a JSON API, rendering the whole collection
+  concurrently at start-up.
+
 == Licence
 
 Apache License v2.0 with Runtime Library Exception. See link:LICENSE[LICENSE].
