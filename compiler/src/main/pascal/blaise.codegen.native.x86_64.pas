@@ -266,6 +266,16 @@ type
       (SkipDepCodegen): the cached object DEFINES the global, so this object
       must reference it only — emitting a definition here would clash at link. }
     function IsImportedGlobal(const AName: string): Boolean;
+    { True when this global is defined in an unmangled unit (rtl.*/runtime.*/
+      System), so its symbol is BARE and re-defined by every object that inlines
+      the unit (--no-incremental).  Such definitions must get WEAK link binding
+      so archive-member duplicates collapse instead of colliding (GH #174).
+      Distinct from IsWeakGlobal, which flags a [Weak] ARC reference. }
+    function GlobalLinkWeak(const AName: string): Boolean;
+    { The binding directive ('.weak ' or '.globl ') for a global's DEFINITION,
+      chosen by GlobalLinkWeak.  Used at every module-var definition site so a
+      bare unmangled-unit global gets weak binding (GH #174). }
+    function GlobalBindDir(const AName: string): string;
     { The owner-correct emit symbol for a MODULE global (a unit-level var or
       threadvar).  Mirrors the QBE backend's GlobalVarUnitPrefix + VarRef: a
       plain module var owned by unit ua emits as 'ua_GVal'; a program var or an
@@ -1372,6 +1382,39 @@ begin
   Result := FImportedUnits.IndexOf(Sym.OwningUnit) >= 0;
 end;
 
+function TX86_64Backend.GlobalLinkWeak(const AName: string): Boolean;
+var
+  Sym:   TSymbol;
+  Owner: string;
+begin
+  { Owner resolution mirrors IsImportedGlobal: EmitDataSection passes the
+    canonical (owner-prefixed) key, whose owning unit is recorded in
+    FGlobalOwners; fall back to a symbol re-lookup for a bare name.  A global
+    owned by an unmangled unit carries a bare symbol every inlining object
+    re-defines — weak binding lets the copies collapse (GH #174). }
+  Result := False;
+  Owner := '';
+  if not FGlobalOwners.TryGetValue(AName, Owner) then
+    FGlobalOwners.TryGetValue(Self.GlobalSymName(AName), Owner);
+  if (Owner = '') and (FSymTable <> nil) then
+  begin
+    Sym := FSymTable.Lookup(AName);
+    if (Sym <> nil) and (Sym.Kind = skVariable) then
+      Owner := Sym.OwningUnit;
+  end;
+  if Owner = '' then Exit;
+  { The program itself is not unmangled here — its own globals stay strong. }
+  Result := IsUnmangledUnit(Owner);
+end;
+
+function TX86_64Backend.GlobalBindDir(const AName: string): string;
+begin
+  if Self.GlobalLinkWeak(AName) then
+    Result := '.weak '
+  else
+    Result := '.globl ';
+end;
+
 function TX86_64Backend.GlobalOwnerPrefix(const AOwner: string): string;
 begin
   { The module-var owner→prefix, mirroring QBE.MangleGlobalOwner EXACTLY: the
@@ -1471,7 +1514,7 @@ begin
     begin
       Self.Emit('.balign 8');
       if Copy(Name, 0, 2) <> '.L' then
-        Self.Emit('.globl ' + Name);
+        Self.Emit(Self.GlobalBindDir(Name) + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.quad 0');
       Self.Emit(#9'.quad 0');
@@ -1483,8 +1526,8 @@ begin
       Self.Emit('.balign 8');
       if Copy(Name, 0, 2) <> '.L' then
       begin
-        Self.Emit('.globl ' + Name + '_obj');
-        Self.Emit('.globl ' + Name + '_itab');
+        Self.Emit(Self.GlobalBindDir(Name) + Name + '_obj');
+        Self.Emit(Self.GlobalBindDir(Name) + Name + '_itab');
       end;
       Self.Emit(Name + '_obj:');
       Self.Emit(#9'.quad 0');
@@ -1499,7 +1542,7 @@ begin
       Sz := Self.GlobalType(Name).RawSize();
       Self.Emit('.balign 8');
       if Copy(Name, 0, 2) <> '.L' then
-        Self.Emit('.globl ' + Name);
+        Self.Emit(Self.GlobalBindDir(Name) + Name);
       Self.Emit(Name + ':');
       Self.Emit(Format(#9'.skip %d', [Sz]));
       Continue;
@@ -1509,7 +1552,7 @@ begin
     begin
       Self.Emit('.balign 8');
       if Copy(Name, 0, 2) <> '.L' then
-        Self.Emit('.globl ' + Name);
+        Self.Emit(Self.GlobalBindDir(Name) + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.double 0.0');
       Continue;
@@ -1519,7 +1562,7 @@ begin
     begin
       Self.Emit('.balign 4');
       if Copy(Name, 0, 2) <> '.L' then
-        Self.Emit('.globl ' + Name);
+        Self.Emit(Self.GlobalBindDir(Name) + Name);
       Self.Emit(Name + ':');
       Self.Emit(#9'.float 0.0');
       Continue;
@@ -1533,7 +1576,7 @@ begin
       begin Directive := #9'.long 0'; Self.Emit('.balign 4'); end;
     end;
     if Copy(Name, 0, 2) <> '.L' then
-      Self.Emit('.globl ' + Name);
+      Self.Emit(Self.GlobalBindDir(Name) + Name);
     Self.Emit(Name + ':');
     Self.Emit(Directive);
   end;
@@ -1622,7 +1665,7 @@ begin
     ElemKind := SAT.ElementType.Kind;
     Self.Emit('.balign 8');
     if Copy(AName, 0, 2) <> '.L' then
-      Self.Emit('.globl ' + AName);
+      Self.Emit(Self.GlobalBindDir(AName) + AName);
     Self.Emit(AName + ':');
     if ElemKind = tyString then
     begin
@@ -1658,7 +1701,7 @@ begin
     Idx := FStrLits.IndexOf(CD.StrVal);
     Self.Emit('.balign 8');
     if Copy(AName, 0, 2) <> '.L' then
-      Self.Emit('.globl ' + AName);
+      Self.Emit(Self.GlobalBindDir(AName) + AName);
     Self.Emit(AName + ':');
     Self.Emit(Format(#9'.quad __s%d + 12', [Idx]));
     Exit;
@@ -1669,35 +1712,35 @@ begin
     tyDouble:
       begin
         Self.Emit('.balign 8');
-        if Copy(AName, 0, 2) <> '.L' then Self.Emit('.globl ' + AName);
+        if Copy(AName, 0, 2) <> '.L' then Self.Emit(Self.GlobalBindDir(AName) + AName);
         Self.Emit(AName + ':');
         Self.Emit(Format(#9'.double %s', [CD.StrVal]));
       end;
     tySingle:
       begin
         Self.Emit('.balign 4');
-        if Copy(AName, 0, 2) <> '.L' then Self.Emit('.globl ' + AName);
+        if Copy(AName, 0, 2) <> '.L' then Self.Emit(Self.GlobalBindDir(AName) + AName);
         Self.Emit(AName + ':');
         Self.Emit(Format(#9'.float %s', [CD.StrVal]));
       end;
     tyByte, tyBoolean:
       begin
         Self.Emit('.balign 1');
-        if Copy(AName, 0, 2) <> '.L' then Self.Emit('.globl ' + AName);
+        if Copy(AName, 0, 2) <> '.L' then Self.Emit(Self.GlobalBindDir(AName) + AName);
         Self.Emit(AName + ':');
         Self.Emit(Format(#9'.byte %d', [CD.IntVal]));
       end;
     tySmallInt, tyWord:
       begin
         Self.Emit('.balign 2');
-        if Copy(AName, 0, 2) <> '.L' then Self.Emit('.globl ' + AName);
+        if Copy(AName, 0, 2) <> '.L' then Self.Emit(Self.GlobalBindDir(AName) + AName);
         Self.Emit(AName + ':');
         Self.Emit(Format(#9'.word %d', [CD.IntVal]));
       end;
     tyInt64, tyUInt64, tyPointer, tyPChar:
       begin
         Self.Emit('.balign 8');
-        if Copy(AName, 0, 2) <> '.L' then Self.Emit('.globl ' + AName);
+        if Copy(AName, 0, 2) <> '.L' then Self.Emit(Self.GlobalBindDir(AName) + AName);
         Self.Emit(AName + ':');
         Self.Emit(Format(#9'.quad %d', [CD.IntVal]));
       end;
@@ -2858,7 +2901,18 @@ var
   PubCount:     Integer;
   Line:         string;
   EmitSys:      Boolean;
+  BareClass:    Boolean;
 begin
+  { Classes in an unmangled unit (rtl.*/runtime.*/System) carry BARE symbols
+    that every object referencing the class re-defines.  Under --no-incremental
+    two archive members both strong-define e.g. typeinfo_TRtlPlatform and the
+    link fails with a multiple-definition error (GH #174).  Emit their
+    typeinfo/vtable/_FieldCleanup WEAK so duplicate definitions collapse — the
+    same treatment generic instances already get.  A prefixed (normal) unit's
+    class is referenced externally by other units, so it stays strong.
+    EmitClassSection also runs for program-scope classes (FCurrentUnitName is
+    the program, never rtl.*), which correctly stay strong. }
+  BareClass := IsUnmangledUnit(FCurrentUnitName);
   { Fixed RTL class-name strings and stubs for TObject and TCustomAttribute.
     Emitted exactly once across the whole program (the first class section that
     runs); guarded so multiple units + the program do not redefine the symbols.
@@ -2924,7 +2978,12 @@ begin
         end;
       end;
       Self.Emit('.balign 8');
-      Self.Emit('.globl methods_' + CSym);
+      { Bare (unmangled-unit) methods table is re-defined by every referencing
+        object — mark it WEAK too (GH #174). }
+      if BareClass then
+        Self.Emit('.weak methods_' + CSym)
+      else
+        Self.Emit('.globl methods_' + CSym);
       Self.Emit('methods_' + CSym + ':');
       Self.Emit(Format(#9'.quad %d', [PubCount]));
       for J := 0 to CD.Methods.Count - 1 do
@@ -3023,7 +3082,10 @@ begin
     Self.EmitAttrTables(CD, CSym, AttrsStr, MethAttrsStr);
 
     Self.Emit('.balign 8');
-    Self.Emit('.globl typeinfo_' + CSym);
+    if BareClass then
+      Self.Emit('.weak typeinfo_' + CSym)
+    else
+      Self.Emit('.globl typeinfo_' + CSym);
     Self.Emit('typeinfo_' + CSym + ':');
     Self.Emit(#9'.quad ' + ParentStr);
     Self.Emit(#9'.quad ' + ImplStr);
@@ -3080,7 +3142,7 @@ begin
     TDesc := ASymTable.FindType(TD.Name);
     if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
     RT := TRecordTypeDesc(TDesc);
-    Self.EmitFieldCleanupFn(Self.ClassSymNameForDecl(TD), RT, False);
+    Self.EmitFieldCleanupFn(Self.ClassSymNameForDecl(TD), RT, BareClass);
   end;
   { Field cleanup for generic class instances. }
   for I := 0 to AGenericInstances.Count - 1 do
@@ -3120,7 +3182,10 @@ begin
     CSym := Self.ClassSymNameForDecl(TD);
 
     Self.Emit('.balign 8');
-    Self.Emit('.globl vtable_' + CSym);
+    if BareClass then
+      Self.Emit('.weak vtable_' + CSym)
+    else
+      Self.Emit('.globl vtable_' + CSym);
     Self.Emit('vtable_' + CSym + ':');
     Self.Emit(#9'.quad typeinfo_' + CSym);
     for S := 0 to RT.VTableCount() - 1 do
@@ -3683,7 +3748,14 @@ var
   EmitIntfs:  TObjectList;
   IntfWalk:   TInterfaceTypeDesc;
   ClassWalk:  TRecordTypeDesc;
+  BareClass:  Boolean;
 begin
+  { A class in an unmangled unit (rtl.*/runtime.*/System) has BARE itab/impllist
+    symbols that every inlining object re-defines — emit them WEAK so archive
+    members collapse instead of colliding (GH #174), matching EmitClassSection's
+    treatment of typeinfo/vtable/methods.  Program-scope classes stay strong
+    (FCurrentUnitName is the program, never rtl.*). }
+  BareClass := IsUnmangledUnit(FCurrentUnitName);
   { Typeinfo blocks for every plain interface. }
   for I := 0 to ATypeDecls.Count - 1 do
   begin
@@ -3691,7 +3763,12 @@ begin
     if not (TD.Def is TInterfaceTypeDef) then Continue;
     CSym := Self.ClassSymNameForDecl(TD);
     Self.Emit('.balign 8');
-    Self.Emit('.globl typeinfo_' + CSym);
+    { A bare (unmangled-unit) interface's own typeinfo is re-defined by every
+      inlining object too — mark it WEAK (GH #174). }
+    if BareClass then
+      Self.Emit('.weak typeinfo_' + CSym)
+    else
+      Self.Emit('.globl typeinfo_' + CSym);
     Self.Emit('typeinfo_' + CSym + ':');
     Self.Emit(#9'.quad 0');
   end;
@@ -3749,7 +3826,10 @@ begin
       begin
         IntfDesc := TInterfaceTypeDesc(EmitIntfs.Items[J]);
         Self.Emit('.balign 8');
-        Self.Emit('.globl itab_' + CSym + '_' + Self.IntfTypeInfoName(IntfDesc.Name));
+        if BareClass then
+          Self.Emit('.weak itab_' + CSym + '_' + Self.IntfTypeInfoName(IntfDesc.Name))
+        else
+          Self.Emit('.globl itab_' + CSym + '_' + Self.IntfTypeInfoName(IntfDesc.Name));
         Self.Emit('itab_' + CSym + '_' + Self.IntfTypeInfoName(IntfDesc.Name) + ':');
         for K := 0 to IntfDesc.MethodCount() - 1 do
         begin
@@ -3768,7 +3848,10 @@ begin
       { One impllist per class: NULL-terminated (typeinfo, itab) pairs.
         Includes ancestor interfaces so _GetItab(obj, typeinfo_IBase) resolves. }
       Self.Emit('.balign 8');
-      Self.Emit('.globl impllist_' + CSym);
+      if BareClass then
+        Self.Emit('.weak impllist_' + CSym)
+      else
+        Self.Emit('.globl impllist_' + CSym);
       Self.Emit('impllist_' + CSym + ':');
       for J := 0 to EmitIntfs.Count - 1 do
       begin

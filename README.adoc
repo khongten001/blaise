@@ -223,9 +223,33 @@ work without the override.
 
 The native backend (default) emits and links a binary directly — no external
 tools.  To bootstrap via the opt-in QBE backend instead, build the vendored QBE
-once (`cd vendor/qbe && make`), add `--backend qbe --emit-ir > /tmp/blaise.ssa`
-to step 2, then `vendor/qbe/qbe -o /tmp/blaise.s /tmp/blaise.ssa` and
-`gcc -o compiler/target/blaise /tmp/blaise.s compiler/target/blaise_rtl.a`.
+once (`cd vendor/qbe && make`) and replace step 2 with an emit-assemble-link
+sequence:
+
+[source,shell]
+----
+# 2a. Emit whole-program QBE IR and assemble it to an object.
+$RELEASE \
+  --source compiler/src/main/pascal/Blaise.pas \
+  --unit-path compiler/src/main/pascal \
+  --unit-path runtime/src/main/pascal \
+  --unit-path stdlib/src/main/pascal \
+  --backend qbe --emit-ir > /tmp/blaise.ssa
+vendor/qbe/qbe -o /tmp/blaise.s /tmp/blaise.ssa
+gcc -c -o /tmp/blaise.o /tmp/blaise.s
+
+# 2b. Build the RTL objects from source and link.  The whole-program IR INLINES
+#     the RTL units it uses, so --exclude-defined-by drops the RTL objects whose
+#     symbols /tmp/blaise.o already defines — otherwise they double-define at the
+#     link.  (This mirrors what the compiler's own driver and scripts/fixpoint.sh
+#     do; do NOT link against blaise_rtl.a directly — that archive is built for
+#     the fixpoint scripts and the runtime test module, and its members redefine
+#     the same inlined RTL symbols, so a whole-program QBE link against it fails
+#     with multiple-definition errors.)
+RTL=$(scripts/build-rtl-objects.sh "$RELEASE" /tmp/rtlobj \
+        --exclude-defined-by /tmp/blaise.o)
+gcc -o compiler/target/blaise /tmp/blaise.o $RTL -lm -lpthread
+----
 
 === Bootstrap a development checkout
 

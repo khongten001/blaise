@@ -42,6 +42,12 @@ type
     function  RunBlaise(const AArgs: array of string;
                         out AStdout: string): Integer;
     function  RunBinary(const AExe: string; out AStdout: string): Integer;
+    { Run an arbitrary tool (ar, cc, nm, …) capturing its stdout. }
+    function  RunProc(const AExe: string; const AArgs: array of string;
+                      out AStdout: string): Integer;
+    { Assert ASym is present in nm output ANm but not as a strong (T/D) local
+      definition — the GH #174 archive-collision guard. }
+    procedure AssertNotStrongDef(const ANm, ASym, AWhere: string);
   published
     procedure TestFreeRoutine_RoundTrip_WithoutSource;
     procedure TestGenericClass_RoundTrip_WithoutSource;
@@ -49,6 +55,17 @@ type
     procedure TestDuplicateExternalAcrossUnits_Compiles;
     procedure TestNativeIncremental_MultiUnitClass_Compiles;
     procedure TestNativeNoIncremental_MultiUnitClass_Compiles;
+    { Regression (GH #174): a class declared in an UNMANGLED unit (rtl.*/
+      runtime.*/System) has BARE typeinfo/vtable/_FieldCleanup symbols, and a
+      unit-level global of such a unit has a bare data symbol.  Under
+      --no-incremental every object that references the class / inlines the unit
+      re-DEFINES those bare symbols; two such objects archived together then
+      collide at link with a multiple-definition error.  The fix emits the
+      definitions WEAK so the copies collapse.  This test compiles two rtl.*
+      leaf units (each using a shared rtl.* base unit) standalone with
+      --no-incremental, archives all three, and links a driver that pulls BOTH
+      leaves — the link must succeed and the program run. }
+    procedure TestNoIncremental_UnmangledUnitClass_ArchiveLinks;
     { Regression: a class declared in a unit's IMPLEMENTATION section (not its
       interface) was rejected at compile and never had its method bodies /
       typeinfo / vtable / _FieldCleanup emitted — both backends' unit-emission
@@ -717,6 +734,182 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('use_shapes_ni exit code', 0, Rc);
   AssertEquals('use_shapes_ni stdout', 'shape:box' + #10, Captured)
+end;
+
+function TSepCompileTests.RunProc(const AExe: string;
+  const AArgs: array of string; out AStdout: string): Integer;
+var
+  Proc:  TProcess;
+  I:     Integer;
+  Chunk: string;
+begin
+  Proc := TProcess.Create(nil);
+  try
+    Proc.Executable := AExe;
+    for I := 0 to High(AArgs) do
+      Proc.Parameters.Add(AArgs[I]);
+    Proc.Execute();
+    AStdout := '';
+    repeat
+      Chunk := Proc.ReadOutput();
+      AStdout := AStdout + Chunk
+    until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
+    Result := Proc.ExitCode
+  finally
+    Proc.Free()
+  end
+end;
+
+procedure TSepCompileTests.AssertNotStrongDef(const ANm, ASym, AWhere: string);
+{ nm prints one line '<addr> <bind> <name>' per symbol: 'T'/'D' = strong
+  text/data def (the GH #174 collision), 'W'/'V' = weak def (the fix), 'U' =
+  external reference.  The bare base-class symbol re-defined by a leaf object
+  must not be strong; weak or extern is fine.  (Blaise Pos is 0-based and
+  returns -1 when not found.) }
+begin
+  { Present at all — a trailing-newline exact match so a prefix (e.g.
+    typeinfo_TGh174Base) is not matched by a search for a shorter name. }
+  AssertTrue(ASym + ' present in ' + AWhere,
+    Pos(' ' + ASym + #10, ANm + #10) >= 0);
+  { Neither strong-text (' T ') nor strong-data (' D ') binding for it. }
+  AssertTrue(ASym + ' must not be a strong text def in ' + AWhere +
+    ' — GH #174', Pos(' T ' + ASym + #10, ANm + #10) < 0);
+  AssertTrue(ASym + ' must not be a strong data def in ' + AWhere +
+    ' — GH #174', Pos(' D ' + ASym + #10, ANm + #10) < 0)
+end;
+
+procedure TSepCompileTests.TestNoIncremental_UnmangledUnitClass_ArchiveLinks;
+{ GH #174: two rtl.* leaf units, each USING a shared rtl.* base unit that
+  declares a class + a unit global, are each compiled STANDALONE with
+  --no-incremental (the runtime/Makefile archive-producer path).  Because the
+  base unit is unmangled its class typeinfo/vtable/_FieldCleanup and its global
+  are BARE, and every inlining object re-DEFINES them.  Before the fix each such
+  definition was STRONG (a gas .globl), so archiving the two leaves and linking
+  a puller that pulls BOTH failed with 'multiple definition of
+  typeinfo_TGh174Base' / GGh174.  The fix emits them WEAK; nm must show 'W'/'V'
+  (weak), never 'T'/'D' (strong), for the base class's symbols and global in the
+  leaf objects.  Asserting the binding directly (rather than driving a full
+  archive link) isolates THIS defect from the orthogonal fact that a
+  --no-incremental object also inlines its runtime.* deps. }
+const
+  { The base is ABSTRACT and published and implements an interface, so it emits
+    the FULL set of bare per-class symbols a referencing object re-defines —
+    typeinfo/vtable/_FieldCleanup/methods/itab/impllist — plus a bare unit
+    global, while emitting NO concrete method body of its own (Kind is abstract;
+    the override lives in each leaf).  Every one of those definitions must be
+    weak.  (A concrete base method body is a separate, still-latent case not
+    exercised here: no RTL class today declares one.) }
+  BaseSrc =
+    '''
+    unit rtl.gh174base;
+    interface
+    type
+      IGh174 = interface
+        function Kind: string;
+      end;
+      TGh174Base = class(IGh174)
+        Tag: Integer;
+      published
+        function Kind: string; virtual; abstract;
+      end;
+    var GGh174: TGh174Base;
+    implementation
+    end.
+    ''';
+  LeafASrc =
+    '''
+    unit rtl.gh174a;
+    interface
+    uses rtl.gh174base;
+    function MakeGh174A: TGh174Base;
+    implementation
+    type TGh174A = class(TGh174Base) function Kind: string; override; end;
+    function TGh174A.Kind: string; begin Result := 'A' end;
+    function MakeGh174A: TGh174Base; begin Result := TGh174A.Create() end;
+    end.
+    ''';
+  LeafBSrc =
+    '''
+    unit rtl.gh174b;
+    interface
+    uses rtl.gh174base;
+    function MakeGh174B: TGh174Base;
+    implementation
+    type TGh174B = class(TGh174Base) function Kind: string; override; end;
+    function TGh174B.Kind: string; begin Result := 'B' end;
+    function MakeGh174B: TGh174Base; begin Result := TGh174B.Create() end;
+    end.
+    ''';
+
+var
+  BasePas, LeafAPas, LeafBPas: string;
+  BaseObj, LeafAObj, LeafBObj: string;
+  Captured, NmA, NmB: string;
+  Rc: Integer;
+begin
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  BasePas  := FScratch + '/rtl.gh174base.pas';
+  LeafAPas := FScratch + '/rtl.gh174a.pas';
+  LeafBPas := FScratch + '/rtl.gh174b.pas';
+  { Objects go in a subdir that is NOT on --unit-path, so each leaf INLINES the
+    base unit from source (--no-incremental) rather than auto-discovering a
+    prebuilt base.o and importing it externally — matching runtime/Makefile,
+    whose .o outputs land in target/ while --unit-path points at the sources.
+    This is what makes every leaf re-define the bare base symbols. }
+  ForceDirectories(FScratch + '/obj');
+  BaseObj  := FScratch + '/obj/rtl.gh174base.o';
+  LeafAObj := FScratch + '/obj/rtl.gh174a.o';
+  LeafBObj := FScratch + '/obj/rtl.gh174b.o';
+
+  WriteFile(BasePas, BaseSrc);
+  WriteFile(LeafAPas, LeafASrc);
+  WriteFile(LeafBPas, LeafBSrc);
+
+  { Compile each unit STANDALONE with --no-incremental + native/internal — the
+    exact recipe runtime/Makefile uses to build blaise_rtl.a members. }
+  Rc := RunBlaise(['--source', BasePas, '--output', BaseObj,
+                   '--backend', 'native', '--assembler', 'internal',
+                   '--no-incremental', '--unit-path', FScratch], Captured);
+  AssertEquals('compile base (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBlaise(['--source', LeafAPas, '--output', LeafAObj,
+                   '--backend', 'native', '--assembler', 'internal',
+                   '--no-incremental', '--unit-path', FScratch], Captured);
+  AssertEquals('compile leaf A (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBlaise(['--source', LeafBPas, '--output', LeafBObj,
+                   '--backend', 'native', '--assembler', 'internal',
+                   '--no-incremental', '--unit-path', FScratch], Captured);
+  AssertEquals('compile leaf B (out: ' + Captured + ')', 0, Rc);
+
+  { Both leaf objects inline the base unit, so each re-defines the base class's
+    bare symbols and the bare global.  None of these may be a STRONG local
+    definition, or two members collide when archived + both pulled. }
+  Rc := RunProc('nm', [LeafAObj], NmA);
+  AssertEquals('nm leaf A', 0, Rc);
+  Rc := RunProc('nm', [LeafBObj], NmB);
+  AssertEquals('nm leaf B', 0, Rc);
+
+  AssertNotStrongDef(NmA, 'typeinfo_TGh174Base', 'leaf A');
+  AssertNotStrongDef(NmA, 'vtable_TGh174Base', 'leaf A');
+  AssertNotStrongDef(NmA, '_FieldCleanup_TGh174Base', 'leaf A');
+  AssertNotStrongDef(NmA, 'methods_TGh174Base', 'leaf A');
+  AssertNotStrongDef(NmA, 'itab_TGh174Base_IGh174', 'leaf A');
+  AssertNotStrongDef(NmA, 'impllist_TGh174Base', 'leaf A');
+  AssertNotStrongDef(NmA, 'typeinfo_IGh174', 'leaf A');
+  AssertNotStrongDef(NmA, 'GGh174', 'leaf A');
+  AssertNotStrongDef(NmB, 'typeinfo_TGh174Base', 'leaf B');
+  AssertNotStrongDef(NmB, 'vtable_TGh174Base', 'leaf B');
+  AssertNotStrongDef(NmB, '_FieldCleanup_TGh174Base', 'leaf B');
+  AssertNotStrongDef(NmB, 'methods_TGh174Base', 'leaf B');
+  AssertNotStrongDef(NmB, 'itab_TGh174Base_IGh174', 'leaf B');
+  AssertNotStrongDef(NmB, 'impllist_TGh174Base', 'leaf B');
+  AssertNotStrongDef(NmB, 'typeinfo_IGh174', 'leaf B');
+  AssertNotStrongDef(NmB, 'GGh174', 'leaf B')
 end;
 
 procedure TSepCompileTests.TestNativeImplSectionClass_Compiles;

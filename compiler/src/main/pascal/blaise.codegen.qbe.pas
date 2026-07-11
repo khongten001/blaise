@@ -2292,6 +2292,16 @@ begin
         the winner after extraction).  Bare name kept above for the threadvar
         lookup key. }
       VarName := MangleGlobalOwner(FCurrentUnitName) + VarName;
+      { A global declared in an unmangled unit (rtl.*/runtime.*/System) carries
+        a BARE symbol that every object inlining the unit (--no-incremental)
+        re-defines — two archive members both strong-define e.g. GRtlPlatform
+        and the link collides (GH #174).  Mark such a global WEAK so the copies
+        collapse; the authoritative slot (the unit's own object, or the winning
+        weak copy — all are identical zero/const slots) still defines it.
+        threadvars are left strong: weak TLS binding is fragile and a threadvar
+        collision is not the reported failure mode. }
+      if IsUnmangledUnit(FCurrentUnitName) and (not Decl.IsThreadVar) then
+        MarkWeak(VarName);
       { Initialised global: emit the folded value into the data section instead
         of a zero slot.  threadvars cannot carry a non-zero static initialiser
         (they live in .tbss), so the parser/semantic restrict initialisers to
@@ -16051,7 +16061,13 @@ begin
             if TDesc = nil then TDesc := FSymTable.FindType(TD.Name);
             if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
             RT := TRecordTypeDesc(TDesc);
-            EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT, False);
+            { Classes in an unmangled unit (rtl.*/runtime.*/System) carry BARE
+              symbols that every referencing object re-defines; emit their
+              _FieldCleanup WEAK so duplicate definitions collapse at link time
+              rather than colliding (GH #174).  A prefixed (normal) unit's class
+              is referenced externally elsewhere, so it stays strong. }
+            EmitFieldCleanupFn(ClassSymNameForDecl(TD), RT,
+                               IsUnmangledUnit(AUnit.Name));
           end;
 
         { System-unit (TObject / TCustomAttribute) FieldCleanup stubs.
@@ -16147,7 +16163,13 @@ begin
         begin
           TD := TTypeDecl(AllTD.Items[I]);
           if TD.Def is TInterfaceTypeDef then
+          begin
+            { A bare (unmangled-unit) interface's own typeinfo is re-defined by
+              every inlining object — mark it WEAK (GH #174). }
+            if IsUnmangledUnit(AUnit.Name) then
+              MarkWeak('typeinfo_' + ClassSymNameForDecl(TD));
             EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymNameForDecl(TD) + ' = { l 0 }');
+          end;
         end;
 
         { System-unit (TObject / TCustomAttribute) typeinfo + vtable.
@@ -16203,6 +16225,11 @@ begin
               Inc(PubCount);
           if PubCount > 0 then
           begin
+            { Bare (unmangled-unit) methods table is re-defined by every
+              referencing object — mark it WEAK too (GH #174), matching the
+              typeinfo/vtable weak markers. }
+            if IsUnmangledUnit(AUnit.Name) then
+              MarkWeak('methods_' + ClassSymNameForDecl(TD));
             MethLine := ExportPrefix() + 'data $methods_' + ClassSymNameForDecl(TD) + ' = { l ' + IntToStr(PubCount);
             for J := 0 to CD.Methods.Count - 1 do
             begin
@@ -16222,6 +16249,12 @@ begin
 
           EmitAttrTables(TD, CD, AttrsStr, MethAttrsStr);
 
+          { Bare (unmangled-unit) class typeinfo is re-defined by every
+            referencing object — mark it WEAK so archive members collapse
+            instead of colliding (GH #174).  Matches the _FieldCleanup and
+            vtable weak markers below and the generic-instance treatment. }
+          if IsUnmangledUnit(AUnit.Name) then
+            MarkWeak('typeinfo_' + ClassSymNameForDecl(TD));
           EmitLine(ExportPrefix() + 'data $typeinfo_' + ClassSymNameForDecl(TD) +
                    ' = { l ' + ParentStr + ', l ' + ImplStr +
                    ', l ' + EmitClassNameRefForDecl(TD) +
@@ -16246,6 +16279,10 @@ begin
           if (TDesc = nil) or not (TDesc is TRecordTypeDesc) then Continue;
           RT := TRecordTypeDesc(TDesc);
           if not RT.HasVTable() then Continue;
+          { Bare (unmangled-unit) vtable is re-defined by every referencing
+            object — mark it WEAK so archive members collapse (GH #174). }
+          if IsUnmangledUnit(AUnit.Name) then
+            MarkWeak('vtable_' + ClassSymNameForDecl(TD));
           VLine := ExportPrefix() + 'data $vtable_' + ClassSymNameForDecl(TD) +
                    ' = { l $typeinfo_' + ClassSymNameForDecl(TD);
           for S := 0 to RT.VTableCount() - 1 do
@@ -16379,6 +16416,10 @@ begin
           begin
             IntfDesc   := ClassRT.ImplementsIntfAt(J);
             IntfMangle := QBEMangle(IntfDesc.Name);
+            { Bare (unmangled-unit) itab is re-defined by every referencing
+              object — mark it WEAK (GH #174). }
+            if IsUnmangledUnit(AUnit.Name) then
+              MarkWeak('itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle);
             ItabLine   := ExportPrefix() + 'data $itab_' + ClassSymNameForDecl(TD) + '_' + IntfMangle + ' = {';
             for K := 0 to IntfDesc.MethodCount() - 1 do
             begin
@@ -16396,6 +16437,10 @@ begin
             ItabLine := ItabLine + ' }';
             EmitLine(ItabLine);
           end;
+          { Bare (unmangled-unit) impllist is re-defined by every referencing
+            object — mark it WEAK (GH #174). }
+          if IsUnmangledUnit(AUnit.Name) then
+            MarkWeak('impllist_' + ClassSymNameForDecl(TD));
           ImplLine := ExportPrefix() + 'data $impllist_' + ClassSymNameForDecl(TD) + ' = {';
           for J := 0 to ClassRT.ImplementsCount() - 1 do
           begin

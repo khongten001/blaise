@@ -85,6 +85,15 @@ type
     procedure TestCodegen_UnitGeneric_WeakSymMarkersEmitted;
 
     { ------------------------------------------------------------------ }
+    { Bare (unmangled-unit) class data must be WEAK — an rtl.* / runtime.* }
+    { class carries bare typeinfo/vtable/_FieldCleanup symbols that every  }
+    { object referencing the class re-defines; with --no-incremental two   }
+    { archive members both strong-define them and the link collides        }
+    { (GH #174).  Emitting them WEAK lets duplicates collapse.             }
+    { ------------------------------------------------------------------ }
+    procedure TestCodegen_UnmangledUnitClass_WeakSymMarkersEmitted;
+
+    { ------------------------------------------------------------------ }
     { Multi-instance: same generic class with two different type args     }
     { ------------------------------------------------------------------ }
     procedure TestSemantic_Generic_TwoInstancesOfSameClass_Resolve;
@@ -859,6 +868,72 @@ begin
     Pos('# WEAKSYM vtable_TPair_Integer_Integer', IR) > 0);
   AssertTrue('WEAKSYM marker for instance field cleanup',
     Pos('# WEAKSYM _FieldCleanup_TPair_Integer_Integer', IR) > 0);
+end;
+
+procedure TGenericsTests.TestCodegen_UnmangledUnitClass_WeakSymMarkersEmitted;
+{ A class declared in an rtl.* unit gets BARE typeinfo/vtable/_FieldCleanup
+  symbols (IsUnmangledUnit strips the unit prefix so the whole RTL agrees on
+  one name).  Because the symbol is bare, EVERY object that references the
+  class re-defines it — so under --no-incremental (which inlines a source dep
+  via AppendUnit) two archive members both strong-define e.g.
+  typeinfo_TRtlPlatform and the link fails with a multiple-definition error
+  (GH #174).  The definitions must be WEAK so duplicates collapse; a single
+  strong owner (the incremental per-unit .o) still wins.  Non-RTL classes are
+  immune — their symbols are unit-prefixed and referenced externally. }
+const
+  BareUnitSrc =
+    '''
+    unit rtl.testplat;
+    interface
+    type
+      ITestPlat = interface
+        function Kind: string;
+      end;
+      TTestPlat = class(ITestPlat)
+        Name: string;
+      published
+        function Kind: string; virtual;
+      end;
+    implementation
+    function TTestPlat.Kind: string;
+    begin Result := 'plat' end;
+    end.
+    ''';
+  ProgUsesBare =
+    '''
+    program UseBare;
+    uses rtl.testplat;
+    var P: TTestPlat;
+    begin
+      P := TTestPlat.Create();
+      P.Free()
+    end.
+    ''';
+var
+  IR: string;
+begin
+  IR := GenCombinedIR(BareUnitSrc, ProgUsesBare);
+  { The class data is emitted bare (no rtl_testplat_ prefix) — confirm the
+    bare form is what we key the weak markers on. }
+  AssertTrue('bare typeinfo emitted for TTestPlat',
+    Pos('data $typeinfo_TTestPlat', IR) > 0);
+  { Every bare per-class data symbol a referencing object re-defines must be
+    marked WEAK: typeinfo, vtable, field-cleanup, the published-methods table,
+    and the interface itab / impllist. }
+  AssertTrue('WEAKSYM marker for bare-unit class typeinfo',
+    Pos('# WEAKSYM typeinfo_TTestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit class vtable',
+    Pos('# WEAKSYM vtable_TTestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit class field cleanup',
+    Pos('# WEAKSYM _FieldCleanup_TTestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit class methods table',
+    Pos('# WEAKSYM methods_TTestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit class itab',
+    Pos('# WEAKSYM itab_TTestPlat_ITestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit class impllist',
+    Pos('# WEAKSYM impllist_TTestPlat', IR) > 0);
+  AssertTrue('WEAKSYM marker for bare-unit interface typeinfo',
+    Pos('# WEAKSYM typeinfo_ITestPlat', IR) > 0);
 end;
 
 { ------------------------------------------------------------------ }
