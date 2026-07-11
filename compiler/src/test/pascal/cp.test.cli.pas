@@ -674,8 +674,12 @@ begin
   AssertEquals('QBE Sqrt program links (out: ' + Out_ + ')', 0, EC);
   Dyn := ReadelfDynamic(BinPath);
   if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
-  AssertTrue('QBE float-math binary links libm (DT_NEEDED libm.so)',
-    Pos('libm.so', Dyn) >= 0);
+  { Assert only on a dynamic binary (the libc-host / Linux case): libm must be a
+    DT_NEEDED.  A freestanding host that links the QBE output statically has no
+    .dynamic section and needs no libm entry — don't demand one there. }
+  if Pos('(NEEDED)', Dyn) >= 0 then
+    AssertTrue('QBE float-math binary links libm (DT_NEEDED libm.so)',
+      Pos('libm.so', Dyn) >= 0);
 end;
 
 procedure TCLIContractTests.TestLibm_NoFloatMath_NoLibm;
@@ -700,9 +704,15 @@ procedure TCLIContractTests.TestPthread_NativeThreads_LinksLibpthread;
 var SrcPath, BinPath, Out_, Dyn: string; EC: Integer;
 begin
   if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
-  { A native, DYNAMIC program that uses runtime.thread pulls libpthread via
+  { A native program that uses runtime.thread pulls libpthread via
     runtime.thread's `external 'pthread'` — the internal linker emits the
-    DT_NEEDED (no hardcoded -lpthread). }
+    DT_NEEDED (no hardcoded -lpthread).  The default binary is DYNAMIC on a
+    libc host (Linux) but STATIC/freestanding on FreeBSD, where threads come
+    from the static kernel leaf and there is no .dynamic section at all.  So
+    key the assertion on the emitted ELF, not the host: IF the binary is
+    dynamic (has any DT_NEEDED), libpthread must be among them; a fully static
+    binary correctly has none.  This keeps the test valid on both the Linux and
+    FreeBSD CI hosts. }
   SrcPath := WriteScratchSource(
     'program p; uses runtime.thread; begin WriteLn(GetCPUCount() > 0); end.');
   BinPath := FScratch + 'cli_pthr_nat_' + IntToStr(FCounter);
@@ -712,8 +722,14 @@ begin
   AssertEquals('native threaded program links (out: ' + Out_ + ')', 0, EC);
   Dyn := ReadelfDynamic(BinPath);
   if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
-  AssertTrue('native threaded binary links libpthread (DT_NEEDED)',
-    Pos('libpthread.so', Dyn) >= 0);
+  if Pos('(NEEDED)', Dyn) >= 0 then
+    { Dynamic host (Linux): libpthread must be a DT_NEEDED. }
+    AssertTrue('dynamic native threaded binary links libpthread (DT_NEEDED)',
+      Pos('libpthread.so', Dyn) >= 0)
+  else
+    { Freestanding host (FreeBSD): static binary, no shared-lib dependency. }
+    AssertTrue('static native threaded binary has no DT_NEEDED',
+      Pos('libpthread.so', Dyn) < 0);
 end;
 
 procedure TCLIContractTests.TestPthread_StaticThreads_NoNeeded;
