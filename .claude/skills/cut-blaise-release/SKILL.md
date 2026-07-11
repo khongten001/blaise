@@ -6,7 +6,9 @@ description: |
   fixpoints (QBE, native, internal-assembler, warm-cache), runs the full test
   suite, commits, tags, archives the NATIVE stage-2 binary under releases/vX.Y.Z/
   (NOT committed — releases/ is gitignored), renames + refreshes the -pre
-  bootstrap dir to the next cycle, writes the community post + changelog, then
+  bootstrap dir to the next cycle, cross-compiles a FreeBSD x86_64 binary, builds
+  self-contained Linux + FreeBSD release tarballs (binary + blaise.cfg + RTL +
+  stdlib source), writes the community post + changelog, then
   bumps Blaise.pas + project.xml + uCompilerId.pas to the next -SNAPSHOT version.
   Use when asked to "cut a release", "release v0.X.Y", "tag a release", or after
   the user confirms a fixpoint is achieved.
@@ -246,25 +248,127 @@ git add README.adoc
 git commit -m "docs: update test count to <N> for v<X.Y.Z>"
 ```
 
-Then build the release tarball for the GitHub Releases page — a single
-top-level directory containing `blaise`, `blaise_rtl.a`, `README.adoc`,
-`NOTICE`, and `LICENSE`:
+Then cross-compile the FreeBSD binary and build the **self-contained** release
+tarballs for the GitHub Releases page — one for each supported target
+(Linux x86_64 and FreeBSD x86_64).
 
-```bash
-STAGING=$(mktemp -d)
-DIRNAME="blaise-v<X.Y.Z>-linux-x86_64"
-mkdir "$STAGING/$DIRNAME"
-cp releases/v<X.Y.Z>/blaise       "$STAGING/$DIRNAME/blaise"
-cp releases/v<X.Y.Z>/blaise_rtl.a "$STAGING/$DIRNAME/blaise_rtl.a"
-cp README.adoc                    "$STAGING/$DIRNAME/README.adoc"
-cp NOTICE                         "$STAGING/$DIRNAME/NOTICE"
-cp LICENSE                        "$STAGING/$DIRNAME/LICENSE"
-tar -czf releases/blaise-v<X.Y.Z>-linux-x86_64.tar.gz -C "$STAGING" "$DIRNAME"
-rm -rf "$STAGING"
-tar -tzf releases/blaise-v<X.Y.Z>-linux-x86_64.tar.gz   # verify
+**Tarball layout — self-contained, NOT binary-only.** The native backend
+SOURCE-BUILDS the RTL on every link (it does *not* link `blaise_rtl.a`), so a
+binary shipped alone cannot compile anything — it fails with `RTL source
+directory not found`. Each tarball must therefore bundle the RTL + stdlib
+**source** plus a `blaise.cfg` beside the binary so the extracted package works
+with zero flags from any directory:
+
+```
+blaise-v<X.Y.Z>-<os>-x86_64/
+  blaise            the target binary (native)
+  blaise.cfg        rtl-src=rtl-src / unit-path=stdlib-src (relative → resolved
+                    against this file's own dir, so it works wherever extracted)
+  rtl-src/          compiler/src/main/pascal/*.pas  (the RTL units)
+  stdlib-src/       stdlib/src/main/pascal/*.pas    (the standard library)
+  hello.pas         a sample program
+  USAGE.txt         quick-start (the `blaise.cfg` means `./blaise --source
+                    hello.pas --output hello` just works)
+  README.adoc  NOTICE  LICENSE
 ```
 
-**Do not `git add` any binary files or the tarball.** `releases/` is gitignored
+`blaise.cfg` recognises only `rtl-src=<dir>` and `unit-path=<dir>` (KEY=VALUE,
+`#` comments); relative values resolve against the config file's directory, `~`
+expands to `$HOME`, absolute paths are used as-is. The compiler reads
+`<bindir>/blaise.cfg` first, then `~/.blaise.cfg`.
+
+First cross-compile the FreeBSD binary with the just-archived NATIVE release
+binary as stage-1 (same invocation the `freebsd-crosscheck` CI job uses —
+`--target freebsd-x86_64` makes a static, freestanding FreeBSD ET_EXEC).
+
+CRITICAL — version timing: the cross-compiled binary bakes in whatever `Version`
+(Blaise.pas) and `COMPILER_ID` (uCompilerId.pas) the WORKING TREE currently
+holds. This step MUST run BEFORE Step 7's dev-version bump, while the tree is
+still at `<X.Y.Z>`. If you build (or rebuild) the FreeBSD tarball AFTER the bump
+— e.g. adding it as an afterthought — the binary will report `<next>-SNAPSHOT`.
+To rebuild correctly after the bump, first restore the two version files to the
+tag, cross-compile, then restore the dev version:
+
+```bash
+# Only if the tree has already moved to the -SNAPSHOT dev version:
+git checkout v<X.Y.Z> -- compiler/src/main/pascal/Blaise.pas \
+                         compiler/src/main/pascal/uCompilerId.pas
+# ... run the cross-compile below ...
+# then restore the dev version:
+git checkout HEAD -- compiler/src/main/pascal/Blaise.pas \
+                     compiler/src/main/pascal/uCompilerId.pas
+```
+
+```bash
+mkdir -p target/freebsd-blaise
+releases/v<X.Y.Z>/blaise \
+  --source compiler/src/main/pascal/Blaise.pas \
+  --backend native --target freebsd-x86_64 \
+  --unit-path compiler/src/main/pascal \
+  --unit-path runtime/src/main/pascal \
+  --unit-path stdlib/src/main/pascal \
+  --output target/freebsd-blaise/blaise
+# Must be a FreeBSD (EI_OSABI) executable, or stop:
+readelf -hW target/freebsd-blaise/blaise | awk -F: '/OS\/ABI/{print $2}' | grep -qi FreeBSD \
+  || { echo "ERROR: not a FreeBSD binary"; exit 1; }
+# Must report the RELEASE version, not -SNAPSHOT (guards the version-timing trap):
+strings target/freebsd-blaise/blaise | grep -q 'blaise-<X.Y.Z>+' \
+  || { echo "ERROR: FreeBSD binary is not v<X.Y.Z> — rebuild at the release version"; exit 1; }
+```
+
+Then build both tarballs with a shared packaging function:
+
+```bash
+# make_tarball <binary-path> <os-label>
+make_tarball() {
+  BIN="$1"; OS="$2"
+  STAGING=$(mktemp -d); DIRNAME="blaise-v<X.Y.Z>-${OS}-x86_64"; D="$STAGING/$DIRNAME"
+  mkdir -p "$D/rtl-src" "$D/stdlib-src"
+  cp "$BIN"                        "$D/blaise"; chmod +x "$D/blaise"
+  cp compiler/src/main/pascal/*.pas "$D/rtl-src/"
+  cp stdlib/src/main/pascal/*.pas   "$D/stdlib-src/"
+  cp README.adoc "$D/README.adoc"; cp NOTICE "$D/NOTICE"; cp LICENSE "$D/LICENSE"
+  cat > "$D/blaise.cfg" <<'CFG'
+# Blaise compiler configuration.  Relative paths resolve against this file's
+# directory, so the compiler finds its RTL + stdlib source wherever extracted.
+rtl-src=rtl-src
+unit-path=stdlib-src
+CFG
+  cat > "$D/hello.pas" <<'PAS'
+program Hello;
+begin
+  WriteLn('Hello from Blaise!');
+end.
+PAS
+  cat > "$D/USAGE.txt" <<'TXT'
+Blaise — self-contained toolchain.  From this directory:
+    ./blaise --source hello.pas --output hello && ./hello
+The bundled blaise.cfg supplies the RTL + stdlib source locations, so no extra
+flags are needed.  If you move `blaise`, keep blaise.cfg / rtl-src/ / stdlib-src/
+beside it, or pass --rtl-src DIR --unit-path DIR explicitly.  See README.adoc.
+TXT
+  tar -czf "releases/blaise-v<X.Y.Z>-${OS}-x86_64.tar.gz" -C "$STAGING" "$DIRNAME"
+  rm -rf "$STAGING"
+  tar -tzf "releases/blaise-v<X.Y.Z>-${OS}-x86_64.tar.gz" | head   # verify
+}
+
+make_tarball releases/v<X.Y.Z>/blaise         linux
+make_tarball target/freebsd-blaise/blaise     freebsd
+```
+
+Sanity-check each tarball's binary is the right ELF shape (Linux = `UNIX -
+System V` / `GNU`, FreeBSD = `UNIX - FreeBSD`); the FreeBSD binary cannot be
+executed on the Linux host — the user copies that tarball to a FreeBSD box to
+verify. The self-contained layout is validated on the LINUX binary before
+shipping (same driver code, target-agnostic RTL-source resolution):
+
+```bash
+V=$(mktemp -d); tar -xzf releases/blaise-v<X.Y.Z>-linux-x86_64.tar.gz -C "$V"
+( cd "$V/blaise-v<X.Y.Z>-linux-x86_64" && ./blaise --source hello.pas --output /tmp/th && /tmp/th )
+rm -rf "$V"   # must print: Hello from Blaise!
+```
+
+**Do not `git add` any binary files or the tarballs.** `releases/` is gitignored
 and the user keeps binaries local on purpose.
 
 ## Step 7 — bump to next -dev version
@@ -363,7 +467,11 @@ Summarise:
 - Last 3–4 commit oneliners
 - Community post: `community-post-v<X.Y.Z>.md` (untracked)
 - Changelog: `changelog-v<X.Y.Z>.md` (untracked)
-- Release tarball: `releases/blaise-v<X.Y.Z>-linux-x86_64.tar.gz` (upload to GitHub Releases)
+- Release tarballs (upload both to GitHub Releases):
+  - `releases/blaise-v<X.Y.Z>-linux-x86_64.tar.gz`
+  - `releases/blaise-v<X.Y.Z>-freebsd-x86_64.tar.gz` (cross-compiled; user
+    verifies on a FreeBSD box — self-contained, includes RTL + stdlib source +
+    blaise.cfg)
 
 Mention that the user must `git push --tags` themselves if they want the tag on
 the remote — never push automatically.
@@ -380,6 +488,27 @@ the remote — never push automatically.
   `fixpoint-native.sh`), NOT the QBE `/tmp/fp_blaise2` (from `fixpoint.sh`). The
   QBE fixpoint is still required as a reproducibility guard — it just isn't the
   artefact.
+- **Shipping a binary-only tarball.** The native backend source-builds the RTL,
+  so a tarball with just `blaise` (+ the legacy `blaise_rtl.a`) CANNOT compile
+  anything once extracted — it dies with `RTL source directory not found`. Every
+  release tarball must bundle `rtl-src/` (compiler/src/main/pascal) + `stdlib-src/`
+  (stdlib/src/main/pascal) + a `blaise.cfg` beside the binary (Step 6). Verify by
+  extracting the Linux tarball to a temp dir and compiling `hello.pas` from there
+  — it must print output, not an RTL-not-found error.
+- **Running the FreeBSD binary on the Linux host.** The FreeBSD tarball binary is
+  a FreeBSD ET_EXEC and cannot execute on Linux — only sanity-check its ELF shape
+  (`readelf -hW … | grep FreeBSD`). The self-contained layout is validated on the
+  LINUX binary (same driver code); the user runs the FreeBSD tarball on a FreeBSD
+  box.
+- **FreeBSD binary reports `-SNAPSHOT`.** The cross-compiled binary bakes in the
+  working-tree `Version`/`COMPILER_ID`. The FreeBSD cross-compile (Step 6) MUST
+  run before Step 7's dev-version bump. If you build/rebuild it after the bump,
+  the binary is `<next>-SNAPSHOT`, not the release version. Check the FreeBSD
+  binary can't run locally, so verify with `strings … | grep 'blaise-<X.Y.Z>+'`.
+  To fix: `git checkout v<X.Y.Z> -- Blaise.pas uCompilerId.pas`, re-cross-compile,
+  rebuild the tarball, then `git checkout HEAD -- Blaise.pas uCompilerId.pas`.
+  (The Linux release binary is immune — it's archived from the fixpoint in Step 6
+  before the bump.)
 - **Stale fixpoint binary in /tmp.** A `/tmp/fpn_blaise2` (or `/tmp/fp_blaise3`)
   left over from an earlier run can be days old. Always confirm the binary you
   archive prints the RIGHT version: `<binary> --help | head -1`.
