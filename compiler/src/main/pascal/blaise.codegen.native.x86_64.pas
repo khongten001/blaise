@@ -85,6 +85,13 @@ type
       AlignFreshBytes so the call site is aligned by construction and the
       wrap pad never fires for them. }
     FSPDepth: Integer;
+    { One-line peephole window: a just-emitted `pushq %reg` is held back here
+      so an immediately following `popq %reg2` fuses into a single
+      `movq %reg, %reg2` (or into nothing when the registers match).  Any
+      other line flushes the pending push first.  FSPDepth is updated when
+      the push is PENDED (so AlignFreshBytes and the callq wrap pad see the
+      true depth) and rolled back on fusion. }
+    FPendingPush: string;
     { OPDF debug facts (nil unless --debug-opdf): the backend records each
       function's symbol, end label, real frame-slot offsets and per-statement
       line labels here; the OPDF emitter consumes them for exact debug info.
@@ -498,6 +505,23 @@ type
     { Load an integer-family value from AOperand into %rax, extended to 64
       bits per AType (sign/zero-extend by width and signedness). }
     procedure EmitLoadVar(const AOperand: string; AType: TTypeDesc);
+    { EmitLoadVar generalised to any destination register pair (64-bit name +
+      32-bit sub-view), so a trivial RHS operand can load straight into %rcx
+      without disturbing the LHS value in %rax. }
+    procedure EmitLoadVarToReg(const AOperand: string; AType: TTypeDesc;
+      const AReg64, AReg32: string);
+    { Materialise an integer immediate into a register using the shortest
+      correct form: movl for [0, 2^31), movq (sign-extended imm32) for
+      negative int32-range values, movabsq only for true 64-bit values. }
+    procedure EmitImmToReg(AValue: Int64; const AReg64, AReg32: string);
+    { True when AExpr is a compile-time integer value (int literal, integer
+      const ident, char-coerced single-char literal, nil); returns it. }
+    function  TryGetImmValue(AExpr: TASTExpr; out AValue: Int64): Boolean;
+    { Trivial-RHS operand emission: when AExpr is an immediate or a plain
+      scalar local/global/param load with no side effects and no use of
+      %rax, load it directly into %rcx and return True.  Returning False
+      means the caller must fall back to the push/pop evaluation bracket. }
+    function  TryEmitOperandToRcx(AExpr: TASTExpr): Boolean;
     { Store the integer-family value currently in %rax into AOperand, using
       the right-width register sub-view for AType. }
     procedure EmitStoreVar(const AOperand: string; AType: TTypeDesc);
@@ -809,6 +833,9 @@ type
       callq at a misaligned tracked depth in a subq $8/addq $8 pad pair (see
       the FSPDepth field comment for the full rationale). }
     procedure Emit(const ALine: string); override;
+    { Emit the held-back pushq (peephole window) without re-tracking its
+      stack-depth contribution (applied when it was pended). }
+    procedure FlushPendingPush;
     { Parse the immediate of a `subq $N, %rsp` / `addq $N, %rsp` line and
       apply it to FSPDepth (ASign = +1 for subq, -1 for addq).  Lines whose
       destination is not %rsp are ignored. }
@@ -4848,6 +4875,96 @@ begin
   end;
 end;
 
+procedure TX86_64Backend.EmitLoadVarToReg(const AOperand: string;
+  AType: TTypeDesc; const AReg64, AReg32: string);
+begin
+  case IntByteSize(AType) of
+    1: if IsUnsignedInt(AType) then
+         Self.Emit(Format(#9'movzbq %s, %s', [AOperand, AReg64]))
+       else
+         Self.Emit(Format(#9'movsbq %s, %s', [AOperand, AReg64]));
+    2: if IsUnsignedInt(AType) then
+         Self.Emit(Format(#9'movzwq %s, %s', [AOperand, AReg64]))
+       else
+         Self.Emit(Format(#9'movswq %s, %s', [AOperand, AReg64]));
+    8: Self.Emit(Format(#9'movq %s, %s', [AOperand, AReg64]));
+  else
+    if IsUnsignedInt(AType) then
+      Self.Emit(Format(#9'movl %s, %s', [AOperand, AReg32]))
+    else
+      Self.Emit(Format(#9'movslq %s, %s', [AOperand, AReg64]));
+  end;
+end;
+
+procedure TX86_64Backend.EmitImmToReg(AValue: Int64; const AReg64, AReg32: string);
+begin
+  if (AValue >= 0) and (AValue <= 2147483647) then
+    { movl zero-extends into the full 64-bit register. }
+    Self.Emit(Format(#9'movl $%s, %s', [IntToStr(AValue), AReg32]))
+  else if (AValue < 0) and (AValue >= -2147483648) then
+    { movq sign-extends its imm32 — correct for negative int32-range values.
+      Positive values above 2^31-1 MUST NOT take this form: they do not fit
+      the sign-extended imm32 (e.g. $FFFFFFFF would materialise as -1). }
+    Self.Emit(Format(#9'movq $%s, %s', [IntToStr(AValue), AReg64]))
+  else
+    Self.Emit(Format(#9'movabsq $%s, %s', [IntToStr(AValue), AReg64]));
+end;
+
+function TX86_64Backend.TryGetImmValue(AExpr: TASTExpr; out AValue: Int64): Boolean;
+begin
+  AValue := 0;
+  Result := True;
+  if AExpr is TIntLiteral then
+    AValue := TIntLiteral(AExpr).Value
+  else if AExpr is TNilLiteral then
+    AValue := 0
+  else if (AExpr is TStringLiteral) and TStringLiteral(AExpr).IsCharCoerce then
+    AValue := TStringLiteral(AExpr).CharOrdValue
+  else if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsConstant and
+          ((TIdentExpr(AExpr).ResolvedType = nil) or
+           not TIdentExpr(AExpr).ResolvedType.IsString()) then
+    AValue := TIdentExpr(AExpr).ConstValue
+  else
+    Result := False;
+end;
+
+function TX86_64Backend.TryEmitOperandToRcx(AExpr: TASTExpr): Boolean;
+var
+  E:   TIdentExpr;
+  Ty:  TTypeDesc;
+  Imm: Int64;
+begin
+  Result := True;
+  if Self.TryGetImmValue(AExpr, Imm) then
+  begin
+    Self.EmitImmToReg(Imm, '%rcx', '%ecx');
+    Exit;
+  end;
+  if not (AExpr is TIdentExpr) then
+    Exit(False);
+  E := TIdentExpr(AExpr);
+  { Only plain scalar loads qualify — every special ident form (metaclass,
+    implicit Self, captured outer local, aggregate/interface/method-ptr
+    value, sret Result) keeps the general push/pop path. }
+  if E.IsMetaclassRef or E.IsImplicitSelfMethod or E.IsImplicitSelf or
+     E.IsConstant or Self.IsCaptured(E.Name) then
+    Exit(False);
+  if FSretFunc and SameText(E.Name, 'Result') then
+    Exit(False);
+  Ty := Self.IntExprType(E);
+  if not (IsIntFamily(Ty) or
+          ((Ty <> nil) and (Ty.Kind in [tyPointer, tyPChar]))) then
+    Exit(False);
+  if E.ParamMode <> pmNone then
+  begin
+    { var/out/by-ref param: slot holds the address; deref into %rcx. }
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand(E.Name)]));
+    Self.EmitLoadVarToReg('(%rcx)', Ty, '%rcx', '%ecx');
+    Exit;
+  end;
+  Self.EmitLoadVarToReg(Self.VarOperand(E.Name), Ty, '%rcx', '%ecx');
+end;
+
 { Store the value in %rax to memory at the slot's natural width, using the
   matching register sub-view (%al / %ax / %eax / %rax). }
 procedure TX86_64Backend.EmitStoreVar(const AOperand: string; AType: TTypeDesc);
@@ -6583,6 +6700,8 @@ var
   ScEndLbl: string;
   IsS: Boolean;
   DivOkLbl: string;
+  HasImm: Boolean;
+  ImmV: Int64;
   SuppOut: string;
   LSuppNo: string;
   LSuppEnd: string;
@@ -6596,9 +6715,9 @@ begin
 
   if AExpr is TIntLiteral then
   begin
-    { movabsq carries the full 64-bit immediate (32-bit movq sign-extends a
-      value above 2^31, which is wrong for large Int64 constants). }
-    Self.Emit(Format(#9'movabsq $%s, %%rax', [IntToStr(TIntLiteral(AExpr).Value)]));
+    { Shortest correct materialisation: movl (zero-extends), movq (sign-
+      extended imm32) or movabsq for true 64-bit values. }
+    Self.EmitImmToReg(TIntLiteral(AExpr).Value, '%rax', '%eax');
     Exit;
   end;
 
@@ -6692,8 +6811,7 @@ begin
          TIdentExpr(AExpr).ResolvedType.IsString() then
         Self.EmitStrLitAddr(TIdentExpr(AExpr).ConstString)
       else
-        Self.Emit(Format(#9'movabsq $%s, %%rax',
-          [IntToStr(TIdentExpr(AExpr).ConstValue)]));
+        Self.EmitImmToReg(TIdentExpr(AExpr).ConstValue, '%rax', '%eax');
     end
     else if TIdentExpr(AExpr).ParamMode <> pmNone then
     begin
@@ -8120,16 +8238,39 @@ begin
       Self.Emit(ScEndLbl + ':');
       Exit;
     end;
-    { left -> %rax, save; right -> %rax; left -> %rcx; combine in 64 bits. }
+    { left -> %rax.  A compile-time RHS folds into the instruction's
+      immediate field; a trivial RHS (plain scalar local/param/global)
+      loads straight into %rcx.  Only a complex RHS — one whose evaluation
+      may clobber %rax — needs the push/pop save bracket. }
     Self.EmitExprToEax(BE.Left);
-    Self.Emit(#9'pushq %rax');
-    Self.EmitExprToEax(BE.Right);
-    Self.Emit(#9'movq %rax, %rcx');   { right in %rcx }
-    Self.Emit(#9'popq %rax');          { left in %rax }
+    HasImm := Self.TryGetImmValue(BE.Right, ImmV) and
+              (ImmV >= -2147483648) and (ImmV <= 2147483647) and
+              (BE.Op in [boAdd, boSub, boMul, boAnd, boOr, boXor,
+                         boShl, boShr, boSar,
+                         boEQ, boNE, boLT, boGT, boLE, boGE]);
+    if (not HasImm) and (not Self.TryEmitOperandToRcx(BE.Right)) then
+    begin
+      Self.Emit(#9'pushq %rax');
+      Self.EmitExprToEax(BE.Right);
+      Self.Emit(#9'movq %rax, %rcx');   { right in %rcx }
+      Self.Emit(#9'popq %rax');          { left in %rax }
+    end;
     case BE.Op of
-      boAdd: Self.Emit(#9'addq %rcx, %rax');
-      boSub: Self.Emit(#9'subq %rcx, %rax');
-      boMul: Self.Emit(#9'imulq %rcx, %rax');
+      boAdd:
+        if HasImm then
+          Self.Emit(#9'addq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'addq %rcx, %rax');
+      boSub:
+        if HasImm then
+          Self.Emit(#9'subq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'subq %rcx, %rax');
+      boMul:
+        if HasImm then
+          Self.Emit(#9'imulq $' + IntToStr(ImmV) + ', %rax, %rax')
+        else
+          Self.Emit(#9'imulq %rcx, %rax');
       boDiv, boMod:
         begin
           { Divisor-zero guard: when SysUtils is in scope, a zero divisor
@@ -8165,20 +8306,54 @@ begin
         end;
       { Signed integer comparisons -> boolean 0/1 in %rax.  AT&T `cmpq B, A`
         computes A - B; setcc yields 0/1, then movzbl clears the rest. }
-      boAnd: Self.Emit(#9'andq %rcx, %rax');
-      boOr:  Self.Emit(#9'orq %rcx, %rax');
-      boXor: Self.Emit(#9'xorq %rcx, %rax');
-      boShl: Self.Emit(#9'shlq %cl, %rax');
-      boShr: Self.Emit(#9'shrq %cl, %rax');
-      boSar: Self.Emit(#9'sarq %cl, %rax');
+      boAnd:
+        if HasImm then
+          Self.Emit(#9'andq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'andq %rcx, %rax');
+      boOr:
+        if HasImm then
+          Self.Emit(#9'orq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'orq %rcx, %rax');
+      boXor:
+        if HasImm then
+          Self.Emit(#9'xorq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'xorq %rcx, %rax');
+      boShl:
+        if HasImm then
+          Self.Emit(#9'shlq $' + IntToStr(ImmV and 63) + ', %rax')
+        else
+          Self.Emit(#9'shlq %cl, %rax');
+      boShr:
+        if HasImm then
+          Self.Emit(#9'shrq $' + IntToStr(ImmV and 63) + ', %rax')
+        else
+          Self.Emit(#9'shrq %cl, %rax');
+      boSar:
+        if HasImm then
+          Self.Emit(#9'sarq $' + IntToStr(ImmV and 63) + ', %rax')
+        else
+          Self.Emit(#9'sarq %cl, %rax');
       boEQ, boNE, boLT, boGT, boLE, boGE:
         begin
           if (BE.Left.ResolvedType <> nil) and
              (BE.Left.ResolvedType.Kind in [tyInt64, tyUInt64, tyClass,
                 tyPointer, tyInterface, tyString, tyDynArray, tyProcedural]) then
-            Self.Emit(#9'cmpq %rcx, %rax')
+          begin
+            if HasImm then
+              Self.Emit(#9'cmpq $' + IntToStr(ImmV) + ', %rax')
+            else
+              Self.Emit(#9'cmpq %rcx, %rax');
+          end
           else
-            Self.Emit(#9'cmpl %ecx, %eax');
+          begin
+            if HasImm then
+              Self.Emit(#9'cmpl $' + IntToStr(ImmV) + ', %eax')
+            else
+              Self.Emit(#9'cmpl %ecx, %eax');
+          end;
           Unsigned := IsUnsignedInt(BE.Left.ResolvedType) or
                       IsUnsignedInt(BE.Right.ResolvedType) or
                       ((BE.Left.ResolvedType <> nil) and
@@ -10949,6 +11124,9 @@ procedure TX86_64Backend.EmitCondBranch(AExpr: TASTExpr;
 var
   BE: TBinaryExpr;
   IsS: Boolean;
+  HasImm: Boolean;
+  ImmV: Int64;
+  Unsigned: Boolean;
 begin
   { Float comparison: ucomisd/ucomiss sets CF/ZF directly; use conditional
     jumps that map CF/ZF to the comparison operator.  The result is a direct
@@ -10992,6 +11170,75 @@ begin
         raise ENativeCodeGenError.Create(
           'native backend: unsupported float comparison operator');
       end;
+      Self.Emit(#9'jmp ' + AFalseLabel);
+      Exit;
+    end;
+  end;
+
+  { Integer/pointer comparison as the branch condition: emit cmp + jcc
+    directly instead of materialising a 0/1 via setcc/movzbl and then
+    re-testing it.  Strings (content comparison via RTL call) and sets
+    (subset semantics for <=/>=) keep the materialised path below. }
+  if AExpr is TBinaryExpr then
+  begin
+    BE := TBinaryExpr(AExpr);
+    if (BE.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
+       ((BE.Left.ResolvedType = nil) or
+        not (BE.Left.ResolvedType.Kind in [tyString, tySet])) and
+       ((BE.Right.ResolvedType = nil) or
+        not (BE.Right.ResolvedType.Kind in [tyString, tySet])) then
+    begin
+      Self.EmitExprToEax(BE.Left);
+      HasImm := Self.TryGetImmValue(BE.Right, ImmV) and
+                (ImmV >= -2147483648) and (ImmV <= 2147483647);
+      if (not HasImm) and (not Self.TryEmitOperandToRcx(BE.Right)) then
+      begin
+        Self.Emit(#9'pushq %rax');
+        Self.EmitExprToEax(BE.Right);
+        Self.Emit(#9'movq %rax, %rcx');
+        Self.Emit(#9'popq %rax');
+      end;
+      { Width + signedness selection mirrors the materialising comparison
+        path in EmitExprToEax — the two must stay in lockstep. }
+      if (BE.Left.ResolvedType <> nil) and
+         (BE.Left.ResolvedType.Kind in [tyInt64, tyUInt64, tyClass,
+            tyPointer, tyInterface, tyString, tyDynArray, tyProcedural]) then
+      begin
+        if HasImm then
+          Self.Emit(#9'cmpq $' + IntToStr(ImmV) + ', %rax')
+        else
+          Self.Emit(#9'cmpq %rcx, %rax');
+      end
+      else
+      begin
+        if HasImm then
+          Self.Emit(#9'cmpl $' + IntToStr(ImmV) + ', %eax')
+        else
+          Self.Emit(#9'cmpl %ecx, %eax');
+      end;
+      Unsigned := IsUnsignedInt(BE.Left.ResolvedType) or
+                  IsUnsignedInt(BE.Right.ResolvedType) or
+                  ((BE.Left.ResolvedType <> nil) and
+                   (BE.Left.ResolvedType.Kind in [tyPointer, tyClass,
+                      tyInterface, tyString, tyDynArray, tyProcedural]));
+      if Unsigned then
+        case BE.Op of
+          boEQ: Self.Emit(#9'je '  + ATrueLabel);
+          boNE: Self.Emit(#9'jne ' + ATrueLabel);
+          boLT: Self.Emit(#9'jb '  + ATrueLabel);
+          boGT: Self.Emit(#9'ja '  + ATrueLabel);
+          boLE: Self.Emit(#9'jbe ' + ATrueLabel);
+          boGE: Self.Emit(#9'jae ' + ATrueLabel);
+        end
+      else
+        case BE.Op of
+          boEQ: Self.Emit(#9'je '  + ATrueLabel);
+          boNE: Self.Emit(#9'jne ' + ATrueLabel);
+          boLT: Self.Emit(#9'jl '  + ATrueLabel);
+          boGT: Self.Emit(#9'jg '  + ATrueLabel);
+          boLE: Self.Emit(#9'jle ' + ATrueLabel);
+          boGE: Self.Emit(#9'jge ' + ATrueLabel);
+        end;
       Self.Emit(#9'jmp ' + AFalseLabel);
       Exit;
     end;
@@ -15646,10 +15893,79 @@ begin
   Result := True;
 end;
 
+{ '%rax'..'%r15' when the tail of a pushq/popq line (starting at AFrom) is a
+  plain 64-bit GPR operand; '' for memory/immediate operands and for
+  %rsp/%rbp (frame-critical — never part of the peephole window). }
+function PlainRegOperandAt(const ALine: string; AFrom: Integer): string;
+var
+  I, L, C: Integer;
+begin
+  Result := '';
+  L := Length(ALine);
+  if (L <= AFrom) or (StrAt(ALine, AFrom) <> 37) then   { 37 = '%' }
+    Exit;
+  for I := AFrom + 1 to L - 1 do
+  begin
+    C := StrAt(ALine, I);
+    if not (((C >= 97) and (C <= 122)) or               { 'a'..'z' }
+            ((C >= 48) and (C <= 57))) then             { '0'..'9' }
+      Exit;
+  end;
+  Result := StrCopyTail(ALine, AFrom);
+  if (Result = '%rsp') or (Result = '%rbp') then
+    Result := '';
+end;
+
+{ The pushed register of a #9'pushq %REG' line, or ''. }
+function PlainPushedReg(const ALine: string): string;
+begin
+  Result := '';
+  if LineStartsWith(ALine, #9'pushq %') then
+    Result := PlainRegOperandAt(ALine, 7);   { after TAB + 'pushq ' }
+end;
+
+{ The popped register of a #9'popq %REG' line, or ''. }
+function PlainPoppedReg(const ALine: string): string;
+begin
+  Result := '';
+  if LineStartsWith(ALine, #9'popq %') then
+    Result := PlainRegOperandAt(ALine, 6);   { after TAB + 'popq ' }
+end;
+
 procedure TX86_64Backend.Emit(const ALine: string);
 var
   L, C, Rem: Integer;
+  Reg: string;
 begin
+  { --- adjacent push/pop peephole ------------------------------------
+    A pended `pushq %reg` immediately followed by `popq %reg2` fuses into
+    `movq %reg, %reg2` (nothing at all when reg = reg2).  Any other line
+    flushes the pending push first, so instruction order is preserved. }
+  if FPendingPush <> '' then
+  begin
+    Reg := PlainPoppedReg(ALine);
+    if Reg <> '' then
+    begin
+      { Fuse: cancel the pended push's depth contribution; the pop is
+        never emitted so it contributes nothing either. }
+      FSPDepth := FSPDepth - 8;
+      if Reg <> PlainPushedReg(FPendingPush) then
+        inherited Emit(#9'movq ' + PlainPushedReg(FPendingPush) + ', ' + Reg);
+      FPendingPush := '';
+      Exit;
+    end;
+    Self.FlushPendingPush();
+  end;
+  Reg := PlainPushedReg(ALine);
+  if Reg <> '' then
+  begin
+    { Hold the push back one line; track its depth NOW so AlignFreshBytes
+      and the callq wrap pad observe the true stack depth. }
+    FPendingPush := ALine;
+    FSPDepth := FSPDepth + 8;
+    Exit;
+  end;
+
   L := Length(ALine);
   if (L > 1) and (StrAt(ALine, 0) = 9) then          { 9 = TAB: instruction }
   begin
@@ -15717,6 +16033,18 @@ begin
       instructions, so the reset is harmless there. }
     FSPDepth := 8;
   inherited Emit(ALine);
+end;
+
+procedure TX86_64Backend.FlushPendingPush;
+var
+  P: string;
+begin
+  if FPendingPush = '' then
+    Exit;
+  P := FPendingPush;
+  FPendingPush := '';
+  { Depth was tracked when the line was pended — emit raw, no re-tracking. }
+  inherited Emit(P);
 end;
 
 procedure TX86_64Backend.TrackRspAdjust(const ALine: string; ASign: Integer);

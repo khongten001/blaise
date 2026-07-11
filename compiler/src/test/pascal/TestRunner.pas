@@ -70,6 +70,7 @@ uses
   cp.test.constarg,
   cp.test.nativeconstarg,
   cp.test.nativealign,
+  cp.test.nativeopt,
   cp.test.defaultargs,
   cp.test.caseenum,
   cp.test.sets,
