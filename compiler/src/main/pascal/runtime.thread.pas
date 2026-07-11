@@ -17,21 +17,21 @@ interface
 { Thread creation / join }
 function pthread_create(Thread: Pointer; Attr: Pointer;
   StartRoutine: Pointer; Arg: Pointer): Integer;
-  external name 'pthread_create';
+  external 'pthread' name 'pthread_create';
 function pthread_join(Thread: Int64; RetVal: Pointer): Integer;
-  external name 'pthread_join';
+  external 'pthread' name 'pthread_join';
 
 { Mutex — callers allocate a 48-byte buffer (array[0..5] of Int64)
   and pass its address.  48 bytes covers pthread_mutex_t on all
   current Linux x86_64 and aarch64 targets (actual size is 40). }
 function pthread_mutex_init(Mutex: Pointer; Attr: Pointer): Integer;
-  external name 'pthread_mutex_init';
+  external 'pthread' name 'pthread_mutex_init';
 function pthread_mutex_lock(Mutex: Pointer): Integer;
-  external name 'pthread_mutex_lock';
+  external 'pthread' name 'pthread_mutex_lock';
 function pthread_mutex_unlock(Mutex: Pointer): Integer;
-  external name 'pthread_mutex_unlock';
+  external 'pthread' name 'pthread_mutex_unlock';
 function pthread_mutex_destroy(Mutex: Pointer): Integer;
-  external name 'pthread_mutex_destroy';
+  external 'pthread' name 'pthread_mutex_destroy';
 
 { sysconf(_SC_NPROCESSORS_ONLN) — returns number of online CPUs. }
 function sysconf(Name: Integer): Int64; external name 'sysconf';

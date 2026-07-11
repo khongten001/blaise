@@ -45,6 +45,9 @@ type
     function WriteScratchSource(const ASrc: string): string;
     { Run a produced binary, capturing stdout/stderr; returns its exit code. }
     function RunBinary(const AExe: string; out ACombined: string): Integer;
+    { `readelf -dW <exe>` output — the DT_NEEDED lines reveal which shared libs
+      the binary links.  Empty string if readelf is unavailable. }
+    function ReadelfDynamic(const AExe: string): string;
     { Compile ASrc with the given backend (empty = default QBE), link against
       the full RTL, run it, and report stdout + exit code.  Used for features
       that need stdlib units loaded + linked, which the in-process e2e harness
@@ -83,6 +86,15 @@ type
       LinkViaToolchain), so this drives the real compiler binary end to end. }
     procedure TestExternalLib_MissingLib_FailsLink_QBE;
     procedure TestExternalLib_MissingLib_FailsLink_Native;
+    { ---- demand-driven link libs: -lm (QBE libm math) and -lpthread ---- }
+    { libm is added only when the QBE backend emits a libm call; native emits
+      float math inline and never links libm.  libpthread flows from
+      runtime.thread's `external 'pthread'` — only when threads are used — and
+      is a DT_NEEDED on the dynamic path, absent on --static/freestanding. }
+    procedure TestLibm_QBEFloatMath_LinksLibm;
+    procedure TestLibm_NoFloatMath_NoLibm;
+    procedure TestPthread_NativeThreads_LinksLibpthread;
+    procedure TestPthread_StaticThreads_NoNeeded;
     { ---- div/mod by zero raises a catchable EDivByZero (needs stdlib) ---- }
     procedure TestDivByZeroCaught_QBE;
     procedure TestDivByZeroCaught_Native;
@@ -519,6 +531,32 @@ begin
   end;
 end;
 
+function TCLIContractTests.ReadelfDynamic(const AExe: string): string;
+var
+  Proc: TProcess;
+  Chunk: string;
+begin
+  Result := '';
+  Proc := TProcess.Create(nil);
+  try
+    Proc.Executable := 'readelf';
+    Proc.Parameters.Add('-dW');
+    Proc.Parameters.Add(AExe);
+    try
+      Proc.Execute();
+    except
+      Exit;   { readelf not installed — caller Ignores }
+    end;
+    repeat
+      Chunk := Proc.ReadOutput();
+      Result := Result + Chunk;
+    until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
+  finally
+    Proc.Free();
+  end;
+end;
+
 function TCLIContractTests.CompileRunFull(const ASrc, ABackend: string;
   out AStdout: string; out AExitCode: Integer): Boolean;
 var
@@ -608,9 +646,10 @@ begin
   if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
   SrcPath := WriteScratchSource(SrcMissingExternalLib);
   BinPath := FScratch + 'cli_misslib_nat_' + IntToStr(FCounter);
-  { --linker external: the internal linker cannot resolve -l<name> system
-    libraries (it errors out separately); the toolchain linker is what emits
-    and consumes -l<name>. }
+  { --linker external: the toolchain linker emits and consumes -l<name>, so a
+    missing library fails at LINK time with "cannot find -l<name>".  (The
+    internal linker instead records a DT_NEEDED and would fail at RUN time when
+    the loader can't find the .so — a different contract, not tested here.) }
   EC := RunCompiler(['--source', SrcPath, '--backend', 'native',
     '--linker', 'external',
     '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
@@ -618,6 +657,82 @@ begin
   AssertTrue('link must fail (missing library)', EC <> 0);
   AssertTrue('linker reports the -l<name> it could not find',
     Pos('nosuchlib_blaise_xyz', Out_) >= 0);
+end;
+
+procedure TCLIContractTests.TestLibm_QBEFloatMath_LinksLibm;
+var SrcPath, BinPath, Out_, Dyn: string; EC: Integer;
+begin
+  if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
+  { The QBE backend lowers Sqrt to a $sqrt libm call, so RequireLib('m') fires
+    and the binary must carry a libm DT_NEEDED (demand-driven, not hardcoded). }
+  SrcPath := WriteScratchSource(
+    'program p; var d: Double; begin d := Sqrt(2.0); WriteLn(d > 1.0); end.');
+  BinPath := FScratch + 'cli_libm_qbe_' + IntToStr(FCounter);
+  EC := RunCompiler(['--source', SrcPath, '--backend', 'qbe',
+    '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
+    '--output', BinPath], Out_);
+  AssertEquals('QBE Sqrt program links (out: ' + Out_ + ')', 0, EC);
+  Dyn := ReadelfDynamic(BinPath);
+  if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
+  AssertTrue('QBE float-math binary links libm (DT_NEEDED libm.so)',
+    Pos('libm.so', Dyn) >= 0);
+end;
+
+procedure TCLIContractTests.TestLibm_NoFloatMath_NoLibm;
+var SrcPath, BinPath, Out_, Dyn: string; EC: Integer;
+begin
+  if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
+  { A program with no float math must NOT drag in libm — proves -lm is
+    demand-driven, not on every link. }
+  SrcPath := WriteScratchSource(
+    'program p; begin WriteLn(6 * 7); end.');
+  BinPath := FScratch + 'cli_nolibm_qbe_' + IntToStr(FCounter);
+  EC := RunCompiler(['--source', SrcPath, '--backend', 'qbe',
+    '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
+    '--output', BinPath], Out_);
+  AssertEquals('plain QBE program links (out: ' + Out_ + ')', 0, EC);
+  Dyn := ReadelfDynamic(BinPath);
+  if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
+  AssertTrue('non-math binary does NOT link libm', Pos('libm.so', Dyn) < 0);
+end;
+
+procedure TCLIContractTests.TestPthread_NativeThreads_LinksLibpthread;
+var SrcPath, BinPath, Out_, Dyn: string; EC: Integer;
+begin
+  if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
+  { A native, DYNAMIC program that uses runtime.thread pulls libpthread via
+    runtime.thread's `external 'pthread'` — the internal linker emits the
+    DT_NEEDED (no hardcoded -lpthread). }
+  SrcPath := WriteScratchSource(
+    'program p; uses runtime.thread; begin WriteLn(GetCPUCount() > 0); end.');
+  BinPath := FScratch + 'cli_pthr_nat_' + IntToStr(FCounter);
+  EC := RunCompiler(['--source', SrcPath, '--backend', 'native',
+    '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
+    '--output', BinPath], Out_);
+  AssertEquals('native threaded program links (out: ' + Out_ + ')', 0, EC);
+  Dyn := ReadelfDynamic(BinPath);
+  if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
+  AssertTrue('native threaded binary links libpthread (DT_NEEDED)',
+    Pos('libpthread.so', Dyn) >= 0);
+end;
+
+procedure TCLIContractTests.TestPthread_StaticThreads_NoNeeded;
+var SrcPath, BinPath, Out_, Dyn: string; EC: Integer;
+begin
+  if not CompilerAvailable() then begin Ignore('<toolchain-missing>'); Exit; end;
+  { A --static threaded binary is freestanding (no .dynamic section), so it must
+    carry NO DT_NEEDED at all — threads come from the static kernel leaf, not
+    libpthread.  Guards that AddNeededLib is skipped in static mode. }
+  SrcPath := WriteScratchSource(
+    'program p; uses runtime.thread; begin WriteLn(GetCPUCount() > 0); end.');
+  BinPath := FScratch + 'cli_pthr_static_' + IntToStr(FCounter);
+  EC := RunCompiler(['--source', SrcPath, '--backend', 'native', '--static',
+    '--unit-path', FRTLPath, '--unit-path', FStdlibPath,
+    '--output', BinPath], Out_);
+  AssertEquals('static threaded program links (out: ' + Out_ + ')', 0, EC);
+  Dyn := ReadelfDynamic(BinPath);
+  if Dyn = '' then begin Ignore('readelf unavailable'); Exit; end;
+  AssertTrue('static binary has no DT_NEEDED', Pos('(NEEDED)', Dyn) < 0);
 end;
 
 procedure TCLIContractTests.TestDivByZeroCaught_QBE;
