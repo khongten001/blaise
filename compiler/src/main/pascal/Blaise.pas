@@ -40,7 +40,7 @@ type
   TBackend = TBackendKind;
 
 const
-  Version = '0.13.0-SNAPSHOT';
+  Version = '0.13.0';
   CompilerName = 'Blaise';
 
 { Build the --backend usage fragment from the registered drivers, with
