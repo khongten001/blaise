@@ -204,6 +204,12 @@ type
     FRelaPlt:     string;               { .rela.plt contents }
     FRelaDynData: string;               { .rela.dyn contents }
     FDynamicData: string;               { .dynamic section contents }
+    FExtraNeeded: TList<string>;        { extra DT_NEEDED sonames beyond libc
+                                          (e.g. libpthread.so.0, libm.so.6) —
+                                          demand-driven from AddNeededLib }
+    FExtraNeededDyn: string;            { pre-built DT_NEEDED,<off> pairs for the
+                                          extra sonames; spliced into BOTH
+                                          .dynamic builders after the libc entry }
     FInterpData:  string;               { .interp contents }
     FTlsSize:     Int64;                { total TLS block size }
     FTlsAlign:    Int64;                { TLS block alignment }
@@ -256,6 +262,16 @@ type
 
     { Enable dynamic linking mode (PIE, GOT/PLT, libc). }
     procedure SetDynamic(AEnabled: Boolean);
+    { True when linking a dynamic (libc, DT_NEEDED) binary; False for a
+      --static / freestanding link that has no .dynamic section. }
+    function IsDynamic: Boolean;
+
+    { Add a DT_NEEDED shared library beyond the implicit libc.so.6 (e.g.
+      'libpthread.so.0', 'libm.so.6').  Demand-driven: the native driver calls
+      this for each `external 'lib'` / codegen-required lib.  A no-op in static
+      mode (no .dynamic section at all — a --static/freestanding binary needs no
+      shared libraries).  Pass the SONAME the dynamic loader expects. }
+    procedure AddNeededLib(const ASoname: string);
 
     { Add a parsed object the caller owns (not freed by the linker). }
     procedure AddObject(AObj: TElfObjectFile);
@@ -525,7 +541,8 @@ const
 
   PLT_ENTRY_SIZE = 16;
   PLT_HEADER_SIZE = 16;
-  DYN_MAX_ENTRIES = 24;   { upper bound on .dynamic tag entries }
+  DYN_MAX_ENTRIES = 32;   { upper bound on .dynamic tag entries (base ~21 +
+                            headroom for demand-driven extra DT_NEEDED libs) }
 
 { ---- Little-endian byte writers --------------------------------------- }
 
@@ -655,6 +672,8 @@ begin
   FRelaPlt := '';
   FRelaDynData := '';
   FDynamicData := '';
+  FExtraNeeded := TList<string>.Create();
+  FExtraNeededDyn := '';
   FInterpData := '';
   FTlsSize := 0;
   FTlsAlign := 0;
@@ -675,6 +694,7 @@ begin
     FRelaDyn.Get(I).Free();
   FRelaDyn.Free();
   FDynSymNames.Free();
+  FExtraNeeded.Free();
   for I := 0 to FSymbols.Count - 1 do
     FSymbols.Get(I).Free();
   FSymbols.Free();
@@ -705,6 +725,22 @@ end;
 procedure TLinker.SetDynamic(AEnabled: Boolean);
 begin
   FDynamic := AEnabled;
+end;
+
+function TLinker.IsDynamic: Boolean;
+begin
+  Result := FDynamic;
+end;
+
+procedure TLinker.AddNeededLib(const ASoname: string);
+var
+  I: Integer;
+begin
+  if ASoname = '' then Exit;
+  { De-dup by value (small list; avoids a second DT_NEEDED for the same lib). }
+  for I := 0 to FExtraNeeded.Count - 1 do
+    if FExtraNeeded.Get(I) = ASoname then Exit;
+  FExtraNeeded.Add(ASoname);
 end;
 
 procedure TLinker.AddCrtObject(const APath: string);
@@ -1232,6 +1268,16 @@ begin
   FDynStrTab := Chr(0);
   LkAddStr(FDynStrTab, 'libc.so.6');
 
+  { Extra DT_NEEDED sonames (demand-driven via AddNeededLib, e.g. libpthread /
+    libm).  Add each to .dynstr and pre-build the DT_NEEDED,<off> pairs spliced
+    into both .dynamic builders after the libc entry.  Empty when no extra lib
+    was requested (the common case), so .dynamic is byte-identical to before —
+    the fixpoint is unperturbed for programs that need only libc. }
+  FExtraNeededDyn := '';
+  for I := 0 to FExtraNeeded.Count - 1 do
+    FExtraNeededDyn := FExtraNeededDyn +
+      LkLE(DT_NEEDED, 8) + LkLE(LkAddStr(FDynStrTab, FExtraNeeded.Get(I)), 8);
+
   { .dynsym: entry 0 is NULL, then one entry per external symbol. }
   FDynSymTab := LkZeros(ELF64_SYM_SIZE);
   FDynSymNames.Add('');
@@ -1575,9 +1621,11 @@ begin
     TPOFF32 (sym - FTlsAddr - FTlsSize) matches the aligned thread pointer. }
   FTlsSize := LkAlignUp(FTlsSize, FTlsAlign);
 
-  { Build .dynamic section.  'libc.so.6' is at offset 1 in .dynstr. }
+  { Build .dynamic section.  'libc.so.6' is at offset 1 in .dynstr.  Any extra
+    DT_NEEDED libs (libpthread/libm) follow immediately — empty string when none. }
   FDynamicData := '';
   FDynamicData := FDynamicData + LkLE(DT_NEEDED, 8) + LkLE(1, 8);
+  FDynamicData := FDynamicData + FExtraNeededDyn;
   FDynamicData := FDynamicData + LkLE(DT_HASH, 8) + LkLE(FHashAddr, 8);
   FDynamicData := FDynamicData + LkLE(DT_STRTAB, 8) + LkLE(FDynStrAddr, 8);
   FDynamicData := FDynamicData + LkLE(DT_SYMTAB, 8) + LkLE(FDynSymAddr, 8);
@@ -2433,6 +2481,7 @@ begin
         The addresses of other sections haven't changed. }
       FDynamicData := '';
       FDynamicData := FDynamicData + LkLE(DT_NEEDED, 8) + LkLE(1, 8);
+      FDynamicData := FDynamicData + FExtraNeededDyn;
       FDynamicData := FDynamicData + LkLE(DT_HASH, 8) + LkLE(FHashAddr, 8);
       FDynamicData := FDynamicData + LkLE(DT_STRTAB, 8) + LkLE(FDynStrAddr, 8);
       FDynamicData := FDynamicData + LkLE(DT_SYMTAB, 8) + LkLE(FDynSymAddr, 8);

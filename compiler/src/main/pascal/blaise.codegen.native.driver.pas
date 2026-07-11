@@ -184,6 +184,23 @@ begin
     Result := 'cc -c error (exit ' + IntToStr(ExitCode) + '): ' + Msg;
 end;
 
+{ Map a link-library name (as it appears in `external 'lib'` or the codegen's
+  required-libs list) to the SONAME the dynamic loader records in DT_NEEDED.
+  The external cc linker resolves `-l<name>` to lib<name>.so at link time and
+  the resulting binary carries the library's real SONAME; the internal linker
+  writes DT_NEEDED itself, so it must name the versioned SONAME directly.  Known
+  system libs get their canonical SONAME; anything else falls back to the
+  conventional unversioned 'lib<name>.so' (a dev symlink, matching -l<name>). }
+function LinkLibSoname(const ALibName: string): string;
+begin
+  if SameText(ALibName, 'pthread') then Result := 'libpthread.so.0'
+  else if SameText(ALibName, 'm')  then Result := 'libm.so.6'
+  else if SameText(ALibName, 'dl') then Result := 'libdl.so.2'
+  else if SameText(ALibName, 'rt') then Result := 'librt.so.1'
+  else if SameText(ALibName, 'c')  then Result := 'libc.so.6'
+  else Result := 'lib' + ALibName + '.so';
+end;
+
 function TNativeBackendDriver.LinkViaInternalLinker(
   const AObjFile, AOutputFile: string;
   AOpts: TBackendOpts; AExtraObjects: TStringList): string;
@@ -196,16 +213,6 @@ var
   I: Integer;
 begin
   Result := '';
-
-  { The internal linker links only Blaise ELF objects (+ the source-built RTL);
-    it has no concept of -l<name> system libraries.  A program that declares an
-    `external 'lib'` dependency therefore cannot be linked this way — fail loudly
-    rather than silently drop the library and emit a binary with unresolved
-    symbols.  Use the external toolchain linker (the default) for such programs. }
-  if (AOpts.LinkLibs <> nil) and (AOpts.LinkLibs.Count > 0) then
-    Exit('internal linker cannot resolve external library ''' +
-      AOpts.LinkLibs.Strings[0] +
-      ''' (from an ''external ''''lib'''''' declaration); use --linker external');
 
   { Build the linker with the resolved target's TLinkTarget so the emitted ELF
     carries the right EI_OSABI / machine / load base for AOpts.Target — without
@@ -244,6 +251,19 @@ begin
           no libc to link against, so it is ALWAYS static regardless of the
           --static flag — the kernel leaf is the only libc it gets. }
         Lk.SetDynamic(not (AOpts.Static or TargetIsFreestanding(AOpts.Target)));
+
+        { Demand-driven shared-library dependencies (from `external 'lib'`
+          declarations and codegen-required libs like 'm').  A DYNAMIC binary
+          gets one DT_NEEDED per lib, mapped to its SONAME; the loader resolves
+          the symbols at run time.  A STATIC / freestanding binary has NO
+          .dynamic section and no libc to link against, so these are ignored —
+          on those paths threads come from the freestanding kernel leaf, not
+          libpthread, and float math is emitted inline.  This replaces the old
+          hard rejection of any LinkLibs: the internal linker now handles the
+          same -l<name> deps the external cc linker does. }
+        if Lk.IsDynamic() and (AOpts.LinkLibs <> nil) then
+          for I := 0 to AOpts.LinkLibs.Count - 1 do
+            Lk.AddNeededLib(LinkLibSoname(AOpts.LinkLibs.Strings[I]));
 
         Obj := ReadElfObjectFile(AObjFile);
         Lk.AddOwnedObject(Obj);

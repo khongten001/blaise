@@ -27,7 +27,7 @@ unit blaise.codegen;
 interface
 
 uses
-  uAST, uSymbolTable, uDebugFacts, blaise.codegen.target, uStrCompat;
+  Classes, uAST, uSymbolTable, uDebugFacts, blaise.codegen.target, uStrCompat;
 
 type
   TRecReturnClass = (
@@ -89,6 +89,12 @@ type
     { Retrieve the complete generated output (QBE IR text for the QBE
       backend; target assembly text for the native backend). }
     function GetOutput: string;
+
+    { Link libraries the emitted code depends on (e.g. 'm' for libm math calls
+      the QBE backend lowers to $sqrt/$fabs/…).  The driver unions these into
+      its -l<name> list so a lib is linked only when actually used.  The native
+      backend emits float math inline and returns an empty list. }
+    function GetRequiredLibs: TStringList;
   end;
 
 { ----------------------------------------------------------------------

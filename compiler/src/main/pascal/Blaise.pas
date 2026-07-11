@@ -550,6 +550,10 @@ var
                                 see them. }
   Semantic:  TSemanticAnalyser;
   CG:        ICodeGen;
+  ReqLibs:   TStringList;     { CG.GetRequiredLibs result, held in a local so the
+                               .Count/.Strings access is not chained off the
+                               method call (the stage-1 release compiler cannot
+                               resolve a chained field access off a call result) }
   Driver:    TBackendDriver;  { resolved backend driver for top-program codegen }
   Opts:      TBackendOpts;    { flag bag passed through Driver.CreateCodeGen }
   Front:     TFrontEndOpts;   { front-end-only flag bag, populated by ParseArgs }
@@ -1161,8 +1165,22 @@ begin
     { Capture link-library deps (-l<name>) off the program AST and every used
       unit's interface before Prog/Loader are freed below — the link step runs
       after this finally block.  Unioned into Opts.LinkLibs; the driver emits one
-      -l<name> each, additive to the RTL's -lm/-lpthread. }
+      -l<name> each.  These come from `external 'lib'` declarations; the backend
+      additionally reports codegen-demanded libs (e.g. 'm' for libm math calls)
+      via GetRequiredLibs, unioned in below. }
     if Opts.LinkLibs = nil then Opts.LinkLibs := TStringList.Create();
+    { Backend-demanded libraries: the QBE backend lowers Sqrt/Sin/Abs(double)/…
+      to libm calls and reports 'm' here, so libm is linked only when the
+      program actually uses float math (never on the native backend, which
+      emits float math inline). }
+    if CG <> nil then
+    begin
+      ReqLibs := CG.GetRequiredLibs();
+      if ReqLibs <> nil then
+        for I := 0 to ReqLibs.Count - 1 do
+          if Opts.LinkLibs.IndexOf(ReqLibs.Strings[I]) < 0 then
+            Opts.LinkLibs.Add(ReqLibs.Strings[I]);
+    end;
     if (Prog <> nil) and (Prog.LinkLibs <> nil) then
       for I := 0 to Prog.LinkLibs.Count - 1 do
         if Opts.LinkLibs.IndexOf(TLinkLibDecl(Prog.LinkLibs.Items[I]).LibName) < 0 then

@@ -706,11 +706,14 @@ begin
     { RTL objects, in link order. }
     for I := 0 to RTLObjs.Count - 1 do
       Args.Add(RTLObjs.Strings[I]);
-    Args.Add('-lm');       { math functions (sqrt, sin, cos, etc.) }
-    Args.Add('-lpthread'); { POSIX threads (blaise_thread unit) }
-    { Libraries declared via 'external ''lib''' in the program or any used unit
-      (unioned by the frontend into AOpts.LinkLibs).  Emitted as -l<name> — ld
-      expands to lib<name>.so/.a.  Additive to the always-needed -lm/-lpthread. }
+    { Link libraries are now demand-driven, not hardcoded: libm ('m') is added
+      by the QBE backend only when it emits a libm math call, and libpthread
+      ('pthread') flows from runtime.thread's `external 'pthread'` bindings.
+      Both arrive via AOpts.LinkLibs.  The native default, --static, and FreeBSD
+      paths need neither and get a clean link line.
+      Libraries declared via 'external ''lib''' in the program or any used unit
+      (plus the backend-demanded libs above) are emitted here as -l<name> — ld
+      expands to lib<name>.so/.a. }
     if AOpts.LinkLibs <> nil then
       for I := 0 to AOpts.LinkLibs.Count - 1 do
         Args.Add('-l' + AOpts.LinkLibs.Strings[I]);

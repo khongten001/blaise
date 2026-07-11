@@ -31,7 +31,7 @@ unit blaise.codegen.native;
 interface
 
 uses
-  SysUtils, uAST, uSymbolTable, blaise.codegen, uDebugFacts,
+  SysUtils, Classes, uAST, uSymbolTable, blaise.codegen, uDebugFacts,
   blaise.codegen.target, blaise.codegen.native.backend;
 
 type
@@ -44,6 +44,8 @@ type
     FSeparateCompile: Boolean;
     FBackend:   TNativeBackend;
     FDbgFacts:  TDbgFacts;   { owned; created by SetOpdfMode(True) }
+    FRequiredLibs: TStringList;  { owned; always empty — the native backend
+                                   emits float math inline (no libm calls) }
     procedure EnsureBackend;
   public
     constructor Create;
@@ -67,6 +69,7 @@ type
     procedure AppendProgram(AProg: TProgram);
     procedure NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);
     function  GetOutput: string;
+    function  GetRequiredLibs: TStringList;
   end;
 
 { Construct the backend for a target, or raise ENativeCodeGenError if no
@@ -108,11 +111,13 @@ begin
   FDebugMode := False;
   FSeparateCompile := False;
   FBackend   := nil;
+  FRequiredLibs := TStringList.Create();  { always empty — native math is inline }
 end;
 
 destructor TCodeGenNative.Destroy;
 begin
   FBackend.Free();
+  FRequiredLibs.Free();
   inherited Destroy();
 end;
 
@@ -202,6 +207,13 @@ end;
 function TCodeGenNative.GetOutput: string;
 begin
   Result := FBackend.GetOutput();
+end;
+
+function TCodeGenNative.GetRequiredLibs: TStringList;
+begin
+  { The native backend emits float math inline (no libm calls), so it never
+    demands a link library — return the always-empty list. }
+  Result := FRequiredLibs;
 end;
 
 end.

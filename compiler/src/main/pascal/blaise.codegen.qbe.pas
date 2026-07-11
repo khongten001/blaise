@@ -90,6 +90,9 @@ type
                                        System defs and can't compile
                                        its own next iteration. }
     FThreadVarNames:   TStringList;  { global names declared as threadvar }
+    FRequiredLibs:     TStringList;  { link libs demanded by emitted code (e.g.
+                                       'm' when a libm math call is emitted) —
+                                       unioned into the driver's -l<name> list }
     FUnitInitNames:    TStringList;  { unit names that have initialization sections }
     FCurrentUnitName:  string;
     FProgramName: string;     { set by Generate/AppendProgram — program-scope
@@ -245,6 +248,11 @@ type
       assembling, so generic-instance symbols get WEAK binding and any
       number of objects in a link may carry the identical copy (BUG-004). }
     procedure MarkWeak(const ASym: string);
+    { Record a link library the emitted code depends on (e.g. 'm' when a libm
+      math call like $sqrt is emitted).  The driver unions FRequiredLibs into
+      its -l<name> list, so the lib is linked only when actually used — no
+      hardcoded -lm on every link. }
+    procedure RequireLib(const ALibName: string);
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ARec: TRecordTypeDesc;
                                  AWeak: Boolean);
@@ -673,6 +681,10 @@ type
     procedure AppendProgram(AProg: TProgram);
     procedure NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);
     function  GetOutput: string;
+    { Link libraries the emitted IR depends on (e.g. 'm' for libm math calls),
+      collected during codegen.  The driver unions these into its -l<name> list
+      so a lib is linked only when the program actually uses it. }
+    function  GetRequiredLibs: TStringList;
   end;
 
 implementation
@@ -778,6 +790,10 @@ begin
   FFinallyStack    := TObjectList.Create(False);  { not owned — AST owns the blocks }
   FThreadVarNames  := TStringList.Create();
   FThreadVarNames.CaseSensitive := True;
+  FRequiredLibs    := TStringList.Create();
+  FRequiredLibs.CaseSensitive := True;
+  FRequiredLibs.Sorted := True;
+  FRequiredLibs.Duplicates := dupIgnore;
   FUnitInitNames   := TStringList.Create();
   FPromotedLocals  := TStringList.Create();
   FPromotedLocals.CaseSensitive := True;
@@ -816,6 +832,7 @@ begin
   FContinueLabels.Free();
   FFinallyStack.Free();
   FThreadVarNames.Free();
+  FRequiredLibs.Free();
   FUnitInitNames.Free();
   FPromotedLocals.Free();
   FConstArgUnsafe.Free();
@@ -9392,6 +9409,12 @@ begin
   EmitLine('# WEAKSYM ' + ASym);
 end;
 
+procedure TCodeGenQBE.RequireLib(const ALibName: string);
+begin
+  if ALibName <> '' then
+    FRequiredLibs.Add(ALibName);   { sorted, dupIgnore — one entry per lib }
+end;
+
 procedure TCodeGenQBE.EmitFieldCleanupFn(const AMangledName: string;
                                          ARec: TRecordTypeDesc;
                                          AWeak: Boolean);
@@ -11671,6 +11694,24 @@ begin
         Exit(T);
       end;
 
+      { Float-math builtins below lower to libm calls ($sqrt, $sin, $fabs, …),
+        so the emitted object depends on libm.  Register it here (once per
+        builtin that actually emits a libm call) instead of hardcoding -lm on
+        every link — the native backend never emits these, and a program that
+        uses no float math links without libm.  Abs is special: only its
+        float arms hit libm ($fabs/$fabsf); the integer arms use $_AbsInt. }
+      if SameText(FC.Name, 'Sqrt') or SameText(FC.Name, 'Ceil')
+        or SameText(FC.Name, 'Floor') or SameText(FC.Name, 'Trunc')
+        or SameText(FC.Name, 'Round') or SameText(FC.Name, 'Ln')
+        or SameText(FC.Name, 'Log2') or SameText(FC.Name, 'Log10')
+        or SameText(FC.Name, 'Power') or SameText(FC.Name, 'Sin')
+        or SameText(FC.Name, 'Cos') or SameText(FC.Name, 'Tan')
+        or SameText(FC.Name, 'ArcTan') or SameText(FC.Name, 'ArcTan2')
+        or SameText(FC.Name, 'ArcSin') or SameText(FC.Name, 'ArcCos')
+        or SameText(FC.Name, 'Sinh') or SameText(FC.Name, 'Cosh')
+        or SameText(FC.Name, 'Tanh') then
+        RequireLib('m');
+
       if SameText(FC.Name,'Abs') then
       begin
         L   := EmitExpr(TASTExpr(FC.Args.Items[0]));
@@ -11679,8 +11720,8 @@ begin
         case QType of
           'w': EmitLine(Format('  %s =w call $_AbsInt(w %s)',   [T, L]));
           'l': EmitLine(Format('  %s =l call $_AbsInt64(l %s)', [T, L]));
-          'd': EmitLine(Format('  %s =d call $fabs(d %s)',      [T, L]));
-          's': EmitLine(Format('  %s =s call $fabsf(s %s)',     [T, L]));
+          'd': begin RequireLib('m'); EmitLine(Format('  %s =d call $fabs(d %s)',  [T, L])); end;
+          's': begin RequireLib('m'); EmitLine(Format('  %s =s call $fabsf(s %s)', [T, L])); end;
         else   EmitLine(Format('  %s =w call $_AbsInt(w %s)',   [T, L]));
         end;
         Exit(T);
@@ -16578,6 +16619,11 @@ end;
 function TCodeGenQBE.GetOutput: string;
 begin
   Result := FOutput.Text();
+end;
+
+function TCodeGenQBE.GetRequiredLibs: TStringList;
+begin
+  Result := FRequiredLibs;
 end;
 
 function TCodeGenQBE.EmitStringSubscriptExpr(AExpr: TStringSubscriptExpr): string;
