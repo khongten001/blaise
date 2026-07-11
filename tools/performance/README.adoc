@@ -1,0 +1,85 @@
+= Blaise codegen benchmarks
+:toc: macro
+
+Reproducible micro-benchmarks for comparing code-generation quality between the
+Blaise backends (native vs QBE) and for tracking codegen performance over time.
+
+toc::[]
+
+== What is here
+
+[cols="1,3",options="header"]
+|===
+| File | Purpose
+
+| `bench_fib.pas`
+| Recursion / call-heavy workload (naive `Fib(34)` x20). The case where
+  register allocation and call-overhead handling matter most. Output:
+  `114057740`.
+
+| `bench_loop.pas`
+| Tight integer-arithmetic loop (50M iterations, no calls). Measures raw
+  arithmetic codegen. Output: `349999994`.
+
+| `run-benchmarks.sh`
+| Runs both programs through each backend and times the EXECUTION (best of 3),
+  after checking both backends produce identical output. `--full` also times
+  the compiler self-compile per backend and captures valgrind instruction
+  counts.
+|===
+
+== Running
+
+From the project root, with a current native-built `compiler/target/blaise`:
+
+[source,shell]
+----
+# Runtime of generated code only (fast, a few seconds):
+tools/performance/run-benchmarks.sh
+
+# Also compile-time + deterministic instruction counts (adds ~8 min for the
+# two callgrind runs):
+tools/performance/run-benchmarks.sh --full
+----
+
+Record the results in `perf-optimisation-results.txt` (project root) as a new
+dated session, so the trend is tracked. That file is the single perf log we
+keep for the compiler/codegen; `docs/benchmark.txt` is a SEPARATE log for the
+`blaise_mem` allocator.
+
+== Two things are measured — don't conflate them
+
+* *Runtime of generated code* (the default) — how fast the compiled binary
+  runs. This reflects codegen QUALITY / optimisation. It is the number that
+  answers "which backend produces faster code".
+* *Compile time* (`--full`) — how fast the compiler itself runs when it compiles
+  its own source. Dominated by the shared front end (parse + semantic + ARC
+  traffic), so it is largely backend-independent.
+
+== Current standing (2026-07-11, commit 6b15288a, Ryzen 7 5800X)
+
+[cols="1,1,1,1",options="header"]
+|===
+| Workload | QBE | Native | Native / QBE
+
+| `bench_fib` (runtime)  | 0.50 s | 0.96 s | 1.9x slower
+| `bench_loop` (runtime) | 0.14 s | 0.16 s | 1.14x slower
+| self-compile (wall)    | 3.48 s | 3.69 s | ~par
+|===
+
+*QBE still generates faster code than native*, decisively for call/recursion-
+heavy code. Native's strengths are debugging fidelity (OPDF), cross-compilation,
+static/freestanding output, and toolchain independence — not raw speed. Closing
+this gap is a native-optimiser task (register allocation, inlining, mem2reg);
+see `docs/backend-strategy.adoc` and `docs/inlining-design.adoc`.
+
+== Notes on methodology
+
+* Wall time is best-of-3 (`/usr/bin/time`), which is machine- and load-
+  dependent — compare within a run, not across machines.
+* Instruction counts (`--full`, valgrind callgrind) are deterministic and
+  machine-independent; prefer them for tracking regressions.
+* The runner asserts both backends produce identical output before timing, so a
+  codegen bug can never masquerade as a speed difference.
+* Keep the workload constants stable across sessions (the `Fib(34) x20` and
+  50M-iteration counts) so numbers stay comparable.
