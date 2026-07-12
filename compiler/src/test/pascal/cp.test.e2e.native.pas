@@ -60,6 +60,18 @@ type
     procedure TestRun_Native_ForEndEvaluatedOnce;
     procedure TestRun_Native_FunctionsAndCalls;
     procedure TestRun_Native_Recursion;
+    { Stage-1 register promotion: mixed-width promoted scalars (Byte
+      param in %r14b forms, Int64 Result) must compute exactly as the
+      slot-resident lowering did. }
+    procedure TestRun_Native_PromotedWidthMix;
+    { An exception raised INSIDE a promoted function longjmps past its
+      epilogue; the catcher's setjmp must restore %r14/%r15 so an OUTER
+      promoted frame's register-resident local survives the unwind. }
+    procedure TestRun_Native_RaiseThroughPromotedFrame;
+    { The except path parks the exception in %r15 across handler bodies;
+      the catching function must preserve its CALLER's %r15 (a promoted
+      local).  Latent ABI hole before promotion — pinned here. }
+    procedure TestRun_Native_CatcherPreservesR15Local;
     procedure TestRun_Native_ForLoopOverLocal;
     procedure TestRun_Native_WiderIntGlobals;
     procedure TestRun_Native_Int64Arithmetic;
@@ -1603,6 +1615,132 @@ procedure TE2ENativeTests.TestRun_Native_Recursion;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcRecursion, '120' + LE + '1' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_PromotedWidthMix;
+const
+  Src = '''
+      program P;
+      function Mix(B: Byte): Int64;
+      var
+        W: SmallInt;
+      begin
+        B := B + 200;      { wraps in byte width: 100+200 = 44 }
+        W := -3;
+        W := W * 100;      { -300 }
+        Result := B;
+        Result := Result * 1000 + W;   { 44*1000 - 300 = 43700 }
+      end;
+      begin
+        WriteLn(Mix(100))
+      end.
+      ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  Self.AssertRunsOnAll(Src, '43700' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_RaiseThroughPromotedFrame;
+const
+  { H is promoted (K hot, in %r14).  H calls F, which owns a try/except
+    (so F itself is NOT promoted, and its setjmp records %r14/%r15).  F
+    calls G — promoted, clobbers its own %r14/%r15 — and G raises.  The
+    longjmp lands in F's handler with the setjmp-saved registers; when F
+    returns, H's K must still hold its pre-call value.  A local Exception
+    class keeps the program stdlib-free (same pattern as the fiber e2e). }
+  Src = '''
+      program P;
+      type
+        Exception = class
+          FMessage: string;
+          constructor Create(AMsg: string);
+          property Message: string read FMessage;
+        end;
+      constructor Exception.Create(AMsg: string);
+      begin
+        FMessage := AMsg
+      end;
+      function G(N: Integer): Integer;
+      begin
+        Result := N * 2;
+        if N > 0 then
+          raise Exception.Create('boom');
+      end;
+      function F(N: Integer): Integer;
+      begin
+        Result := 0;
+        try
+          Result := G(N)
+        except
+          on E: Exception do
+            Result := 7
+        end
+      end;
+      function H(N: Integer): Integer;
+      var K: Integer;
+      begin
+        K := N + 40;       { K promoted; must survive the unwind below }
+        Result := F(N);
+        Result := Result * 1000 + K
+      end;
+      begin
+        WriteLn(H(1))
+      end.
+      ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { F catches (7), K survives as 41: 7*1000 + 41. }
+  Self.AssertRunsOnAll(Src, '7041' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_CatcherPreservesR15Local;
+const
+  { In H: N (param) takes %r14, A (local) takes %r15 — H is a procedure,
+    so there is no Result competing for the second register.  F contains
+    try/except whose exception path RUNS (G raises); F must restore %r15
+    before returning or A is replaced by the exception pointer. }
+  Src = '''
+      program P;
+      type
+        Exception = class
+          FMessage: string;
+          constructor Create(AMsg: string);
+          property Message: string read FMessage;
+        end;
+      constructor Exception.Create(AMsg: string);
+      begin
+        FMessage := AMsg
+      end;
+      function G(N: Integer): Integer;
+      begin
+        Result := N;
+        if N > 0 then
+          raise Exception.Create('boom');
+      end;
+      function F(N: Integer): Integer;
+      begin
+        Result := 0;
+        try
+          Result := G(N)
+        except
+          on E: Exception do
+            Result := 5
+        end
+      end;
+      procedure H(N: Integer);
+      var A: Integer;
+      begin
+        A := N * 11;       { A promoted into %r15 }
+        WriteLn(F(N));     { F's except path runs — must preserve %r15 }
+        WriteLn(A)
+      end;
+      begin
+        H(3)
+      end.
+      ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  Self.AssertRunsOnAll(Src, '5' + LE + '33' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_ForLoopOverLocal;

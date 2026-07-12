@@ -230,6 +230,13 @@ type
     procedure AppendLine(const S: string); overload;
     { Remove all content without releasing the buffer. }
     procedure Clear;
+    { Truncate the content to ALen bytes (no-op when ALen >= Length or
+      negative).  Used for roll-back-and-redo emission patterns: mark
+      Length, append, then Truncate back to the mark to discard. }
+    procedure Truncate(ALen: Integer);
+    { True when ANeedle occurs in the content at or after byte AFrom.
+      Byte-wise scan; empty needle returns False. }
+    function ContainsFrom(AFrom: Integer; const ANeedle: string): Boolean;
     { Return the accumulated content as a managed string. }
     function  ToString: string;
     { Current byte length. }
@@ -831,6 +838,38 @@ end;
 procedure TStringBuilder.Clear;
 begin
   Self.FLen := 0;
+end;
+
+procedure TStringBuilder.Truncate(ALen: Integer);
+begin
+  if (ALen >= 0) and (ALen < Self.FLen) then
+    Self.FLen := ALen;
+end;
+
+function TStringBuilder.ContainsFrom(AFrom: Integer; const ANeedle: string): Boolean;
+var
+  NLen, I, J: Integer;
+  NP, DP: PChar;
+begin
+  Result := False;
+  NLen := Length(ANeedle);
+  if NLen = 0 then Exit;
+  if AFrom < 0 then AFrom := 0;
+  NP := PChar(ANeedle);
+  DP := Self.FData;
+  I := AFrom;
+  while I <= Self.FLen - NLen do
+  begin
+    J := 0;
+    while (J < NLen) and (DP[I + J] = NP[J]) do
+      J := J + 1;
+    if J = NLen then
+    begin
+      Result := True;
+      Exit;
+    end;
+    I := I + 1;
+  end;
 end;
 
 function TStringBuilder.ToString: string;

@@ -33,7 +33,7 @@ unit blaise.codegen.arcshapes;
 interface
 
 uses
-  Classes, SysUtils, uAST;
+  Classes, SysUtils, uAST, uSymbolTable;
 
 type
   TConstArgMode = (camPin, camBorrowed, camConsume);
@@ -44,6 +44,54 @@ procedure CollectAddressTakenStmt(AStmt: TASTStmt; ASet: TStringList);
 function CollectAddressTaken(ABlock: TBlock): TStringList;
 
 implementation
+
+{ Mark AArg when it is a plain local ident passed by reference. }
+procedure MarkVarArg(AArg: TASTExpr; ASet: TStringList);
+begin
+  if (AArg is TIdentExpr) and not TIdentExpr(AArg).IsGlobal then
+    ASet.Add(TIdentExpr(AArg).Name);
+end;
+
+{ Interface (itab) dispatch has no ResolvedMethod: recover the var/out
+  param flags from the interface type's method table (parent chain
+  included) and mark local args passed by reference. }
+procedure MarkIntfVarArgs(AIntf: TTypeDesc; const AMethName: string;
+  AArgs: TObjectList; ASet: TStringList);
+var
+  It: TInterfaceTypeDesc;
+  MI, I: Integer;
+begin
+  if (AIntf = nil) or (AIntf.Kind <> tyInterface) or (AArgs = nil) then Exit;
+  It := TInterfaceTypeDesc(AIntf);
+  MI := -1;
+  while It <> nil do
+  begin
+    MI := It.MethodIndex(AMethName);
+    if MI >= 0 then Break;
+    It := It.Parent;
+  end;
+  if MI < 0 then Exit;
+  for I := 0 to AArgs.Count - 1 do
+    if It.MethodParamIsVar(MI, I) then
+      MarkVarArg(TASTExpr(AArgs.Items[I]), ASet);
+end;
+
+{ Indirect / proc-field calls: recover var-param modes from the
+  procedural type's signature. }
+procedure MarkProcTypeVarArgs(AProcType: TObject; AArgs: TObjectList;
+  ASet: TStringList);
+var
+  PT: TProceduralTypeDesc;
+  I: Integer;
+begin
+  if (AProcType = nil) or (AArgs = nil) then Exit;
+  PT := TProceduralTypeDesc(AProcType);
+  if PT.Params = nil then Exit;
+  for I := 0 to AArgs.Count - 1 do
+    if (I < PT.Params.Count) and
+       TProcParamInfo(PT.Params.Items[I]).IsVarParam then
+      MarkVarArg(TASTExpr(AArgs.Items[I]), ASet);
+end;
 
 procedure CollectAddressTakenExpr(AExpr: TASTExpr; ASet: TStringList);
 var
@@ -84,8 +132,15 @@ begin
       end;
     end
     else
+    begin
+      { Indirect call through a procedural variable/field: the signature
+        lives on the procedural type, not a decl. }
+      if (FC.IsIndirectCall or FC.IsProcFieldCall) and
+         (FC.ResolvedProcType <> nil) then
+        MarkProcTypeVarArgs(FC.ResolvedProcType, FC.Args, ASet);
       for I := 0 to FC.Args.Count - 1 do
         CollectAddressTakenExpr(TASTExpr(FC.Args.Items[I]), ASet);
+    end;
     Exit;
   end;
 
@@ -109,8 +164,15 @@ begin
       end;
     end
     else
+    begin
+      { Interface (itab) dispatch and proc-field calls carry no
+        ResolvedMethod — recover param modes from the type. }
+      MarkIntfVarArgs(MC.ResolvedClassType, MC.Name, MC.Args, ASet);
+      if MC.IsProcFieldCall and (MC.ResolvedProcType <> nil) then
+        MarkProcTypeVarArgs(MC.ResolvedProcType, MC.Args, ASet);
       for I := 0 to MC.Args.Count - 1 do
         CollectAddressTakenExpr(TASTExpr(MC.Args.Items[I]), ASet);
+    end;
     Exit;
   end;
 
@@ -220,8 +282,13 @@ begin
         CollectAddressTakenExpr(TASTExpr(MCall.Args.Items[I]), ASet);
       end
     else
+    begin
+      MarkIntfVarArgs(MCall.ResolvedClassType, MCall.Name, MCall.Args, ASet);
+      if MCall.IsProcFieldCall and (MCall.ResolvedProcType <> nil) then
+        MarkProcTypeVarArgs(MCall.ResolvedProcType, MCall.Args, ASet);
       for I := 0 to MCall.Args.Count - 1 do
         CollectAddressTakenExpr(TASTExpr(MCall.Args.Items[I]), ASet);
+    end;
   end
   else if AStmt is TProcCall then
   begin
@@ -237,8 +304,13 @@ begin
         CollectAddressTakenExpr(TASTExpr(PCall.Args.Items[I]), ASet);
       end
     else
+    begin
+      if (PCall.IsIndirectCall or PCall.IsProcFieldCall) and
+         (PCall.ResolvedProcType <> nil) then
+        MarkProcTypeVarArgs(PCall.ResolvedProcType, PCall.Args, ASet);
       for I := 0 to PCall.Args.Count - 1 do
         CollectAddressTakenExpr(TASTExpr(PCall.Args.Items[I]), ASet);
+    end;
   end
   else if AStmt is TInheritedCallStmt then
   begin

@@ -111,6 +111,13 @@ type
     procedure TestBooleanExpr;
     procedure TestNegativeNumbers;
     procedure TestMultipleVars;
+    { Stage-1 register promotion emits extended-register sub-register
+      forms (movb %al, %r14b / movzwq %r14w, ... / movl ..., %r14d) —
+      this pins that the internal assembler encodes them correctly.
+      (Only exercises promotion once the fixpoint compiler binary is
+      itself promotion-aware; before that it still validates the
+      program's behaviour.) }
+    procedure TestPromotedSubRegisterWidths;
     procedure TestNestedCalls;
     procedure TestClassVirtualCall;
     procedure TestFloatArithmetic;
@@ -1172,6 +1179,34 @@ begin
   end;
   AssertEquals(0, EC);
   AssertEquals('-42' + LineEnding, Out_);
+end;
+
+procedure TInternalAsmE2ETests.TestPromotedSubRegisterWidths;
+var
+  Out_: string;
+  EC: Integer;
+begin
+  if not CompileAndRun(
+    'program test_promo_widths;' + LineEnding +
+    'function Mix(B: Byte): Int64;' + LineEnding +
+    'var W: SmallInt;' + LineEnding +
+    'begin' + LineEnding +
+    '  B := B + 200;' + LineEnding +
+    '  W := -3;' + LineEnding +
+    '  W := W * 100;' + LineEnding +
+    '  Result := B;' + LineEnding +
+    '  Result := Result * 1000 + W' + LineEnding +
+    'end;' + LineEnding +
+    'begin' + LineEnding +
+    '  WriteLn(Mix(100))' + LineEnding +
+    'end.',
+    Out_, EC) then
+  begin
+    Ignore('<toolchain-missing>');
+    Exit;
+  end;
+  AssertEquals(0, EC);
+  AssertEquals('43700' + LineEnding, Out_);
 end;
 
 procedure TInternalAsmE2ETests.TestMultipleVars;

@@ -61,6 +61,13 @@ type
     { Append a blank separator line. }
     procedure EmitBlank;
 
+    { Roll-back support for two-pass function emission (stage-1 register
+      promotion): mark the buffer, emit a function, inspect the emitted
+      region, and optionally truncate back to the mark and re-emit. }
+    function  AsmMark: Integer;
+    procedure AsmRollback(AMark: Integer);
+    function  AsmContainsFrom(AMark: Integer; const ANeedle: string): Boolean;
+
     function IsRecordManagedClean(ARec: TRecordTypeDesc): Boolean;
     function IsRecordAllIntegerLeaves(ARec: TRecordTypeDesc): Boolean;
     function IsRecordAllFloatLeaves(ARec: TRecordTypeDesc): Boolean;
@@ -163,6 +170,22 @@ end;
 procedure TNativeBackend.EmitBlank;
 begin
   FAsm.AppendLine();
+end;
+
+function TNativeBackend.AsmMark: Integer;
+begin
+  Result := FAsm.Length;
+end;
+
+procedure TNativeBackend.AsmRollback(AMark: Integer);
+begin
+  FAsm.Truncate(AMark);
+end;
+
+function TNativeBackend.AsmContainsFrom(AMark: Integer;
+  const ANeedle: string): Boolean;
+begin
+  Result := FAsm.ContainsFrom(AMark, ANeedle);
 end;
 
 { The record-return ABI classifier and its leaf predicates now live as shared

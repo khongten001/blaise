@@ -29,6 +29,7 @@ type
     procedure TestJoinList_Basic;
     procedure TestJoinList_Empty;
     procedure TestRoundTrip;
+    procedure TestStringBuilder_Truncate;
   end;
 
 implementation
@@ -126,6 +127,28 @@ begin
   { JoinList is the inverse of SplitChar on the same delimiter }
   L := SplitChar('x,y,z', CH_COMMA);
   AssertEquals('roundtrip', 'x,y,z', JoinList(L, ','));
+end;
+
+procedure TStrUtilsTests.TestStringBuilder_Truncate;
+var SB: TStringBuilder;
+begin
+  SB := TStringBuilder.Create();
+  SB.Append('hello');
+  SB.Append(' world');
+  SB.Truncate(5);
+  AssertEquals('truncated length', 5, SB.Length);
+  AssertEquals('truncated content', 'hello', SB.ToString());
+  { Append after truncate continues from the mark. }
+  SB.Append('!');
+  AssertEquals('append after truncate', 'hello!', SB.ToString());
+  { No-op cases: beyond current length, equal, negative. }
+  SB.Truncate(100);
+  AssertEquals('truncate beyond length is a no-op', 'hello!', SB.ToString());
+  SB.Truncate(-1);
+  AssertEquals('negative truncate is a no-op', 'hello!', SB.ToString());
+  SB.Truncate(0);
+  AssertEquals('truncate to zero empties', 0, SB.Length);
+  SB.Free();
 end;
 
 initialization

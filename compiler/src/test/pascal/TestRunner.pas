@@ -71,6 +71,7 @@ uses
   cp.test.nativeconstarg,
   cp.test.nativealign,
   cp.test.nativeopt,
+  cp.test.nativepromo,
   cp.test.defaultargs,
   cp.test.caseenum,
   cp.test.sets,

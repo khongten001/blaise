@@ -92,6 +92,35 @@ type
       the push is PENDED (so AlignFreshBytes and the callq wrap pad see the
       true depth) and rolled back on fusion. }
     FPendingPush: string;
+    { --- Stage-1 register promotion (two-pass) -----------------------
+      Hot, safe scalar locals/params live in callee-saved %r14/%r15 for
+      the whole function instead of frame slots.  Pass 1 emits the
+      function unpromoted; if that text contains NO %r14/%r15 (all the
+      emitter's scratch windows would collide) and candidates exist, the
+      region is rolled back and re-emitted with FPromoActive set:
+      VarOperand answers the register, and PromoRewrite maps each
+      width-suffixed memory-form instruction onto the matching
+      sub-register form.  Promotion is disabled under --debug-opdf
+      (OPDF has no register location expression; pdr reads frame slots). }
+    FPromoActive: Boolean;
+    FPromoVar14: string;   { var name resident in %r14 ('' = unused ) }
+    FPromoVar15: string;   { var name resident in %r15 ('' = unused ) }
+    FPromoFunc: string;    { symbol being emitted (promotion diagnostics) }
+    { Bisection aid: BLAISE_PROMO_LIMIT=N promotes only the first N eligible
+      functions (-1 = unlimited).  BLAISE_PROMO_LOG=1 prints each promoted
+      symbol to stderr.  Used to pin a promotion miscompile to one function
+      during self-hosting bring-up; costs one env read per backend. }
+    FPromoCount: Integer;
+    FPromoLimit: Integer;
+    FPromoLog: Boolean;
+    FPromoOnly: string;    { BLAISE_PROMO_ONLY=Sym — promote only that symbol }
+    { True when the current function contains try statements: its except
+      paths hold the in-flight exception in %r15 (callee-saved) WITHOUT a
+      window save, so the function saves/restores the incumbent %r15 in
+      its prologue/epilogue.  Without this, any function whose exception
+      path executes clobbers the caller's %r15 — latent before register
+      promotion (nothing lived in %r15 across calls), fatal after. }
+    FTryR15Save: Boolean;
     { OPDF debug facts (nil unless --debug-opdf): the backend records each
       function's symbol, end label, real frame-slot offsets and per-statement
       line labels here; the OPDF emitter consumes them for exact debug info.
@@ -833,9 +862,32 @@ type
       callq at a misaligned tracked depth in a subq $8/addq $8 pad pair (see
       the FSPDepth field comment for the full rationale). }
     procedure Emit(const ALine: string); override;
+    { The pre-promotion Emit body: peephole + stack-depth tracking +
+      call-site alignment.  Emit itself first applies PromoRewrite. }
+    procedure EmitTracked(const ALine: string);
     { Emit the held-back pushq (peephole window) without re-tracking its
       stack-depth contribution (applied when it was pended). }
     procedure FlushPendingPush;
+    { True for types safe to register-promote: unmanaged scalars only.
+      Managed types stay in slots (ARC release walks read them). }
+    function  PromoEligibleType(ATy: TTypeDesc): Boolean;
+    { Pick up to two promotion candidates for ADecl (params first, then
+      Result, then locals in declaration order) into FPromoVar14/15.
+      False when the function is ineligible (debug build, try stmts,
+      nostackframe) or no candidate exists. }
+    function  SelectPromotions(ADecl: TMethodDecl): Boolean;
+    { Rewrite one instruction line for register-resident operands:
+      width-suffixed memory forms map onto the matching %r14/%r15
+      sub-register.  Raises on any form that would need an address. }
+    function  PromoRewrite(const ALine: string): string;
+    { The per-function emission tail (symbol, frame, prologue, body,
+      epilogue) — extracted from EmitFunctionDef so the two-pass driver
+      can run it twice. }
+    procedure EmitFunctionCore(ADecl: TMethodDecl; AExported: Boolean);
+    { Prologue init for a promoted param that arrived on the STACK (7th+
+      integer arg): load the caller-pushed slot into the register.  No-op
+      for locals, Result, and register-passed params. }
+    procedure PromoInitStackParam(const AName, AReg: string);
     { Parse the immediate of a `subq $N, %rsp` / `addq $N, %rsp` line and
       apply it to FSPDepth (ASign = +1 for subq, -1 for addq).  Lines whose
       destination is not %rsp are ignored. }
@@ -1224,6 +1276,12 @@ begin
   FFrameTypes     := nil;
   FFrameSize      := 0;
   FExitLabel      := '';
+  FPromoCount     := 0;
+  FPromoLimit     := -1;
+  if GetEnvironmentVariable('BLAISE_PROMO_LIMIT') <> '' then
+    FPromoLimit := StrToIntDef(GetEnvironmentVariable('BLAISE_PROMO_LIMIT'), -1);
+  FPromoLog := GetEnvironmentVariable('BLAISE_PROMO_LOG') <> '';
+  FPromoOnly := GetEnvironmentVariable('BLAISE_PROMO_ONLY');
   FSretFunc       := False;
   FRecRetClass    := rcSret;
   FExcDepth           := 0;
@@ -4736,6 +4794,13 @@ function TX86_64Backend.VarOperand(const AName: string): string;
 var
   Off: Integer;
 begin
+  { Register-promoted var: the register IS the storage.  PromoRewrite in
+    Emit maps width-suffixed instruction forms onto the sub-registers. }
+  if FPromoActive then
+  begin
+    if AName = FPromoVar14 then Exit('%r14');
+    if AName = FPromoVar15 then Exit('%r15');
+  end;
   if (FFrame <> nil) and FFrame.TryGetValue(AName, Off) then
   begin
     if Off > 0 then
@@ -5277,6 +5342,11 @@ begin
     for K := 0 to TryCount - 1 do
       Self.AddSlot('_for_end_' + IntToStr(K), nil, Offset);
   end;
+  { Except paths park the in-flight exception in %r15 across handler
+    bodies; the function must preserve the caller's %r15 (see FTryR15Save). }
+  FTryR15Save := FFrame.ContainsKey('_exc_frame_0');
+  if FTryR15Save then
+    Self.AddSlot('_try_r15_save', nil, Offset);
   { Jumbo-set scratch slots: a jumbo set literal, union, intersection, or
     difference produces a new bitmap that must live somewhere addressable.
     Such a value can appear deep inside any expression (e.g. 'X in [members]'
@@ -5307,6 +5377,14 @@ begin
     Offset := (Offset + 7) and (-8);
     FFrame.Add(Format('_pendrel_%d', [I]), -Offset);
     FFrameTypes.Add(Format('_pendrel_%d', [I]), nil);
+  end;
+  { Register promotion: slots to save/restore the callee-saved incumbents
+    of %r14/%r15 across this function (pass 2 only). }
+  if FPromoActive then
+  begin
+    Self.AddSlot('_promo_save_a', nil, Offset);
+    if FPromoVar15 <> '' then
+      Self.AddSlot('_promo_save_b', nil, Offset);
   end;
   { Round the reserved size up to a 16-byte multiple (SysV alignment).
     -16 is the bitmask not(15) in two's complement (Blaise `not` is Boolean). }
@@ -15933,6 +16011,14 @@ begin
 end;
 
 procedure TX86_64Backend.Emit(const ALine: string);
+begin
+  if FPromoActive then
+    Self.EmitTracked(Self.PromoRewrite(ALine))
+  else
+    Self.EmitTracked(ALine);
+end;
+
+procedure TX86_64Backend.EmitTracked(const ALine: string);
 var
   L, C, Rem: Integer;
   Reg: string;
@@ -16045,6 +16131,155 @@ begin
   FPendingPush := '';
   { Depth was tracked when the line was pended — emit raw, no re-tracking. }
   inherited Emit(P);
+end;
+
+function TX86_64Backend.PromoEligibleType(ATy: TTypeDesc): Boolean;
+begin
+  { Unmanaged scalars only: ints, enums, booleans, raw pointers.  Managed
+    types (string/class/interface/dynarray/closures) must stay in frame
+    slots — the ARC release walks and exception cleanup read them there. }
+  Result := (ATy <> nil) and
+    (IsIntFamily(ATy) or (ATy.Kind in [tyPointer, tyPChar]));
+end;
+
+function TX86_64Backend.SelectPromotions(ADecl: TMethodDecl): Boolean;
+var
+  I, J, TryCount: Integer;
+  P:  TMethodParam;
+  VD: TVarDecl;
+
+  procedure Consider(const AName: string; ATy: TTypeDesc);
+  begin
+    if FPromoVar15 <> '' then Exit;                    { both regs taken }
+    if not Self.PromoEligibleType(ATy) then Exit;
+    if AName = 'Self' then Exit;                       { hardcoded paths }
+    { Address-taken (@ / var-out arg) or captured by a nested proc: the
+      slot is the contract. }
+    if FConstArgUnsafe.IndexOf(AName) >= 0 then Exit;
+    { A var this function itself captures FROM an enclosing frame lives
+      in the OUTER frame — never register-resident here. }
+    if Self.IsCaptured(AName) then Exit;
+    if FPromoVar14 = '' then
+      FPromoVar14 := AName
+    else if AName <> FPromoVar14 then
+      FPromoVar15 := AName;
+  end;
+
+begin
+  FPromoVar14 := '';
+  FPromoVar15 := '';
+  Result := False;
+  { OPDF debug builds keep exact frame-slot locations for pdr. }
+  if FDbgFacts <> nil then Exit;
+  if ADecl.NoStackFrame or (ADecl.Body = nil) then Exit;
+  { setjmp contract: locals modified after setjmp and read after longjmp
+    are indeterminate in registers — any try statement disables promotion. }
+  TryCount := 0;
+  for I := 0 to ADecl.Body.Stmts.Count - 1 do
+    TryCount := TryCount + Self.CountTryStmts(TASTStmt(ADecl.Body.Stmts.Items[I]));
+  if TryCount > 0 then Exit;
+  { Priority: params in declaration order, then Result, then locals in
+    declaration order.  (Use-count ranking is a possible refinement.) }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    P := TMethodParam(ADecl.Params.Items[I]);
+    if P.IsVarParam or P.IsOpenArray then Continue;
+    Consider(P.ParamName, P.ResolvedType);
+  end;
+  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
+    Consider('Result', ADecl.ResolvedReturnType);
+  for I := 0 to ADecl.Body.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(ADecl.Body.Decls.Items[I]);
+    for J := 0 to VD.Names.Count - 1 do
+      Consider(VD.Names.Strings[J], VD.ResolvedType);
+  end;
+  Result := FPromoVar14 <> '';
+end;
+
+procedure TX86_64Backend.PromoInitStackParam(const AName, AReg: string);
+var
+  Off: Integer;
+begin
+  { Stack-passed params were assigned POSITIVE rbp offsets in BuildFrame;
+    locals/Result/register params are negative and need no init here
+    (register params spill into the promoted register via the normal
+    spill code, locals via zero-init). }
+  if (FFrame <> nil) and FFrame.TryGetValue(AName, Off) and (Off > 0) then
+    Self.EmitLoadVarToReg(Format('%d(%%rbp)', [Off]),
+      Self.LocalType(AName), AReg, AReg);
+end;
+
+function TX86_64Backend.PromoRewrite(const ALine: string): string;
+var
+  I, L, CommaP: Integer;
+  M, Rest, Op1, Op2: string;
+  WSrc, WDst: string;
+
+  function SubReg(const AOp, W: string): string;
+  begin
+    Result := AOp;
+    if (AOp = '%r14') or (AOp = '%r15') then
+    begin
+      if W = 'q' then Exit;
+      if W = 'l' then Exit(AOp + 'd');
+      Exit(AOp + W);                                   { b / w }
+    end;
+    { An embedded (non-bare) occurrence — '(%r14)', '-8(%r15)' — means a
+      promoted register leaked into an addressing context. }
+    if (Pos('%r14', AOp) >= 0) or (Pos('%r15', AOp) >= 0) then
+      raise ENativeCodeGenError.Create(
+        'register promotion: unexpected operand form in ' + FPromoFunc +
+        ' [' + FPromoVar14 + '/' + FPromoVar15 + ']: ' + ALine);
+  end;
+
+begin
+  Result := ALine;
+  if (Pos('%r14', ALine) < 0) and (Pos('%r15', ALine) < 0) then Exit;
+  L := Length(ALine);
+  if (L < 2) or (StrAt(ALine, 0) <> 9) then Exit;      { instructions only }
+  I := 1;
+  while (I < L) and (StrAt(ALine, I) <> 32) do
+    I := I + 1;
+  M := StrCopyFrom(ALine, 1, I - 1);
+  if I >= L then Exit;
+  Rest := StrCopyTail(ALine, I + 1);
+  { Two-width extension movs carry the source width in the mnemonic. }
+  WSrc := '';
+  WDst := '';
+  if (M = 'movsbq') or (M = 'movzbq') then begin WSrc := 'b'; WDst := 'q'; end
+  else if (M = 'movswq') or (M = 'movzwq') then begin WSrc := 'w'; WDst := 'q'; end
+  else if M = 'movslq' then begin WSrc := 'l'; WDst := 'q'; end
+  else if (M = 'movsbl') or (M = 'movzbl') then begin WSrc := 'b'; WDst := 'l'; end
+  else if (M = 'movswl') or (M = 'movzwl') then begin WSrc := 'w'; WDst := 'l'; end
+  else if (M = 'movsbw') or (M = 'movzbw') then begin WSrc := 'b'; WDst := 'w'; end
+  else
+  begin
+    case StrAt(M, Length(M) - 1) of
+      98:  begin WSrc := 'b'; WDst := 'b'; end;        { ...b }
+      119: begin WSrc := 'w'; WDst := 'w'; end;        { ...w }
+      108: begin WSrc := 'l'; WDst := 'l'; end;        { ...l }
+      113: begin WSrc := 'q'; WDst := 'q'; end;        { ...q }
+    else
+      raise ENativeCodeGenError.Create(
+        'register promotion: unhandled mnemonic in ' + FPromoFunc + ': ' + ALine);
+    end;
+  end;
+  CommaP := Pos(', ', Rest);
+  if CommaP < 0 then
+  begin
+    Result := #9 + M + ' ' + SubReg(Rest, WSrc);
+    Exit;
+  end;
+  Op1 := StrCopyFrom(Rest, 0, CommaP);
+  Op2 := StrCopyTail(Rest, CommaP + 2);
+  { leaq of a register has no meaning — a promoted var's address must
+    never be taken (the selection predicate guarantees this). }
+  if (M = 'leaq') and ((Op1 = '%r14') or (Op1 = '%r15')) then
+    raise ENativeCodeGenError.Create(
+      'register promotion: address taken of promoted register in ' +
+      FPromoFunc + ' [' + FPromoVar14 + '/' + FPromoVar15 + ']: ' + ALine);
+  Result := #9 + M + ' ' + SubReg(Op1, WSrc) + ', ' + SubReg(Op2, WDst);
 end;
 
 procedure TX86_64Backend.TrackRspAdjust(const ALine: string; ASign: Integer);
@@ -18971,13 +19206,10 @@ procedure TX86_64Backend.EmitFunctionDef(ADecl: TMethodDecl; AExported: Boolean)
 var
   I, J:        Integer;
   P:           TMethodParam;
-  Sym:         string;
-  IntIdx:      Integer;
-  XmmIdx:      Integer;
+  Mark:        Integer;
   NestedDecl:  TMethodDecl;
   SavedOuterDecl: TMethodDecl;
   AddrTaken:   TStringList;
-  SlotOff:     Integer;
 begin
   { Generic templates (routine- or method-level type params) are never
     emitted — call sites emit monomorphised instances. }
@@ -19049,6 +19281,45 @@ begin
             TMethodDecl(ADecl.Body.ProcDecls.Items[I]).CapturedVars.Strings[J]);
   end;
 
+  Mark := Self.AsmMark();
+  FPromoActive := False;
+  FPromoVar14 := '';
+  FPromoVar15 := '';
+  Self.EmitFunctionCore(ADecl, AExported);
+  { Two-pass register promotion: when the unpromoted text proves %r14/%r15
+    are unused (no scratch-window collision possible) and candidates exist,
+    roll the function back and re-emit with the candidates register-resident. }
+  if Self.SelectPromotions(ADecl) and
+     (not Self.AsmContainsFrom(Mark, '%r14')) and
+     (not Self.AsmContainsFrom(Mark, '%r15')) and
+     ((FPromoLimit < 0) or (FPromoCount < FPromoLimit)) and
+     ((FPromoOnly = '') or (FPromoOnly = FuncSymbolFromDecl(ADecl))) then
+  begin
+    FPromoCount := FPromoCount + 1;
+    if FPromoLog then
+      WriteLn(StdErr, '[promo] ', FuncSymbolFromDecl(ADecl), ' [',
+        FPromoVar14, '/', FPromoVar15, ']');
+    Self.AsmRollback(Mark);
+    FPromoActive := True;
+    FPromoFunc := FuncSymbolFromDecl(ADecl);
+    Self.EmitFunctionCore(ADecl, AExported);
+    FPromoActive := False;
+    FPromoFunc := '';
+  end;
+  FPromoVar14 := '';
+  FPromoVar15 := '';
+  FCapturedVars := nil;
+end;
+
+procedure TX86_64Backend.EmitFunctionCore(ADecl: TMethodDecl; AExported: Boolean);
+var
+  I, J:    Integer;
+  P:       TMethodParam;
+  Sym:     string;
+  IntIdx:  Integer;
+  XmmIdx:  Integer;
+  SlotOff: Integer;
+begin
   Sym := FuncSymbolFromDecl(ADecl);
   Self.DbgBeginFunc(Sym);
   Self.BuildFrame(ADecl);
@@ -19089,6 +19360,22 @@ begin
   Self.Emit(#9'movq %rsp, %rbp');
   if FFrameSize > 0 then
     Self.Emit(Format(#9'subq $%d, %%rsp', [FFrameSize]));
+  { Register promotion: save the callee-saved incumbents into their frame
+    slots, then explicitly load any STACK-passed promoted param (it has no
+    spill instruction — its home was the caller-pushed slot).  Register-
+    passed promoted params land in the promoted register via the normal
+    spill code below (VarOperand answers the register). }
+  if FPromoActive then
+  begin
+    Self.Emit(Format(#9'movq %%r14, %s', [Self.VarOperand('_promo_save_a')]));
+    if FPromoVar15 <> '' then
+      Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand('_promo_save_b')]));
+    Self.PromoInitStackParam(FPromoVar14, '%r14');
+    if FPromoVar15 <> '' then
+      Self.PromoInitStackParam(FPromoVar15, '%r15');
+  end;
+  if FTryR15Save then
+    Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand('_try_r15_save')]));
   { Spill incoming argument registers into param slots.  SysV AMD64 passes
     integer args in %rdi/%rsi/... and float args in %xmm0/%xmm1/... independently.
     Track separate counters: IntIdx for integer params, XmmIdx for float params.
@@ -19640,14 +19927,23 @@ begin
     else
       Self.EmitLoadVar(Self.VarOperand('Result'), ADecl.ResolvedReturnType);
   end;
+  { Restore the promoted registers' incumbents (saved in the prologue)
+    before the frame teardown. }
+  if FPromoActive then
+  begin
+    Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand('_promo_save_a')]));
+    if FPromoVar15 <> '' then
+      Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_promo_save_b')]));
+  end;
+  if FTryR15Save then
+    Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_try_r15_save')]));
   Self.Emit(#9'movq %rbp, %rsp');
   Self.Emit(#9'popq %rbp');
   Self.Emit(#9'ret');
   Self.DbgEndFunc();
   Self.Emit('.type ' + Sym + ', @function');
 
-  FExitLabel    := '';
-  FCapturedVars := nil;
+  FExitLabel := '';
   Self.ClearFrame();
 end;
 
