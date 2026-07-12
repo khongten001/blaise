@@ -155,6 +155,8 @@ type
     function  TryGetValue(Key: K; var Value: V): Boolean;
     function  ContainsKey(Key: K): Boolean;
     procedure Remove(Key: K);
+    { Drop all entries; keeps the allocated capacity for reuse. }
+    procedure Clear;
     function  GetCount: Integer;
     procedure Destroy;
     property Count: Integer read FCount;
@@ -1034,6 +1036,12 @@ begin
     { Indexes shifted — rebuild lazily on the next lookup. }
     Self.HashInvalidate()
   end
+end;
+
+procedure TDictionary<K, V>.Clear;
+begin
+  FCount := 0;
+  Self.HashInvalidate();
 end;
 
 function TDictionary<K, V>.GetItem(Key: K): V;

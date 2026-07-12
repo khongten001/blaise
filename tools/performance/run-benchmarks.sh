@@ -53,7 +53,7 @@ best_of_3() {
 
 # ---- B. RUNTIME OF GENERATED CODE ------------------------------------------
 echo "=== B. RUNTIME of generated code (best of 3) ==="
-for prog in bench_fib bench_loop; do
+for prog in bench_fib bench_loop bench_calls; do
   "$BLAISE" --source "$HERE/$prog.pas" --backend qbe    --output "/tmp/${prog}_qbe"    "${UP[@]}" >/dev/null
   "$BLAISE" --source "$HERE/$prog.pas" --backend native --output "/tmp/${prog}_native" "${UP[@]}" >/dev/null
   # correctness: both backends must agree, or the comparison is meaningless

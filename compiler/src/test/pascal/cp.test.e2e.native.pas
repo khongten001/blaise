@@ -76,6 +76,12 @@ type
       local: the native receiver path fell through to a global-symbol
       load (garbage pointer) instead of dereferencing the _cap_ pointer. }
     procedure TestRun_Native_NestedProcMethodOnCapturedLocal;
+    { Phase-1 inlining behaviour: early-Exit chains, two inlined sites
+      combined in one expression (the shared-scratch-area + argument
+      staging shape that regressed during bring-up), an inline site
+      inside an argument of another inline site, and a callee param
+      shadowing a caller local's name. }
+    procedure TestRun_Native_InlineLeafShapes;
     procedure TestRun_Native_ForLoopOverLocal;
     procedure TestRun_Native_WiderIntGlobals;
     procedure TestRun_Native_Int64Arithmetic;
@@ -1781,6 +1787,53 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   Self.AssertRunsOnAll(Src, '2' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_InlineLeafShapes;
+const
+  Src = '''
+      program P;
+      var GBase: Integer;
+      function Clamp(V, Lo, Hi: Integer): Integer;
+      begin
+        if V < Lo then Exit(Lo);
+        if V > Hi then Exit(Hi);
+        Result := V
+      end;
+      function AddBase(N: Integer): Integer;
+      begin
+        Result := N + GBase
+      end;
+      function MixExpr(A, B: Integer): Integer;
+      begin
+        Result := Clamp(A + B, 0, 100) + Clamp(A - B, -10, 10)
+      end;
+      function Nested(A: Integer): Integer;
+      begin
+        Result := Clamp(Clamp(A, 0, 50), 10, 40)
+      end;
+      function Shadow(V: Integer): Integer;
+      var Lo: Integer;
+      begin
+        Lo := 7;
+        Result := Clamp(V, 1, 5) + Lo
+      end;
+      begin
+        GBase := 1000;
+        WriteLn(MixExpr(60, 55));
+        WriteLn(Nested(75));
+        WriteLn(Nested(5));
+        WriteLn(Shadow(9));
+        WriteLn(AddBase(23))
+      end.
+      ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { MixExpr: clamp(115)=100 + clamp(5)=5 = 105.  Nested(75): inner 50,
+    outer 40.  Nested(5): inner 5, outer 10.  Shadow: clamp(9,1,5)=5 + 7
+    = 12.  AddBase reads a program global from the inlined body: 1023. }
+  Self.AssertRunsOnAll(Src,
+    '105' + LE + '40' + LE + '10' + LE + '12' + LE + '1023' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_ForLoopOverLocal;

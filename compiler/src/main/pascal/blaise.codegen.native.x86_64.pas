@@ -130,6 +130,26 @@ type
       machinery; the incumbent is saved beside the promo saves. }
     FPromoPinOk: Boolean;
     FPinDepth: Integer;
+    { --- Phase-1 inlining (native port of the QBE inliner) -----------
+      Small leaf functions (TMethodDecl.IsInlineCandidate, computed by
+      uSemantic) expand at the call site: arguments stage into a shared
+      caller-frame scratch area (_inl_area, reserved by a BuildFrame
+      pre-scan and validated independently at emission — a site the
+      pre-scan missed simply stays a normal call), the body emits with
+      the callee's params/Result name-mapped onto area slots, and Exit
+      jumps to a per-site end label.  Depth 1: calls inside an inlined
+      body emit as normal calls.  Disabled under --debug-opdf. }
+    FInlineActive: Boolean;
+    FInlineDepth: Integer;      { nesting level (cap 2, matching QBE) }
+    FInlineNextOff: Integer;    { next free area offset for a nested site }
+    FInlineMap: TDictionary<string, Integer>;     { callee name → rbp offset }
+    FInlineTypes: TDictionary<string, TTypeDesc>; { callee name → type }
+    FInlineEndLbl: string;
+    FInlineAreaSize: Integer;   { bytes reserved this function (0 = none) }
+    FInlineAreaOff: Integer;    { negative rbp offset of the area base }
+    FInlineCount: Integer;      { sites inlined so far (bisection aid) }
+    FInlineLimit: Integer;      { BLAISE_INLINE_LIMIT (-1 = unlimited) }
+    FInlineLog: Boolean;        { BLAISE_INLINE_LOG }
     { OPDF debug facts (nil unless --debug-opdf): the backend records each
       function's symbol, end label, real frame-slot offsets and per-statement
       line labels here; the OPDF emitter consumes them for exact debug info.
@@ -905,6 +925,11 @@ type
       integer arg): load the caller-pushed slot into the register.  No-op
       for locals, Result, and register-passed params. }
     procedure PromoInitStackParam(const AName, AReg: string);
+    { Inline a qualifying direct call.  ADecl/AArgs are the callee and the
+      call-site arguments; AWantResult loads the Result slot into %rax or
+      %xmm0 (per return type) at the end.  False = emit a normal call. }
+    function  TryEmitInlineCall(ADecl: TObject; AArgs: TObjectList;
+      AWantResult: Boolean): Boolean;
     { Parse the immediate of a `subq $N, %rsp` / `addq $N, %rsp` line and
       apply it to FSPDepth (ASign = +1 for subq, -1 for addq).  Lines whose
       destination is not %rsp are ignored. }
@@ -1299,6 +1324,12 @@ begin
     FPromoLimit := StrToIntDef(GetEnvironmentVariable('BLAISE_PROMO_LIMIT'), -1);
   FPromoLog := GetEnvironmentVariable('BLAISE_PROMO_LOG') <> '';
   FPromoOnly := GetEnvironmentVariable('BLAISE_PROMO_ONLY');
+  FInlineMap := TDictionary<string, Integer>.Create();
+  FInlineTypes := TDictionary<string, TTypeDesc>.Create();
+  FInlineLimit := -1;
+  if GetEnvironmentVariable('BLAISE_INLINE_LIMIT') <> '' then
+    FInlineLimit := StrToIntDef(GetEnvironmentVariable('BLAISE_INLINE_LIMIT'), -1);
+  FInlineLog := GetEnvironmentVariable('BLAISE_INLINE_LOG') <> '';
   FSretFunc       := False;
   FRecRetClass    := rcSret;
   FExcDepth           := 0;
@@ -4757,6 +4788,10 @@ end;
 
 function TX86_64Backend.IsCaptured(const AName: string): Boolean;
 begin
+  { An inline candidate captures nothing; without this, a callee ident
+    sharing a name with one of the CALLER's captured vars would be
+    misrouted through the caller's _cap_ pointer. }
+  if FInlineActive then Exit(False);
   Result := ((FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0)) or
             ((FEnvVarNames <> nil) and (FEnvVarNames.IndexOf(AName) >= 0)) or
             ((FBlockEnvVarNames <> nil) and (FBlockEnvVarNames.IndexOf(AName) >= 0));
@@ -4802,7 +4837,15 @@ begin
 end;
 
 function TX86_64Backend.IsLocal(const AName: string): Boolean;
+var
+  Off: Integer;
 begin
+  if FInlineActive then
+  begin
+    if FInlineMap.TryGetValue(AName, Off) then Exit(True);
+    if (Length(AName) = 0) or (StrAt(AName, 0) <> 95) then
+      Exit(False);                    { inlined-body ident: global }
+  end;
   Result := (FFrame <> nil) and FFrame.ContainsKey(AName);
 end;
 
@@ -4811,6 +4854,22 @@ function TX86_64Backend.VarOperand(const AName: string): string;
 var
   Off: Integer;
 begin
+  { Inlined-body names resolve through the inline map; anything else
+    referenced from an inlined body is a GLOBAL — never the caller's
+    frame (a caller local sharing the callee's global's name must not
+    hijack it).  Internal '_'-prefixed helper slots (_pendrel, _jset,
+    _promo_save, _inl_area) still live in the caller frame. }
+  if FInlineActive then
+  begin
+    if FInlineMap.TryGetValue(AName, Off) then
+      Exit(Format('-%d(%%rbp)', [-Off]));
+    if (Length(AName) = 0) or (StrAt(AName, 0) <> 95) then    { '_' }
+    begin
+      if Self.IsThreadVarGlobal(AName) then
+        Exit('%fs:' + Self.GlobalSymName(AName) + '@tpoff');
+      Exit(Self.GlobalSymName(AName) + '(%rip)');
+    end;
+  end;
   { Register-promoted var: the register IS the storage.  PromoRewrite in
     Emit maps width-suffixed instruction forms onto the sub-registers. }
   if FPromoActive then
@@ -4859,6 +4918,12 @@ end;
 
 function TX86_64Backend.LocalType(const AName: string): TTypeDesc;
 begin
+  if FInlineActive then
+  begin
+    if FInlineTypes.TryGetValue(AName, Result) then Exit;
+    if (Length(AName) = 0) or (StrAt(AName, 0) <> 95) then
+      Exit(nil);                      { inlined-body ident: global }
+  end;
   if (FFrameTypes = nil) or (not FFrameTypes.TryGetValue(AName, Result)) then
     Result := nil;
 end;
@@ -5405,6 +5470,26 @@ begin
     if FPromoPinOk then
       Self.AddSlot('_promo_save_c', nil, Offset);
   end;
+  { Inline scratch area: the largest qualifying call site's need, found
+    by an optimistic pre-scan (emission re-validates per site). }
+  FInlineAreaSize := 0;
+  FInlineAreaOff := 0;
+  if (FDbgFacts = nil) and (ADecl.Body <> nil) and not ADecl.NoStackFrame then
+  begin
+    for K := 0 to ADecl.Body.Stmts.Count - 1 do
+    begin
+      IntIdx2 := InlineNeedStmtD(TASTStmt(ADecl.Body.Stmts.Items[K]), 0);
+      if IntIdx2 > FInlineAreaSize then FInlineAreaSize := IntIdx2;
+    end;
+    if FInlineAreaSize > 0 then
+    begin
+      Inc(Offset, FInlineAreaSize);
+      Offset := (Offset + 7) and (-8);
+      FFrame.Add('_inl_area', -Offset);
+      FFrameTypes.Add('_inl_area', nil);
+      FInlineAreaOff := -Offset;
+    end;
+  end;
   { Round the reserved size up to a 16-byte multiple (SysV alignment).
     -16 is the bitmask not(15) in two's complement (Blaise `not` is Boolean). }
   FFrameSize := (Offset + 15) and (-16);
@@ -5412,6 +5497,11 @@ end;
 
 procedure TX86_64Backend.ClearFrame;
 begin
+  { Inline scratch state is per-frame: a stale non-zero area size from
+    the previous function would let a frameless context (EmitProgram's
+    main, unit init sections) "inline" into slots it never reserved. }
+  FInlineAreaSize := 0;
+  FInlineAreaOff := 0;
   if FFrame <> nil then
   begin
     FFrame.Free();
@@ -6518,6 +6608,8 @@ begin
       Exit;
     end;
     { User function call whose return type is float. }
+    if Self.TryEmitInlineCall(FC.ResolvedDecl, FC.Args, True) then
+      Exit;
     Self.EmitCall(FuncSymbolOf(FC), TMethodDecl(FC.ResolvedDecl), FC.Args);
     { Return value is in %xmm0 per SysV ABI. }
     Exit;
@@ -8047,6 +8139,12 @@ begin
       end
       else
         Self.EmitImplicitSelfCallOverflow(MD, FC.Args, FuncSymbolOf(FC));
+      if FC.ResolvedType <> nil then
+        Self.EmitNarrowToType(FC.ResolvedType);
+      Exit;
+    end;
+    if Self.TryEmitInlineCall(FC.ResolvedDecl, FC.Args, True) then
+    begin
       if FC.ResolvedType <> nil then
         Self.EmitNarrowToType(FC.ResolvedType);
       Exit;
@@ -14205,6 +14303,8 @@ begin
       raise ENativeCodeGenError.Create(Format(
         'Unknown procedure ''%s'' at line %d', [PC.Name, PC.Line]));
     { User procedure call (result, if any, ignored in statement position). }
+    if Self.TryEmitInlineCall(PC.ResolvedDecl, PC.Args, False) then
+      Exit;
     Self.EmitCall(FuncSymbolFromDecl(TMethodDecl(PC.ResolvedDecl)),
       TMethodDecl(PC.ResolvedDecl), PC.Args);
     { A function called in statement position discards its result.  When the
@@ -14345,6 +14445,14 @@ begin
   begin
     if TExitStmt(AStmt).ResultAssign <> nil then
       Self.EmitStmt(TExitStmt(AStmt).ResultAssign);
+    { Exit inside an INLINED body returns from the CALLEE only: jump to
+      the inline end label.  No exception unwinding (the callee cannot
+      contain try) and no caller-epilogue involvement. }
+    if FInlineActive then
+    begin
+      Self.Emit(#9'jmp ' + FInlineEndLbl);
+      Exit;
+    end;
     Self.EmitExcUnwind(0);
     if FExitLabel <> '' then
       Self.Emit(#9'jmp ' + FExitLabel)
@@ -16209,6 +16317,227 @@ begin
   inherited Emit(P);
 end;
 
+{ ---- Inline-area pre-scan --------------------------------------------
+  Walk a function body and return the LARGEST inline scratch need (bytes)
+  of any qualifying call site: (param count + 1) * 8.  Purely an
+  optimistic reservation — emission re-validates each site against the
+  reserved size, so a shape this walker misses degrades to a normal call
+  rather than miscompiling. }
+const
+  INLINE_MAX_DEPTH = 2;   { matches the QBE inliner's MAX_INLINE_DEPTH }
+
+function InlineNeedStmtD(AStmt: TASTStmt; ADepth: Integer): Integer; forward;
+
+function InlineSiteNeed(AD: TObject; AArgCount, ADepth: Integer): Integer;
+var
+  MD: TMethodDecl;
+  I, N: Integer;
+begin
+  Result := 0;
+  if ADepth >= INLINE_MAX_DEPTH then Exit;
+  if (AD = nil) or not (AD is TMethodDecl) then Exit;
+  MD := TMethodDecl(AD);
+  if not MD.IsInlineCandidate then Exit;
+  if MD.Body = nil then Exit;
+  if AArgCount <> MD.Params.Count then Exit;
+  Result := (MD.Params.Count + 1) * 8;
+  { A nested qualifying site inside the callee body stacks on top of this
+    frame's slots — add the deepest such need. }
+  N := 0;
+  for I := 0 to MD.Body.Stmts.Count - 1 do
+    if InlineNeedStmtD(TASTStmt(MD.Body.Stmts.Items[I]), ADepth + 1) > N then
+      N := InlineNeedStmtD(TASTStmt(MD.Body.Stmts.Items[I]), ADepth + 1);
+  Result := Result + N;
+end;
+
+function InlineNeedExprD(AExpr: TASTExpr; ADepth: Integer): Integer;
+var
+  I, N: Integer;
+begin
+  Result := 0;
+  if AExpr = nil then Exit;
+  if AExpr is TFuncCallExpr then
+  begin
+    Result := InlineSiteNeed(TFuncCallExpr(AExpr).ResolvedDecl,
+      TFuncCallExpr(AExpr).Args.Count, ADepth);
+    for I := 0 to TFuncCallExpr(AExpr).Args.Count - 1 do
+    begin
+      N := InlineNeedExprD(TASTExpr(TFuncCallExpr(AExpr).Args.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end;
+    Exit;
+  end;
+  if AExpr is TMethodCallExpr then
+  begin
+    Result := InlineNeedExprD(TMethodCallExpr(AExpr).ObjExpr, ADepth);
+    for I := 0 to TMethodCallExpr(AExpr).Args.Count - 1 do
+    begin
+      N := InlineNeedExprD(TASTExpr(TMethodCallExpr(AExpr).Args.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end;
+    Exit;
+  end;
+  if AExpr is TBinaryExpr then
+  begin
+    Result := InlineNeedExprD(TBinaryExpr(AExpr).Left, ADepth);
+    N := InlineNeedExprD(TBinaryExpr(AExpr).Right, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AExpr is TNotExpr then
+    Result := InlineNeedExprD(TNotExpr(AExpr).Expr, ADepth)
+  else if AExpr is TFieldAccessExpr then
+  begin
+    Result := InlineNeedExprD(TFieldAccessExpr(AExpr).Base, ADepth);
+    N := InlineNeedExprD(TFieldAccessExpr(AExpr).PropIndexExpr, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AExpr is TDerefExpr then
+    Result := InlineNeedExprD(TDerefExpr(AExpr).Expr, ADepth)
+  else if AExpr is TStringSubscriptExpr then
+  begin
+    Result := InlineNeedExprD(TStringSubscriptExpr(AExpr).StrExpr, ADepth);
+    N := InlineNeedExprD(TStringSubscriptExpr(AExpr).IndexExpr, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AExpr is TIsExpr then
+    Result := InlineNeedExprD(TIsExpr(AExpr).Obj, ADepth)
+  else if AExpr is TAsExpr then
+    Result := InlineNeedExprD(TAsExpr(AExpr).Obj, ADepth)
+  else if AExpr is TSupportsExpr then
+    Result := InlineNeedExprD(TSupportsExpr(AExpr).Obj, ADepth)
+  else if AExpr is TAddrOfExpr then
+    Result := InlineNeedExprD(TAddrOfExpr(AExpr).Expr, ADepth)
+  else if AExpr is TArrayLiteralExpr then
+    for I := 0 to TArrayLiteralExpr(AExpr).Elements.Count - 1 do
+    begin
+      N := InlineNeedExprD(TASTExpr(TArrayLiteralExpr(AExpr).Elements.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end;
+end;
+
+function InlineNeedStmtD(AStmt: TASTStmt; ADepth: Integer): Integer;
+var
+  I, J, N: Integer;
+begin
+  Result := 0;
+  if AStmt = nil then Exit;
+  if AStmt is TCompoundStmt then
+    for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
+    begin
+      N := InlineNeedStmtD(TASTStmt(TCompoundStmt(AStmt).Stmts.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end
+  else if AStmt is TIfStmt then
+  begin
+    Result := InlineNeedExprD(TIfStmt(AStmt).Condition, ADepth);
+    N := InlineNeedStmtD(TIfStmt(AStmt).ThenStmt, ADepth);
+    if N > Result then Result := N;
+    N := InlineNeedStmtD(TIfStmt(AStmt).ElseStmt, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TWhileStmt then
+  begin
+    Result := InlineNeedExprD(TWhileStmt(AStmt).Condition, ADepth);
+    N := InlineNeedStmtD(TWhileStmt(AStmt).Body, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TRepeatStmt then
+  begin
+    Result := InlineNeedExprD(TRepeatStmt(AStmt).Condition, ADepth);
+    N := InlineNeedStmtD(TRepeatStmt(AStmt).Body, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TForStmt then
+  begin
+    Result := InlineNeedExprD(TForStmt(AStmt).StartExpr, ADepth);
+    N := InlineNeedExprD(TForStmt(AStmt).EndExpr, ADepth);
+    if N > Result then Result := N;
+    N := InlineNeedStmtD(TForStmt(AStmt).Body, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TForInStmt then
+  begin
+    Result := InlineNeedExprD(TForInStmt(AStmt).CollExpr, ADepth);
+    N := InlineNeedStmtD(TForInStmt(AStmt).Body, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TAssignment then
+    Result := InlineNeedExprD(TAssignment(AStmt).Expr, ADepth)
+  else if AStmt is TFieldAssignment then
+    Result := InlineNeedExprD(TFieldAssignment(AStmt).Expr, ADepth)
+  else if AStmt is TPointerWriteStmt then
+  begin
+    Result := InlineNeedExprD(TPointerWriteStmt(AStmt).PtrExpr, ADepth);
+    N := InlineNeedExprD(TPointerWriteStmt(AStmt).ValExpr, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TStaticSubscriptAssign then
+  begin
+    Result := InlineNeedExprD(TStaticSubscriptAssign(AStmt).IndexExpr, ADepth);
+    N := InlineNeedExprD(TStaticSubscriptAssign(AStmt).ValueExpr, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TProcCall then
+  begin
+    Result := InlineSiteNeed(TProcCall(AStmt).ResolvedDecl,
+      TProcCall(AStmt).Args.Count, ADepth);
+    for I := 0 to TProcCall(AStmt).Args.Count - 1 do
+    begin
+      N := InlineNeedExprD(TASTExpr(TProcCall(AStmt).Args.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end;
+  end
+  else if AStmt is TMethodCallStmt then
+  begin
+    Result := InlineNeedExprD(TMethodCallStmt(AStmt).ObjExpr, ADepth);
+    for I := 0 to TMethodCallStmt(AStmt).Args.Count - 1 do
+    begin
+      N := InlineNeedExprD(TASTExpr(TMethodCallStmt(AStmt).Args.Items[I]), ADepth);
+      if N > Result then Result := N;
+    end;
+  end
+  else if AStmt is TTryFinallyStmt then
+  begin
+    Result := InlineNeedStmtD(TTryFinallyStmt(AStmt).TryBody, ADepth);
+    N := InlineNeedStmtD(TTryFinallyStmt(AStmt).FinallyBody, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TTryExceptStmt then
+  begin
+    Result := InlineNeedStmtD(TTryExceptStmt(AStmt).TryBody, ADepth);
+    for I := 0 to TTryExceptStmt(AStmt).Handlers.Count - 1 do
+    begin
+      N := InlineNeedStmtD(TExceptHandlerClause(TTryExceptStmt(AStmt).Handlers.Items[I]).Body, ADepth);
+      if N > Result then Result := N;
+    end;
+    N := InlineNeedStmtD(TTryExceptStmt(AStmt).ElseBody, ADepth);
+    if N > Result then Result := N;
+    N := InlineNeedStmtD(TTryExceptStmt(AStmt).ExceptBody, ADepth);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TRaiseStmt then
+    Result := InlineNeedExprD(TRaiseStmt(AStmt).Expr, ADepth)
+  else if AStmt is TCaseStmt then
+  begin
+    Result := InlineNeedExprD(TCaseStmt(AStmt).Selector, ADepth);
+    for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
+    begin
+      for J := 0 to TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Values.Count - 1 do
+      begin
+        N := InlineNeedExprD(TASTExpr(
+          TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Values.Items[J]), ADepth);
+        if N > Result then Result := N;
+      end;
+      N := InlineNeedStmtD(TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Stmt, ADepth);
+      if N > Result then Result := N;
+    end;
+    N := InlineNeedStmtD(TCaseStmt(AStmt).ElseStmt, ADepth);
+    if N > Result then Result := N;
+  end
+  else if (AStmt is TExitStmt) and (TExitStmt(AStmt).ResultAssign <> nil) then
+    Result := InlineNeedStmtD(TExitStmt(AStmt).ResultAssign, ADepth);
+end;
+
 function TX86_64Backend.PromoEligibleType(ATy: TTypeDesc): Boolean;
 begin
   { Unmanaged scalars only: ints, enums, booleans, raw pointers.  Managed
@@ -16330,6 +16659,155 @@ begin
   if (FFrame <> nil) and FFrame.TryGetValue(AName, Off) and (Off > 0) then
     Self.EmitLoadVarToReg(Format('%d(%%rbp)', [Off]),
       Self.LocalType(AName), AReg, AReg);
+end;
+
+function TX86_64Backend.TryEmitInlineCall(ADecl: TObject; AArgs: TObjectList;
+  AWantResult: Boolean): Boolean;
+var
+  Callee: TMethodDecl;
+  Par:    TMethodParam;
+  I, Need, SlotOff, MyBase: Integer;
+  EndL:   string;
+  RetTy:  TTypeDesc;
+  OldMap: TDictionary<string, Integer>;
+  OldTypes: TDictionary<string, TTypeDesc>;
+  OldEnd: string;
+  OldNext: Integer;
+
+  function SlotOp(AIdx: Integer): string;
+  begin
+    Result := Format('-%d(%%rbp)', [-(MyBase + AIdx * 8)]);
+  end;
+
+begin
+  Result := False;
+  if FInlineDepth >= INLINE_MAX_DEPTH then Exit;
+  if FDbgFacts <> nil then Exit;                 { exact debug info }
+  if (ADecl = nil) or not (ADecl is TMethodDecl) then Exit;
+  Callee := TMethodDecl(ADecl);
+  if not Callee.IsInlineCandidate then Exit;
+  if Callee.Body = nil then Exit;
+  { Phase 1 is SAME-UNIT only (as per docs/inlining-design.adoc): a
+    cross-unit callee's body may reference its own unit's globals or
+    threadvars, whose owner-prefixed symbols are not resolvable from
+    this emission context (the async.fibers CurrentFiber threadvar bug).
+    Program-level callees have OwningUnit = '' and are only callable
+    from the program itself. }
+  if (Callee.OwningUnit <> '') and
+     not SameText(Callee.OwningUnit, FCurrentUnitName) then Exit;
+  { Nested procs and closures receive HIDDEN capture/env arguments that
+    are not in AArgs, and their bodies reference outer frames — never
+    inline them (their captured idents would resolve as globals). }
+  if Callee.EnclosingDecl <> nil then Exit;
+  if Callee.IsAnonThunk then Exit;
+  if (Callee.CapturedVars <> nil) and (Callee.CapturedVars.Count > 0) then Exit;
+  if (Callee.EnvCaptured <> nil) and (Callee.EnvCaptured.Count > 0) then Exit;
+  if (Callee.BlockEnvCaptured <> nil) and (Callee.BlockEnvCaptured.Count > 0) then Exit;
+  if (AArgs = nil) or (AArgs.Count <> Callee.Params.Count) then Exit;
+  if (FInlineLimit >= 0) and (FInlineCount >= FInlineLimit) then Exit;
+  { This frame's slots start where the ENCLOSING inline frame (if any)
+    ends; the whole stack of frames must fit the reserved area. }
+  if FInlineDepth = 0 then
+    MyBase := FInlineAreaOff
+  else
+    MyBase := FInlineNextOff;
+  Need := (Callee.Params.Count + 1) * 8;
+  if FInlineAreaSize <= 0 then Exit;
+  if (MyBase + Need) - FInlineAreaOff > FInlineAreaSize then Exit;
+  { Mixed int/float coercion at the boundary is the normal call path's
+    job — inline only exact-family matches. }
+  for I := 0 to Callee.Params.Count - 1 do
+  begin
+    Par := TMethodParam(Callee.Params.Items[I]);
+    if IsFloatFamily(Par.ResolvedType) <>
+       IsFloatFamily(TASTExpr(AArgs.Items[I]).ResolvedType) then
+      Exit;
+  end;
+
+  { Stage arguments via the stack: an argument expression may itself
+    contain an inlinable call (which uses the SAME scratch area while
+    this site's earlier arguments are being computed), so nothing may
+    land in the area until every argument value exists. }
+  for I := 0 to Callee.Params.Count - 1 do
+  begin
+    Par := TMethodParam(Callee.Params.Items[I]);
+    if IsFloatFamily(Par.ResolvedType) then
+    begin
+      Self.EmitExprToXmm0(TASTExpr(AArgs.Items[I]));
+      Self.EmitXmm0WidthAdjust(TASTExpr(AArgs.Items[I]).ResolvedType,
+        (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tySingle));
+      Self.Emit(#9'movq %xmm0, %rax');
+    end
+    else
+      Self.EmitExprToEax(TASTExpr(AArgs.Items[I]));
+    Self.Emit(#9'pushq %rax');
+  end;
+  { All argument values exist — the area is free now.  Pop into the
+    param slots (reverse order), width-correct per param type. }
+  for I := Callee.Params.Count - 1 downto 0 do
+  begin
+    Par := TMethodParam(Callee.Params.Items[I]);
+    Self.Emit(#9'popq %rax');
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tySingle) then
+      Self.Emit(Format(#9'movl %%eax, %s', [SlotOp(I)]))
+    else if IsFloatFamily(Par.ResolvedType) then
+      Self.Emit(Format(#9'movq %%rax, %s', [SlotOp(I)]))
+    else
+      Self.EmitStoreVar(SlotOp(I), Par.ResolvedType);
+  end;
+  { Zero the Result slot (Blaise zero-init semantics). }
+  RetTy := Callee.ResolvedReturnType;
+  if RetTy <> nil then
+    Self.Emit(Format(#9'movq $0, %s', [SlotOp(Callee.Params.Count)]));
+
+  FInlineCount := FInlineCount + 1;
+  if FInlineLog then
+    WriteLn(StdErr, '[inl] ', Callee.Name, ' (', IntToStr(FInlineCount), ')');
+  EndL := Self.NewLabel('inl_end');
+  { Stack a fresh name frame (depth 2 restores the enclosing one after). }
+  OldMap := FInlineMap;
+  OldTypes := FInlineTypes;
+  OldEnd := FInlineEndLbl;
+  OldNext := FInlineNextOff;
+  FInlineMap := TDictionary<string, Integer>.Create();
+  FInlineTypes := TDictionary<string, TTypeDesc>.Create();
+  for I := 0 to Callee.Params.Count - 1 do
+  begin
+    Par := TMethodParam(Callee.Params.Items[I]);
+    FInlineMap.Add(Par.ParamName, MyBase + I * 8);
+    FInlineTypes.Add(Par.ParamName, Par.ResolvedType);
+  end;
+  if RetTy <> nil then
+  begin
+    FInlineMap.Add('Result', MyBase + Callee.Params.Count * 8);
+    FInlineTypes.Add('Result', RetTy);
+  end;
+  FInlineEndLbl := EndL;
+  FInlineNextOff := MyBase + Need;
+  FInlineDepth := FInlineDepth + 1;
+  FInlineActive := True;
+  try
+    for I := 0 to Callee.Body.Stmts.Count - 1 do
+      Self.EmitStmt(TASTStmt(Callee.Body.Stmts.Items[I]));
+  finally
+    FInlineDepth := FInlineDepth - 1;
+    FInlineActive := FInlineDepth > 0;
+    FInlineMap.Free();
+    FInlineTypes.Free();
+    FInlineMap := OldMap;
+    FInlineTypes := OldTypes;
+    FInlineEndLbl := OldEnd;
+    FInlineNextOff := OldNext;
+  end;
+  Self.Emit(EndL + ':');
+  if AWantResult and (RetTy <> nil) then
+  begin
+    if IsFloatFamily(RetTy) then
+      Self.EmitLoadFloat(SlotOp(Callee.Params.Count), RetTy)
+    else
+      Self.EmitLoadVar(SlotOp(Callee.Params.Count), RetTy);
+  end;
+  Result := True;
 end;
 
 function TX86_64Backend.PromoRewrite(const ALine: string): string;
