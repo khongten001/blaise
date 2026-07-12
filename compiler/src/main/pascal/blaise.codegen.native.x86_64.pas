@@ -121,6 +121,15 @@ type
       path executes clobbers the caller's %r15 — latent before register
       promotion (nothing lived in %r15 across calls), fatal after. }
     FTryR15Save: Boolean;
+    { Cross-call pin: when the pass-1 scan also proved %r13 unused, the
+      generic binary-operator bracket saves its LHS in %r13 across a
+      complex RHS (typically a call) instead of pushq/popq — killing the
+      stack round-trip AND the odd-depth call-site alignment pad.  Only
+      the OUTERMOST bracket pins (FPinDepth); nested brackets fall back
+      to push/pop.  %r13 is callee-saved and untouched by the except
+      machinery; the incumbent is saved beside the promo saves. }
+    FPromoPinOk: Boolean;
+    FPinDepth: Integer;
     { OPDF debug facts (nil unless --debug-opdf): the backend records each
       function's symbol, end label, real frame-slot offsets and per-statement
       line labels here; the OPDF emitter consumes them for exact debug info.
@@ -875,7 +884,15 @@ type
       Result, then locals in declaration order) into FPromoVar14/15.
       False when the function is ineligible (debug build, try stmts,
       nostackframe) or no candidate exists. }
-    function  SelectPromotions(ADecl: TMethodDecl): Boolean;
+    function  SelectPromotions(ADecl: TMethodDecl; AMark: Integer): Boolean;
+    { SelectPromotions helper: append AName to the candidate lists when it
+      is promotable, with its pass-1 slot-traffic count.  A plain method
+      (not a nested proc): the release bootstrap binary miscompiles
+      method calls on captured class locals — the very bug fixed in this
+      source — so the compiler's own source must not use that shape until
+      a fixed bootstrap binary exists (teach-then-use). }
+    procedure ConsiderPromo(const AName: string; ATy: TTypeDesc;
+      AMark: Integer; ACandNames: TStringList; ACandCounts: TList<Integer>);
     { Rewrite one instruction line for register-resident operands:
       width-suffixed memory forms map onto the matching %r14/%r15
       sub-register.  Raises on any form that would need an address. }
@@ -5385,6 +5402,8 @@ begin
     Self.AddSlot('_promo_save_a', nil, Offset);
     if FPromoVar15 <> '' then
       Self.AddSlot('_promo_save_b', nil, Offset);
+    if FPromoPinOk then
+      Self.AddSlot('_promo_save_c', nil, Offset);
   end;
   { Round the reserved size up to a 16-byte multiple (SysV alignment).
     -16 is the bitmask not(15) in two's complement (Blaise `not` is Boolean). }
@@ -8328,10 +8347,26 @@ begin
                          boEQ, boNE, boLT, boGT, boLE, boGE]);
     if (not HasImm) and (not Self.TryEmitOperandToRcx(BE.Right)) then
     begin
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(BE.Right);
-      Self.Emit(#9'movq %rax, %rcx');   { right in %rcx }
-      Self.Emit(#9'popq %rax');          { left in %rax }
+      if FPromoActive and FPromoPinOk and (FPinDepth = 0) then
+      begin
+        { Pin the LHS in callee-saved %r13 across the complex RHS
+          (typically a call): no stack round-trip, and the call site
+          stays 16-byte aligned (no wrap pad).  Only the outermost
+          bracket pins; nested brackets keep push/pop. }
+        FPinDepth := FPinDepth + 1;
+        Self.Emit(#9'movq %rax, %r13');
+        Self.EmitExprToEax(BE.Right);
+        Self.Emit(#9'movq %rax, %rcx');   { right in %rcx }
+        Self.Emit(#9'movq %r13, %rax');   { left in %rax }
+        FPinDepth := FPinDepth - 1;
+      end
+      else
+      begin
+        Self.Emit(#9'pushq %rax');
+        Self.EmitExprToEax(BE.Right);
+        Self.Emit(#9'movq %rax, %rcx');   { right in %rcx }
+        Self.Emit(#9'popq %rax');          { left in %rax }
+      end;
     end;
     case BE.Op of
       boAdd:
@@ -9883,7 +9918,17 @@ begin
       end
       else
       begin
-        if Self.IsLocal(ACall.ObjectName) then
+        if Self.IsCaptured(ACall.ObjectName) then
+        begin
+          { Captured outer class local: _cap_ holds the OUTER slot's
+            address — dereference it for the object pointer.  Falling
+            through to the global path bound a nonexistent global symbol
+            (nested-proc receiver bug, 2026-07-12). }
+          Self.Emit(Format(#9'movq %s, %%r10',
+            [Self.VarOperand('_cap_' + ACall.ObjectName)]));
+          Self.Emit(#9'movq (%r10), %r10');
+        end
+        else if Self.IsLocal(ACall.ObjectName) then
           Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
         else
           Self.Emit(Format(#9'movq %s(%%rip), %%r10',
@@ -10875,6 +10920,18 @@ begin
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'movq $0, (%rax)');
     end
+    else if Self.IsCaptured(ACall.ObjectName) then
+    begin
+      { Captured class local: release the object through the capture
+        pointer and nil the OUTER slot (mirrors the var-param shape). }
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand('_cap_' + ACall.ObjectName)]));
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq (%rax), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq $0, (%rax)');
+    end
     else
     begin
       if Self.IsLocal(ACall.ObjectName) then
@@ -10998,7 +11055,13 @@ begin
     end
     else if ACall.ObjectName <> '' then
     begin
-      if Self.IsLocal(ACall.ObjectName) then
+      if Self.IsCaptured(ACall.ObjectName) then
+      begin
+        Self.Emit(Format(#9'movq %s, %%r10',
+          [Self.VarOperand('_cap_' + ACall.ObjectName)]));
+        Self.Emit(#9'movq (%r10), %r10');
+      end
+      else if Self.IsLocal(ACall.ObjectName) then
         Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
       else
         Self.Emit(Format(#9'movq %s(%%rip), %%r10', [Self.GlobalSymName(ACall.ObjectName)]));
@@ -11271,10 +11334,22 @@ begin
                 (ImmV >= -2147483648) and (ImmV <= 2147483647);
       if (not HasImm) and (not Self.TryEmitOperandToRcx(BE.Right)) then
       begin
-        Self.Emit(#9'pushq %rax');
-        Self.EmitExprToEax(BE.Right);
-        Self.Emit(#9'movq %rax, %rcx');
-        Self.Emit(#9'popq %rax');
+        if FPromoActive and FPromoPinOk and (FPinDepth = 0) then
+        begin
+          FPinDepth := FPinDepth + 1;
+          Self.Emit(#9'movq %rax, %r13');
+          Self.EmitExprToEax(BE.Right);
+          Self.Emit(#9'movq %rax, %rcx');
+          Self.Emit(#9'movq %r13, %rax');
+          FPinDepth := FPinDepth - 1;
+        end
+        else
+        begin
+          Self.Emit(#9'pushq %rax');
+          Self.EmitExprToEax(BE.Right);
+          Self.Emit(#9'movq %rax, %rcx');
+          Self.Emit(#9'popq %rax');
+        end;
       end;
       { Width + signedness selection mirrors the materialising comparison
         path in EmitExprToEax — the two must stay in lockstep. }
@@ -11512,10 +11587,11 @@ begin
   end
   else
     Self.EmitLoadVar(VarOp, VarType);
-  Self.Emit(#9'pushq %rax');
-  Self.EmitLoadVar(EndSlot, VarType);
-  Self.Emit(#9'movq %rax, %rcx');
-  Self.Emit(#9'popq %rax');
+  { The end value is a plain slot/global load with no side effects and no
+    %rax use — load it straight into %rcx, no push/pop bracket.  This runs
+    once per ITERATION of every for loop, so the two saved stack ops are
+    the hottest push/pop pair in loop-bound code. }
+  Self.EmitLoadVarToReg(EndSlot, VarType, '%rcx', '%ecx');
   Self.Emit(#9'cmpq %rcx, %rax');
   if AFor.IsDownTo then
     Self.Emit(#9'jge ' + LBody)
@@ -16142,29 +16218,47 @@ begin
     (IsIntFamily(ATy) or (ATy.Kind in [tyPointer, tyPChar]));
 end;
 
-function TX86_64Backend.SelectPromotions(ADecl: TMethodDecl): Boolean;
+procedure TX86_64Backend.ConsiderPromo(const AName: string; ATy: TTypeDesc;
+  AMark: Integer; ACandNames: TStringList; ACandCounts: TList<Integer>);
+var
+  SlotOp: string;
+  N, SlotOff: Integer;
+begin
+  if not Self.PromoEligibleType(ATy) then Exit;
+  if AName = 'Self' then Exit;                         { hardcoded paths }
+  { Address-taken (@ / var-out arg) or captured by a nested proc: the
+    slot is the contract. }
+  if FConstArgUnsafe.IndexOf(AName) >= 0 then Exit;
+  { A var this function itself captures FROM an enclosing frame lives
+    in the OUTER frame — never register-resident here. }
+  if Self.IsCaptured(AName) then Exit;
+  if ACandNames.IndexOf(AName) >= 0 then Exit;
+  { Rank by ACTUAL slot traffic: count the slot operand's occurrences
+    in the pass-1 text.  A leading space keeps '-24(%rbp)' from
+    matching inside '-124(%rbp)'.  Static text count — not loop-depth
+    weighted — but it beats declaration order at zero AST-walk cost. }
+  if (FFrame = nil) or not FFrame.TryGetValue(AName, SlotOff) then Exit;
+  if SlotOff > 0 then
+    SlotOp := Format(' %d(%%rbp)', [SlotOff])
+  else
+    SlotOp := Format(' -%d(%%rbp)', [-SlotOff]);
+  N := Self.AsmCountFrom(AMark, SlotOp);
+  { Fewer than two accesses: a register residency saves nothing over
+    the slot (the prologue save/restore would cost as much). }
+  if N < 2 then Exit;
+  ACandNames.Add(AName);
+  ACandCounts.Add(N);
+end;
+
+function TX86_64Backend.SelectPromotions(ADecl: TMethodDecl;
+  AMark: Integer): Boolean;
 var
   I, J, TryCount: Integer;
   P:  TMethodParam;
   VD: TVarDecl;
-
-  procedure Consider(const AName: string; ATy: TTypeDesc);
-  begin
-    if FPromoVar15 <> '' then Exit;                    { both regs taken }
-    if not Self.PromoEligibleType(ATy) then Exit;
-    if AName = 'Self' then Exit;                       { hardcoded paths }
-    { Address-taken (@ / var-out arg) or captured by a nested proc: the
-      slot is the contract. }
-    if FConstArgUnsafe.IndexOf(AName) >= 0 then Exit;
-    { A var this function itself captures FROM an enclosing frame lives
-      in the OUTER frame — never register-resident here. }
-    if Self.IsCaptured(AName) then Exit;
-    if FPromoVar14 = '' then
-      FPromoVar14 := AName
-    else if AName <> FPromoVar14 then
-      FPromoVar15 := AName;
-  end;
-
+  CandNames: TStringList;
+  CandCounts: TList<Integer>;
+  Best, BestIdx: Integer;
 begin
   FPromoVar14 := '';
   FPromoVar15 := '';
@@ -16178,21 +16272,49 @@ begin
   for I := 0 to ADecl.Body.Stmts.Count - 1 do
     TryCount := TryCount + Self.CountTryStmts(TASTStmt(ADecl.Body.Stmts.Items[I]));
   if TryCount > 0 then Exit;
-  { Priority: params in declaration order, then Result, then locals in
-    declaration order.  (Use-count ranking is a possible refinement.) }
-  for I := 0 to ADecl.Params.Count - 1 do
-  begin
-    P := TMethodParam(ADecl.Params.Items[I]);
-    if P.IsVarParam or P.IsOpenArray then Continue;
-    Consider(P.ParamName, P.ResolvedType);
-  end;
-  if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
-    Consider('Result', ADecl.ResolvedReturnType);
-  for I := 0 to ADecl.Body.Decls.Count - 1 do
-  begin
-    VD := TVarDecl(ADecl.Body.Decls.Items[I]);
-    for J := 0 to VD.Names.Count - 1 do
-      Consider(VD.Names.Strings[J], VD.ResolvedType);
+  CandNames := TStringList.Create();
+  CandNames.CaseSensitive := True;
+  CandCounts := TList<Integer>.Create();
+  try
+    { Candidate order (the tie-break): params, Result, locals. }
+    for I := 0 to ADecl.Params.Count - 1 do
+    begin
+      P := TMethodParam(ADecl.Params.Items[I]);
+      if P.IsVarParam or P.IsOpenArray then Continue;
+      Self.ConsiderPromo(P.ParamName, P.ResolvedType, AMark,
+        CandNames, CandCounts);
+    end;
+    if (ADecl.ResolvedReturnType <> nil) and not FSretFunc then
+      Self.ConsiderPromo('Result', ADecl.ResolvedReturnType, AMark,
+        CandNames, CandCounts);
+    for I := 0 to ADecl.Body.Decls.Count - 1 do
+    begin
+      VD := TVarDecl(ADecl.Body.Decls.Items[I]);
+      for J := 0 to VD.Names.Count - 1 do
+        Self.ConsiderPromo(VD.Names.Strings[J], VD.ResolvedType, AMark,
+          CandNames, CandCounts);
+    end;
+    { Pick the two highest-traffic candidates (stable on ties). }
+    for J := 0 to 1 do
+    begin
+      Best := 0;
+      BestIdx := -1;
+      for I := 0 to CandNames.Count - 1 do
+        if CandCounts.Get(I) > Best then
+        begin
+          Best := CandCounts.Get(I);
+          BestIdx := I;
+        end;
+      if BestIdx < 0 then Break;
+      if FPromoVar14 = '' then
+        FPromoVar14 := CandNames.Strings[BestIdx]
+      else
+        FPromoVar15 := CandNames.Strings[BestIdx];
+      CandCounts.SetItem(BestIdx, 0);
+    end;
+  finally
+    CandCounts.Free();
+    CandNames.Free();
   end;
   Result := FPromoVar14 <> '';
 end;
@@ -18966,6 +19088,12 @@ begin
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]));
       Self.Emit(#9'movq (%r10), %r10');
     end
+    else if Self.IsCaptured(ACall.ObjectName) then
+    begin
+      Self.Emit(Format(#9'movq %s, %%r10',
+        [Self.VarOperand('_cap_' + ACall.ObjectName)]));
+      Self.Emit(#9'movq (%r10), %r10');
+    end
     else if Self.IsLocal(ACall.ObjectName) then
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand(ACall.ObjectName)]))
     else
@@ -19289,13 +19417,17 @@ begin
   { Two-pass register promotion: when the unpromoted text proves %r14/%r15
     are unused (no scratch-window collision possible) and candidates exist,
     roll the function back and re-emit with the candidates register-resident. }
-  if Self.SelectPromotions(ADecl) and
-     (not Self.AsmContainsFrom(Mark, '%r14')) and
+  if (not Self.AsmContainsFrom(Mark, '%r14')) and
      (not Self.AsmContainsFrom(Mark, '%r15')) and
+     Self.SelectPromotions(ADecl, Mark) and
      ((FPromoLimit < 0) or (FPromoCount < FPromoLimit)) and
      ((FPromoOnly = '') or (FPromoOnly = FuncSymbolFromDecl(ADecl))) then
   begin
     FPromoCount := FPromoCount + 1;
+    { %r13 free too?  Then the binary-op bracket may pin its LHS there
+      across calls instead of pushq/popq. }
+    FPromoPinOk := not Self.AsmContainsFrom(Mark, '%r13');
+    FPinDepth := 0;
     if FPromoLog then
       WriteLn(StdErr, '[promo] ', FuncSymbolFromDecl(ADecl), ' [',
         FPromoVar14, '/', FPromoVar15, ']');
@@ -19304,11 +19436,13 @@ begin
     FPromoFunc := FuncSymbolFromDecl(ADecl);
     Self.EmitFunctionCore(ADecl, AExported);
     FPromoActive := False;
+    FPromoPinOk := False;
     FPromoFunc := '';
   end;
   FPromoVar14 := '';
   FPromoVar15 := '';
   FCapturedVars := nil;
+  Self.ClearFrame();
 end;
 
 procedure TX86_64Backend.EmitFunctionCore(ADecl: TMethodDecl; AExported: Boolean);
@@ -19373,6 +19507,8 @@ begin
     Self.PromoInitStackParam(FPromoVar14, '%r14');
     if FPromoVar15 <> '' then
       Self.PromoInitStackParam(FPromoVar15, '%r15');
+    if FPromoPinOk then
+      Self.Emit(Format(#9'movq %%r13, %s', [Self.VarOperand('_promo_save_c')]));
   end;
   if FTryR15Save then
     Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand('_try_r15_save')]));
@@ -19934,6 +20070,8 @@ begin
     Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand('_promo_save_a')]));
     if FPromoVar15 <> '' then
       Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_promo_save_b')]));
+    if FPromoPinOk then
+      Self.Emit(Format(#9'movq %s, %%r13', [Self.VarOperand('_promo_save_c')]));
   end;
   if FTryR15Save then
     Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_try_r15_save')]));
@@ -19944,7 +20082,6 @@ begin
   Self.Emit('.type ' + Sym + ', @function');
 
   FExitLabel := '';
-  Self.ClearFrame();
 end;
 
 { Emit the program entry function.

@@ -67,6 +67,7 @@ type
     function  AsmMark: Integer;
     procedure AsmRollback(AMark: Integer);
     function  AsmContainsFrom(AMark: Integer; const ANeedle: string): Boolean;
+    function  AsmCountFrom(AMark: Integer; const ANeedle: string): Integer;
 
     function IsRecordManagedClean(ARec: TRecordTypeDesc): Boolean;
     function IsRecordAllIntegerLeaves(ARec: TRecordTypeDesc): Boolean;
@@ -186,6 +187,12 @@ function TNativeBackend.AsmContainsFrom(AMark: Integer;
   const ANeedle: string): Boolean;
 begin
   Result := FAsm.ContainsFrom(AMark, ANeedle);
+end;
+
+function TNativeBackend.AsmCountFrom(AMark: Integer;
+  const ANeedle: string): Integer;
+begin
+  Result := FAsm.CountFrom(AMark, ANeedle);
 end;
 
 { The record-return ABI classifier and its leaf predicates now live as shared

@@ -64,6 +64,13 @@ type
       (indirect call — signature lives on the proc type) must likewise
       be excluded from promotion. }
     procedure TestIndirectVarParam_ExcludedNotError;
+    { With %r13 also proven free, the two-call binary bracket pins its
+      LHS in %r13 instead of pushq/popq — the fib body carries no
+      push/pop at all. }
+    procedure TestCrossCallPin_UsesR13_NoPush;
+    { The for-loop condition loads the end slot straight into %rcx —
+      no per-iteration push/pop pair. }
+    procedure TestForCond_NoPushPop;
   end;
 
 implementation
@@ -355,6 +362,40 @@ begin
   Region := FuncRegion(GenAsm(Src, False), 'Run');
   AssertTrue('var-param local keeps frame-slot leaq',
     Pos('leaq -', Region) >= 0);
+end;
+
+procedure TNativePromoTests.TestCrossCallPin_UsesR13_NoPush;
+var
+  Region: string;
+begin
+  Region := FuncRegion(GenAsm(SrcFib, False), 'Fib');
+  AssertTrue('LHS pinned in %r13 across the second recursive call',
+    Pos(#9'movq %rax, %r13', Region) >= 0);
+  AssertTrue('no push/pop bracket remains in the promoted body',
+    Pos(#9'pushq %rax', Region) < 0);
+end;
+
+procedure TNativePromoTests.TestForCond_NoPushPop;
+const
+  Src = '''
+      program P;
+      function SumTo(N: Integer): Int64;
+      var I: Integer;
+      begin
+        Result := 0;
+        for I := 1 to N do
+          Result := Result + I
+      end;
+      begin
+        WriteLn(SumTo(10))
+      end.
+      ''';
+var
+  Region: string;
+begin
+  Region := FuncRegion(GenAsm(Src, False), 'SumTo');
+  AssertTrue('no push/pop in the loop condition',
+    Pos(#9'pushq %rax', Region) < 0);
 end;
 
 initialization

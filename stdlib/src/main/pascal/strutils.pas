@@ -237,6 +237,9 @@ type
     { True when ANeedle occurs in the content at or after byte AFrom.
       Byte-wise scan; empty needle returns False. }
     function ContainsFrom(AFrom: Integer; const ANeedle: string): Boolean;
+    { Number of (non-overlapping) occurrences of ANeedle at or after
+      byte AFrom; 0 for an empty needle. }
+    function CountFrom(AFrom: Integer; const ANeedle: string): Integer;
     { Return the accumulated content as a managed string. }
     function  ToString: string;
     { Current byte length. }
@@ -844,6 +847,33 @@ procedure TStringBuilder.Truncate(ALen: Integer);
 begin
   if (ALen >= 0) and (ALen < Self.FLen) then
     Self.FLen := ALen;
+end;
+
+function TStringBuilder.CountFrom(AFrom: Integer; const ANeedle: string): Integer;
+var
+  NLen, I, J: Integer;
+  NP, DP: PChar;
+begin
+  Result := 0;
+  NLen := Length(ANeedle);
+  if NLen = 0 then Exit;
+  if AFrom < 0 then AFrom := 0;
+  NP := PChar(ANeedle);
+  DP := Self.FData;
+  I := AFrom;
+  while I <= Self.FLen - NLen do
+  begin
+    J := 0;
+    while (J < NLen) and (DP[I + J] = NP[J]) do
+      J := J + 1;
+    if J = NLen then
+    begin
+      Result := Result + 1;
+      I := I + NLen;
+    end
+    else
+      I := I + 1;
+  end;
 end;
 
 function TStringBuilder.ContainsFrom(AFrom: Integer; const ANeedle: string): Boolean;

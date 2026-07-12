@@ -72,6 +72,10 @@ type
       the catching function must preserve its CALLER's %r15 (a promoted
       local).  Latent ABI hole before promotion — pinned here. }
     procedure TestRun_Native_CatcherPreservesR15Local;
+    { A nested procedure calling a method on a CAPTURED class-typed outer
+      local: the native receiver path fell through to a global-symbol
+      load (garbage pointer) instead of dereferencing the _cap_ pointer. }
+    procedure TestRun_Native_NestedProcMethodOnCapturedLocal;
     procedure TestRun_Native_ForLoopOverLocal;
     procedure TestRun_Native_WiderIntGlobals;
     procedure TestRun_Native_Int64Arithmetic;
@@ -1741,6 +1745,42 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   Self.AssertRunsOnAll(Src, '5' + LE + '33' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProcMethodOnCapturedLocal;
+const
+  Src = '''
+      program P;
+      type
+        TBox = class
+        public
+          FCount: Integer;
+          procedure Bump;
+        end;
+      procedure TBox.Bump;
+      begin
+        FCount := FCount + 1
+      end;
+      procedure Run;
+      var Box: TBox;
+        procedure Consider;
+        begin
+          Box.Bump()
+        end;
+      begin
+        Box := TBox.Create();
+        Consider();
+        Consider();
+        WriteLn(Box.FCount);
+        Box.Free()
+      end;
+      begin
+        Run()
+      end.
+      ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  Self.AssertRunsOnAll(Src, '2' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_ForLoopOverLocal;
