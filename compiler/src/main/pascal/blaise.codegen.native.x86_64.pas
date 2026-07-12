@@ -103,8 +103,11 @@ type
       sub-register form.  Promotion is disabled under --debug-opdf
       (OPDF has no register location expression; pdr reads frame slots). }
     FPromoActive: Boolean;
-    FPromoVar14: string;   { var name resident in %r14 ('' = unused ) }
-    FPromoVar15: string;   { var name resident in %r15 ('' = unused ) }
+    { Promotion register pool: vars are assigned to the first AVAILABLE
+      registers (available = absent from the pass-1 text) in this order.
+      %r13 is deliberately NOT in the pool — it is the cross-call pin. }
+    FPromoVars: array[0..3] of string;   { var per pool slot ('' unused) }
+    FPromoAvail: array[0..3] of Boolean; { pass-1 scan verdict per slot }
     FPromoFunc: string;    { symbol being emitted (promotion diagnostics) }
     { Bisection aid: BLAISE_PROMO_LIMIT=N promotes only the first N eligible
       functions (-1 = unlimited).  BLAISE_PROMO_LOG=1 prints each promoted
@@ -141,12 +144,11 @@ type
       body emit as normal calls.  Disabled under --debug-opdf. }
     FInlineActive: Boolean;
     FInlineDepth: Integer;      { nesting level (cap 2, matching QBE) }
-    FInlineNextOff: Integer;    { next free area offset for a nested site }
+    FInlineNextIdx: Integer;    { next free scratch-slot index (nested sites) }
     FInlineMap: TDictionary<string, Integer>;     { callee name → rbp offset }
     FInlineTypes: TDictionary<string, TTypeDesc>; { callee name → type }
     FInlineEndLbl: string;
-    FInlineAreaSize: Integer;   { bytes reserved this function (0 = none) }
-    FInlineAreaOff: Integer;    { negative rbp offset of the area base }
+    FInlineSlotCount: Integer;  { _inl_s slots reserved this function }
     FInlineCount: Integer;      { sites inlined so far (bisection aid) }
     FInlineLimit: Integer;      { BLAISE_INLINE_LIMIT (-1 = unlimited) }
     FInlineLog: Boolean;        { BLAISE_INLINE_LOG }
@@ -901,7 +903,7 @@ type
       Managed types stay in slots (ARC release walks read them). }
     function  PromoEligibleType(ATy: TTypeDesc): Boolean;
     { Pick up to two promotion candidates for ADecl (params first, then
-      Result, then locals in declaration order) into FPromoVar14/15.
+      Result, then locals in declaration order) into FPromoVars.
       False when the function is ineligible (debug build, try stmts,
       nostackframe) or no candidate exists. }
     function  SelectPromotions(ADecl: TMethodDecl; AMark: Integer): Boolean;
@@ -4862,7 +4864,9 @@ begin
   if FInlineActive then
   begin
     if FInlineMap.TryGetValue(AName, Off) then
-      Exit(Format('-%d(%%rbp)', [-Off]));
+      { Map value is a scratch-slot INDEX: resolve the _inl_s name so a
+        PROMOTED slot answers its register. }
+      Exit(Self.VarOperand('_inl_s' + IntToStr(Off)));
     if (Length(AName) = 0) or (StrAt(AName, 0) <> 95) then    { '_' }
     begin
       if Self.IsThreadVarGlobal(AName) then
@@ -4873,10 +4877,9 @@ begin
   { Register-promoted var: the register IS the storage.  PromoRewrite in
     Emit maps width-suffixed instruction forms onto the sub-registers. }
   if FPromoActive then
-  begin
-    if AName = FPromoVar14 then Exit('%r14');
-    if AName = FPromoVar15 then Exit('%r15');
-  end;
+    for Off := 0 to 3 do
+      if (FPromoVars[Off] <> '') and (AName = FPromoVars[Off]) then
+        Exit(PROMO_REGS[Off]);
   if (FFrame <> nil) and FFrame.TryGetValue(AName, Off) then
   begin
     if Off > 0 then
@@ -5464,31 +5467,27 @@ begin
     of %r14/%r15 across this function (pass 2 only). }
   if FPromoActive then
   begin
-    Self.AddSlot('_promo_save_a', nil, Offset);
-    if FPromoVar15 <> '' then
-      Self.AddSlot('_promo_save_b', nil, Offset);
+    for K := 0 to 3 do
+      if FPromoVars[K] <> '' then
+        Self.AddSlot('_promo_save_' + IntToStr(K), nil, Offset);
     if FPromoPinOk then
-      Self.AddSlot('_promo_save_c', nil, Offset);
+      Self.AddSlot('_promo_save_pin', nil, Offset);
   end;
-  { Inline scratch area: the largest qualifying call site's need, found
-    by an optimistic pre-scan (emission re-validates per site). }
-  FInlineAreaSize := 0;
-  FInlineAreaOff := 0;
+  { Inline scratch slots: the largest qualifying call site's need, found
+    by an optimistic pre-scan (emission re-validates per site).  Each
+    8-byte slot is an individually NAMED frame slot (_inl_s0..) so the
+    register-promotion ranking can see and promote the hot ones — this
+    is what extends register residency INTO inlined bodies. }
+  FInlineSlotCount := 0;
   if (FDbgFacts = nil) and (ADecl.Body <> nil) and not ADecl.NoStackFrame then
   begin
+    IntIdx2 := 0;
     for K := 0 to ADecl.Body.Stmts.Count - 1 do
-    begin
-      IntIdx2 := InlineNeedStmtD(TASTStmt(ADecl.Body.Stmts.Items[K]), 0);
-      if IntIdx2 > FInlineAreaSize then FInlineAreaSize := IntIdx2;
-    end;
-    if FInlineAreaSize > 0 then
-    begin
-      Inc(Offset, FInlineAreaSize);
-      Offset := (Offset + 7) and (-8);
-      FFrame.Add('_inl_area', -Offset);
-      FFrameTypes.Add('_inl_area', nil);
-      FInlineAreaOff := -Offset;
-    end;
+      if InlineNeedStmtD(TASTStmt(ADecl.Body.Stmts.Items[K]), 0) > IntIdx2 then
+        IntIdx2 := InlineNeedStmtD(TASTStmt(ADecl.Body.Stmts.Items[K]), 0);
+    FInlineSlotCount := IntIdx2 div 8;
+    for K := 0 to FInlineSlotCount - 1 do
+      Self.AddSlot('_inl_s' + IntToStr(K), nil, Offset);
   end;
   { Round the reserved size up to a 16-byte multiple (SysV alignment).
     -16 is the bitmask not(15) in two's complement (Blaise `not` is Boolean). }
@@ -5497,11 +5496,10 @@ end;
 
 procedure TX86_64Backend.ClearFrame;
 begin
-  { Inline scratch state is per-frame: a stale non-zero area size from
+  { Inline scratch state is per-frame: a stale non-zero slot count from
     the previous function would let a frameless context (EmitProgram's
     main, unit init sections) "inline" into slots it never reserved. }
-  FInlineAreaSize := 0;
-  FInlineAreaOff := 0;
+  FInlineSlotCount := 0;
   if FFrame <> nil then
   begin
     FFrame.Free();
@@ -11677,25 +11675,10 @@ begin
   Self.EmitExprToEax(AFor.EndExpr);
   Self.EmitStoreVar(EndSlot, VarType);
 
-  Self.Emit(LCond + ':');
-  if Self.IsCaptured(AFor.VarName) then
-  begin
-    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
-    Self.EmitLoadVar('(%rcx)', VarType);
-  end
-  else
-    Self.EmitLoadVar(VarOp, VarType);
-  { The end value is a plain slot/global load with no side effects and no
-    %rax use — load it straight into %rcx, no push/pop bracket.  This runs
-    once per ITERATION of every for loop, so the two saved stack ops are
-    the hottest push/pop pair in loop-bound code. }
-  Self.EmitLoadVarToReg(EndSlot, VarType, '%rcx', '%ecx');
-  Self.Emit(#9'cmpq %rcx, %rax');
-  if AFor.IsDownTo then
-    Self.Emit(#9'jge ' + LBody)
-  else
-    Self.Emit(#9'jle ' + LBody);
-  Self.Emit(#9'jmp ' + LEnd);
+  { ROTATED loop: the condition sits at the BOTTOM — each iteration runs
+    increment + compare + one taken branch back to the body, instead of a
+    body-end jmp plus the top-of-loop compare-and-two-branches. }
+  Self.Emit(#9'jmp ' + LCond);
 
   Self.Emit(LBody + ':');
   FBreakLabels.Push(LEnd);
@@ -11727,7 +11710,22 @@ begin
   end
   else
     Self.EmitStoreVar(VarOp, VarType);
-  Self.Emit(#9'jmp ' + LCond);
+  Self.Emit(LCond + ':');
+  if Self.IsCaptured(AFor.VarName) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rcx', [Self.VarOperand('_cap_' + AFor.VarName)]));
+    Self.EmitLoadVar('(%rcx)', VarType);
+  end
+  else
+    Self.EmitLoadVar(VarOp, VarType);
+  { The end value is a plain slot/global load with no side effects and no
+    %rax use — straight into %rcx, no push/pop bracket. }
+  Self.EmitLoadVarToReg(EndSlot, VarType, '%rcx', '%ecx');
+  Self.Emit(#9'cmpq %rcx, %rax');
+  if AFor.IsDownTo then
+    Self.Emit(#9'jge ' + LBody)
+  else
+    Self.Emit(#9'jle ' + LBody);
   Self.Emit(LEnd + ':');
 end;
 
@@ -14379,8 +14377,10 @@ begin
     LCond  := Self.NewLabel('wcond');
     LBody  := Self.NewLabel('wbody');
     LEnd   := Self.NewLabel('wend');
-    Self.Emit(LCond + ':');
-    Self.EmitCondBranch(WhileS.Condition, LBody, LEnd);
+    { ROTATED loop: the condition sits at the BOTTOM, so each iteration
+      executes one taken branch (jcc back to the body) instead of a
+      body-end jmp plus the condition's forward branches. }
+    Self.Emit(#9'jmp ' + LCond);
     Self.Emit(LBody + ':');
     FBreakLabels.Push(LEnd);
     FBreakExcDepths.Push(FExcDepth);
@@ -14391,7 +14391,8 @@ begin
     FContinueLabels.Pop();
     FBreakExcDepths.Pop();
     FBreakLabels.Pop();
-    Self.Emit(#9'jmp ' + LCond);
+    Self.Emit(LCond + ':');
+    Self.EmitCondBranch(WhileS.Condition, LBody, LEnd);
     Self.Emit(LEnd + ':');
     Exit;
   end;
@@ -16178,6 +16179,25 @@ begin
     Result := '';
 end;
 
+const
+  PROMO_REGS: array[0..3] of string = ('%r14', '%r15', '%rbx', '%r12');
+
+{ Width sub-register of a promotion-pool register: W is 'b'/'w'/'l'/'q'. }
+function PromoSubReg(const AReg64, W: string): string;
+begin
+  Result := AReg64;
+  if W = 'q' then Exit;
+  if AReg64 = '%rbx' then
+  begin
+    if W = 'b' then Exit('%bl');
+    if W = 'w' then Exit('%bx');
+    Exit('%ebx');                                      { l }
+  end;
+  { %r12/%r14/%r15: numbered registers suffix directly. }
+  if W = 'l' then Exit(AReg64 + 'd');
+  Result := AReg64 + W;                                { b / w }
+end;
+
 { The pushed register of a #9'pushq %REG' line, or ''. }
 function PlainPushedReg(const ALine: string): string;
 begin
@@ -16553,7 +16573,12 @@ var
   SlotOp: string;
   N, SlotOff: Integer;
 begin
-  if not Self.PromoEligibleType(ATy) then Exit;
+  { _inl_s scratch slots are plain 8-byte scalar slots by construction
+    (inline params/Result are primitive-only); they carry no static type
+    (widths come from each site's FInlineTypes at emission). }
+  if not Self.PromoEligibleType(ATy) then
+    if not ((Length(AName) > 6) and (StrCopyFrom(AName, 0, 6) = '_inl_s')) then
+      Exit;
   if AName = 'Self' then Exit;                         { hardcoded paths }
   { Address-taken (@ / var-out arg) or captured by a nested proc: the
     slot is the contract. }
@@ -16589,8 +16614,8 @@ var
   CandCounts: TList<Integer>;
   Best, BestIdx: Integer;
 begin
-  FPromoVar14 := '';
-  FPromoVar15 := '';
+  for I := 0 to 3 do
+    FPromoVars[I] := '';
   Result := False;
   { OPDF debug builds keep exact frame-slot locations for pdr. }
   if FDbgFacts <> nil then Exit;
@@ -16623,9 +16648,16 @@ begin
         Self.ConsiderPromo(VD.Names.Strings[J], VD.ResolvedType, AMark,
           CandNames, CandCounts);
     end;
-    { Pick the two highest-traffic candidates (stable on ties). }
-    for J := 0 to 1 do
+    { Inline scratch slots: promoting the hot ones extends register
+      residency INTO inlined bodies. }
+    for I := 0 to FInlineSlotCount - 1 do
+      Self.ConsiderPromo('_inl_s' + IntToStr(I), nil, AMark,
+        CandNames, CandCounts);
+    { Assign the highest-traffic candidates (stable on ties) to the
+      AVAILABLE pool registers, best first. }
+    for J := 0 to 3 do
     begin
+      if not FPromoAvail[J] then Continue;
       Best := 0;
       BestIdx := -1;
       for I := 0 to CandNames.Count - 1 do
@@ -16635,17 +16667,16 @@ begin
           BestIdx := I;
         end;
       if BestIdx < 0 then Break;
-      if FPromoVar14 = '' then
-        FPromoVar14 := CandNames.Strings[BestIdx]
-      else
-        FPromoVar15 := CandNames.Strings[BestIdx];
+      FPromoVars[J] := CandNames.Strings[BestIdx];
       CandCounts.SetItem(BestIdx, 0);
     end;
   finally
     CandCounts.Free();
     CandNames.Free();
   end;
-  Result := FPromoVar14 <> '';
+  for I := 0 to 3 do
+    if FPromoVars[I] <> '' then
+      Result := True;
 end;
 
 procedure TX86_64Backend.PromoInitStackParam(const AName, AReg: string);
@@ -16661,23 +16692,27 @@ begin
       Self.LocalType(AName), AReg, AReg);
 end;
 
+{ Scratch-slot name for inline expansion (file-level, NOT a nested
+  function: the release bootstrap binary miscompiles captured locals in
+  nested routines — teach-then-use). }
+function InlSlotName(AIdx: Integer): string;
+begin
+  Result := '_inl_s' + IntToStr(AIdx);
+end;
+
 function TX86_64Backend.TryEmitInlineCall(ADecl: TObject; AArgs: TObjectList;
   AWantResult: Boolean): Boolean;
 var
   Callee: TMethodDecl;
   Par:    TMethodParam;
-  I, Need, SlotOff, MyBase: Integer;
+  I, Need, MyBase: Integer;
   EndL:   string;
   RetTy:  TTypeDesc;
+  HasFloat: Boolean;
   OldMap: TDictionary<string, Integer>;
   OldTypes: TDictionary<string, TTypeDesc>;
   OldEnd: string;
   OldNext: Integer;
-
-  function SlotOp(AIdx: Integer): string;
-  begin
-    Result := Format('-%d(%%rbp)', [-(MyBase + AIdx * 8)]);
-  end;
 
 begin
   Result := False;
@@ -16706,14 +16741,26 @@ begin
   if (AArgs = nil) or (AArgs.Count <> Callee.Params.Count) then Exit;
   if (FInlineLimit >= 0) and (FInlineCount >= FInlineLimit) then Exit;
   { This frame's slots start where the ENCLOSING inline frame (if any)
-    ends; the whole stack of frames must fit the reserved area. }
+    ends; the whole stack of frames must fit the reserved slots. }
   if FInlineDepth = 0 then
-    MyBase := FInlineAreaOff
+    MyBase := 0
   else
-    MyBase := FInlineNextOff;
-  Need := (Callee.Params.Count + 1) * 8;
-  if FInlineAreaSize <= 0 then Exit;
-  if (MyBase + Need) - FInlineAreaOff > FInlineAreaSize then Exit;
+    MyBase := FInlineNextIdx;
+  Need := Callee.Params.Count + 1;   { slots }
+  if FInlineSlotCount <= 0 then Exit;
+  if MyBase + Need > FInlineSlotCount then Exit;
+  { Float params/return read/write their slots with movsd/movss forms
+    that cannot address a PROMOTED (register-resident) slot — bail to a
+    normal call when any needed slot is register-resident this pass. }
+  HasFloat := (Callee.ResolvedReturnType <> nil) and
+              IsFloatFamily(Callee.ResolvedReturnType);
+  for I := 0 to Callee.Params.Count - 1 do
+    if IsFloatFamily(TMethodParam(Callee.Params.Items[I]).ResolvedType) then
+      HasFloat := True;
+  if HasFloat then
+    for I := 0 to Need - 1 do
+      if StrAt(Self.VarOperand(InlSlotName(MyBase + I)), 0) = 37 then   { '%': register }
+        Exit;
   { Mixed int/float coercion at the boundary is the normal call path's
     job — inline only exact-family matches. }
   for I := 0 to Callee.Params.Count - 1 do
@@ -16749,16 +16796,16 @@ begin
     Par := TMethodParam(Callee.Params.Items[I]);
     Self.Emit(#9'popq %rax');
     if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tySingle) then
-      Self.Emit(Format(#9'movl %%eax, %s', [SlotOp(I)]))
+      Self.Emit(Format(#9'movl %%eax, %s', [Self.VarOperand(InlSlotName(MyBase + I))]))
     else if IsFloatFamily(Par.ResolvedType) then
-      Self.Emit(Format(#9'movq %%rax, %s', [SlotOp(I)]))
+      Self.Emit(Format(#9'movq %%rax, %s', [Self.VarOperand(InlSlotName(MyBase + I))]))
     else
-      Self.EmitStoreVar(SlotOp(I), Par.ResolvedType);
+      Self.EmitStoreVar(Self.VarOperand(InlSlotName(MyBase + I)), Par.ResolvedType);
   end;
   { Zero the Result slot (Blaise zero-init semantics). }
   RetTy := Callee.ResolvedReturnType;
   if RetTy <> nil then
-    Self.Emit(Format(#9'movq $0, %s', [SlotOp(Callee.Params.Count)]));
+    Self.Emit(Format(#9'movq $0, %s', [Self.VarOperand(InlSlotName(MyBase + Callee.Params.Count))]));
 
   FInlineCount := FInlineCount + 1;
   if FInlineLog then
@@ -16768,22 +16815,22 @@ begin
   OldMap := FInlineMap;
   OldTypes := FInlineTypes;
   OldEnd := FInlineEndLbl;
-  OldNext := FInlineNextOff;
+  OldNext := FInlineNextIdx;
   FInlineMap := TDictionary<string, Integer>.Create();
   FInlineTypes := TDictionary<string, TTypeDesc>.Create();
   for I := 0 to Callee.Params.Count - 1 do
   begin
     Par := TMethodParam(Callee.Params.Items[I]);
-    FInlineMap.Add(Par.ParamName, MyBase + I * 8);
+    FInlineMap.Add(Par.ParamName, MyBase + I);
     FInlineTypes.Add(Par.ParamName, Par.ResolvedType);
   end;
   if RetTy <> nil then
   begin
-    FInlineMap.Add('Result', MyBase + Callee.Params.Count * 8);
+    FInlineMap.Add('Result', MyBase + Callee.Params.Count);
     FInlineTypes.Add('Result', RetTy);
   end;
   FInlineEndLbl := EndL;
-  FInlineNextOff := MyBase + Need;
+  FInlineNextIdx := MyBase + Need;
   FInlineDepth := FInlineDepth + 1;
   FInlineActive := True;
   try
@@ -16797,15 +16844,15 @@ begin
     FInlineMap := OldMap;
     FInlineTypes := OldTypes;
     FInlineEndLbl := OldEnd;
-    FInlineNextOff := OldNext;
+    FInlineNextIdx := OldNext;
   end;
   Self.Emit(EndL + ':');
   if AWantResult and (RetTy <> nil) then
   begin
     if IsFloatFamily(RetTy) then
-      Self.EmitLoadFloat(SlotOp(Callee.Params.Count), RetTy)
+      Self.EmitLoadFloat(Self.VarOperand(InlSlotName(MyBase + Callee.Params.Count)), RetTy)
     else
-      Self.EmitLoadVar(SlotOp(Callee.Params.Count), RetTy);
+      Self.EmitLoadVar(Self.VarOperand(InlSlotName(MyBase + Callee.Params.Count)), RetTy);
   end;
   Result := True;
 end;
@@ -16817,25 +16864,33 @@ var
   WSrc, WDst: string;
 
   function SubReg(const AOp, W: string): string;
+  var
+    R: Integer;
   begin
     Result := AOp;
-    if (AOp = '%r14') or (AOp = '%r15') then
-    begin
-      if W = 'q' then Exit;
-      if W = 'l' then Exit(AOp + 'd');
-      Exit(AOp + W);                                   { b / w }
-    end;
-    { An embedded (non-bare) occurrence — '(%r14)', '-8(%r15)' — means a
+    for R := 0 to 3 do
+      if (FPromoVars[R] <> '') and (AOp = PROMO_REGS[R]) then
+        Exit(PromoSubReg(AOp, W));
+    { An embedded (non-bare) occurrence — '(%r14)', '-8(%rbx)' — means a
       promoted register leaked into an addressing context. }
-    if (Pos('%r14', AOp) >= 0) or (Pos('%r15', AOp) >= 0) then
-      raise ENativeCodeGenError.Create(
-        'register promotion: unexpected operand form in ' + FPromoFunc +
-        ' [' + FPromoVar14 + '/' + FPromoVar15 + ']: ' + ALine);
+    for R := 0 to 3 do
+      if (FPromoVars[R] <> '') and (Pos(PROMO_REGS[R], AOp) >= 0) then
+        raise ENativeCodeGenError.Create(
+          'register promotion: unexpected operand form in ' + FPromoFunc +
+          ': ' + ALine);
   end;
 
 begin
   Result := ALine;
-  if (Pos('%r14', ALine) < 0) and (Pos('%r15', ALine) < 0) then Exit;
+  { Only lines touching a register that actually HOLDS a promoted var are
+    rewritten: an unassigned pool register (e.g. %rbx while only %r14/
+    %r15 carry vars) may legitimately appear in scratch windows and must
+    pass through untouched. }
+  I := -1;
+  for CommaP := 0 to 3 do
+    if (FPromoVars[CommaP] <> '') and (Pos(PROMO_REGS[CommaP], ALine) >= 0) then
+      I := CommaP;
+  if I < 0 then Exit;
   L := Length(ALine);
   if (L < 2) or (StrAt(ALine, 0) <> 9) then Exit;      { instructions only }
   I := 1;
@@ -16875,10 +16930,12 @@ begin
   Op2 := StrCopyTail(Rest, CommaP + 2);
   { leaq of a register has no meaning — a promoted var's address must
     never be taken (the selection predicate guarantees this). }
-  if (M = 'leaq') and ((Op1 = '%r14') or (Op1 = '%r15')) then
-    raise ENativeCodeGenError.Create(
-      'register promotion: address taken of promoted register in ' +
-      FPromoFunc + ' [' + FPromoVar14 + '/' + FPromoVar15 + ']: ' + ALine);
+  if M = 'leaq' then
+    for CommaP := 0 to 3 do
+      if Op1 = PROMO_REGS[CommaP] then
+        raise ENativeCodeGenError.Create(
+          'register promotion: address taken of promoted register in ' +
+          FPromoFunc + ': ' + ALine);
   Result := #9 + M + ' ' + SubReg(Op1, WSrc) + ', ' + SubReg(Op2, WDst);
 end;
 
@@ -19889,15 +19946,18 @@ begin
 
   Mark := Self.AsmMark();
   FPromoActive := False;
-  FPromoVar14 := '';
-  FPromoVar15 := '';
+  for I := 0 to 3 do
+  begin
+    FPromoVars[I] := '';
+    FPromoAvail[I] := False;
+  end;
   Self.EmitFunctionCore(ADecl, AExported);
-  { Two-pass register promotion: when the unpromoted text proves %r14/%r15
-    are unused (no scratch-window collision possible) and candidates exist,
-    roll the function back and re-emit with the candidates register-resident. }
-  if (not Self.AsmContainsFrom(Mark, '%r14')) and
-     (not Self.AsmContainsFrom(Mark, '%r15')) and
-     Self.SelectPromotions(ADecl, Mark) and
+  { Two-pass register promotion: each pool register whose absence from
+    the unpromoted text proves no scratch-window collision is available;
+    candidates are assigned best-traffic-first across available slots. }
+  for I := 0 to 3 do
+    FPromoAvail[I] := not Self.AsmContainsFrom(Mark, PROMO_REGS[I]);
+  if Self.SelectPromotions(ADecl, Mark) and
      ((FPromoLimit < 0) or (FPromoCount < FPromoLimit)) and
      ((FPromoOnly = '') or (FPromoOnly = FuncSymbolFromDecl(ADecl))) then
   begin
@@ -19908,7 +19968,8 @@ begin
     FPinDepth := 0;
     if FPromoLog then
       WriteLn(StdErr, '[promo] ', FuncSymbolFromDecl(ADecl), ' [',
-        FPromoVar14, '/', FPromoVar15, ']');
+        FPromoVars[0], '/', FPromoVars[1], '/', FPromoVars[2], '/',
+        FPromoVars[3], ']');
     Self.AsmRollback(Mark);
     FPromoActive := True;
     FPromoFunc := FuncSymbolFromDecl(ADecl);
@@ -19917,8 +19978,8 @@ begin
     FPromoPinOk := False;
     FPromoFunc := '';
   end;
-  FPromoVar14 := '';
-  FPromoVar15 := '';
+  for I := 0 to 3 do
+    FPromoVars[I] := '';
   FCapturedVars := nil;
   Self.ClearFrame();
 end;
@@ -19979,14 +20040,15 @@ begin
     spill code below (VarOperand answers the register). }
   if FPromoActive then
   begin
-    Self.Emit(Format(#9'movq %%r14, %s', [Self.VarOperand('_promo_save_a')]));
-    if FPromoVar15 <> '' then
-      Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand('_promo_save_b')]));
-    Self.PromoInitStackParam(FPromoVar14, '%r14');
-    if FPromoVar15 <> '' then
-      Self.PromoInitStackParam(FPromoVar15, '%r15');
+    for I := 0 to 3 do
+      if FPromoVars[I] <> '' then
+        Self.Emit(Format(#9'movq %s, %s',
+          [PROMO_REGS[I], Self.VarOperand('_promo_save_' + IntToStr(I))]));
+    for I := 0 to 3 do
+      if FPromoVars[I] <> '' then
+        Self.PromoInitStackParam(FPromoVars[I], PROMO_REGS[I]);
     if FPromoPinOk then
-      Self.Emit(Format(#9'movq %%r13, %s', [Self.VarOperand('_promo_save_c')]));
+      Self.Emit(Format(#9'movq %%r13, %s', [Self.VarOperand('_promo_save_pin')]));
   end;
   if FTryR15Save then
     Self.Emit(Format(#9'movq %%r15, %s', [Self.VarOperand('_try_r15_save')]));
@@ -20545,11 +20607,12 @@ begin
     before the frame teardown. }
   if FPromoActive then
   begin
-    Self.Emit(Format(#9'movq %s, %%r14', [Self.VarOperand('_promo_save_a')]));
-    if FPromoVar15 <> '' then
-      Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_promo_save_b')]));
+    for I := 0 to 3 do
+      if FPromoVars[I] <> '' then
+        Self.Emit(Format(#9'movq %s, %s',
+          [Self.VarOperand('_promo_save_' + IntToStr(I)), PROMO_REGS[I]]));
     if FPromoPinOk then
-      Self.Emit(Format(#9'movq %s, %%r13', [Self.VarOperand('_promo_save_c')]));
+      Self.Emit(Format(#9'movq %s, %%r13', [Self.VarOperand('_promo_save_pin')]));
   end;
   if FTryR15Save then
     Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_try_r15_save')]));
