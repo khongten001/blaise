@@ -5394,6 +5394,35 @@ begin
     begin
       QType   := QbeTypeOf(AAssign.Expr.ResolvedType);
       ValTemp := EmitExpr(AAssign.Expr);
+      { Sub-word LHS (Byte/SmallInt/Word): truncate to the declared width
+        and re-extend by the LHS signedness, so overflow wraps exactly as
+        the native backend's byte/word slot stores (movb/movw + movzbq/
+        movswq reload) do.  A bare storew keeps the full 32-bit value
+        alive through the next loadw — B := B + 200 on a Byte then reads
+        back 300 instead of 44 (backend divergence found 2026-07-12). }
+      if (QType = 'w') and (AAssign.ResolvedLhsType <> nil) then
+      begin
+        case AAssign.ResolvedLhsType.Kind of
+          tyByte:
+            begin
+              ExtTemp := AllocTemp();
+              EmitLine(Format('  %s =w extub %s', [ExtTemp, ValTemp]));
+              ValTemp := ExtTemp;
+            end;
+          tySmallInt:
+            begin
+              ExtTemp := AllocTemp();
+              EmitLine(Format('  %s =w extsh %s', [ExtTemp, ValTemp]));
+              ValTemp := ExtTemp;
+            end;
+          tyWord:
+            begin
+              ExtTemp := AllocTemp();
+              EmitLine(Format('  %s =w extuh %s', [ExtTemp, ValTemp]));
+              ValTemp := ExtTemp;
+            end;
+        end;
+      end;
       if not AAssign.IsGlobal and IsPromoted(AAssign.Name) then
       begin
         EmitLine(Format('  %%_var_%s =%s copy %s', [AAssign.Name, QType, ValTemp]));
