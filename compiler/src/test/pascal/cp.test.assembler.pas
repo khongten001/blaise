@@ -12,7 +12,8 @@ interface
 
 uses
   SysUtils, Classes, Process, blaise.testing,
-  blaise.elfwriter, blaise.elfreader, blaise.assembler.x86_64;
+  blaise.container.writer, blaise.elfwriter, blaise.elfreader,
+  blaise.assembler.x86_64;
 
 type
   { ---- Instruction/directive encoding regression tests ----
@@ -75,6 +76,7 @@ type
     procedure TestAppendDWord_FourBytes;
     procedure TestAppendQWord_EightBytes;
     procedure TestReserveBss_NoData;
+    procedure TestContainerWriterSeam_ElfViaInterface;
   end;
 
   { ---- Internal assembler E2E tests ----
@@ -561,6 +563,29 @@ end;
 
 { ---- TElfWriterTests ---- }
 
+procedure TElfWriterTests.TestContainerWriterSeam_ElfViaInterface;
+var
+  W: IContainerWriter;
+  Buf: string;
+  SymIdx: Integer;
+begin
+  { Drive TElfObjectWriter purely through the IContainerWriter seam — the
+    contract the internal assemblers hold a writer by (Bridge: one
+    assembler, N container writers).  ARC-managed: no manual Free. }
+  W := TElfObjectWriter.Create();
+  W.AppendByte(cskText, $90);
+  SymIdx := W.DefineSymbol('probe', cskText, 0, 0, csbGlobal, cstFunc);
+  AssertTrue(SymIdx >= 0);
+  AssertEquals(SymIdx, W.FindSymbol('probe'));
+  AssertEquals(1, W.CurrentOffset(cskText));
+  W.AddReloc(cskText, 0, W.ExternSymbol('ext'), crkPC32, -4);
+  Buf := W.Finish();
+  AssertEquals($7F, ReadU8(Buf, 0));
+  AssertEquals(Ord('E'), ReadU8(Buf, 1));
+  AssertEquals(Ord('L'), ReadU8(Buf, 2));
+  AssertEquals(Ord('F'), ReadU8(Buf, 3));
+end;
+
 procedure TElfWriterTests.TestElfHeader_Magic;
 var
   W: TElfObjectWriter;
@@ -568,7 +593,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $90);
+    W.AppendByte(cskText, $90);
     Buf := W.Finish();
     AssertEquals($7F, ReadU8(Buf, 0));
     AssertEquals(Ord('E'), ReadU8(Buf, 1));
@@ -586,7 +611,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $90);
+    W.AppendByte(cskText, $90);
     Buf := W.Finish();
     AssertEquals(2, ReadU8(Buf, 4));
   finally
@@ -601,7 +626,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $90);
+    W.AppendByte(cskText, $90);
     Buf := W.Finish();
     AssertEquals(1, ReadU8(Buf, 5));
   finally
@@ -616,7 +641,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $90);
+    W.AppendByte(cskText, $90);
     Buf := W.Finish();
     AssertEquals(1, ReadU16(Buf, 16));
   finally
@@ -631,7 +656,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $90);
+    W.AppendByte(cskText, $90);
     Buf := W.Finish();
     AssertEquals(62, ReadU16(Buf, 18));
   finally
@@ -646,9 +671,9 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    Off := W.Append(eskText, Chr($55) + Chr($48));
+    Off := W.Append(cskText, Chr($55) + Chr($48));
     AssertEquals(0, Off);
-    AssertEquals(2, W.CurrentOffset(eskText));
+    AssertEquals(2, W.CurrentOffset(cskText));
   finally
     W.Free();
   end;
@@ -661,9 +686,9 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    Off := W.Append(eskData, Chr($01) + Chr($02) + Chr($03));
+    Off := W.Append(cskData, Chr($01) + Chr($02) + Chr($03));
     AssertEquals(0, Off);
-    AssertEquals(3, W.CurrentOffset(eskData));
+    AssertEquals(3, W.CurrentOffset(cskData));
   finally
     W.Free();
   end;
@@ -675,11 +700,11 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    AssertEquals(0, W.CurrentOffset(eskText));
-    W.AppendByte(eskText, $90);
-    AssertEquals(1, W.CurrentOffset(eskText));
-    W.AppendByte(eskText, $90);
-    AssertEquals(2, W.CurrentOffset(eskText));
+    AssertEquals(0, W.CurrentOffset(cskText));
+    W.AppendByte(cskText, $90);
+    AssertEquals(1, W.CurrentOffset(cskText));
+    W.AppendByte(cskText, $90);
+    AssertEquals(2, W.CurrentOffset(cskText));
   finally
     W.Free();
   end;
@@ -692,7 +717,7 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    Idx := W.DefineSymbol('main', eskText, 0, 0, esbGlobal, estFunc);
+    Idx := W.DefineSymbol('main', cskText, 0, 0, csbGlobal, cstFunc);
     AssertTrue(Idx >= 0);
     AssertEquals(Idx, W.FindSymbol('main'));
   finally
@@ -722,12 +747,12 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskData, $01);
-    W.AppendByte(eskData, $02);
-    AssertEquals(2, W.CurrentOffset(eskData));
-    W.AppendByte(eskData, 0);
-    W.AppendByte(eskData, 0);
-    AssertEquals(4, W.CurrentOffset(eskData));
+    W.AppendByte(cskData, $01);
+    W.AppendByte(cskData, $02);
+    AssertEquals(2, W.CurrentOffset(cskData));
+    W.AppendByte(cskData, 0);
+    W.AppendByte(cskData, 0);
+    AssertEquals(4, W.CurrentOffset(cskData));
   finally
     W.Free();
   end;
@@ -739,8 +764,8 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $CC);
-    AssertEquals(1, W.CurrentOffset(eskText));
+    W.AppendByte(cskText, $CC);
+    AssertEquals(1, W.CurrentOffset(cskText));
   finally
     W.Free();
   end;
@@ -753,11 +778,11 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $78);
-    W.AppendByte(eskText, $56);
-    W.AppendByte(eskText, $34);
-    W.AppendByte(eskText, $12);
-    AssertEquals(4, W.CurrentOffset(eskText));
+    W.AppendByte(cskText, $78);
+    W.AppendByte(cskText, $56);
+    W.AppendByte(cskText, $34);
+    W.AppendByte(cskText, $12);
+    AssertEquals(4, W.CurrentOffset(cskText));
     Buf := W.Finish();
     AssertEquals($78, ReadU8(Buf, 64));
     AssertEquals($56, ReadU8(Buf, 65));
@@ -774,15 +799,15 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.AppendByte(eskText, $08);
-    W.AppendByte(eskText, $07);
-    W.AppendByte(eskText, $06);
-    W.AppendByte(eskText, $05);
-    W.AppendByte(eskText, $04);
-    W.AppendByte(eskText, $03);
-    W.AppendByte(eskText, $02);
-    W.AppendByte(eskText, $01);
-    AssertEquals(8, W.CurrentOffset(eskText));
+    W.AppendByte(cskText, $08);
+    W.AppendByte(cskText, $07);
+    W.AppendByte(cskText, $06);
+    W.AppendByte(cskText, $05);
+    W.AppendByte(cskText, $04);
+    W.AppendByte(cskText, $03);
+    W.AppendByte(cskText, $02);
+    W.AppendByte(cskText, $01);
+    AssertEquals(8, W.CurrentOffset(cskText));
   finally
     W.Free();
   end;
@@ -794,8 +819,8 @@ var
 begin
   W := TElfObjectWriter.Create();
   try
-    W.ReserveBss(eskBss, 256);
-    AssertEquals(256, W.CurrentOffset(eskBss));
+    W.ReserveBss(cskBss, 256);
+    AssertEquals(256, W.CurrentOffset(cskBss));
   finally
     W.Free();
   end;

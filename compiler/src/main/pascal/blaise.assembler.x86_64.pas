@@ -12,8 +12,10 @@ unit blaise.assembler.x86_64;
 
   Route A of the toolchain-independence plan: parses the restricted AT&T
   subset the native backend emits — a closed set of ~90 mnemonics,
-  operand shapes, directives, and label forms — and encodes it into an
-  ELF relocatable object file via blaise.elfwriter.
+  operand shapes, directives, and label forms — and encodes it into a
+  relocatable object file.  The object is built through the
+  IContainerWriter seam (blaise.container.writer); the concrete writer
+  today is TElfObjectWriter (blaise.elfwriter).
 
   The codegen unit is untouched; the textual .s remains the canonical
   artefact.  The self-assembler is an alternative to shelling out to
@@ -28,13 +30,13 @@ unit blaise.assembler.x86_64;
 interface
 
 uses
-  SysUtils, Generics.Collections, blaise.elfwriter;
+  SysUtils, Generics.Collections, blaise.container.writer, blaise.elfwriter;
 
 type
   EAssembler = class(Exception);
 
   TLabelInfo = record
-    Section: TElfSectionKind;
+    Section: TContainerSectionKind;
     Offset:  Integer;
     Defined: Boolean;
   end;
@@ -206,7 +208,7 @@ type
 
   { Internal assembler state for a single section }
   TSectionState = record
-    Kind:   TElfSectionKind;
+    Kind:   TContainerSectionKind;
     Offset: Integer;       { current offset within section }
   end;
 
@@ -1032,15 +1034,15 @@ end;
 
 type
   TRelocRequest = record
-    Section:  TElfSectionKind;
+    Section:  TContainerSectionKind;
     Offset:   Integer;
     Symbol:   string;
-    RType:    TElfRelocType;
+    RType:    TContainerRelocKind;
     Addend:   Int64;
   end;
 
   TEncodeContext = record
-    Section:  TElfSectionKind;
+    Section:  TContainerSectionKind;
     Offset:   Integer;
     Relocs:      array of TRelocRequest;
     RelocCount:  Integer;
@@ -1207,7 +1209,7 @@ end;
 
 { Add a relocation request to the context }
 procedure AddRelocReq(var ACtx: TEncodeContext; AOffset: Integer;
-  const ASym: string; ARType: TElfRelocType; AAddend: Int64);
+  const ASym: string; ARType: TContainerRelocKind; AAddend: Int64);
 var
   R: TRelocRequest;
 begin
@@ -1240,7 +1242,7 @@ begin
     CBPatch32(ACB, DispOff, PcRelDisp);
   end
   else
-    AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertPC32,
+    AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, crkPC32,
                 AOp.SymDisp - 4 - ACtx.ImmTail);
 end;
 
@@ -1257,7 +1259,7 @@ begin
   if AOp.Sym <> '' then
   begin
     CBEmit32(ACB, 0);
-    AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertTPOFF32, 0);
+    AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, crkTPOFF32, 0);
   end
   else
     CBEmit32(ACB, Integer(AOp.Disp));
@@ -1280,7 +1282,7 @@ begin
         Dummy := EmitModRMMem(ACB, AReg, AOp.Base, AOp.Index, AOp.Scale,
                               $7FFFFFFF, DispOff);
         CBPatch32(ACB, DispOff, 0);
-        AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, ertTPOFF32,
+        AddRelocReq(ACtx, ACtx.Offset + DispOff, AOp.Sym, crkTPOFF32,
                     AOp.SymDisp);
       end
       else if AOp.Sym <> '' then
@@ -1558,10 +1560,10 @@ begin
           CBPatch32(CB, DispOff, Integer(RelDisp));
         end
         else
-          AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, ertPLT32, -4);
+          AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, crkPLT32, -4);
       end
       else
-        AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, ertPLT32, -4);
+        AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, crkPLT32, -4);
     end
     else if IsMemLike(Op1) then
     begin
@@ -1604,7 +1606,7 @@ begin
         { External or other-section target: emit a relocation rather
           than silently encoding displacement 0 (a jump to the next
           instruction). }
-        AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, ertPLT32,
+        AddRelocReq(ACtx, ACtx.Offset + DispOff, Op1.Sym, crkPLT32,
                     Int64(-4));
     end
     else if (Op1.Kind = opIndirect) then
@@ -2859,10 +2861,10 @@ end;
 { ---- Directive handler ------------------------------------------------ }
 
 procedure HandleDirective(const AParsed: TParsedLine;
-  var ASection: TElfSectionKind; AWriter: TElfObjectWriter;
+  var ASection: TContainerSectionKind; AWriter: IContainerWriter;
   var AGlobals: TDictionary<string, Boolean>;
   var AWeaks: TDictionary<string, Boolean>;
-  var ATypes: TDictionary<string, TElfSymType>;
+  var ATypes: TDictionary<string, TContainerSymType>;
   var ACtx: TEncodeContext);
 var
   Dir, Args: string;
@@ -2884,33 +2886,33 @@ begin
 
   if Dir = '.text' then
   begin
-    ASection := eskText;
+    ASection := cskText;
     Exit;
   end;
 
   if Dir = '.data' then
   begin
-    ASection := eskData;
+    ASection := cskData;
     Exit;
   end;
 
   if (Dir = '.section') then
   begin
     if StartsWithStr(Args, '.rodata') then
-      ASection := eskRodata
+      ASection := cskRodata
     else if StartsWithStr(Args, '.tbss') then
-      ASection := eskTbss
+      ASection := cskTbss
     else if StartsWithStr(Args, '.note.GNU-stack') then
       Exit
     else if StartsWithStr(Args, '.data') then
-      ASection := eskData
+      ASection := cskData
     else if StartsWithStr(Args, '.bss') then
-      ASection := eskBss
+      ASection := cskBss
     else if StartsWithStr(Args, '.opdf') then
       { OPDF debug section: alloc+write progbits data.  Holds .byte/.word/.int/
         .quad/.ascii records emitted by uDebugOPDF; .quad <label> lines become
         R_X86_64_64 relocations via the same data-section machinery below. }
-      ASection := eskOpdf
+      ASection := cskOpdf
     else
       raise EAssembler.Create('unsupported section: ' + Args);
     Exit;
@@ -2942,17 +2944,17 @@ begin
       if (TypeStr = '@function') then
       begin
         if not ATypes.ContainsKey(SymName) then
-          ATypes.Add(SymName, estFunc);
+          ATypes.Add(SymName, cstFunc);
       end
       else if (TypeStr = '@object') then
       begin
         if not ATypes.ContainsKey(SymName) then
-          ATypes.Add(SymName, estObject);
+          ATypes.Add(SymName, cstObject);
       end
       else if (TypeStr = '@tls_object') then
       begin
         if not ATypes.ContainsKey(SymName) then
-          ATypes.Add(SymName, estTLS);
+          ATypes.Add(SymName, cstTLS);
       end;
     end;
     Exit;
@@ -3040,7 +3042,7 @@ begin
         the linker via R_X86_64_32. }
       ACtx.Section := ASection;
       AddRelocReq(ACtx, AWriter.CurrentOffset(ASection), DataOp.Sym,
-                  ert32, DataOp.SymDisp);
+                  crk32, DataOp.SymDisp);
       AWriter.AppendDWord(ASection, 0);
     end
     else if DataOp.Kind = opImm then
@@ -3061,7 +3063,7 @@ begin
         vtable in the program. }
       ACtx.Section := ASection;
       AddRelocReq(ACtx, AWriter.CurrentOffset(ASection), DataOp.Sym,
-                  ert64, DataOp.SymDisp);
+                  crk64, DataOp.SymDisp);
       AWriter.AppendQWord(ASection, 0);
     end
     else if DataOp.Kind = opImm then
@@ -3222,18 +3224,18 @@ var
   Labels: TLabelMap;
   Globals: TDictionary<string, Boolean>;
   Weaks: TDictionary<string, Boolean>;
-  Types: TDictionary<string, TElfSymType>;
-  Writer: TElfObjectWriter;
+  Types: TDictionary<string, TContainerSymType>;
+  Writer: IContainerWriter;
   I: Integer;
   PL: TParsedLine;
-  Section: TElfSectionKind;
+  Section: TContainerSectionKind;
   Info: TLabelInfo;
   Ctx: TEncodeContext;
   Encoded: string;
   R: TRelocRequest;
   SymIdx: Integer;
-  Bind: TElfSymBind;
-  SType: TElfSymType;
+  Bind: TContainerSymBind;
+  SType: TContainerSymType;
   LabelKey: string;
   LabelVal: TLabelInfo;
 begin
@@ -3243,7 +3245,7 @@ begin
   Labels := TLabelMap.Create();
   Globals := TDictionary<string, Boolean>.Create();
   Weaks := TDictionary<string, Boolean>.Create();
-  Types := TDictionary<string, TElfSymType>.Create();
+  Types := TDictionary<string, TContainerSymType>.Create();
   Writer := TElfObjectWriter.Create();
   SetLength(Ctx.Relocs, 0);
   Ctx.RelocCount := 0;
@@ -3265,7 +3267,7 @@ begin
     ParsedCount := Lines.Count;
 
     { ---- Pass 1: collect labels and compute section sizes ---- }
-    Section := eskText;
+    Section := cskText;
     Ctx.Labels := Labels;
     Ctx.Pass := 1;
 
@@ -3310,13 +3312,14 @@ begin
     end;
 
     { ---- Reset section offsets for pass 2 ---- }
-    Writer.Free();
+    { Reassignment releases the pass-1 writer (IContainerWriter is
+      ARC-managed — no manual Free). }
     Writer := TElfObjectWriter.Create();
     SetLength(Ctx.Relocs, 0);
     Ctx.RelocCount := 0;
 
     { ---- Pass 2: encode with resolved labels ---- }
-    Section := eskText;
+    Section := cskText;
     Ctx.Pass := 2;
 
     for I := 0 to ParsedCount - 1 do
@@ -3357,9 +3360,9 @@ begin
     end;
 
     { ---- Define symbols ---- }
-    Writer.DefineSymbol('', eskText, 0, 0, esbLocal, estSection);
-    Writer.DefineSymbol('.data', eskData, 0, 0, esbLocal, estSection);
-    Writer.DefineSymbol('.rodata', eskRodata, 0, 0, esbLocal, estSection);
+    Writer.DefineSymbol('', cskText, 0, 0, csbLocal, cstSection);
+    Writer.DefineSymbol('.data', cskData, 0, 0, csbLocal, cstSection);
+    Writer.DefineSymbol('.rodata', cskRodata, 0, 0, csbLocal, cstSection);
 
     for I := 0 to Labels.Count - 1 do
     begin
@@ -3367,11 +3370,11 @@ begin
       LabelVal := Labels.GetVal(I);
 
       if Globals.ContainsKey(LabelKey) then
-        Bind := esbGlobal
+        Bind := csbGlobal
       else if Weaks.ContainsKey(LabelKey) then
-        Bind := esbWeak
+        Bind := csbWeak
       else
-        Bind := esbLocal;
+        Bind := csbLocal;
 
       if not Types.TryGetValue(LabelKey, SType) then
       begin
@@ -3379,10 +3382,10 @@ begin
           section; mirror that.  External linkers resolve @tpoff against a
           non-TLS symbol as a plain vaddr, which puts threadvars at a wild
           positive thread-pointer offset in cc-linked binaries. }
-        if LabelVal.Section = eskTbss then
-          SType := estTLS
+        if LabelVal.Section = cskTbss then
+          SType := cstTLS
         else
-          SType := estNone;
+          SType := cstNone;
       end;
 
       Writer.DefineSymbol(LabelKey, LabelVal.Section,
@@ -3402,7 +3405,7 @@ begin
     Result := Writer.Finish();
   finally
     SetLength(Ctx.Relocs, 0);
-    Writer.Free();
+    { Writer is IContainerWriter — released by ARC at scope exit, not Free. }
     Types.Free();
     Weaks.Free();
     Globals.Free();

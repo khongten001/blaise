@@ -23,53 +23,15 @@ unit blaise.elfwriter;
 interface
 
 uses
-  SysUtils, Generics.Collections;
+  SysUtils, Generics.Collections, blaise.container.writer;
+
+{ The writer's section/symbol/relocation vocabulary (TContainerSectionKind,
+  TContainerSymBind, TContainerSymType, TContainerRelocKind, TContainerReloc)
+  and the IContainerWriter contract live in blaise.container.writer — the
+  container-agnostic seam this ELF writer implements. }
 
 type
   EElfWriter = class(Exception);
-
-  TElfSectionKind = (
-    eskText,     { .text — executable code }
-    eskData,     { .data — read-write initialised data }
-    eskRodata,   { .rodata — read-only data }
-    eskBss,      { .bss — zero-initialised read-write data }
-    eskTbss,     { .tbss — thread-local zero-initialised data }
-    eskOpdf      { .opdf OPDF debug info (alloc+write, progbits) }
-  );
-
-  TElfSymBind = (
-    esbLocal,    { STB_LOCAL — file scope }
-    esbGlobal,   { STB_GLOBAL — visible to linker }
-    esbWeak      { STB_WEAK — overridable global }
-  );
-
-  TElfSymType = (
-    estNone,     { STT_NOTYPE }
-    estFunc,     { STT_FUNC }
-    estObject,   { STT_OBJECT }
-    estSection,  { STT_SECTION }
-    estTLS       { STT_TLS }
-  );
-
-  TElfRelocType = (
-    ertNone,
-    ert64,           { R_X86_64_64        — absolute 64-bit }
-    ert32,           { R_X86_64_32        — absolute 32-bit (zero-extend) }
-    ert32S,          { R_X86_64_32S       — absolute 32-bit (sign-extend) }
-    ertPC32,         { R_X86_64_PC32      — PC-relative 32-bit }
-    ertPLT32,        { R_X86_64_PLT32     — PLT-relative 32-bit }
-    ertGOTPCREL,     { R_X86_64_GOTPCREL  — GOT PC-relative 32-bit }
-    ertTPOFF32,      { R_X86_64_TPOFF32   — TLS TP-relative 32-bit }
-    ertGOTPCRELX,    { R_X86_64_GOTPCRELX — relaxable GOTPCREL }
-    ertREX_GOTPCRELX { R_X86_64_REX_GOTPCRELX — relaxable GOTPCREL with REX }
-  );
-
-  TElfReloc = record
-    Offset:   Integer;      { byte offset within the section }
-    SymIndex: Integer;      { index into the symbol table }
-    RType:    TElfRelocType; { relocation type }
-    Addend:   Int64;         { addend (RELA) }
-  end;
 
   { Amortized-growth byte buffer.  Used to assemble the final ELF image in
     Finish without the O(n^2) `Buf := Buf + ...` per-byte string growth that
@@ -104,14 +66,14 @@ type
     needs indexed byte access into section bodies. }
   TElfWriterSection = class
   public
-    Kind:      TElfSectionKind;
+    Kind:      TContainerSectionKind;
     Bytes:     array of Byte;  { backing store; capacity = Length(Bytes) }
     Count:     Integer;        { logical byte length (<= Length(Bytes)) }
     Size:      Integer;        { for BSS: logical size; for others: Count }
     Align:     Integer;        { section alignment (power of 2) }
-    Relocs:    array of TElfReloc;
+    Relocs:    array of TContainerReloc;
     RelocCount: Integer;
-    constructor Create(AKind: TElfSectionKind);
+    constructor Create(AKind: TContainerSectionKind);
     destructor Destroy; override;
     { Append one byte, growing the backing store geometrically. }
     procedure PushByte(AVal: Integer);
@@ -124,58 +86,60 @@ type
   TElfWriterSym = class
   public
     Name:      string;
-    Section:   TElfSectionKind;
+    Section:   TContainerSectionKind;
     Value:     Integer;
     Size:      Integer;
-    Bind:      TElfSymBind;
-    SType:     TElfSymType;
+    Bind:      TContainerSymBind;
+    SType:     TContainerSymType;
     IsExtern:  Boolean;
   end;
 
-  { The main ELF object builder. }
-  TElfObjectWriter = class
+  { The main ELF object builder.  Implements the container-agnostic
+    IContainerWriter seam (ARC-managed when held through the interface —
+    do not mix with manual Free in that case). }
+  TElfObjectWriter = class(TObject, IContainerWriter)
   private
     FSections: array of TElfWriterSection;
     FSymbols:  TList<TElfWriterSym>;
     FSymMap:   TDictionary<string, Integer>;
 
-    function GetSection(AKind: TElfSectionKind): TElfWriterSection;
-    function SectionName(AKind: TElfSectionKind): string;
+    function GetSection(AKind: TContainerSectionKind): TElfWriterSection;
+    function SectionName(AKind: TContainerSectionKind): string;
   public
     constructor Create;
     destructor Destroy; override;
 
     { Switch to a section (creates on first use). }
-    procedure SelectSection(AKind: TElfSectionKind);
+    procedure SelectSection(AKind: TContainerSectionKind);
 
     { Append raw bytes to a section.  Returns the offset at which the
       bytes were placed. }
-    function Append(AKind: TElfSectionKind; const ABytes: string): Integer;
+    function Append(AKind: TContainerSectionKind; const ABytes: string): Integer;
     { Append a single byte. }
-    procedure AppendByte(AKind: TElfSectionKind; AVal: Integer);
+    procedure AppendByte(AKind: TContainerSectionKind; AVal: Integer);
     { Append a 16-bit little-endian value. }
-    procedure AppendWord(AKind: TElfSectionKind; AVal: Integer);
+    procedure AppendWord(AKind: TContainerSectionKind; AVal: Integer);
     { Append a 32-bit little-endian value. }
-    procedure AppendDWord(AKind: TElfSectionKind; AVal: Integer);
+    procedure AppendDWord(AKind: TContainerSectionKind; AVal: Integer);
     { Append a 64-bit little-endian value. }
-    procedure AppendQWord(AKind: TElfSectionKind; AVal: Int64);
+    procedure AppendQWord(AKind: TContainerSectionKind; AVal: Int64);
     { Append N zero bytes. }
-    procedure AppendZeros(AKind: TElfSectionKind; ACount: Integer);
+    procedure AppendZeros(AKind: TContainerSectionKind; ACount: Integer);
     { Pad the section to the next multiple of AAlign. }
-    procedure AlignSection(AKind: TElfSectionKind; AAlign: Integer);
+    procedure AlignSection(AKind: TContainerSectionKind; AAlign: Integer);
     { Reserve ASize bytes in a BSS/TBSS section (no data emitted). }
-    procedure ReserveBss(AKind: TElfSectionKind; ASize: Integer);
+    procedure ReserveBss(AKind: TContainerSectionKind; ASize: Integer);
 
     { Current write offset in a section. }
-    function CurrentOffset(AKind: TElfSectionKind): Integer;
+    function CurrentOffset(AKind: TContainerSectionKind): Integer;
 
     { Patch a 32-bit value at an existing offset in a section. }
-    procedure Patch32(AKind: TElfSectionKind; AOffset: Integer; AVal: Integer);
+    procedure Patch32(AKind: TContainerSectionKind; AOffset: Integer; AVal: Integer);
 
     { Define a symbol.  Returns the symbol index. }
-    function DefineSymbol(const AName: string; ASection: TElfSectionKind;
+    function DefineSymbol(const AName: string; ASection: TContainerSectionKind;
       AValue: Integer; ASize: Integer;
-      ABind: TElfSymBind; ASType: TElfSymType): Integer;
+      ABind: TContainerSymBind; ASType: TContainerSymType): Integer;
     { Reference an external (undefined) symbol.  Returns the symbol index.
       Idempotent — returns existing index if already declared. }
     function ExternSymbol(const AName: string): Integer;
@@ -183,8 +147,8 @@ type
     function FindSymbol(const AName: string): Integer;
 
     { Add a relocation to a section. }
-    procedure AddReloc(ASection: TElfSectionKind; AOffset: Integer;
-      ASymIndex: Integer; ARType: TElfRelocType; AAddend: Int64);
+    procedure AddReloc(ASection: TContainerSectionKind; AOffset: Integer;
+      ASymIndex: Integer; ARType: TContainerRelocKind; AAddend: Int64);
 
     { Serialise the complete ELF object to a byte string. }
     function Finish: string;
@@ -251,7 +215,7 @@ const
 
 { ---- TElfWriterSection ------------------------------------------------ }
 
-constructor TElfWriterSection.Create(AKind: TElfSectionKind);
+constructor TElfWriterSection.Create(AKind: TContainerSectionKind);
 begin
   inherited Create();
   Kind  := AKind;
@@ -518,21 +482,21 @@ begin
   inherited Destroy();
 end;
 
-function TElfObjectWriter.SectionName(AKind: TElfSectionKind): string;
+function TElfObjectWriter.SectionName(AKind: TContainerSectionKind): string;
 begin
   case AKind of
-    eskText:   Result := '.text';
-    eskData:   Result := '.data';
-    eskRodata: Result := '.rodata';
-    eskBss:    Result := '.bss';
-    eskTbss:   Result := '.tbss';
-    eskOpdf:   Result := '.opdf';
+    cskText:   Result := '.text';
+    cskData:   Result := '.data';
+    cskRodata: Result := '.rodata';
+    cskBss:    Result := '.bss';
+    cskTbss:   Result := '.tbss';
+    cskOpdf:   Result := '.opdf';
   else
     Result := '.text';
   end;
 end;
 
-function TElfObjectWriter.GetSection(AKind: TElfSectionKind): TElfWriterSection;
+function TElfObjectWriter.GetSection(AKind: TContainerSectionKind): TElfWriterSection;
 var
   Idx: Integer;
 begin
@@ -542,12 +506,12 @@ begin
   Result := FSections[Idx];
 end;
 
-procedure TElfObjectWriter.SelectSection(AKind: TElfSectionKind);
+procedure TElfObjectWriter.SelectSection(AKind: TContainerSectionKind);
 begin
   GetSection(AKind);
 end;
 
-function TElfObjectWriter.Append(AKind: TElfSectionKind; const ABytes: string): Integer;
+function TElfObjectWriter.Append(AKind: TContainerSectionKind; const ABytes: string): Integer;
 var
   Sec: TElfWriterSection;
   I: Integer;
@@ -558,12 +522,12 @@ begin
     Sec.PushByte(Ord(ABytes[I]));
 end;
 
-procedure TElfObjectWriter.AppendByte(AKind: TElfSectionKind; AVal: Integer);
+procedure TElfObjectWriter.AppendByte(AKind: TContainerSectionKind; AVal: Integer);
 begin
   GetSection(AKind).PushByte(AVal);
 end;
 
-procedure TElfObjectWriter.AppendWord(AKind: TElfSectionKind; AVal: Integer);
+procedure TElfObjectWriter.AppendWord(AKind: TContainerSectionKind; AVal: Integer);
 var
   Sec: TElfWriterSection;
 begin
@@ -572,7 +536,7 @@ begin
   Sec.PushByte((AVal shr 8) and $FF);
 end;
 
-procedure TElfObjectWriter.AppendDWord(AKind: TElfSectionKind; AVal: Integer);
+procedure TElfObjectWriter.AppendDWord(AKind: TContainerSectionKind; AVal: Integer);
 var
   Sec: TElfWriterSection;
 begin
@@ -583,7 +547,7 @@ begin
   Sec.PushByte((AVal shr 24) and $FF);
 end;
 
-procedure TElfObjectWriter.AppendQWord(AKind: TElfSectionKind; AVal: Int64);
+procedure TElfObjectWriter.AppendQWord(AKind: TContainerSectionKind; AVal: Int64);
 var
   Sec: TElfWriterSection;
   I: Integer;
@@ -593,7 +557,7 @@ begin
     Sec.PushByte(Integer((AVal shr (I * 8)) and $FF));
 end;
 
-procedure TElfObjectWriter.AppendZeros(AKind: TElfSectionKind; ACount: Integer);
+procedure TElfObjectWriter.AppendZeros(AKind: TContainerSectionKind; ACount: Integer);
 var
   Sec: TElfWriterSection;
   I: Integer;
@@ -603,7 +567,7 @@ begin
     Sec.PushByte(0);
 end;
 
-procedure TElfObjectWriter.AlignSection(AKind: TElfSectionKind; AAlign: Integer);
+procedure TElfObjectWriter.AlignSection(AKind: TContainerSectionKind; AAlign: Integer);
 var
   Sec: TElfWriterSection;
   Pad, I: Integer;
@@ -611,7 +575,7 @@ begin
   Sec := GetSection(AKind);
   if AAlign > Sec.Align then
     Sec.Align := AAlign;
-  if (AKind = eskBss) or (AKind = eskTbss) then
+  if (AKind = cskBss) or (AKind = cskTbss) then
   begin
     Sec.Size := ElfAlignUp(Sec.Size, AAlign);
   end
@@ -623,7 +587,7 @@ begin
   end;
 end;
 
-procedure TElfObjectWriter.ReserveBss(AKind: TElfSectionKind; ASize: Integer);
+procedure TElfObjectWriter.ReserveBss(AKind: TContainerSectionKind; ASize: Integer);
 var
   Sec: TElfWriterSection;
 begin
@@ -631,18 +595,18 @@ begin
   Sec.Size := Sec.Size + ASize;
 end;
 
-function TElfObjectWriter.CurrentOffset(AKind: TElfSectionKind): Integer;
+function TElfObjectWriter.CurrentOffset(AKind: TContainerSectionKind): Integer;
 var
   Sec: TElfWriterSection;
 begin
   Sec := GetSection(AKind);
-  if (AKind = eskBss) or (AKind = eskTbss) then
+  if (AKind = cskBss) or (AKind = cskTbss) then
     Result := Sec.Size
   else
     Result := Sec.Count;
 end;
 
-procedure TElfObjectWriter.Patch32(AKind: TElfSectionKind; AOffset: Integer;
+procedure TElfObjectWriter.Patch32(AKind: TContainerSectionKind; AOffset: Integer;
   AVal: Integer);
 var
   Sec: TElfWriterSection;
@@ -655,8 +619,8 @@ begin
 end;
 
 function TElfObjectWriter.DefineSymbol(const AName: string;
-  ASection: TElfSectionKind; AValue: Integer; ASize: Integer;
-  ABind: TElfSymBind; ASType: TElfSymType): Integer;
+  ASection: TContainerSectionKind; AValue: Integer; ASize: Integer;
+  ABind: TContainerSymBind; ASType: TContainerSymType): Integer;
 var
   Sym: TElfWriterSym;
   Existing: Integer;
@@ -691,11 +655,11 @@ begin
   end;
   Sym := TElfWriterSym.Create();
   Sym.Name     := AName;
-  Sym.Section  := eskText;
+  Sym.Section  := cskText;
   Sym.Value    := 0;
   Sym.Size     := 0;
-  Sym.Bind     := esbGlobal;
-  Sym.SType    := estNone;
+  Sym.Bind     := csbGlobal;
+  Sym.SType    := cstNone;
   Sym.IsExtern := True;
   Result := FSymbols.Count;
   FSymbols.Add(Sym);
@@ -712,11 +676,11 @@ begin
     Result := -1;
 end;
 
-procedure TElfObjectWriter.AddReloc(ASection: TElfSectionKind; AOffset: Integer;
-  ASymIndex: Integer; ARType: TElfRelocType; AAddend: Int64);
+procedure TElfObjectWriter.AddReloc(ASection: TContainerSectionKind; AOffset: Integer;
+  ASymIndex: Integer; ARType: TContainerRelocKind; AAddend: Int64);
 var
   Sec: TElfWriterSection;
-  R: TElfReloc;
+  R: TContainerReloc;
 begin
   Sec := GetSection(ASection);
   R.Offset   := AOffset;
@@ -731,43 +695,43 @@ end;
 
 { ---- Finish: serialise to ELF bytes ---------------------------------- }
 
-function RelocTypeToElf(ARType: TElfRelocType): Integer;
+function RelocTypeToElf(ARType: TContainerRelocKind): Integer;
 begin
   case ARType of
-    ertNone:           Result := R_X86_64_NONE;
-    ert64:             Result := R_X86_64_64;
-    ert32:             Result := R_X86_64_32;
-    ert32S:            Result := R_X86_64_32S;
-    ertPC32:           Result := R_X86_64_PC32;
-    ertPLT32:          Result := R_X86_64_PLT32;
-    ertGOTPCREL:       Result := R_X86_64_GOTPCREL;
-    ertTPOFF32:        Result := R_X86_64_TPOFF32;
-    ertGOTPCRELX:      Result := R_X86_64_GOTPCRELX;
-    ertREX_GOTPCRELX:  Result := R_X86_64_REX_GOTPCRELX;
+    crkNone:           Result := R_X86_64_NONE;
+    crk64:             Result := R_X86_64_64;
+    crk32:             Result := R_X86_64_32;
+    crk32S:            Result := R_X86_64_32S;
+    crkPC32:           Result := R_X86_64_PC32;
+    crkPLT32:          Result := R_X86_64_PLT32;
+    crkGOTPCREL:       Result := R_X86_64_GOTPCREL;
+    crkTPOFF32:        Result := R_X86_64_TPOFF32;
+    crkGOTPCRELX:      Result := R_X86_64_GOTPCRELX;
+    crkREX_GOTPCRELX:  Result := R_X86_64_REX_GOTPCRELX;
   else
     Result := R_X86_64_NONE;
   end;
 end;
 
-function SymBindToElf(ABind: TElfSymBind): Integer;
+function SymBindToElf(ABind: TContainerSymBind): Integer;
 begin
   case ABind of
-    esbLocal:  Result := STB_LOCAL;
-    esbGlobal: Result := STB_GLOBAL;
-    esbWeak:   Result := STB_WEAK;
+    csbLocal:  Result := STB_LOCAL;
+    csbGlobal: Result := STB_GLOBAL;
+    csbWeak:   Result := STB_WEAK;
   else
     Result := STB_LOCAL;
   end;
 end;
 
-function SymTypeToElf(ASType: TElfSymType): Integer;
+function SymTypeToElf(ASType: TContainerSymType): Integer;
 begin
   case ASType of
-    estNone:    Result := STT_NOTYPE;
-    estFunc:    Result := STT_FUNC;
-    estObject:  Result := STT_OBJECT;
-    estSection: Result := STT_SECTION;
-    estTLS:     Result := STT_TLS;
+    cstNone:    Result := STT_NOTYPE;
+    cstFunc:    Result := STT_FUNC;
+    cstObject:  Result := STT_OBJECT;
+    cstSection: Result := STT_SECTION;
+    cstTLS:     Result := STT_TLS;
   else
     Result := STT_NOTYPE;
   end;
@@ -867,7 +831,7 @@ var
     then .rela.text, .rela.data, .rela.rodata,
     then .symtab, .strtab, .shstrtab.
     We track which sections exist and their SHT indices. }
-  SecOrder: array[0..5] of TElfSectionKind;
+  SecOrder: array[0..5] of TContainerSectionKind;
   SecPresent: array[0..5] of Boolean;
   SecShtIdx: array[0..5] of Integer;
   NumDataSecs: Integer;
@@ -878,7 +842,7 @@ var
   I, J, K: Integer;
   Sec: TElfWriterSection;
   Sym: TElfWriterSym;
-  R: TElfReloc;
+  R: TContainerReloc;
 
   Strtab: TByteBuf;
   Shstrtab: TByteBuf;
@@ -909,12 +873,12 @@ var
   SymtabNameIdx, StrtabNameIdx, ShstrtabNameIdx, NoteNameIdx: Integer;
 
 begin
-  SecOrder[0] := eskText;
-  SecOrder[1] := eskData;
-  SecOrder[2] := eskRodata;
-  SecOrder[3] := eskBss;
-  SecOrder[4] := eskTbss;
-  SecOrder[5] := eskOpdf;
+  SecOrder[0] := cskText;
+  SecOrder[1] := cskData;
+  SecOrder[2] := cskRodata;
+  SecOrder[3] := cskBss;
+  SecOrder[4] := cskTbss;
+  SecOrder[5] := cskOpdf;
 
   NumDataSecs := 0;
   for I := 0 to 5 do
@@ -983,7 +947,7 @@ begin
     for I := 0 to FSymbols.Count - 1 do
     begin
       Sym := FSymbols.Get(I);
-      if Sym.Bind = esbLocal then
+      if Sym.Bind = csbLocal then
         LocalSyms.Add(I)
       else
         GlobalSyms.Add(I);
@@ -1071,7 +1035,7 @@ begin
       if Sec.Align > 1 then
         CurOff := ElfAlignUp64(CurOff, Int64(Sec.Align));
       SecFileOff[I] := CurOff;
-      if (SecOrder[I] <> eskBss) and (SecOrder[I] <> eskTbss) then
+      if (SecOrder[I] <> cskBss) and (SecOrder[I] <> cskTbss) then
         CurOff := CurOff + Int64(Sec.Count);
     end;
 
@@ -1139,7 +1103,7 @@ begin
     begin
       if not SecPresent[I] then Continue;
       Sec := GetSection(SecOrder[I]);
-      if (SecOrder[I] = eskBss) or (SecOrder[I] = eskTbss) then Continue;
+      if (SecOrder[I] = cskBss) or (SecOrder[I] = cskTbss) then Continue;
       OutBuf.PadTo(Integer(SecFileOff[I]));
       OutBuf.AppendBytes(Sec.AsString());
     end;
@@ -1178,32 +1142,32 @@ begin
       if not SecPresent[I] then Continue;
       Sec := GetSection(SecOrder[I]);
       case SecOrder[I] of
-        eskText:
+        cskText:
         begin
           ShFlags := SHF_ALLOC or SHF_EXECINSTR;
           ShType  := SHT_PROGBITS;
         end;
-        eskData:
+        cskData:
         begin
           ShFlags := SHF_ALLOC or SHF_WRITE;
           ShType  := SHT_PROGBITS;
         end;
-        eskRodata:
+        cskRodata:
         begin
           ShFlags := SHF_ALLOC;
           ShType  := SHT_PROGBITS;
         end;
-        eskBss:
+        cskBss:
         begin
           ShFlags := SHF_ALLOC or SHF_WRITE;
           ShType  := SHT_NOBITS;
         end;
-        eskTbss:
+        cskTbss:
         begin
           ShFlags := SHF_ALLOC or SHF_WRITE or SHF_TLS;
           ShType  := SHT_NOBITS;
         end;
-        eskOpdf:
+        cskOpdf:
         begin
           { OPDF debug section: alloc+write progbits, matching GNU as output
             for `.section .opdf, "aw", @progbits`.  SHF_ALLOC makes it ride
