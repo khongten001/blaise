@@ -422,30 +422,26 @@ type
     procedure EmitFieldCleanupFn(const AMangledName: string;
                                  ART: TRecordTypeDesc;
                                  AWeak: Boolean);
-    { Release every ARC-managed field of ART whose storage starts at the address
-      in the callee-saved register ABaseReg (an AT&T operand such as '%rbx').
-      Strings, classes, dyn-arrays and interface obj-slots are released; weak
-      fields cleared; unretained fields skipped; nested record fields are
-      recursed into at their offset.  ABaseReg must survive callq (caller picks
-      a callee-saved register).  Used by both _FieldCleanup_<T> and record-local
-      scope-exit cleanup. }
-    procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
-                                      const ABaseReg: string);
-    { Release one ARC-managed value of type AType whose storage is at the address
-      in callee-saved ABaseReg.  Scalars (string/class/intf/dynarray) are
-      released directly; records recurse via EmitRecordFieldReleases; static
-      arrays recurse element-by-element via EmitStaticArrayReleaseElems.  When
-      AZero is set the scalar managed slot is zeroed after release (exception
-      path).  ABaseReg must survive callq. }
-    procedure EmitManagedReleaseAt(AType: TTypeDesc; const ABaseReg: string;
-                                   AZero: Boolean);
-    { Release every managed element of a static array whose inline storage starts
-      at the address in callee-saved ABaseReg.  Loops the element count,
-      releasing each via EmitManagedReleaseAt. }
-    procedure EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
-                                          const ABaseReg: string; AZero: Boolean);
-    procedure EmitRecordFieldRetains(ART: TRecordTypeDesc;
-                                     const ABaseReg: string);
+    { ARC field-kind walks (EmitRecordFieldReleases / EmitRecordFieldRetains /
+      EmitManagedReleaseAt / EmitStaticArrayReleaseElems) live in
+      TNativeBackend as Template Methods; this backend supplies only the
+      x86-64 leaf primitives below.  ABaseReg operands are AT&T register
+      names ('%rbx' etc.) and must be callee-saved. }
+    function  ArcNestedBaseReg: string; override;
+    procedure ArcPushNestedBase(AOffset: Integer;
+                                const ABaseReg: string); override;
+    procedure ArcPopNestedBase; override;
+    procedure EmitWeakClearAt(AOffset: Integer;
+                              const ABaseReg: string); override;
+    procedure EmitReleaseSlotAt(AType: TTypeDesc; AOffset: Integer;
+                                const ABaseReg: string;
+                                AZero: Boolean); override;
+    procedure EmitRetainSlotAt(AType: TTypeDesc; AOffset: Integer;
+                               const ABaseReg: string); override;
+    procedure ArcEnterArrayWalk(const ABaseReg: string); override;
+    procedure ArcArrayElemAddr(AByteOffset: Integer); override;
+    function  ArcArrayElemReg: string; override;
+    procedure ArcLeaveArrayWalk; override;
     { Emit all class/record method definitions for the given type decls plus
       the supplied generic-instance lists. }
     procedure EmitClassMethods(ATypeDecls: TObjectList;
@@ -2845,94 +2841,48 @@ begin
   Self.Emit('.type _FieldCleanup_' + AMangledName + ', @function');
 end;
 
-procedure TX86_64Backend.EmitRecordFieldReleases(ART: TRecordTypeDesc;
-  const ABaseReg: string);
-var
-  I:    Integer;
-  F:    TFieldInfo;
+{ ---- ARC walk primitives (x86-64 leaves of the TNativeBackend walks) ---- }
+
+function TX86_64Backend.ArcNestedBaseReg: string;
 begin
-  if ART = nil then Exit;
-  for I := 0 to ART.Fields.Count - 1 do
-  begin
-    F := TFieldInfo(ART.Fields.Items[I]);
-    if F.TypeDesc = nil then Continue;
-    { Nested record field: recurse into its managed sub-fields.  ABaseReg must
-      stay pointed at the parent record (each iteration derives field addresses
-      from it), so the recursion uses its own callee-saved register (%r14). }
-    if F.TypeDesc.Kind = tyRecord then
-    begin
-      { Derive the nested record base into %r14 (callee-saved) so the recursive
-        releases survive their own calls without disturbing ABaseReg. }
-      Self.Emit(#9'pushq %r14');
-      if F.Offset > 0 then
-        Self.Emit(Format(#9'leaq %d(%s), %%r14', [F.Offset, ABaseReg]))
-      else
-        Self.Emit(Format(#9'movq %s, %%r14', [ABaseReg]));
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(F.TypeDesc), '%r14');
-      Self.Emit(#9'popq %r14');
-      Continue;
-    end;
-    { NOTE: a static-array-of-managed FIELD is intentionally NOT released here.
-      EmitRecordFieldReleases must stay symmetric with EmitRecordFieldRetains /
-      EmitRecordCopy, neither of which retains static-array elements; releasing
-      them here without a matching retain over-releases on every record copy /
-      by-value param pass and corrupts the heap.  Static-array element ARC is
-      handled only for scope-exit LOCALS (the bug-#4 case).  Records with such
-      fields remain a separate, latent concern. }
-    if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
-            or (F.TypeDesc.Kind = tyDynArray)
-            or (F.TypeDesc.Kind = tyInterface)) then
-      Continue;
-    if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
-      Continue;
-    if F.IsWeak then
-    begin
-      if F.Offset > 0 then
-        Self.Emit(Format(#9'leaq %d(%s), %%rdi', [F.Offset, ABaseReg]))
-      else
-        Self.Emit(Format(#9'movq %s, %%rdi', [ABaseReg]));
-      Self.Emit(#9'callq _WeakClear');
-      Continue;
-    end;
-    { Load the field's obj/data pointer (interface: the obj slot at +0). }
-    if F.Offset > 0 then
-      Self.Emit(Format(#9'movq %d(%s), %%rdi', [F.Offset, ABaseReg]))
-    else
-      Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
-    if F.TypeDesc.IsString() then
-      Self.Emit(#9'callq _StringRelease')
-    else if F.TypeDesc.Kind = tyDynArray then
-      Self.Emit(#9'callq _DynArrayRelease')
-    else
-      { tyClass and tyInterface both release the obj slot via _ClassRelease; an
-        interface's itab slot at +8 is static rodata and needs no release. }
-      Self.Emit(#9'callq _ClassRelease');
-    if F.Offset > 0 then
-      Self.Emit(Format(#9'movq $0, %d(%s)', [F.Offset, ABaseReg]))
-    else
-      Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
-  end;
+  Result := '%r14';
 end;
 
-procedure TX86_64Backend.EmitManagedReleaseAt(AType: TTypeDesc;
+procedure TX86_64Backend.ArcPushNestedBase(AOffset: Integer;
+  const ABaseReg: string);
+begin
+  { Derive the nested record base into %r14 (callee-saved) so the recursive
+    releases/retains survive their own calls without disturbing ABaseReg. }
+  Self.Emit(#9'pushq %r14');
+  if AOffset > 0 then
+    Self.Emit(Format(#9'leaq %d(%s), %%r14', [AOffset, ABaseReg]))
+  else
+    Self.Emit(Format(#9'movq %s, %%r14', [ABaseReg]));
+end;
+
+procedure TX86_64Backend.ArcPopNestedBase;
+begin
+  Self.Emit(#9'popq %r14');
+end;
+
+procedure TX86_64Backend.EmitWeakClearAt(AOffset: Integer;
+  const ABaseReg: string);
+begin
+  if AOffset > 0 then
+    Self.Emit(Format(#9'leaq %d(%s), %%rdi', [AOffset, ABaseReg]))
+  else
+    Self.Emit(Format(#9'movq %s, %%rdi', [ABaseReg]));
+  Self.Emit(#9'callq _WeakClear');
+end;
+
+procedure TX86_64Backend.EmitReleaseSlotAt(AType: TTypeDesc; AOffset: Integer;
   const ABaseReg: string; AZero: Boolean);
 begin
-  if AType = nil then Exit;
-  if AType.Kind = tyRecord then
-  begin
-    Self.EmitRecordFieldReleases(TRecordTypeDesc(AType), ABaseReg);
-    Exit;
-  end;
-  if AType.Kind = tyStaticArray then
-  begin
-    Self.EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(AType), ABaseReg, AZero);
-    Exit;
-  end;
-  if not (AType.IsString() or (AType.Kind = tyClass)
-          or (AType.Kind = tyDynArray) or (AType.Kind = tyInterface)) then
-    Exit;
-  { Load the element's obj/data pointer (interface: obj slot at +0). }
-  Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
+  { Load the slot's obj/data pointer (interface: the obj slot at +0). }
+  if AOffset > 0 then
+    Self.Emit(Format(#9'movq %d(%s), %%rdi', [AOffset, ABaseReg]))
+  else
+    Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
   if AType.IsString() then
     Self.Emit(#9'callq _StringRelease')
   else if AType.Kind = tyDynArray then
@@ -2942,16 +2892,31 @@ begin
       interface's itab slot at +8 is static rodata and needs no release. }
     Self.Emit(#9'callq _ClassRelease');
   if AZero then
-    Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
+  begin
+    if AOffset > 0 then
+      Self.Emit(Format(#9'movq $0, %d(%s)', [AOffset, ABaseReg]))
+    else
+      Self.Emit(Format(#9'movq $0, (%s)', [ABaseReg]));
+  end;
 end;
 
-procedure TX86_64Backend.EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
-  const ABaseReg: string; AZero: Boolean);
-var
-  I, ElemSize: Integer;
+procedure TX86_64Backend.EmitRetainSlotAt(AType: TTypeDesc; AOffset: Integer;
+  const ABaseReg: string);
 begin
-  if (AType = nil) or (AType.ElementType = nil) then Exit;
-  ElemSize := AType.ElementType.RawSize();
+  if AOffset > 0 then
+    Self.Emit(Format(#9'movq %d(%s), %%rdi', [AOffset, ABaseReg]))
+  else
+    Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
+  if AType.IsString() then
+    Self.Emit(#9'callq _StringAddRef')
+  else if AType.Kind = tyDynArray then
+    Self.Emit(#9'callq _DynArrayAddRef')
+  else
+    Self.Emit(#9'callq _ClassAddRef');
+end;
+
+procedure TX86_64Backend.ArcEnterArrayWalk(const ABaseReg: string);
+begin
   { Hold the array base in callee-saved %r15 and recompute each element address
     into %r14.  Both are saved/restored as a PAIR (even push count) so the
     stack stays 16-byte aligned at the per-element release callq.  Keeping the
@@ -2960,58 +2925,25 @@ begin
   Self.Emit(#9'pushq %r15');
   Self.Emit(#9'pushq %r14');
   Self.Emit(Format(#9'movq %s, %%r15', [ABaseReg]));
-  for I := 0 to AType.HighBound - AType.LowBound do
-  begin
-    if I * ElemSize > 0 then
-      Self.Emit(Format(#9'leaq %d(%%r15), %%r14', [I * ElemSize]))
-    else
-      Self.Emit(#9'movq %r15, %r14');
-    Self.EmitManagedReleaseAt(AType.ElementType, '%r14', AZero);
-  end;
-  Self.Emit(#9'popq %r14');
-  Self.Emit(#9'popq %r15');
 end;
 
-procedure TX86_64Backend.EmitRecordFieldRetains(ART: TRecordTypeDesc;
-  const ABaseReg: string);
-var
-  I: Integer;
-  F: TFieldInfo;
+procedure TX86_64Backend.ArcArrayElemAddr(AByteOffset: Integer);
 begin
-  if ART = nil then Exit;
-  for I := 0 to ART.Fields.Count - 1 do
-  begin
-    F := TFieldInfo(ART.Fields.Items[I]);
-    if F.TypeDesc = nil then Continue;
-    if F.TypeDesc.Kind = tyRecord then
-    begin
-      Self.Emit(#9'pushq %r14');
-      if F.Offset > 0 then
-        Self.Emit(Format(#9'leaq %d(%s), %%r14', [F.Offset, ABaseReg]))
-      else
-        Self.Emit(Format(#9'movq %s, %%r14', [ABaseReg]));
-      Self.EmitRecordFieldRetains(TRecordTypeDesc(F.TypeDesc), '%r14');
-      Self.Emit(#9'popq %r14');
-      Continue;
-    end;
-    if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
-            or (F.TypeDesc.Kind = tyDynArray)
-            or (F.TypeDesc.Kind = tyInterface)) then
-      Continue;
-    if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
-      Continue;
-    if F.IsWeak then Continue;
-    if F.Offset > 0 then
-      Self.Emit(Format(#9'movq %d(%s), %%rdi', [F.Offset, ABaseReg]))
-    else
-      Self.Emit(Format(#9'movq (%s), %%rdi', [ABaseReg]));
-    if F.TypeDesc.IsString() then
-      Self.Emit(#9'callq _StringAddRef')
-    else if F.TypeDesc.Kind = tyDynArray then
-      Self.Emit(#9'callq _DynArrayAddRef')
-    else
-      Self.Emit(#9'callq _ClassAddRef');
-  end;
+  if AByteOffset > 0 then
+    Self.Emit(Format(#9'leaq %d(%%r15), %%r14', [AByteOffset]))
+  else
+    Self.Emit(#9'movq %r15, %r14');
+end;
+
+function TX86_64Backend.ArcArrayElemReg: string;
+begin
+  Result := '%r14';
+end;
+
+procedure TX86_64Backend.ArcLeaveArrayWalk;
+begin
+  Self.Emit(#9'popq %r14');
+  Self.Emit(#9'popq %r15');
 end;
 
 procedure TX86_64Backend.EmitClassSection(ATypeDecls: TObjectList;

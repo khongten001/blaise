@@ -20,20 +20,24 @@ unit blaise.codegen.native.backend;
   helpers (the naive stack-slot allocator, cross-target emit utilities) will be
   added here as the backend grows.
 
-  ARC lowering note (for the coming i386 / arm64 backends): the *decision* logic
-  for ARC is already target-independent — `NativeExprOwnsRef` (a free function
-  over the AST) decides whether a value owns +1, and the field-kind walk in the
-  x86-64 backend's EmitRecordFieldReleases / EmitGlobalReleases decides *which*
-  fields/globals need a release.  Only the leaf emission (which register holds
-  the base, which mnemonic loads/stores it) is CPU-specific.  When a second
-  backend lands, lift those walkers here as template methods whose leaf steps
-  (load-field-ptr, call-release, store-zero) are abstract per-CPU primitives,
-  rather than duplicating the field-kind dispatch in each subclass. }
+  ARC lowering note: the *decision* logic for ARC is target-independent —
+  `NativeExprOwnsRef` (a free function over the AST) decides whether a value
+  owns +1, and the field-kind walk (EmitRecordFieldReleases /
+  EmitRecordFieldRetains / EmitManagedReleaseAt / EmitStaticArrayReleaseElems
+  below) decides *which* fields/elements need a release or retain.  Those
+  walks live HERE as Template Methods: the walk order, field-kind dispatch,
+  weak/unretained filtering and record/static-array recursion are shared,
+  while the leaf steps (which scratch register holds a derived base across a
+  call, which mnemonic loads a slot, which runtime helper is called) are the
+  abstract Arc*/Emit*SlotAt primitives each per-CPU backend implements.  A
+  new CPU backend (arm64) implements only the primitives and inherits the
+  walk — the field-kind dispatch is never duplicated per subclass. }
 
 interface
 
 uses
-  SysUtils, uAST, uSymbolTable, blaise.codegen, strutils, blaise.codegen.target, uDebugFacts;
+  SysUtils, contnrs, uAST, uSymbolTable, blaise.codegen, strutils,
+  blaise.codegen.target, uDebugFacts;
 
 type
   ENativeCodeGenError = class(Exception);
@@ -75,6 +79,78 @@ type
     function IsRecordAllIntOrFloatLeaves(ARec: TRecordTypeDesc): Boolean;
     function EightbyteIsSSE(ARec: TRecordTypeDesc; AStartByte: Integer): Boolean;
     function ClassifyRecordReturn(ARec: TRecordTypeDesc): TRecReturnClass;
+
+    { ---- ARC field-kind walk (Template Method) ----
+
+      The walks below are shared by every CPU backend; register operands are
+      opaque strings the leaf primitives interpret (AT&T '%rbx' today, an
+      AArch64 'x19' tomorrow).  ABaseReg must be callee-saved — the walk
+      emits runtime calls between uses. }
+
+    { Release every ARC-managed field of ART whose storage starts at the
+      address in ABaseReg.  Strings, classes, dyn-arrays and interface
+      obj-slots are released and their slots zeroed; weak fields cleared;
+      unretained fields skipped; nested record fields recursed into at their
+      offset.  A static-array-of-managed FIELD is intentionally NOT released:
+      this walk must stay symmetric with EmitRecordFieldRetains / record
+      copy, neither of which retains static-array elements — releasing them
+      here would over-release on every record copy / by-value param pass.
+      Static-array element ARC is handled only for scope-exit LOCALS. }
+    procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
+                                      const ABaseReg: string);
+    { Release one ARC-managed value of type AType whose storage is at the
+      address in ABaseReg.  Scalars (string/class/intf/dynarray) release
+      directly; records recurse via EmitRecordFieldReleases; static arrays
+      recurse element-by-element via EmitStaticArrayReleaseElems.  When AZero
+      is set the scalar managed slot is zeroed after release. }
+    procedure EmitManagedReleaseAt(AType: TTypeDesc; const ABaseReg: string;
+                                   AZero: Boolean);
+    { Release every managed element of a static array whose inline storage
+      starts at the address in ABaseReg. }
+    procedure EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
+                                          const ABaseReg: string;
+                                          AZero: Boolean);
+    { Retain every ARC-managed field of ART (the copy-side twin of
+      EmitRecordFieldReleases): weak and unretained fields are skipped,
+      nested records recursed, static-array fields not touched. }
+    procedure EmitRecordFieldRetains(ART: TRecordTypeDesc;
+                                     const ABaseReg: string);
+
+    { ---- ARC walk primitives (abstract per-CPU leaves) ---- }
+
+    { The callee-saved scratch register a nested-record recursion walks with
+      (x86-64: '%r14'). }
+    function  ArcNestedBaseReg: string; virtual; abstract;
+    { Save the nested-base scratch register and derive ABaseReg+AOffset into
+      it (the recursion base must survive the recursive walk's calls). }
+    procedure ArcPushNestedBase(AOffset: Integer;
+                                const ABaseReg: string); virtual; abstract;
+    { Restore the nested-base scratch register. }
+    procedure ArcPopNestedBase; virtual; abstract;
+    { Clear a weak reference slot at ABaseReg+AOffset (call _WeakClear with
+      the SLOT ADDRESS). }
+    procedure EmitWeakClearAt(AOffset: Integer;
+                              const ABaseReg: string); virtual; abstract;
+    { Load the managed pointer at ABaseReg+AOffset, call the release helper
+      AType selects (_StringRelease/_DynArrayRelease/_ClassRelease), and
+      zero the slot when AZero is set. }
+    procedure EmitReleaseSlotAt(AType: TTypeDesc; AOffset: Integer;
+                                const ABaseReg: string;
+                                AZero: Boolean); virtual; abstract;
+    { Load the managed pointer at ABaseReg+AOffset and call the retain helper
+      AType selects (_StringAddRef/_DynArrayAddRef/_ClassAddRef). }
+    procedure EmitRetainSlotAt(AType: TTypeDesc; AOffset: Integer;
+                               const ABaseReg: string); virtual; abstract;
+    { Begin a static-array element walk: save two callee-saved scratch
+      registers and anchor the array base (x86-64: %r15 base, %r14 element). }
+    procedure ArcEnterArrayWalk(const ABaseReg: string); virtual; abstract;
+    { Derive the element address at AByteOffset from the anchored array base
+      into the element scratch register. }
+    procedure ArcArrayElemAddr(AByteOffset: Integer); virtual; abstract;
+    { The element scratch register ArcArrayElemAddr targets. }
+    function  ArcArrayElemReg: string; virtual; abstract;
+    { End the static-array element walk (restore the scratch registers). }
+    procedure ArcLeaveArrayWalk; virtual; abstract;
 
     { ---- target-specific program lowering (abstract) ---- }
 
@@ -227,6 +303,122 @@ end;
 function TNativeBackend.ClassifyRecordReturn(ARec: TRecordTypeDesc): TRecReturnClass;
 begin
   Result := RecretClassify(ARec, FTarget);
+end;
+
+{ ---- ARC field-kind walk (Template Method bodies) ----
+
+  The walk order and field-kind decisions here must stay byte-identical in
+  effect to the historical x86-64 walk: any change to which fields are
+  touched, or in which order, changes emitted release/retain sequences on
+  every backend at once. }
+
+function ArcFieldIsManagedScalar(AType: TTypeDesc): Boolean;
+begin
+  Result := AType.IsString() or (AType.Kind = tyClass)
+    or (AType.Kind = tyDynArray) or (AType.Kind = tyInterface);
+end;
+
+procedure TNativeBackend.EmitRecordFieldReleases(ART: TRecordTypeDesc;
+  const ABaseReg: string);
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  if ART = nil then Exit;
+  for I := 0 to ART.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ART.Fields.Items[I]);
+    if F.TypeDesc = nil then Continue;
+    { Nested record field: recurse into its managed sub-fields.  ABaseReg
+      must stay pointed at the parent record (each iteration derives field
+      addresses from it), so the recursion walks with its own callee-saved
+      scratch register. }
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      Self.ArcPushNestedBase(F.Offset, ABaseReg);
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(F.TypeDesc),
+        Self.ArcNestedBaseReg());
+      Self.ArcPopNestedBase();
+      Continue;
+    end;
+    { Static-array-of-managed fields are intentionally skipped — see the
+      interface comment (symmetry with retains/record copy). }
+    if not ArcFieldIsManagedScalar(F.TypeDesc) then
+      Continue;
+    if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
+      Continue;
+    if F.IsWeak then
+    begin
+      Self.EmitWeakClearAt(F.Offset, ABaseReg);
+      Continue;
+    end;
+    Self.EmitReleaseSlotAt(F.TypeDesc, F.Offset, ABaseReg, True);
+  end;
+end;
+
+procedure TNativeBackend.EmitManagedReleaseAt(AType: TTypeDesc;
+  const ABaseReg: string; AZero: Boolean);
+begin
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+  begin
+    Self.EmitRecordFieldReleases(TRecordTypeDesc(AType), ABaseReg);
+    Exit;
+  end;
+  if AType.Kind = tyStaticArray then
+  begin
+    Self.EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(AType), ABaseReg,
+      AZero);
+    Exit;
+  end;
+  if not ArcFieldIsManagedScalar(AType) then
+    Exit;
+  Self.EmitReleaseSlotAt(AType, 0, ABaseReg, AZero);
+end;
+
+procedure TNativeBackend.EmitStaticArrayReleaseElems(
+  AType: TStaticArrayTypeDesc; const ABaseReg: string; AZero: Boolean);
+var
+  I, ElemSize: Integer;
+begin
+  if (AType = nil) or (AType.ElementType = nil) then Exit;
+  ElemSize := AType.ElementType.RawSize();
+  Self.ArcEnterArrayWalk(ABaseReg);
+  for I := 0 to AType.HighBound - AType.LowBound do
+  begin
+    Self.ArcArrayElemAddr(I * ElemSize);
+    Self.EmitManagedReleaseAt(AType.ElementType, Self.ArcArrayElemReg(),
+      AZero);
+  end;
+  Self.ArcLeaveArrayWalk();
+end;
+
+procedure TNativeBackend.EmitRecordFieldRetains(ART: TRecordTypeDesc;
+  const ABaseReg: string);
+var
+  I: Integer;
+  F: TFieldInfo;
+begin
+  if ART = nil then Exit;
+  for I := 0 to ART.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ART.Fields.Items[I]);
+    if F.TypeDesc = nil then Continue;
+    if F.TypeDesc.Kind = tyRecord then
+    begin
+      Self.ArcPushNestedBase(F.Offset, ABaseReg);
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(F.TypeDesc),
+        Self.ArcNestedBaseReg());
+      Self.ArcPopNestedBase();
+      Continue;
+    end;
+    if not ArcFieldIsManagedScalar(F.TypeDesc) then
+      Continue;
+    if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
+      Continue;
+    if F.IsWeak then Continue;
+    Self.EmitRetainSlotAt(F.TypeDesc, F.Offset, ABaseReg);
+  end;
 end;
 
 function TNativeBackend.GenerateProgram(AProg: TProgram): string;
