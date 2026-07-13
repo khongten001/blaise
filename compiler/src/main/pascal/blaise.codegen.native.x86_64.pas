@@ -20020,9 +20020,25 @@ begin
       functions/methods) are emitted WEAK: any number of objects in a link
       may carry the identical copy and the linker keeps one (BUG-004).
       The internal assembler gives .globl precedence over .weak, so emit
-      .weak INSTEAD OF .globl — gas treats a lone .weak the same way. }
+      .weak INSTEAD OF .globl — gas treats a lone .weak the same way.
+
+      Functions owned by an unmangled RTL unit (System, rtl.*, runtime.*,
+      blaise_*) are ALSO emitted weak.  In the RTL archive each unit is a
+      separate member, but a whole-program-per-unit build (--no-incremental
+      without --skip-dep-codegen, as the RTL Makefile uses) inlines a
+      dependency unit's bodies into every importing object.  Two archive
+      members then define the same bare RTL symbol (e.g. _AtomicAddInt32 in
+      both runtime.atomic.o and runtime.mem.o), and pulling both at link
+      time is a multiple-definition error.  Weak binding lets the copies
+      collapse — exactly the treatment RTL GLOBALS already get (GH #174,
+      GlobalLinkWeak).  This fixes GH #180. }
+    { _start is the ELF entry point: the internal linker resolves the entry
+      symbol by name and requires a STRONG definition, so it must never be
+      weakened even though runtime.start is an unmangled RTL unit. }
     if (StrPos('<', ADecl.OwnerTypeName) >= 0) or
-       (StrPos('<', ADecl.Name) >= 0) then
+       (StrPos('<', ADecl.Name) >= 0) or
+       ((ADecl.OwningUnit <> '') and IsUnmangledUnit(ADecl.OwningUnit)
+        and (Sym <> '_start')) then
       Self.Emit('.weak ' + Sym)
     else
       Self.Emit('.globl ' + Sym);

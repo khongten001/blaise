@@ -10055,9 +10055,20 @@ begin
       Sig := Sig + Format('%s %%_par_%s', [QbeParamTypeOf(Par.ResolvedType), Par.ParamName]);
   end;
 
-  { Monomorphised generic free functions get WEAK binding (BUG-004). }
+  { Monomorphised generic free functions get WEAK binding (BUG-004).
+    Functions owned by an unmangled RTL unit (System, rtl.*, runtime.*,
+    blaise_*) are ALSO weak: a whole-program-per-unit RTL build inlines a
+    dependency unit's bodies into every importing object, so two archive
+    members can define the same bare RTL symbol (e.g. _AtomicAddInt32 in
+    both runtime.atomic.o and runtime.mem.o).  Weak binding lets the copies
+    collapse at link time — the same treatment RTL globals already get
+    (GH #174).  Fixes GH #180. }
+  { _start is the ELF entry point and must stay STRONG (the internal linker
+    resolves the entry symbol by name and rejects a weak-only definition). }
   if (StrPos('<', ADecl.Name) >= 0) or
-     (StrPos('<', ADecl.OwnerTypeName) >= 0) then
+     (StrPos('<', ADecl.OwnerTypeName) >= 0) or
+     ((ADecl.OwningUnit <> '') and IsUnmangledUnit(ADecl.OwningUnit)
+      and (StrCopyTail(FuncName, 1) <> '_start')) then
     MarkWeak(StrCopyTail(FuncName, 1));
 
   if IsFunc then
