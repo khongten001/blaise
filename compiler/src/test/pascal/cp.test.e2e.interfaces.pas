@@ -74,6 +74,16 @@ type
     procedure TestRun_InterfaceMethod_SixArgs_SpillsToStack;
     procedure TestRun_InterfaceFieldMethod_SixArgs_SpillsToStack;
     procedure TestRun_DiscardedIntfReturn_FiveArgs_SpillsToStack;
+    { Float arguments through itab dispatch: the native backend used to have
+      NO float classification at interface call sites — a float literal arg
+      failed codegen outright and a float variable would have been routed
+      into an integer register while the callee reads %xmm0.  Shapes:
+      float-only, float mixed among integers, mixed WITH integer-slot
+      overflow (>6 int slots + a float), and a class-field receiver. }
+    procedure TestRun_InterfaceMethod_FloatArg;
+    procedure TestRun_InterfaceMethod_MixedIntFloatArgs;
+    procedure TestRun_InterfaceMethod_FloatArgAndIntSpill;
+    procedure TestRun_InterfaceFieldMethod_FloatArg;
   end;
 
 implementation
@@ -639,6 +649,141 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '12345' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceMethod_FloatArg;
+const
+  Src = '''
+    program p;
+    type
+      IC = interface
+        function AddHalf(X: Double): Double;
+      end;
+      TC = class(TObject, IC)
+      public
+        function AddHalf(X: Double): Double;
+      end;
+    function TC.AddHalf(X: Double): Double;
+    begin
+      Result := X + 0.5
+    end;
+    var
+      C: IC;
+      V: Double;
+    begin
+      C := TC.Create();
+      V := 1.5;
+      WriteLn(C.AddHalf(1.5) = 2.0);   { literal arg }
+      WriteLn(C.AddHalf(V) = 2.0)      { variable arg }
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'True' + LE + 'True' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceMethod_MixedIntFloatArgs;
+const
+  { The float sits BETWEEN integer args: integer slots must keep consuming
+    %rsi.. across it while the float takes %xmm0 (independent sequences). }
+  Src = '''
+    program p;
+    type
+      IM = interface
+        function Mix(A: Integer; X: Double; B: Integer): Integer;
+      end;
+      TM = class(TObject, IM)
+      public
+        function Mix(A: Integer; X: Double; B: Integer): Integer;
+      end;
+    function TM.Mix(A: Integer; X: Double; B: Integer): Integer;
+    begin
+      Result := A * 100 + Trunc(X * 10.0) + B
+    end;
+    var M: IM;
+    begin
+      M := TM.Create();
+      { 700 + 25 + 9 = 734 }
+      WriteLn(M.Mix(7, 2.5, 9))
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '734' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceMethod_FloatArgAndIntSpill;
+const
+  { Self + string + five Integers = 7 integer slots (one spills) while the
+    Double rides in %xmm0 — spill relocation must skip the float slot. }
+  Src = '''
+    program p;
+    type
+      IS2 = interface
+        function Take(const AName: string; AA, AB, AC, AD: Integer;
+                      X: Double; AE: Integer): Integer;
+      end;
+      TS = class(TObject, IS2)
+      public
+        function Take(const AName: string; AA, AB, AC, AD: Integer;
+                      X: Double; AE: Integer): Integer;
+      end;
+    function TS.Take(const AName: string; AA, AB, AC, AD: Integer;
+                     X: Double; AE: Integer): Integer;
+    begin
+      Result := Length(AName) + AA + AB * 10 + AC * 100 + AD * 1000
+        + Trunc(X) * 10000 + AE * 100000
+    end;
+    var S: IS2;
+    begin
+      S := TS.Create();
+      { 3 + 1 + 20 + 300 + 4000 + 70000 + 500000 = 574324 }
+      WriteLn(S.Take('abc', 1, 2, 3, 4, 7.0, 5))
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '574324' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceFieldMethod_FloatArg;
+const
+  Src = '''
+    program p;
+    type
+      IC = interface
+        function Scale(X: Double; N: Integer): Double;
+      end;
+      TC = class(TObject, IC)
+      public
+        function Scale(X: Double; N: Integer): Double;
+      end;
+      THold = class
+      private
+        FC: IC;
+      public
+        procedure Bind(c: IC);
+        function Call: Double;
+      end;
+    function TC.Scale(X: Double; N: Integer): Double;
+    begin
+      Result := X * N
+    end;
+    procedure THold.Bind(c: IC); begin FC := c end;
+    function THold.Call: Double;
+    begin
+      Result := FC.Scale(2.5, 4)
+    end;
+    var H: THold;
+    begin
+      H := THold.Create();
+      H.Bind(TC.Create());
+      WriteLn(H.Call() = 10.0)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'True' + LE, 0);
 end;
 
 initialization

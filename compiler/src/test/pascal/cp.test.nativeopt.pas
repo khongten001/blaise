@@ -54,6 +54,10 @@ type
     { Same overflow through the implicit-Self path of a FLOAT-returning
       6-arg method call (EmitExprToXmm0's embedded call lowering). }
     procedure TestImplicitSelfFloatCall_SevenSlots_Generates;
+    { Float arg through itab dispatch: pushed as an 8-byte xmm bit pattern
+      and loaded into %xmm0 at the call — never an integer register.  Used
+      to fail codegen outright (no float classification at itab sites). }
+    procedure TestInterfaceCall_FloatArg_RoutesToXmm;
   end;
 
 implementation
@@ -291,6 +295,37 @@ const
 begin
   { Generating without ENativeCodeGenError is the regression guard. }
   AssertTrue('program generates', Length(GenAsm(Src)) > 0);
+end;
+
+procedure TNativeOptTests.TestInterfaceCall_FloatArg_RoutesToXmm;
+const
+  Src = '''
+      program P;
+      type
+        IM = interface
+          function Mix(A: Integer; X: Double; B: Integer): Integer;
+        end;
+        TM = class(TObject, IM)
+        public
+          function Mix(A: Integer; X: Double; B: Integer): Integer;
+        end;
+      function TM.Mix(A: Integer; X: Double; B: Integer): Integer;
+      begin
+        Result := A + B
+      end;
+      var M: IM;
+      begin
+        M := TM.Create();
+        WriteLn(M.Mix(7, 2.5, 9))
+      end.
+      ''';
+var
+  Asm_: string;
+begin
+  Asm_ := GenAsm(Src);
+  AssertTrue('itab dispatch emitted', Pos(#9'callq *%r11', Asm_) >= 0);
+  AssertTrue('float slot loads into an xmm register',
+    Pos(#9'movsd 0(%rsp), %xmm0', Asm_) >= 0);
 end;
 
 initialization

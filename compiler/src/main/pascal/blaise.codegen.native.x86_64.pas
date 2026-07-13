@@ -997,6 +997,16 @@ type
       spilling any overflow to the stack.  Returns overflow bytes to clean up
       after the call.  Used by the interface/class sret call emitters. }
     function EmitSretRegArgs(ASlots, ABase: Integer): Integer;
+    { Float-aware sibling of EmitSretRegArgs for itab dispatch: ASlotClasses
+      holds one entry per pushed slot in push order (0 = integer/pointer
+      eightbyte, 1 = float eightbyte stored as its 8-byte xmm bit pattern).
+      Integer slots consume the SysV integer registers from ABase and spill
+      any overflow; float slots consume %xmm0.. and never spill.  Delegates
+      to EmitSretRegArgs when no float slot is present, so float-free call
+      sites emit unchanged code.  Returns overflow bytes to clean up after
+      the call. }
+    function EmitIntfRegArgs(ASlotClasses: TList<Integer>;
+                             ABase: Integer): Integer;
     { Pop already-pushed method-call arg slots (slot 0 pushed first, on top is
       the last slot) into the System V argument registers, routing float-family
       params to %xmm0.. and everything else to the integer registers starting
@@ -3329,6 +3339,7 @@ var
   RecvOnStack: Boolean;
   DiscSz: Integer;
   CleanBytes: Integer;
+  SlotClasses: TList<Integer>;
 begin
   { x86_64: pointers are 8 bytes (this backend's invariant, like the rest of the
     file).  i386/arm64 backends will be separate TNativeBackend subclasses. }
@@ -3421,6 +3432,15 @@ begin
         raise ENativeCodeGenError.Create(
           'native backend: unsupported interface arg expression in interface dispatch');
     end
+    else if (Arg.ResolvedType <> nil) and IsFloatFamily(Arg.ResolvedType) then
+    begin
+      { Float scalar argument: materialise to %xmm0 and push its 8-byte bit
+        pattern as one slot; EmitIntfRegArgs routes it into an xmm register
+        instead of an integer one. }
+      Self.EmitExprToXmm0(Arg);
+      Self.Emit(#9'subq $8, %rsp');
+      Self.Emit(#9'movsd %xmm0, 0(%rsp)');
+    end
     else
     begin
       Self.EmitExprToEax(Arg);
@@ -3494,34 +3514,45 @@ begin
     Self.Emit(#9'movq (%rax), %r11')
   else
     Self.Emit(Format(#9'movq %d(%%rax), %%r11', [SlotOff]));
-  { Pop args into %rsi/%rdx/... (shift by 1 for %rdi = Self).
-    Count slots: interface args occupy 2 slots each, except at var
-    positions (one address slot). }
-  SlotOff := 0;
+  { Classify the pushed slots for the register-load phase, mirroring the
+    push loop above: hoist-reloaded and var slots are integer; interface
+    args are two integer slots (obj + itab); float args are xmm slots. }
+  SlotClasses := TList<Integer>.Create();
   for I := 0 to ArgN - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    if (not Self.VarFlagAt(VFlags, I)) and (Arg.ResolvedType <> nil) and
-       (Arg.ResolvedType.Kind = tyInterface) then
-      Inc(SlotOff, 2)
+    if HK.Get(I) >= akRecCall then
+      SlotClasses.Add(0)
+    else if Self.VarFlagAt(VFlags, I) then
+      SlotClasses.Add(0)
+    else if (Arg.ResolvedType <> nil) and
+            (Arg.ResolvedType.Kind = tyInterface) then
+    begin
+      SlotClasses.Add(0);
+      SlotClasses.Add(0);
+    end
+    else if (Arg.ResolvedType <> nil) and IsFloatFamily(Arg.ResolvedType) then
+      SlotClasses.Add(1)
     else
-      Inc(SlotOff);
+      SlotClasses.Add(0);
   end;
   if ADiscardIntfRet then
   begin
     { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx.
-      EmitSretRegArgs spills slots beyond the registers to the stack (Self +
-      sret already occupy two); it returns the extra bytes between %rsp and
-      the hoist region at call time, so the buffer leaq shifts by them. }
-    CleanBytes := Self.EmitSretRegArgs(SlotOff, 2);
+      EmitIntfRegArgs spills integer slots beyond the registers to the stack
+      (Self + sret already occupy two); it returns the extra bytes between
+      %rsp and the hoist region at call time, so the buffer leaq shifts by
+      them. }
+    CleanBytes := Self.EmitIntfRegArgs(SlotClasses, 2);
     Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal + CleanBytes]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
-    CleanBytes := Self.EmitSretRegArgs(SlotOff, 1);
+    CleanBytes := Self.EmitIntfRegArgs(SlotClasses, 1);
     Self.Emit(#9'movq %r10, %rdi');
   end;
+  SlotClasses.Free();
   Self.Emit(#9'callq *%r11');
   if CleanBytes > 0 then
     { Reclaim the spill region + still-pushed slots so the epilogue below
@@ -3568,6 +3599,7 @@ var
   HTotal, Pushed: Integer;
   VFlags: string;
   CleanBytes: Integer;
+  SlotClasses: TList<Integer>;
 begin
   ArgN := 0;
   if AArgs <> nil then ArgN := AArgs.Count;
@@ -3640,6 +3672,14 @@ begin
         raise ENativeCodeGenError.Create(
           'native backend: unsupported interface arg expression in field dispatch');
     end
+    else if (Arg.ResolvedType <> nil) and IsFloatFamily(Arg.ResolvedType) then
+    begin
+      { Float scalar argument: push its 8-byte xmm bit pattern as one slot;
+        EmitIntfRegArgs routes it into an xmm register. }
+      Self.EmitExprToXmm0(Arg);
+      Self.Emit(#9'subq $8, %rsp');
+      Self.Emit(#9'movsd %xmm0, 0(%rsp)');
+    end
     else
     begin
       Self.EmitExprToEax(Arg);
@@ -3666,31 +3706,42 @@ begin
     Self.Emit(#9'movq (%rax), %r11')
   else
     Self.Emit(Format(#9'movq %d(%%rax), %%r11', [SlotOff]));
-  { Count total slots then pop in reverse; var positions take one slot. }
-  SlotOff := 0;
+  { Classify the pushed slots for the register-load phase, mirroring the
+    push loop above (see EmitInterfaceCall). }
+  SlotClasses := TList<Integer>.Create();
   for I := 0 to ArgN - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    if (not Self.VarFlagAt(VFlags, I)) and (Arg.ResolvedType <> nil) and
-       (Arg.ResolvedType.Kind = tyInterface) then
-      Inc(SlotOff, 2)
+    if HK.Get(I) >= akRecCall then
+      SlotClasses.Add(0)
+    else if Self.VarFlagAt(VFlags, I) then
+      SlotClasses.Add(0)
+    else if (Arg.ResolvedType <> nil) and
+            (Arg.ResolvedType.Kind = tyInterface) then
+    begin
+      SlotClasses.Add(0);
+      SlotClasses.Add(0);
+    end
+    else if (Arg.ResolvedType <> nil) and IsFloatFamily(Arg.ResolvedType) then
+      SlotClasses.Add(1)
     else
-      Inc(SlotOff);
+      SlotClasses.Add(0);
   end;
   if ADiscardIntfRet then
   begin
     { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx.
-      EmitSretRegArgs spills slots beyond the registers to the stack; its
-      return value shifts the buffer leaq (see EmitInterfaceCall). }
-    CleanBytes := Self.EmitSretRegArgs(SlotOff, 2);
+      EmitIntfRegArgs spills integer slots beyond the registers; its return
+      value shifts the buffer leaq (see EmitInterfaceCall). }
+    CleanBytes := Self.EmitIntfRegArgs(SlotClasses, 2);
     Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal + CleanBytes]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
-    CleanBytes := Self.EmitSretRegArgs(SlotOff, 1);
+    CleanBytes := Self.EmitIntfRegArgs(SlotClasses, 1);
     Self.Emit(#9'movq %r10, %rdi');
   end;
+  SlotClasses.Free();
   Self.Emit(#9'callq *%r11');
   if CleanBytes > 0 then
     { Reclaim spill region + still-pushed slots (addq preserves the return
@@ -10536,6 +10587,113 @@ begin
     Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [K * 8]));
   end;
   Result := DstOff + ASlots * 8;
+end;
+
+function TX86_64Backend.EmitIntfRegArgs(ASlotClasses: TList<Integer>;
+  ABase: Integer): Integer;
+var
+  I, K, Slots, IntCount, RegInts, IntIdx, XmmIdx: Integer;
+  SrcOff, DstOff: Integer;
+  Dest: TStringList;
+  OvSlots: TList<Integer>;   { forward slot indices of overflow int slots }
+begin
+  Slots := ASlotClasses.Count;
+  IntCount := 0;
+  for I := 0 to Slots - 1 do
+    if ASlotClasses.Get(I) = 0 then
+      Inc(IntCount);
+  if IntCount = Slots then
+  begin
+    { No float slot: keep the classic path so float-free itab calls emit
+      byte-identical code. }
+    Result := Self.EmitSretRegArgs(Slots, ABase);
+    Exit;
+  end;
+  RegInts := 6 - ABase;
+  if RegInts < 0 then RegInts := 0;
+  if IntCount <= RegInts then
+  begin
+    { Everything register-mapped: assign registers in forward slot order
+      (integer and xmm sequences advance independently, per SysV), then
+      consume the stack top-down — the current slot is always at 0(%rsp). }
+    Dest := TStringList.Create();
+    try
+      IntIdx := ABase;
+      XmmIdx := 0;
+      for I := 0 to Slots - 1 do
+      begin
+        if ASlotClasses.Get(I) = 1 then
+        begin
+          if XmmIdx > 7 then
+            raise ENativeCodeGenError.Create('native backend: more than 8 ' +
+              'float args at an interface call site — xmm registers exhausted');
+          Dest.Add(SysVXmmArgRegs[XmmIdx]);
+          Inc(XmmIdx);
+        end
+        else
+        begin
+          Dest.Add(Self.SysVArg64(IntIdx));
+          Inc(IntIdx);
+        end;
+      end;
+      for I := Slots - 1 downto 0 do
+      begin
+        if ASlotClasses.Get(I) = 1 then
+        begin
+          Self.Emit(Format(#9'movsd 0(%%rsp), %s', [Dest.Strings[I]]));
+          Self.Emit(#9'addq $8, %rsp');
+        end
+        else
+          Self.Emit(#9'popq ' + Dest.Strings[I]);
+      end;
+    finally
+      Dest.Free();
+    end;
+    Result := 0;
+    Exit;
+  end;
+  { Integer overflow with floats present: leave the pushed slots in place,
+    load every register-mapped slot from its %rsp offset, then relocate the
+    overflow INTEGER slots into a fresh region below the pushed block in
+    ascending arg order (System V stack-arg order at 0(%rsp)..).  Same
+    scheme as EmitSretRegArgs; float slots never overflow. }
+  OvSlots := TList<Integer>.Create();
+  try
+    IntIdx := ABase;
+    XmmIdx := 0;
+    for I := 0 to Slots - 1 do
+    begin
+      SrcOff := (Slots - 1 - I) * 8;
+      if ASlotClasses.Get(I) = 1 then
+      begin
+        if XmmIdx > 7 then
+          raise ENativeCodeGenError.Create('native backend: more than 8 ' +
+            'float args at an interface call site — xmm registers exhausted');
+        Self.Emit(Format(#9'movsd %d(%%rsp), %s',
+          [SrcOff, SysVXmmArgRegs[XmmIdx]]));
+        Inc(XmmIdx);
+      end
+      else if IntIdx <= 5 then
+      begin
+        Self.Emit(Format(#9'movq %d(%%rsp), %s',
+          [SrcOff, Self.SysVArg64(IntIdx)]));
+        Inc(IntIdx);
+      end
+      else
+        OvSlots.Add(I);
+    end;
+    DstOff := Self.AlignFreshBytes(OvSlots.Count);
+    Self.Emit(Format(#9'subq $%d, %%rsp', [DstOff]));
+    for K := 0 to OvSlots.Count - 1 do
+    begin
+      SrcOff := DstOff + (Slots - 1 - OvSlots.Get(K)) * 8;
+      Self.Emit(Format(#9'movq %d(%%rsp), %%rax', [SrcOff]));
+      Self.Emit(Format(#9'movq %%rax, %d(%%rsp)', [K * 8]));
+    end;
+    Result := DstOff + Slots * 8;
+  finally
+    OvSlots.Free();
+  end;
 end;
 
 procedure TX86_64Backend.EmitSelfDispatch(AMD: TMethodDecl;
