@@ -65,6 +65,11 @@ type
     procedure TestRun_HighByte_Prints255;
     procedure TestRun_HighEnum_PrintsLastOrdinal;
     procedure TestRun_LowHighIntegerLoopBound;
+    { GH #176 — native backend was missing the tyInt64/tyUInt64 cases (and
+      mis-encoded tyUInt32), folding to 0.  These run on BOTH backends. }
+    procedure TestRun_HighLowInt64_BothBackends;
+    procedure TestRun_HighUInt64_BothBackends;
+    procedure TestRun_HighUInt32_BothBackends;
   end;
 
 implementation
@@ -462,6 +467,59 @@ begin
   AssertTrue('compile+run', CompileAndRun(Src, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('loop guard', '15' + LE + 'ok' + LE, Output);
+end;
+
+procedure THighLowE2ETests.TestRun_HighLowInt64_BothBackends;
+const
+  Src =
+    '''
+        program P;
+        var X: Int64;
+        begin
+          WriteLn(High(Int64));
+          WriteLn(Low(Int64));
+          X := High(Int64);
+          WriteLn(X)
+        end.
+        ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src,
+    '9223372036854775807' + LE +
+    '-9223372036854775808' + LE +
+    '9223372036854775807' + LE, 0);
+end;
+
+procedure THighLowE2ETests.TestRun_HighUInt64_BothBackends;
+const
+  Src =
+    '''
+        program P;
+        var X: UInt64;
+        begin
+          X := High(UInt64);
+          WriteLn(X)
+        end.
+        ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '18446744073709551615' + LE, 0);
+end;
+
+procedure THighLowE2ETests.TestRun_HighUInt32_BothBackends;
+const
+  Src =
+    '''
+        program P;
+        var X: UInt32;
+        begin
+          X := High(UInt32);
+          WriteLn(X)
+        end.
+        ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '4294967295' + LE, 0);
 end;
 
 initialization

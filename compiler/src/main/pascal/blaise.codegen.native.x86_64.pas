@@ -7150,16 +7150,25 @@ begin
           Self.Emit(#9'decq %rax');
         end;
       else
-        { Integer/enum types: type-level High (min/max). }
+        { Integer/enum types: type-level High (max).  EmitImmToReg picks the
+          correct encoding — movl for values that zero-extend, movq for
+          sign-extended imm32, movabsq for true 64-bit values.  A raw
+          'movq $4294967295' would sign-extend the imm32 to -1, so UInt32
+          MUST go through the helper too (GH #176). }
         case TASTExpr(FC.Args.Items[0]).ResolvedType.Kind of
-          tyByte:     Self.Emit(#9'movq $255, %rax');
-          tyBoolean:  Self.Emit(#9'movq $1, %rax');
-          tySmallInt: Self.Emit(#9'movq $32767, %rax');
-          tyWord:     Self.Emit(#9'movq $65535, %rax');
-          tyInteger:  Self.Emit(#9'movq $2147483647, %rax');
-          tyUInt32:   Self.Emit(#9'movq $4294967295, %rax');
-          tyEnum:     Self.Emit(Format(#9'movq $%d, %%rax',
-            [TEnumTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).Members.Count - 1]));
+          tyByte:     Self.EmitImmToReg(255, '%rax', '%eax');
+          tyBoolean:  Self.EmitImmToReg(1, '%rax', '%eax');
+          tySmallInt: Self.EmitImmToReg(32767, '%rax', '%eax');
+          tyWord:     Self.EmitImmToReg(65535, '%rax', '%eax');
+          tyInteger:  Self.EmitImmToReg(2147483647, '%rax', '%eax');
+          tyUInt32:   Self.EmitImmToReg(4294967295, '%rax', '%eax');
+          tyInt64:    Self.EmitImmToReg(9223372036854775807, '%rax', '%eax');
+          { High(UInt64) = 18446744073709551615, i.e. all-ones — the -1
+            Int64 bit pattern; movabsq $-1 materialises it exactly. }
+          tyUInt64:   Self.Emit(#9'movabsq $-1, %rax');
+          tyEnum:     Self.EmitImmToReg(
+            TEnumTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).Members.Count - 1,
+            '%rax', '%eax');
         else
           Self.Emit(#9'movq $0, %rax');
         end;
@@ -7172,10 +7181,16 @@ begin
     begin
       case TASTExpr(FC.Args.Items[0]).ResolvedType.Kind of
         tyStaticArray:
-          Self.Emit(Format(#9'movq $%d, %%rax',
-            [TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).LowBound]));
+          Self.EmitImmToReg(
+            TStaticArrayTypeDesc(TASTExpr(FC.Args.Items[0]).ResolvedType).LowBound,
+            '%rax', '%eax');
         tySmallInt: Self.Emit(#9'movq $-32768, %rax');
         tyInteger:  Self.Emit(#9'movq $-2147483648, %rax');
+        { Low(Int64) = -9223372036854775808, the Int64 minimum — a true
+          64-bit value that needs movabsq (GH #176).  Spelled as the literal
+          (not Low(Int64)) so the fold is stable across self-hosting stages —
+          the stage-1 binary predates this fix and would fold Low(Int64) to 0. }
+        tyInt64:    Self.Emit(#9'movabsq $-9223372036854775808, %rax');
       else
         Self.Emit(#9'movq $0, %rax');  { 0 for all array/byte/bool/word/unsigned/open/dyn }
       end;
