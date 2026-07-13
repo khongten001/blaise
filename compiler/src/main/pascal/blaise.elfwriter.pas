@@ -33,25 +33,8 @@ uses
 type
   EElfWriter = class(Exception);
 
-  { Amortized-growth byte buffer.  Used to assemble the final ELF image in
-    Finish without the O(n^2) `Buf := Buf + ...` per-byte string growth that
-    OOM-killed on the compiler's own ~2 MB object.  Appends are amortized
-    O(1); a section body or table is bulk-copied in via AppendBytes. }
-  TByteBuf = class
-  public
-    Bytes: array of Byte;
-    Count: Integer;
-    constructor Create;
-    destructor Destroy; override;
-    procedure PushByte(AVal: Integer);
-    procedure PushU16(AVal: Integer);
-    procedure PushU32(AVal: Integer);
-    procedure PushU64(AVal: Int64);
-    procedure PadTo(ALen: Integer);        { append zeros until Count = ALen }
-    procedure AppendBytes(const ASrc: string);   { bulk-copy a byte string }
-    procedure AppendBuf(ASrc: TByteBuf);          { bulk-copy another buffer }
-    function AsString: string;
-  end;
+  { TByteBuf (the amortized-growth byte buffer both container writers
+    assemble their final images with) lives in blaise.container.writer. }
 
   { In-memory section: accumulates bytes (for non-BSS) and relocations.
 
@@ -256,107 +239,6 @@ begin
   { Bulk byte-array -> string, done once per section at serialise time
     (NOT on the hot append path).  SetLength preallocates the string and
     memcpy fills it in one O(n) copy. }
-  SetLength(Result, Count);
-  if Count > 0 then
-    _ew_memcpy(PChar(Result), @Bytes[0], Count);
-end;
-
-{ ---- TByteBuf --------------------------------------------------------- }
-
-constructor TByteBuf.Create;
-begin
-  inherited Create();
-  SetLength(Bytes, 0);
-  Count := 0;
-end;
-
-destructor TByteBuf.Destroy;
-begin
-  SetLength(Bytes, 0);
-  inherited Destroy();
-end;
-
-procedure TByteBuf.PushByte(AVal: Integer);
-var
-  NewCap: Integer;
-begin
-  if Count >= Length(Bytes) then
-  begin
-    NewCap := Length(Bytes) * 2;
-    if NewCap < 4096 then
-      NewCap := 4096;
-    SetLength(Bytes, NewCap);
-  end;
-  Bytes[Count] := AVal and $FF;
-  Count := Count + 1;
-end;
-
-procedure TByteBuf.PushU16(AVal: Integer);
-begin
-  PushByte(AVal and $FF);
-  PushByte((AVal shr 8) and $FF);
-end;
-
-procedure TByteBuf.PushU32(AVal: Integer);
-begin
-  PushByte(AVal and $FF);
-  PushByte((AVal shr 8) and $FF);
-  PushByte((AVal shr 16) and $FF);
-  PushByte((AVal shr 24) and $FF);
-end;
-
-procedure TByteBuf.PushU64(AVal: Int64);
-var
-  I: Integer;
-begin
-  for I := 0 to 7 do
-    PushByte(Integer((AVal shr (I * 8)) and $FF));
-end;
-
-procedure TByteBuf.PadTo(ALen: Integer);
-begin
-  while Count < ALen do
-    PushByte(0);
-end;
-
-procedure TByteBuf.AppendBytes(const ASrc: string);
-var
-  N, NewCap: Integer;
-begin
-  N := Length(ASrc);
-  if N = 0 then Exit;
-  if Count + N > Length(Bytes) then
-  begin
-    NewCap := Length(Bytes);
-    if NewCap < 4096 then NewCap := 4096;
-    while Count + N > NewCap do
-      NewCap := NewCap * 2;
-    SetLength(Bytes, NewCap);
-  end;
-  _ew_memcpy(@Bytes[Count], PChar(ASrc), N);
-  Count := Count + N;
-end;
-
-procedure TByteBuf.AppendBuf(ASrc: TByteBuf);
-var
-  N, NewCap: Integer;
-begin
-  N := ASrc.Count;
-  if N = 0 then Exit;
-  if Count + N > Length(Bytes) then
-  begin
-    NewCap := Length(Bytes);
-    if NewCap < 4096 then NewCap := 4096;
-    while Count + N > NewCap do
-      NewCap := NewCap * 2;
-    SetLength(Bytes, NewCap);
-  end;
-  _ew_memcpy(@Bytes[Count], @ASrc.Bytes[0], N);
-  Count := Count + N;
-end;
-
-function TByteBuf.AsString: string;
-begin
   SetLength(Result, Count);
   if Count > 0 then
     _ew_memcpy(PChar(Result), @Bytes[0], Count);

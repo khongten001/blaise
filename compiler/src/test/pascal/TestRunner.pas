@@ -171,6 +171,7 @@ uses
   cp.test.threadvar,
   cp.test.config,
   cp.test.assembler,
+  cp.test.macho,
   cp.test.cli,
   cp.test.driver,
   cp.test.e2e.inherit,

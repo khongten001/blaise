@@ -72,7 +72,10 @@ type
     cstTLS
   );
 
-  { Relocation kinds.  x86-64 family (ELF R_X86_64_* semantics): }
+  { Relocation kinds — a union of per-architecture families; each writer
+    encodes the kinds its container defines and rejects the rest.
+
+    x86-64 family (ELF R_X86_64_* semantics): }
   TContainerRelocKind = (
     crkNone,
     crk64,           { absolute 64-bit }
@@ -83,7 +86,16 @@ type
     crkGOTPCREL,     { GOT PC-relative 32-bit }
     crkTPOFF32,      { TLS TP-relative 32-bit }
     crkGOTPCRELX,    { relaxable GOTPCREL }
-    crkREX_GOTPCRELX { relaxable GOTPCREL with REX prefix }
+    crkREX_GOTPCRELX,{ relaxable GOTPCREL with REX prefix }
+    { AArch64 family (Mach-O ARM64_RELOC_* semantics): }
+    crkArm64Abs64,        { ARM64_RELOC_UNSIGNED — absolute 64-bit pointer }
+    crkArm64Branch26,     { ARM64_RELOC_BRANCH26 — b/bl ±128 MiB }
+    crkArm64Page21,       { ARM64_RELOC_PAGE21 — adrp page delta }
+    crkArm64PageOff12,    { ARM64_RELOC_PAGEOFF12 — add/ldr low 12 bits }
+    crkArm64GotPage21,    { ARM64_RELOC_GOT_LOAD_PAGE21 }
+    crkArm64GotPageOff12, { ARM64_RELOC_GOT_LOAD_PAGEOFF12 }
+    crkArm64TlvPage21,    { ARM64_RELOC_TLVP_LOAD_PAGE21 }
+    crkArm64TlvPageOff12  { ARM64_RELOC_TLVP_LOAD_PAGEOFF12 }
   );
 
   TContainerReloc = record
@@ -91,6 +103,27 @@ type
     SymIndex: Integer;             { index into the writer's symbol table }
     RType:    TContainerRelocKind; { relocation kind }
     Addend:   Int64;               { addend (RELA-style) }
+  end;
+
+  { Amortized-growth byte buffer shared by the container writers.  Used to
+    assemble a final on-disk image without the O(n^2) `Buf := Buf + ...`
+    per-byte string growth that OOM-killed on the compiler's own ~2 MB
+    object.  Appends are amortized O(1); a section body or table is
+    bulk-copied in via AppendBytes. }
+  TByteBuf = class
+  public
+    Bytes: array of Byte;
+    Count: Integer;
+    constructor Create;
+    destructor Destroy; override;
+    procedure PushByte(AVal: Integer);
+    procedure PushU16(AVal: Integer);
+    procedure PushU32(AVal: Integer);
+    procedure PushU64(AVal: Int64);
+    procedure PadTo(ALen: Integer);        { append zeros until Count = ALen }
+    procedure AppendBytes(const ASrc: string);   { bulk-copy a byte string }
+    procedure AppendBuf(ASrc: TByteBuf);          { bulk-copy another buffer }
+    function AsString: string;
   end;
 
   { The append-oriented writer contract the assemblers drive. }
@@ -145,5 +178,109 @@ type
   end;
 
 implementation
+
+{ Bulk memory copy, used for O(n) buffer appends and materialisation. }
+procedure _cw_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
+
+{ ---- TByteBuf --------------------------------------------------------- }
+
+constructor TByteBuf.Create;
+begin
+  inherited Create();
+  SetLength(Bytes, 0);
+  Count := 0;
+end;
+
+destructor TByteBuf.Destroy;
+begin
+  SetLength(Bytes, 0);
+  inherited Destroy();
+end;
+
+procedure TByteBuf.PushByte(AVal: Integer);
+var
+  NewCap: Integer;
+begin
+  if Count >= Length(Bytes) then
+  begin
+    NewCap := Length(Bytes) * 2;
+    if NewCap < 4096 then
+      NewCap := 4096;
+    SetLength(Bytes, NewCap);
+  end;
+  Bytes[Count] := AVal and $FF;
+  Count := Count + 1;
+end;
+
+procedure TByteBuf.PushU16(AVal: Integer);
+begin
+  PushByte(AVal and $FF);
+  PushByte((AVal shr 8) and $FF);
+end;
+
+procedure TByteBuf.PushU32(AVal: Integer);
+begin
+  PushByte(AVal and $FF);
+  PushByte((AVal shr 8) and $FF);
+  PushByte((AVal shr 16) and $FF);
+  PushByte((AVal shr 24) and $FF);
+end;
+
+procedure TByteBuf.PushU64(AVal: Int64);
+var
+  I: Integer;
+begin
+  for I := 0 to 7 do
+    PushByte(Integer((AVal shr (I * 8)) and $FF));
+end;
+
+procedure TByteBuf.PadTo(ALen: Integer);
+begin
+  while Count < ALen do
+    PushByte(0);
+end;
+
+procedure TByteBuf.AppendBytes(const ASrc: string);
+var
+  N, NewCap: Integer;
+begin
+  N := Length(ASrc);
+  if N = 0 then Exit;
+  if Count + N > Length(Bytes) then
+  begin
+    NewCap := Length(Bytes);
+    if NewCap < 4096 then NewCap := 4096;
+    while Count + N > NewCap do
+      NewCap := NewCap * 2;
+    SetLength(Bytes, NewCap);
+  end;
+  _cw_memcpy(@Bytes[Count], PChar(ASrc), N);
+  Count := Count + N;
+end;
+
+procedure TByteBuf.AppendBuf(ASrc: TByteBuf);
+var
+  N, NewCap: Integer;
+begin
+  N := ASrc.Count;
+  if N = 0 then Exit;
+  if Count + N > Length(Bytes) then
+  begin
+    NewCap := Length(Bytes);
+    if NewCap < 4096 then NewCap := 4096;
+    while Count + N > NewCap do
+      NewCap := NewCap * 2;
+    SetLength(Bytes, NewCap);
+  end;
+  _cw_memcpy(@Bytes[Count], @ASrc.Bytes[0], N);
+  Count := Count + N;
+end;
+
+function TByteBuf.AsString: string;
+begin
+  SetLength(Result, Count);
+  if Count > 0 then
+    _cw_memcpy(PChar(Result), @Bytes[0], Count);
+end;
 
 end.
