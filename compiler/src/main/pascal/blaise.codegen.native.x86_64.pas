@@ -8997,9 +8997,14 @@ begin
     if FAE.FieldInfo.TypeDesc.Kind = tyDynArray then
     begin
       Self.Emit(#9'movq (%rcx), %rcx');
+      { The index expression may itself use %rcx (a record-field or chained
+        read), so the data pointer must survive on the stack — same
+        protection the static-array branch below has always had. }
+      Self.Emit(#9'pushq %rcx');
       Self.EmitExprToEax(FAE.PropIndexExpr);
       Self.Emit(Format(#9'imulq $%d, %%rax',
         [TDynArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.RawSize()]));
+      Self.Emit(#9'popq %rcx');
       Self.Emit(#9'addq %rcx, %rax');
       if TDynArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.Kind = tyRecord then
         Exit;
@@ -9021,9 +9026,12 @@ begin
     else if FAE.FieldInfo.TypeDesc.Kind = tyOpenArray then
     begin
       Self.Emit(#9'movq (%rcx), %rcx');
+      { Same %rcx-survival rule as the dynamic-array branch above. }
+      Self.Emit(#9'pushq %rcx');
       Self.EmitExprToEax(FAE.PropIndexExpr);
       Self.Emit(Format(#9'imulq $%d, %%rax',
         [TOpenArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.RawSize()]));
+      Self.Emit(#9'popq %rcx');
       Self.Emit(#9'addq %rcx, %rax');
       if TOpenArrayTypeDesc(FAE.FieldInfo.TypeDesc).ElementType.Kind = tyRecord then
         Exit;

@@ -47,6 +47,12 @@ type
     procedure TestRun_SetLengthGlobalFromGlobalLength;
     procedure TestRun_SetLengthLocalFromLocalLength;
     procedure TestRun_SetLengthFromUserFuncCall;
+    { Element READ of a class dyn-array FIELD with a COMPOUND index
+      (H.Bytes[R.Offset + K]): the native lowering held the data pointer in
+      %rcx while EmitExprToEax evaluated the index, and a record-field or
+      other rcx-using index expression clobbered the base -> garbage deref
+      (segfault).  Static-array fields already push/popped the base. }
+    procedure TestRun_FieldElemRead_CompoundIndex;
   end;
 
 implementation
@@ -339,6 +345,42 @@ procedure TE2EDynArrayTests.TestRun_SetLengthFromUserFuncCall;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcFromUserFuncCall, '666' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_FieldElemRead_CompoundIndex;
+const
+  Src = '''
+    program p;
+    type
+      TRec = record
+        Offset: Integer;
+        Pad: Int64;
+      end;
+      THolder = class
+      public
+        Bytes: array of Byte;
+      end;
+    var
+      H: THolder;
+      R: TRec;
+      K: Integer;
+      V: Int64;
+    begin
+      H := THolder.Create();
+      SetLength(H.Bytes, 16);
+      for K := 0 to 15 do
+        H.Bytes[K] := K + 1;
+      R.Offset := 4;
+      V := 0;
+      for K := 0 to 7 do
+        V := V or (Int64(H.Bytes[R.Offset + K]) shl (K * 8));
+      { bytes 5..12 little-endian }
+      WriteLn(V = $0C0B0A0908070605)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'True' + LE, 0);
 end;
 
 initialization
