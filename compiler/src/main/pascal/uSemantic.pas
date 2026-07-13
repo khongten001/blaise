@@ -3538,6 +3538,21 @@ begin
         Result := SAT;
       end;
     end
+    else if (IdxTD <> nil) and (IdxTD.Kind = tyBoolean) and (BaseType <> nil) then
+    begin
+      { Boolean index (array[Boolean] of T): a 2-element ordinal indexed by
+        False (0) and True (1).  Fold to array[0..1] of T, parallel to the
+        enum branch (GH #181). }
+      CanonName := Format('array[0..1] of %s', [BaseType.Name]);
+      Result    := FTable.FindType(CanonName);
+      if Result = nil then
+      begin
+        SAT := FTable.NewStaticArrayType(BaseType, 0, 1);
+        Sym := TSymbol.Create(CanonName, skType, SAT);
+        FTable.DefineGlobal(Sym);
+        Result := SAT;
+      end;
+    end
     else if (IdxTD <> nil) and IdxTD.IsSubrange and (BaseType <> nil) then
     begin
       { Named integer subrange index (type TIdx = lo..hi; array[TIdx] of T):
@@ -3557,8 +3572,11 @@ begin
     end
     else if IdxTD = nil then
       SemanticError(Format('Unknown index type ''%s''', [IdxName]), 0, 0)
-    else if (IdxTD.Kind <> tyEnum) and (not IdxTD.IsSubrange) then
-      SemanticError(Format('''%s'' is not an enumeration type', [IdxName]), 0, 0);
+    else if (IdxTD.Kind <> tyEnum) and (IdxTD.Kind <> tyBoolean) and
+            (not IdxTD.IsSubrange) then
+      SemanticError(Format(
+        '''%s'' is not a valid array index type (expected an enumeration, '
+        + 'Boolean, or an integer subrange)', [IdxName]), 0, 0);
     Exit;
   end;
   { Range-indexed static array: 'array[L..H] of TypeName' — create on demand.
@@ -9897,8 +9915,8 @@ begin
     Exit;
   end;
   IdxType := AnalyseExpr(AAssign.PropIndexExpr);
-  if not IdxType.IsNumeric() then
-    SemanticError('Array index must be numeric', AAssign.Line, AAssign.Col);
+  if not IdxType.IsArrayIndex() then
+    SemanticError('Array index must be an ordinal type', AAssign.Line, AAssign.Col);
   ExprType := AnalyseExpr(AAssign.Expr);
   CheckTypesMatch(ElemT, ExprType,
     Format('''%s'' element', [AAssign.FieldName]), AAssign.Line, AAssign.Col);
@@ -15298,9 +15316,9 @@ begin
   if StrType.Kind = tyStaticArray then
   begin
     IdxType := AnalyseExpr(AExpr.IndexExpr);
-    if not IdxType.IsNumeric() then
+    if not IdxType.IsArrayIndex() then
       SemanticError(
-        Format('Static array index must be numeric, got ''%s''', [IdxType.Name]),
+        Format('Static array index must be an ordinal type, got ''%s''', [IdxType.Name]),
         AExpr.Line, AExpr.Col);
     Result := TStaticArrayTypeDesc(StrType).ElementType;
     AExpr.ResolvedType := Result;
@@ -15517,8 +15535,8 @@ begin
     else
       ElemT := TStaticArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
     IdxType := AnalyseExpr(AStmt.IndexExpr);
-    if not IdxType.IsNumeric() then
-      SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
+    if not IdxType.IsArrayIndex() then
+      SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
     ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
     CheckTypesMatch(ElemT, ValType,
       Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
@@ -15544,8 +15562,8 @@ begin
         else
           ElemT := TStaticArrayTypeDesc(BaseInfo.TypeDesc).ElementType;
         IdxType := AnalyseExpr(AStmt.IndexExpr);
-        if not IdxType.IsNumeric() then
-          SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
+        if not IdxType.IsArrayIndex() then
+          SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
         ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
         CheckTypesMatch(ElemT, ValType,
           Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);
@@ -15692,8 +15710,8 @@ begin
   AStmt.IsVarParam := Sym.Kind = skVarParameter;
   AStmt.ResolvedArrayType := ArrType;
   IdxType := AnalyseExpr(AStmt.IndexExpr);
-  if not IdxType.IsNumeric() then
-    SemanticError('Array index must be numeric', AStmt.Line, AStmt.Col);
+  if not IdxType.IsArrayIndex() then
+    SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
   ValType := AnalyseExprHinted(AStmt.ValueExpr, ArrType.ElementType);
   CheckTypesMatch(ArrType.ElementType, ValType,
     Format('''%s'' element', [AStmt.ArrayName]), AStmt.Line, AStmt.Col);

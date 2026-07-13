@@ -85,6 +85,9 @@ type
     { Enum-indexed var/type static arrays (issue #114) }
     procedure TestRun_EnumIndex_VarDecl;
     procedure TestRun_EnumIndex_TypeDecl;
+    { GH #181 — Boolean is a valid 2-element ordinal index type. }
+    procedure TestRun_BooleanIndex_TypeDecl;
+    procedure TestRun_BooleanIndex_VarDecl;
   end;
 
 implementation
@@ -932,6 +935,40 @@ begin
       WriteLn(C[North]); WriteLn(C[West])
     end.
     ''', '1' + LE + '4' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_BooleanIndex_TypeDecl;
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll('''
+    program P;
+    type TFlags = array[Boolean] of string;
+    var A: TFlags;
+    begin
+      A[False] := 'no'; A[True] := 'yes';
+      WriteLn(A[False]); WriteLn(A[True])
+    end.
+    ''', 'no' + LE + 'yes' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_BooleanIndex_VarDecl;
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  { Anonymous decl + subscript by a Boolean expression, not just literals. }
+  AssertRunsOnAll('''
+    program P;
+    var A: array[Boolean] of Integer;
+    var I: Integer;
+    begin
+      A[False] := 10; A[True] := 20;
+      for I := 0 to 3 do
+        WriteLn(A[I > 1]);
+    end.
+    ''', '10' + LE + '10' + LE + '20' + LE + '20' + LE, 0);
 end;
 
 initialization

@@ -92,6 +92,11 @@ type
     function IsFloat: Boolean;
     function IsString: Boolean;
     function IsOrdinal: Boolean;
+    { True when this type may index an array subscript: any integer-family
+      type, an enum, or Boolean (a 2-element ordinal).  Floats are numeric
+      but not valid indices; historically IsNumeric was used here and let
+      them slip through — index checks should prefer this predicate. }
+    function IsArrayIndex: Boolean;
     function IsRecord: Boolean;
     { True byte size of a value: 1 for Byte/Boolean, 4 for Integer/Single, 8
       for pointer/string/Int64/Double, sum-of-fields for records (with natural
@@ -801,6 +806,12 @@ end;
 function TTypeDesc.IsString: Boolean;
 begin
   Result := Kind = tyString;
+end;
+
+function TTypeDesc.IsArrayIndex: Boolean;
+begin
+  Result := Kind in [tyInteger, tyInt64, tyUInt32, tyUInt64, tySmallInt,
+                     tyWord, tyByte, tyBoolean, tyEnum];
 end;
 
 function TTypeDesc.IsOrdinal: Boolean;

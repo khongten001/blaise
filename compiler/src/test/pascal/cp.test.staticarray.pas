@@ -124,6 +124,10 @@ type
     procedure TestSemantic_EnumIndex_TypeDecl;
     procedure TestSemantic_EnumIndex_Bounds;
     procedure TestCodegen_EnumIndex_AllocSize;
+    { GH #181 — Boolean is a valid 2-element ordinal index type. }
+    procedure TestSemantic_BooleanIndex_TypeDecl;
+    procedure TestSemantic_BooleanIndex_Bounds;
+    procedure TestSemantic_StringIndex_RaisesTargetedError;
   end;
 
 implementation
@@ -1118,6 +1122,60 @@ begin
   finally
     P.Free();
   end;
+end;
+
+procedure TStaticArrayTests.TestSemantic_BooleanIndex_TypeDecl;
+var P: TProgram; VD: TVarDecl;
+begin
+  P := AnalyseSrc('''
+    program P;
+    type TFlags = array[Boolean] of string;
+    var F: TFlags;
+    begin end.
+    ''');
+  try
+    VD := TVarDecl(P.Block.Decls.Items[0]);
+    AssertTrue('resolved type', VD.ResolvedType <> nil);
+    AssertTrue('is static array', VD.ResolvedType.Kind = tyStaticArray);
+  finally
+    P.Free();
+  end;
+end;
+
+procedure TStaticArrayTests.TestSemantic_BooleanIndex_Bounds;
+var P: TProgram; VD: TVarDecl; SAT: TStaticArrayTypeDesc;
+begin
+  P := AnalyseSrc('''
+    program P;
+    var B: array[Boolean] of Integer;
+    begin end.
+    ''');
+  try
+    VD := TVarDecl(P.Block.Decls.Items[0]);
+    SAT := TStaticArrayTypeDesc(VD.ResolvedType);
+    AssertEquals('low', 0, SAT.LowBound);
+    AssertEquals('high (False..True)', 1, SAT.HighBound);
+  finally
+    P.Free();
+  end;
+end;
+
+procedure TStaticArrayTests.TestSemantic_StringIndex_RaisesTargetedError;
+var Threw: Boolean; Msg: string;
+begin
+  Threw := False; Msg := '';
+  try
+    AnalyseSrc('''
+      program P;
+      type TBad = array[string] of Integer;
+      begin end.
+      ''');
+  except
+    on E: Exception do begin Threw := True; Msg := E.Message; end;
+  end;
+  AssertTrue('expected semantic error', Threw);
+  AssertTrue('mentions valid index types, got: ' + Msg,
+    Pos('not a valid array index type', Msg) >= 0);
 end;
 
 procedure TStaticArrayTests.TestCodegen_EnumIndex_AllocSize;

@@ -1154,6 +1154,9 @@ Blaise supports fixed-size, stack-allocated arrays declared as
 | `array[TEnum] of T` — enum-type index
 | Supported
 
+| `array[Boolean] of T` — Boolean index
+| Supported. Boolean is a 2-element ordinal, so `array[Boolean] of T` folds to `array[0..1] of T`, indexed by `False` (0) and `True` (1). Rejecting it was an oversight — the ordinal-index resolver only admitted enum and subrange kinds (GH #181).
+
 | `array[TSubrange] of T` — named integer-subrange index
 | Supported. The subrange (`type TIdx = lo..hi;`) supplies the index range, so `array[TIdx] of T` folds to `array[lo..hi] of T`; the subrange's values remain ordinary unchecked integers of its underlying storage type.
 
