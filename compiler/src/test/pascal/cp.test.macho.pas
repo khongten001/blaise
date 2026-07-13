@@ -18,7 +18,7 @@ unit cp.test.macho;
 interface
 
 uses
-  SysUtils, blaise.testing, blaise.container.writer,
+  SysUtils, blaise.testing, uStrCompat, blaise.container.writer,
   blaise.machowriter, blaise.machoreader;
 
 type
@@ -39,6 +39,29 @@ type
     procedure TestReloc_SymbolIndexRemappedAfterReorder;
     procedure TestReloc_X86KindRejected;
     procedure TestInterfaceSeam_MachOViaIContainerWriter;
+  end;
+
+  { MH_EXECUTE structural tests (Phase 1B): build a tiny resolved image
+    with TMachOExecWriter and pin the segment/load-command shape dyld
+    checks.  LC_CODE_SIGNATURE is Phase 4, so the image is structurally
+    complete but not yet runnable on Apple Silicon. }
+  TMachOExecWriterTests = class(TTestCase)
+  private
+    function BuildExec: TMachOFile;
+    function RdU32At(const ABuf: string; AOff: Integer): Integer;
+    function RdU64At(const ABuf: string; AOff: Integer): Int64;
+  published
+    procedure TestExecHeader_TypeAndPieFlags;
+    procedure TestPageZero_FourGiBUnmapped;
+    procedure TestTextSegment_BaseAndPageAlignment;
+    procedure TestDataSegment_BssZerofillTail;
+    procedure TestLinkEdit_CoversDyldInfoAndSymtab;
+    procedure TestEntry_LCMainNotUnixthread;
+    procedure TestDylinkerAndLibSystem;
+    procedure TestBuildVersion_PlatformMacOS;
+    procedure TestRebaseStream_OpcodesDecode;
+    procedure TestBindStream_NamesLibSystemSymbol;
+    procedure TestGlobals_InSymtab;
   end;
 
 implementation
@@ -366,7 +389,288 @@ begin
   AssertEquals($FE, StrAt(Buf, 3));
 end;
 
+{ ---- TMachOExecWriterTests ---- }
+
+function TMachOExecWriterTests.RdU32At(const ABuf: string; AOff: Integer): Integer;
+begin
+  Result := StrAt(ABuf, AOff)
+         or (StrAt(ABuf, AOff + 1) shl 8)
+         or (StrAt(ABuf, AOff + 2) shl 16)
+         or (StrAt(ABuf, AOff + 3) shl 24);
+end;
+
+function TMachOExecWriterTests.RdU64At(const ABuf: string; AOff: Integer): Int64;
+begin
+  Result := (Int64(RdU32At(ABuf, AOff)) and $FFFFFFFF)
+    or (Int64(RdU32At(ABuf, AOff + 4)) shl 32);
+end;
+
+function TMachOExecWriterTests.BuildExec: TMachOFile;
+var
+  W: TMachOExecWriter;
+  T, D: string;
+  I: Integer;
+  Buf: string;
+begin
+  { 8 instructions of nop + ret }
+  T := '';
+  for I := 0 to 6 do
+    T := T + Chr($1F) + Chr($20) + Chr($03) + Chr($D5);   { nop }
+  T := T + Chr($C0) + Chr($03) + Chr($5F) + Chr($D6);     { ret }
+  D := '';
+  for I := 0 to 15 do
+    D := D + Chr(0);
+
+  W := TMachOExecWriter.Create();
+  try
+    W.SetText(T);
+    W.SetConst(Chr(1) + Chr(2) + Chr(3) + Chr(4));
+    W.SetData(D);
+    W.SetBssSize(64);
+    W.SetEntryTextOffset(4);
+    { __DATA starts at the first 16 KiB page after __TEXT; with this tiny
+      payload that is exactly base + one page. }
+    W.AddRebase($100000000 + $4000);
+    W.AddBind($100000000 + $4000 + 8, '_environ');
+    W.AddGlobal('_main', W.TextVmAddr() + 4);
+    Buf := W.Finish();
+  finally
+    W.Free();
+  end;
+  Result := ParseMachO(Buf, 'probe_exec');
+end;
+
+procedure TMachOExecWriterTests.TestExecHeader_TypeAndPieFlags;
+var
+  F: TMachOFile;
+begin
+  F := BuildExec();
+  try
+    AssertEquals(MH_EXECUTE, F.FileType);
+    AssertEquals(CPU_TYPE_ARM64, F.CpuType);
+    AssertTrue('MH_PIE set', (F.Flags and MH_PIE) <> 0);
+    AssertTrue('MH_DYLDLINK set', (F.Flags and MH_DYLDLINK) <> 0);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestPageZero_FourGiBUnmapped;
+var
+  F: TMachOFile;
+  S: TMoSegment;
+begin
+  F := BuildExec();
+  try
+    S := F.FindSegment('__PAGEZERO');
+    AssertTrue(S <> nil);
+    AssertEquals(0, Integer(S.VmAddr));
+    AssertTrue('vmsize is 4 GiB', S.VmSize = $100000000);
+    AssertEquals(0, Integer(S.FileSize));
+    AssertEquals('no access', 0, S.InitProt);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestTextSegment_BaseAndPageAlignment;
+var
+  F: TMachOFile;
+  S: TMoSegment;
+  T: TMoSection;
+begin
+  F := BuildExec();
+  try
+    S := F.FindSegment('__TEXT');
+    AssertTrue(S <> nil);
+    AssertTrue('__TEXT at the 4 GiB base', S.VmAddr = $100000000);
+    AssertEquals('maps from file offset 0', 0, Integer(S.FileOff));
+    AssertEquals('16 KiB-aligned filesize', 0,
+      Integer(S.FileSize mod $4000));
+    AssertEquals('r-x', 5, S.InitProt);
+    T := F.FindSection('__TEXT', '__text');
+    AssertTrue(T <> nil);
+    AssertTrue('vmaddr = base + fileoff',
+      T.Addr = $100000000 + T.Offset);
+    AssertEquals('ret rides at the right file spot',
+      $D6, StrAt(F.Raw, T.Offset + Integer(T.Size) - 1));
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestDataSegment_BssZerofillTail;
+var
+  F: TMachOFile;
+  S: TMoSegment;
+  B: TMoSection;
+begin
+  F := BuildExec();
+  try
+    S := F.FindSegment('__DATA');
+    AssertTrue(S <> nil);
+    AssertEquals('16 KiB-aligned vmaddr', 0, Integer(S.VmAddr mod $4000));
+    AssertEquals('rw-', 3, S.InitProt);
+    B := F.FindSection('__DATA', '__bss');
+    AssertTrue(B <> nil);
+    AssertEquals('zerofill', S_ZEROFILL, B.Flags and $FF);
+    AssertEquals(64, Integer(B.Size));
+    AssertEquals('no file bytes', 0, B.Offset);
+    AssertTrue('bss follows data in vm',
+      B.Addr = F.FindSection('__DATA', '__data').Addr + 16);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestLinkEdit_CoversDyldInfoAndSymtab;
+var
+  F: TMachOFile;
+  S: TMoSegment;
+  LC: TMoLoadCmd;
+  RebOff, RebSize, BindOff, BindSize: Integer;
+begin
+  F := BuildExec();
+  try
+    S := F.FindSegment('__LINKEDIT');
+    AssertTrue(S <> nil);
+    LC := F.FindLoadCmd(LC_DYLD_INFO_ONLY);
+    AssertTrue('LC_DYLD_INFO_ONLY present', LC <> nil);
+    RebOff := RdU32At(F.Raw, LC.Offset + 8);
+    RebSize := RdU32At(F.Raw, LC.Offset + 12);
+    BindOff := RdU32At(F.Raw, LC.Offset + 16);
+    BindSize := RdU32At(F.Raw, LC.Offset + 20);
+    AssertTrue('rebase stream present', RebSize > 0);
+    AssertTrue('bind stream present', BindSize > 0);
+    AssertTrue('rebase inside __LINKEDIT',
+      (RebOff >= S.FileOff) and (RebOff + RebSize <= S.FileOff + S.FileSize));
+    AssertTrue('bind inside __LINKEDIT',
+      (BindOff >= S.FileOff) and (BindOff + BindSize <= S.FileOff + S.FileSize));
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestEntry_LCMainNotUnixthread;
+var
+  F: TMachOFile;
+  LC: TMoLoadCmd;
+  EntryOff: Int64;
+  T: TMoSection;
+begin
+  F := BuildExec();
+  try
+    AssertTrue('LC_UNIXTHREAD absent', F.FindLoadCmd(LC_UNIXTHREAD) = nil);
+    LC := F.FindLoadCmd(LC_MAIN);
+    AssertTrue('LC_MAIN present', LC <> nil);
+    EntryOff := RdU64At(F.Raw, LC.Offset + 8);
+    T := F.FindSection('__TEXT', '__text');
+    AssertTrue('entryoff = __text fileoff + 4',
+      EntryOff = T.Offset + 4);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestDylinkerAndLibSystem;
+var
+  F: TMachOFile;
+  LC: TMoLoadCmd;
+begin
+  F := BuildExec();
+  try
+    LC := F.FindLoadCmd(LC_LOAD_DYLINKER);
+    AssertTrue(LC <> nil);
+    AssertTrue('dyld path',
+      Pos('/usr/lib/dyld', Copy(F.Raw, LC.Offset, LC.CmdSize)) >= 0);
+    LC := F.FindLoadCmd(LC_LOAD_DYLIB);
+    AssertTrue(LC <> nil);
+    AssertTrue('libSystem path',
+      Pos('/usr/lib/libSystem.B.dylib', Copy(F.Raw, LC.Offset, LC.CmdSize)) >= 0);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestBuildVersion_PlatformMacOS;
+var
+  F: TMachOFile;
+  LC: TMoLoadCmd;
+begin
+  F := BuildExec();
+  try
+    LC := F.FindLoadCmd(LC_BUILD_VERSION);
+    AssertTrue(LC <> nil);
+    AssertEquals(PLATFORM_MACOS, RdU32At(F.Raw, LC.Offset + 8));
+    AssertEquals('minos 11.0', $000B0000, RdU32At(F.Raw, LC.Offset + 12));
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestRebaseStream_OpcodesDecode;
+var
+  F: TMachOFile;
+  LC: TMoLoadCmd;
+  RebOff: Integer;
+begin
+  F := BuildExec();
+  try
+    LC := F.FindLoadCmd(LC_DYLD_INFO_ONLY);
+    RebOff := RdU32At(F.Raw, LC.Offset + 8);
+    { SET_TYPE_IMM|POINTER, SET_SEGMENT_AND_OFFSET_ULEB|2, uleb(0),
+      DO_REBASE_IMM_TIMES|1, DONE }
+    AssertEquals($11, StrAt(F.Raw, RebOff));
+    AssertEquals($22, StrAt(F.Raw, RebOff + 1));
+    AssertEquals(0, StrAt(F.Raw, RebOff + 2));
+    AssertEquals($51, StrAt(F.Raw, RebOff + 3));
+    AssertEquals(0, StrAt(F.Raw, RebOff + 4));
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestBindStream_NamesLibSystemSymbol;
+var
+  F: TMachOFile;
+  LC: TMoLoadCmd;
+  BindOff, BindSize: Integer;
+begin
+  F := BuildExec();
+  try
+    LC := F.FindLoadCmd(LC_DYLD_INFO_ONLY);
+    BindOff := RdU32At(F.Raw, LC.Offset + 16);
+    BindSize := RdU32At(F.Raw, LC.Offset + 20);
+    AssertEquals('dylib ordinal 1 first', $11, StrAt(F.Raw, BindOff));
+    AssertEquals('bind type pointer', $51, StrAt(F.Raw, BindOff + 1));
+    AssertTrue('bound symbol name embedded',
+      Pos('_environ', Copy(F.Raw, BindOff, BindSize)) >= 0);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TMachOExecWriterTests.TestGlobals_InSymtab;
+var
+  F: TMachOFile;
+  S: TMoSymbol;
+  T: TMoSection;
+begin
+  F := BuildExec();
+  try
+    S := F.FindSymbol('_main');
+    AssertTrue(S <> nil);
+    AssertTrue('external', S.IsExt());
+    T := F.FindSection('__TEXT', '__text');
+    AssertTrue('addr = __text vmaddr + 4', S.Value = T.Addr + 4);
+    AssertEquals('n_sect = __text ordinal', 1, S.Sect);
+  finally
+    F.Free();
+  end;
+end;
+
 initialization
   RegisterTest(TMachOWriterTests);
+  RegisterTest(TMachOExecWriterTests);
 
 end.

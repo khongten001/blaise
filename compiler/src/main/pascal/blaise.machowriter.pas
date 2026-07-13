@@ -118,6 +118,87 @@ type
     procedure WriteToFile(const APath: string);
   end;
 
+  { MH_EXECUTE emitter — the executable side of the container (Phase 1B).
+
+    The linker core resolves every address; this writer serialises the
+    resolved image: __PAGEZERO (4 GiB NULL trap), __TEXT at 0x100000000
+    holding the header + load commands + code + rodata, __DATA (data +
+    zerofill bss), and __LINKEDIT holding the legacy LC_DYLD_INFO_ONLY
+    rebase/bind opcode streams and the LC_SYMTAB tables.  Segments are
+    16 KiB-aligned (arm64 macOS page size).  Entry is LC_MAIN (entryoff =
+    file offset of the entry code inside __TEXT); the dynamic loader is
+    /usr/lib/dyld and the single v1 dylib is libSystem.B.dylib.
+
+    Rebases/binds use the LEGACY dyld-info opcodes (simpler than chained
+    fixups; accepted by current dyld for MH_EXECUTE — migrating to
+    LC_DYLD_CHAINED_FIXUPS is a Phase 6 decision).  LC_CODE_SIGNATURE is
+    Phase 4; its absence makes the binary structurally complete but not
+    yet runnable on Apple Silicon. }
+  TMachOExecWriter = class
+  private
+    FText:      string;   { __TEXT,__text bytes }
+    FConst:     string;   { __TEXT,__const bytes }
+    FData:      string;   { __DATA,__data bytes }
+    FBssSize:   Int64;    { __DATA,__bss zerofill size }
+    FEntryTextOff: Integer;      { entry offset within __text }
+    FRebases:   TList<Int64>;    { vm addresses needing slide }
+    FBindAddrs: TList<Int64>;    { vm addresses of dylib-bound pointers }
+    FBindNames: TList<string>;   { parallel: bound symbol names }
+    FGlobalNames: TList<string>; { exported/global symbols }
+    FGlobalAddrs: TList<Int64>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure SetText(const ABytes: string);
+    procedure SetConst(const ABytes: string);
+    procedure SetData(const ABytes: string);
+    procedure SetBssSize(ASize: Int64);
+    { Entry point, as an offset into the __text payload. }
+    procedure SetEntryTextOffset(AOff: Integer);
+    { Record a pointer slot at AVmAddr that dyld must slide (rebase). }
+    procedure AddRebase(AVmAddr: Int64);
+    { Record a pointer slot at AVmAddr bound to libSystem symbol AName. }
+    procedure AddBind(AVmAddr: Int64; const AName: string);
+    { Record a defined global for the symbol table. }
+    procedure AddGlobal(const AName: string; AVmAddr: Int64);
+    { Virtual address the __text payload starts at (fixed for the v1
+      load-command configuration, so callers can resolve before Finish). }
+    function TextVmAddr: Int64;
+    function Finish: string;
+  end;
+
+const
+  { Executable layout knobs (arm64 macOS). }
+  MACHO_PAGEZERO_SIZE = $100000000;   { 4 GiB }
+  MACHO_EXEC_BASE     = $100000000;   { __TEXT vmaddr }
+  MACHO_PAGE_SIZE     = $4000;        { 16 KiB pages }
+
+  MH_PIE       = $200000;
+  MH_NOUNDEFS  = $1;
+  MH_DYLDLINK  = $4;
+  MH_TWOLEVEL  = $80;
+
+  LC_LOAD_DYLIB      = $0C;
+  LC_LOAD_DYLINKER   = $0E;
+  { $22/$28 or LC_REQ_DYLD ($80000000) — precomputed literals }
+  LC_DYLD_INFO_ONLY  = Integer($80000022);
+  LC_MAIN            = Integer($80000028);
+  LC_UNIXTHREAD      = $05;
+
+  { legacy dyld-info opcodes }
+  REBASE_TYPE_POINTER                        = 1;
+  REBASE_OPCODE_SET_TYPE_IMM                 = $10;
+  REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB  = $20;
+  REBASE_OPCODE_DO_REBASE_IMM_TIMES          = $50;
+  REBASE_OPCODE_DONE                         = $00;
+  BIND_TYPE_POINTER                          = 1;
+  BIND_OPCODE_SET_DYLIB_ORDINAL_IMM          = $10;
+  BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM  = $40;
+  BIND_OPCODE_SET_TYPE_IMM                   = $50;
+  BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB    = $70;
+  BIND_OPCODE_DO_BIND                        = $90;
+  BIND_OPCODE_DONE                           = $00;
+
 { (segname, sectname) a container section kind maps to — shared with the
   structural tests and the future link path. }
 procedure MachOSectionNames(AKind: TContainerSectionKind;
@@ -937,6 +1018,423 @@ begin
   finally
     FOut.Close();
     FOut.Free();
+  end;
+end;
+
+{ ---- TMachOExecWriter --------------------------------------------------- }
+
+{ Fixed v1 load-command configuration:
+    __PAGEZERO, __TEXT(__text,__const), __DATA(__data,__bss), __LINKEDIT,
+    LC_DYLD_INFO_ONLY, LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLINKER,
+    LC_BUILD_VERSION, LC_LOAD_DYLIB, LC_MAIN  (ncmds = 11). }
+const
+  DYLD_PATH    = '/usr/lib/dyld';
+  LIBSYSTEM    = '/usr/lib/libSystem.B.dylib';
+  DYLINKER_CMD_SIZE = 32;   { 12 + len(dyld path)+1 = 26, padded to 8 }
+  DYLIB_CMD_SIZE    = 56;   { 24 + len(libSystem)+1 = 51, padded to 8 }
+  DYLDINFO_CMD_SIZE = 48;
+  MAIN_CMD_SIZE     = 24;
+  { 72(__PAGEZERO) + 232(__TEXT: 72+2*80) + 232(__DATA) + 72(__LINKEDIT)
+    + 48(dyld-info) + 24(symtab) + 80(dysymtab) + 32(dylinker)
+    + 24(build-version) + 56(dylib) + 24(main) — the Finish size check
+    guards this precomputed literal. }
+  EXEC_SIZEOFCMDS = 896;
+  EXEC_NCMDS = 11;
+
+procedure PushUleb(ABuf: TByteBuf; AVal: Int64);
+var
+  B: Integer;
+begin
+  repeat
+    B := Integer(AVal and $7F);
+    AVal := AVal shr 7;
+    if AVal <> 0 then
+      B := B or $80;
+    ABuf.PushByte(B);
+  until AVal = 0;
+end;
+
+function MoAlignUp64(AVal: Int64; AAlign: Int64): Int64;
+var
+  Rem: Int64;
+begin
+  if AAlign <= 1 then
+  begin
+    Result := AVal;
+    Exit;
+  end;
+  Rem := AVal mod AAlign;
+  if Rem = 0 then
+    Result := AVal
+  else
+    Result := AVal + (AAlign - Rem);
+end;
+
+constructor TMachOExecWriter.Create;
+begin
+  inherited Create();
+  FRebases := TList<Int64>.Create();
+  FBindAddrs := TList<Int64>.Create();
+  FBindNames := TList<string>.Create();
+  FGlobalNames := TList<string>.Create();
+  FGlobalAddrs := TList<Int64>.Create();
+end;
+
+destructor TMachOExecWriter.Destroy;
+begin
+  FRebases.Free();
+  FBindAddrs.Free();
+  FBindNames.Free();
+  FGlobalNames.Free();
+  FGlobalAddrs.Free();
+  inherited Destroy();
+end;
+
+procedure TMachOExecWriter.SetText(const ABytes: string);
+begin
+  FText := ABytes;
+end;
+
+procedure TMachOExecWriter.SetConst(const ABytes: string);
+begin
+  FConst := ABytes;
+end;
+
+procedure TMachOExecWriter.SetData(const ABytes: string);
+begin
+  FData := ABytes;
+end;
+
+procedure TMachOExecWriter.SetBssSize(ASize: Int64);
+begin
+  FBssSize := ASize;
+end;
+
+procedure TMachOExecWriter.SetEntryTextOffset(AOff: Integer);
+begin
+  FEntryTextOff := AOff;
+end;
+
+procedure TMachOExecWriter.AddRebase(AVmAddr: Int64);
+begin
+  FRebases.Add(AVmAddr);
+end;
+
+procedure TMachOExecWriter.AddBind(AVmAddr: Int64; const AName: string);
+begin
+  FBindAddrs.Add(AVmAddr);
+  FBindNames.Add(AName);
+end;
+
+procedure TMachOExecWriter.AddGlobal(const AName: string; AVmAddr: Int64);
+begin
+  FGlobalNames.Add(AName);
+  FGlobalAddrs.Add(AVmAddr);
+end;
+
+function TMachOExecWriter.TextVmAddr: Int64;
+begin
+  Result := MACHO_EXEC_BASE
+    + MoAlignUp(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS, 16);
+end;
+
+function TMachOExecWriter.Finish: string;
+var
+  Head, Reb, Bind, SymT, StrT: TByteBuf;
+  TextOff, ConstOff: Integer;
+  TextSegFileSize: Int64;
+  DataOff: Int64;
+  DataVm, BssVm, DataSegVmSize, DataSegFileSize: Int64;
+  LinkOff, LinkVm: Int64;
+  RebOff, BindOff, SymOff, StrOff: Int64;
+  I: Integer;
+  A: Int64;
+  StrIdx: Integer;
+  NSectOf: Integer;
+begin
+  TextOff := MoAlignUp(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS, 16);
+  ConstOff := MoAlignUp(TextOff + Length(FText), 16);
+  TextSegFileSize := MoAlignUp64(ConstOff + Length(FConst), MACHO_PAGE_SIZE);
+  DataOff := TextSegFileSize;
+  DataVm := MACHO_EXEC_BASE + DataOff;
+  BssVm := DataVm + Length(FData);
+  DataSegVmSize := MoAlignUp64(Length(FData) + FBssSize, MACHO_PAGE_SIZE);
+  DataSegFileSize := MoAlignUp64(Length(FData), MACHO_PAGE_SIZE);
+  LinkOff := DataOff + DataSegFileSize;
+  LinkVm := DataVm + DataSegVmSize;
+
+  Head := TByteBuf.Create();
+  Reb := TByteBuf.Create();
+  Bind := TByteBuf.Create();
+  SymT := TByteBuf.Create();
+  StrT := TByteBuf.Create();
+  try
+    { ---- rebase opcodes (segment 2 = __DATA) ---- }
+    if FRebases.Count > 0 then
+    begin
+      Reb.PushByte(REBASE_OPCODE_SET_TYPE_IMM or REBASE_TYPE_POINTER);
+      for I := 0 to FRebases.Count - 1 do
+      begin
+        A := FRebases.Get(I);
+        if (A < DataVm) or (A >= DataVm + DataSegVmSize) then
+          raise EMachOWriter.Create('machowriter: rebase target outside __DATA');
+        Reb.PushByte(REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB or 2);
+        PushUleb(Reb, A - DataVm);
+        Reb.PushByte(REBASE_OPCODE_DO_REBASE_IMM_TIMES or 1);
+      end;
+      Reb.PushByte(REBASE_OPCODE_DONE);
+      while (Reb.Count mod 8) <> 0 do
+        Reb.PushByte(0);
+    end;
+
+    { ---- bind opcodes (dylib ordinal 1 = libSystem) ---- }
+    if FBindAddrs.Count > 0 then
+    begin
+      Bind.PushByte(BIND_OPCODE_SET_DYLIB_ORDINAL_IMM or 1);
+      Bind.PushByte(BIND_OPCODE_SET_TYPE_IMM or BIND_TYPE_POINTER);
+      for I := 0 to FBindAddrs.Count - 1 do
+      begin
+        A := FBindAddrs.Get(I);
+        if (A < DataVm) or (A >= DataVm + DataSegVmSize) then
+          raise EMachOWriter.Create('machowriter: bind target outside __DATA');
+        Bind.PushByte(BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM or 0);
+        Bind.AppendBytes(FBindNames.Get(I));
+        Bind.PushByte(0);
+        Bind.PushByte(BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB or 2);
+        PushUleb(Bind, A - DataVm);
+        Bind.PushByte(BIND_OPCODE_DO_BIND);
+      end;
+      Bind.PushByte(BIND_OPCODE_DONE);
+      while (Bind.Count mod 8) <> 0 do
+        Bind.PushByte(0);
+    end;
+
+    RebOff := LinkOff;
+    BindOff := RebOff + Reb.Count;
+    SymOff := BindOff + Bind.Count;
+
+    { ---- symtab (globals only; n_sect by address range) ---- }
+    StrT.PushByte(0);
+    for I := 0 to FGlobalNames.Count - 1 do
+    begin
+      A := FGlobalAddrs.Get(I);
+      if A >= BssVm then NSectOf := 4
+      else if A >= DataVm then NSectOf := 3
+      else if A >= MACHO_EXEC_BASE + ConstOff then NSectOf := 2
+      else NSectOf := 1;
+      StrIdx := StrT.Count;
+      StrT.AppendBytes(FGlobalNames.Get(I));
+      StrT.PushByte(0);
+      SymT.PushU32(StrIdx);
+      SymT.PushByte(N_SECT or N_EXT);
+      SymT.PushByte(NSectOf);
+      SymT.PushU16(0);
+      SymT.PushU64(A);
+    end;
+    StrOff := SymOff + FGlobalNames.Count * NLIST_64_SIZE;
+
+    { ---- header ---- }
+    Head.PushU32(MH_MAGIC_64);
+    Head.PushU32(CPU_TYPE_ARM64);
+    Head.PushU32(CPU_SUBTYPE_ARM64_ALL);
+    Head.PushU32(MH_EXECUTE);
+    Head.PushU32(EXEC_NCMDS);
+    Head.PushU32(EXEC_SIZEOFCMDS);
+    Head.PushU32(MH_NOUNDEFS or MH_DYLDLINK or MH_TWOLEVEL or MH_PIE);
+    Head.PushU32(0);
+
+    { ---- __PAGEZERO ---- }
+    Head.PushU32(LC_SEGMENT_64);
+    Head.PushU32(SEGMENT_CMD_SIZE);
+    PushName16(Head, '__PAGEZERO');
+    Head.PushU64(0);
+    Head.PushU64(MACHO_PAGEZERO_SIZE);
+    Head.PushU64(0);
+    Head.PushU64(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+
+    { ---- __TEXT (maps file 0 .. TextSegFileSize) ---- }
+    Head.PushU32(LC_SEGMENT_64);
+    Head.PushU32(SEGMENT_CMD_SIZE + 2 * SECTION_64_SIZE);
+    PushName16(Head, '__TEXT');
+    Head.PushU64(MACHO_EXEC_BASE);
+    Head.PushU64(TextSegFileSize);
+    Head.PushU64(0);
+    Head.PushU64(TextSegFileSize);
+    Head.PushU32(5);   { r-x }
+    Head.PushU32(5);
+    Head.PushU32(2);
+    Head.PushU32(0);
+    PushName16(Head, '__text');
+    PushName16(Head, '__TEXT');
+    Head.PushU64(MACHO_EXEC_BASE + TextOff);
+    Head.PushU64(Length(FText));
+    Head.PushU32(TextOff);
+    Head.PushU32(4);   { 2^4 = 16 }
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_REGULAR or S_ATTR_PURE_INSTRUCTIONS
+      or S_ATTR_SOME_INSTRUCTIONS);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    PushName16(Head, '__const');
+    PushName16(Head, '__TEXT');
+    Head.PushU64(MACHO_EXEC_BASE + ConstOff);
+    Head.PushU64(Length(FConst));
+    Head.PushU32(ConstOff);
+    Head.PushU32(4);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_REGULAR);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+
+    { ---- __DATA ---- }
+    Head.PushU32(LC_SEGMENT_64);
+    Head.PushU32(SEGMENT_CMD_SIZE + 2 * SECTION_64_SIZE);
+    PushName16(Head, '__DATA');
+    Head.PushU64(DataVm);
+    Head.PushU64(DataSegVmSize);
+    Head.PushU64(DataOff);
+    Head.PushU64(DataSegFileSize);
+    Head.PushU32(3);   { rw- }
+    Head.PushU32(3);
+    Head.PushU32(2);
+    Head.PushU32(0);
+    PushName16(Head, '__data');
+    PushName16(Head, '__DATA');
+    Head.PushU64(DataVm);
+    Head.PushU64(Length(FData));
+    Head.PushU32(Integer(DataOff));
+    Head.PushU32(3);   { 2^3 = 8 }
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_REGULAR);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    PushName16(Head, '__bss');
+    PushName16(Head, '__DATA');
+    Head.PushU64(BssVm);
+    Head.PushU64(FBssSize);
+    Head.PushU32(0);
+    Head.PushU32(3);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_ZEROFILL);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+
+    { ---- __LINKEDIT ---- }
+    Head.PushU32(LC_SEGMENT_64);
+    Head.PushU32(SEGMENT_CMD_SIZE);
+    PushName16(Head, '__LINKEDIT');
+    Head.PushU64(LinkVm);
+    Head.PushU64(MoAlignUp64(
+      Reb.Count + Bind.Count + FGlobalNames.Count * NLIST_64_SIZE
+      + StrT.Count, MACHO_PAGE_SIZE));
+    Head.PushU64(LinkOff);
+    Head.PushU64(Reb.Count + Bind.Count
+      + FGlobalNames.Count * NLIST_64_SIZE + StrT.Count);
+    Head.PushU32(1);   { r-- }
+    Head.PushU32(1);
+    Head.PushU32(0);
+    Head.PushU32(0);
+
+    { ---- LC_DYLD_INFO_ONLY ---- }
+    Head.PushU32(LC_DYLD_INFO_ONLY);
+    Head.PushU32(DYLDINFO_CMD_SIZE);
+    if Reb.Count > 0 then Head.PushU32(Integer(RebOff)) else Head.PushU32(0);
+    Head.PushU32(Reb.Count);
+    if Bind.Count > 0 then Head.PushU32(Integer(BindOff)) else Head.PushU32(0);
+    Head.PushU32(Bind.Count);
+    Head.PushU32(0); Head.PushU32(0);   { weak bind }
+    Head.PushU32(0); Head.PushU32(0);   { lazy bind }
+    Head.PushU32(0); Head.PushU32(0);   { export trie }
+
+    { ---- LC_SYMTAB ---- }
+    Head.PushU32(LC_SYMTAB);
+    Head.PushU32(SYMTAB_CMD_SIZE);
+    Head.PushU32(Integer(SymOff));
+    Head.PushU32(FGlobalNames.Count);
+    Head.PushU32(Integer(StrOff));
+    Head.PushU32(StrT.Count);
+
+    { ---- LC_DYSYMTAB ---- }
+    Head.PushU32(LC_DYSYMTAB);
+    Head.PushU32(DYSYMTAB_CMD_SIZE);
+    Head.PushU32(0); Head.PushU32(0);                     { locals }
+    Head.PushU32(0); Head.PushU32(FGlobalNames.Count);    { extdef }
+    Head.PushU32(FGlobalNames.Count); Head.PushU32(0);    { undef }
+    for I := 1 to 12 do
+      Head.PushU32(0);
+
+    { ---- LC_LOAD_DYLINKER ---- }
+    Head.PushU32(LC_LOAD_DYLINKER);
+    Head.PushU32(DYLINKER_CMD_SIZE);
+    Head.PushU32(12);   { name offset }
+    Head.AppendBytes(DYLD_PATH);
+    Head.PushByte(0);
+    while (Head.Count mod 8) <> 0 do
+      Head.PushByte(0);
+
+    { ---- LC_BUILD_VERSION ---- }
+    Head.PushU32(LC_BUILD_VERSION);
+    Head.PushU32(BUILD_VERSION_SIZE);
+    Head.PushU32(PLATFORM_MACOS);
+    Head.PushU32($000B0000);   { minos 11.0 }
+    Head.PushU32(0);
+    Head.PushU32(0);
+
+    { ---- LC_LOAD_DYLIB ---- }
+    Head.PushU32(LC_LOAD_DYLIB);
+    Head.PushU32(DYLIB_CMD_SIZE);
+    Head.PushU32(24);          { name offset }
+    Head.PushU32(0);           { timestamp }
+    Head.PushU32($00010000);   { current_version 1.0 }
+    Head.PushU32($00010000);   { compat_version 1.0 }
+    Head.AppendBytes(LIBSYSTEM);
+    Head.PushByte(0);
+    while (Head.Count mod 8) <> 0 do
+      Head.PushByte(0);
+
+    { ---- LC_MAIN ---- }
+    Head.PushU32(LC_MAIN);
+    Head.PushU32(MAIN_CMD_SIZE);
+    Head.PushU64(TextOff + FEntryTextOff);   { entryoff (file offset) }
+    Head.PushU64(0);                         { stacksize: default }
+
+    if Head.Count <> MACH_HEADER_SIZE + EXEC_SIZEOFCMDS then
+      raise EMachOWriter.Create('machowriter: exec load-command size mismatch: '
+        + IntToStr(Head.Count) + ' vs '
+        + IntToStr(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS));
+
+    { ---- payloads ---- }
+    Head.PadTo(TextOff);
+    Head.AppendBytes(FText);
+    Head.PadTo(ConstOff);
+    Head.AppendBytes(FConst);
+    Head.PadTo(Integer(DataOff));
+    Head.AppendBytes(FData);
+    Head.PadTo(Integer(LinkOff));
+    Head.AppendBuf(Reb);
+    Head.AppendBuf(Bind);
+    Head.AppendBuf(SymT);
+    Head.AppendBuf(StrT);
+
+    Result := Head.AsString();
+  finally
+    Head.Free();
+    Reb.Free();
+    Bind.Free();
+    SymT.Free();
+    StrT.Free();
   end;
 end;
 
