@@ -53,13 +53,31 @@ OBJS = $(PAS_OBJS)
 
 all: $(LIB)
 
+# Rebuild the archive from scratch every time.  `ar rcs` ADDS or REPLACES
+# members by name but never REMOVES stale ones, so an incremental rebuild over
+# a pre-existing blaise_rtl.a keeps any member whose object was renamed or
+# dropped between builds.  The RTL unit names changed from underscored
+# (rtl_platform_posix.o) to dotted (rtl.platform.posix.o) in the RTL-unification
+# move; without the rm, the OLD member lingers beside the NEW one and both
+# define the same class typeinfo/vtable/global symbols — a multiple-definition
+# link error for any end-user program (GH #180).  Deleting first guarantees the
+# archive contains exactly the current $(OBJS) and nothing else.
 $(LIB): $(OBJS)
+	rm -f $@
 	ar rcs $@ $^
 
 # --- Pascal unit rule (unit-as-top-level) ---
 # One pattern rule now suffices: every unit compiles the same way, and the
 # object basename equals the unit/source basename.
-$(OBJ_DIR)/%.o: $(PAS_SRC_DIR)/%.pas
+#
+# Each object depends on the COMPILER BINARY as well as its source: the symbol
+# binding an object gets (.globl vs .weak) is decided by the compiler, not the
+# .pas source, so a compiler upgrade with unchanged sources must still rebuild
+# every object.  Without this prerequisite `make` keeps stale objects — e.g. an
+# archive built by a pre-GH#180 compiler kept strong-binding _AtomicAddInt32
+# objects and still failed to link even after the fix was pulled.  $(BLAISE) is
+# a normal prerequisite so a newer compiler mtime forces the rebuild.
+$(OBJ_DIR)/%.o: $(PAS_SRC_DIR)/%.pas $(BLAISE)
 	@mkdir -p $(OBJ_DIR)
 	$(BLAISE) $(BLAISE_FLAGS) --source $< --unit-path $(PAS_SRC_DIR) --output $@
 
