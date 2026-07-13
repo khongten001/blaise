@@ -3396,6 +3396,7 @@ var
   VFlags: string;
   RecvOnStack: Boolean;
   DiscSz: Integer;
+  CleanBytes: Integer;
 begin
   { x86_64: pointers are 8 bytes (this backend's invariant, like the rest of the
     file).  i386/arm64 backends will be separate TNativeBackend subclasses. }
@@ -3576,19 +3577,25 @@ begin
   end;
   if ADiscardIntfRet then
   begin
-    { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx. }
-    for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArg64(I + 2));
-    Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal]));
+    { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx.
+      EmitSretRegArgs spills slots beyond the registers to the stack (Self +
+      sret already occupy two); it returns the extra bytes between %rsp and
+      the hoist region at call time, so the buffer leaq shifts by them. }
+    CleanBytes := Self.EmitSretRegArgs(SlotOff, 2);
+    Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal + CleanBytes]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
-    for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArg64(I + 1));
+    CleanBytes := Self.EmitSretRegArgs(SlotOff, 1);
     Self.Emit(#9'movq %r10, %rdi');
   end;
   Self.Emit(#9'callq *%r11');
+  if CleanBytes > 0 then
+    { Reclaim the spill region + still-pushed slots so the epilogue below
+      sees the register-only stack layout.  addq preserves the return
+      registers (%rax/%rdx/%xmm0). }
+    Self.Emit(Format(#9'addq $%d, %%rsp', [CleanBytes]));
   Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, 0, True);
   if ADiscardIntfRet then
   begin
@@ -3628,6 +3635,7 @@ var
   HK: TList<Integer>;
   HTotal, Pushed: Integer;
   VFlags: string;
+  CleanBytes: Integer;
 begin
   ArgN := 0;
   if AArgs <> nil then ArgN := AArgs.Count;
@@ -3739,19 +3747,23 @@ begin
   end;
   if ADiscardIntfRet then
   begin
-    { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx. }
-    for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArg64(I + 2));
-    Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal]));
+    { sret convention: %rdi = buffer, %rsi = Self, visible args from %rdx.
+      EmitSretRegArgs spills slots beyond the registers to the stack; its
+      return value shifts the buffer leaq (see EmitInterfaceCall). }
+    CleanBytes := Self.EmitSretRegArgs(SlotOff, 2);
+    Self.Emit(Format(#9'leaq %d(%%rsp), %%rdi', [HTotal + CleanBytes]));
     Self.Emit(#9'movq %r10, %rsi');
   end
   else
   begin
-    for I := SlotOff - 1 downto 0 do
-      Self.Emit(#9'popq ' + SysVArg64(I + 1));
+    CleanBytes := Self.EmitSretRegArgs(SlotOff, 1);
     Self.Emit(#9'movq %r10, %rdi');
   end;
   Self.Emit(#9'callq *%r11');
+  if CleanBytes > 0 then
+    { Reclaim spill region + still-pushed slots (addq preserves the return
+      registers) so the epilogue sees the register-only layout. }
+    Self.Emit(Format(#9'addq $%d, %%rsp', [CleanBytes]));
   Self.EmitHoistEpilogue(AArgs, HD, HK, HTotal, 0, True);
   if ADiscardIntfRet then
   begin
@@ -6324,6 +6336,7 @@ var
   Ty:  TTypeDesc;
   IsS: Boolean;
   I:   Integer;
+  CleanBytes: Integer;
 begin
   if AExpr is TFloatLiteral then
   begin
@@ -6598,10 +6611,13 @@ begin
         Self.PushCallArg(TMethodParam(MD.Params.Items[I]),
           TASTExpr(FC.Args.Items[I]), I);
       Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('Self')]));
-      for I := Self.CountArgSlots(MD.Params) - 1 downto 0 do
-        Self.Emit(#9'popq ' + SysVArg64(I + 1));
+      { Self + args can exceed the six integer registers: EmitSretRegArgs
+        spills the overflow and returns the bytes to reclaim post-call. }
+      CleanBytes := Self.EmitSretRegArgs(Self.CountArgSlots(MD.Params), 1);
       Self.Emit(#9'movq %r10, %rdi');
       Self.Emit(#9'callq ' + FuncSymbolOf(FC));
+      if CleanBytes > 0 then
+        Self.Emit(Format(#9'addq $%d, %%rsp', [CleanBytes]));
       Self.EndCallArgs();
       Exit;
     end;

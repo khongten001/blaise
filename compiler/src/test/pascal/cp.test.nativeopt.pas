@@ -47,6 +47,13 @@ type
     { A one-argument call stages its argument with a direct register move,
       not an adjacent pushq/popq pair. }
     procedure TestSingleArgCall_PushPopFused;
+    { Interface method with 6 params (Self + 6 args = 7 integer slots): the
+      itab-dispatch lowering must spill the overflow slot to the stack.  It
+      used to raise "register index 6 out of range" instead of generating. }
+    procedure TestInterfaceCall_SevenSlots_Generates;
+    { Same overflow through the implicit-Self path of a FLOAT-returning
+      6-arg method call (EmitExprToXmm0's embedded call lowering). }
+    procedure TestImplicitSelfFloatCall_SevenSlots_Generates;
   end;
 
 implementation
@@ -221,6 +228,69 @@ begin
     Pos(#9'movq %rax, %rdi', Region) >= 0);
   AssertTrue('no adjacent pushq/popq pair survives the peephole',
     Pos(#9'pushq %rax' + LF + #9'popq %rdi', Region) < 0);
+end;
+
+procedure TNativeOptTests.TestInterfaceCall_SevenSlots_Generates;
+const
+  Src = '''
+      program P;
+      type
+        ISink = interface
+          function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+        end;
+        TSink = class(TObject, ISink)
+        public
+          function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+        end;
+      function TSink.Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+      begin
+        Result := AA + AB + AC + AD + AE
+      end;
+      var S: ISink;
+      begin
+        S := TSink.Create();
+        WriteLn(S.Take('abc', 1, 2, 3, 4, 5))
+      end.
+      ''';
+var
+  Asm_: string;
+begin
+  { Red state raised ENativeCodeGenError ("register index 6 out of range")
+    from the itab-dispatch pop loop; generating at all is the regression
+    guard, the itab call shape pins that the dispatch path was taken. }
+  Asm_ := GenAsm(Src);
+  AssertTrue('itab dispatch emitted', Pos(#9'callq *%r11', Asm_) >= 0);
+end;
+
+procedure TNativeOptTests.TestImplicitSelfFloatCall_SevenSlots_Generates;
+const
+  Src = '''
+      program P;
+      type
+        TCalc = class
+        public
+          function Mix(AA, AB, AC, AD, AE, AF: Integer): Double;
+          function Run: Double;
+        end;
+      function TCalc.Mix(AA, AB, AC, AD, AE, AF: Integer): Double;
+      begin
+        Result := AA + AB + AC + AD + AE + AF
+      end;
+      function TCalc.Run: Double;
+      begin
+        { implicit-Self call in float expression position: lowered by
+          EmitExprToXmm0's embedded method-call path }
+        Result := Mix(1, 2, 3, 4, 5, 6) * 2.0
+      end;
+      var C: TCalc;
+      begin
+        C := TCalc.Create();
+        WriteLn(C.Run() > 41.0)
+      end.
+      ''';
+begin
+  { Generating without ENativeCodeGenError is the regression guard. }
+  AssertTrue('program generates', Length(GenAsm(Src)) > 0);
 end;
 
 initialization

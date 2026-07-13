@@ -64,6 +64,16 @@ type
       under --linker external, or a call-through-garbage SIGSEGV) instead of
       loading the receiver's real fat pointer from Self+offset / the local slot. }
     procedure TestRun_InterfaceField_ValueReturn_InMethod;
+    { Interface method with SIX parameters: Self + 6 args = 7 integer slots,
+      one more than the System V registers.  The native itab-dispatch pop
+      loop used to raise ("register index 6 out of range") instead of
+      spilling the overflow slot to the stack.  Three dispatch shapes are
+      covered: a plain interface-variable receiver, a class-FIELD receiver
+      (a separate emitter), and a DISCARDED interface-returning call (sret
+      shifts args to start at %rdx, overflowing one slot earlier). }
+    procedure TestRun_InterfaceMethod_SixArgs_SpillsToStack;
+    procedure TestRun_InterfaceFieldMethod_SixArgs_SpillsToStack;
+    procedure TestRun_DiscardedIntfReturn_FiveArgs_SpillsToStack;
   end;
 
 implementation
@@ -528,6 +538,107 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'CallField=42' + LE + 'CallLocal=42' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceMethod_SixArgs_SpillsToStack;
+const
+  Src = '''
+    program p;
+    type
+      ISink = interface
+        function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+      end;
+      TSink = class(TObject, ISink)
+      public
+        function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+      end;
+    function TSink.Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+    begin
+      Result := Length(AName) + AA + AB * 10 + AC * 100 + AD * 1000 + AE * 10000
+    end;
+    var S: ISink;
+    begin
+      S := TSink.Create();
+      { 3 + 1 + 20 + 300 + 4000 + 50000 = 54324 }
+      WriteLn(S.Take('abc', 1, 2, 3, 4, 5))
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '54324' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_InterfaceFieldMethod_SixArgs_SpillsToStack;
+const
+  Src = '''
+    program p;
+    type
+      ISink = interface
+        function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+      end;
+      TSink = class(TObject, ISink)
+      public
+        function Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+      end;
+      THold = class
+      private
+        FS: ISink;
+      public
+        procedure Bind(s: ISink);
+        function Call: Integer;
+      end;
+    function TSink.Take(const AName: string; AA, AB, AC, AD, AE: Integer): Integer;
+    begin
+      Result := Length(AName) + AA + AB * 10 + AC * 100 + AD * 1000 + AE * 10000
+    end;
+    procedure THold.Bind(s: ISink); begin FS := s end;
+    function THold.Call: Integer;
+    begin
+      Result := FS.Take('abcd', 5, 4, 3, 2, 1)
+    end;
+    var H: THold;
+    begin
+      H := THold.Create();
+      H.Bind(TSink.Create());
+      { 4 + 5 + 40 + 300 + 2000 + 10000 = 12349 }
+      WriteLn(H.Call())
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '12349' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_DiscardedIntfReturn_FiveArgs_SpillsToStack;
+const
+  { A DISCARDED interface-returning itab call uses the sret convention:
+    %rdi = buffer, %rsi = Self, visible args from %rdx — so five args
+    already need seven integer slots and must spill one. }
+  Src = '''
+    program p;
+    type
+      ISink = interface
+        function Note(AA, AB, AC, AD, AE: Integer): ISink;
+      end;
+      TSink = class(TObject, ISink)
+      public
+        function Note(AA, AB, AC, AD, AE: Integer): ISink;
+      end;
+    function TSink.Note(AA, AB, AC, AD, AE: Integer): ISink;
+    begin
+      WriteLn(AA + AB * 10 + AC * 100 + AD * 1000 + AE * 10000);
+      Result := Self
+    end;
+    var S: ISink;
+    begin
+      S := TSink.Create();
+      { statement position: the returned interface is discarded }
+      S.Note(5, 4, 3, 2, 1)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '12345' + LE, 0);
 end;
 
 initialization
