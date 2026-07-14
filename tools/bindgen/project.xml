@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <name>blaise-bindgen</name>
+  <!-- version inherited from root aggregator -->
+
+  <build>
+    <packaging>application</packaging>
+    <mainSource>BindGen.pas</mainSource>
+    <executableName>bindgen</executableName>
+
+    <manualUnitPaths>true</manualUnitPaths>
+    <unitPaths>
+      <path>src/main/pascal</path>
+      <path>../../stdlib/src/main/pascal</path>
+    </unitPaths>
+  </build>
+
+  <test>
+    <testSource>BindGenTests.pas</testSource>
+    <unitPaths>
+      <path>../../stdlib/src/main/pascal</path>
+    </unitPaths>
+  </test>
+</project>
