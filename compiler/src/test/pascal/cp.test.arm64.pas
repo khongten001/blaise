@@ -1,0 +1,276 @@
+{
+  Blaise - An Object Pascal Compiler
+  Copyright (c) 2026 Graeme Geldenhuys
+  SPDX-License-Identifier: Apache-2.0 WITH Swift-exception
+  Licensed under the Apache License v2.0 with Runtime Library Exception.
+  See LICENSE file in the project root for full license terms.
+}
+
+unit cp.test.arm64;
+
+{ Structural tests for the AArch64 backend (macos-arm64 Phase 2).
+
+  Two lanes, both on Linux CI (the design doc's Phase 2 verification):
+    1. asm-shape — TArm64Backend's emitted text carries the expected
+       prologue / call / addressing / guard shapes;
+    2. full pipeline — the emitted text assembles through
+       blaise.assembler.arm64 into an MH_OBJECT that blaise.machoreader
+       parses back (sections, relocations, entry symbol).
+
+  Behavioural runs happen on real Apple Silicon in Phase 6. }
+
+interface
+
+uses
+  Classes, SysUtils, blaise.testing, uStrCompat,
+  uLexer, uParser, uAST, uSymbolTable, uSemantic,
+  blaise.codegen.native.arm64, blaise.codegen.native.backend,
+  blaise.codegen.target, blaise.assembler.arm64,
+  blaise.machoreader, blaise.machowriter;
+
+type
+  TArm64BackendTests = class(TTestCase)
+  private
+    function GenAsm(const ASrc: string): string;
+  published
+    procedure TestHello_PrologueAndFrameChain;
+    procedure TestHello_StringLiteral_AdrpAddPair;
+    procedure TestHello_RtlCallsAndEpilogue;
+    procedure TestIntegerArithmetic_Shapes;
+    procedure TestDivision_AlwaysEmitsZeroGuard;
+    procedure TestGlobals_PageAddressed;
+    procedure TestIfWhile_BranchShapes;
+    procedure TestUnsupported_RaisesHonestly;
+    procedure TestPipeline_AssemblesToMachO;
+  end;
+
+implementation
+
+const
+  LF = #10;
+
+  SrcHello =
+    '''
+    program P;
+    begin
+      WriteLn('hi arm64')
+    end.
+    ''';
+
+  SrcArith =
+    '''
+    program P;
+    var
+      A, B, C: Integer;
+    begin
+      A := 6;
+      B := 7;
+      C := A * B + (A - B) div 2;
+      WriteLn(C)
+    end.
+    ''';
+
+  SrcControl =
+    '''
+    program P;
+    var
+      N, Sum: Integer;
+    begin
+      N := 5;
+      Sum := 0;
+      while N > 0 do
+      begin
+        Sum := Sum + N;
+        N := N - 1
+      end;
+      if Sum = 15 then
+        WriteLn('ok')
+      else
+        WriteLn('bad')
+    end.
+    ''';
+
+function TArm64BackendTests.GenAsm(const ASrc: string): string;
+var
+  L:    TLexer;
+  P:    TParser;
+  Prog: TProgram;
+  A:    TSemanticAnalyser;
+  CG:   TArm64Backend;
+  T:    TTargetDesc;
+begin
+  L := TLexer.Create(ASrc);
+  P := TParser.Create(L);
+  try
+    Prog := P.Parse();
+  finally
+    P.Free();
+    L.Free();
+  end;
+  try
+    A := TSemanticAnalyser.Create();
+    try
+      A.Analyse(Prog);
+    finally
+      A.Free();
+    end;
+    MakeTarget(osMacOS, cpuArm64, T);
+    CG := TArm64Backend.Create(T);
+    try
+      CG.SetSymbolTable(Prog.SymbolTable);
+      Result := CG.GenerateProgram(Prog);
+    finally
+      CG.Free();
+    end;
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestHello_PrologueAndFrameChain;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcHello);
+  AssertTrue('exports _main', Pos('.globl _main', AsmT) >= 0);
+  { Darwin requires the fp chain: fp/lr pair save + mov x29, sp — always. }
+  AssertTrue('fp/lr pair saved',
+    Pos(#9'stp x29, x30, [sp, #-16]!', AsmT) >= 0);
+  AssertTrue('frame pointer established',
+    Pos(#9'mov x29, sp', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestHello_StringLiteral_AdrpAddPair;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcHello);
+  { PIE-safe literal address: adrp + add @PAGE/@PAGEOFF, then +12 past the
+    immortal string header (refcnt/len/cap — same layout as x86-64). }
+  AssertTrue('adrp page', Pos('adrp x0, __s0@PAGE', AsmT) >= 0);
+  AssertTrue('add pageoff', Pos('add x0, x0, __s0@PAGEOFF', AsmT) >= 0);
+  AssertTrue('data pointer past the 12-byte header',
+    Pos(#9'add x0, x0, #12', AsmT) >= 0);
+  AssertTrue('immortal refcnt', Pos(#9'.word -1', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestHello_RtlCallsAndEpilogue;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcHello);
+  AssertTrue('args forwarded before init', Pos(#9'bl _SetArgs', AsmT) >= 0);
+  AssertTrue('rtl init', Pos(#9'bl _BlaiseInit', AsmT) >= 0);
+  AssertTrue('string write', Pos(#9'bl _SysWriteStr', AsmT) >= 0);
+  AssertTrue('newline', Pos(#9'bl _SysWriteNewline', AsmT) >= 0);
+  AssertTrue('epilogue restores fp/lr',
+    Pos(#9'ldp x29, x30, [sp], #16', AsmT) >= 0);
+  AssertTrue('returns', Pos(#9'ret', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestIntegerArithmetic_Shapes;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcArith);
+  AssertTrue('multiply', Pos(#9'mul x0, x0, x1', AsmT) >= 0);
+  AssertTrue('subtract', Pos(#9'sub x0, x0, x1', AsmT) >= 0);
+  AssertTrue('divide', Pos(#9'sdiv x0, x0, x1', AsmT) >= 0);
+  AssertTrue('int write', Pos(#9'bl _SysWriteInt', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestDivision_AlwaysEmitsZeroGuard;
+var
+  AsmT: string;
+begin
+  { AArch64 sdiv yields 0 on a zero divisor instead of trapping, so the
+    explicit guard must ALWAYS precede the divide (design-doc risk item). }
+  AsmT := GenAsm(SrcArith);
+  AssertTrue('divisor zero-check', Pos(#9'cbnz x1, Ldivok', AsmT) >= 0);
+  AssertTrue('deliberate trap', Pos(#9'brk #1', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestGlobals_PageAddressed;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcArith);
+  { program vars are globals addressed via adrp/@PAGEOFF (PIE-safe) }
+  AssertTrue('global page', Pos('adrp x9, _g_A@PAGE', AsmT) >= 0);
+  AssertTrue('global store',
+    Pos('str x0, [x9, _g_A@PAGEOFF]', AsmT) >= 0);
+  AssertTrue('bss slot', Pos('_g_A:', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestIfWhile_BranchShapes;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcControl);
+  AssertTrue('comparison materialised', Pos(#9'cset x0, gt', AsmT) >= 0);
+  AssertTrue('condition branch', Pos(#9'cbz x0, L', AsmT) >= 0);
+  AssertTrue('equality for if', Pos(#9'cset x0, eq', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestUnsupported_RaisesHonestly;
+var
+  Raised: Boolean;
+  Msg: string;
+begin
+  Raised := False;
+  Msg := '';
+  try
+    GenAsm(
+      '''
+      program P;
+      var
+        D: Double;
+      begin
+        D := 1.5
+      end.
+      ''');
+  except
+    on E: ENativeCodeGenError do
+    begin
+      Raised := True;
+      Msg := E.Message;
+    end;
+  end;
+  AssertTrue('unsupported construct raises', Raised);
+  AssertTrue('message names the arm64 subset',
+    Pos('arm64: not yet', Msg) >= 0);
+end;
+
+procedure TArm64BackendTests.TestPipeline_AssemblesToMachO;
+var
+  AsmT, Obj: string;
+  F: TMachOFile;
+  T: TMoSection;
+  S: TMoSymbol;
+begin
+  { The full Phase-2 pipeline on Linux CI: backend text -> arm64 internal
+    assembler -> MH_OBJECT -> parse back. }
+  AsmT := GenAsm(SrcControl);
+  Obj  := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64probe.o');
+  try
+    AssertEquals(CPU_TYPE_ARM64, F.CpuType);
+    T := F.FindSection('__TEXT', '__text');
+    AssertTrue('__text present', T <> nil);
+    AssertTrue('code emitted', T.Size > 0);
+    S := F.FindSymbol('_main');
+    AssertTrue('_main defined', (S <> nil) and (not S.IsUndef()));
+    AssertTrue('_main exported', S.IsExt());
+    { the RTL calls stay undefined externs with BRANCH26 relocations }
+    AssertTrue('rtl call relocations recorded', T.Relocs.Count > 0);
+    AssertTrue('_SysWriteStr referenced',
+      F.FindSymbol('_SysWriteStr') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+initialization
+  RegisterTest(TArm64BackendTests);
+
+end.

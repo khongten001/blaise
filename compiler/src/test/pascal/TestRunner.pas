@@ -173,6 +173,7 @@ uses
   cp.test.assembler,
   cp.test.macho,
   cp.test.asmarm64,
+  cp.test.arm64,
   cp.test.cli,
   cp.test.driver,
   cp.test.e2e.inherit,
