@@ -72,7 +72,7 @@ HKDF, every AEAD cipher, all elliptic-curve code, signature verification,
 ASN.1/X.509, and a CSPRNG port. Those are designed below. The other adjacent
 assets are:
 
-* `Security.Guid` — `NewGuidRaw` calls `getrandom(2)` via `external name
+* `Uuid` — `TUuid.RandomUuid` calls `getrandom(2)` via `external name
   'getrandom'`; the CSPRNG sourcing pattern we extend in <<csprng>>.
 * `Encoding.Base64` — `Base64Encode`/`Decode`, reused verbatim for PEM parsing.
 * `Net.Sockets` — the raw-byte socket idioms and the `TStringBuilder`/`Byte(S[I])`
@@ -564,7 +564,7 @@ procedure RandomBytes(out ABytes: RawBytes; ALen: Integer);   { the public API }
 
 | `TGetRandomSource` (Linux, FreeBSD)
 | `getrandom(2)` — *already bound both ways*: `external name 'getrandom'`
-  (libc build, as `Security.Guid` does) and the raw `SYS_getrandom = 318`
+  (libc build, as `Uuid` does) and the raw `SYS_getrandom = 318`
   syscall stub in `runtime.syscall.linux.pas` (static build). **This is the key
   enabler for TLS on the static/libc-free build** — the CSPRNG works there with
   no new kernel leaf. Loop on short reads / EINTR.
@@ -577,13 +577,13 @@ procedure RandomBytes(out ABytes: RawBytes; ALen: Integer);   { the public API }
 Binding mechanism per build profile:
 
 * *Dynamic (libc-linked) build* — `getrandom` bound via `external name
-  'getrandom'`, the `security.guid.pas` pattern.
+  'getrandom'`, the `uuid.pas` pattern.
 * *Static (libc-free) build* — the raw `SYS_getrandom = 318` stub in
   `runtime.syscall.linux.pas`, resolved by the link-time symbol swap. Note the
   `runtime.*` kernel-leaf units currently live under
   `compiler/src/main/pascal/`, not `runtime/`.
 
-`Security.Guid` should be refactored to call `RandomBytes` so there is one
+`Uuid` should be refactored to call `RandomBytes` so there is one
 CSPRNG path, but that is opportunistic, not required.
 
 == Part II — the TLS record layer

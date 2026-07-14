@@ -33,7 +33,7 @@ uses
   HttpServer.Tests,
   NetTcp.Tests,
   HttpFiber.Tests,
-  Guid.Tests,
+  Uuid.Tests,
   StrUtils.Tests,
   Scheduler.Tests,
   Reactor.Tests,

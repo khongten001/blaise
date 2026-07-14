@@ -79,7 +79,7 @@ uses
   StrUtils,
   Net.Uri,
   Net.WebSockets,
-  Security.Guid,
+  Uuid,
   Encoding.Base64,
   async.fibers;
 
@@ -89,7 +89,7 @@ const
 { A fresh Sec-WebSocket-Key: 16 random bytes, base64-encoded (RFC 6455 4.1). }
 function NewClientKey: string;
 begin
-  Result := Base64Encode(NewGuidRaw());
+  Result := Base64Encode(TUuid.RandomUuid().ToBytes());
 end;
 
 constructor TWebSocketClient.Create;
