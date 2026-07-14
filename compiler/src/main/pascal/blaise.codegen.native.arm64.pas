@@ -1139,11 +1139,25 @@ begin
       Par := TMethodParam(ADecl.Params.Items[I]);
       if Par.IsVarParam or Par.IsOpenArray then
         NotYet('var/out/open-array parameters', ADecl);
-      if not (IsIntFam(Par.ResolvedType) or
-              ((Par.ResolvedType <> nil) and
-               (Par.ResolvedType.Kind = tyDouble))) then
-        NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
-      AddLocal(Par.ParamName, 8);
+      if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
+      begin
+        if not RecretManagedClean(TRecordTypeDesc(Par.ResolvedType)) then
+          NotYet('managed-record parameter', ADecl);
+        AddLocal(Par.ParamName, Par.ResolvedType.RawSize());
+        FRecLocals.AddObject(Par.ParamName, Par.ResolvedType);
+        if RecReturnShape(TRecordTypeDesc(Par.ResolvedType)) = 0 then
+          { >16B records arrive as a pointer; park it until the
+            prologue memcpy pass copies the bytes into our own slot }
+          AddLocal('__pptr_' + Par.ParamName, 8);
+      end
+      else
+      begin
+        if not (IsIntFam(Par.ResolvedType) or
+                ((Par.ResolvedType <> nil) and
+                 (Par.ResolvedType.Kind = tyDouble))) then
+          NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
+        AddLocal(Par.ParamName, 8);
+      end;
     end;
     if ADecl.ResolvedReturnType <> nil then
     begin
@@ -1190,10 +1204,11 @@ end;
 
 procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
 var
-  I, J, FIdx: Integer;
+  I, J, K, FIdx: Integer;
   FrameAligned: Integer;
   Sym: string;
-  RecShape: Integer;
+  RecShape, ParShape: Integer;
+  Par: TMethodParam;
 begin
   if ADecl.Body.ProcDecls.Count > 0 then
     NotYet('nested routines', ADecl);
@@ -1226,23 +1241,75 @@ begin
   FIdx := 0;   { float register index }
   for I := 0 to ADecl.Params.Count - 1 do
   begin
-    if (TMethodParam(ADecl.Params.Items[I]).ResolvedType <> nil) and
-       (TMethodParam(ADecl.Params.Items[I]).ResolvedType.Kind = tyDouble) then
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
     begin
+      ParShape := RecReturnShape(TRecordTypeDesc(Par.ResolvedType));
+      case ParShape of
+        0:
+        begin
+          { >16B: pointer in one x reg — park it, copy bytes in pass 2 }
+          if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
+          EmitStoreSlot('x' + IntToStr(J), '__pptr_' + Par.ParamName);
+          J := J + 1;
+        end;
+        1:
+        begin
+          if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
+          EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+          J := J + 1;
+        end;
+        2:
+        begin
+          if J >= 7 then NotYet('parameters spilling to the stack', ADecl);
+          EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+          EmitSlotAddr('x9', Par.ParamName);
+          Self.Emit(Format(#9'str x%d, [x9, #8]', [J + 1]));
+          J := J + 2;
+        end;
+      else
+        { HFA of (ParShape - 100) Doubles in d(FIdx).. }
+        if FIdx + (ParShape - 100) > 8 then
+          NotYet('parameters spilling to the stack', ADecl);
+        EmitSlotAddr('x9', Par.ParamName);
+        for K := 0 to (ParShape - 100) - 1 do
+          Self.Emit(Format(#9'str d%d, [x9, #%d]', [FIdx + K, K * 8]));
+        FIdx := FIdx + (ParShape - 100);
+      end;
+    end
+    else if (Par.ResolvedType <> nil) and
+            (Par.ResolvedType.Kind = tyDouble) then
+    begin
+      if FIdx >= 8 then NotYet('parameters spilling to the stack', ADecl);
       Self.Emit(Format(#9'fmov x9, d%d', [FIdx]));
-      EmitStoreSlot('x9', TMethodParam(ADecl.Params.Items[I]).ParamName);
+      EmitStoreSlot('x9', Par.ParamName);
       FIdx := FIdx + 1;
     end
     else
     begin
-      EmitStoreSlot('x' + IntToStr(J),
-        TMethodParam(ADecl.Params.Items[I]).ParamName);
+      if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
+      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
       J := J + 1;
     end;
   end;
   { sret: park the incoming x8 destination pointer in its hidden slot }
   if RecShape = 0 then
     EmitStoreSlot('x8', '__sret');
+  { pass 2: copy the bytes of every pointer-passed record param into its
+    own slot.  This runs only after every register is parked, because the
+    memcpy call clobbers the caller-saved argument registers. }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) and
+       (RecReturnShape(TRecordTypeDesc(Par.ResolvedType)) = 0) then
+    begin
+      EmitSlotAddr('x0', Par.ParamName);
+      EmitLoadSlot('x1', '__pptr_' + Par.ParamName);
+      EmitIntLiteral('x2', Par.ResolvedType.RawSize());
+      Self.Emit(#9'bl memcpy');
+    end;
+  end;
   { zero-initialise Result and every declared local (language rule: ALL
     variables are zero-initialised) }
   if FIsFunction and (RecShape >= 0) then
@@ -1331,10 +1398,11 @@ end;
 procedure TArm64Backend.EmitCall(ADecl: TMethodDecl; const AName: string;
   AArgs: TObjectList; const ASretDest: string);
 var
-  I: Integer;
+  I, K, Shape: Integer;
   Arg: TASTExpr;
-  FloatArg: array[0..7] of Boolean;
   NInt, NFloat: Integer;
+  PopRegs: TStringList;
+  Reg: string;
 begin
   NInt := 0;
   NFloat := 0;
@@ -1347,42 +1415,106 @@ begin
   { Evaluate args left-to-right onto the stack (calls inside an argument
     cannot clobber earlier args), floats as their 8-byte bit pattern.
     Integer and float args consume INDEPENDENT register sequences
-    (x0.. / d0..) per AAPCS64 — the pop walk assigns registers by class. }
-  for I := 0 to AArgs.Count - 1 do
-  begin
-    Arg := TASTExpr(AArgs.Items[I]);
-    if IsFloatExpr(Arg) then
+    (x0.. / d0..) per AAPCS64.  Each pushed 8-byte value records its
+    final register up front; the pop walk restores in reverse order. }
+  PopRegs := TStringList.Create();
+  try
+    for I := 0 to AArgs.Count - 1 do
     begin
-      Self.EmitExprToD0(Arg);
-      Self.Emit(#9'fmov x0, d0');
-      EmitPushX0();
-      FloatArg[I] := True;
-      Inc(NFloat);
-    end
-    else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) then
-    begin
-      Self.EmitExprToX0(Arg);
-      EmitPushX0();
-      FloatArg[I] := False;
-      Inc(NInt);
-    end
-    else
-      NotYet('call argument of this type', Arg);
-  end;
-  { pop last-arg-first; per-class register indices count DOWN }
-  for I := AArgs.Count - 1 downto 0 do
-  begin
-    if FloatArg[I] then
-    begin
-      Dec(NFloat);
-      EmitPopTo('x9');
-      Self.Emit(Format(#9'fmov d%d, x9', [NFloat]));
-    end
-    else
-    begin
-      Dec(NInt);
-      EmitPopTo('x' + IntToStr(NInt));
+      Arg := TASTExpr(AArgs.Items[I]);
+      if (Arg.ResolvedType <> nil) and
+         (Arg.ResolvedType.Kind = tyRecord) then
+      begin
+        if ADecl.IsExternal then
+          { C-side small-struct marshalling needs hardware validation
+            first — same honest hole as external record returns }
+          NotYet('record argument to an external routine', Arg);
+        if not (Arg is TIdentExpr) then
+          NotYet('record argument from this expression', Arg);
+        Shape := RecReturnShape(TRecordTypeDesc(Arg.ResolvedType));
+        case Shape of
+          0:
+          begin
+            { >16B: pass the lvalue address.  AAPCS64 wants a caller-side
+              copy, but our callees memcpy the bytes into their own slot
+              at entry (before any user code runs), which yields identical
+              by-value semantics — and external callees are rejected above }
+            if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+            EmitPushX0();
+            PopRegs.Add('x' + IntToStr(NInt));
+            Inc(NInt);
+          end;
+          1:
+          begin
+            if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+            Self.Emit(#9'ldr x0, [x0]');
+            EmitPushX0();
+            PopRegs.Add('x' + IntToStr(NInt));
+            Inc(NInt);
+          end;
+          2:
+          begin
+            if NInt >= 7 then NotYet('arguments spilling to the stack', Arg);
+            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
+            Self.Emit(#9'ldr x0, [x9]');
+            EmitPushX0();
+            PopRegs.Add('x' + IntToStr(NInt));
+            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
+            Self.Emit(#9'ldr x0, [x9, #8]');
+            EmitPushX0();
+            PopRegs.Add('x' + IntToStr(NInt + 1));
+            NInt := NInt + 2;
+          end;
+        else
+          { HFA of (Shape - 100) Doubles in d(NFloat).. }
+          if NFloat + (Shape - 100) > 8 then
+            NotYet('arguments spilling to the stack', Arg);
+          for K := 0 to (Shape - 100) - 1 do
+          begin
+            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
+            Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+            EmitPushX0();
+            PopRegs.Add('d' + IntToStr(NFloat + K));
+          end;
+          NFloat := NFloat + (Shape - 100);
+        end;
+      end
+      else if IsFloatExpr(Arg) then
+      begin
+        if NFloat >= 8 then NotYet('arguments spilling to the stack', Arg);
+        Self.EmitExprToD0(Arg);
+        Self.Emit(#9'fmov x0, d0');
+        EmitPushX0();
+        PopRegs.Add('d' + IntToStr(NFloat));
+        Inc(NFloat);
+      end
+      else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) then
+      begin
+        if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+        Self.EmitExprToX0(Arg);
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt));
+        Inc(NInt);
+      end
+      else
+        NotYet('call argument of this type', Arg);
     end;
+    { pop last-pushed-first into each value's pre-assigned register }
+    for I := PopRegs.Count - 1 downto 0 do
+    begin
+      Reg := PopRegs.Strings[I];
+      if Copy(Reg, 0, 1) = 'd' then
+      begin
+        EmitPopTo('x9');
+        Self.Emit(Format(#9'fmov %s, x9', [Reg]));
+      end
+      else
+        EmitPopTo(Reg);
+    end;
+  finally
+    PopRegs.Free();
   end;
   if ASretDest <> '' then
     { record sret: the callee writes through x8 (set AFTER the arg pops —

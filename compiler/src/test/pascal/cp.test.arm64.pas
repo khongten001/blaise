@@ -64,6 +64,9 @@ type
       HFA doubles in d0.. }
     procedure TestRecordReturn_SretViaX8;
     procedure TestRecordReturn_SmallImagesAndHfa;
+    { slice 8: record PARAMETERS per AAPCS64 }
+    procedure TestRecordParam_SmallImagesAndHfa;
+    procedure TestRecordParam_LargeByPointer;
   end;
 
 implementation
@@ -675,6 +678,88 @@ begin
   { two-double HFA: d0/d1 both sides }
   AssertTrue('callee loads HFA d1', Pos(#9'ldr d1, [x9, #8]', AsmT) >= 0);
   AssertTrue('caller stores HFA d1', Pos(#9'str d1, [x9, #8]', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestRecordParam_SmallImagesAndHfa;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPair = record
+        A: Int64;
+        B: Int64;
+      end;
+      TVec = record
+        X: Double;
+        Y: Double;
+      end;
+    var
+      GP: TPair;
+      GV: TVec;
+    function SumPair(P: TPair): Int64;
+    begin
+      Result := P.A + P.B
+    end;
+    function VecX(V: TVec): Double;
+    begin
+      Result := V.X
+    end;
+    begin
+      GP.A := 3;
+      GV.X := 1.5;
+      WriteLn(SumPair(GP));
+      WriteLn(VecX(GV))
+    end.
+    ''');
+  { 16-byte non-HFA param: x0:x1 image — callee stores the second half
+    at slot+8, caller loads it from the lvalue at +8 }
+  AssertTrue('callee spills x1 half', Pos(#9'str x1, [x9, #8]', AsmT) >= 0);
+  AssertTrue('caller loads second half', Pos(#9'ldr x0, [x9, #8]', AsmT) >= 0);
+  { two-double HFA param: callee spills d0/d1 into the slot }
+  AssertTrue('callee spills HFA d1', Pos(#9'str d1, [x9, #8]', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestRecordParam_LargeByPointer;
+var
+  AsmT, Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBig = record
+        A, B, C: Int64;
+      end;
+    var
+      G: TBig;
+    function SumBig(R: TBig): Int64;
+    begin
+      Result := R.A + R.C
+    end;
+    begin
+      G.A := 5;
+      G.C := 7;
+      WriteLn(SumBig(G))
+    end.
+    ''');
+  { >16B param travels as a pointer: the callee parks it and memcpys the
+    bytes into its own slot before any user code }
+  AssertTrue('caller passes the global address',
+    Pos('add x0, x0, _g_G@PAGEOFF', AsmT) >= 0);
+  AssertTrue('callee copies the bytes in', Pos(#9'bl memcpy', AsmT) >= 0);
+  { and the whole module still assembles to a valid Mach-O object }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64recpar.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization
