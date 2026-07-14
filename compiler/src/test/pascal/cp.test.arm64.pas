@@ -48,6 +48,10 @@ type
     procedure TestRecursion_Compiles;
     procedure TestForLoop_BoundEvaluatedOnce;
     procedure TestPipeline_FunctionsAssembleToMachO;
+    { slice 3: Double — literals, arithmetic, comparisons, d-register
+      call ABI with independent int/float sequences }
+    procedure TestFloat_LiteralAndArithmetic;
+    procedure TestFloat_CallAbi_IndependentSequences;
   end;
 
 implementation
@@ -277,9 +281,9 @@ begin
       '''
       program P;
       var
-        D: Double;
+        S: string;
       begin
-        D := 1.5
+        S := 'x'
       end.
       ''');
   except
@@ -388,6 +392,54 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestFloat_LiteralAndArithmetic;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      D, E: Double;
+    begin
+      D := 1.5;
+      E := D * 2.0 + 0.25;
+      if E > 3.0 then
+        WriteLn(1)
+    end.
+    ''');
+  AssertTrue('literal from rodata page',
+    Pos('adrp x9, __d0@PAGE', AsmT) >= 0);
+  AssertTrue('double blob emitted', Pos(#9'.double 1.5', AsmT) >= 0);
+  AssertTrue('float multiply', Pos(#9'fmul d0, d0, d1', AsmT) >= 0);
+  AssertTrue('float add', Pos(#9'fadd d0, d0, d1', AsmT) >= 0);
+  AssertTrue('float compare', Pos(#9'fcmp d0, d1', AsmT) >= 0);
+  AssertTrue('ordered greater', Pos(#9'cset x0, gt', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestFloat_CallAbi_IndependentSequences;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    function Mix(A: Integer; X: Double; B: Integer): Integer;
+    begin
+      Result := A + B
+    end;
+    begin
+      WriteLn(Mix(1, 2.5, 3))
+    end.
+    ''');
+  { AAPCS64: ints take x0/x1, the float takes d0 — independent sequences.
+    The callee spills d0 through x9 into the param slot. }
+  AssertTrue('float arg lands in d0', Pos(#9'fmov d0, x9', AsmT) >= 0);
+  AssertTrue('callee spills the d0 param', Pos(#9'fmov x9, d0', AsmT) >= 0);
+  AssertTrue('int args pop into x0/x1', Pos(#9'ldr x1, [sp], #16', AsmT) >= 0);
+  AssertTrue('call emitted', Pos(#9'bl Mix', AsmT) >= 0);
 end;
 
 initialization

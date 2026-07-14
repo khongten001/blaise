@@ -60,10 +60,14 @@ type
     FLabelN:      Integer;
     FProgramName: string;
     FIsFunction:  Boolean;       { current routine returns a value }
+    FResultFloat: Boolean;       { ...and that value is a Double (d0) }
     FExitLabel:   string;        { current routine's epilogue label }
     FBreakLbls:   TStringList;   { innermost-last loop end labels }
     FContLbls:    TStringList;   { innermost-last loop continue labels }
     FForN:        Integer;       { hidden for-loop end-slot counter }
+    FFloatLits:   TStringList;   { .rodata double-literal texts }
+    FFloatNames:  TStringList;   { program-level float globals (parallel
+                                   subset of FGlobalNames' world) }
 
     function  NewLabel(const APrefix: string): string;
     procedure NotYet(const AWhat: string; ANode: TASTNode);
@@ -80,6 +84,13 @@ type
     procedure EmitPushX0;
     procedure EmitPopTo(const AReg: string);
     procedure EmitIntLiteral(const AReg: string; AValue: Int64);
+    { Float expression lowering (result in d0). }
+    procedure EmitExprToD0(AExpr: TASTExpr);
+    { Float-context operand: floats via EmitExprToD0, integers via
+      EmitExprToX0 + scvtf widening. }
+    procedure EmitExprToD0OrConvert(AExpr: TASTExpr);
+    function  IsFloatExpr(AExpr: TASTExpr): Boolean;
+    procedure EmitFloatLitSection;
     procedure EmitStrLitAddr(AValue: string);
     function  AsmEscape(const AValue: string): string;
 
@@ -152,6 +163,8 @@ begin
   FStrLits     := TStringList.Create();
   FBreakLbls   := TStringList.Create();
   FContLbls    := TStringList.Create();
+  FFloatLits   := TStringList.Create();
+  FFloatNames  := TStringList.Create();
   FFrameSize   := 0;
   FLabelN      := 0;
   FForN        := 0;
@@ -159,6 +172,8 @@ end;
 
 destructor TArm64Backend.Destroy;
 begin
+  FFloatNames.Free();
+  FFloatLits.Free();
   FContLbls.Free();
   FBreakLbls.Free();
   FStrLits.Free();
@@ -362,6 +377,8 @@ begin
        TFuncCallExpr(AExpr).IsImplicitSelfMethod or
        (TFuncCallExpr(AExpr).ResolvedDecl = nil) then
       NotYet('this call form (''' + TFuncCallExpr(AExpr).Name + ''')', AExpr);
+    if IsFloatExpr(AExpr) then
+      NotYet('float-returning call in integer context', AExpr);
     EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
       TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
     Exit;
@@ -369,6 +386,28 @@ begin
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
+    { float COMPARISON in integer/boolean context: fcmp + cset }
+    if (BE.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
+       (IsFloatExpr(BE.Left) or IsFloatExpr(BE.Right)) then
+    begin
+      Self.EmitExprToD0OrConvert(BE.Left);
+      Self.Emit(#9'str d0, [sp, #-16]!');
+      Self.EmitExprToD0OrConvert(BE.Right);
+      Self.Emit(#9'fmov d1, d0');
+      Self.Emit(#9'ldr d0, [sp], #16');
+      Self.Emit(#9'fcmp d0, d1');
+      case BE.Op of
+        boEQ: CondName := 'eq';
+        boNE: CondName := 'ne';
+        boLT: CondName := 'mi';   { ordered less: N set }
+        boGT: CondName := 'gt';
+        boLE: CondName := 'ls';   { ordered less-or-equal }
+      else
+        CondName := 'ge';
+      end;
+      Self.Emit(Format(#9'cset x0, %s', [CondName]));
+      Exit;
+    end;
     Self.EmitExprToX0(BE.Left);
     EmitPushX0();
     Self.EmitExprToX0(BE.Right);
@@ -421,6 +460,82 @@ begin
     Exit;
   end;
   NotYet('expression ' + AExpr.ClassName, AExpr);
+end;
+
+function TArm64Backend.IsFloatExpr(AExpr: TASTExpr): Boolean;
+begin
+  Result := ((AExpr.ResolvedType <> nil) and AExpr.ResolvedType.IsFloat())
+    or (AExpr is TFloatLiteral);
+end;
+
+procedure TArm64Backend.EmitExprToD0(AExpr: TASTExpr);
+var
+  BE: TBinaryExpr;
+  Idx: Integer;
+  Lit: string;
+  CondName: string;
+begin
+  if AExpr is TFloatLiteral then
+  begin
+    { .rodata double constant addressed via an adrp/PAGEOFF pair — the
+      AArch64 analogue of the x86-64 .LF label + movsd(%rip) }
+    Lit := TFloatLiteral(AExpr).Value;
+    Idx := FFloatLits.IndexOf(Lit);
+    if Idx < 0 then
+      Idx := FFloatLits.Add(Lit);
+    Self.Emit(Format(#9'adrp x9, __d%d@PAGE', [Idx]));
+    Self.Emit(Format(#9'ldr d0, [x9, __d%d@PAGEOFF]', [Idx]));
+    Exit;
+  end;
+  if (AExpr is TIdentExpr) and IsFloatExpr(AExpr) then
+  begin
+    { reuse the slot machinery: load the 8-byte pattern into x0, move to d0 }
+    EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
+    Self.Emit(#9'fmov d0, x0');
+    Exit;
+  end;
+  if AExpr is TFuncCallExpr then
+  begin
+    if TFuncCallExpr(AExpr).IsIndirectCall or
+       TFuncCallExpr(AExpr).IsImplicitSelfMethod or
+       (TFuncCallExpr(AExpr).ResolvedDecl = nil) then
+      NotYet('this call form in float context', AExpr);
+    EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
+      TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
+    { a Double-returning call leaves its result in d0 already }
+    Exit;
+  end;
+  if AExpr is TBinaryExpr then
+  begin
+    BE := TBinaryExpr(AExpr);
+    { int operands convert on the way in (scvtf) — mixed int/float exprs }
+    Self.EmitExprToD0OrConvert(BE.Left);
+    Self.Emit(#9'str d0, [sp, #-16]!');
+    Self.EmitExprToD0OrConvert(BE.Right);
+    Self.Emit(#9'fmov d1, d0');
+    Self.Emit(#9'ldr d0, [sp], #16');
+    case BE.Op of
+      boAdd:   Self.Emit(#9'fadd d0, d0, d1');
+      boSub:   Self.Emit(#9'fsub d0, d0, d1');
+      boMul:   Self.Emit(#9'fmul d0, d0, d1');
+      boSlash: Self.Emit(#9'fdiv d0, d0, d1');
+    else
+      NotYet('float binary operator', AExpr);
+    end;
+    Exit;
+  end;
+  NotYet('float expression ' + AExpr.ClassName, AExpr);
+end;
+
+procedure TArm64Backend.EmitExprToD0OrConvert(AExpr: TASTExpr);
+begin
+  if IsFloatExpr(AExpr) then
+    EmitExprToD0(AExpr)
+  else
+  begin
+    Self.EmitExprToX0(AExpr);
+    Self.Emit(#9'scvtf d0, x0');
+  end;
 end;
 
 { ---- statements ---------------------------------------------------------- }
@@ -489,6 +604,15 @@ end;
 
 procedure TArm64Backend.EmitAssignment(AAsgn: TAssignment);
 begin
+  if (AAsgn.ResolvedLhsType <> nil) and AAsgn.ResolvedLhsType.IsFloat() then
+  begin
+    if AAsgn.ResolvedLhsType.Kind = tySingle then
+      NotYet('Single variables (Double only for now)', AAsgn);
+    Self.EmitExprToD0OrConvert(AAsgn.Expr);
+    Self.Emit(#9'fmov x0, d0');
+    EmitStoreSlot('x0', AAsgn.Name);
+    Exit;
+  end;
   if (AAsgn.ResolvedLhsType <> nil) and
      not IsIntFam(AAsgn.ResolvedLhsType) and
      not (AAsgn.ResolvedLhsType.Kind = tyBoolean) then
@@ -537,6 +661,12 @@ begin
       Self.Emit(#9'mov x1, x0');
       Self.Emit(#9'movz w0, #1');           { fd = stdout }
       Self.Emit(#9'bl _SysWriteStr');
+    end
+    else if K = tyDouble then
+    begin
+      Self.EmitExprToD0OrConvert(Arg);
+      Self.Emit(#9'movz w0, #1');
+      Self.Emit(#9'bl _SysWriteDouble');
     end
     else if K = tyBoolean then
     begin
@@ -706,22 +836,27 @@ begin
       Par := TMethodParam(ADecl.Params.Items[I]);
       if Par.IsVarParam or Par.IsOpenArray then
         NotYet('var/out/open-array parameters', ADecl);
-      if not IsIntFam(Par.ResolvedType) then
-        NotYet('non-integer parameter ''' + Par.ParamName + '''', ADecl);
+      if not (IsIntFam(Par.ResolvedType) or
+              ((Par.ResolvedType <> nil) and
+               (Par.ResolvedType.Kind = tyDouble))) then
+        NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
       AddLocal(Par.ParamName, 8);
     end;
     if ADecl.ResolvedReturnType <> nil then
     begin
-      if not IsIntFam(ADecl.ResolvedReturnType) then
-        NotYet('non-integer function result', ADecl);
+      if not (IsIntFam(ADecl.ResolvedReturnType) or
+              (ADecl.ResolvedReturnType.Kind = tyDouble)) then
+        NotYet('function result of this type', ADecl);
       AddLocal('Result', 8);
     end;
   end;
   for I := 0 to ABody.Decls.Count - 1 do
   begin
     VD := TVarDecl(ABody.Decls.Items[I]);
-    if not IsIntFam(VD.ResolvedType) then
-      NotYet('non-integer local variable', VD);
+    if not (IsIntFam(VD.ResolvedType) or
+            ((VD.ResolvedType <> nil) and
+             (VD.ResolvedType.Kind = tyDouble))) then
+      NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
       AddLocal(VD.Names.Strings[J], 8);
   end;
@@ -731,7 +866,7 @@ end;
 
 procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
 var
-  I, J: Integer;
+  I, J, FIdx: Integer;
   FrameAligned: Integer;
   Sym: string;
 begin
@@ -739,6 +874,8 @@ begin
     NotYet('nested routines', ADecl);
   Sym := RoutineSym(ADecl, ADecl.Name);
   FIsFunction := ADecl.ResolvedReturnType <> nil;
+  FResultFloat := FIsFunction and
+    (ADecl.ResolvedReturnType.Kind = tyDouble);
   FExitLabel := NewLabel('rexit');
   FForN := 0;
   RegisterFrameSlots(ADecl, ADecl.Body);
@@ -752,13 +889,29 @@ begin
   Self.Emit(#9'mov x29, sp');
   if FrameAligned > 0 then
     Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
-  { spill register args to their slots (x0..x7 — >8 int args rejected in
-    RegisterFrameSlots' NotYet path via the count check below) }
+  { spill register args to their slots.  Integer and float parameters
+    consume INDEPENDENT register sequences (x0.. / d0..) per AAPCS64;
+    floats hop through x9 so the slot store machinery stays uniform. }
   if ADecl.Params.Count > 8 then
     NotYet('more than 8 parameters', ADecl);
+  J := 0;      { int register index }
+  FIdx := 0;   { float register index }
   for I := 0 to ADecl.Params.Count - 1 do
-    EmitStoreSlot('x' + IntToStr(I),
-      TMethodParam(ADecl.Params.Items[I]).ParamName);
+  begin
+    if (TMethodParam(ADecl.Params.Items[I]).ResolvedType <> nil) and
+       (TMethodParam(ADecl.Params.Items[I]).ResolvedType.Kind = tyDouble) then
+    begin
+      Self.Emit(Format(#9'fmov x9, d%d', [FIdx]));
+      EmitStoreSlot('x9', TMethodParam(ADecl.Params.Items[I]).ParamName);
+      FIdx := FIdx + 1;
+    end
+    else
+    begin
+      EmitStoreSlot('x' + IntToStr(J),
+        TMethodParam(ADecl.Params.Items[I]).ParamName);
+      J := J + 1;
+    end;
+  end;
   { zero-initialise Result and every declared local (language rule: ALL
     variables are zero-initialised) }
   if FIsFunction then
@@ -772,7 +925,11 @@ begin
 
   Self.Emit(FExitLabel + ':');
   if FIsFunction then
+  begin
     EmitLoadSlot('x0', 'Result');
+    if FResultFloat then
+      Self.Emit(#9'fmov d0, x0');   { Double results return in d0 }
+  end;
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
   Self.Emit(#9'ret');
@@ -785,25 +942,57 @@ procedure TArm64Backend.EmitCall(ADecl: TMethodDecl; const AName: string;
 var
   I: Integer;
   Arg: TASTExpr;
+  FloatArg: array[0..7] of Boolean;
+  NInt, NFloat: Integer;
 begin
+  NInt := 0;
+  NFloat := 0;
   if ADecl = nil then
     NotYet('call to unresolved routine ''' + AName + '''', nil);
   if ADecl.IsExternal and (ADecl.ExternalName = '') then
     NotYet('external routine without a link name', nil);
   if AArgs.Count > 8 then
     NotYet('call with more than 8 arguments', nil);
-  { evaluate args left-to-right onto the stack (calls inside an argument
-    cannot clobber earlier args), then pop into x(N-1)..x0 }
+  { Evaluate args left-to-right onto the stack (calls inside an argument
+    cannot clobber earlier args), floats as their 8-byte bit pattern.
+    Integer and float args consume INDEPENDENT register sequences
+    (x0.. / d0..) per AAPCS64 — the pop walk assigns registers by class. }
   for I := 0 to AArgs.Count - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    if not (IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral)) then
-      NotYet('non-integer call argument', Arg);
-    Self.EmitExprToX0(Arg);
-    EmitPushX0();
+    if IsFloatExpr(Arg) then
+    begin
+      Self.EmitExprToD0(Arg);
+      Self.Emit(#9'fmov x0, d0');
+      EmitPushX0();
+      FloatArg[I] := True;
+      Inc(NFloat);
+    end
+    else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) then
+    begin
+      Self.EmitExprToX0(Arg);
+      EmitPushX0();
+      FloatArg[I] := False;
+      Inc(NInt);
+    end
+    else
+      NotYet('call argument of this type', Arg);
   end;
+  { pop last-arg-first; per-class register indices count DOWN }
   for I := AArgs.Count - 1 downto 0 do
-    EmitPopTo('x' + IntToStr(I));
+  begin
+    if FloatArg[I] then
+    begin
+      Dec(NFloat);
+      EmitPopTo('x9');
+      Self.Emit(Format(#9'fmov d%d, x9', [NFloat]));
+    end
+    else
+    begin
+      Dec(NInt);
+      EmitPopTo('x' + IntToStr(NInt));
+    end;
+  end;
   Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
 end;
 
@@ -826,6 +1015,20 @@ begin
     if Len > 0 then
       Self.Emit(Format(#9'.ascii "%s"', [AsmEscape(FStrLits.Strings[I])]));
     Self.Emit(#9'.byte 0');
+  end;
+end;
+
+procedure TArm64Backend.EmitFloatLitSection;
+var
+  I: Integer;
+begin
+  if FFloatLits.Count = 0 then Exit;
+  Self.Emit('.section .rodata');
+  for I := 0 to FFloatLits.Count - 1 do
+  begin
+    Self.Emit('.balign 8');
+    Self.Emit(Format('__d%d:', [I]));
+    Self.Emit(Format(#9'.double %s', [FFloatLits.Strings[I]]));
   end;
 end;
 
@@ -860,8 +1063,10 @@ begin
   for I := 0 to AProg.Block.Decls.Count - 1 do
   begin
     VD := TVarDecl(AProg.Block.Decls.Items[I]);
-    if not IsIntFam(VD.ResolvedType) then
-      NotYet('non-integer program variable', VD);
+    if not (IsIntFam(VD.ResolvedType) or
+            ((VD.ResolvedType <> nil) and
+             (VD.ResolvedType.Kind = tyDouble))) then
+      NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
       FGlobalNames.Add(VD.Names.Strings[J]);
   end;
@@ -913,6 +1118,7 @@ begin
   Self.Emit(#9'ret');
 
   EmitStrLitSection();
+  EmitFloatLitSection();
   EmitGlobalsSection();
 end;
 
