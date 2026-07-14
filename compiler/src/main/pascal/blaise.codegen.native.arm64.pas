@@ -411,8 +411,61 @@ begin
       Self.Emit(#9'bl _StringConcat');
       Exit;
     end;
-    { any other operator on strings needs the RTL comparison helpers —
-      an int cmp on the pointers would be silently wrong }
+    { string comparisons: content comparison via the RTL helpers — an int
+      cmp on the pointers would be silently wrong.  Owned operands (concat/
+      call transients) are released after the compare (this backend has no
+      deferred transient-release list). }
+    if (BE.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
+       (BE.Left.ResolvedType <> nil) and
+       BE.Left.ResolvedType.IsString() then
+    begin
+      Self.EmitExprToX0(BE.Left);
+      EmitPushX0();
+      Self.EmitExprToX0(BE.Right);
+      EmitPushX0();
+      Self.Emit(#9'ldur x0, [sp, #16]');   { left  (peek) }
+      Self.Emit(#9'ldur x1, [sp]');        { right (peek) }
+      if BE.Op in [boEQ, boNE] then
+        Self.Emit(#9'bl _StringEquals')
+      else
+        Self.Emit(#9'bl _StringCompare');
+      EmitPushX0();                        { result bracket }
+      if OwnsStringRef(BE.Right) then
+      begin
+        Self.Emit(#9'ldur x0, [sp, #16]');
+        Self.Emit(#9'bl _StringRelease');
+      end;
+      if OwnsStringRef(BE.Left) then
+      begin
+        Self.Emit(#9'ldur x0, [sp, #32]');
+        Self.Emit(#9'bl _StringRelease');
+      end;
+      EmitPopTo('x0');
+      Self.Emit(#9'add sp, sp, #32');      { drop the operand brackets }
+      case BE.Op of
+        boEQ: ;                            { 0/1 already }
+        boNE:
+        begin
+          Self.Emit(#9'cmp x0, #0');
+          Self.Emit(#9'cset x0, eq');
+        end;
+      else
+        begin
+          { _StringCompare is strcmp-like: signed compare against 0 }
+          Self.Emit(#9'sxtw x0, w0');
+          Self.Emit(#9'cmp x0, #0');
+          case BE.Op of
+            boLT: Self.Emit(#9'cset x0, lt');
+            boGT: Self.Emit(#9'cset x0, gt');
+            boLE: Self.Emit(#9'cset x0, le');
+          else
+            Self.Emit(#9'cset x0, ge');
+          end;
+        end;
+      end;
+      Exit;
+    end;
+    { any other operator on strings stays a named hole }
     if ((BE.Left.ResolvedType <> nil) and BE.Left.ResolvedType.IsString())
        or ((BE.Right.ResolvedType <> nil) and
            BE.Right.ResolvedType.IsString()) then

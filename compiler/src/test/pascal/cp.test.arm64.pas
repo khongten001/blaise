@@ -56,6 +56,8 @@ type
     procedure TestString_AssignRetainsAndReleasesOld;
     procedure TestString_ConcatOwnedTransientReleased;
     procedure TestString_ScopeExitReleases;
+    { slice 5: string comparisons via RTL helpers }
+    procedure TestString_Comparisons_UseRtlHelpers;
   end;
 
 implementation
@@ -517,6 +519,31 @@ begin
   { the routine's exit label releases its string local before Result loads }
   AssertTrue('exit label present', Pos('Lrexit', AsmT) >= 0);
   AssertTrue('scope-exit release', Pos(#9'bl _StringRelease', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestString_Comparisons_UseRtlHelpers;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      A, B: string;
+    begin
+      A := 'x';
+      B := 'y';
+      if A = B then WriteLn(1);
+      if A <> B then WriteLn(2);
+      if A < B then WriteLn(3)
+    end.
+    ''');
+  { content comparison, never a pointer cmp }
+  AssertTrue('equality helper', Pos(#9'bl _StringEquals', AsmT) >= 0);
+  AssertTrue('ordering helper', Pos(#9'bl _StringCompare', AsmT) >= 0);
+  AssertTrue('NE inverts via cset eq', Pos(#9'cset x0, eq', AsmT) >= 0);
+  AssertTrue('relational sign-extends the strcmp result',
+    Pos(#9'sxtw x0, w0', AsmT) >= 0);
 end;
 
 initialization
