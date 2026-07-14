@@ -72,6 +72,10 @@ type
       8 bytes and skipping managed-field ARC — so every field past the first
       was stale.  On BOTH backends. }
     procedure TestRun_ForInArrayOfRecords_CopiesWholeElement;
+    { Instance method chained onto a record-RETURNING call
+      (TVal.Make(1).GetX()): QBE typed the receiver call `l` and passed half
+      the record VALUE as Self for register-class returns (SIGSEGV). }
+    procedure TestRun_ChainedMethodOnRecordReturn;
   end;
 
 implementation
@@ -1255,6 +1259,35 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src,
     'N0|0|True' + LE + 'N1|10|False' + LE + 'N2|20|True' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_ChainedMethodOnRecordReturn;
+const
+  Src = '''
+    program prg;
+    type
+      TVal = record
+        X: Integer;
+        Y: Int64;
+        static function Make(A: Integer): TVal;
+        function GetX: Integer;
+      end;
+    static function TVal.Make(A: Integer): TVal;
+    begin
+      Result.X := A;
+      Result.Y := 7
+    end;
+    function TVal.GetX: Integer;
+    begin
+      Result := X
+    end;
+    begin
+      WriteLn(TVal.Make(41).GetX() + 1)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '42' + LE, 0);
 end;
 
 initialization

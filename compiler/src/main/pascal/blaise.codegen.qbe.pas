@@ -5612,6 +5612,22 @@ begin
     Exit;
   end;
 
+  { Record-RETURNING call as a chained receiver (TVal.Make(1).GetX()):
+    materialise the returned record into a stack temp and use ITS ADDRESS as
+    the receiver.  The generic EmitExpr path below types the call `l`, which
+    for a register-class record return grabs half the record VALUE out of the
+    return registers — the chained method then dereferences garbage. }
+  if (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyRecord) and
+     ((AExpr is TMethodCallExpr) or (AExpr is TFuncCallExpr)) then
+  begin
+    Result := AllocTemp();
+    EmitLine(Format('  %s =l alloc8 %d',
+      [Result, TRecordTypeDesc(AExpr.ResolvedType).TotalSize()]));
+    EmitLine(Format('  call $memset(l %s, w 0, l %d)',
+      [Result, TRecordTypeDesc(AExpr.ResolvedType).TotalSize()]));
+    EmitRecordCallSret(AExpr, Result);
+    Exit;
+  end;
   { Other expression shapes (method calls, typecasts, etc.) — evaluate the
     expression and use the resulting value as the pointer. }
   if (AExpr.ResolvedType <> nil) and
@@ -6713,7 +6729,17 @@ begin
       Exit;
     end;
     if MCallExpr.ObjExpr <> nil then
-      SelfTemp := EmitExpr(MCallExpr.ObjExpr)
+    begin
+      { A RECORD-typed receiver expression (TVal.Make(1).GetX()) must be
+        materialised to an ADDRESS — EmitInstancePtr lands a record-returning
+        call in a stack temp; plain EmitExpr types the call `l` and yields
+        half the record VALUE for register-class returns (garbage Self). }
+      if (MCallExpr.ObjExpr.ResolvedType <> nil) and
+         (MCallExpr.ObjExpr.ResolvedType.Kind = tyRecord) then
+        SelfTemp := EmitInstancePtr(MCallExpr.ObjExpr)
+      else
+        SelfTemp := EmitExpr(MCallExpr.ObjExpr);
+    end
     else if MDecl.IsRecordMethod and MCallExpr.IsVarParam then
     begin
       SelfTemp := AllocTemp();
@@ -7883,7 +7909,12 @@ begin
       end;
       Exit;
     end;
-    SelfTemp := EmitExpr(ACall.ObjExpr);
+    if (ACall.ObjExpr.ResolvedType <> nil) and
+       (ACall.ObjExpr.ResolvedType.Kind = tyRecord) then
+      { record-typed receiver expression: see the value-position note. }
+      SelfTemp := EmitInstancePtr(ACall.ObjExpr)
+    else
+      SelfTemp := EmitExpr(ACall.ObjExpr);
     if ACall.IsProcFieldCall then
     begin
       PT := TProceduralTypeDesc(ACall.ResolvedProcType);
@@ -13292,7 +13323,17 @@ begin
     { Load the object pointer (Self): either from a named variable or from
       evaluating the receiver expression (e.g. a typecast). }
     if MCallExpr.ObjExpr <> nil then
-      SelfTemp := EmitExpr(MCallExpr.ObjExpr)
+    begin
+      { A RECORD-typed receiver expression (TVal.Make(1).GetX()) must be
+        materialised to an ADDRESS — EmitInstancePtr lands a record-returning
+        call in a stack temp; plain EmitExpr types the call `l` and yields
+        half the record VALUE for register-class returns (garbage Self). }
+      if (MCallExpr.ObjExpr.ResolvedType <> nil) and
+         (MCallExpr.ObjExpr.ResolvedType.Kind = tyRecord) then
+        SelfTemp := EmitInstancePtr(MCallExpr.ObjExpr)
+      else
+        SelfTemp := EmitExpr(MCallExpr.ObjExpr);
+    end
     else if MDecl.IsRecordMethod and MCallExpr.IsVarParam then
     begin
       { Record var-param receiver — slot holds the record address; load once. }
