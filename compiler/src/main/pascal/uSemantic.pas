@@ -10303,8 +10303,8 @@ begin
     end
     else
       SemanticError(
-        Format('Type ''%s'' has no field ''%s''',
-          [AAssign.RecordName, AAssign.FieldName]),
+        Format('''%s'' (of type ''%s'') has no field ''%s''',
+          [AAssign.RecordName, RT.Name, AAssign.FieldName]),
         AAssign.Line, AAssign.Col);
   end
   else
@@ -13928,8 +13928,8 @@ begin
       Exit(Sym.TypeDesc);
     end;
     SemanticError(
-      Format('Type ''%s'' has no field ''%s''',
-        [AAccess.RecordName, AAccess.FieldName]),
+      Format('''%s'' (of type ''%s'') has no field ''%s''',
+        [AAccess.RecordName, RT.Name, AAccess.FieldName]),
       AAccess.Line, AAccess.Col);
   end;
 
