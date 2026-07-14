@@ -6,10 +6,6 @@
   See LICENSE file in the project root for full license terms.
 }
 
-{ Tests for Uuid: the TUuid value type (format, version/variant bits,
-  parsing, round-tripping, comparison, hashing) plus regression coverage for
-  the deprecated NewUuid/NewUuidRaw free functions until their removal.
-  Self-registers via the initialization section. }
 
 unit Uuid.Tests;
 
@@ -21,11 +17,6 @@ uses
 type
   TUuidTests = class(TTestCase)
   published
-    { deprecated free-function API - regression coverage until removal }
-    procedure TestDeprecatedFormat;
-    procedure TestDeprecatedVersionAndVariant;
-    procedure TestDeprecatedRawLength;
-    procedure TestDeprecatedUnique;
 
     { TUuid }
     procedure TestUuidFormat;
@@ -56,60 +47,7 @@ begin
 end;
 
 { ------------------------------------------------------------------ }
-{ Deprecated free-function API                                         }
 { ------------------------------------------------------------------ }
-
-procedure TUuidTests.TestDeprecatedFormat;
-var
-  G: string;
-  I: Integer;
-  Ch: Byte;
-begin
-  G := NewUuid();
-  AssertEquals('length', 36, Integer(Length(G)));
-  for I := 0 to 35 do
-  begin
-    Ch := Byte(G[I]);
-    if (I = 8) or (I = 13) or (I = 18) or (I = 23) then
-      AssertEquals('hyphen at ' + IntToStr(I), 45, Integer(Ch))
-    else
-      AssertTrue('hex at ' + IntToStr(I), IsHexLower(Ch));
-  end;
-end;
-
-procedure TUuidTests.TestDeprecatedVersionAndVariant;
-var
-  G: string;
-begin
-  G := NewUuid();
-  { version nibble: position 14 (after 'xxxxxxxx-xxxx-') must be '4' (=52) }
-  AssertEquals('version 4', 52, Integer(Byte(G[14])));
-  { variant nibble: position 19 must be one of '8','9','a','b' (56,57,97,98) }
-  AssertTrue('variant 8/9/a/b',
-    (Byte(G[19]) = 56) or (Byte(G[19]) = 57) or
-    (Byte(G[19]) = 97) or (Byte(G[19]) = 98));
-end;
-
-procedure TUuidTests.TestDeprecatedRawLength;
-var
-  R: string;
-begin
-  R := NewUuidRaw();
-  AssertEquals('16 bytes', 16, Integer(Length(R)));
-  { version bits in raw byte 6 (index 6): high nibble = 4 }
-  AssertEquals('raw version', $40, Integer(Byte(R[6]) and $F0));
-  { variant bits in raw byte 8: top two bits = 10 }
-  AssertEquals('raw variant', $80, Integer(Byte(R[8]) and $C0));
-end;
-
-procedure TUuidTests.TestDeprecatedUnique;
-var
-  A, B: string;
-begin
-  A := NewUuid();
-  B := NewUuid();
-  AssertTrue('two uuids differ', A <> B);
-end;
 
 { ------------------------------------------------------------------ }
 { TUuid                                                                }

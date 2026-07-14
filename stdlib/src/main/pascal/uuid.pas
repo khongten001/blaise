@@ -45,10 +45,7 @@
   Equals/CompareTo instead. A default (zero-initialised, never-assigned)
   TUuid is the nil UUID (IsEmpty returns True) - there is no separate
   "unset" state to worry about.
-
-  NewUuid/NewUuidRaw (the original string-returning free-function API) are
-  retained but DEPRECATED - scheduled for removal in v0.16.0 (two releases
-  after the v0.14.0 introduction of TUuid). New code should use TUuid. }
+ }
 
 unit Uuid;
 
@@ -140,19 +137,6 @@ type
       @returns 1-5 for a well-formed UUID, 0 if IsEmpty. }
     function Version: Integer;
   end;
-
-{ ------------------------------------------------------------------ }
-{ Deprecated string-returning API - use TUuid instead.                 }
-{ Scheduled for removal in v0.16.0.                                    }
-{ ------------------------------------------------------------------ }
-
-{ A new random (v4) UUID in canonical 8-4-4-4-12 lowercase hex form.
-  @deprecated Use TUuid.RandomUuid().ToString, or just TUuid.RandomUuid. }
-function NewUuid: string; deprecated;
-
-{ The 16 raw bytes of a new v4 UUID (version/variant bits already set).
-  @deprecated Use TUuid.RandomUuid().ToBytes. }
-function NewUuidRaw: string; deprecated;
 
 implementation
 
@@ -419,59 +403,6 @@ end;
 function TUuid.Version: Integer;
 begin
   Result := (ByteAt(FMostSigBits, FLeastSigBits, 6) shr 4) and $0F
-end;
-
-{ ------------------------------------------------------------------ }
-{ Deprecated string-returning API                                      }
-{ ------------------------------------------------------------------ }
-
-function NewUuidRaw: string;
-var
-  Buf: array[0..15] of Byte;
-  SB: TStringBuilder;
-  I: Integer;
-begin
-  if c_getrandom(@Buf[0], 16, 0) <> 16 then
-  begin
-    Result := '';
-    Exit;
-  end;
-  { version 4: high nibble of byte 6 = 0100 }
-  Buf[6] := (Buf[6] and $0F) or $40;
-  { variant RFC 4122: top two bits of byte 8 = 10 }
-  Buf[8] := (Buf[8] and $3F) or $80;
-
-  SB := TStringBuilder.Create();
-  for I := 0 to 15 do
-    SB.AppendByte(Buf[I]);
-  Result := SB.ToString();
-  SB.Free()
-end;
-
-function NewUuid: string;
-var
-  Raw: string;
-  SB: TStringBuilder;
-  I, B: Integer;
-begin
-  Raw := NewUuidRaw();
-  if Raw = '' then
-  begin
-    Result := '';
-    Exit;
-  end;
-  SB := TStringBuilder.Create();
-  for I := 0 to 15 do
-  begin
-    { hyphens after bytes 4, 6, 8, 10 (the 8-4-4-4-12 grouping) }
-    if (I = 4) or (I = 6) or (I = 8) or (I = 10) then
-      SB.AppendByte(Ord('-'));
-    B := Byte(Raw[I]);
-    SB.AppendByte(HexDigit((B shr 4) and $0F));
-    SB.AppendByte(HexDigit(B and $0F))
-  end;
-  Result := SB.ToString();
-  SB.Free()
 end;
 
 end.
