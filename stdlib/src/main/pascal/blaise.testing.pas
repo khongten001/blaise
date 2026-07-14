@@ -170,6 +170,13 @@ type
     procedure AssertRaises(AMsg, AExpectedClassName: string; AProc: TAssertProc); overload;
     procedure AssertRaises(AExpectedClassName: string; AProc: TAssertProc); overload;
 
+    { AssertNotRaises — runs AProc and fails if it raises ANY exception (the
+      failure message reports the class and message of whatever was
+      thrown). The complement of AssertRaises: useful for regression tests
+      pinning down "this used to throw, assert it no longer does". }
+    procedure AssertNotRaises(AMsg: string; AProc: TAssertProc); overload;
+    procedure AssertNotRaises(AProc: TAssertProc); overload;
+
     procedure Fail(AMsg: string);
     procedure Ignore(AMsg: string);
   end;
@@ -528,6 +535,22 @@ end;
 procedure TAssert.AssertRaises(AExpectedClassName: string; AProc: TAssertProc);
 begin
   Self.AssertRaises('', AExpectedClassName, AProc);
+end;
+
+procedure TAssert.AssertNotRaises(AMsg: string; AProc: TAssertProc);
+begin
+  try
+    AProc()
+  except
+    on E: Exception do
+      Self.Fail(AMsg + ' expected no exception, but got ' +
+                E.ClassName + ': ' + E.Message);
+  end;
+end;
+
+procedure TAssert.AssertNotRaises(AProc: TAssertProc);
+begin
+  Self.AssertNotRaises('', AProc);
 end;
 
 procedure TAssert.AssertNotNull(AMsg: string; AObject: TObject);
