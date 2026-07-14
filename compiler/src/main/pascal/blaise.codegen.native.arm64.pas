@@ -121,12 +121,17 @@ type
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl);
     procedure EmitCall(ADecl: TMethodDecl; const AName: string;
-      AArgs: TObjectList);
+      AArgs: TObjectList; const ASretDest: string = '');
     { Pre-pass: register every local/param/hidden slot a routine body needs
       so the frame size is final before the prologue's sub sp. }
     procedure RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
     procedure RegisterForSlots(AStmt: TASTStmt);
     function  RoutineSym(ADecl: TMethodDecl; const AName: string): string;
+    { AAPCS64 record-return shape for ARec: 0 = sret via x8, 1 = x0,
+      2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
+      (encoded as 100+N).  Derived from the shared classifier; the
+      register choice is this leaf's per-CPU step. }
+    function  RecReturnShape(ARec: TRecordTypeDesc): Integer;
 
     procedure EmitStrLitSection;
     procedure EmitGlobalsSection;
@@ -446,6 +451,9 @@ begin
       NotYet('this call form (''' + TFuncCallExpr(AExpr).Name + ''')', AExpr);
     if IsFloatExpr(AExpr) then
       NotYet('float-returning call in integer context', AExpr);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tyRecord) then
+      NotYet('record-returning call outside direct assignment', AExpr);
     EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
       TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
     Exit;
@@ -776,6 +784,9 @@ begin
 end;
 
 procedure TArm64Backend.EmitAssignment(AAsgn: TAssignment);
+var
+  I, Shape: Integer;
+  RD: TMethodDecl;
 begin
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyString) then
@@ -800,6 +811,38 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyRecord) then
   begin
+    { record-returning call: classify the callee's return shape }
+    if (AAsgn.Expr is TFuncCallExpr) and
+       (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) then
+    begin
+      RD := TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl);
+      if RD.IsExternal then
+        { a C-side small-struct return needs full AAPCS64 marshalling
+          validation on real hardware first — keep the hole honest }
+        NotYet('external record-returning call', AAsgn);
+      Shape := RecReturnShape(TRecordTypeDesc(AAsgn.ResolvedLhsType));
+      if Shape = 0 then
+      begin
+        EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
+          TFuncCallExpr(AAsgn.Expr).Args, AAsgn.Name);
+        Exit;
+      end;
+      EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
+        TFuncCallExpr(AAsgn.Expr).Args);
+      EmitSlotAddr('x9', AAsgn.Name);
+      case Shape of
+        1: Self.Emit(#9'str x0, [x9]');
+        2:
+        begin
+          Self.Emit(#9'str x0, [x9]');
+          Self.Emit(#9'str x1, [x9, #8]');
+        end;
+      else
+        for I := 0 to (Shape - 100) - 1 do
+          Self.Emit(Format(#9'str d%d, [x9, #%d]', [I, I * 8]));
+      end;
+      Exit;
+    end;
     { whole-record copy: ARC-clean records only in this slice (managed
       fields rejected at declaration), so a plain memcpy is exact }
     if not (AAsgn.Expr is TIdentExpr) then
@@ -1016,6 +1059,41 @@ begin
     Result := CodegenMangle(AName);
 end;
 
+function TArm64Backend.RecReturnShape(ARec: TRecordTypeDesc): Integer;
+var
+  I, NDoubles: Integer;
+  F: TFieldInfo;
+  AllDouble: Boolean;
+begin
+  { HFA check first: up to four Double fields return in d0..d(N-1) —
+    AAPCS64's homogeneous float aggregate rule.  (Single-member HFAs are
+    rejected with the rest of Single support.) }
+  AllDouble := ARec.Fields.Count > 0;
+  NDoubles := 0;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := TFieldInfo(ARec.Fields.Items[I]);
+    if (F.TypeDesc = nil) or (F.TypeDesc.Kind <> tyDouble) then
+      AllDouble := False
+    else
+      NDoubles := NDoubles + 1;
+  end;
+  if AllDouble and (NDoubles <= 4) then
+  begin
+    Result := 100 + NDoubles;
+    Exit;
+  end;
+  case Self.ClassifyRecordReturn(ARec) of
+    rcSret: Result := 0;
+    rcInt1: Result := 1;
+  else
+    { rcInt2 / rcIntSSE / rcSSEInt / rcSSE2: any non-HFA composite of at
+      most 16 bytes returns as a MEMORY IMAGE in x0:x1 on AAPCS64 (no
+      per-eightbyte class split like System V). }
+    Result := 2;
+  end;
+end;
+
 procedure TArm64Backend.RegisterForSlots(AStmt: TASTStmt);
 var
   I: Integer;
@@ -1069,10 +1147,19 @@ begin
     end;
     if ADecl.ResolvedReturnType <> nil then
     begin
-      if not (IsIntFam(ADecl.ResolvedReturnType) or
-              (ADecl.ResolvedReturnType.Kind = tyDouble)) then
-        NotYet('function result of this type', ADecl);
-      AddLocal('Result', 8);
+      if ADecl.ResolvedReturnType.Kind = tyRecord then
+      begin
+        if not RecretManagedClean(TRecordTypeDesc(ADecl.ResolvedReturnType)) then
+          NotYet('managed-record function result', ADecl);
+        AddLocal('Result', ADecl.ResolvedReturnType.RawSize());
+        if RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType)) = 0 then
+          AddLocal('__sret', 8);   { the incoming x8 destination pointer }
+      end
+      else if not (IsIntFam(ADecl.ResolvedReturnType) or
+                   (ADecl.ResolvedReturnType.Kind = tyDouble)) then
+        NotYet('function result of this type', ADecl)
+      else
+        AddLocal('Result', 8);
     end;
   end;
   for I := 0 to ABody.Decls.Count - 1 do
@@ -1106,6 +1193,7 @@ var
   I, J, FIdx: Integer;
   FrameAligned: Integer;
   Sym: string;
+  RecShape: Integer;
 begin
   if ADecl.Body.ProcDecls.Count > 0 then
     NotYet('nested routines', ADecl);
@@ -1113,6 +1201,9 @@ begin
   FIsFunction := ADecl.ResolvedReturnType <> nil;
   FResultFloat := FIsFunction and
     (ADecl.ResolvedReturnType.Kind = tyDouble);
+  RecShape := -1;
+  if FIsFunction and (ADecl.ResolvedReturnType.Kind = tyRecord) then
+    RecShape := RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType));
   FExitLabel := NewLabel('rexit');
   FForN := 0;
   RegisterFrameSlots(ADecl, ADecl.Body);
@@ -1149,9 +1240,19 @@ begin
       J := J + 1;
     end;
   end;
+  { sret: park the incoming x8 destination pointer in its hidden slot }
+  if RecShape = 0 then
+    EmitStoreSlot('x8', '__sret');
   { zero-initialise Result and every declared local (language rule: ALL
     variables are zero-initialised) }
-  if FIsFunction then
+  if FIsFunction and (RecShape >= 0) then
+  begin
+    EmitSlotAddr('x0', 'Result');
+    Self.Emit(#9'movz w1, #0');
+    EmitIntLiteral('x2', ADecl.ResolvedReturnType.RawSize());
+    Self.Emit(#9'bl memset');
+  end
+  else if FIsFunction then
     EmitStoreSlot('xzr', 'Result');
   for I := 0 to ADecl.Body.Decls.Count - 1 do
     for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
@@ -1180,7 +1281,41 @@ begin
     EmitLoadSlot('x0', FStrLocals.Strings[I]);
     Self.Emit(#9'bl _StringRelease');
   end;
-  if FIsFunction then
+  if FIsFunction and (RecShape >= 0) then
+  begin
+    case RecShape of
+      0:
+      begin
+        { sret: copy Result into the caller's x8 buffer }
+        EmitLoadSlot('x0', '__sret');
+        EmitPushX0();
+        EmitSlotAddr('x0', 'Result');
+        Self.Emit(#9'mov x1, x0');
+        EmitPopTo('x0');
+        EmitIntLiteral('x2', ADecl.ResolvedReturnType.RawSize());
+        Self.Emit(#9'bl memcpy');
+      end;
+      1:
+      begin
+        EmitSlotAddr('x9', 'Result');
+        Self.Emit(#9'ldr x0, [x9]');
+      end;
+      2:
+      begin
+        EmitSlotAddr('x9', 'Result');
+        Self.Emit(#9'ldr x0, [x9]');
+        Self.Emit(#9'ldr x1, [x9, #8]');
+      end;
+    else
+      begin
+        { HFA: N doubles in d0..d(N-1) }
+        EmitSlotAddr('x9', 'Result');
+        for I := 0 to (RecShape - 100) - 1 do
+          Self.Emit(Format(#9'ldr d%d, [x9, #%d]', [I, I * 8]));
+      end;
+    end;
+  end
+  else if FIsFunction then
   begin
     EmitLoadSlot('x0', 'Result');
     if FResultFloat then
@@ -1194,7 +1329,7 @@ begin
 end;
 
 procedure TArm64Backend.EmitCall(ADecl: TMethodDecl; const AName: string;
-  AArgs: TObjectList);
+  AArgs: TObjectList; const ASretDest: string);
 var
   I: Integer;
   Arg: TASTExpr;
@@ -1249,6 +1384,10 @@ begin
       EmitPopTo('x' + IntToStr(NInt));
     end;
   end;
+  if ASretDest <> '' then
+    { record sret: the callee writes through x8 (set AFTER the arg pops —
+      nothing below clobbers it before the call) }
+    EmitSlotAddr('x8', ASretDest);
   Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
 end;
 

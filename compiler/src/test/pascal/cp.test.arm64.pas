@@ -60,6 +60,10 @@ type
     procedure TestString_Comparisons_UseRtlHelpers;
     { slice 6: ARC-clean records — fields, whole-record copy, zero-init }
     procedure TestRecord_FieldsAndCopy;
+    { slice 7: record RETURNS per AAPCS64 — x8 sret, x0/x0:x1 images,
+      HFA doubles in d0.. }
+    procedure TestRecordReturn_SretViaX8;
+    procedure TestRecordReturn_SmallImagesAndHfa;
   end;
 
 implementation
@@ -598,6 +602,79 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestRecordReturn_SretViaX8;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBig = record
+        A, B, C: Int64;
+      end;
+    var
+      G: TBig;
+    function MakeBig(N: Integer): TBig;
+    begin
+      Result.A := N
+    end;
+    begin
+      G := MakeBig(7);
+      WriteLn(G.A)
+    end.
+    ''');
+  { 24-byte record: sret — callee parks x8, memcpys Result out; the
+    caller loads the destination address into x8 before the bl }
+  AssertTrue('callee parks x8', Pos(#9'stur x8, ', AsmT) >= 0);
+  AssertTrue('callee copies Result to the x8 buffer',
+    Pos(#9'bl memcpy', AsmT) >= 0);
+  AssertTrue('caller sets x8 to the destination',
+    Pos('add x8, x8, _g_G@PAGEOFF', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestRecordReturn_SmallImagesAndHfa;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPair = record
+        A: Int64;
+        B: Int64;
+      end;
+      TVec = record
+        X: Double;
+        Y: Double;
+      end;
+    var
+      GP: TPair;
+      GV: TVec;
+    function MkPair: TPair;
+    begin
+      Result.A := 1;
+      Result.B := 2
+    end;
+    function MkVec: TVec;
+    begin
+      Result.X := 1.5
+    end;
+    begin
+      GP := MkPair();
+      GV := MkVec();
+      WriteLn(GP.A)
+    end.
+    ''');
+  { 16-byte non-HFA: memory image in x0:x1 both sides }
+  AssertTrue('callee loads x0:x1 image', Pos(#9'ldr x1, [x9, #8]', AsmT) >= 0);
+  AssertTrue('caller stores x1 half', Pos(#9'str x1, [x9, #8]', AsmT) >= 0);
+  { two-double HFA: d0/d1 both sides }
+  AssertTrue('callee loads HFA d1', Pos(#9'ldr d1, [x9, #8]', AsmT) >= 0);
+  AssertTrue('caller stores HFA d1', Pos(#9'str d1, [x9, #8]', AsmT) >= 0);
 end;
 
 initialization
