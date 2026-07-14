@@ -10906,8 +10906,13 @@ begin
          version, even when the enclosing class declared its own.
       3. Unit-level proc / function (program-level or uses-clause). }
   Sym := FTable.Lookup(ACall.Name);
+  { Only a LOCAL variable/parameter shadows the implicit-Self method — a
+    PROGRAM-LEVEL global of the same (case-insensitive) name must not: the
+    class scope sits between locals and the unit scope (BUG-037; same rule
+    the ident-expression path applies to class fields vs globals). }
   if (FCurrentClass <> nil) and
      ((Sym = nil) or
+      (Sym.IsGlobal) or
       not (Sym.Kind in [skVariable, skParameter, skVarParameter])) then
   begin
     MDecl := FindMethodDecl(FCurrentClass.Name, ACall.Name);
@@ -11546,8 +11551,11 @@ begin
     Local vars/parameters win over implicit-Self method, which wins
     over unit-level. }
   Sym := FTable.Lookup(AExpr.Name);
+  { A program-level global does not shadow an implicit-Self method — see
+    the matching note in AnalyseProcCall (BUG-037). }
   if (FCurrentClass <> nil) and
      ((Sym = nil) or
+      (Sym.IsGlobal) or
       not (Sym.Kind in [skVariable, skParameter, skVarParameter])) then
   begin
     MDecl := FindMethodDecl(FCurrentClass.Name, AExpr.Name);

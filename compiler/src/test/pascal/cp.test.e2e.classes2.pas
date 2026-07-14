@@ -172,6 +172,11 @@ type
       double) without narrowing. }
     procedure TestRun_IntToFloatField_Converts;
     procedure TestRun_SelfIndexedRecordFieldAssign;
+    { BUG-037: an unqualified call to a method must not be shadowed by a
+      same-named PROGRAM-LEVEL variable (case-insensitive: global LOG vs
+      method Log).  Locals/params still shadow methods. }
+    procedure TestRun_UnqualifiedMethodCall_GlobalVarSameName;
+    procedure TestRun_UnqualifiedFuncCall_GlobalVarSameName;
   end;
 
 implementation
@@ -2402,6 +2407,69 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcIntToFloatField, Output, RCode));
   AssertEquals('Int64/Integer→float field stores convert',
     '7' + LE + '42' + LE + '5' + LE + '9', Trim(Output));
+end;
+
+procedure TE2EClasses2Tests.TestRun_UnqualifiedMethodCall_GlobalVarSameName;
+const
+  Src = '''
+    program p;
+    type
+      TLogger = class
+      public
+        procedure Log(AMsg: string);
+        procedure Info(AMsg: string);
+      end;
+    procedure TLogger.Log(AMsg: string);
+    begin
+      WriteLn(AMsg)
+    end;
+    procedure TLogger.Info(AMsg: string);
+    begin
+      Log(AMsg)   { must bind to TLogger.Log, not the global LOG }
+    end;
+    var
+      LOG: TLogger;
+    begin
+      LOG := TLogger.Create();
+      LOG.Info('hi')
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'hi' + LE, 0);
+end;
+
+procedure TE2EClasses2Tests.TestRun_UnqualifiedFuncCall_GlobalVarSameName;
+const
+  { expression position: the value-returning twin of the statement case }
+  Src = '''
+    program p;
+    type
+      TCalc = class
+      public
+        function Total(A: Integer): Integer;
+        function Twice(A: Integer): Integer;
+      end;
+    function TCalc.Total(A: Integer): Integer;
+    begin
+      Result := A + 1
+    end;
+    function TCalc.Twice(A: Integer): Integer;
+    begin
+      Result := Total(A) * 2   { must bind to TCalc.Total, not global TOTAL }
+    end;
+    var
+      TOTAL: Integer;
+      C: TCalc;
+    begin
+      TOTAL := 99;
+      C := TCalc.Create();
+      WriteLn(C.Twice(5))
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '12' + LE, 0);
 end;
 
 initialization
