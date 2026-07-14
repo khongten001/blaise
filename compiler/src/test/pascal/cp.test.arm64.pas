@@ -52,6 +52,10 @@ type
       call ABI with independent int/float sequences }
     procedure TestFloat_LiteralAndArithmetic;
     procedure TestFloat_CallAbi_IndependentSequences;
+    { slice 4: string variables with ARC }
+    procedure TestString_AssignRetainsAndReleasesOld;
+    procedure TestString_ConcatOwnedTransientReleased;
+    procedure TestString_ScopeExitReleases;
   end;
 
 implementation
@@ -280,10 +284,10 @@ begin
     GenAsm(
       '''
       program P;
-      var
-        S: string;
+      type
+        TC = class
+        end;
       begin
-        S := 'x'
       end.
       ''');
   except
@@ -440,6 +444,79 @@ begin
   AssertTrue('callee spills the d0 param', Pos(#9'fmov x9, d0', AsmT) >= 0);
   AssertTrue('int args pop into x0/x1', Pos(#9'ldr x1, [sp], #16', AsmT) >= 0);
   AssertTrue('call emitted', Pos(#9'bl Mix', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestString_AssignRetainsAndReleasesOld;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      S: string;
+    begin
+      S := 'one';
+      S := 'two';
+      WriteLn(S)
+    end.
+    ''');
+  { plain (non-owning) RHS retains; the slot's old value releases }
+  AssertTrue('incoming retained', Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('old value released', Pos(#9'bl _StringRelease', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestString_ConcatOwnedTransientReleased;
+var
+  AsmT: string;
+  ConcatPos, AddRefAfter: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      S: string;
+    begin
+      S := 'a' + 'b';
+      WriteLn('x' + 'y')
+    end.
+    ''');
+  AssertTrue('concat lowered', Pos(#9'bl _StringConcat', AsmT) >= 0);
+  { the concat result OWNS its +1: between the concat and the release of
+    the slot's OLD value there must be no retain of the new value }
+  ConcatPos := Pos(#9'bl _StringConcat', AsmT);
+  AddRefAfter := Pos(#9'bl _StringRelease',
+    Copy(AsmT, ConcatPos, Length(AsmT) - ConcatPos));
+  AssertTrue('old-value release follows the concat', AddRefAfter >= 0);
+  AssertTrue('owned concat result not double-retained on assignment',
+    Pos(#9'bl _StringAddRef',
+      Copy(AsmT, ConcatPos, AddRefAfter)) < 0);
+  { the WriteLn transient is released after the write }
+  AssertTrue('transient released after write',
+    Pos(#9'bl _SysWriteStr', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestString_ScopeExitReleases;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    function Tag(N: Integer): Integer;
+    var
+      S: string;
+    begin
+      S := 'tag';
+      Result := N
+    end;
+    begin
+      WriteLn(Tag(1))
+    end.
+    ''');
+  { the routine's exit label releases its string local before Result loads }
+  AssertTrue('exit label present', Pos('Lrexit', AsmT) >= 0);
+  AssertTrue('scope-exit release', Pos(#9'bl _StringRelease', AsmT) >= 0);
 end;
 
 initialization

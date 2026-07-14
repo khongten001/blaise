@@ -66,6 +66,10 @@ type
     FContLbls:    TStringList;   { innermost-last loop continue labels }
     FForN:        Integer;       { hidden for-loop end-slot counter }
     FFloatLits:   TStringList;   { .rodata double-literal texts }
+    FStrLocals:   TStringList;   { string locals of the current routine —
+                                   released at the shared exit label }
+    FStrGlobals:  TStringList;   { string program globals — released at
+                                   the program exit }
     FFloatNames:  TStringList;   { program-level float globals (parallel
                                    subset of FGlobalNames' world) }
 
@@ -90,6 +94,11 @@ type
       EmitExprToX0 + scvtf widening. }
     procedure EmitExprToD0OrConvert(AExpr: TASTExpr);
     function  IsFloatExpr(AExpr: TASTExpr): Boolean;
+    { Ownership of a string value in x0: ArcExprOwnsRef plus concat — this
+      backend consumes concat's +1 directly instead of the deferred
+      transient-release machinery the mature backends use (a concat result
+      here is always consumed exactly once by its statement). }
+    function  OwnsStringRef(AExpr: TASTExpr): Boolean;
     procedure EmitFloatLitSection;
     procedure EmitStrLitAddr(AValue: string);
     function  AsmEscape(const AValue: string): string;
@@ -165,6 +174,8 @@ begin
   FContLbls    := TStringList.Create();
   FFloatLits   := TStringList.Create();
   FFloatNames  := TStringList.Create();
+  FStrLocals   := TStringList.Create();
+  FStrGlobals  := TStringList.Create();
   FFrameSize   := 0;
   FLabelN      := 0;
   FForN        := 0;
@@ -172,6 +183,8 @@ end;
 
 destructor TArm64Backend.Destroy;
 begin
+  FStrGlobals.Free();
+  FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
   FContLbls.Free();
@@ -386,6 +399,24 @@ begin
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
+    { string concatenation: _StringConcat returns an owned +1 string }
+    if (BE.Op = boAdd) and (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tyString) then
+    begin
+      Self.EmitExprToX0(BE.Left);
+      EmitPushX0();
+      Self.EmitExprToX0(BE.Right);
+      Self.Emit(#9'mov x1, x0');
+      EmitPopTo('x0');
+      Self.Emit(#9'bl _StringConcat');
+      Exit;
+    end;
+    { any other operator on strings needs the RTL comparison helpers —
+      an int cmp on the pointers would be silently wrong }
+    if ((BE.Left.ResolvedType <> nil) and BE.Left.ResolvedType.IsString())
+       or ((BE.Right.ResolvedType <> nil) and
+           BE.Right.ResolvedType.IsString()) then
+      NotYet('string operator', AExpr);
     { float COMPARISON in integer/boolean context: fcmp + cset }
     if (BE.Op in [boEQ, boNE, boLT, boGT, boLE, boGE]) and
        (IsFloatExpr(BE.Left) or IsFloatExpr(BE.Right)) then
@@ -460,6 +491,13 @@ begin
     Exit;
   end;
   NotYet('expression ' + AExpr.ClassName, AExpr);
+end;
+
+function TArm64Backend.OwnsStringRef(AExpr: TASTExpr): Boolean;
+begin
+  Result := ArcExprOwnsRef(AExpr)
+    or ((AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).Op = boAdd) and
+        (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyString));
 end;
 
 function TArm64Backend.IsFloatExpr(AExpr: TASTExpr): Boolean;
@@ -604,6 +642,26 @@ end;
 
 procedure TArm64Backend.EmitAssignment(AAsgn: TAssignment);
 begin
+  if (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyString) then
+  begin
+    { ARC discipline (mirrors x86-64): retain the incoming value unless the
+      expression already OWNS a +1 reference (concat/call results), release
+      the slot's previous string, then store. }
+    Self.EmitExprToX0(AAsgn.Expr);
+    if not OwnsStringRef(AAsgn.Expr) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'bl _StringAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _StringRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AAsgn.Name);
+    Exit;
+  end;
   if (AAsgn.ResolvedLhsType <> nil) and AAsgn.ResolvedLhsType.IsFloat() then
   begin
     if AAsgn.ResolvedLhsType.Kind = tySingle then
@@ -658,9 +716,23 @@ begin
     if (K in [tyString, tyPChar]) or (Arg is TStringLiteral) then
     begin
       Self.EmitExprToX0(Arg);
-      Self.Emit(#9'mov x1, x0');
-      Self.Emit(#9'movz w0, #1');           { fd = stdout }
-      Self.Emit(#9'bl _SysWriteStr');
+      if (K = tyString) and OwnsStringRef(Arg) then
+      begin
+        { an owned +1 transient (concat/call result) is borrowed by
+          _SysWriteStr — release it after the write or it leaks }
+        EmitPushX0();
+        Self.Emit(#9'mov x1, x0');
+        Self.Emit(#9'movz w0, #1');
+        Self.Emit(#9'bl _SysWriteStr');
+        EmitPopTo('x0');
+        Self.Emit(#9'bl _StringRelease');
+      end
+      else
+      begin
+        Self.Emit(#9'mov x1, x0');
+        Self.Emit(#9'movz w0, #1');           { fd = stdout }
+        Self.Emit(#9'bl _SysWriteStr');
+      end;
     end
     else if K = tyDouble then
     begin
@@ -829,6 +901,7 @@ var
 begin
   FFrame.Clear();
   FFrameSize := 0;
+  FStrLocals.Clear();
   if ADecl <> nil then
   begin
     for I := 0 to ADecl.Params.Count - 1 do
@@ -855,10 +928,14 @@ begin
     VD := TVarDecl(ABody.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind = tyDouble))) then
+             (VD.ResolvedType.Kind in [tyDouble, tyString]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
+    begin
       AddLocal(VD.Names.Strings[J], 8);
+      if (VD.ResolvedType <> nil) and (VD.ResolvedType.Kind = tyString) then
+        FStrLocals.Add(VD.Names.Strings[J]);
+    end;
   end;
   for I := 0 to ABody.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
@@ -924,6 +1001,12 @@ begin
   EmitStmtList(ADecl.Body.Stmts);
 
   Self.Emit(FExitLabel + ':');
+  { release string locals at scope exit (Exit statements land here too) }
+  for I := 0 to FStrLocals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FStrLocals.Strings[I]);
+    Self.Emit(#9'bl _StringRelease');
+  end;
   if FIsFunction then
   begin
     EmitLoadSlot('x0', 'Result');
@@ -1065,10 +1148,14 @@ begin
     VD := TVarDecl(AProg.Block.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind = tyDouble))) then
+             (VD.ResolvedType.Kind in [tyDouble, tyString]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
+    begin
       FGlobalNames.Add(VD.Names.Strings[J]);
+      if (VD.ResolvedType <> nil) and (VD.ResolvedType.Kind = tyString) then
+        FStrGlobals.Add(VD.Names.Strings[J]);
+    end;
   end;
 
   Self.Emit('.text');
@@ -1112,6 +1199,13 @@ begin
   EmitStmtList(AProg.Block.Stmts);
 
   Self.Emit(FExitLabel + ':');
+  { release string globals before returning (ARC parity with x86-64's
+    program-exit global release) }
+  for I := 0 to FStrGlobals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FStrGlobals.Strings[I]);
+    Self.Emit(#9'bl _StringRelease');
+  end;
   Self.Emit(#9'movz w0, #0');
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
