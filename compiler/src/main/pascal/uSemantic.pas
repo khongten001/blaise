@@ -9279,11 +9279,13 @@ begin
   end;
 
   ObjSym := FTable.Lookup(ACall.ObjectName);
-  { TypeName.StaticMethod() — a static (class-level) method called through the
-    class name in statement position.  Resolve the method on the class; it must
-    be declared static.  Lowered with NO Self. }
+  { TypeName.StaticMethod() — a static (type-level) method called through the
+    CLASS or RECORD name in statement position.  Resolve the method on the
+    type; it must be declared static.  Lowered with NO Self.  (Records took
+    this path late: TUuid.Parse(...) as a discarded statement used to fail
+    with "'TUuid' is not a variable" — expression position already worked.) }
   if (ObjSym <> nil) and (ObjSym.Kind = skType) and (ObjSym.TypeDesc <> nil) and
-     (ObjSym.TypeDesc.Kind = tyClass) then
+     (ObjSym.TypeDesc.Kind in [tyClass, tyRecord]) then
   begin
     RT := TRecordTypeDesc(ObjSym.TypeDesc);
     for I := 0 to ACall.Args.Count - 1 do

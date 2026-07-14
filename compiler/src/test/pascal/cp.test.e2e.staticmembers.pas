@@ -41,6 +41,10 @@ type
     { BUG-036: a method declared AFTER a bare `static var` block must stay an
       instance method and see instance fields. }
     procedure TestRun_MethodAfterStaticVar_SeesInstanceFields;
+    { RECORD static methods called through the TYPE NAME in STATEMENT
+      position (TVal.Note(1); / discarded TVal.Make(2);) — the resolver
+      only accepted class types there ('TVal' is not a variable). }
+    procedure TestRun_RecordStaticCall_StatementPosition;
   end;
 
 implementation
@@ -441,6 +445,35 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'hello:3' + LineEnding, 0);
+end;
+
+procedure TE2EStaticMembersTests.TestRun_RecordStaticCall_StatementPosition;
+const
+  Src = '''
+    program prg;
+    type
+      TVal = record
+        X: Integer;
+        static function Make(A: Integer): TVal;
+        static procedure Note(A: Integer);
+      end;
+    static function TVal.Make(A: Integer): TVal;
+    begin
+      WriteLn('make ', A);
+      Result.X := A
+    end;
+    static procedure TVal.Note(A: Integer);
+    begin
+      WriteLn('note ', A)
+    end;
+    begin
+      TVal.Note(1);      { record static procedure, statement position }
+      TVal.Make(2)       { record static FUNCTION, result discarded }
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'note 1' + LineEnding + 'make 2' + LineEnding, 0);
 end;
 
 initialization
