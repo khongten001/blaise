@@ -45,6 +45,11 @@ type
     procedure TestParse_StaticProcedurePrefix_SetsIsStatic;
     procedure TestParse_StaticSection_AppliesToMethods;
     procedure TestParse_PlainMethodAfterStaticSection_NotStatic;
+    { BUG-036: a bare `static var` BLOCK ends at the first method/property —
+      a method declared right after it must NOT silently become static
+      (that made instance fields invisible in its body). }
+    procedure TestParse_MethodAfterBareStaticVar_NotStatic;
+    procedure TestParse_PropertyAfterBareStaticVar_NotStatic;
     procedure TestParse_BareStaticKeepsCurrentVisibility;
 
     { static property }
@@ -1116,6 +1121,65 @@ begin
     Pos('storel 0, $THolder_GObj', IR) >= 0);
   AssertFalse('no l-value use may dereference the class-name base as a variable',
     Pos('%_var_THolder', IR) >= 0);
+end;
+
+procedure TStaticMembersParseTests.TestParse_MethodAfterBareStaticVar_NotStatic;
+const
+  Src =
+    '''
+        program P;
+        type
+          TFoo = class
+          private
+            FName: string;
+          public
+            constructor Create; overload;
+            static var Shared: Integer;
+            procedure Log;
+          end;
+        begin end.
+        ''';
+var Prog: TProgram; C: TClassTypeDef;
+begin
+  Prog := ParseSrc(Src);
+  try
+    C := ClassOf(Prog, 0);
+    AssertTrue('Shared is class var',
+      TFieldDecl(C.Fields.Items[1]).IsClassVar);
+    AssertFalse('FName stays an instance field',
+      TFieldDecl(C.Fields.Items[0]).IsClassVar);
+    AssertFalse('Log after the static var block is NOT static',
+      TMethodDecl(C.Methods.Items[1]).IsStatic);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TStaticMembersParseTests.TestParse_PropertyAfterBareStaticVar_NotStatic;
+const
+  Src =
+    '''
+        program P;
+        type
+          TFoo = class
+          private
+            FVal: Integer;
+          public
+            static var Shared: Integer;
+            property Val: Integer read FVal;
+          end;
+        begin end.
+        ''';
+var Prog: TProgram; C: TClassTypeDef;
+begin
+  Prog := ParseSrc(Src);
+  try
+    C := ClassOf(Prog, 0);
+    AssertFalse('property after the static var block is NOT static',
+      TPropertyDecl(C.Properties.Items[0]).IsStatic);
+  finally
+    Prog.Free();
+  end;
 end;
 
 initialization

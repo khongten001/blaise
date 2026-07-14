@@ -38,6 +38,9 @@ type
     procedure TestRun_Singleton_LazyGetInstance;
     procedure TestRun_StaticConst_OnClass;
     procedure TestRun_RecordStaticFactory;
+    { BUG-036: a method declared AFTER a bare `static var` block must stay an
+      instance method and see instance fields. }
+    procedure TestRun_MethodAfterStaticVar_SeesInstanceFields;
   end;
 
 implementation
@@ -405,6 +408,39 @@ const Src =
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, '7' + LineEnding, 0);
+end;
+
+procedure TE2EStaticMembersTests.TestRun_MethodAfterStaticVar_SeesInstanceFields;
+const
+  Src = '''
+    program p;
+    type
+      TLogger = class
+      private
+        FName: string;
+      public
+        constructor Create(AName: string); overload;
+        static var Level: Integer;
+        procedure Log;
+      end;
+    constructor TLogger.Create(AName: string);
+    begin
+      FName := AName
+    end;
+    procedure TLogger.Log;
+    begin
+      WriteLn(FName, ':', TLogger.Level)
+    end;
+    var L: TLogger;
+    begin
+      TLogger.Level := 3;
+      L := TLogger.Create('hello');
+      L.Log()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'hello:3' + LineEnding, 0);
 end;
 
 initialization

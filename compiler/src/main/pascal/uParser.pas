@@ -2045,6 +2045,8 @@ function TParser.ParseRecordDef: TRecordTypeDef;
 var
   MethDecl:         TMethodDecl;
   CurrStatic:       Boolean;   { current section's static (class-level) association }
+  CurrStaticBlock:  Boolean;   { bare `static var`/`static const` block (see
+                                 ParseClassDef; BUG-036) }
   CurrVisibility:   TMemberVisibility; { current section's visibility }
   LocalStatic:      Boolean;
   FieldCountBefore: Integer;
@@ -2052,6 +2054,7 @@ var
 begin
   Result := TRecordTypeDef.Create();
   CurrStatic     := False;
+  CurrStaticBlock := False;
   CurrVisibility := mvPublic;
   try
     Result.Line := FCurrent.Line;
@@ -2065,6 +2068,7 @@ begin
          (PeekKind() in [tkVar, tkConst]) then
       begin
         CurrStatic := True;
+        CurrStaticBlock := True;
         Advance();  { the following var/const section belongs to this static section }
       end
       { Optional `strict` soft keyword before private/protected (record fields). }
@@ -2079,11 +2083,13 @@ begin
         else
           CurrVisibility := mvStrictProtected;
         CurrStatic := False;
+        CurrStaticBlock := False;
         Advance();  { consume private/protected }
         if Check(tkIdent) and SameText(FCurrent.Value, 'static') and
            (PeekKind() in [tkVar, tkConst, tkFunction, tkProcedure]) then
         begin
           CurrStatic := True;
+          CurrStaticBlock := PeekKind() in [tkVar, tkConst];
           Advance();
         end;
       end
@@ -2107,11 +2113,13 @@ begin
         else
           CurrVisibility := mvPublic;
         CurrStatic := False;
+        CurrStaticBlock := False;
         Advance();
         if Check(tkIdent) and SameText(FCurrent.Value, 'static') and
            (PeekKind() in [tkVar, tkConst, tkFunction, tkProcedure]) then
         begin
           CurrStatic := True;
+          CurrStaticBlock := PeekKind() in [tkVar, tkConst];
           Advance();
         end;
       end
@@ -2125,6 +2133,13 @@ begin
               (Check(tkIdent) and SameText(FCurrent.Value, 'static') and
                (PeekKind() in [tkFunction, tkProcedure])) then
       begin
+        if CurrStatic and CurrStaticBlock then
+        begin
+          { a bare `static var`/`static const` block ends at the first
+            method/property member (BUG-036) }
+          CurrStatic := False;
+          CurrStaticBlock := False;
+        end;
         LocalStatic := CurrStatic;
         if Check(tkIdent) and SameText(FCurrent.Value, 'static') then
         begin
@@ -2196,6 +2211,11 @@ var
   CurrPublished:    Boolean;
   CurrVisibility:   TMemberVisibility; { current section's visibility }
   CurrStatic:       Boolean;   { current section's static (class-level) association }
+  CurrStaticBlock:  Boolean;   { CurrStatic came from a bare `static var`/
+                                 `static const` BLOCK (not a `public static`
+                                 section) — such a block ends at the first
+                                 method/property, so a member declared after
+                                 it must not silently become static (BUG-036) }
   LocalStatic:      Boolean;   { effective static for the member being parsed }
   MethDecl:         TMethodDecl;
   PropDecl:         TPropertyDecl;
@@ -2249,6 +2269,7 @@ begin
     CurrPublished  := False;
     CurrVisibility := mvPublic;
     CurrStatic     := False;
+    CurrStaticBlock := False;
     repeat
       { An attribute list may precede a field or a method declaration.
         Capture it here and attach it to whichever member follows. }
@@ -2279,6 +2300,11 @@ begin
             ((PeekKind() = tkIdent) and SameText(PeekValueAt(1), 'property'))) then
         begin
           CurrStatic := True;
+          { `<visibility> static var/const` is the BLOCK form (ends at the
+            first method/property — BUG-036); followed by a routine or
+            property it is the section form applying until the next
+            visibility keyword. }
+          CurrStaticBlock := PeekKind() in [tkVar, tkConst];
           Advance();
         end;
       end
@@ -2309,6 +2335,7 @@ begin
           CurrVisibility := mvPublic;
         CurrStatic    := False;  { a new visibility section is non-static unless
                                    `static` follows }
+        CurrStaticBlock := False;
         Advance();  { consume the visibility modifier }
         { Optional trailing `static` section qualifier.  `static` is a soft
           keyword: treat it as a qualifier only when it introduces a static
@@ -2320,6 +2347,11 @@ begin
             ((PeekKind() = tkIdent) and SameText(PeekValueAt(1), 'property'))) then
         begin
           CurrStatic := True;
+          { `<visibility> static var/const` is the BLOCK form (ends at the
+            first method/property — BUG-036); followed by a routine or
+            property it is the section form applying until the next
+            visibility keyword. }
+          CurrStaticBlock := PeekKind() in [tkVar, tkConst];
           Advance();
         end;
       end
@@ -2334,6 +2366,7 @@ begin
               (PeekKind() in [tkVar, tkConst]) then
       begin
         CurrStatic := True;
+        CurrStaticBlock := True;
         Advance();  { consume `static`; the following `var`/`const` section is
                      part of this static section }
       end
@@ -2345,6 +2378,13 @@ begin
               (Check(tkIdent) and SameText(FCurrent.Value, 'static') and
                (PeekKind() = tkIdent) and SameText(PeekValueAt(1), 'property')) then
       begin
+        if CurrStatic and CurrStaticBlock then
+        begin
+          { a bare `static var`/`static const` block ends at the first
+            method/property member (BUG-036) }
+          CurrStatic := False;
+          CurrStaticBlock := False;
+        end;
         LocalStatic := CurrStatic;
         if Check(tkIdent) and SameText(FCurrent.Value, 'static') then
         begin
@@ -2363,6 +2403,13 @@ begin
               (Check(tkIdent) and SameText(FCurrent.Value, 'static') and
                (PeekKind() in [tkFunction, tkProcedure, tkConstructor, tkDestructor])) then
       begin
+        if CurrStatic and CurrStaticBlock then
+        begin
+          { a bare `static var`/`static const` block ends at the first
+            method/property member (BUG-036) }
+          CurrStatic := False;
+          CurrStaticBlock := False;
+        end;
         LocalStatic := CurrStatic;
         if Check(tkIdent) and SameText(FCurrent.Value, 'static') then
         begin
