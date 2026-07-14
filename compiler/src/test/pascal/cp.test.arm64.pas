@@ -42,6 +42,12 @@ type
     procedure TestIfWhile_BranchShapes;
     procedure TestUnsupported_RaisesHonestly;
     procedure TestPipeline_AssemblesToMachO;
+    { slice 2: routines + AAPCS64 calls + for/exit/break }
+    procedure TestFunction_PrologueSpillsAndResult;
+    procedure TestCall_ArgsPoppedIntoRegisters;
+    procedure TestRecursion_Compiles;
+    procedure TestForLoop_BoundEvaluatedOnce;
+    procedure TestPipeline_FunctionsAssembleToMachO;
   end;
 
 implementation
@@ -87,6 +93,53 @@ const
         WriteLn('ok')
       else
         WriteLn('bad')
+    end.
+    ''';
+
+const
+  SrcFuncs =
+    '''
+    program P;
+    function Add2(A, B: Integer): Integer;
+    begin
+      Result := A + B
+    end;
+    begin
+      WriteLn(Add2(20, 22))
+    end.
+    ''';
+
+  SrcFib =
+    '''
+    program P;
+    function Fib(N: Integer): Integer;
+    begin
+      if N < 2 then
+      begin
+        Result := N;
+        Exit
+      end;
+      Result := Fib(N - 1) + Fib(N - 2)
+    end;
+    begin
+      WriteLn(Fib(10))
+    end.
+    ''';
+
+  SrcForLoop =
+    '''
+    program P;
+    var
+      I, Sum: Integer;
+    begin
+      Sum := 0;
+      for I := 1 to 10 do
+      begin
+        if I = 3 then continue;
+        if I = 9 then break;
+        Sum := Sum + I
+      end;
+      WriteLn(Sum)
     end.
     ''';
 
@@ -265,6 +318,73 @@ begin
     AssertTrue('rtl call relocations recorded', T.Relocs.Count > 0);
     AssertTrue('_SysWriteStr referenced',
       F.FindSymbol('_SysWriteStr') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestFunction_PrologueSpillsAndResult;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcFuncs);
+  { params spill from x0/x1 into frame slots; Result zero-initialised and
+    loaded back into x0 at the routine exit }
+  AssertTrue('add2 exported+defined', Pos('Add2:', AsmT) >= 0);
+  AssertTrue('param 0 spilled', Pos(#9'stur x0, [x29, #-8]', AsmT) >= 0);
+  AssertTrue('param 1 spilled', Pos(#9'stur x1, [x29, #-16]', AsmT) >= 0);
+  AssertTrue('Result zero-initialised', Pos(#9'stur xzr, [x29, #-24]', AsmT) >= 0);
+  AssertTrue('frame restored via fp', Pos(#9'mov sp, x29', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestCall_ArgsPoppedIntoRegisters;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcFuncs);
+  { args are pushed left-to-right and popped last-first, so x1 fills before
+    x0; the call is a bl to the mangled routine symbol }
+  AssertTrue('second arg popped first', Pos(#9'ldr x1, [sp], #16', AsmT) >= 0);
+  AssertTrue('first arg popped last', Pos(#9'ldr x0, [sp], #16', AsmT) >= 0);
+  AssertTrue('direct call', Pos(#9'bl Add2', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestRecursion_Compiles;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcFib);
+  AssertTrue('fib defined', Pos('Fib:', AsmT) >= 0);
+  AssertTrue('recursive call', Pos(#9'bl Fib', AsmT) >= 0);
+  AssertTrue('exit lands on the epilogue label', Pos(#9'b Lrexit', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestForLoop_BoundEvaluatedOnce;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(SrcForLoop);
+  { the loop bound lives in a hidden frame slot, compared each iteration }
+  AssertTrue('bound stored to the hidden slot',
+    Pos(#9'stur x0, [x29, #-8]', AsmT) >= 0);
+  AssertTrue('signed compare against the bound', Pos(#9'cmp x0, x1', AsmT) >= 0);
+  AssertTrue('exit branch on greater', Pos(#9'b.gt Lfend', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestPipeline_FunctionsAssembleToMachO;
+var
+  AsmT, Obj: string;
+  F: TMachOFile;
+  S: TMoSymbol;
+begin
+  AsmT := GenAsm(SrcFib);
+  Obj  := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64fib.o');
+  try
+    S := F.FindSymbol('Fib');
+    AssertTrue('Fib defined in the object', (S <> nil) and (not S.IsUndef()));
+    S := F.FindSymbol('_main');
+    AssertTrue('_main defined', (S <> nil) and (not S.IsUndef()));
   finally
     F.Free();
   end;

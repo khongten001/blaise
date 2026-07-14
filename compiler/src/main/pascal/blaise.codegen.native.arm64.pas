@@ -59,6 +59,11 @@ type
     FStrLits:     TStringList;
     FLabelN:      Integer;
     FProgramName: string;
+    FIsFunction:  Boolean;       { current routine returns a value }
+    FExitLabel:   string;        { current routine's epilogue label }
+    FBreakLbls:   TStringList;   { innermost-last loop end labels }
+    FContLbls:    TStringList;   { innermost-last loop continue labels }
+    FForN:        Integer;       { hidden for-loop end-slot counter }
 
     function  NewLabel(const APrefix: string): string;
     procedure NotYet(const AWhat: string; ANode: TASTNode);
@@ -86,6 +91,16 @@ type
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     procedure EmitIf(AStmt: TIfStmt);
     procedure EmitWhile(AStmt: TWhileStmt);
+    procedure EmitFor(AStmt: TForStmt);
+    procedure EmitExit(AStmt: TExitStmt);
+    procedure EmitFunctionDef(ADecl: TMethodDecl);
+    procedure EmitCall(ADecl: TMethodDecl; const AName: string;
+      AArgs: TObjectList);
+    { Pre-pass: register every local/param/hidden slot a routine body needs
+      so the frame size is final before the prologue's sub sp. }
+    procedure RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
+    procedure RegisterForSlots(AStmt: TASTStmt);
+    function  RoutineSym(ADecl: TMethodDecl; const AName: string): string;
 
     procedure EmitStrLitSection;
     procedure EmitGlobalsSection;
@@ -135,12 +150,17 @@ begin
   FFrame       := TDictionary<string, Integer>.Create();
   FGlobalNames := TStringList.Create();
   FStrLits     := TStringList.Create();
+  FBreakLbls   := TStringList.Create();
+  FContLbls    := TStringList.Create();
   FFrameSize   := 0;
   FLabelN      := 0;
+  FForN        := 0;
 end;
 
 destructor TArm64Backend.Destroy;
 begin
+  FContLbls.Free();
+  FBreakLbls.Free();
   FStrLits.Free();
   FGlobalNames.Free();
   FFrame.Free();
@@ -336,6 +356,16 @@ begin
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
     Exit;
   end;
+  if AExpr is TFuncCallExpr then
+  begin
+    if TFuncCallExpr(AExpr).IsIndirectCall or
+       TFuncCallExpr(AExpr).IsImplicitSelfMethod or
+       (TFuncCallExpr(AExpr).ResolvedDecl = nil) then
+      NotYet('this call form (''' + TFuncCallExpr(AExpr).Name + ''')', AExpr);
+    EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
+      TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
+    Exit;
+  end;
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
@@ -430,6 +460,30 @@ begin
     EmitWhile(TWhileStmt(AStmt));
     Exit;
   end;
+  if AStmt is TForStmt then
+  begin
+    EmitFor(TForStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TExitStmt then
+  begin
+    EmitExit(TExitStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TBreakStmt then
+  begin
+    if FBreakLbls.Count = 0 then
+      NotYet('break outside a loop', AStmt);
+    Self.Emit(Format(#9'b %s', [FBreakLbls.Strings[FBreakLbls.Count - 1]]));
+    Exit;
+  end;
+  if AStmt is TContinueStmt then
+  begin
+    if FContLbls.Count = 0 then
+      NotYet('continue outside a loop', AStmt);
+    Self.Emit(Format(#9'b %s', [FContLbls.Strings[FContLbls.Count - 1]]));
+    Exit;
+  end;
   NotYet('statement ' + AStmt.ClassName, AStmt);
 end;
 
@@ -453,6 +507,12 @@ begin
   if SameText(ACall.Name, 'Write') then
   begin
     EmitWrite(ACall, False);
+    Exit;
+  end;
+  if (ACall.ResolvedDecl <> nil) and (ACall.ResolvedDecl is TMethodDecl) and
+     (TMethodDecl(ACall.ResolvedDecl).OwnerTypeName = '') then
+  begin
+    EmitCall(TMethodDecl(ACall.ResolvedDecl), ACall.Name, ACall.Args);
     Exit;
   end;
   NotYet('call to ''' + ACall.Name + '''', ACall);
@@ -539,6 +599,214 @@ begin
   Self.Emit(EndL + ':');
 end;
 
+procedure TArm64Backend.EmitFor(AStmt: TForStmt);
+var
+  TopL, EndL, ContL: string;
+  EndSlot: string;
+begin
+  { the pre-pass registered one hidden end slot per for statement, consumed
+    here in the same walk order }
+  EndSlot := '__for_end_' + IntToStr(FForN);
+  FForN := FForN + 1;
+  TopL  := NewLabel('for');
+  EndL  := NewLabel('fend');
+  ContL := NewLabel('fcont');
+  Self.EmitExprToX0(AStmt.StartExpr);
+  EmitStoreSlot('x0', AStmt.VarName);
+  Self.EmitExprToX0(AStmt.EndExpr);      { bound evaluated ONCE }
+  EmitStoreSlot('x0', EndSlot);
+  Self.Emit(TopL + ':');
+  EmitLoadSlot('x0', AStmt.VarName);
+  EmitLoadSlot('x1', EndSlot);
+  Self.Emit(#9'cmp x0, x1');
+  if AStmt.IsDownTo then
+    Self.Emit(Format(#9'b.lt %s', [EndL]))
+  else
+    Self.Emit(Format(#9'b.gt %s', [EndL]));
+  FBreakLbls.Add(EndL);
+  FContLbls.Add(ContL);
+  Self.EmitStmt(AStmt.Body);
+  FContLbls.Delete(FContLbls.Count - 1);
+  FBreakLbls.Delete(FBreakLbls.Count - 1);
+  Self.Emit(ContL + ':');
+  EmitLoadSlot('x0', AStmt.VarName);
+  if AStmt.IsDownTo then
+    Self.Emit(#9'sub x0, x0, #1')
+  else
+    Self.Emit(#9'add x0, x0, #1');
+  EmitStoreSlot('x0', AStmt.VarName);
+  Self.Emit(Format(#9'b %s', [TopL]));
+  Self.Emit(EndL + ':');
+end;
+
+procedure TArm64Backend.EmitExit(AStmt: TExitStmt);
+begin
+  if AStmt.ResultAssign <> nil then
+    Self.EmitStmt(AStmt.ResultAssign)
+  else if AStmt.Value <> nil then
+    NotYet('exit with a value in this position', AStmt);
+  Self.Emit(Format(#9'b %s', [FExitLabel]));
+end;
+
+{ ---- routines ------------------------------------------------------------ }
+
+function TArm64Backend.RoutineSym(ADecl: TMethodDecl;
+  const AName: string): string;
+begin
+  if (ADecl <> nil) and ADecl.IsExternal and (ADecl.ExternalName <> '') then
+    Result := ADecl.ExternalName
+  else if (ADecl <> nil) and (ADecl.ResolvedQbeName <> '') then
+    Result := CodegenMangle(ADecl.ResolvedQbeName)
+  else if ADecl <> nil then
+    Result := CodegenMangle(ADecl.Name)
+  else
+    Result := CodegenMangle(AName);
+end;
+
+procedure TArm64Backend.RegisterForSlots(AStmt: TASTStmt);
+var
+  I: Integer;
+begin
+  if AStmt = nil then Exit;
+  if AStmt is TCompoundStmt then
+  begin
+    for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
+      RegisterForSlots(TASTStmt(TCompoundStmt(AStmt).Stmts.Items[I]));
+    Exit;
+  end;
+  if AStmt is TForStmt then
+  begin
+    AddLocal('__for_end_' + IntToStr(FForN), 8);
+    FForN := FForN + 1;
+    RegisterForSlots(TForStmt(AStmt).Body);
+    Exit;
+  end;
+  if AStmt is TIfStmt then
+  begin
+    RegisterForSlots(TIfStmt(AStmt).ThenStmt);
+    RegisterForSlots(TIfStmt(AStmt).ElseStmt);
+    Exit;
+  end;
+  if AStmt is TWhileStmt then
+    RegisterForSlots(TWhileStmt(AStmt).Body);
+end;
+
+procedure TArm64Backend.RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
+var
+  I, J: Integer;
+  VD: TVarDecl;
+  Par: TMethodParam;
+begin
+  FFrame.Clear();
+  FFrameSize := 0;
+  if ADecl <> nil then
+  begin
+    for I := 0 to ADecl.Params.Count - 1 do
+    begin
+      Par := TMethodParam(ADecl.Params.Items[I]);
+      if Par.IsVarParam or Par.IsOpenArray then
+        NotYet('var/out/open-array parameters', ADecl);
+      if not IsIntFam(Par.ResolvedType) then
+        NotYet('non-integer parameter ''' + Par.ParamName + '''', ADecl);
+      AddLocal(Par.ParamName, 8);
+    end;
+    if ADecl.ResolvedReturnType <> nil then
+    begin
+      if not IsIntFam(ADecl.ResolvedReturnType) then
+        NotYet('non-integer function result', ADecl);
+      AddLocal('Result', 8);
+    end;
+  end;
+  for I := 0 to ABody.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(ABody.Decls.Items[I]);
+    if not IsIntFam(VD.ResolvedType) then
+      NotYet('non-integer local variable', VD);
+    for J := 0 to VD.Names.Count - 1 do
+      AddLocal(VD.Names.Strings[J], 8);
+  end;
+  for I := 0 to ABody.Stmts.Count - 1 do
+    RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
+end;
+
+procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
+var
+  I, J: Integer;
+  FrameAligned: Integer;
+  Sym: string;
+begin
+  if ADecl.Body.ProcDecls.Count > 0 then
+    NotYet('nested routines', ADecl);
+  Sym := RoutineSym(ADecl, ADecl.Name);
+  FIsFunction := ADecl.ResolvedReturnType <> nil;
+  FExitLabel := NewLabel('rexit');
+  FForN := 0;
+  RegisterFrameSlots(ADecl, ADecl.Body);
+  FForN := 0;   { reset so EmitFor consumes slots in registration order }
+  FrameAligned := (FFrameSize + 15) and (not 15);
+
+  Self.Emit('');
+  Self.Emit(Format('.globl %s', [Sym]));
+  Self.Emit(Sym + ':');
+  Self.Emit(#9'stp x29, x30, [sp, #-16]!');
+  Self.Emit(#9'mov x29, sp');
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  { spill register args to their slots (x0..x7 — >8 int args rejected in
+    RegisterFrameSlots' NotYet path via the count check below) }
+  if ADecl.Params.Count > 8 then
+    NotYet('more than 8 parameters', ADecl);
+  for I := 0 to ADecl.Params.Count - 1 do
+    EmitStoreSlot('x' + IntToStr(I),
+      TMethodParam(ADecl.Params.Items[I]).ParamName);
+  { zero-initialise Result and every declared local (language rule: ALL
+    variables are zero-initialised) }
+  if FIsFunction then
+    EmitStoreSlot('xzr', 'Result');
+  for I := 0 to ADecl.Body.Decls.Count - 1 do
+    for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
+      EmitStoreSlot('xzr',
+        TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J]);
+
+  EmitStmtList(ADecl.Body.Stmts);
+
+  Self.Emit(FExitLabel + ':');
+  if FIsFunction then
+    EmitLoadSlot('x0', 'Result');
+  Self.Emit(#9'mov sp, x29');
+  Self.Emit(#9'ldp x29, x30, [sp], #16');
+  Self.Emit(#9'ret');
+  FFrame.Clear();
+  FFrameSize := 0;
+end;
+
+procedure TArm64Backend.EmitCall(ADecl: TMethodDecl; const AName: string;
+  AArgs: TObjectList);
+var
+  I: Integer;
+  Arg: TASTExpr;
+begin
+  if ADecl = nil then
+    NotYet('call to unresolved routine ''' + AName + '''', nil);
+  if ADecl.IsExternal and (ADecl.ExternalName = '') then
+    NotYet('external routine without a link name', nil);
+  if AArgs.Count > 8 then
+    NotYet('call with more than 8 arguments', nil);
+  { evaluate args left-to-right onto the stack (calls inside an argument
+    cannot clobber earlier args), then pop into x(N-1)..x0 }
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if not (IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral)) then
+      NotYet('non-integer call argument', Arg);
+    Self.EmitExprToX0(Arg);
+    EmitPushX0();
+  end;
+  for I := AArgs.Count - 1 downto 0 do
+    EmitPopTo('x' + IntToStr(I));
+  Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
+end;
+
 { ---- data sections ------------------------------------------------------- }
 
 procedure TArm64Backend.EmitStrLitSection;
@@ -581,10 +849,10 @@ procedure TArm64Backend.EmitProgram(AProg: TProgram);
 var
   I, J: Integer;
   VD:   TVarDecl;
+  Decl: TMethodDecl;
+  FrameAligned: Integer;
 begin
   FProgramName := AProg.Name;
-  if AProg.Block.ProcDecls.Count > 0 then
-    NotYet('standalone procedures/functions', nil);
   if AProg.Block.TypeDecls.Count > 0 then
     NotYet('type declarations', nil);
 
@@ -599,6 +867,31 @@ begin
   end;
 
   Self.Emit('.text');
+
+  { Standalone procedures/functions before $main. }
+  for I := 0 to AProg.Block.ProcDecls.Count - 1 do
+  begin
+    Decl := TMethodDecl(AProg.Block.ProcDecls.Items[I]);
+    if Decl.OwnerTypeName <> '' then Continue;   { class methods: not yet }
+    if Decl.TypeParams <> nil then Continue;     { generic templates }
+    if Decl.Body = nil then Continue;            { forward decls }
+    if Decl.IsExternal then Continue;            { externals: call-site only }
+    EmitFunctionDef(Decl);
+  end;
+
+  { _main's frame holds only the hidden for-loop bound slots (program vars
+    are globals). }
+  FIsFunction := False;
+  FExitLabel := NewLabel('mainexit');
+  FFrame.Clear();
+  FFrameSize := 0;
+  FForN := 0;
+  for I := 0 to AProg.Block.Stmts.Count - 1 do
+    RegisterForSlots(TASTStmt(AProg.Block.Stmts.Items[I]));
+  FForN := 0;
+  FrameAligned := (FFrameSize + 15) and (not 15);
+
+  Self.Emit('');
   Self.Emit('.globl _main');
   Self.Emit('_main:');
   { Prologue: fp/lr pair + frame chain — ALWAYS (Darwin unwind).  argc/argv
@@ -606,12 +899,16 @@ begin
     before _BlaiseInit (that clobbers the argument registers). }
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
   Self.Emit(#9'bl _SetArgs');
   Self.Emit(#9'bl _BlaiseInit');
 
   EmitStmtList(AProg.Block.Stmts);
 
+  Self.Emit(FExitLabel + ':');
   Self.Emit(#9'movz w0, #0');
+  Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
   Self.Emit(#9'ret');
 
