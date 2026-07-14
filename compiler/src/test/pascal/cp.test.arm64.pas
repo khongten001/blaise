@@ -58,6 +58,8 @@ type
     procedure TestString_ScopeExitReleases;
     { slice 5: string comparisons via RTL helpers }
     procedure TestString_Comparisons_UseRtlHelpers;
+    { slice 6: ARC-clean records — fields, whole-record copy, zero-init }
+    procedure TestRecord_FieldsAndCopy;
   end;
 
 implementation
@@ -544,6 +546,58 @@ begin
   AssertTrue('NE inverts via cset eq', Pos(#9'cset x0, eq', AsmT) >= 0);
   AssertTrue('relational sign-extends the strcmp result',
     Pos(#9'sxtw x0, w0', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestRecord_FieldsAndCopy;
+var
+  AsmT, Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPoint = record
+        X: Integer;
+        Y: Int64;
+        D: Double;
+      end;
+    var
+      G: TPoint;
+    function Sum(N: Integer): Integer;
+    var
+      L, M: TPoint;
+    begin
+      L.X := N;
+      L.Y := 10;
+      L.D := 1.5;
+      M := L;
+      Result := M.X + M.Y
+    end;
+    begin
+      G.X := 1;
+      WriteLn(Sum(G.X + 31))
+    end.
+    ''');
+  { record locals zero-init their WHOLE storage, not just 8 bytes }
+  AssertTrue('record zeroed via memset', Pos(#9'bl memset', AsmT) >= 0);
+  { field writes go through the record base + offset }
+  AssertTrue('field write at offset 8', Pos(', [x9, #8]', AsmT) >= 0);
+  AssertTrue('field write at offset 16', Pos(', [x9, #16]', AsmT) >= 0);
+  { whole-record copy is a memcpy of RawSize }
+  AssertTrue('record copy via memcpy', Pos(#9'bl memcpy', AsmT) >= 0);
+  AssertTrue('copy length 24', Pos(#9'movz x2, #24', AsmT) >= 0);
+  { record global gets a full-size bss slot }
+  AssertTrue('global record slot', Pos(#9'.zero 24', AsmT) >= 0);
+  { and the whole thing still assembles into a Mach-O object }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'rec.o');
+  try
+    AssertTrue('__text non-empty',
+      F.FindSection('__TEXT', '__text').Size > 0);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

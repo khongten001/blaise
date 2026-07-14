@@ -70,6 +70,9 @@ type
                                    released at the shared exit label }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
+    FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
+    FRecGlobals:  TStringList;   { record program globals; Objects = desc }
+    FGlobalSize:  TDictionary<string, Integer>;  { bss size per global }
     FFloatNames:  TStringList;   { program-level float globals (parallel
                                    subset of FGlobalNames' world) }
 
@@ -82,6 +85,9 @@ type
     { Load/store x-register <-> local slot / global (int-family only). }
     procedure EmitLoadSlot(const AReg, AName: string);
     procedure EmitStoreSlot(const AReg, AName: string);
+    { Address of a variable's storage (record base / slot address). }
+    procedure EmitSlotAddr(const AReg, AName: string);
+    procedure EmitFieldAssign(AStmt: TFieldAssignment);
 
     { ---- expression lowering (result in x0) ---- }
     procedure EmitExprToX0(AExpr: TASTExpr);
@@ -176,6 +182,9 @@ begin
   FFloatNames  := TStringList.Create();
   FStrLocals   := TStringList.Create();
   FStrGlobals  := TStringList.Create();
+  FRecLocals   := TStringList.Create();
+  FRecGlobals  := TStringList.Create();
+  FGlobalSize  := TDictionary<string, Integer>.Create();
   FFrameSize   := 0;
   FLabelN      := 0;
   FForN        := 0;
@@ -183,6 +192,9 @@ end;
 
 destructor TArm64Backend.Destroy;
 begin
+  FGlobalSize.Free();
+  FRecGlobals.Free();
+  FRecLocals.Free();
   FStrGlobals.Free();
   FStrLocals.Free();
   FFloatNames.Free();
@@ -280,6 +292,48 @@ begin
     Exit;
   end;
   NotYet('store to variable ''' + AName + '''', nil);
+end;
+
+procedure TArm64Backend.EmitSlotAddr(const AReg, AName: string);
+var
+  Off: Integer;
+begin
+  if FFrame.TryGetValue(AName, Off) then
+  begin
+    Self.Emit(Format(#9'sub %s, x29, #%d', [AReg, Off]));
+    Exit;
+  end;
+  if FGlobalNames.IndexOf(AName) >= 0 then
+  begin
+    Self.Emit(Format(#9'adrp %s, _g_%s@PAGE', [AReg, AName]));
+    Self.Emit(Format(#9'add %s, %s, _g_%s@PAGEOFF', [AReg, AReg, AName]));
+    Exit;
+  end;
+  NotYet('address of variable ''' + AName + '''', nil);
+end;
+
+procedure TArm64Backend.EmitFieldAssign(AStmt: TFieldAssignment);
+begin
+  if (AStmt.ObjExpr <> nil) or AStmt.IsClassAccess or
+     AStmt.IsImplicitSelf or AStmt.IsVarParam or
+     (AStmt.PropIndexExpr <> nil) then
+    NotYet('this field-assignment form', AStmt);
+  if AStmt.FieldInfo = nil then
+    NotYet('unresolved field assignment', AStmt);
+  if not (IsIntFam(AStmt.FieldInfo.TypeDesc) or
+          (AStmt.FieldInfo.TypeDesc.Kind = tyDouble)) then
+    NotYet('field of this type', AStmt);
+  if AStmt.FieldInfo.TypeDesc.Kind = tyDouble then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.Expr);
+    Self.Emit(#9'fmov x0, d0');
+  end
+  else
+    Self.EmitExprToX0(AStmt.Expr);
+  EmitPushX0();
+  EmitSlotAddr('x9', AStmt.RecordName);
+  EmitPopTo('x0');
+  Self.Emit(Format(#9'str x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
 end;
 
 { ---- expressions --------------------------------------------------------- }
@@ -543,6 +597,22 @@ begin
     end;
     Exit;
   end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base = nil) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     (not TFieldAccessExpr(AExpr).IsImplicitSelf) and
+     (not TFieldAccessExpr(AExpr).IsClassAccess) and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { plain Rec.Field read of a local/global record }
+    if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyDouble)) then
+      NotYet('read of a field of this type', AExpr);
+    EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
+    Self.Emit(Format(#9'ldr x0, [x9, #%d]',
+      [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+    Exit;
+  end;
   NotYet('expression ' + AExpr.ClassName, AExpr);
 end;
 
@@ -582,6 +652,13 @@ begin
   begin
     { reuse the slot machinery: load the 8-byte pattern into x0, move to d0 }
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
+    Self.Emit(#9'fmov d0, x0');
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and IsFloatExpr(AExpr) then
+  begin
+    { Double field: load the bit pattern via the integer path, fmov to d0 }
+    Self.EmitExprToX0(AExpr);
     Self.Emit(#9'fmov d0, x0');
     Exit;
   end;
@@ -651,6 +728,11 @@ begin
     EmitAssignment(TAssignment(AStmt));
     Exit;
   end;
+  if AStmt is TFieldAssignment then
+  begin
+    EmitFieldAssign(TFieldAssignment(AStmt));
+    Exit;
+  end;
   if AStmt is TProcCall then
   begin
     EmitProcCallStmt(TProcCall(AStmt));
@@ -713,6 +795,22 @@ begin
     Self.Emit(#9'bl _StringRelease');
     EmitPopTo('x0');
     EmitStoreSlot('x0', AAsgn.Name);
+    Exit;
+  end;
+  if (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyRecord) then
+  begin
+    { whole-record copy: ARC-clean records only in this slice (managed
+      fields rejected at declaration), so a plain memcpy is exact }
+    if not (AAsgn.Expr is TIdentExpr) then
+      NotYet('record assignment from this expression', AAsgn);
+    EmitSlotAddr('x0', AAsgn.Name);
+    EmitPushX0();
+    EmitSlotAddr('x0', TIdentExpr(AAsgn.Expr).Name);
+    Self.Emit(#9'mov x1, x0');
+    EmitPopTo('x0');
+    EmitIntLiteral('x2', AAsgn.ResolvedLhsType.RawSize());
+    Self.Emit(#9'bl memcpy');
     Exit;
   end;
   if (AAsgn.ResolvedLhsType <> nil) and AAsgn.ResolvedLhsType.IsFloat() then
@@ -955,6 +1053,7 @@ begin
   FFrame.Clear();
   FFrameSize := 0;
   FStrLocals.Clear();
+  FRecLocals.Clear();
   if ADecl <> nil then
   begin
     for I := 0 to ADecl.Params.Count - 1 do
@@ -981,12 +1080,20 @@ begin
     VD := TVarDecl(ABody.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind in [tyDouble, tyString]))) then
+             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
-      AddLocal(VD.Names.Strings[J], 8);
-      if (VD.ResolvedType <> nil) and (VD.ResolvedType.Kind = tyString) then
+      if VD.ResolvedType.Kind = tyRecord then
+      begin
+        if not RecretManagedClean(TRecordTypeDesc(VD.ResolvedType)) then
+          NotYet('records with ARC-managed fields', VD);
+        AddLocal(VD.Names.Strings[J], VD.ResolvedType.RawSize());
+        FRecLocals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
+      end
+      else
+        AddLocal(VD.Names.Strings[J], 8);
+      if VD.ResolvedType.Kind = tyString then
         FStrLocals.Add(VD.Names.Strings[J]);
     end;
   end;
@@ -1048,8 +1155,21 @@ begin
     EmitStoreSlot('xzr', 'Result');
   for I := 0 to ADecl.Body.Decls.Count - 1 do
     for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-      EmitStoreSlot('xzr',
-        TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J]);
+    begin
+      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyRecord then
+      begin
+        { records zero-initialise their whole storage }
+        EmitSlotAddr('x0',
+          TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J]);
+        Self.Emit(#9'movz w1, #0');
+        EmitIntLiteral('x2',
+          TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.RawSize());
+        Self.Emit(#9'bl memset');
+      end
+      else
+        EmitStoreSlot('xzr',
+          TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J]);
+    end;
 
   EmitStmtList(ADecl.Body.Stmts);
 
@@ -1170,7 +1290,7 @@ end;
 
 procedure TArm64Backend.EmitGlobalsSection;
 var
-  I: Integer;
+  I, J: Integer;
 begin
   if FGlobalNames.Count = 0 then Exit;
   Self.Emit('.section .bss');
@@ -1178,7 +1298,10 @@ begin
   begin
     Self.Emit('.balign 8');
     Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
-    Self.Emit(#9'.zero 8');
+    if FGlobalSize.TryGetValue(FGlobalNames.Strings[I], J) then
+      Self.Emit(Format(#9'.zero %d', [J]))
+    else
+      Self.Emit(#9'.zero 8');
   end;
 end;
 
@@ -1192,8 +1315,12 @@ var
   FrameAligned: Integer;
 begin
   FProgramName := AProg.Name;
-  if AProg.Block.TypeDecls.Count > 0 then
-    NotYet('type declarations', nil);
+  for I := 0 to AProg.Block.TypeDecls.Count - 1 do
+    if not (TTypeDecl(AProg.Block.TypeDecls.Items[I]).Def is TRecordTypeDef) then
+      NotYet('non-record type declarations', nil)
+    else if TRecordTypeDef(
+              TTypeDecl(AProg.Block.TypeDecls.Items[I]).Def).Methods.Count > 0 then
+      NotYet('record methods', nil);
 
   { Program-level variables become globals (int-family only for now). }
   for I := 0 to AProg.Block.Decls.Count - 1 do
@@ -1201,13 +1328,22 @@ begin
     VD := TVarDecl(AProg.Block.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind in [tyDouble, tyString]))) then
+             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       FGlobalNames.Add(VD.Names.Strings[J]);
-      if (VD.ResolvedType <> nil) and (VD.ResolvedType.Kind = tyString) then
+      if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(VD.Names.Strings[J]);
+      if VD.ResolvedType.Kind = tyRecord then
+      begin
+        if not RecretManagedClean(TRecordTypeDesc(VD.ResolvedType)) then
+          NotYet('records with ARC-managed fields', VD);
+        FRecGlobals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
+        FGlobalSize.Add(VD.Names.Strings[J], VD.ResolvedType.RawSize());
+      end
+      else
+        FGlobalSize.Add(VD.Names.Strings[J], 8);
     end;
   end;
 
