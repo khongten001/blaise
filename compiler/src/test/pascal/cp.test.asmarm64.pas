@@ -147,6 +147,9 @@ begin
   AssertWord('ldrh w0, [x1]', Integer($79400020));
   AssertWord('ldrsw x0, [x1]', Integer($B9800020));
   AssertWord('ldur x0, [x1, #-8]', Integer($F85F8020));
+  { single-register pre/post-index — the backend's stack brackets }
+  AssertWord('str x0, [sp, #-16]!', Integer($F81F0FE0));
+  AssertWord('ldr x9, [sp], #16', Integer($F84107E9));
   AssertWord('ldr d0, [x1, #8]', Integer($FD400420));
   AssertWord('str d0, [sp]', Integer($FD0003E0));
 end;

@@ -549,6 +549,23 @@ begin
   Result := W;
 end;
 
+{ ldr/str with writeback.  APre selects pre-index ([xN, #i]!) vs
+  post-index ([xN], #i); signed 9-bit immediate. }
+function EncodeLdStPrePost(ASize: Integer; AV: Boolean; AOpc: Integer;
+  APre: Boolean; ARt, ARn: Integer; AImm: Int64): Integer;
+var
+  W, Mode: Integer;
+begin
+  if (AImm < -256) or (AImm > 255) then
+    raise EArm64Assembler.Create('pre/post-index offset out of range [-256..255]');
+  if APre then Mode := 3 else Mode := 1;
+  W := (ASize shl 30) or $38000000 or (AOpc shl 22)
+    or ((Integer(AImm) and $1FF) shl 12) or (Mode shl 10)
+    or (ARn shl 5) or ARt;
+  if AV then W := W or (1 shl 26);
+  Result := W;
+end;
+
 { ldp/stp.  AMode: 0=signed offset, 1=pre-index, 2=post-index. }
 function EncLdStPair(AIs64: Boolean; ALoad: Boolean; AMode: Integer;
   ARt, ARt2, ARn: Integer; AImm: Int64): Integer;
@@ -831,7 +848,9 @@ procedure TArm64Assembler.EncodeInstr;
     begin
       NeedOps(1);
       Delta := BranchDelta(FA[0].Sym, crkNone, IsLocal);
-      if not IsLocal then
+      { pass 1 may see a FORWARD label that is not collected yet — emit a
+        placeholder; pass 2 has the full label table and errors for real }
+      if (not IsLocal) and (FPassNo = 2) then
         LineError('b.<cond> target must be a local label');
       EmitW(Integer($54000000) or (((Delta div 4) and $7FFFF) shl 5)
         or CondCode(FL.Cond));
@@ -842,7 +861,7 @@ procedure TArm64Assembler.EncodeInstr;
     begin
       NeedOps(2);
       Delta := BranchDelta(FA[1].Sym, crkNone, IsLocal);
-      if not IsLocal then
+      if (not IsLocal) and (FPassNo = 2) then
         LineError('cbz/cbnz target must be a local label');
       Wd := Integer($34000000) or (SfBit(FA[0].Is64) shl 31);
       if FL.Mnemonic = 'cbnz' then Wd := Wd or $01000000;
@@ -854,7 +873,7 @@ procedure TArm64Assembler.EncodeInstr;
     begin
       NeedOps(3);
       Delta := BranchDelta(FA[2].Sym, crkNone, IsLocal);
-      if not IsLocal then
+      if (not IsLocal) and (FPassNo = 2) then
         LineError('tbz/tbnz target must be a local label');
       Wd := Integer($36000000);
       if FL.Mnemonic = 'tbnz' then Wd := Wd or $01000000;
@@ -1053,9 +1072,29 @@ procedure TArm64Assembler.EncodeInstr;
        or (FL.Mnemonic = 'ldrsw')
        or (FL.Mnemonic = 'ldur') or (FL.Mnemonic = 'stur') then
     begin
+      { post-index '[sp], #16' splits at the top-level comma into a third
+        immediate operand — fold it back (same shape as ldp/stp). }
+      if (FNOps = 3) and (FA[1].Kind = okMem) and (FA[2].Kind = okImm) then
+      begin
+        FA[1].PostIdx := True;
+        FA[1].MemImm := FA[2].Imm;
+        FNOps := 2;
+      end;
       NeedOps(2);
       if FA[1].Kind <> okMem then
         LineError('memory operand expected');
+      { pre/post-index single-register forms ([sp, #-16]! / [sp], #16) —
+        the backend's 16-byte stack brackets. }
+      if FA[1].PreIdx or FA[1].PostIdx then
+      begin
+        if FA[0].IsFP then
+          LineError('pre/post-index fp load/store not supported');
+        if FA[0].Is64 then Sz := 3 else Sz := 2;
+        if StrAt(FL.Mnemonic, 0) = Ord('l') then Opc := 1 else Opc := 0;
+        EmitW(EncodeLdStPrePost(Sz, False, Opc, FA[1].PreIdx,
+          FA[0].Reg, FA[1].Base, FA[1].MemImm));
+        Exit;
+      end;
       { size/opc per variant }
       if FA[0].IsFP then
       begin
