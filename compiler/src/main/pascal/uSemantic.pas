@@ -7897,6 +7897,21 @@ begin
             an implicit Self.Method() dispatch. }
           if TProcCall(CurStmt).IsImplicitSelfMethod then
             MaybeCaptureName(ADecl, OuterVars, 'Self');
+          { A call to a SIBLING nested routine forwards the callee's captured
+            outer variables by address, so the CALLER must capture them too —
+            even when its own body never references them (BUG-031).  Only
+            names that belong to the shared enclosing scope fold in (the
+            OuterVars filter inside MaybeCaptureName).  Siblings are analysed
+            in declaration order, so the callee's capture set is final here. }
+          if (TProcCall(CurStmt).ResolvedDecl <> nil) and
+             (TProcCall(CurStmt).ResolvedDecl is TMethodDecl) and
+             (TMethodDecl(TProcCall(CurStmt).ResolvedDecl).EnclosingDecl <> nil) and
+             (TMethodDecl(TProcCall(CurStmt).ResolvedDecl).CapturedVars <> nil) then
+            for J := 0 to TMethodDecl(TProcCall(CurStmt).ResolvedDecl)
+                            .CapturedVars.Count - 1 do
+              MaybeCaptureName(ADecl, OuterVars,
+                TMethodDecl(TProcCall(CurStmt).ResolvedDecl)
+                  .CapturedVars.Strings[J]);
           for J := 0 to TProcCall(CurStmt).Args.Count - 1 do
             TodoExprs.Add(TProcCall(CurStmt).Args.Items[J]);
         end
@@ -8045,6 +8060,17 @@ begin
             class dispatches on the method's Self. }
           if TFuncCallExpr(CurExpr).IsImplicitSelfMethod then
             MaybeCaptureName(ADecl, OuterVars, 'Self');
+          { Sibling nested-routine call: fold the callee's captures into the
+            caller (BUG-031) — see the TProcCall branch. }
+          if (TFuncCallExpr(CurExpr).ResolvedDecl <> nil) and
+             (TFuncCallExpr(CurExpr).ResolvedDecl is TMethodDecl) and
+             (TMethodDecl(TFuncCallExpr(CurExpr).ResolvedDecl).EnclosingDecl <> nil) and
+             (TMethodDecl(TFuncCallExpr(CurExpr).ResolvedDecl).CapturedVars <> nil) then
+            for J := 0 to TMethodDecl(TFuncCallExpr(CurExpr).ResolvedDecl)
+                            .CapturedVars.Count - 1 do
+              MaybeCaptureName(ADecl, OuterVars,
+                TMethodDecl(TFuncCallExpr(CurExpr).ResolvedDecl)
+                  .CapturedVars.Strings[J]);
           for J := 0 to TFuncCallExpr(CurExpr).Args.Count - 1 do
             TodoExprs.Add(TFuncCallExpr(CurExpr).Args.Items[J]);
         end

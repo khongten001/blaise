@@ -176,6 +176,11 @@ type
       IFDEF/IFNDEF/ELSE/ENDIF, nesting. }
     procedure TestRun_Ifdef_PredefinedBlaise;
     procedure TestRun_Ifdef_DefineUndefIfndefNested;
+    { BUG-031: a nested routine that calls a SIBLING nested routine must
+      inherit the sibling's captures so the call site can forward the
+      outer variables' addresses. }
+    procedure TestRun_SiblingNestedCall_ForwardsCaptures;
+    procedure TestRun_SiblingNestedCall_ForwardsSelfCapture;
   end;
 
 implementation
@@ -1966,6 +1971,73 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'True False True False' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_SiblingNestedCall_ForwardsCaptures;
+const
+  Src = '''
+    program p;
+    procedure Run;
+    var
+      Total: Integer;
+      procedure Bump;
+      begin
+        Total := Total + 5
+      end;
+      procedure Twice;   { captures nothing itself — calls the sibling }
+      begin
+        Bump();
+        Bump()
+      end;
+    begin
+      Total := 1;
+      Twice();
+      WriteLn(Total)
+    end;
+    begin
+      Run()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '11' + LE, 0);
+end;
+
+procedure TE2EMiscTests.TestRun_SiblingNestedCall_ForwardsSelfCapture;
+const
+  Src = '''
+    program p;
+    type
+      TBox = class
+      public
+        FVal: Integer;
+        procedure Grow;
+      end;
+    procedure TBox.Grow;
+      procedure Inc1;
+      begin
+        FVal := FVal + 1   { captures Self }
+      end;
+      procedure Inc3;      { no Self reference of its own }
+      begin
+        Inc1();
+        Inc1();
+        Inc1()
+      end;
+    begin
+      Inc3()
+    end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.FVal := 4;
+      B.Grow();
+      WriteLn(B.FVal)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '7' + LE, 0);
 end;
 
 initialization
