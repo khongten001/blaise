@@ -11,6 +11,11 @@
       <unit>Net.Tls.Provider</unit>
       <unit>Net.Tls</unit>
       <unit>Net.Http.Client.Tls</unit>
+      <!-- FreeBSD-only reactor: defines the same link-time CreateOsReactor
+           symbol as async.reactor.epoll, so a bootstrap program holding BOTH
+           fails with a duplicate identifier.  The per-OS reactor is selected
+           by the driver's unit list, not by this all-units program. -->
+      <unit>async.reactor.kqueue</unit>
     </bootstrapExclude>
   </build>
 

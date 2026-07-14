@@ -20,7 +20,7 @@ unit Reactor.Tests;
 interface
 
 uses
-  blaise.testing, SysUtils, async.reactor, async.fibers;
+  blaise.testing, SysUtils, async.reactor, async.reactor.epoll, async.fibers;
 
 type
   TReactorTests = class(TTestCase)
@@ -90,7 +90,7 @@ begin
   R := NewReactor();
   RdOnly := [ioRead];
   R.Add(A, RdOnly, Pointer(PtrUInt(1)));
-  AssertEquals('one fd registered', 1, R.Count);
+  AssertEquals('one fd registered', 1, R.FdCount());
   N := R.Wait(0, Ready);          { poll: nothing written yet }
   AssertEquals('empty poll before any write', 0, N);
   R.Free();
@@ -163,9 +163,9 @@ begin
   R := NewReactor();
   RdOnly := [ioRead];
   R.Add(A, RdOnly, Pointer(PtrUInt(3)));
-  AssertEquals('registered', 1, R.Count);
+  AssertEquals('registered', 1, R.FdCount());
   R.Remove(A);
-  AssertEquals('count back to zero', 0, R.Count);
+  AssertEquals('count back to zero', 0, R.FdCount());
   { Even with data pending, a removed fd is not delivered. }
   Byte1 := 1;
   c_write_fd(B, @Byte1, 1);
