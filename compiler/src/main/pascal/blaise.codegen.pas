@@ -27,7 +27,8 @@ unit blaise.codegen;
 interface
 
 uses
-  Classes, uAST, uSymbolTable, uDebugFacts, blaise.codegen.target, uStrCompat;
+  SysUtils, Classes, uAST, uSymbolTable, uDebugFacts, blaise.codegen.target,
+  uStrCompat;
 
 type
   TRecReturnClass = (
@@ -124,6 +125,18 @@ function RecretAllIntOrFloatLeaves(ARec: TRecordTypeDesc): Boolean;
   the eightbyte is SSE-classified under the SysV mixed-class rules. }
 function RecretEightbyteIsSSE(ARec: TRecordTypeDesc; AStartByte: Integer): Boolean;
 { Classify ARec's return-passing for ATarget's OS. }
+{ Type of the outer variable AName captured by nested routine ADecl: walks
+  the EnclosingDecl chain's local var decls and parameters.  nil when the
+  name is not found (e.g. a method's captured 'Self').  Both backends use
+  this to give interface-typed captures (16-byte fat pointers) their own
+  hidden-capture ABI (BUG-038). }
+function NestedCapturedVarType(ADecl: TMethodDecl;
+  const AName: string): TTypeDesc;
+
+{ True when AType is an interface (nil-safe) — the fat-pointer capture ABI
+  test both backends share. }
+function IsIntfType(AType: TTypeDesc): Boolean;
+
 function RecretClassify(ARec: TRecordTypeDesc;
   const ATarget: TTargetDesc): TRecReturnClass;
 
@@ -406,6 +419,44 @@ begin
     else
       Result := Result + Chr(C);
     end;
+  end;
+end;
+
+function IsIntfType(AType: TTypeDesc): Boolean;
+begin
+  Result := (AType <> nil) and (AType.Kind = tyInterface);
+end;
+
+function NestedCapturedVarType(ADecl: TMethodDecl;
+  const AName: string): TTypeDesc;
+var
+  Encl: TMethodDecl;
+  I, J: Integer;
+  VD:   TVarDecl;
+begin
+  Result := nil;
+  if ADecl = nil then Exit;
+  Encl := ADecl.EnclosingDecl;
+  while Encl <> nil do
+  begin
+    if Encl.Body <> nil then
+      for I := 0 to Encl.Body.Decls.Count - 1 do
+      begin
+        VD := TVarDecl(Encl.Body.Decls.Items[I]);
+        for J := 0 to VD.Names.Count - 1 do
+          if SameText(VD.Names.Strings[J], AName) then
+          begin
+            Result := VD.ResolvedType;
+            Exit;
+          end;
+      end;
+    for I := 0 to Encl.Params.Count - 1 do
+      if SameText(TMethodParam(Encl.Params.Items[I]).ParamName, AName) then
+      begin
+        Result := TMethodParam(Encl.Params.Items[I]).ResolvedType;
+        Exit;
+      end;
+    Encl := Encl.EnclosingDecl;
   end;
 end;
 

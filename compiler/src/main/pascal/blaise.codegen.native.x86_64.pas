@@ -3504,6 +3504,15 @@ begin
     Self.Emit(#9'movq 8(%r10), %rax');
     Self.Emit(#9'movq (%r10), %r10');
   end
+  else if Self.IsCaptured(AObjName) then
+  begin
+    { Captured interface local (BUG-038): the capture slot holds the ADDRESS
+      of the enclosing routine's contiguous fat pointer — obj at +0, itab at
+      +8 (the same shape as a var/out interface param). }
+    Self.Emit(Format(#9'movq %s, %%r10', [Self.VarOperand('_cap_' + AObjName)]));
+    Self.Emit(#9'movq 8(%r10), %rax');
+    Self.Emit(#9'movq (%r10), %r10');
+  end
   else
   begin
     Self.Emit(Format(#9'movq %s, %%r10', [Self.IntfObjOperand(AObjName, AIsGlobal)]));
@@ -4962,6 +4971,17 @@ begin
     { sret interface Result: the slot holds the caller-buffer address —
       dereference for obj (+0) and itab (+8). }
     Self.Emit(Format(#9'movq %s, %%rax', [Self.VarOperand('Result')]));
+    Self.Emit(#9'movq 8(%rax), %rcx');
+    Self.Emit(#9'pushq %rcx');
+    Self.Emit(#9'movq (%rax), %rax');
+    Self.Emit(#9'pushq %rax');
+  end
+  else if Self.IsCaptured(AIdent.Name) then
+  begin
+    { Captured interface local (BUG-038): the capture slot holds the address
+      of the enclosing routine's contiguous fat pointer. }
+    Self.Emit(Format(#9'movq %s, %%rax',
+      [Self.VarOperand('_cap_' + AIdent.Name)]));
     Self.Emit(#9'movq 8(%rax), %rcx');
     Self.Emit(#9'pushq %rcx');
     Self.Emit(#9'movq (%rax), %rax');
@@ -10350,6 +10370,17 @@ begin
       Self.Emit(#9'movq 8(%rax), %rdx');
       Self.Emit(#9'pushq %rcx');
       Self.Emit(#9'pushq %rdx');
+    end
+    else if (AArg is TIdentExpr) and Self.IsCaptured(TIdentExpr(AArg).Name) then
+    begin
+      { Captured interface local (BUG-038): dereference the capture pointer
+        for both halves. }
+      Self.Emit(Format(#9'movq %s, %%rax',
+        [Self.VarOperand('_cap_' + TIdentExpr(AArg).Name)]));
+      Self.Emit(#9'movq (%rax), %rcx');   { obj }
+      Self.Emit(#9'movq 8(%rax), %rdx');  { itab }
+      Self.Emit(#9'pushq %rcx');          { push obj }
+      Self.Emit(#9'pushq %rdx');          { push itab }
     end
     else if AArg is TIdentExpr then
     begin

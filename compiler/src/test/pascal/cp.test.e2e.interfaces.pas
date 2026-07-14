@@ -84,6 +84,12 @@ type
     procedure TestRun_InterfaceMethod_MixedIntFloatArgs;
     procedure TestRun_InterfaceMethod_FloatArgAndIntSpill;
     procedure TestRun_InterfaceFieldMethod_FloatArg;
+    { BUG-038: a nested routine using an INTERFACE variable captured from
+      its enclosing routine — dispatch through the captured fat pointer
+      (native used to emit bogus bare _obj/_itab globals; QBE failed to
+      compile), and forwarding the captured interface as an argument. }
+    procedure TestRun_NestedProc_DispatchOnCapturedInterface;
+    procedure TestRun_NestedProc_PassesCapturedInterfaceOn;
   end;
 
 implementation
@@ -784,6 +790,86 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'True' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_NestedProc_DispatchOnCapturedInterface;
+const
+  Src = '''
+    program p;
+    type
+      IThing = interface
+        function V: Integer;
+      end;
+      TThing = class(TObject, IThing)
+      public
+        function V: Integer;
+      end;
+    function TThing.V: Integer;
+    begin
+      Result := 42
+    end;
+    procedure Run;
+    var
+      T: IThing;
+      N: Integer;
+      procedure Inner;
+      begin
+        WriteLn(T.V());      { statement position }
+        N := T.V() + 1       { expression position }
+      end;
+    begin
+      T := TThing.Create();
+      N := 0;
+      Inner();
+      WriteLn(N)
+    end;
+    begin
+      Run()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '42' + LE + '43' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_NestedProc_PassesCapturedInterfaceOn;
+const
+  Src = '''
+    program p;
+    type
+      IThing = interface
+        function V: Integer;
+      end;
+      TThing = class(TObject, IThing)
+      public
+        function V: Integer;
+      end;
+    function TThing.V: Integer;
+    begin
+      Result := 7
+    end;
+    procedure Show(AThing: IThing);
+    begin
+      WriteLn(AThing.V())
+    end;
+    procedure Run;
+    var
+      T: IThing;
+      procedure Inner;
+      begin
+        Show(T)      { captured interface forwarded as an argument }
+      end;
+    begin
+      T := TThing.Create();
+      Inner()
+    end;
+    begin
+      Run()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '7' + LE, 0);
 end;
 
 initialization

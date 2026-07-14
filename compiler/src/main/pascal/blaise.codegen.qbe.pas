@@ -280,6 +280,10 @@ type
     function  StmtHasTry(AStmt: TASTStmt): Boolean;
     { Returns True if AName is currently a promoted SSA temp. }
     function  IsCaptured(const AName: string): Boolean;
+    { The hidden-capture argument(s) for callee AMDecl's I-th captured var at
+      a call site: one slot address, or the obj+itab slot-address PAIR for an
+      interface-typed capture (BUG-038). }
+    function  CapArgFor(AMDecl: TMethodDecl; AIdx: Integer): string;
     function  IsEnvField(const AName: string): Boolean;
     procedure EmitVarDeclStmt(AStmt: TVarDeclStmt);
     procedure EmitEnvPrologue(ADecl: TMethodDecl);
@@ -1670,6 +1674,23 @@ end;
 function TCodeGenQBE.IsCaptured(const AName: string): Boolean;
 begin
   Result := (FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0);
+end;
+
+function TCodeGenQBE.CapArgFor(AMDecl: TMethodDecl; AIdx: Integer): string;
+var
+  Nm, Base: string;
+begin
+  Nm := AMDecl.CapturedVars.Strings[AIdx];
+  { Forward the pointer(s) we received when the var is one of our own
+    captures; otherwise pass the local alloc slot address(es). }
+  if IsCaptured(Nm) then
+    Base := '%_cap_' + Nm
+  else
+    Base := '%_var_' + Nm;
+  if IsIntfType(NestedCapturedVarType(AMDecl, Nm)) then
+    Result := Format('l %s_obj, l %s_itab', [Base, Base])
+  else
+    Result := Format('l %s', [Base]);
 end;
 
 function TCodeGenQBE.IsEnvField(const AName: string): Boolean;
@@ -6603,10 +6624,7 @@ begin
         for I := 0 to MDecl.CapturedVars.Count - 1 do
         begin
           if VisArgs <> '' then VisArgs := VisArgs + ', ';
-          if IsCaptured(MDecl.CapturedVars.Strings[I]) then
-            VisArgs := VisArgs + Format('l %%_cap_%s', [MDecl.CapturedVars.Strings[I]])
-          else
-            VisArgs := VisArgs + Format('l %%_var_%s', [MDecl.CapturedVars.Strings[I]]);
+          VisArgs := VisArgs + CapArgFor(MDecl, I);
         end;
     end;
     for I := 0 to FCallExpr.Args.Count - 1 do
@@ -10032,7 +10050,16 @@ begin
     begin
       CapName := ADecl.CapturedVars.Strings[I];
       if Sig <> '' then Sig := Sig + ', ';
-      Sig := Sig + Format('l %%_cap_%s', [CapName]);
+      { An interface-typed capture is a TWO-slot fat pointer: QBE lays the
+        obj and itab out as separate alloc slots, so the caller passes both
+        slot addresses (BUG-038).  Reads/writes through %_cap_<Name>_obj /
+        _itab then work unchanged — the operand naming already appends the
+        pair suffixes. }
+      if IsIntfType(NestedCapturedVarType(ADecl, CapName)) then
+        Sig := Sig + Format('l %%_cap_%s_obj, l %%_cap_%s_itab',
+          [CapName, CapName])
+      else
+        Sig := Sig + Format('l %%_cap_%s', [CapName]);
     end;
 
   for I := 0 to ADecl.Params.Count - 1 do
@@ -10682,10 +10709,7 @@ begin
       for I := 0 to MDecl.CapturedVars.Count - 1 do
       begin
         if ArgLine <> '' then ArgLine := ArgLine + ', ';
-        if IsCaptured(MDecl.CapturedVars.Strings[I]) then
-          ArgLine := ArgLine + Format('l %%_cap_%s', [MDecl.CapturedVars.Strings[I]])
-        else
-          ArgLine := ArgLine + Format('l %%_var_%s', [MDecl.CapturedVars.Strings[I]]);
+        ArgLine := ArgLine + CapArgFor(MDecl, I);
       end;
     ArgTemps := TStringList.Create();
     try
@@ -12791,10 +12815,7 @@ begin
         for I := 0 to MDecl.CapturedVars.Count - 1 do
         begin
           if ArgLine <> '' then ArgLine := ArgLine + ', ';
-          if IsCaptured(MDecl.CapturedVars.Strings[I]) then
-            ArgLine := ArgLine + Format('l %%_cap_%s', [MDecl.CapturedVars.Strings[I]])
-          else
-            ArgLine := ArgLine + Format('l %%_var_%s', [MDecl.CapturedVars.Strings[I]]);
+          ArgLine := ArgLine + CapArgFor(MDecl, I);
         end;
       ArgTemps := TStringList.Create();
       try
