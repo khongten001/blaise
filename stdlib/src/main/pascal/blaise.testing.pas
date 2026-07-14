@@ -22,8 +22,17 @@
     * EAssertionFailed descends from TObject (not Exception) so that
       assertion failures are never accidentally caught by a user-level
       'on E: Exception do' handler inside a test method.
-    * AssertException / ExpectException are intentionally absent — no
-      cp.test.*.pas unit currently relies on them.  Re-add when needed.
+    * AssertRaises takes the EXPECTED CLASS AS A NAME STRING (compared
+      against E.ClassName), not a 'class of Exception' reference compared
+      with 'is' or InheritsFrom.  Blaise's 'is'/'as' operators require a
+      static type name on the right (see uSemantic.AnalyseIsExpr) — they
+      cannot test against a TClass VARIABLE — and TObject exposes no
+      InheritsFrom/ClassType-returns-TClass builtin.  A generic method
+      (e.g. 'AssertRaises<E: Exception>') would sidestep that, but generic
+      methods are only proven on already-generic classes (Phase 10a,
+      TList<T>.Map<R>); TAssert/TTestCase are plain classes, so that path
+      is unverified.  The class-name-string comparison only depends on
+      already-proven features (closures, E.ClassName, string equality).
     * Test enumeration of a registered class via 'class of TTestCase' is
       deferred to Step 11e (the runner).  v0 only stores the registered
       classes for the runner to walk later.
@@ -53,6 +62,12 @@ type
     at most 5 parameters, and no Double/Single params (those travel in
     xmm registers, which this trick cannot fill). }
   TCaseMethod = procedure(A1, A2, A3, A4, A5: PtrUInt) of object;
+
+  { TAssertProc — a parameterless closure passed to AssertRaises.  Real
+    closures (capture, exceptions propagating through the call) landed with
+    the anonymous-methods work; see AssertRaises for why the expected
+    exception class is a name string rather than a TClass reference. }
+  TAssertProc = reference to procedure;
 
   { TTestResult is declared first so TTest.Run can name it without the
     forward-class-declaration form that Blaise does not yet support. }
@@ -146,6 +161,14 @@ type
       more useful than 'AssertTrue failed' when a Pos() check fails. }
     procedure AssertContains(AMsg: string; const ASubstring, AHaystack: string); overload;
     procedure AssertContains(const ASubstring, AHaystack: string); overload;
+
+    { AssertRaises — runs AProc and verifies it raises an exception whose
+      ClassName is AExpectedClassName (see the unit header for why this is
+      a name string, not a TClass).  Fails if no exception is raised, or if
+      a DIFFERENT exception class is raised (the failure message reports
+      what was actually thrown, rather than swallowing it silently). }
+    procedure AssertRaises(AMsg, AExpectedClassName: string; AProc: TAssertProc); overload;
+    procedure AssertRaises(AExpectedClassName: string; AProc: TAssertProc); overload;
 
     procedure Fail(AMsg: string);
     procedure Ignore(AMsg: string);
@@ -478,6 +501,33 @@ procedure TAssert.AssertContains(const ASubstring, AHaystack: string);
 begin
   if Pos(ASubstring, AHaystack) < 0 then
     Self.Fail('Expected "' + ASubstring + '" to appear in: "' + AHaystack + '"');
+end;
+
+procedure TAssert.AssertRaises(AMsg, AExpectedClassName: string; AProc: TAssertProc);
+var
+  Raised: Boolean;
+begin
+  Raised := False;
+  try
+    AProc()
+  except
+    on E: Exception do
+    begin
+      if E.ClassName = AExpectedClassName then
+        Raised := True
+      else
+        Self.Fail(AMsg + ' expected ' + AExpectedClassName + ' but got ' +
+                  E.ClassName + ': ' + E.Message);
+    end;
+  end;
+  if not Raised then
+    Self.Fail(AMsg + ' expected ' + AExpectedClassName +
+              ' to be raised, but no exception was');
+end;
+
+procedure TAssert.AssertRaises(AExpectedClassName: string; AProc: TAssertProc);
+begin
+  Self.AssertRaises('', AExpectedClassName, AProc);
 end;
 
 procedure TAssert.AssertNotNull(AMsg: string; AObject: TObject);
