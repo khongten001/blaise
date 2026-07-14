@@ -681,6 +681,7 @@ var
   I, J:     Integer;
   FldDecl:  TFieldDecl;
   FldType:  TTypeDesc;
+  MDecl:    TMethodDecl;
 begin
   RecDef  := TRecordTypeDef(AEntry.Def);
 
@@ -722,6 +723,24 @@ begin
       end;
   end;
 
+  { Record METHODS (instance and static — e.g. TUuid.RandomUuid): register
+    the synthesised decls so call sites against the cached interface resolve,
+    mirroring the class path.  Without this every record method silently
+    vanished on a warm-cache import and callers failed with
+    "Type 'X' has no method 'M'" (BUG-043 follow-on). }
+  for I := 0 to AEntry.Methods.Count - 1 do
+    if ASemantic <> nil then
+    begin
+      MDecl := SynthesiseMethodDecl(
+        TRoutineSig(AEntry.Methods.Items[I]), AUnitName, ATable, ASemantic);
+      { The receiver of a RECORD method is the record's ADDRESS, not a class
+        instance pointer — codegen keys that on IsRecordMethod, which the
+        sig does not carry (the import context knows the owner is a record). }
+      MDecl.IsRecordMethod := True;
+      ATable.OwnImportedDecl(MDecl);
+      ASemantic.RegisterImportedMethod(AEntry.Name, MDecl);
+    end;
+
   { record-level `static const` declarations — reachable bare and qualified. }
   RegisterImportedTypeConsts(AEntry.Name, RecDef.ConstDecls, ATable);
 end;
@@ -740,6 +759,10 @@ begin
   Def      := TProceduralTypeDef(AEntry.Def);
   ProcDesc := ATable.NewProceduralType(AEntry.Name);
   ProcDesc.IsMethodPtr := Def.IsMethodPtr;
+  { 'reference to' closures: without this flag the imported type is a plain
+    procedural pointer — anon-method arguments then fail overload scoring
+    and the 16-byte fat-value ABI is lost (BUG-043 follow-on). }
+  ProcDesc.IsReference := Def.IsReference;
   for K := 0 to Def.Params.Count - 1 do
   begin
     MParam := TMethodParam(Def.Params.Items[K]);

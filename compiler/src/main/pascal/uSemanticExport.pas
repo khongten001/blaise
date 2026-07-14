@@ -155,6 +155,23 @@ begin
     filled in. }
 end;
 
+procedure PopulateRecordMethods(AEntry: TTypeEntry;
+                                ASrc:   TRecordTypeDef;
+                                AIface: TUnitInterface;
+                                ADeps:  TObjectList);
+var
+  I:   Integer;
+  M:   TMethodDecl;
+  Sig: TRoutineSig;
+begin
+  for I := 0 to ASrc.Methods.Count - 1 do
+  begin
+    M   := TMethodDecl(ASrc.Methods.Items[I]);
+    Sig := BuildRoutineSig(M, AIface, ADeps);
+    AEntry.Methods.Add(Sig);
+  end;
+end;
+
 function BuildTypeEntry(ASrc:         TTypeDecl;
                         AIface:       TUnitInterface;
                         ADeps:        TObjectList;
@@ -170,6 +187,11 @@ begin
 
   if ASrc.Def is TClassTypeDef then
     PopulateClassEntry(Result, TClassTypeDef(ASrc.Def), AIface, ADeps, ASymbolTable)
+  else if ASrc.Def is TRecordTypeDef then
+    { Record methods (instance + static) export as TRoutineSig like class
+      methods — without this, cached imports lost every record method
+      (BUG-043 follow-on; .bif v13). }
+    PopulateRecordMethods(Result, TRecordTypeDef(ASrc.Def), AIface, ADeps)
   else if ASrc.Def is TGenericTypeDef then
   begin
     { Generic class — the class body lives inside the wrapper. }

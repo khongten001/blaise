@@ -2707,7 +2707,7 @@ begin
       v6's `overload` directive, v5's member Visibility, v4's
       TRoutineSig.IsStatic, and v3's static-member facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 12', Buf) = 0);
+      Pos('BLAISE-IFACE 13', Buf) = 0);
   finally
     Iface.Free();
   end;

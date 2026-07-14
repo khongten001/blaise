@@ -35,6 +35,8 @@ uses
 
 type
   TSepCompileTests = class(TE2ETestCase)
+  private
+    procedure RunRecordMethodsAndClosuresWarmCache(const ABackend: string);
   protected
     procedure SetUp; override;
   private
@@ -146,6 +148,14 @@ type
       both backends. }
     procedure TestStaticMembers_CrossUnit_QBE;
     procedure TestStaticMembers_CrossUnit_Native;
+    { Regression (BUG-043 follow-ons, IFACE v13): RECORD methods vanished
+      entirely from the cached interface (records never exported/imported
+      their method sigs), an imported record method lost the record-receiver
+      convention (IsRecordMethod), and a 'reference to' procedural type lost
+      its closure flag on import (anon-method args then failed overload
+      scoring).  One warm-cache round trip covers all three, per backend. }
+    procedure TestRecordMethodsAndClosures_WarmCache_Native;
+    procedure TestRecordMethodsAndClosures_WarmCache_QBE;
     { Regression: two units EACH declaring a same-named unit-level `var` (and a
       same-named `threadvar`) must emit DISTINCT global symbols on the native
       backend (ua_GVal / ub_GVal), not one colliding bare `GVal`.  The native
@@ -1891,6 +1901,109 @@ const
       WriteLn(TReg.Tag)
     end.
     ''';
+
+const
+  RecClosUnitSrc =
+    '''
+    unit recclos;
+    interface
+    type
+      TVal = record
+        X: Integer;
+        static function Make(A: Integer): TVal;
+        function Doubled: Integer;
+      end;
+      TStep = reference to procedure;
+      TWalker = class
+      public
+        procedure Walk(AMsg: string; AStep: TStep); overload;
+        procedure Walk(AStep: TStep); overload;
+      end;
+    implementation
+    static function TVal.Make(A: Integer): TVal;
+    begin
+      Result.X := A
+    end;
+    function TVal.Doubled: Integer;
+    begin
+      Result := X * 2
+    end;
+    procedure TWalker.Walk(AMsg: string; AStep: TStep);
+    begin
+      WriteLn(AMsg);
+      AStep()
+    end;
+    procedure TWalker.Walk(AStep: TStep);
+    begin
+      AStep()
+    end;
+    end.
+    ''';
+  RecClosProgSrc =
+    '''
+    program userec;
+    uses recclos;
+    var
+      V: TVal;
+      W: TWalker;
+    begin
+      V := TVal.Make(21);
+      W := TWalker.Create();
+      W.Walk('go', procedure begin WriteLn(V.Doubled()) end)
+    end.
+    ''';
+
+procedure TSepCompileTests.RunRecordMethodsAndClosuresWarmCache(
+  const ABackend: string);
+var
+  UnitPas, ProgPas, ProgBin, CacheDir: string;
+  Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  UnitPas  := FScratch + '/recclos.pas';
+  ProgPas  := FScratch + '/userec_' + ABackend + '.pas';
+  ProgBin  := FScratch + '/userec_' + ABackend;
+  CacheDir := FScratch + '/units-recclos-' + ABackend;
+  WriteFile(UnitPas, RecClosUnitSrc);
+  WriteFile(ProgPas, RecClosProgSrc);
+  ForceDirectories(CacheDir);
+
+  { Build 1: cold cache — everything from source. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', ABackend,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('cold build exit (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('cold run exit', 0, Rc);
+  AssertEquals('cold stdout', 'go' + #10 + '42' + #10, Captured);
+
+  { Build 2: warm cache — recclos loads from its .bif; the record's static
+    and instance methods and the reference-to overloads must all resolve. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--backend', ABackend,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('warm build exit (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('warm run exit', 0, Rc);
+  AssertEquals('warm stdout', 'go' + #10 + '42' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestRecordMethodsAndClosures_WarmCache_Native;
+begin
+  Self.RunRecordMethodsAndClosuresWarmCache('native');
+end;
+
+procedure TSepCompileTests.TestRecordMethodsAndClosures_WarmCache_QBE;
+begin
+  Self.RunRecordMethodsAndClosuresWarmCache('qbe');
+end;
 
 procedure TSepCompileTests.TestStaticMembers_CrossUnit_QBE;
 var

@@ -54,7 +54,10 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 12; { v12 (this cycle): 'anonm' payload carries the '->'
+  IFACE_VERSION = 13; { v13: record payload gains a method list (record
+                          methods incl. statics — TUuid.RandomUuid — used to
+                          vanish on cached import, BUG-043 follow-on). }
+                      { v12 (this cycle): 'anonm' payload carries the '->'
                         lambda facts (IsArrow + optional expression body).
                         v11: 'generic-proc' TYPE-block kind —
                         generic procedural-type templates
@@ -441,6 +444,8 @@ begin
   Def := TRecordTypeDef(AEntry.Def);
   Result := EncodeBool(Def.IsPacked) +
             EncodeFieldList(Def.Fields) +
+            { record methods (instance + static), as TRoutineSig — v13. }
+            EncodeMethodList(AEntry.Methods) +
             { record-level `static const` declarations. }
             EncodeConstDeclList(Def.ConstDecls);
 end;
@@ -2138,6 +2143,7 @@ begin
   Def := TRecordTypeDef.Create();
   Def.IsPacked := DecodeBool(AText, APos);
   ReadFieldList(AText, APos, Def.Fields);
+  ReadMethodList(AText, APos, AEntry.Methods);   { v13 }
   ReadConstDeclList(AText, APos, Def.ConstDecls);
   AEntry.Def := Def;
 end;
