@@ -41,6 +41,12 @@ type
     procedure TestRun_PointerEquality;
     procedure TestRun_PointerToArrayElement;
     procedure TestRun_LinkedListViaGetMem;
+    { BUG-039: whole-RECORD store through a typed pointer (P^ := V) used to
+      store the record's ADDRESS instead of copying its bytes — the root of
+      TList<TRec>/TDictionary<K,TRec> returning garbage.  Managed fields
+      must retain/release like any record copy. }
+    procedure TestRun_PointerWrite_WholeRecord;
+    procedure TestRun_PointerWrite_RecordWithString;
   end;
 
 implementation
@@ -463,6 +469,64 @@ procedure TE2EPointersTests.TestRun_LinkedListViaGetMem;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcLinkedList2, '3' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_PointerWrite_WholeRecord;
+const
+  Src = '''
+    program prg;
+    type
+      TInfo = record
+        A: Integer;
+        B: Integer;
+      end;
+      PInfo = ^TInfo;
+    var
+      V, W: TInfo;
+      P: PInfo;
+    begin
+      V.A := 1;
+      V.B := 2;
+      P := GetMem(SizeOf(TInfo));
+      P^ := V;
+      W := P^;
+      WriteLn(W.A, ' ', W.B);
+      FreeMem(P)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '1 2' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_PointerWrite_RecordWithString;
+const
+  Src = '''
+    program prg;
+    type
+      TNamed = record
+        Name: string;
+        N: Integer;
+      end;
+      PNamed = ^TNamed;
+    var
+      V, W: TNamed;
+      P: PNamed;
+    begin
+      V.Name := 'hello';
+      V.N := 7;
+      P := GetMem(SizeOf(TNamed));
+      P^.Name := '';
+      P^.N := 0;
+      P^ := V;
+      W := P^;
+      WriteLn(W.Name, ' ', W.N);
+      FreeMem(P)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'hello 7' + LE, 0);
 end;
 
 initialization

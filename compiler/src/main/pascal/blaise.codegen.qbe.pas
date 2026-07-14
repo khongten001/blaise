@@ -11185,6 +11185,16 @@ begin
     EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
     Exit;
   end;
+  { Whole-RECORD store through a typed pointer: an ARC-aware field copy.
+    The scalar path below would store the record expression's ADDRESS into
+    the first 8 bytes instead of copying SizeOf(T) — the root cause of
+    TList<TRec>/TDictionary<K,TRec> round-tripping garbage (BUG-039). }
+  if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tyRecord) then
+  begin
+    ValTemp := EmitExpr(AStmt.ValExpr);   { record expr yields its address }
+    EmitRecordCopy(TRecordTypeDesc(AStmt.BaseTy), PtrTemp, ValTemp);
+    Exit;
+  end;
   if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind in [tyByte, tyBoolean]) then
     ValTemp := EmitByteRhs(AStmt.ValExpr)
   else

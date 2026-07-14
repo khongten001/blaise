@@ -16022,6 +16022,35 @@ begin
       Self.Emit(#9'addq $8, %rsp');
       Self.Emit(#9'movss %xmm0, (%rcx)');
     end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyRecord) then
+    begin
+      { Whole-RECORD store through a typed pointer: ARC-aware copy (retain
+        source fields, release dest fields, memcpy) — the scalar fallback
+        below would store the record's ADDRESS instead of its bytes
+        (BUG-039).  Same sequence as the array-element record write. }
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');           { source record address }
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'pushq %rbx');
+      Self.Emit(#9'pushq %r15');
+      Self.Emit(#9'subq $8, %rsp');
+      Self.Emit(#9'movq %rax, %r15');      { dest address }
+      Self.Emit(#9'movq 24(%rsp), %rbx');  { source record address }
+      Self.EmitRecordFieldRetains(
+        TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%rbx');
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%r15');
+      Self.Emit(#9'movq %r15, %rdi');
+      Self.Emit(#9'movq %rbx, %rsi');
+      Self.Emit(Format(#9'movq $%d, %%rdx',
+        [TPointerWriteStmt(AStmt).BaseTy.RawSize()]));
+      Self.Emit(#9'callq memcpy');
+      Self.Emit(#9'addq $8, %rsp');
+      Self.Emit(#9'popq %r15');
+      Self.Emit(#9'popq %rbx');
+      Self.Emit(#9'addq $8, %rsp');        { drop saved source address }
+    end
     else
     begin
       if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
