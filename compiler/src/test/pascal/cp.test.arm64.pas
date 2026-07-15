@@ -75,6 +75,8 @@ type
     procedure TestUnit_RoutinesAndCrossUnitCalls;
     procedure TestUnit_VarsAndInitSection;
     procedure TestUnit_FinalizationStillNotYet;
+    { slice 13: initialised globals in .data }
+    procedure TestInitialisedGlobals_DataSection;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1076,6 +1078,41 @@ begin
   PosGreet := PosEx(#9'bl _StringAddRef', AsmT, PosShow);
   AssertTrue('const param not retained in Show',
     (PosGreet < 0) or (PosGreet > PosNext));
+end;
+
+procedure TArm64BackendTests.TestInitialisedGlobals_DataSection;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      Answer: Int64 = 42;
+      Ratio: Double = 2.5;
+      Plain: Int64;
+    begin
+      WriteLn(Answer);
+      WriteLn(Ratio);
+      WriteLn(Plain)
+    end.
+    ''');
+  { initialised globals live in .data with their values; uninitialised
+    ones stay zerofill }
+  AssertTrue('data section present', Pos('.section .data', AsmT) >= 0);
+  AssertTrue('int initialiser', Pos(#9'.quad 42', AsmT) >= 0);
+  AssertTrue('float initialiser', Pos(#9'.double 2.5', AsmT) >= 0);
+  AssertTrue('plain global stays bss', Pos('.section .bss', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64initg.o');
+  try
+    AssertTrue('has a data section',
+      F.FindSection('__DATA', '__data') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

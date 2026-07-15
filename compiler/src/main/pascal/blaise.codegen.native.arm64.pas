@@ -72,6 +72,8 @@ type
     FModuleVarNames: TStringList; { unit-level var names (both sections) — these
                                     take the owning-unit symbol prefix }
     FUnitInits:   TStringList;   { emitted <unit>_init symbols, called by _main }
+    FGlobalInits: TDictionary<string, string>;  { prefixed symbol -> .data
+                                    directive for initialised globals }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -132,6 +134,7 @@ type
     procedure RegisterForSlots(AStmt: TASTStmt);
     function  RoutineSym(ADecl: TMethodDecl; const AName: string): string;
     function  GlobalSym(const AName: string): string;
+    procedure RegisterGlobalInit(const ASym: string; AVD: TVarDecl);
     { AAPCS64 record-return shape for ARec: 0 = sret via x8, 1 = x0,
       2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
       (encoded as 100+N).  Derived from the shared classifier; the
@@ -196,6 +199,7 @@ begin
   FStrGlobals  := TStringList.Create();
   FModuleVarNames := TStringList.Create();
   FUnitInits   := TStringList.Create();
+  FGlobalInits := TDictionary<string, string>.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -212,6 +216,7 @@ begin
   FStrGlobals.Free();
   FModuleVarNames.Free();
   FUnitInits.Free();
+  FGlobalInits.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -1155,6 +1160,19 @@ begin
   Result := MangleUnitPrefix(Owner) + AName;
 end;
 
+procedure TArm64Backend.RegisterGlobalInit(const ASym: string; AVD: TVarDecl);
+begin
+  { Integer and float literal initialisers become .data directives; string,
+    aggregate, and const-expression initialisers stay honest holes. }
+  if AVD.InitConst.IsString or AVD.InitConst.IsArrayConst or
+     (AVD.InitConst.ConstParts <> nil) then
+    NotYet('initialised global of this form', AVD);
+  if AVD.InitConst.IsFloat then
+    FGlobalInits.Add(ASym, #9'.double ' + AVD.InitConst.StrVal)
+  else
+    FGlobalInits.Add(ASym, Format(#9'.quad %d', [AVD.InitConst.IntVal]));
+end;
+
 function TArm64Backend.RecReturnShape(ARec: TRecordTypeDesc): Integer;
 var
   I, NDoubles: Integer;
@@ -1717,17 +1735,42 @@ end;
 procedure TArm64Backend.EmitGlobalsSection;
 var
   I, J: Integer;
+  Directive: string;
+  AnyBss, AnyData: Boolean;
 begin
   if FGlobalNames.Count = 0 then Exit;
-  Self.Emit('.section .bss');
+  AnyBss := False;
+  AnyData := False;
   for I := 0 to FGlobalNames.Count - 1 do
-  begin
-    Self.Emit('.balign 8');
-    Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
-    if FGlobalSize.TryGetValue(FGlobalNames.Strings[I], J) then
-      Self.Emit(Format(#9'.zero %d', [J]))
+    if FGlobalInits.ContainsKey(FGlobalNames.Strings[I]) then
+      AnyData := True
     else
-      Self.Emit(#9'.zero 8');
+      AnyBss := True;
+  if AnyBss then
+  begin
+    Self.Emit('.section .bss');
+    for I := 0 to FGlobalNames.Count - 1 do
+    begin
+      if FGlobalInits.ContainsKey(FGlobalNames.Strings[I]) then Continue;
+      Self.Emit('.balign 8');
+      Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
+      if FGlobalSize.TryGetValue(FGlobalNames.Strings[I], J) then
+        Self.Emit(Format(#9'.zero %d', [J]))
+      else
+        Self.Emit(#9'.zero 8');
+    end;
+  end;
+  if AnyData then
+  begin
+    Self.Emit('.section .data');
+    for I := 0 to FGlobalNames.Count - 1 do
+    begin
+      if not FGlobalInits.TryGetValue(FGlobalNames.Strings[I], Directive) then
+        Continue;
+      Self.Emit('.balign 8');
+      Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
+      Self.Emit(Directive);
+    end;
   end;
 end;
 
@@ -1757,13 +1800,11 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
       NotYet('program variable of this type', VD);
-    if VD.InitConst <> nil then
-      { silently zeroing an initialised global would be WRONG code —
-        keep the hole honest until the data-section initialiser lands }
-      NotYet('initialised global variables', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       FGlobalNames.Add(VD.Names.Strings[J]);
+      if VD.InitConst <> nil then
+        RegisterGlobalInit(VD.Names.Strings[J], VD);
       if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyRecord then
@@ -1951,8 +1992,6 @@ begin
       NotYet('unit variable of this type', VD);
     if VD.IsThreadVar then
       NotYet('unit threadvars', VD);
-    if VD.InitConst <> nil then
-      NotYet('initialised unit variables', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       FModuleVarNames.Add(VD.Names.Strings[J]);
@@ -1960,6 +1999,8 @@ begin
         in different units (or the program) cannot collide }
       N := GlobalSym(VD.Names.Strings[J]);
       FGlobalNames.Add(N);
+      if VD.InitConst <> nil then
+        RegisterGlobalInit(N, VD);
       if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(N);
       if VD.ResolvedType.Kind = tyRecord then
