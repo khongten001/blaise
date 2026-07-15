@@ -94,6 +94,7 @@ type
     procedure TestCodegen_TryFinally_FinallyOnBothPaths;
     procedure TestCodegen_TryExcept_FrameAllocSize;
     procedure TestCodegen_TryFinally_FrameAllocSize;
+    procedure TestCodegen_TryInsideFinally_AllFramesAllocated;
     { Exit inside try/finally must emit the finally body on the exit path,
       not just pop the frame. }
     procedure TestCodegen_ExitInTryFinally_RunsFinally;
@@ -742,6 +743,44 @@ var IR: string;
 begin
   IR := GenIR(SrcTryFinally);
   AssertTrue('try/finally allocates 512-byte exc frame', Pos('alloc16 512', IR) > 0);
+end;
+
+procedure TExceptionTests.TestCodegen_TryInsideFinally_AllFramesAllocated;
+var
+  IR: string;
+  N: Integer;
+begin
+  { A try nested INSIDE a finally body is emitted more than once (normal
+    path + exception path, plus every non-local-exit unwind site), and each
+    emission consumes a fresh exception-frame slot.  Every %_exc_frame_N the
+    body references must have a matching alloc16 — an unallocated frame is
+    invalid QBE (regression: TTestCase.Run with a guarded TearDown). }
+  IR := GenIR(
+    '''
+        program P;
+        procedure Risky;
+        begin
+        end;
+        begin
+          try
+            Risky()
+          finally
+            try
+              Risky()
+            except
+              on E: TObject do WriteLn('caught')
+            end
+          end
+        end.
+        ''');
+  N := 0;
+  while Pos(Format('%%_exc_frame_%d', [N]), IR) > 0 do
+  begin
+    AssertTrue(Format('frame %d is allocated', [N]),
+      Pos(Format('%%_exc_frame_%d =l alloc16 512', [N]), IR) > 0);
+    N := N + 1;
+  end;
+  AssertTrue('the finally-nested try uses at least 3 frames', N >= 3);
 end;
 
 { ------------------------------------------------------------------ }

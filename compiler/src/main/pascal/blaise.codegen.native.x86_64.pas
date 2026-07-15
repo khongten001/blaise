@@ -27,7 +27,7 @@ interface
 
 uses
   SysUtils, Classes, contnrs, Generics.Collections, uAST, uSymbolTable, uStrCompat,
-  blaise.codegen, blaise.codegen.arcshapes, uDebugFacts,
+  blaise.codegen, blaise.codegen.arcshapes, uDebugFacts, strutils,
   blaise.codegen.native.backend, blaise.codegen.target;
 
 const
@@ -273,6 +273,11 @@ type
                       Uses TList<TCompoundStmt> so nil entries are safe (no ARC release). }
     FExcDepth:     Integer;
     FExcFrameNext: Integer;
+    { Frame layout cursor: bytes below %rbp consumed so far.  Kept after
+      BuildFrame so EnsureExcFrameSlot can lazily grow the frame when the
+      body consumes more exception-frame slots than the source-level
+      pre-count saw (finally bodies are emitted more than once). }
+    FFrameBottom: Integer;
     FFinallyStack: TList<TCompoundStmt>;
     FForEndNext: Integer;
     { Stack of open-array-literal call frames; top = innermost call currently
@@ -660,6 +665,10 @@ type
     { Emit the shared frame-pop bookkeeping triplet: _PopExcFrame, Dec(FExcDepth),
       drop the FFinallyStack top.  The Dec and the Delete must always travel with
       the pop, so they are emitted together here. }
+    { Lazily allocate a 512-byte exception-frame slot the body needs beyond
+      BuildFrame's pre-count.  Safe because the prologue's frame-reserve subq
+      is emitted after the body (see EmitFunctionDef). }
+    procedure EnsureExcFrameSlot(AIndex: Integer; const AName: string);
     procedure EmitPopExcFrame;
     { Lower try/finally. }
     procedure EmitTryFinallyStmt(AStmt: TTryFinallyStmt);
@@ -5506,6 +5515,7 @@ begin
   end;
   { Round the reserved size up to a 16-byte multiple (SysV alignment).
     -16 is the bitmask not(15) in two's complement (Blaise `not` is Boolean). }
+  FFrameBottom := Offset;
   FFrameSize := (Offset + 15) and (-16);
 end;
 
@@ -5526,6 +5536,7 @@ begin
     FFrameTypes := nil;
   end;
   FFrameSize    := 0;
+  FFrameBottom  := 0;
   FSretFunc     := False;
   FRecRetClass  := rcSret;
   FExcDepth     := 0;
@@ -12710,13 +12721,38 @@ begin
   end;
 end;
 
+procedure TX86_64Backend.EnsureExcFrameSlot(AIndex: Integer; const AName: string);
+begin
+  { Finally bodies are emitted more than once (normal path, exception path,
+    and every non-local-exit unwind site), so a try nested inside a finally
+    body consumes more frame slots than the source-level pre-counts provide.
+    Grow lazily: for a framed function the prologue's frame-reserve subq is
+    emitted after the body (EmitFunctionCore), and for a frameless context
+    (program main / unit init) the _exc_frame_N .bss labels are emitted in
+    EmitDataSection after all code — both cover late slots. }
+  if FFrame = nil then
+  begin
+    if AIndex >= FProgExcFrameCount then
+      FProgExcFrameCount := AIndex + 1;
+    Exit;
+  end;
+  if FFrame.ContainsKey(AName) then Exit;
+  Inc(FFrameBottom, 512);
+  FFrameBottom := (FFrameBottom + 15) and (-16);
+  FFrame.Add(AName, -FFrameBottom);
+  FFrameTypes.Add(AName, nil);
+  FFrameSize := (FFrameBottom + 15) and (-16);
+end;
+
 procedure TX86_64Backend.EmitTryFramePrologue(AFinallyBody: TCompoundStmt;
   const ALblExc, ALblTry: string);
 var
   FrameSlot: string;
 begin
-  { Use the next pre-allocated 512-byte frame slot from BuildFrame. }
+  { Use the next pre-allocated 512-byte frame slot from BuildFrame, or grow
+    the frame if the pre-count ran out (try inside a finally body). }
   FrameSlot := '_exc_frame_' + IntToStr(FExcFrameNext);
+  Self.EnsureExcFrameSlot(FExcFrameNext, FrameSlot);
   Inc(FExcFrameNext);
 
   { _PushExcFrame wants the frame base address in %rdi. }
@@ -20181,6 +20217,8 @@ var
   IntIdx:  Integer;
   XmmIdx:  Integer;
   SlotOff: Integer;
+  SavedAsm: TStringBuilder;
+  BodyBuf:  TStringBuilder;
 begin
   Sym := FuncSymbolFromDecl(ADecl);
   Self.DbgBeginFunc(Sym);
@@ -20236,8 +20274,15 @@ begin
   end;
   Self.Emit(#9'pushq %rbp');
   Self.Emit(#9'movq %rsp, %rbp');
-  if FFrameSize > 0 then
-    Self.Emit(Format(#9'subq $%d, %%rsp', [FFrameSize]));
+  { The rest of the function is emitted into a side buffer so the frame-
+    reserve subq below can be written with the FINAL frame size — the body
+    may lazily grow the frame via EnsureExcFrameSlot (a try nested inside a
+    finally body needs more exception-frame slots than BuildFrame's source-
+    level pre-count provides). }
+  SavedAsm := FAsm;
+  BodyBuf := TStringBuilder.Create();
+  FAsm := BodyBuf;
+  try
   { Register promotion: save the callee-saved incumbents into their frame
     slots, then explicitly load any STACK-passed promoted param (it has no
     spill instruction — its home was the caller-pushed slot).  Register-
@@ -20822,8 +20867,15 @@ begin
   if FTryR15Save then
     Self.Emit(Format(#9'movq %s, %%r15', [Self.VarOperand('_try_r15_save')]));
   Self.Emit(#9'movq %rbp, %rsp');
-  Self.Emit(#9'popq %rbp');
-  Self.Emit(#9'ret');
+    Self.Emit(#9'popq %rbp');
+    Self.Emit(#9'ret');
+  finally
+    FAsm := SavedAsm;
+  end;
+  if FFrameSize > 0 then
+    Self.Emit(Format(#9'subq $%d, %%rsp', [FFrameSize]));
+  FAsm.Append(BodyBuf.ToString());
+  BodyBuf.Free();
   Self.DbgEndFunc();
   Self.Emit('.type ' + Sym + ', @function');
 

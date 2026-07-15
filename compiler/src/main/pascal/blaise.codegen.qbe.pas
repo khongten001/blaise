@@ -318,8 +318,6 @@ type
     function  TryEmitInlineCall(AExpr: TFuncCallExpr; out ATemp: string): Boolean;
     { Returns the QBE type of a promoted local ('' if not promoted). }
     function  PromotedType(const AName: string): string;
-    function  CountTryStmts(AStmt: TASTStmt): Integer;
-    procedure EmitExcFrameAllocs(ABlock: TBlock);
     procedure CollectThreadVarNames(ABlock: TBlock);
     procedure EmitGlobalVarData(ABlock: TBlock);
     procedure EmitGlobalVarInit(const AVarName: string; AType: TTypeDesc;
@@ -1507,114 +1505,6 @@ begin
     FFFIRecordEmitted.Add(R.Name);
   end;
   FFFIRecordTypes.Clear();
-end;
-
-function TCodeGenQBE.CountTryStmts(AStmt: TASTStmt): Integer;
-var
-  I, J: Integer;
-  Cmp:  TCompoundStmt;
-  IfS:  TIfStmt;
-  WhS:  TWhileStmt;
-  ForS: TForStmt;
-  FiS:  TForInStmt;
-  RepS: TRepeatStmt;
-  TFS:  TTryFinallyStmt;
-  TES:  TTryExceptStmt;
-  CsS:  TCaseStmt;
-  Br:   TCaseBranch;
-  H:    TExceptHandlerClause;
-begin
-  Result := 0;
-  if AStmt = nil then Exit;
-  if AStmt is TTryFinallyStmt then
-  begin
-    TFS := TTryFinallyStmt(AStmt);
-    Result := 1;
-    for I := 0 to TFS.TryBody.Stmts.Count - 1 do
-      Result := Result + CountTryStmts(TASTStmt(TFS.TryBody.Stmts.Items[I]));
-    for I := 0 to TFS.FinallyBody.Stmts.Count - 1 do
-      Result := Result + CountTryStmts(TASTStmt(TFS.FinallyBody.Stmts.Items[I]));
-    Exit;
-  end;
-  if AStmt is TTryExceptStmt then
-  begin
-    TES := TTryExceptStmt(AStmt);
-    Result := 1;
-    for I := 0 to TES.TryBody.Stmts.Count - 1 do
-      Result := Result + CountTryStmts(TASTStmt(TES.TryBody.Stmts.Items[I]));
-    for I := 0 to TES.Handlers.Count - 1 do
-    begin
-      H := TExceptHandlerClause(TES.Handlers.Items[I]);
-      Result := Result + CountTryStmts(H.Body);
-    end;
-    if TES.ElseBody <> nil then
-      for I := 0 to TES.ElseBody.Stmts.Count - 1 do
-        Result := Result + CountTryStmts(TASTStmt(TES.ElseBody.Stmts.Items[I]));
-    Exit;
-  end;
-  if AStmt is TCompoundStmt then
-  begin
-    Cmp := TCompoundStmt(AStmt);
-    for I := 0 to Cmp.Stmts.Count - 1 do
-      Result := Result + CountTryStmts(TASTStmt(Cmp.Stmts.Items[I]));
-    Exit;
-  end;
-  if AStmt is TIfStmt then
-  begin
-    IfS := TIfStmt(AStmt);
-    Exit(CountTryStmts(IfS.ThenStmt) + CountTryStmts(IfS.ElseStmt));
-  end;
-  if AStmt is TWhileStmt then
-  begin
-    WhS := TWhileStmt(AStmt);
-    Exit(CountTryStmts(WhS.Body));
-  end;
-  if AStmt is TForStmt then
-  begin
-    ForS := TForStmt(AStmt);
-    Exit(CountTryStmts(ForS.Body));
-  end;
-  if AStmt is TForInStmt then
-  begin
-    FiS := TForInStmt(AStmt);
-    Exit(CountTryStmts(FiS.Body));
-  end;
-  if AStmt is TRepeatStmt then
-  begin
-    RepS := TRepeatStmt(AStmt);
-    for I := 0 to RepS.Body.Stmts.Count - 1 do
-      Result := Result + CountTryStmts(TASTStmt(RepS.Body.Stmts.Items[I]));
-    Exit;
-  end;
-  if AStmt is TCaseStmt then
-  begin
-    CsS := TCaseStmt(AStmt);
-    for I := 0 to CsS.Branches.Count - 1 do
-    begin
-      Br := TCaseBranch(CsS.Branches.Items[I]);
-      Result := Result + CountTryStmts(Br.Stmt);
-    end;
-    Exit(Result + CountTryStmts(CsS.ElseStmt));
-  end;
-end;
-
-{ Pre-allocate exception frame slots at @start so that try/finally and
-  try/except blocks (including those inside loops) use static stack slots
-  rather than dynamic sub-%rsp allocations.  Dynamic alloc16 512 in loop
-  bodies grows the stack by 512 bytes per iteration and eventually
-  corrupts parent exception frame prev-pointers. }
-procedure TCodeGenQBE.EmitExcFrameAllocs(ABlock: TBlock);
-var
-  I, Total: Integer;
-begin
-  Total := 0;
-  for I := 0 to ABlock.Stmts.Count - 1 do
-    Total := Total + CountTryStmts(TASTStmt(ABlock.Stmts.Items[I]));
-  FExcFrameNext := 0;
-  FExcDepth := 0;
-  FFinallyStack.Clear();  { defensive: each function starts with no active finallys }
-  for I := 0 to Total - 1 do
-    EmitLine(Format('  %%_exc_frame_%d =l alloc16 512', [I]));
 end;
 
 { -----------------------------------------------------------------------
@@ -2949,25 +2839,48 @@ end;
 procedure TCodeGenQBE.EmitBlock(ABlock: TBlock);
 var
   I: Integer;
+  Body: TIRBuffer;
+  SavedOut: TIRBuffer;
 begin
   FCurrentBlock := ABlock;
   EmitVarAllocs(ABlock);
-  EmitExcFrameAllocs(ABlock);
-  for I := 0 to ABlock.Stmts.Count - 1 do
-    EmitStmt(TASTStmt(ABlock.Stmts.Items[I]));
-  { Fall-through to exit label so 'exit' and normal flow share cleanup. }
-  if FExitLabel <> '' then
-  begin
-    EmitLine(Format('  jmp @%s', [FExitLabel]));
-    EmitLine('@' + FExitLabel);
+  { Exception-frame slots must be pre-allocated at @start (dynamic alloc16 in
+    loop bodies grows the stack per iteration), but a source-level pre-count
+    cannot know how many slots the body needs: finally bodies are emitted
+    more than once (normal path, exception path, and every non-local-exit
+    unwind site), and each emission of a try nested inside a finally body
+    consumes a fresh slot.  So emit the body into a side buffer first —
+    FExcFrameNext then holds the exact slot count — and write the allocs
+    ahead of it. }
+  FExcFrameNext := 0;
+  FExcDepth := 0;
+  FFinallyStack.Clear();  { defensive: each function starts with no active finallys }
+  Body := TIRBuffer.Create();
+  SavedOut := FOutput;
+  try
+    FOutput := Body;
+    for I := 0 to ABlock.Stmts.Count - 1 do
+      EmitStmt(TASTStmt(ABlock.Stmts.Items[I]));
+    { Fall-through to exit label so 'exit' and normal flow share cleanup. }
+    if FExitLabel <> '' then
+    begin
+      EmitLine(Format('  jmp @%s', [FExitLabel]));
+      EmitLine('@' + FExitLabel);
+    end;
+    EmitArcCleanup(ABlock);
+    { Program exit: release class/interface-typed static (class-level) variables.
+      They are shared globals not present in ABlock.Decls, so EmitArcCleanup does
+      not cover them.  Only the program's top block carries the 'main_exit' label,
+      so this fires exactly once, at process teardown. }
+    if FExitLabel = 'main_exit' then
+      EmitStaticVarReleases(ABlock);
+  finally
+    FOutput := SavedOut;
   end;
-  EmitArcCleanup(ABlock);
-  { Program exit: release class/interface-typed static (class-level) variables.
-    They are shared globals not present in ABlock.Decls, so EmitArcCleanup does
-    not cover them.  Only the program's top block carries the 'main_exit' label,
-    so this fires exactly once, at process teardown. }
-  if FExitLabel = 'main_exit' then
-    EmitStaticVarReleases(ABlock);
+  for I := 0 to FExcFrameNext - 1 do
+    EmitLine(Format('  %%_exc_frame_%d =l alloc16 512', [I]));
+  FOutput.AppendBuffer(Body);
+  Body.Free();
 end;
 
 procedure TCodeGenQBE.EmitExcPathArcCleanup(ABlock: TBlock);
@@ -3253,7 +3166,7 @@ begin
   LblFinExc := AllocLabel('fin_exc');
   LblEnd    := AllocLabel('fin_end');
 
-  { Use a pre-allocated exception frame slot from @start (see EmitExcFrameAllocs).
+  { Use a pre-allocated exception frame slot from @start (see EmitBlock).
     Pre-allocation ensures the frame lives in the function's static stack frame
     rather than being allocated dynamically on every execution of this block.
     Dynamic alloc16 inside loops would grow the stack by 512 bytes per iteration
@@ -3329,7 +3242,7 @@ begin
   LblExcept := AllocLabel('except_handler');
   LblEnd    := AllocLabel('except_end');
 
-  { Use a pre-allocated exception frame slot from @start (see EmitExcFrameAllocs).
+  { Use a pre-allocated exception frame slot from @start (see EmitBlock).
     Matches the size contract in blaise_exc.pas — must hold jmp_buf (64 B on
     x86_64, larger on ARM64) plus two pointer fields. }
   FrameTemp := Format('%%_exc_frame_%d', [FExcFrameNext]);
