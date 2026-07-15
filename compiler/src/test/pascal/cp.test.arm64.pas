@@ -79,6 +79,8 @@ type
     procedure TestInitialisedGlobals_DataSection;
     { slice 14: var/out parameters (int, Double, string) }
     procedure TestVarParams_WriteThroughAndPassThrough;
+    { slice 15: Single end to end (4-byte storage, double arithmetic) }
+    procedure TestSingle_LoadsStoresParamsResult;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1168,6 +1170,45 @@ begin
   { pipeline check: the whole module assembles }
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64varpar.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSingle_LoadsStoresParamsResult;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      A, B: Single;
+    function Half(V: Single): Single;
+    begin
+      Result := V / 2.0
+    end;
+    begin
+      A := 3.0;
+      B := Half(A) + 1.5;
+      WriteLn(B)
+    end.
+    ''');
+  { 4-byte storage: stores narrow through s0, loads widen through fcvt }
+  AssertTrue('store narrows', Pos(#9'fcvt s0, d0', AsmT) >= 0);
+  AssertTrue('4-byte store', Pos(#9'str s0, [x9]', AsmT) >= 0);
+  AssertTrue('load widens', Pos(#9'fcvt d0, s0', AsmT) >= 0);
+  { the param arrives in s0 and is spilled as 4 bytes; the caller narrows
+    into s0 at the pop }
+  AssertTrue('callee spills s-reg param', Pos(#9'str s0, [x9]', AsmT) >= 0);
+  { the whole module assembles (fcvt + s-reg loads reach the encoder) }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64single.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

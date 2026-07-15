@@ -61,6 +61,7 @@ type
     FProgramName: string;
     FIsFunction:  Boolean;       { current routine returns a value }
     FResultFloat: Boolean;       { ...and that value is a Double (d0) }
+    FResultSingle: Boolean;      { ...or a Single (returned in s0) }
     FExitLabel:   string;        { current routine's epilogue label }
     FBreakLbls:   TStringList;   { innermost-last loop end labels }
     FContLbls:    TStringList;   { innermost-last loop continue labels }
@@ -716,6 +717,17 @@ begin
   end;
   if (AExpr is TIdentExpr) and IsFloatExpr(AExpr) then
   begin
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tySingle) then
+    begin
+      { Single lives as a 4-byte value: load through s0 and widen }
+      if TIdentExpr(AExpr).ParamMode = pmVar then
+        NotYet('var Single parameter', AExpr);
+      EmitSlotAddr('x9', TIdentExpr(AExpr).Name);
+      Self.Emit(#9'ldr s0, [x9]');
+      Self.Emit(#9'fcvt d0, s0');
+      Exit;
+    end;
     { reuse the slot machinery: load the 8-byte pattern into x0, move to d0 }
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
     if TIdentExpr(AExpr).ParamMode = pmVar then
@@ -738,6 +750,9 @@ begin
       NotYet('this call form in float context', AExpr);
     EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
       TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tySingle) then
+      Self.Emit(#9'fcvt d0, s0');   { Single returns in s0 — widen }
     { a Double-returning call leaves its result in d0 already }
     Exit;
   end;
@@ -951,7 +966,15 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and AAsgn.ResolvedLhsType.IsFloat() then
   begin
     if AAsgn.ResolvedLhsType.Kind = tySingle then
-      NotYet('Single variables (Double only for now)', AAsgn);
+    begin
+      if AAsgn.IsVarParam then
+        NotYet('var Single parameter', AAsgn);
+      Self.EmitExprToD0OrConvert(AAsgn.Expr);
+      Self.Emit(#9'fcvt s0, d0');
+      EmitSlotAddr('x9', AAsgn.Name);
+      Self.Emit(#9'str s0, [x9]');
+      Exit;
+    end;
     Self.EmitExprToD0OrConvert(AAsgn.Expr);
     Self.Emit(#9'fmov x0, d0');
     if AAsgn.IsVarParam then
@@ -1032,7 +1055,7 @@ begin
         Self.Emit(#9'bl _SysWriteStr');
       end;
     end
-    else if K = tyDouble then
+    else if K in [tyDouble, tySingle] then
     begin
       Self.EmitExprToD0OrConvert(Arg);
       Self.Emit(#9'movz w0, #1');
@@ -1308,7 +1331,8 @@ begin
       begin
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
-                 (Par.ResolvedType.Kind in [tyDouble, tyString]))) then
+                 (Par.ResolvedType.Kind in [tyDouble, tySingle,
+                                            tyString]))) then
           NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
         { a BY-VALUE string param is the callee's own copy: retained in the
@@ -1330,7 +1354,7 @@ begin
           AddLocal('__sret', 8);   { the incoming x8 destination pointer }
       end
       else if not (IsIntFam(ADecl.ResolvedReturnType) or
-                   (ADecl.ResolvedReturnType.Kind = tyDouble) or
+                   (ADecl.ResolvedReturnType.Kind in [tyDouble, tySingle]) or
                    (ADecl.ResolvedReturnType.Kind = tyString)) then
         NotYet('function result of this type', ADecl)
       else
@@ -1346,7 +1370,8 @@ begin
     VD := TVarDecl(ABody.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
+             (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
+                                       tyRecord]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -1381,6 +1406,8 @@ begin
   FIsFunction := ADecl.ResolvedReturnType <> nil;
   FResultFloat := FIsFunction and
     (ADecl.ResolvedReturnType.Kind = tyDouble);
+  FResultSingle := FIsFunction and
+    (ADecl.ResolvedReturnType.Kind = tySingle);
   RecShape := -1;
   if FIsFunction and (ADecl.ResolvedReturnType.Kind = tyRecord) then
     RecShape := RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType));
@@ -1455,6 +1482,15 @@ begin
       if FIdx >= 8 then NotYet('parameters spilling to the stack', ADecl);
       Self.Emit(Format(#9'fmov x9, d%d', [FIdx]));
       EmitStoreSlot('x9', Par.ParamName);
+      FIdx := FIdx + 1;
+    end
+    else if (Par.ResolvedType <> nil) and
+            (Par.ResolvedType.Kind = tySingle) then
+    begin
+      { Single arrives in s(FIdx); its slot holds the 4-byte value }
+      if FIdx >= 8 then NotYet('parameters spilling to the stack', ADecl);
+      EmitSlotAddr('x9', Par.ParamName);
+      Self.Emit(Format(#9'str s%d, [x9]', [FIdx]));
       FIdx := FIdx + 1;
     end
     else
@@ -1577,6 +1613,12 @@ begin
           Self.Emit(Format(#9'ldr d%d, [x9, #%d]', [I, I * 8]));
       end;
     end;
+  end
+  else if FIsFunction and FResultSingle then
+  begin
+    { Single results return in s0 — the slot holds the 4-byte value }
+    EmitSlotAddr('x9', 'Result');
+    Self.Emit(#9'ldr s0, [x9]');
   end
   else if FIsFunction then
   begin
@@ -1724,7 +1766,12 @@ begin
         Self.EmitExprToD0(Arg);
         Self.Emit(#9'fmov x0, d0');
         EmitPushX0();
-        PopRegs.Add('d' + IntToStr(NFloat));
+        { a Single param wants the value in s(N) — the pop walk narrows }
+        if (Arg.ResolvedType <> nil) and
+           (Arg.ResolvedType.Kind = tySingle) then
+          PopRegs.Add('s' + IntToStr(NFloat))
+        else
+          PopRegs.Add('d' + IntToStr(NFloat));
         Inc(NFloat);
       end
       else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) then
@@ -1746,6 +1793,15 @@ begin
       begin
         EmitPopTo('x9');
         Self.Emit(Format(#9'fmov %s, x9', [Reg]));
+      end
+      else if Copy(Reg, 0, 1) = 's' then
+      begin
+        { Single arg: the stacked value is the DOUBLE bit pattern —
+          rebuild d(N) and narrow into s(N) (same register, legal) }
+        EmitPopTo('x9');
+        Self.Emit(Format(#9'fmov d%s, x9', [Copy(Reg, 1, Length(Reg) - 1)]));
+        Self.Emit(Format(#9'fcvt %s, d%s',
+          [Reg, Copy(Reg, 1, Length(Reg) - 1)]));
       end
       else
         EmitPopTo(Reg);
@@ -1862,7 +1918,8 @@ begin
     VD := TVarDecl(AProg.Block.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
+             (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
+                                       tyRecord]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -2052,7 +2109,8 @@ begin
     VD := TVarDecl(ABlock.Decls.Items[I]);
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
-             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
+             (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
+                                       tyRecord]))) then
       NotYet('unit variable of this type', VD);
     if VD.IsThreadVar then
       NotYet('unit threadvars', VD);

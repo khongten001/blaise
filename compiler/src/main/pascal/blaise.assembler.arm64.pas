@@ -1117,11 +1117,9 @@ procedure TArm64Assembler.EncodeInstr;
         the backend's 16-byte stack brackets. }
       if FA[1].PreIdx or FA[1].PostIdx then
       begin
-        if FA[0].IsFP then
-          LineError('pre/post-index fp load/store not supported');
         if FA[0].Is64 then Sz := 3 else Sz := 2;
         if StrAt(FL.Mnemonic, 0) = Ord('l') then Opc := 1 else Opc := 0;
-        EmitW(EncodeLdStPrePost(Sz, False, Opc, FA[1].PreIdx,
+        EmitW(EncodeLdStPrePost(Sz, FA[0].IsFP, Opc, FA[1].PreIdx,
           FA[0].Reg, FA[1].Base, FA[1].MemImm));
         Exit;
       end;
@@ -1226,6 +1224,23 @@ procedure TArm64Assembler.EncodeInstr;
       Wd := Integer($1E220000) or (FA[1].Reg shl 5) or FA[0].Reg;
       if FA[0].Is64 then Wd := Wd or (1 shl 22);       { double dest }
       if FA[1].Is64 then Wd := Wd or (1 shl 31);       { 64-bit source }
+      EmitW(Wd);
+      Exit;
+    end;
+    if FL.Mnemonic = 'fcvt' then
+    begin
+      { precision conversion between scalar fp registers:
+          fcvt dD, sN  (single -> double) = $1E22C000 | Rn<<5 | Rd
+          fcvt sD, dN  (double -> single) = $1E624000 | Rn<<5 | Rd }
+      NeedOps(2);
+      if not (FA[0].IsFP and FA[1].IsFP) then
+        LineError('fcvt needs two fp registers');
+      if FA[0].Is64 = FA[1].Is64 then
+        LineError('fcvt needs one single and one double register');
+      if FA[0].Is64 then
+        Wd := Integer($1E22C000) or (FA[1].Reg shl 5) or FA[0].Reg
+      else
+        Wd := Integer($1E624000) or (FA[1].Reg shl 5) or FA[0].Reg;
       EmitW(Wd);
       Exit;
     end;

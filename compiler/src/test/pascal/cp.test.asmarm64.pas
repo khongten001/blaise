@@ -167,6 +167,14 @@ begin
   AssertWord('fmov d0, x1', Integer($9E670020));
   AssertWord('fmov x0, d1', Integer($9E660020));
   AssertWord('fmov d0, d1', Integer($1E604020));
+  { precision conversions + 32-bit fp load/store (Single support) }
+  AssertWord('fcvt d0, s1', Integer($1E22C020));
+  AssertWord('fcvt s2, d3', Integer($1E624062));
+  AssertWord('ldr s0, [x9, #8]', Integer($BD400920));
+  AssertWord('str s1, [x9, #4]', Integer($BD000521));
+  { fp pre/post-index — the backend's float stack brackets }
+  AssertWord('str d0, [sp, #-16]!', Integer($FC1F0FE0));
+  AssertWord('ldr d0, [sp], #16', Integer($FC4107E0));
 end;
 
 procedure TArm64AsmTests.TestLocalBranches_ResolveToDeltas;
