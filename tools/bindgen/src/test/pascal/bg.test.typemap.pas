@@ -57,6 +57,13 @@ type
     procedure TestMap_TypedefName_PassesThrough;
     procedure TestMap_FixedArray_IsStaticArray;
     procedure TestMap_FunctionPtr_IsPointer;
+    procedure TestFnPtrDecl_IntArgs_FunctionType;
+    procedure TestFnPtrDecl_VoidReturn_ProcedureType;
+    procedure TestFnPtrDecl_NoParams;
+    procedure TestFnPtrDecl_Variadic_Fails;
+    procedure TestMapCallback_RegistersNamedType;
+    procedure TestMapCallback_SameSignature_Deduped;
+    procedure TestMapCallback_NonFnPtr_FallsBackToMap;
     procedure TestMap_SizeT_IsUInt64;
     procedure TestMap_SSizeT_IsInt64;
     procedure TestMap_StdintTypes;
@@ -210,6 +217,55 @@ begin
   { Slice 1: function pointers degrade to an untyped Pointer.  A later
     slice will synthesise proper procedural types. }
   AssertEquals('Pointer', FMapper.Map('int (*)(Display *, int)'));
+end;
+
+procedure TTypeMapTests.TestFnPtrDecl_IntArgs_FunctionType;
+begin
+  AssertEquals('function(a0: PDisplay; a1: Integer): Integer',
+    FMapper.FnPtrDecl('int (*)(Display *, int)'));
+end;
+
+procedure TTypeMapTests.TestFnPtrDecl_VoidReturn_ProcedureType;
+begin
+  AssertEquals('procedure(a0: Pointer)',
+    FMapper.FnPtrDecl('void (*)(void *)'));
+end;
+
+procedure TTypeMapTests.TestFnPtrDecl_NoParams;
+begin
+  AssertEquals('function: Integer', FMapper.FnPtrDecl('int (*)(void)'));
+end;
+
+procedure TTypeMapTests.TestFnPtrDecl_Variadic_Fails;
+begin
+  { C varargs cannot be represented in a Blaise procedural type. }
+  AssertEquals('', FMapper.FnPtrDecl('int (*)(Display *, ...)'));
+end;
+
+procedure TTypeMapTests.TestMapCallback_RegistersNamedType;
+begin
+  AssertEquals('TXSampleIfEvent_predicate',
+    FMapper.MapCallback('int (*)(Display *, XID)', 'XSampleIfEvent_predicate'));
+  AssertEquals('one synth type', 1, FMapper.ProcTypes.Count);
+  AssertEquals('TXSampleIfEvent_predicate', FMapper.ProcTypes[0].Name);
+  AssertEquals('function(a0: PDisplay; a1: XID): Integer',
+    FMapper.ProcTypes[0].Decl);
+end;
+
+procedure TTypeMapTests.TestMapCallback_SameSignature_Deduped;
+begin
+  FMapper.MapCallback('int (*)(Display *, XID)', 'XSampleIfEvent_predicate');
+  { An identical signature under a different hint reuses the first
+    name — XIfEvent/XCheckIfEvent/XPeekIfEvent share one type. }
+  AssertEquals('TXSampleIfEvent_predicate',
+    FMapper.MapCallback('int (*)(Display *, XID)', 'XSampleCheckIfEvent_predicate'));
+  AssertEquals(1, FMapper.ProcTypes.Count);
+end;
+
+procedure TTypeMapTests.TestMapCallback_NonFnPtr_FallsBackToMap;
+begin
+  AssertEquals('Integer', FMapper.MapCallback('int', 'ignored'));
+  AssertEquals('Pointer', FMapper.MapCallback('int (*)(int, ...)', 'vararg_cb'));
 end;
 
 procedure TTypeMapTests.TestMap_SizeT_IsUInt64;

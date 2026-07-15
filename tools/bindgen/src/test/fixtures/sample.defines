@@ -457,3 +457,9 @@ extern void XSampleSetDirection(XSampleDirection dir);
 #define SAMPLE_STR "hello"
 #define SAMPLE_FN(x) ((x)+1)
 #define SAMPLE_TYPE int
+
+
+extern int XSampleIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID arg);
+extern int XSampleCheckIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID arg);
+
+typedef int (*XSampleVaHandler)(Display *dpy, ...);

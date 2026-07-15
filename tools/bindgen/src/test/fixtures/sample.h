@@ -56,3 +56,9 @@ extern void XSampleSetDirection(XSampleDirection dir);
 #define SAMPLE_STR "hello"
 #define SAMPLE_FN(x) ((x)+1)
 #define SAMPLE_TYPE int
+
+/* Inline (non-typedef) function-pointer parameter — XIfEvent pattern. */
+extern int XSampleIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID arg);
+extern int XSampleCheckIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID arg);
+/* Variadic function pointer — must degrade to Pointer. */
+typedef int (*XSampleVaHandler)(Display *dpy, ...);

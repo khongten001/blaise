@@ -45,6 +45,9 @@ type
     procedure TestEmit_UnknownTypedefRHS_DegradesToPointer;
     procedure TestEmit_Union_ExactSizeRawArray;
     procedure TestEmit_Union_Uncomputable_Placeholder;
+    procedure TestEmit_FnPtrTypedef_ProceduralType;
+    procedure TestEmit_InlineFnPtrParam_SynthesisedType;
+    procedure TestEmit_VariadicFnPtrTypedef_DegradesToPointer;
   end;
 
 implementation
@@ -269,6 +272,42 @@ begin
   FModel.AddRecord(R);
   Src := Self.Emit();
   AssertTrue(ContainsStr(Src, 'BadUnion = record end;'));
+end;
+
+procedure TEmitTests.TestEmit_FnPtrTypedef_ProceduralType;
+var
+  Src: string;
+begin
+  FModel.AddTypedef(TCTypedef.Create('XErrorHandler',
+    'int (*)(Display *, int)'));
+  Src := Self.Emit();
+  AssertTrue(ContainsStr(Src,
+    'XErrorHandler = function(a0: PDisplay; a1: Integer): Integer;'));
+end;
+
+procedure TEmitTests.TestEmit_InlineFnPtrParam_SynthesisedType;
+var
+  F: TCFunction;
+  Src: string;
+begin
+  F := TCFunction.Create('XIfThing');
+  F.ReturnCType := 'int';
+  F.Params.Add(TCParam.Create('predicate', 'int (*)(Display *, XID)'));
+  FModel.AddFunction(F);
+  Src := Self.Emit();
+  AssertTrue('synth type declared', ContainsStr(Src,
+    'TXIfThing_predicate = function(a0: PDisplay; a1: XID): Integer;'));
+  AssertTrue('param uses it', ContainsStr(Src,
+    'XIfThing(predicate: TXIfThing_predicate)'));
+end;
+
+procedure TEmitTests.TestEmit_VariadicFnPtrTypedef_DegradesToPointer;
+var
+  Src: string;
+begin
+  FModel.AddTypedef(TCTypedef.Create('XVaHandler', 'int (*)(Display *, ...)'));
+  Src := Self.Emit();
+  AssertTrue(ContainsStr(Src, 'XVaHandler = Pointer;'));
 end;
 
 initialization

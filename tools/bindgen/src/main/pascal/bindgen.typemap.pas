@@ -32,17 +32,41 @@ type
     constructor Create(const AName, ATarget: string);
   end;
 
+  { One synthesised procedural type for an inline (non-typedef'd)
+    function-pointer parameter, e.g.
+      TXIfEvent_predicate = function(a0: PDisplay; a1: PXEvent; a2: XPointer): Integer; }
+  TProcTypeDecl = class
+  public
+    Name: string;      { TXIfEvent_predicate }
+    Decl: string;      { the right-hand side, without trailing ';' }
+    constructor Create(const AName, ADecl: string);
+  end;
+
   TTypeMapper = class
   private
     FPtrAliases: TList<TPtrAlias>;
     FPtrSeen: TSet<string>;
+    FProcTypes: TList<TProcTypeDecl>;
+    FProcBySig: TDictionary<string, string>;  { decl string → type name }
+    FProcNames: TSet<string>;
     function MapPointer(const APointee: string): string;
     procedure RegisterAlias(const AName, ATarget: string);
   public
     constructor Create;
-    { Map a clang qualType to a Blaise type name.  Returns '' for void. }
+    { Map a clang qualType to a Blaise type name.  Returns '' for void.
+      Function-pointer types degrade to Pointer here — use MapCallback
+      in contexts where a synthesised procedural type is wanted. }
     function Map(const AQualType: string): string;
+    { Render a function-pointer qualType as a Blaise procedural-type
+      right-hand side ('function(a0: X): Y' / 'procedure(...)').
+      Returns '' when it cannot be represented (variadic, unparsable). }
+    function FnPtrDecl(const AQualType: string): string;
+    { Like Map, but a representable function pointer synthesises a
+      named procedural type 'T<AHint>' (deduped by signature, so
+      look-alike callbacks share one type) and returns its name. }
+    function MapCallback(const AQualType, AHint: string): string;
     property PtrAliases: TList<TPtrAlias> read FPtrAliases;
+    property ProcTypes: TList<TProcTypeDecl> read FProcTypes;
   end;
 
 { Strip leading const/volatile/restrict qualifiers and struct/union/enum
@@ -143,11 +167,123 @@ begin
   Target := ATarget;
 end;
 
+constructor TProcTypeDecl.Create(const AName, ADecl: string);
+begin
+  inherited Create();
+  Name := AName;
+  Decl := ADecl;
+end;
+
 constructor TTypeMapper.Create();
 begin
   inherited Create();
   FPtrAliases := TList<TPtrAlias>.Create();
   FPtrSeen := TSet<string>.Create();
+  FProcTypes := TList<TProcTypeDecl>.Create();
+  FProcBySig := TDictionary<string, string>.Create();
+  FProcNames := TSet<string>.Create();
+end;
+
+{ Split AArgs ('Display *, int (*)(int, char *), XID') at top-level
+  commas, respecting parenthesis depth. }
+function SplitTopLevelArgs(const AArgs: string): TList<String>;
+var
+  I, Depth, Start: Integer;
+  B: Integer;
+begin
+  Result := TList<String>.Create();
+  Depth := 0;
+  Start := 0;
+  for I := 0 to Length(AArgs) - 1 do
+  begin
+    B := AArgs[I];
+    if B = Ord('(') then Depth := Depth + 1
+    else if B = Ord(')') then Depth := Depth - 1
+    else if (B = Ord(',')) and (Depth = 0) then
+    begin
+      Result.Add(Trim(MidStr(AArgs, Start, I - Start)));
+      Start := I + 1;
+    end;
+  end;
+  if Trim(MidStr(AArgs, Start, Length(AArgs) - Start)) <> '' then
+    Result.Add(Trim(MidStr(AArgs, Start, Length(AArgs) - Start)));
+end;
+
+function TTypeMapper.FnPtrDecl(const AQualType: string): string;
+var
+  S, RetC, ArgsC: string;
+  StarPos: Integer;
+  Ret: string;
+  Args: TList<String>;
+  I: Integer;
+  Params: string;
+  Mapped: string;
+begin
+  Result := '';
+  S := Trim(AQualType);
+  StarPos := Pos('(*)', S);
+  if StarPos < 0 then Exit;
+  RetC := Trim(LeftStr(S, StarPos));
+  ArgsC := Trim(MidStr(S, StarPos + 3, Length(S)));
+  if (ArgsC = '') or (ArgsC[0] <> Ord('(')) or
+     (ArgsC[Length(ArgsC) - 1] <> Ord(')')) then Exit;
+  ArgsC := Trim(MidStr(ArgsC, 1, Length(ArgsC) - 2));
+  if Pos('...', ArgsC) >= 0 then Exit;   { C varargs — unrepresentable }
+  Params := '';
+  if (ArgsC <> '') and (ArgsC <> 'void') then
+  begin
+    Args := SplitTopLevelArgs(ArgsC);
+    for I := 0 to Args.Count - 1 do
+    begin
+      Mapped := Self.Map(Args[I]);
+      if Mapped = '' then Exit;          { a bare void arg — malformed }
+      if I > 0 then Params := Params + '; ';
+      Params := Params + 'a' + IntToStr(I) + ': ' + Mapped;
+    end;
+  end;
+  if Params <> '' then
+    Params := '(' + Params + ')';
+  Ret := Self.Map(RetC);
+  if Ret = '' then
+    Result := 'procedure' + Params
+  else
+    Result := 'function' + Params + ': ' + Ret;
+end;
+
+function TTypeMapper.MapCallback(const AQualType, AHint: string): string;
+var
+  Decl: string;
+  Name: string;
+  N: Integer;
+begin
+  if Pos('(*)', AQualType) < 0 then
+  begin
+    Result := Self.Map(AQualType);
+    Exit;
+  end;
+  Decl := Self.FnPtrDecl(AQualType);
+  if Decl = '' then
+  begin
+    Result := 'Pointer';
+    Exit;
+  end;
+  if FProcBySig.ContainsKey(Decl) then
+  begin
+    FProcBySig.TryGetValue(Decl, Result);
+    Exit;
+  end;
+  Name := 'T' + AHint;
+  { A hint collision with a different signature gets a numeric suffix. }
+  N := 1;
+  while FProcNames.Contains(Name) do
+  begin
+    N := N + 1;
+    Name := 'T' + AHint + IntToStr(N);
+  end;
+  FProcNames.Include(Name);
+  FProcBySig.Add(Decl, Name);
+  FProcTypes.Add(TProcTypeDecl.Create(Name, Decl));
+  Result := Name;
 end;
 
 procedure TTypeMapper.RegisterAlias(const AName, ATarget: string);

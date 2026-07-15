@@ -73,6 +73,38 @@ begin
     Result := Result + '_';
 end;
 
+{ The Blaise type for one function parameter.  An inline function
+  pointer synthesises a named procedural type hinted by function and
+  parameter name; everything else goes through plain Map.  Called from
+  BOTH the pre-pass and emission so the two see identical types. }
+function ParamTypeName(F: TCFunction; AIndex: Integer;
+  AMapper: TTypeMapper): string;
+var
+  Hint: string;
+begin
+  if Pos('(*)', F.Params[AIndex].CType) >= 0 then
+  begin
+    Hint := F.Params[AIndex].Name;
+    if Hint = '' then
+      Hint := 'a' + IntToStr(AIndex);
+    Result := AMapper.MapCallback(F.Params[AIndex].CType, F.Name + '_' + Hint);
+  end
+  else
+    Result := AMapper.Map(F.Params[AIndex].CType);
+end;
+
+{ The Blaise right-hand side for one typedef.  A representable
+  function-pointer typedef becomes an inline procedural type. }
+function TypedefRhs(T: TCTypedef; AMapper: TTypeMapper): string;
+begin
+  if Pos('(*)', T.CType) >= 0 then
+  begin
+    Result := AMapper.FnPtrDecl(T.CType);
+    if Result <> '' then Exit;
+  end;
+  Result := AMapper.Map(T.CType);
+end;
+
 procedure PreMapModel(AModel: TCModel; AMapper: TTypeMapper);
 var
   I, J: Integer;
@@ -80,9 +112,9 @@ var
   F: TCFunction;
 begin
   { Walk everything once so the mapper registers every pointer alias
-    before any line is emitted. }
+    and synthesised procedural type before any line is emitted. }
   for I := 0 to AModel.Typedefs.Count - 1 do
-    AMapper.Map(AModel.Typedefs[I].CType);
+    TypedefRhs(AModel.Typedefs[I], AMapper);
   for I := 0 to AModel.Records.Count - 1 do
   begin
     R := AModel.Records[I];
@@ -95,7 +127,7 @@ begin
     if F.IsVariadic then Continue;
     AMapper.Map(F.ReturnCType);
     for J := 0 to F.Params.Count - 1 do
-      AMapper.Map(F.Params[J].CType);
+      ParamTypeName(F, J, AMapper);
   end;
 end;
 
@@ -181,15 +213,21 @@ procedure EmitTypedef(T: TCTypedef; AMapper: TTypeMapper;
 var
   Mapped: string;
 begin
-  Mapped := AMapper.Map(T.CType);
+  Mapped := TypedefRhs(T, AMapper);
   if Mapped = '' then Exit;          { typedef of void — meaningless }
   if Mapped = T.Name then Exit;      { self-alias — record carries it }
+  if StartsStr('function', Mapped) or StartsStr('procedure', Mapped) then
+  begin
+    ATypeLines.Add('  ' + T.Name + ' = ' + Mapped + ';');
+    Exit;
+  end;
   if IsUnresolvedName(ADeclared, Mapped) then
     ATypeLines.Add('  ' + T.Name + ' = Pointer; { unresolved C type ''' +
       T.CType + ''' — declared in a filtered-out header }')
   else if Pos('(*', T.CType) >= 0 then
     ATypeLines.Add('  ' + T.Name + ' = ' + Mapped +
-      '; { TODO: C function pointer ' + T.CType + ' }')
+      '; { C function pointer ' + T.CType + ' — variadic or ' +
+      'unrepresentable, degraded }')
   else
     ATypeLines.Add('  ' + T.Name + ' = ' + Mapped + ';');
 end;
@@ -225,7 +263,7 @@ begin
     if J > 0 then
       ParamStr := ParamStr + '; ';
     ParamStr := ParamStr + SanitiseIdent(F.Params[J].Name, J) + ': ' +
-      AMapper.Map(F.Params[J].CType);
+      ParamTypeName(F, J, AMapper);
   end;
   Ret := AMapper.Map(F.ReturnCType);
   if ParamStr <> '' then
@@ -276,6 +314,8 @@ begin
       Declared.Include(UpperCase(AModel.Enums[I].Name));
   for I := 0 to Mapper.PtrAliases.Count - 1 do
     Declared.Include(UpperCase(Mapper.PtrAliases[I].Name));
+  for I := 0 to Mapper.ProcTypes.Count - 1 do
+    Declared.Include(UpperCase(Mapper.ProcTypes[I].Name));
 
   { Pointer aliases first: forward pointer declarations are legal, so
     this order is always safe regardless of where the targets sit.
@@ -304,6 +344,13 @@ begin
     else if D is TCFunction then
       EmitFunction(TCFunction(D), ALibName, Mapper, FuncLines);
   end;
+
+  { Synthesised procedural types go LAST in the type section: they may
+    reference any typedef, and only function declarations (which come
+    after the whole type section) reference them. }
+  for I := 0 to Mapper.ProcTypes.Count - 1 do
+    TypeLines.Add('  ' + Mapper.ProcTypes[I].Name + ' = ' +
+      Mapper.ProcTypes[I].Decl + ';');
 
   { -------- macro constants -------- }
   if AMacros <> nil then
