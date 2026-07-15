@@ -74,6 +74,8 @@ type
     { slice 10: units — routines + record types from a used unit }
     procedure TestUnit_RoutinesAndCrossUnitCalls;
     procedure TestUnit_InitSectionStillNotYet;
+    { slice 11: string parameters (by-value retained, const borrowed) }
+    procedure TestStringParams_ValueRetainsConstBorrows;
   end;
 
 implementation
@@ -989,6 +991,48 @@ begin
   AssertTrue('init section raises', Raised);
   AssertTrue('message names the hole',
     Pos('initialization', Msg) >= 0);
+end;
+
+procedure TArm64BackendTests.TestStringParams_ValueRetainsConstBorrows;
+var
+  AsmT: string;
+  PosGreet, PosShow, PosNext: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var G: string;
+    procedure Greet(Msg: string);
+    begin
+      WriteLn(Msg)
+    end;
+    procedure Show(const Msg: string);
+    begin
+      WriteLn(Msg)
+    end;
+    begin
+      G := 'hi';
+      Greet(G);
+      Show(G);
+      Greet('lit')
+    end.
+    ''');
+  { the by-value param retains its copy in the prologue and releases it
+    with the string locals at exit; the const param does neither }
+  PosGreet := Pos('Greet:', AsmT);
+  PosShow := Pos('Show:', AsmT);
+  AssertTrue('both routines emitted', (PosGreet >= 0) and (PosShow >= 0));
+  PosNext := PosEx(#9'bl _StringAddRef', AsmT, PosGreet);
+  AssertTrue('by-value param retained in Greet',
+    (PosNext > PosGreet) and ((PosShow < PosGreet) or (PosNext < PosShow)));
+  AssertTrue('by-value param released at Greet exit',
+    PosEx(#9'bl _StringRelease', AsmT, PosGreet) > PosGreet);
+  { const param: no retain between Show's label and its ret }
+  PosNext := PosEx(#9'ret', AsmT, PosShow);
+  AssertTrue('Show has a ret', PosNext > PosShow);
+  PosGreet := PosEx(#9'bl _StringAddRef', AsmT, PosShow);
+  AssertTrue('const param not retained in Show',
+    (PosGreet < 0) or (PosGreet > PosNext));
 end;
 
 initialization

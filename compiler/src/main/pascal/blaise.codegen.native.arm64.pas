@@ -1208,9 +1208,15 @@ begin
       begin
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
-                 (Par.ResolvedType.Kind = tyDouble))) then
+                 (Par.ResolvedType.Kind in [tyDouble, tyString]))) then
           NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
+        { a BY-VALUE string param is the callee's own copy: retained in the
+          prologue, released with the string locals at scope exit.  A const
+          string param is a borrow — no retain, no release. }
+        if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyString)
+           and not Par.IsConstParam then
+          FStrLocals.Add(Par.ParamName);
       end;
     end;
     if ADecl.ResolvedReturnType <> nil then
@@ -1354,6 +1360,19 @@ begin
   { sret: park the incoming x8 destination pointer in its hidden slot }
   if RecShape = 0 then
     EmitStoreSlot('x8', '__sret');
+  { by-value string params: retain the callee's copy (the caller keeps its
+    own reference).  Runs after every register is parked — _StringAddRef
+    clobbers the caller-saved argument registers. }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyString) and
+       not Par.IsConstParam then
+    begin
+      EmitLoadSlot('x0', Par.ParamName);
+      Self.Emit(#9'bl _StringAddRef');
+    end;
+  end;
   { pass 2: copy the bytes of every pointer-passed record param into its
     own slot.  This runs only after every register is parked, because the
     memcpy call clobbers the caller-saved argument registers. }
@@ -1557,6 +1576,23 @@ begin
           end;
           NFloat := NFloat + (Shape - 100);
         end;
+      end
+      else if (Arg.ResolvedType <> nil) and
+              (Arg.ResolvedType.Kind = tyString) then
+      begin
+        { the callee owns its copy (by-value params retain in the callee
+          prologue; const params borrow), so the caller passes a BORROWED
+          pointer.  Owned +1 transients (concat/call results) would need a
+          post-call release slot — honest hole until then. }
+        if OwnsStringRef(Arg) then
+          NotYet('owned string transient as argument', Arg);
+        if not ((Arg is TIdentExpr) or (Arg is TStringLiteral)) then
+          NotYet('string argument from this expression', Arg);
+        if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+        Self.EmitExprToX0(Arg);
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt));
+        Inc(NInt);
       end
       else if IsFloatExpr(Arg) then
       begin
