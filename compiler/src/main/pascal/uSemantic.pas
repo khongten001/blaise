@@ -11682,6 +11682,15 @@ begin
         Format('Type cast ''%s'' expects exactly one argument', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
     AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    { Byte(','), Word('A'), ...: an integer cast of a string LITERAL
+      means the character code (Ord semantics).  Without this fold the
+      backends reinterpret the literal's pointer — silent garbage.
+      CoerceToCharOrd rejects literals that are not exactly one byte. }
+    if (Sym.TypeDesc <> nil) and
+       (Sym.TypeDesc.Kind in [tyInteger, tyInt64, tyUInt32, tyUInt64,
+                              tySmallInt, tyWord, tyByte]) and
+       (TASTExpr(AExpr.Args.Items[0]) is TStringLiteral) then
+      CoerceToCharOrd(TStringLiteral(AExpr.Args.Items[0]));
     Result := Sym.TypeDesc;
     AExpr.ResolvedType := Result;
     Exit;

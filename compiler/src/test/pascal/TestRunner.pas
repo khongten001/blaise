@@ -16,6 +16,7 @@ uses
   cp.test.sar,
   cp.test.highlow,
   cp.test.sizeof,
+  cp.test.charcast,
   cp.test.smallint_word,
   cp.test.lexer,
   cp.test.parser,
