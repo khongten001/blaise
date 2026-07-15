@@ -77,6 +77,8 @@ type
     procedure TestUnit_FinalizationStillNotYet;
     { slice 13: initialised globals in .data }
     procedure TestInitialisedGlobals_DataSection;
+    { slice 14: var/out parameters (int, Double, string) }
+    procedure TestVarParams_WriteThroughAndPassThrough;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1110,6 +1112,65 @@ begin
   try
     AssertTrue('has a data section',
       F.FindSection('__DATA', '__data') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestVarParams_WriteThroughAndPassThrough;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      N: Int64;
+      D: Double;
+      S: string;
+    procedure Bump(var X: Int64);
+    begin
+      X := X + 1
+    end;
+    procedure BumpTwice(var X: Int64);
+    begin
+      Bump(X);
+      Bump(X)
+    end;
+    procedure SetD(out V: Double);
+    begin
+      V := 2.5
+    end;
+    procedure Tag(var T: string);
+    begin
+      T := T + '!'
+    end;
+    begin
+      N := 40;
+      BumpTwice(N);
+      SetD(D);
+      S := 'hey';
+      Tag(S);
+      WriteLn(N);
+      WriteLn(D);
+      WriteLn(S)
+    end.
+    ''');
+  { the caller passes the global's address; the callee reads and writes
+    through the pointer; a var->var pass-through forwards the address }
+  AssertTrue('caller passes global address',
+    Pos('add x0, x0, _g_N@PAGEOFF', AsmT) >= 0);
+  AssertTrue('callee derefs for the read', Pos(#9'ldr x0, [x0]', AsmT) >= 0);
+  AssertTrue('callee stores through the pointer',
+    Pos(#9'str x0, [x9]', AsmT) >= 0);
+  { pipeline check: the whole module assembles }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64varpar.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
   finally
     F.Free();
   end;

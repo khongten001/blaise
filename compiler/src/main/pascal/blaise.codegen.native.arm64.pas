@@ -495,6 +495,8 @@ begin
   if AExpr is TIdentExpr then
   begin
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
+    if TIdentExpr(AExpr).ParamMode = pmVar then
+      Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
     Exit;
   end;
   if AExpr is TFuncCallExpr then
@@ -716,6 +718,8 @@ begin
   begin
     { reuse the slot machinery: load the 8-byte pattern into x0, move to d0 }
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
+    if TIdentExpr(AExpr).ParamMode = pmVar then
+      Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
     Self.Emit(#9'fmov d0, x0');
     Exit;
   end;
@@ -849,7 +853,9 @@ begin
   begin
     { ARC discipline (mirrors x86-64): retain the incoming value unless the
       expression already OWNS a +1 reference (concat/call results), release
-      the slot's previous string, then store. }
+      the slot's previous string, then store.  A var-param target holds the
+      caller's ADDRESS — the old-value load and the store deref it (the
+      address is re-loaded after the release call clobbers x9). }
     Self.EmitExprToX0(AAsgn.Expr);
     if not OwnsStringRef(AAsgn.Expr) then
     begin
@@ -858,6 +864,16 @@ begin
       EmitPopTo('x0');
     end;
     EmitPushX0();
+    if AAsgn.IsVarParam then
+    begin
+      EmitLoadSlot('x9', AAsgn.Name);
+      Self.Emit(#9'ldr x0, [x9]');
+      Self.Emit(#9'bl _StringRelease');
+      EmitLoadSlot('x9', AAsgn.Name);
+      EmitPopTo('x0');
+      Self.Emit(#9'str x0, [x9]');
+      Exit;
+    end;
     EmitLoadSlot('x0', AAsgn.Name);
     Self.Emit(#9'bl _StringRelease');
     EmitPopTo('x0');
@@ -938,7 +954,13 @@ begin
       NotYet('Single variables (Double only for now)', AAsgn);
     Self.EmitExprToD0OrConvert(AAsgn.Expr);
     Self.Emit(#9'fmov x0, d0');
-    EmitStoreSlot('x0', AAsgn.Name);
+    if AAsgn.IsVarParam then
+    begin
+      EmitLoadSlot('x9', AAsgn.Name);
+      Self.Emit(#9'str x0, [x9]');
+    end
+    else
+      EmitStoreSlot('x0', AAsgn.Name);
     Exit;
   end;
   if (AAsgn.ResolvedLhsType <> nil) and
@@ -946,7 +968,13 @@ begin
      not (AAsgn.ResolvedLhsType.Kind = tyBoolean) then
     NotYet('assignment to non-integer variable', AAsgn);
   Self.EmitExprToX0(AAsgn.Expr);
-  EmitStoreSlot('x0', AAsgn.Name);
+  if AAsgn.IsVarParam then
+  begin
+    EmitLoadSlot('x9', AAsgn.Name);
+    Self.Emit(#9'str x0, [x9]');
+  end
+  else
+    EmitStoreSlot('x0', AAsgn.Name);
 end;
 
 procedure TArm64Backend.EmitProcCallStmt(ACall: TProcCall);
@@ -1251,8 +1279,20 @@ begin
     for I := 0 to ADecl.Params.Count - 1 do
     begin
       Par := TMethodParam(ADecl.Params.Items[I]);
-      if Par.IsVarParam or Par.IsOpenArray then
-        NotYet('var/out/open-array parameters', ADecl);
+      if Par.IsOpenArray then
+        NotYet('open-array parameters', ADecl);
+      if Par.IsVarParam then
+      begin
+        { var/out param: the 8-byte slot holds the caller's ADDRESS.  The
+          pointee is int-family, Double or string for now — records need
+          base-pointer plumbing at every field-access site. }
+        if not (IsIntFam(Par.ResolvedType) or
+                ((Par.ResolvedType <> nil) and
+                 (Par.ResolvedType.Kind in [tyDouble, tyString]))) then
+          NotYet('var parameter ''' + Par.ParamName + ''' of this type', ADecl);
+        AddLocal(Par.ParamName, 8);
+        Continue;
+      end;
       if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
       begin
         if not RecretManagedClean(TRecordTypeDesc(Par.ResolvedType)) then
@@ -1367,7 +1407,14 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params.Items[I]);
-    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
+    if Par.IsVarParam then
+    begin
+      { var/out param: one x register carrying the caller's address }
+      if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
+      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+      J := J + 1;
+    end
+    else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
     begin
       ParShape := RecReturnShape(TRecordTypeDesc(Par.ResolvedType));
       case ParShape of
@@ -1578,7 +1625,24 @@ begin
     for I := 0 to AArgs.Count - 1 do
     begin
       Arg := TASTExpr(AArgs.Items[I]);
-      if (Arg.ResolvedType <> nil) and
+      if (I < ADecl.Params.Count) and
+         TMethodParam(ADecl.Params.Items[I]).IsVarParam then
+      begin
+        { var/out param: pass the lvalue's address.  A var param handed
+          straight through to another var param forwards the address it
+          already holds. }
+        if not (Arg is TIdentExpr) then
+          NotYet('var argument from this expression', Arg);
+        if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+        if TIdentExpr(Arg).ParamMode = pmVar then
+          EmitLoadSlot('x0', TIdentExpr(Arg).Name)
+        else
+          EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt));
+        Inc(NInt);
+      end
+      else if (Arg.ResolvedType <> nil) and
          (Arg.ResolvedType.Kind = tyRecord) then
       begin
         if ADecl.IsExternal then
