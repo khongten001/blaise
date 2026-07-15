@@ -326,8 +326,40 @@ begin
   if AStmt.FieldInfo = nil then
     NotYet('unresolved field assignment', AStmt);
   if not (IsIntFam(AStmt.FieldInfo.TypeDesc) or
-          (AStmt.FieldInfo.TypeDesc.Kind = tyDouble)) then
+          (AStmt.FieldInfo.TypeDesc.Kind in [tyDouble, tyClass]) or
+          AStmt.FieldInfo.TypeDesc.IsString()) then
     NotYet('field of this type', AStmt);
+  if AStmt.FieldInfo.TypeDesc.IsString() or
+     (AStmt.FieldInfo.TypeDesc.Kind = tyClass) then
+  begin
+    { managed field store: retain the value unless the expression owns a
+      +1 already, release the field's old value, then store.  The slot
+      address is re-derived after the release call (it clobbers x9). }
+    Self.EmitExprToX0(AStmt.Expr);
+    if (AStmt.FieldInfo.TypeDesc.IsString() and
+        not OwnsStringRef(AStmt.Expr)) or
+       ((AStmt.FieldInfo.TypeDesc.Kind = tyClass) and
+        not ArcExprOwnsRef(AStmt.Expr)) then
+    begin
+      EmitPushX0();
+      if AStmt.FieldInfo.TypeDesc.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();
+    EmitSlotAddr('x9', AStmt.RecordName);
+    Self.Emit(Format(#9'ldr x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
+    if AStmt.FieldInfo.TypeDesc.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    EmitSlotAddr('x9', AStmt.RecordName);
+    EmitPopTo('x0');
+    Self.Emit(Format(#9'str x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
+    Exit;
+  end;
   if AStmt.FieldInfo.TypeDesc.Kind = tyDouble then
   begin
     Self.EmitExprToD0OrConvert(AStmt.Expr);
@@ -614,7 +646,9 @@ begin
   begin
     { plain Rec.Field read of a local/global record }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
-            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyDouble)) then
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
+              [tyDouble, tyClass]) or
+            TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
     Self.Emit(Format(#9'ldr x0, [x9, #%d]',
@@ -843,10 +877,30 @@ begin
       end;
       Exit;
     end;
-    { whole-record copy: ARC-clean records only in this slice (managed
-      fields rejected at declaration), so a plain memcpy is exact }
+    { whole-record copy.  With managed fields the ARC discipline mirrors
+      x86-64's record-var assignment: retain the SOURCE's managed fields
+      first, release the destination's old ones, then memcpy the raw
+      bytes — retain-before-release keeps self-assignment (R := R) exact.
+      The walk calls clobber the scratch regs, so the two base addresses
+      live in callee-saved x19/x22 for the duration. }
     if not (AAsgn.Expr is TIdentExpr) then
       NotYet('record assignment from this expression', AAsgn);
+    if not RecretManagedClean(TRecordTypeDesc(AAsgn.ResolvedLhsType)) then
+    begin
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      EmitSlotAddr('x19', TIdentExpr(AAsgn.Expr).Name);
+      EmitSlotAddr('x22', AAsgn.Name);
+      Self.EmitRecordFieldRetains(
+        TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x19');
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      Self.Emit(#9'mov x1, x19');
+      EmitIntLiteral('x2', AAsgn.ResolvedLhsType.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Exit;
+    end;
     EmitSlotAddr('x0', AAsgn.Name);
     EmitPushX0();
     EmitSlotAddr('x0', TIdentExpr(AAsgn.Expr).Name);
@@ -1187,8 +1241,8 @@ begin
     begin
       if VD.ResolvedType.Kind = tyRecord then
       begin
-        if not RecretManagedClean(TRecordTypeDesc(VD.ResolvedType)) then
-          NotYet('records with ARC-managed fields', VD);
+        { managed fields are fine: zero-init nils them, the base-class ARC
+          walks handle copies and the scope-exit release }
         AddLocal(VD.Names.Strings[J], VD.ResolvedType.RawSize());
         FRecLocals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
       end
@@ -1348,6 +1402,17 @@ begin
     EmitLoadSlot('x0', FStrLocals.Strings[I]);
     Self.Emit(#9'bl _StringRelease');
   end;
+  { release the managed fields of record locals — the base-class walk needs
+    a callee-saved base register across its release calls }
+  for I := 0 to FRecLocals.Count - 1 do
+    if not RecretManagedClean(TRecordTypeDesc(FRecLocals.Objects[I])) then
+    begin
+      Self.Emit(#9'str x19, [sp, #-16]!');
+      EmitSlotAddr('x19', FRecLocals.Strings[I]);
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(FRecLocals.Objects[I]), 'x19');
+      Self.Emit(#9'ldr x19, [sp], #16');
+    end;
   if FIsFunction and (RecShape >= 0) then
   begin
     case RecShape of
@@ -1615,8 +1680,6 @@ begin
         FStrGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyRecord then
       begin
-        if not RecretManagedClean(TRecordTypeDesc(VD.ResolvedType)) then
-          NotYet('records with ARC-managed fields', VD);
         FRecGlobals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
         FGlobalSize.Add(VD.Names.Strings[J], VD.ResolvedType.RawSize());
       end
@@ -1673,6 +1736,15 @@ begin
     EmitLoadSlot('x0', FStrGlobals.Strings[I]);
     Self.Emit(#9'bl _StringRelease');
   end;
+  for I := 0 to FRecGlobals.Count - 1 do
+    if not RecretManagedClean(TRecordTypeDesc(FRecGlobals.Objects[I])) then
+    begin
+      Self.Emit(#9'str x19, [sp, #-16]!');
+      EmitSlotAddr('x19', FRecGlobals.Strings[I]);
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(FRecGlobals.Objects[I]), 'x19');
+      Self.Emit(#9'ldr x19, [sp], #16');
+    end;
   Self.Emit(#9'movz w0, #0');
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');

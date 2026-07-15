@@ -67,6 +67,9 @@ type
     { slice 8: record PARAMETERS per AAPCS64 }
     procedure TestRecordParam_SmallImagesAndHfa;
     procedure TestRecordParam_LargeByPointer;
+    { slice 9: records with ARC-managed fields via the base walks }
+    procedure TestManagedRecord_CopyAndFieldStore;
+    procedure TestManagedRecord_ScopeExitRelease;
   end;
 
 implementation
@@ -754,6 +757,87 @@ begin
   { and the whole module still assembles to a valid Mach-O object }
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64recpar.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestManagedRecord_CopyAndFieldStore;
+var
+  AsmT: string;
+  PosRetain, PosRelease, PosCpy: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TNamed = record
+        Id: Int64;
+        Name: string;
+      end;
+    var
+      A, B: TNamed;
+    begin
+      A.Name := 'hello';
+      B := A;
+      WriteLn(B.Name)
+    end.
+    ''');
+  { field store: retain the incoming value, release the old field }
+  AssertTrue('field store retains', Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  { whole-copy discipline: retain source fields BEFORE releasing the
+    destination's (self-assignment safety), memcpy after both }
+  PosRetain := Pos('_StringAddRef', AsmT);
+  PosRelease := Pos('_StringRelease', AsmT);
+  PosCpy := Pos('bl memcpy', AsmT);
+  AssertTrue('retain present', PosRetain >= 0);
+  AssertTrue('release present', PosRelease >= 0);
+  AssertTrue('memcpy present', PosCpy >= 0);
+  { the copy walks from callee-saved bases }
+  AssertTrue('walk bases are callee-saved',
+    Pos(#9'stp x19, x22, [sp, #-16]!', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestManagedRecord_ScopeExitRelease;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TNamed = record
+        Id: Int64;
+        Name: string;
+      end;
+    procedure Use;
+    var
+      L: TNamed;
+    begin
+      L.Name := 'local';
+      WriteLn(L.Name)
+    end;
+    var
+      G: TNamed;
+    begin
+      G.Name := 'global';
+      Use();
+      WriteLn(G.Name)
+    end.
+    ''');
+  { the local's managed field is released at the routine's exit label and
+    the global's at program exit — each walk anchors on saved x19 }
+  AssertTrue('scope-exit walk saves x19',
+    Pos(#9'str x19, [sp, #-16]!', AsmT) >= 0);
+  AssertTrue('walk releases through x19', Pos('[x19', AsmT) >= 0);
+  { and the whole module still assembles to a valid Mach-O object }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64mrec.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
