@@ -83,5 +83,6 @@ progress-native-backend.txt
 # Local design/FYI notes — kept untracked
 docs/opdf-emission-design.adoc
 
-# Local examples
-examples/
+# Local examples (root-level scratch dir only — committed example dirs like
+# bindings/examples/ are tracked)
+/examples/
