@@ -81,6 +81,9 @@ type
     procedure TestVarParams_WriteThroughAndPassThrough;
     { slice 15: Single end to end (4-byte storage, double arithmetic) }
     procedure TestSingle_LoadsStoresParamsResult;
+    { slice 16: classes — create, methods, fields, ARC, metadata }
+    procedure TestClass_CreateFieldsMethodsMetadata;
+    procedure TestClass_VirtualDispatchAndDestroy;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -365,7 +368,8 @@ begin
       '''
       program P;
       type
-        TC = class
+        IThing = interface
+          procedure Go;
         end;
       begin
       end.
@@ -1215,6 +1219,109 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestClass_CreateFieldsMethodsMetadata;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TCounter = class
+        FCount: Int64;
+        FName: string;
+        procedure Bump;
+        function Value: Int64;
+      end;
+    procedure TCounter.Bump;
+    begin
+      FCount := FCount + 1
+    end;
+    function TCounter.Value: Int64;
+    begin
+      Result := FCount
+    end;
+    var
+      C: TCounter;
+    begin
+      C := TCounter.Create();
+      C.Bump();
+      C.FName := 'named';
+      WriteLn(C.Value());
+      WriteLn(C.FName)
+    end.
+    ''');
+  { creation goes through the RTL with the class typeinfo }
+  AssertTrue('typeinfo passed to _ClassCreate',
+    Pos('add x0, x0, typeinfo_TCounter@PAGEOFF', AsmT) >= 0);
+  AssertTrue('creates via the RTL', Pos(#9'bl _ClassCreate', AsmT) >= 0);
+  { non-virtual methods dispatch directly to the mangled symbol }
+  AssertTrue('direct method call', Pos(#9'bl TCounter_Bump', AsmT) >= 0);
+  { metadata: typeinfo slots + vtable with the typeinfo back-pointer }
+  AssertTrue('typeinfo emitted', Pos('typeinfo_TCounter:', AsmT) >= 0);
+  AssertTrue('vtable emitted', Pos('vtable_TCounter:', AsmT) >= 0);
+  AssertTrue('vtable slot 0 is the typeinfo',
+    Pos(#9'.quad typeinfo_TCounter', AsmT) >= 0);
+  AssertTrue('cleanup emitted', Pos('_FieldCleanup_TCounter:', AsmT) >= 0);
+  { the class-typed global is released at program exit }
+  AssertTrue('program-exit release', Pos(#9'bl _ClassRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64class.o');
+  try
+    AssertTrue('has a data section',
+      F.FindSection('__DATA', '__data') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestClass_VirtualDispatchAndDestroy;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TAnimal = class
+        function Speak: Int64; virtual;
+        destructor Destroy; override;
+      end;
+      TDog = class(TAnimal)
+        function Speak: Int64; override;
+      end;
+    function TAnimal.Speak: Int64;
+    begin
+      Result := 1
+    end;
+    destructor TAnimal.Destroy;
+    begin
+    end;
+    function TDog.Speak: Int64;
+    begin
+      Result := 2
+    end;
+    var
+      A: TAnimal;
+    begin
+      A := TDog.Create();
+      WriteLn(A.Speak())
+    end.
+    ''');
+  { virtual dispatch: vtable load + slot load + blr }
+  AssertTrue('vtable indirection', Pos(#9'blr x9', AsmT) >= 0);
+  { the derived vtable carries the override }
+  AssertTrue('override in TDog vtable', Pos(#9'.quad TDog_Speak', AsmT) >= 0);
+  { the cleanup chain calls the user destructor }
+  AssertTrue('cleanup calls Destroy',
+    Pos('_Destroy', AsmT) >= 0);
+  { parent typeinfo chains to the base class }
+  AssertTrue('parent typeinfo link',
+    Pos(#9'.quad typeinfo_TAnimal', AsmT) >= 0);
 end;
 
 initialization
