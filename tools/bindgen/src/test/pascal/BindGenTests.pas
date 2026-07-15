@@ -14,7 +14,8 @@ uses
   bg.test.typemap,
   bg.test.clang,
   bg.test.emit,
-  bg.test.layout;
+  bg.test.layout,
+  bg.test.macros;
 
 begin
   Halt(RunAll());

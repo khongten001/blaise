@@ -2,3 +2,4 @@
    is invoked with a file match of "sample.h". */
 typedef unsigned int DepType;
 extern DepType dep_func(int a);
+#define DEP_HIDDEN 99

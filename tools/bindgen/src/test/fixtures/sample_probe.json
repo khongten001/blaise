@@ -1,0 +1,3928 @@
+{
+  "id": "0x5c37d6282228",
+  "kind": "TranslationUnitDecl",
+  "loc": {},
+  "range": {
+    "begin": {},
+    "end": {}
+  },
+  "inner": [
+    {
+      "id": "0x5c37d6282a58",
+      "kind": "TypedefDecl",
+      "loc": {},
+      "range": {
+        "begin": {},
+        "end": {}
+      },
+      "isImplicit": true,
+      "name": "__int128_t",
+      "type": {
+        "qualType": "__int128"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62827f0",
+          "kind": "BuiltinType",
+          "type": {
+            "qualType": "__int128"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d6282ac8",
+      "kind": "TypedefDecl",
+      "loc": {},
+      "range": {
+        "begin": {},
+        "end": {}
+      },
+      "isImplicit": true,
+      "name": "__uint128_t",
+      "type": {
+        "qualType": "unsigned __int128"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d6282810",
+          "kind": "BuiltinType",
+          "type": {
+            "qualType": "unsigned __int128"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d6282dd0",
+      "kind": "TypedefDecl",
+      "loc": {},
+      "range": {
+        "begin": {},
+        "end": {}
+      },
+      "isImplicit": true,
+      "name": "__NSConstantString",
+      "type": {
+        "qualType": "struct __NSConstantString_tag"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d6282ba0",
+          "kind": "RecordType",
+          "type": {
+            "qualType": "struct __NSConstantString_tag"
+          },
+          "decl": {
+            "id": "0x5c37d6282b20",
+            "kind": "RecordDecl",
+            "name": "__NSConstantString_tag"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d6282e78",
+      "kind": "TypedefDecl",
+      "loc": {},
+      "range": {
+        "begin": {},
+        "end": {}
+      },
+      "isImplicit": true,
+      "name": "__builtin_ms_va_list",
+      "type": {
+        "qualType": "char *"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d6282e30",
+          "kind": "PointerType",
+          "type": {
+            "qualType": "char *"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62822d0",
+              "kind": "BuiltinType",
+              "type": {
+                "qualType": "char"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d6283170",
+      "kind": "TypedefDecl",
+      "loc": {},
+      "range": {
+        "begin": {},
+        "end": {}
+      },
+      "isImplicit": true,
+      "name": "__builtin_va_list",
+      "type": {
+        "qualType": "struct __va_list_tag[1]"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d6283110",
+          "kind": "ConstantArrayType",
+          "type": {
+            "qualType": "struct __va_list_tag[1]"
+          },
+          "size": 1,
+          "inner": [
+            {
+              "id": "0x5c37d6282f50",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "struct __va_list_tag"
+              },
+              "decl": {
+                "id": "0x5c37d6282ed0",
+                "kind": "RecordDecl",
+                "name": "__va_list_tag"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e25b0",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 143,
+        "file": "./sample_dep.h",
+        "line": 3,
+        "col": 22,
+        "tokLen": 7,
+        "includedFrom": {
+          "file": "./sample.h"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 122,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "./sample.h"
+          }
+        },
+        "end": {
+          "offset": 143,
+          "col": 22,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "./sample.h"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "DepType",
+      "type": {
+        "qualType": "unsigned int"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62823d0",
+          "kind": "BuiltinType",
+          "type": {
+            "qualType": "unsigned int"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e2790",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 167,
+        "line": 4,
+        "col": 16,
+        "tokLen": 8,
+        "includedFrom": {
+          "file": "./sample.h"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 152,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "./sample.h"
+          }
+        },
+        "end": {
+          "offset": 181,
+          "col": 30,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "./sample.h"
+          }
+        }
+      },
+      "name": "dep_func",
+      "mangledName": "dep_func",
+      "type": {
+        "qualType": "DepType (int)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e2688",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 180,
+            "col": 29,
+            "tokLen": 1,
+            "includedFrom": {
+              "file": "./sample.h"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 176,
+              "col": 25,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "./sample.h"
+              }
+            },
+            "end": {
+              "offset": 180,
+              "col": 29,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "./sample.h"
+              }
+            }
+          },
+          "name": "a",
+          "type": {
+            "qualType": "int"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e28a0",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 201,
+        "file": "./sample.h",
+        "line": 6,
+        "col": 23,
+        "tokLen": 3,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 179,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 201,
+          "col": 23,
+          "tokLen": 3,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "XID",
+      "type": {
+        "qualType": "unsigned long"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62823f0",
+          "kind": "BuiltinType",
+          "type": {
+            "qualType": "unsigned long"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e2970",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 218,
+        "line": 7,
+        "col": 13,
+        "tokLen": 6,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 206,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 218,
+          "col": 13,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "Window",
+      "type": {
+        "desugaredQualType": "unsigned long",
+        "qualType": "XID",
+        "typeAliasDeclId": "0x5c37d62e28a0"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e2930",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "XID"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e2900",
+              "kind": "TypedefType",
+              "type": {
+                "qualType": "XID"
+              },
+              "decl": {
+                "id": "0x5c37d62e28a0",
+                "kind": "TypedefDecl",
+                "name": "XID"
+              },
+              "inner": [
+                {
+                  "id": "0x5c37d62823f0",
+                  "kind": "BuiltinType",
+                  "type": {
+                    "qualType": "unsigned long"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e29c8",
+      "kind": "EnumDecl",
+      "loc": {
+        "offset": 232,
+        "line": 9,
+        "col": 6,
+        "tokLen": 12,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 227,
+          "col": 1,
+          "tokLen": 4,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 300,
+          "col": 74,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XOrientation",
+      "inner": [
+        {
+          "id": "0x5c37d62e2a90",
+          "kind": "EnumConstantDecl",
+          "loc": {
+            "offset": 247,
+            "col": 21,
+            "tokLen": 15,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 247,
+              "col": 21,
+              "tokLen": 15,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 247,
+              "col": 21,
+              "tokLen": 15,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "XOrientVertical",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e2b28",
+          "kind": "EnumConstantDecl",
+          "loc": {
+            "offset": 264,
+            "col": 38,
+            "tokLen": 17,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 264,
+              "col": 38,
+              "tokLen": 17,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 284,
+              "col": 58,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "XOrientHorizontal",
+          "type": {
+            "qualType": "int"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e2b08",
+              "kind": "ConstantExpr",
+              "range": {
+                "begin": {
+                  "offset": 284,
+                  "col": 58,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 284,
+                  "col": 58,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "type": {
+                "qualType": "int"
+              },
+              "valueCategory": "prvalue",
+              "value": "5",
+              "inner": [
+                {
+                  "id": "0x5c37d62e2ae8",
+                  "kind": "IntegerLiteral",
+                  "range": {
+                    "begin": {
+                      "offset": 284,
+                      "col": 58,
+                      "tokLen": 1,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    },
+                    "end": {
+                      "offset": 284,
+                      "col": 58,
+                      "tokLen": 1,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "int"
+                  },
+                  "valueCategory": "prvalue",
+                  "value": "5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "0x5c37d62e2b80",
+          "kind": "EnumConstantDecl",
+          "loc": {
+            "offset": 287,
+            "col": 61,
+            "tokLen": 12,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 287,
+              "col": 61,
+              "tokLen": 12,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 287,
+              "col": 61,
+              "tokLen": 12,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "XOrientOther",
+          "type": {
+            "qualType": "int"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e2bd8",
+      "kind": "RecordDecl",
+      "loc": {
+        "offset": 312,
+        "line": 11,
+        "col": 9,
+        "tokLen": 6,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 312,
+          "col": 9,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 368,
+          "col": 65,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "tagUsed": "struct",
+      "completeDefinition": true,
+      "inner": [
+        {
+          "id": "0x5c37d62e2c98",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 325,
+            "col": 22,
+            "tokLen": 1,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 321,
+              "col": 18,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 325,
+              "col": 22,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "x",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e2d00",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 342,
+            "col": 39,
+            "tokLen": 6,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 328,
+              "col": 25,
+              "tokLen": 8,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 342,
+              "col": 39,
+              "tokLen": 6,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "serial",
+          "type": {
+            "qualType": "unsigned long"
+          }
+        },
+        {
+          "id": "0x5c37d62e2d68",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 362,
+            "col": 59,
+            "tokLen": 4,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 350,
+              "col": 47,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 362,
+              "col": 59,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "name",
+          "type": {
+            "qualType": "const char *"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e2e18",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 370,
+        "col": 67,
+        "tokLen": 6,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 304,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 370,
+          "col": 67,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "XPoint",
+      "type": {
+        "desugaredQualType": "XPoint",
+        "qualType": "struct XPoint"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e2dc0",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "struct XPoint"
+          },
+          "ownedTagDecl": {
+            "id": "0x5c37d62e2bd8",
+            "kind": "RecordDecl",
+            "name": ""
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e2c60",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "XPoint"
+              },
+              "decl": {
+                "id": "0x5c37d62e2bd8",
+                "kind": "RecordDecl",
+                "name": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e2e88",
+      "kind": "RecordDecl",
+      "loc": {
+        "offset": 394,
+        "line": 13,
+        "col": 16,
+        "tokLen": 9,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 387,
+          "col": 9,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 394,
+          "col": 16,
+          "tokLen": 9,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "_XDisplay",
+      "tagUsed": "struct"
+    },
+    {
+      "id": "0x5c37d62e2f88",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 404,
+        "col": 26,
+        "tokLen": 7,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 379,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 404,
+          "col": 26,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "Display",
+      "type": {
+        "qualType": "struct _XDisplay"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e2f30",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "struct _XDisplay"
+          },
+          "ownedTagDecl": {
+            "id": "0x5c37d62e2e88",
+            "kind": "RecordDecl",
+            "name": "_XDisplay"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e2f10",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "struct _XDisplay"
+              },
+              "decl": {
+                "id": "0x5c37d62e2e88",
+                "kind": "RecordDecl",
+                "name": "_XDisplay"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e3318",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 443,
+        "line": 15,
+        "col": 15,
+        "tokLen": 13,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 429,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 480,
+          "col": 52,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XErrorHandler",
+      "type": {
+        "qualType": "int (*)(Display *, int)"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e32a0",
+          "kind": "PointerType",
+          "type": {
+            "qualType": "int (*)(Display *, int)"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e3240",
+              "kind": "ParenType",
+              "type": {
+                "qualType": "int (Display *, int)"
+              },
+              "inner": [
+                {
+                  "id": "0x5c37d62e3200",
+                  "kind": "FunctionProtoType",
+                  "type": {
+                    "qualType": "int (Display *, int)"
+                  },
+                  "cc": "cdecl",
+                  "inner": [
+                    {
+                      "id": "0x5c37d6282330",
+                      "kind": "BuiltinType",
+                      "type": {
+                        "qualType": "int"
+                      }
+                    },
+                    {
+                      "id": "0x5c37d62e3090",
+                      "kind": "PointerType",
+                      "type": {
+                        "qualType": "Display *"
+                      },
+                      "inner": [
+                        {
+                          "id": "0x5c37d62e3030",
+                          "kind": "ElaboratedType",
+                          "type": {
+                            "qualType": "Display"
+                          },
+                          "inner": [
+                            {
+                              "id": "0x5c37d62e3000",
+                              "kind": "TypedefType",
+                              "type": {
+                                "qualType": "Display"
+                              },
+                              "decl": {
+                                "id": "0x5c37d62e2f88",
+                                "kind": "TypedefDecl",
+                                "name": "Display"
+                              },
+                              "inner": [
+                                {
+                                  "id": "0x5c37d62e2f30",
+                                  "kind": "ElaboratedType",
+                                  "type": {
+                                    "qualType": "struct _XDisplay"
+                                  },
+                                  "ownedTagDecl": {
+                                    "id": "0x5c37d62e2e88",
+                                    "kind": "RecordDecl",
+                                    "name": "_XDisplay"
+                                  },
+                                  "inner": [
+                                    {
+                                      "id": "0x5c37d62e2f10",
+                                      "kind": "RecordType",
+                                      "type": {
+                                        "qualType": "struct _XDisplay"
+                                      },
+                                      "decl": {
+                                        "id": "0x5c37d62e2e88",
+                                        "kind": "RecordDecl",
+                                        "name": "_XDisplay"
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": "0x5c37d6282330",
+                      "kind": "BuiltinType",
+                      "type": {
+                        "qualType": "int"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e3498",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 500,
+        "line": 17,
+        "col": 17,
+        "tokLen": 12,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 484,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 537,
+          "col": 54,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XOpenDisplay",
+      "mangledName": "XOpenDisplay",
+      "type": {
+        "qualType": "Display *(const char *)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e3388",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 525,
+            "col": 42,
+            "tokLen": 12,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 513,
+              "col": 30,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 525,
+              "col": 42,
+              "tokLen": 12,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "display_name",
+          "type": {
+            "qualType": "const char *"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e36d8",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 551,
+        "line": 18,
+        "col": 12,
+        "tokLen": 13,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 540,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 577,
+          "col": 38,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XCloseDisplay",
+      "mangledName": "XCloseDisplay",
+      "type": {
+        "qualType": "int (Display *)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e35c0",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 574,
+            "col": 35,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 565,
+              "col": 26,
+              "tokLen": 7,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 574,
+              "col": 35,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "dpy",
+          "type": {
+            "qualType": "Display *"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e3850",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 592,
+        "line": 19,
+        "col": 13,
+        "tokLen": 13,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 580,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 610,
+          "col": 31,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XFlushNothing",
+      "mangledName": "XFlushNothing",
+      "type": {
+        "qualType": "void (void)"
+      },
+      "storageClass": "extern"
+    },
+    {
+      "id": "0x5c37d62e3c70",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 624,
+        "line": 20,
+        "col": 12,
+        "tokLen": 12,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 613,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 688,
+          "col": 76,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XCreateThing",
+      "mangledName": "XCreateThing",
+      "type": {
+        "qualType": "XID (Display *, XPoint, char **, double)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e3910",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 646,
+            "col": 34,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 637,
+              "col": 25,
+              "tokLen": 7,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 646,
+              "col": 34,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "dpy",
+          "type": {
+            "qualType": "Display *"
+          }
+        },
+        {
+          "id": "0x5c37d62e39f0",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 658,
+            "col": 46,
+            "tokLen": 2,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 651,
+              "col": 39,
+              "tokLen": 6,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 658,
+              "col": 46,
+              "tokLen": 2,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "pt",
+          "type": {
+            "qualType": "XPoint",
+            "typeAliasDeclId": "0x5c37d62e2e18"
+          }
+        },
+        {
+          "id": "0x5c37d62e3aa8",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 669,
+            "col": 57,
+            "tokLen": 5,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 662,
+              "col": 50,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 669,
+              "col": 57,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "names",
+          "type": {
+            "qualType": "char **"
+          }
+        },
+        {
+          "id": "0x5c37d62e3b28",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 683,
+            "col": 71,
+            "tokLen": 5,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 676,
+              "col": 64,
+              "tokLen": 6,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 683,
+              "col": 71,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "scale",
+          "type": {
+            "qualType": "double"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e3f10",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 702,
+        "line": 21,
+        "col": 12,
+        "tokLen": 14,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 691,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 744,
+          "col": 54,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XVariadicThing",
+      "mangledName": "XVariadicThing",
+      "type": {
+        "qualType": "int (Display *, int, ...)"
+      },
+      "storageClass": "extern",
+      "variadic": true,
+      "inner": [
+        {
+          "id": "0x5c37d62e3d50",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 726,
+            "col": 36,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 717,
+              "col": 27,
+              "tokLen": 7,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 726,
+              "col": 36,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "dpy",
+          "type": {
+            "qualType": "Display *"
+          }
+        },
+        {
+          "id": "0x5c37d62e3dd0",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 735,
+            "col": 45,
+            "tokLen": 4,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 731,
+              "col": 41,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 735,
+              "col": 45,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "mode",
+          "type": {
+            "qualType": "int"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e40b8",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 758,
+        "line": 22,
+        "col": 12,
+        "tokLen": 13,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 747,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 791,
+          "col": 45,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "hidden_helper",
+      "mangledName": "hidden_helper",
+      "type": {
+        "qualType": "int (int)"
+      },
+      "storageClass": "static",
+      "inner": [
+        {
+          "id": "0x5c37d62e3fe0",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 776,
+            "col": 30,
+            "tokLen": 1,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 772,
+              "col": 26,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 776,
+              "col": 30,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "isUsed": true,
+          "name": "a",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e41b0",
+          "kind": "CompoundStmt",
+          "range": {
+            "begin": {
+              "offset": 779,
+              "col": 33,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 791,
+              "col": 45,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e41a0",
+              "kind": "ReturnStmt",
+              "range": {
+                "begin": {
+                  "offset": 781,
+                  "col": 35,
+                  "tokLen": 6,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 788,
+                  "col": 42,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "inner": [
+                {
+                  "id": "0x5c37d62e4188",
+                  "kind": "ImplicitCastExpr",
+                  "range": {
+                    "begin": {
+                      "offset": 788,
+                      "col": 42,
+                      "tokLen": 1,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    },
+                    "end": {
+                      "offset": 788,
+                      "col": 42,
+                      "tokLen": 1,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "int"
+                  },
+                  "valueCategory": "prvalue",
+                  "castKind": "LValueToRValue",
+                  "inner": [
+                    {
+                      "id": "0x5c37d62e4168",
+                      "kind": "DeclRefExpr",
+                      "range": {
+                        "begin": {
+                          "offset": 788,
+                          "col": 42,
+                          "tokLen": 1,
+                          "includedFrom": {
+                            "file": "sample_probe.c"
+                          }
+                        },
+                        "end": {
+                          "offset": 788,
+                          "col": 42,
+                          "tokLen": 1,
+                          "includedFrom": {
+                            "file": "sample_probe.c"
+                          }
+                        }
+                      },
+                      "type": {
+                        "qualType": "int"
+                      },
+                      "valueCategory": "lvalue",
+                      "referencedDecl": {
+                        "id": "0x5c37d62e3fe0",
+                        "kind": "ParmVarDecl",
+                        "name": "a",
+                        "type": {
+                          "qualType": "int"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e41c8",
+      "kind": "RecordDecl",
+      "loc": {
+        "offset": 879,
+        "line": 25,
+        "col": 15,
+        "tokLen": 13,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 873,
+          "col": 9,
+          "tokLen": 5,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 927,
+          "line": 28,
+          "col": 1,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "_XSampleEvent",
+      "tagUsed": "union",
+      "completeDefinition": true,
+      "inner": [
+        {
+          "id": "0x5c37d62e4288",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 903,
+            "line": 26,
+            "col": 9,
+            "tokLen": 4,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 899,
+              "col": 5,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 903,
+              "col": 9,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "type",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e4388",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 918,
+            "line": 27,
+            "col": 10,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 913,
+              "col": 5,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 924,
+              "col": 16,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "pad",
+          "type": {
+            "qualType": "long[24]"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e4438",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 929,
+        "line": 28,
+        "col": 3,
+        "tokLen": 12,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 865,
+          "line": 25,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 929,
+          "line": 28,
+          "col": 3,
+          "tokLen": 12,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "XSampleEvent",
+      "type": {
+        "qualType": "union _XSampleEvent"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e43e0",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "union _XSampleEvent"
+          },
+          "ownedTagDecl": {
+            "id": "0x5c37d62e41c8",
+            "kind": "RecordDecl",
+            "name": "_XSampleEvent"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e4250",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "union _XSampleEvent"
+              },
+              "decl": {
+                "id": "0x5c37d62e41c8",
+                "kind": "RecordDecl",
+                "name": "_XSampleEvent"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e44a8",
+      "kind": "RecordDecl",
+      "loc": {
+        "offset": 952,
+        "line": 30,
+        "col": 9,
+        "tokLen": 6,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 952,
+          "col": 9,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1061,
+          "line": 37,
+          "col": 1,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "tagUsed": "struct",
+      "completeDefinition": true,
+      "inner": [
+        {
+          "id": "0x5c37d62e4568",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 969,
+            "line": 31,
+            "col": 9,
+            "tokLen": 6,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 965,
+              "col": 5,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 969,
+              "col": 9,
+              "tokLen": 6,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "format",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e49e0",
+          "kind": "RecordDecl",
+          "loc": {
+            "offset": 981,
+            "line": 32,
+            "col": 5,
+            "tokLen": 5,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 981,
+              "col": 5,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1053,
+              "line": 36,
+              "col": 5,
+              "tokLen": 1,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "tagUsed": "union",
+          "completeDefinition": true,
+          "inner": [
+            {
+              "id": "0x5c37d62e4b20",
+              "kind": "FieldDecl",
+              "loc": {
+                "offset": 1002,
+                "line": 33,
+                "col": 14,
+                "tokLen": 1,
+                "includedFrom": {
+                  "file": "sample_probe.c"
+                }
+              },
+              "range": {
+                "begin": {
+                  "offset": 997,
+                  "col": 9,
+                  "tokLen": 4,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 1006,
+                  "col": 18,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "name": "b",
+              "type": {
+                "qualType": "char[20]"
+              }
+            },
+            {
+              "id": "0x5c37d62e4c18",
+              "kind": "FieldDecl",
+              "loc": {
+                "offset": 1023,
+                "line": 34,
+                "col": 15,
+                "tokLen": 1,
+                "includedFrom": {
+                  "file": "sample_probe.c"
+                }
+              },
+              "range": {
+                "begin": {
+                  "offset": 1017,
+                  "col": 9,
+                  "tokLen": 5,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 1027,
+                  "col": 19,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "name": "s",
+              "type": {
+                "qualType": "short[10]"
+              }
+            },
+            {
+              "id": "0x5c37d62e4d18",
+              "kind": "FieldDecl",
+              "loc": {
+                "offset": 1043,
+                "line": 35,
+                "col": 14,
+                "tokLen": 1,
+                "includedFrom": {
+                  "file": "sample_probe.c"
+                }
+              },
+              "range": {
+                "begin": {
+                  "offset": 1038,
+                  "col": 9,
+                  "tokLen": 4,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 1046,
+                  "col": 17,
+                  "tokLen": 1,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "name": "l",
+              "type": {
+                "qualType": "long[5]"
+              }
+            }
+          ]
+        },
+        {
+          "id": "0x5c37d62e4dc8",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 1055,
+            "line": 36,
+            "col": 7,
+            "tokLen": 4,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 981,
+              "line": 32,
+              "col": 5,
+              "tokLen": 5,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1055,
+              "line": 36,
+              "col": 7,
+              "tokLen": 4,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "data",
+          "type": {
+            "desugaredQualType": "union XSampleMessage::(unnamed at ./sample.h:32:5)",
+            "qualType": "union (unnamed union at ./sample.h:32:5)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e4e78",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 1063,
+        "line": 37,
+        "col": 3,
+        "tokLen": 14,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 944,
+          "line": 30,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1063,
+          "line": 37,
+          "col": 3,
+          "tokLen": 14,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XSampleMessage",
+      "type": {
+        "desugaredQualType": "XSampleMessage",
+        "qualType": "struct XSampleMessage"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e4e20",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "struct XSampleMessage"
+          },
+          "ownedTagDecl": {
+            "id": "0x5c37d62e44a8",
+            "kind": "RecordDecl",
+            "name": ""
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e4530",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "XSampleMessage"
+              },
+              "decl": {
+                "id": "0x5c37d62e44a8",
+                "kind": "RecordDecl",
+                "name": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e5168",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 1091,
+        "line": 39,
+        "col": 12,
+        "tokLen": 16,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 1080,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1138,
+          "col": 59,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XSampleNextEvent",
+      "mangledName": "XSampleNextEvent",
+      "type": {
+        "qualType": "int (Display *, XSampleEvent *)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e4f00",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 1117,
+            "col": 38,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 1108,
+              "col": 29,
+              "tokLen": 7,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1117,
+              "col": 38,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "dpy",
+          "type": {
+            "qualType": "Display *"
+          }
+        },
+        {
+          "id": "0x5c37d62e5048",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 1136,
+            "col": 57,
+            "tokLen": 2,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 1122,
+              "col": 43,
+              "tokLen": 12,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1136,
+              "col": 57,
+              "tokLen": 2,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "ev",
+          "type": {
+            "qualType": "XSampleEvent *"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e5220",
+      "kind": "EnumDecl",
+      "loc": {
+        "offset": 1217,
+        "line": 42,
+        "col": 9,
+        "tokLen": 4,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 1217,
+          "col": 9,
+          "tokLen": 4,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1275,
+          "line": 45,
+          "col": 1,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e52e0",
+          "kind": "EnumConstantDecl",
+          "loc": {
+            "offset": 1228,
+            "line": 43,
+            "col": 5,
+            "tokLen": 17,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 1228,
+              "col": 5,
+              "tokLen": 17,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1228,
+              "col": 5,
+              "tokLen": 17,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "XSampleDirForward",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x5c37d62e5378",
+          "kind": "EnumConstantDecl",
+          "loc": {
+            "offset": 1251,
+            "line": 44,
+            "col": 5,
+            "tokLen": 18,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 1251,
+              "col": 5,
+              "tokLen": 18,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1272,
+              "col": 26,
+              "tokLen": 2,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "XSampleDirBackward",
+          "type": {
+            "qualType": "int"
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e5358",
+              "kind": "ConstantExpr",
+              "range": {
+                "begin": {
+                  "offset": 1272,
+                  "col": 26,
+                  "tokLen": 2,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                },
+                "end": {
+                  "offset": 1272,
+                  "col": 26,
+                  "tokLen": 2,
+                  "includedFrom": {
+                    "file": "sample_probe.c"
+                  }
+                }
+              },
+              "type": {
+                "qualType": "int"
+              },
+              "valueCategory": "prvalue",
+              "value": "10",
+              "inner": [
+                {
+                  "id": "0x5c37d62e5338",
+                  "kind": "IntegerLiteral",
+                  "range": {
+                    "begin": {
+                      "offset": 1272,
+                      "col": 26,
+                      "tokLen": 2,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    },
+                    "end": {
+                      "offset": 1272,
+                      "col": 26,
+                      "tokLen": 2,
+                      "includedFrom": {
+                        "file": "sample_probe.c"
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "int"
+                  },
+                  "valueCategory": "prvalue",
+                  "value": "10"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e5428",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 1277,
+        "line": 45,
+        "col": 3,
+        "tokLen": 16,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 1209,
+          "line": 42,
+          "col": 1,
+          "tokLen": 7,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1277,
+          "line": 45,
+          "col": 3,
+          "tokLen": 16,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "isReferenced": true,
+      "name": "XSampleDirection",
+      "type": {
+        "desugaredQualType": "XSampleDirection",
+        "qualType": "enum XSampleDirection"
+      },
+      "inner": [
+        {
+          "id": "0x5c37d62e53d0",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "enum XSampleDirection"
+          },
+          "ownedTagDecl": {
+            "id": "0x5c37d62e5220",
+            "kind": "EnumDecl",
+            "name": ""
+          },
+          "inner": [
+            {
+              "id": "0x5c37d62e52c0",
+              "kind": "EnumType",
+              "type": {
+                "qualType": "XSampleDirection"
+              },
+              "decl": {
+                "id": "0x5c37d62e5220",
+                "kind": "EnumDecl",
+                "name": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e5620",
+      "kind": "FunctionDecl",
+      "loc": {
+        "offset": 1308,
+        "line": 47,
+        "col": 13,
+        "tokLen": 19,
+        "includedFrom": {
+          "file": "sample_probe.c"
+        }
+      },
+      "range": {
+        "begin": {
+          "offset": 1296,
+          "col": 1,
+          "tokLen": 6,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        },
+        "end": {
+          "offset": 1348,
+          "col": 53,
+          "tokLen": 1,
+          "includedFrom": {
+            "file": "sample_probe.c"
+          }
+        }
+      },
+      "name": "XSampleSetDirection",
+      "mangledName": "XSampleSetDirection",
+      "type": {
+        "qualType": "void (XSampleDirection)"
+      },
+      "storageClass": "extern",
+      "inner": [
+        {
+          "id": "0x5c37d62e5510",
+          "kind": "ParmVarDecl",
+          "loc": {
+            "offset": 1345,
+            "col": 50,
+            "tokLen": 3,
+            "includedFrom": {
+              "file": "sample_probe.c"
+            }
+          },
+          "range": {
+            "begin": {
+              "offset": 1328,
+              "col": 33,
+              "tokLen": 16,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            },
+            "end": {
+              "offset": 1345,
+              "col": 50,
+              "tokLen": 3,
+              "includedFrom": {
+                "file": "sample_probe.c"
+              }
+            }
+          },
+          "name": "dir",
+          "type": {
+            "qualType": "XSampleDirection",
+            "typeAliasDeclId": "0x5c37d62e5428"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e56e8",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 43,
+        "file": "sample_probe.c",
+        "line": 2,
+        "col": 24,
+        "tokLen": 14
+      },
+      "range": {
+        "begin": {
+          "offset": 20,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 80,
+          "col": 61,
+          "tokLen": 1
+        }
+      },
+      "name": "__bgm_SAMPLE_A",
+      "mangledName": "__bgm_SAMPLE_A",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static",
+      "init": "c",
+      "inner": [
+        {
+          "id": "0x5c37d62e57c8",
+          "kind": "CStyleCastExpr",
+          "range": {
+            "begin": {
+              "offset": 60,
+              "col": 41,
+              "tokLen": 1
+            },
+            "end": {
+              "offset": 80,
+              "col": 61,
+              "tokLen": 1
+            }
+          },
+          "type": {
+            "qualType": "long long"
+          },
+          "valueCategory": "prvalue",
+          "castKind": "IntegralCast",
+          "inner": [
+            {
+              "id": "0x5c37d62e57a8",
+              "kind": "ParenExpr",
+              "range": {
+                "begin": {
+                  "offset": 71,
+                  "col": 52,
+                  "tokLen": 1
+                },
+                "end": {
+                  "offset": 80,
+                  "col": 61,
+                  "tokLen": 1
+                }
+              },
+              "type": {
+                "qualType": "int"
+              },
+              "valueCategory": "prvalue",
+              "inner": [
+                {
+                  "id": "0x5c37d62e5750",
+                  "kind": "IntegerLiteral",
+                  "range": {
+                    "begin": {
+                      "spellingLoc": {
+                        "offset": 1476,
+                        "file": "./sample.h",
+                        "line": 51,
+                        "col": 18,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 72,
+                        "file": "sample_probe.c",
+                        "line": 2,
+                        "col": 53,
+                        "tokLen": 8
+                      }
+                    },
+                    "end": {
+                      "spellingLoc": {
+                        "offset": 1476,
+                        "file": "./sample.h",
+                        "line": 51,
+                        "col": 18,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 72,
+                        "file": "sample_probe.c",
+                        "line": 2,
+                        "col": 53,
+                        "tokLen": 8
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "int"
+                  },
+                  "valueCategory": "prvalue",
+                  "value": "2"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e5808",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 106,
+        "line": 3,
+        "col": 24,
+        "tokLen": 17
+      },
+      "range": {
+        "begin": {
+          "offset": 83,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 149,
+          "col": 67,
+          "tokLen": 1
+        }
+      },
+      "name": "__bgm_SAMPLE_MASK",
+      "mangledName": "__bgm_SAMPLE_MASK",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static",
+      "init": "c",
+      "inner": [
+        {
+          "id": "0x5c37d62e5948",
+          "kind": "CStyleCastExpr",
+          "range": {
+            "begin": {
+              "offset": 126,
+              "col": 44,
+              "tokLen": 1
+            },
+            "end": {
+              "offset": 149,
+              "col": 67,
+              "tokLen": 1
+            }
+          },
+          "type": {
+            "qualType": "long long"
+          },
+          "valueCategory": "prvalue",
+          "castKind": "IntegralCast",
+          "inner": [
+            {
+              "id": "0x5c37d62e5928",
+              "kind": "ParenExpr",
+              "range": {
+                "begin": {
+                  "offset": 137,
+                  "col": 55,
+                  "tokLen": 1
+                },
+                "end": {
+                  "offset": 149,
+                  "col": 67,
+                  "tokLen": 1
+                }
+              },
+              "type": {
+                "qualType": "long"
+              },
+              "valueCategory": "prvalue",
+              "inner": [
+                {
+                  "id": "0x5c37d62e58d0",
+                  "kind": "ParenExpr",
+                  "range": {
+                    "begin": {
+                      "spellingLoc": {
+                        "offset": 1498,
+                        "file": "./sample.h",
+                        "line": 52,
+                        "col": 21,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 138,
+                        "file": "sample_probe.c",
+                        "line": 3,
+                        "col": 56,
+                        "tokLen": 11
+                      }
+                    },
+                    "end": {
+                      "spellingLoc": {
+                        "offset": 1505,
+                        "file": "./sample.h",
+                        "line": 52,
+                        "col": 28,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 138,
+                        "file": "sample_probe.c",
+                        "line": 3,
+                        "col": 56,
+                        "tokLen": 11
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "long"
+                  },
+                  "valueCategory": "prvalue",
+                  "inner": [
+                    {
+                      "id": "0x5c37d62e58b0",
+                      "kind": "BinaryOperator",
+                      "range": {
+                        "begin": {
+                          "spellingLoc": {
+                            "offset": 1499,
+                            "file": "./sample.h",
+                            "line": 52,
+                            "col": 22,
+                            "tokLen": 2,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 138,
+                            "file": "sample_probe.c",
+                            "line": 3,
+                            "col": 56,
+                            "tokLen": 11
+                          }
+                        },
+                        "end": {
+                          "spellingLoc": {
+                            "offset": 1503,
+                            "file": "./sample.h",
+                            "line": 52,
+                            "col": 26,
+                            "tokLen": 2,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 138,
+                            "file": "sample_probe.c",
+                            "line": 3,
+                            "col": 56,
+                            "tokLen": 11
+                          }
+                        }
+                      },
+                      "type": {
+                        "qualType": "long"
+                      },
+                      "valueCategory": "prvalue",
+                      "opcode": "<<",
+                      "inner": [
+                        {
+                          "id": "0x5c37d62e5870",
+                          "kind": "IntegerLiteral",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1499,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 22,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 138,
+                                "file": "sample_probe.c",
+                                "line": 3,
+                                "col": 56,
+                                "tokLen": 11
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1499,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 22,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 138,
+                                "file": "sample_probe.c",
+                                "line": 3,
+                                "col": 56,
+                                "tokLen": 11
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "long"
+                          },
+                          "valueCategory": "prvalue",
+                          "value": "1"
+                        },
+                        {
+                          "id": "0x5c37d62e5890",
+                          "kind": "IntegerLiteral",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1503,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 26,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 138,
+                                "file": "sample_probe.c",
+                                "line": 3,
+                                "col": 56,
+                                "tokLen": 11
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1503,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 26,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 138,
+                                "file": "sample_probe.c",
+                                "line": 3,
+                                "col": 56,
+                                "tokLen": 11
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "int"
+                          },
+                          "valueCategory": "prvalue",
+                          "value": "15"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e6e10",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 175,
+        "line": 4,
+        "col": 24,
+        "tokLen": 16
+      },
+      "range": {
+        "begin": {
+          "offset": 152,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 216,
+          "col": 65,
+          "tokLen": 1
+        }
+      },
+      "name": "__bgm_SAMPLE_NEG",
+      "mangledName": "__bgm_SAMPLE_NEG",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static",
+      "init": "c",
+      "inner": [
+        {
+          "id": "0x5c37d62e6f28",
+          "kind": "CStyleCastExpr",
+          "range": {
+            "begin": {
+              "offset": 194,
+              "col": 43,
+              "tokLen": 1
+            },
+            "end": {
+              "offset": 216,
+              "col": 65,
+              "tokLen": 1
+            }
+          },
+          "type": {
+            "qualType": "long long"
+          },
+          "valueCategory": "prvalue",
+          "castKind": "IntegralCast",
+          "inner": [
+            {
+              "id": "0x5c37d62e6f08",
+              "kind": "ParenExpr",
+              "range": {
+                "begin": {
+                  "offset": 205,
+                  "col": 54,
+                  "tokLen": 1
+                },
+                "end": {
+                  "offset": 216,
+                  "col": 65,
+                  "tokLen": 1
+                }
+              },
+              "type": {
+                "qualType": "int"
+              },
+              "valueCategory": "prvalue",
+              "inner": [
+                {
+                  "id": "0x5c37d62e6eb0",
+                  "kind": "ParenExpr",
+                  "range": {
+                    "begin": {
+                      "spellingLoc": {
+                        "offset": 1526,
+                        "file": "./sample.h",
+                        "line": 53,
+                        "col": 20,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 206,
+                        "file": "sample_probe.c",
+                        "line": 4,
+                        "col": 55,
+                        "tokLen": 10
+                      }
+                    },
+                    "end": {
+                      "spellingLoc": {
+                        "offset": 1529,
+                        "file": "./sample.h",
+                        "line": 53,
+                        "col": 23,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 206,
+                        "file": "sample_probe.c",
+                        "line": 4,
+                        "col": 55,
+                        "tokLen": 10
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "int"
+                  },
+                  "valueCategory": "prvalue",
+                  "inner": [
+                    {
+                      "id": "0x5c37d62e6e98",
+                      "kind": "UnaryOperator",
+                      "range": {
+                        "begin": {
+                          "spellingLoc": {
+                            "offset": 1527,
+                            "file": "./sample.h",
+                            "line": 53,
+                            "col": 21,
+                            "tokLen": 1,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 206,
+                            "file": "sample_probe.c",
+                            "line": 4,
+                            "col": 55,
+                            "tokLen": 10
+                          }
+                        },
+                        "end": {
+                          "spellingLoc": {
+                            "offset": 1528,
+                            "file": "./sample.h",
+                            "line": 53,
+                            "col": 22,
+                            "tokLen": 1,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 206,
+                            "file": "sample_probe.c",
+                            "line": 4,
+                            "col": 55,
+                            "tokLen": 10
+                          }
+                        }
+                      },
+                      "type": {
+                        "qualType": "int"
+                      },
+                      "valueCategory": "prvalue",
+                      "isPostfix": false,
+                      "opcode": "-",
+                      "inner": [
+                        {
+                          "id": "0x5c37d62e6e78",
+                          "kind": "IntegerLiteral",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1528,
+                                "file": "./sample.h",
+                                "line": 53,
+                                "col": 22,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 206,
+                                "file": "sample_probe.c",
+                                "line": 4,
+                                "col": 55,
+                                "tokLen": 10
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1528,
+                                "file": "./sample.h",
+                                "line": 53,
+                                "col": 22,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 206,
+                                "file": "sample_probe.c",
+                                "line": 4,
+                                "col": 55,
+                                "tokLen": 10
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "int"
+                          },
+                          "valueCategory": "prvalue",
+                          "value": "5"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e6f68",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 242,
+        "line": 5,
+        "col": 24,
+        "tokLen": 16
+      },
+      "range": {
+        "begin": {
+          "offset": 219,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 283,
+          "col": 65,
+          "tokLen": 1
+        }
+      },
+      "name": "__bgm_SAMPLE_ALL",
+      "mangledName": "__bgm_SAMPLE_ALL",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static",
+      "init": "c",
+      "inner": [
+        {
+          "id": "0x5c37d62e7080",
+          "kind": "CStyleCastExpr",
+          "range": {
+            "begin": {
+              "offset": 261,
+              "col": 43,
+              "tokLen": 1
+            },
+            "end": {
+              "offset": 283,
+              "col": 65,
+              "tokLen": 1
+            }
+          },
+          "type": {
+            "qualType": "long long"
+          },
+          "valueCategory": "prvalue",
+          "castKind": "IntegralCast",
+          "inner": [
+            {
+              "id": "0x5c37d62e7060",
+              "kind": "ParenExpr",
+              "range": {
+                "begin": {
+                  "offset": 272,
+                  "col": 54,
+                  "tokLen": 1
+                },
+                "end": {
+                  "offset": 283,
+                  "col": 65,
+                  "tokLen": 1
+                }
+              },
+              "type": {
+                "qualType": "long"
+              },
+              "valueCategory": "prvalue",
+              "inner": [
+                {
+                  "id": "0x5c37d62e7008",
+                  "kind": "ParenExpr",
+                  "range": {
+                    "begin": {
+                      "spellingLoc": {
+                        "offset": 1550,
+                        "file": "./sample.h",
+                        "line": 54,
+                        "col": 20,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 273,
+                        "file": "sample_probe.c",
+                        "line": 5,
+                        "col": 55,
+                        "tokLen": 10
+                      }
+                    },
+                    "end": {
+                      "spellingLoc": {
+                        "offset": 1554,
+                        "file": "./sample.h",
+                        "line": 54,
+                        "col": 24,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 273,
+                        "file": "sample_probe.c",
+                        "line": 5,
+                        "col": 55,
+                        "tokLen": 10
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "long"
+                  },
+                  "valueCategory": "prvalue",
+                  "inner": [
+                    {
+                      "id": "0x5c37d62e6ff0",
+                      "kind": "UnaryOperator",
+                      "range": {
+                        "begin": {
+                          "spellingLoc": {
+                            "offset": 1551,
+                            "file": "./sample.h",
+                            "line": 54,
+                            "col": 21,
+                            "tokLen": 1,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 273,
+                            "file": "sample_probe.c",
+                            "line": 5,
+                            "col": 55,
+                            "tokLen": 10
+                          }
+                        },
+                        "end": {
+                          "spellingLoc": {
+                            "offset": 1552,
+                            "file": "./sample.h",
+                            "line": 54,
+                            "col": 22,
+                            "tokLen": 2,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 273,
+                            "file": "sample_probe.c",
+                            "line": 5,
+                            "col": 55,
+                            "tokLen": 10
+                          }
+                        }
+                      },
+                      "type": {
+                        "qualType": "long"
+                      },
+                      "valueCategory": "prvalue",
+                      "isPostfix": false,
+                      "opcode": "~",
+                      "canOverflow": false,
+                      "inner": [
+                        {
+                          "id": "0x5c37d62e6fd0",
+                          "kind": "IntegerLiteral",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1552,
+                                "file": "./sample.h",
+                                "line": 54,
+                                "col": 22,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 273,
+                                "file": "sample_probe.c",
+                                "line": 5,
+                                "col": 55,
+                                "tokLen": 10
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1552,
+                                "file": "./sample.h",
+                                "line": 54,
+                                "col": 22,
+                                "tokLen": 2,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 273,
+                                "file": "sample_probe.c",
+                                "line": 5,
+                                "col": 55,
+                                "tokLen": 10
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "long"
+                          },
+                          "valueCategory": "prvalue",
+                          "value": "0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e70c0",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 309,
+        "line": 6,
+        "col": 24,
+        "tokLen": 18
+      },
+      "range": {
+        "begin": {
+          "offset": 286,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 354,
+          "col": 69,
+          "tokLen": 1
+        }
+      },
+      "name": "__bgm_SAMPLE_COMBO",
+      "mangledName": "__bgm_SAMPLE_COMBO",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static",
+      "init": "c",
+      "inner": [
+        {
+          "id": "0x5c37d62e7278",
+          "kind": "CStyleCastExpr",
+          "range": {
+            "begin": {
+              "offset": 330,
+              "col": 45,
+              "tokLen": 1
+            },
+            "end": {
+              "offset": 354,
+              "col": 69,
+              "tokLen": 1
+            }
+          },
+          "type": {
+            "qualType": "long long"
+          },
+          "valueCategory": "prvalue",
+          "castKind": "IntegralCast",
+          "inner": [
+            {
+              "id": "0x5c37d62e7258",
+              "kind": "ParenExpr",
+              "range": {
+                "begin": {
+                  "offset": 341,
+                  "col": 56,
+                  "tokLen": 1
+                },
+                "end": {
+                  "offset": 354,
+                  "col": 69,
+                  "tokLen": 1
+                }
+              },
+              "type": {
+                "qualType": "long"
+              },
+              "valueCategory": "prvalue",
+              "inner": [
+                {
+                  "id": "0x5c37d62e7200",
+                  "kind": "ParenExpr",
+                  "range": {
+                    "begin": {
+                      "spellingLoc": {
+                        "offset": 1577,
+                        "file": "./sample.h",
+                        "line": 55,
+                        "col": 22,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 342,
+                        "file": "sample_probe.c",
+                        "line": 6,
+                        "col": 57,
+                        "tokLen": 12
+                      }
+                    },
+                    "end": {
+                      "spellingLoc": {
+                        "offset": 1600,
+                        "file": "./sample.h",
+                        "line": 55,
+                        "col": 45,
+                        "tokLen": 1,
+                        "includedFrom": {
+                          "file": "sample_probe.c"
+                        }
+                      },
+                      "expansionLoc": {
+                        "offset": 342,
+                        "file": "sample_probe.c",
+                        "line": 6,
+                        "col": 57,
+                        "tokLen": 12
+                      }
+                    }
+                  },
+                  "type": {
+                    "qualType": "long"
+                  },
+                  "valueCategory": "prvalue",
+                  "inner": [
+                    {
+                      "id": "0x5c37d62e71e0",
+                      "kind": "BinaryOperator",
+                      "range": {
+                        "begin": {
+                          "spellingLoc": {
+                            "offset": 1476,
+                            "file": "./sample.h",
+                            "line": 51,
+                            "col": 18,
+                            "tokLen": 1,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 342,
+                            "file": "sample_probe.c",
+                            "line": 6,
+                            "col": 57,
+                            "tokLen": 12
+                          }
+                        },
+                        "end": {
+                          "spellingLoc": {
+                            "offset": 1505,
+                            "file": "./sample.h",
+                            "line": 52,
+                            "col": 28,
+                            "tokLen": 1,
+                            "includedFrom": {
+                              "file": "sample_probe.c"
+                            }
+                          },
+                          "expansionLoc": {
+                            "offset": 342,
+                            "file": "sample_probe.c",
+                            "line": 6,
+                            "col": 57,
+                            "tokLen": 12
+                          }
+                        }
+                      },
+                      "type": {
+                        "qualType": "long"
+                      },
+                      "valueCategory": "prvalue",
+                      "opcode": "|",
+                      "inner": [
+                        {
+                          "id": "0x5c37d62e71c8",
+                          "kind": "ImplicitCastExpr",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1476,
+                                "file": "./sample.h",
+                                "line": 51,
+                                "col": 18,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 342,
+                                "file": "sample_probe.c",
+                                "line": 6,
+                                "col": 57,
+                                "tokLen": 12
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1476,
+                                "file": "./sample.h",
+                                "line": 51,
+                                "col": 18,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 342,
+                                "file": "sample_probe.c",
+                                "line": 6,
+                                "col": 57,
+                                "tokLen": 12
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "long"
+                          },
+                          "valueCategory": "prvalue",
+                          "castKind": "IntegralCast",
+                          "inner": [
+                            {
+                              "id": "0x5c37d62e7128",
+                              "kind": "IntegerLiteral",
+                              "range": {
+                                "begin": {
+                                  "spellingLoc": {
+                                    "offset": 1476,
+                                    "file": "./sample.h",
+                                    "line": 51,
+                                    "col": 18,
+                                    "tokLen": 1,
+                                    "includedFrom": {
+                                      "file": "sample_probe.c"
+                                    }
+                                  },
+                                  "expansionLoc": {
+                                    "offset": 342,
+                                    "file": "sample_probe.c",
+                                    "line": 6,
+                                    "col": 57,
+                                    "tokLen": 12
+                                  }
+                                },
+                                "end": {
+                                  "spellingLoc": {
+                                    "offset": 1476,
+                                    "file": "./sample.h",
+                                    "line": 51,
+                                    "col": 18,
+                                    "tokLen": 1,
+                                    "includedFrom": {
+                                      "file": "sample_probe.c"
+                                    }
+                                  },
+                                  "expansionLoc": {
+                                    "offset": 342,
+                                    "file": "sample_probe.c",
+                                    "line": 6,
+                                    "col": 57,
+                                    "tokLen": 12
+                                  }
+                                }
+                              },
+                              "type": {
+                                "qualType": "int"
+                              },
+                              "valueCategory": "prvalue",
+                              "value": "2"
+                            }
+                          ]
+                        },
+                        {
+                          "id": "0x5c37d62e71a8",
+                          "kind": "ParenExpr",
+                          "range": {
+                            "begin": {
+                              "spellingLoc": {
+                                "offset": 1498,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 21,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 342,
+                                "file": "sample_probe.c",
+                                "line": 6,
+                                "col": 57,
+                                "tokLen": 12
+                              }
+                            },
+                            "end": {
+                              "spellingLoc": {
+                                "offset": 1505,
+                                "file": "./sample.h",
+                                "line": 52,
+                                "col": 28,
+                                "tokLen": 1,
+                                "includedFrom": {
+                                  "file": "sample_probe.c"
+                                }
+                              },
+                              "expansionLoc": {
+                                "offset": 342,
+                                "file": "sample_probe.c",
+                                "line": 6,
+                                "col": 57,
+                                "tokLen": 12
+                              }
+                            }
+                          },
+                          "type": {
+                            "qualType": "long"
+                          },
+                          "valueCategory": "prvalue",
+                          "inner": [
+                            {
+                              "id": "0x5c37d62e7188",
+                              "kind": "BinaryOperator",
+                              "range": {
+                                "begin": {
+                                  "spellingLoc": {
+                                    "offset": 1499,
+                                    "file": "./sample.h",
+                                    "line": 52,
+                                    "col": 22,
+                                    "tokLen": 2,
+                                    "includedFrom": {
+                                      "file": "sample_probe.c"
+                                    }
+                                  },
+                                  "expansionLoc": {
+                                    "offset": 342,
+                                    "file": "sample_probe.c",
+                                    "line": 6,
+                                    "col": 57,
+                                    "tokLen": 12
+                                  }
+                                },
+                                "end": {
+                                  "spellingLoc": {
+                                    "offset": 1503,
+                                    "file": "./sample.h",
+                                    "line": 52,
+                                    "col": 26,
+                                    "tokLen": 2,
+                                    "includedFrom": {
+                                      "file": "sample_probe.c"
+                                    }
+                                  },
+                                  "expansionLoc": {
+                                    "offset": 342,
+                                    "file": "sample_probe.c",
+                                    "line": 6,
+                                    "col": 57,
+                                    "tokLen": 12
+                                  }
+                                }
+                              },
+                              "type": {
+                                "qualType": "long"
+                              },
+                              "valueCategory": "prvalue",
+                              "opcode": "<<",
+                              "inner": [
+                                {
+                                  "id": "0x5c37d62e7148",
+                                  "kind": "IntegerLiteral",
+                                  "range": {
+                                    "begin": {
+                                      "spellingLoc": {
+                                        "offset": 1499,
+                                        "file": "./sample.h",
+                                        "line": 52,
+                                        "col": 22,
+                                        "tokLen": 2,
+                                        "includedFrom": {
+                                          "file": "sample_probe.c"
+                                        }
+                                      },
+                                      "expansionLoc": {
+                                        "offset": 342,
+                                        "file": "sample_probe.c",
+                                        "line": 6,
+                                        "col": 57,
+                                        "tokLen": 12
+                                      }
+                                    },
+                                    "end": {
+                                      "spellingLoc": {
+                                        "offset": 1499,
+                                        "file": "./sample.h",
+                                        "line": 52,
+                                        "col": 22,
+                                        "tokLen": 2,
+                                        "includedFrom": {
+                                          "file": "sample_probe.c"
+                                        }
+                                      },
+                                      "expansionLoc": {
+                                        "offset": 342,
+                                        "file": "sample_probe.c",
+                                        "line": 6,
+                                        "col": 57,
+                                        "tokLen": 12
+                                      }
+                                    }
+                                  },
+                                  "type": {
+                                    "qualType": "long"
+                                  },
+                                  "valueCategory": "prvalue",
+                                  "value": "1"
+                                },
+                                {
+                                  "id": "0x5c37d62e7168",
+                                  "kind": "IntegerLiteral",
+                                  "range": {
+                                    "begin": {
+                                      "spellingLoc": {
+                                        "offset": 1503,
+                                        "file": "./sample.h",
+                                        "line": 52,
+                                        "col": 26,
+                                        "tokLen": 2,
+                                        "includedFrom": {
+                                          "file": "sample_probe.c"
+                                        }
+                                      },
+                                      "expansionLoc": {
+                                        "offset": 342,
+                                        "file": "sample_probe.c",
+                                        "line": 6,
+                                        "col": 57,
+                                        "tokLen": 12
+                                      }
+                                    },
+                                    "end": {
+                                      "spellingLoc": {
+                                        "offset": 1503,
+                                        "file": "./sample.h",
+                                        "line": 52,
+                                        "col": 26,
+                                        "tokLen": 2,
+                                        "includedFrom": {
+                                          "file": "sample_probe.c"
+                                        }
+                                      },
+                                      "expansionLoc": {
+                                        "offset": 342,
+                                        "file": "sample_probe.c",
+                                        "line": 6,
+                                        "col": 57,
+                                        "tokLen": 12
+                                      }
+                                    }
+                                  },
+                                  "type": {
+                                    "qualType": "int"
+                                  },
+                                  "valueCategory": "prvalue",
+                                  "value": "15"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5c37d62e72b8",
+      "kind": "VarDecl",
+      "loc": {
+        "offset": 380,
+        "line": 7,
+        "col": 24,
+        "tokLen": 17
+      },
+      "range": {
+        "begin": {
+          "offset": 357,
+          "col": 1,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 380,
+          "col": 24,
+          "tokLen": 17
+        }
+      },
+      "name": "__bgm_SAMPLE_TYPE",
+      "mangledName": "__bgm_SAMPLE_TYPE",
+      "type": {
+        "qualType": "const long long"
+      },
+      "storageClass": "static"
+    }
+  ]
+}

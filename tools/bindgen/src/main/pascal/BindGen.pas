@@ -29,6 +29,7 @@ uses
   generics.collections,
   Bindgen.Model,
   Bindgen.Clang,
+  Bindgen.Macros,
   Bindgen.Emit;
 
 var
@@ -137,33 +138,81 @@ begin
     GMatch := BaseName(GHeaderPath);
 end;
 
-function RunClang(const AHeader: string): string;
+{ Run clang with the given mode arguments plus the user's --clang-arg
+  extras; returns combined output.  AAllowErrors tolerates a non-zero
+  exit (the macro probe deliberately contains unevaluable lines) — in
+  that mode stderr is dropped via sh so diagnostics cannot corrupt the
+  JSON on stdout. }
+function RunClangOn(const AModeArgs: array of string; const AInput: string;
+  AAllowErrors: Boolean): string;
 var
   Proc: TProcess;
   Chunk: string;
   I: Integer;
+  Cmd: string;
 begin
   Result := '';
   Proc := TProcess.Create(nil);
-  Proc.Executable := 'clang';
-  Proc.Parameters.Add('-Xclang');
-  Proc.Parameters.Add('-ast-dump=json');
-  Proc.Parameters.Add('-fsyntax-only');
-  { TProcess merges stdout and stderr; keep clang warnings out of the
-    JSON stream. }
-  Proc.Parameters.Add('-w');
-  for I := 0 to GClangArgs.Count - 1 do
-    Proc.Parameters.Add(GClangArgs[I]);
-  Proc.Parameters.Add(AHeader);
+  if AAllowErrors then
+  begin
+    Cmd := 'clang';
+    for I := 0 to Length(AModeArgs) - 1 do
+      Cmd := Cmd + ' ' + AModeArgs[I];
+    for I := 0 to GClangArgs.Count - 1 do
+      Cmd := Cmd + ' ' + GClangArgs[I];
+    Cmd := Cmd + ' ''' + AInput + ''' 2>/dev/null';
+    Proc.Executable := 'sh';
+    Proc.Parameters.Add('-c');
+    Proc.Parameters.Add(Cmd);
+  end
+  else
+  begin
+    Proc.Executable := 'clang';
+    for I := 0 to Length(AModeArgs) - 1 do
+      Proc.Parameters.Add(AModeArgs[I]);
+    for I := 0 to GClangArgs.Count - 1 do
+      Proc.Parameters.Add(GClangArgs[I]);
+    Proc.Parameters.Add(AInput);
+  end;
   Proc.Execute();
   repeat
     Chunk := Proc.ReadOutput();
     Result := Result + Chunk;
   until (Chunk = '') and (not Proc.Running);
   Proc.WaitOnExit();
-  if Proc.ExitCode <> 0 then
-    Die('clang failed (exit ' + IntToStr(Proc.ExitCode) + ') on ' + AHeader +
+  if (Proc.ExitCode <> 0) and (not AAllowErrors) then
+    Die('clang failed (exit ' + IntToStr(Proc.ExitCode) + ') on ' + AInput +
         #10 + Result);
+end;
+
+function RunClang(const AHeader: string): string;
+begin
+  { -w keeps warnings out of the merged stdout+stderr stream. }
+  Result := RunClangOn(['-Xclang', '-ast-dump=json', '-fsyntax-only', '-w'],
+    AHeader, False);
+end;
+
+{ The macro-constants pass: re-preprocess with -dD for the define list,
+  then AST-dump a probe file so clang substitutes and type-checks each
+  macro body; the initialiser trees are folded into values. }
+function HarvestMacros(const AHeader: string): TList<TCMacro>;
+var
+  DefinesText: string;
+  ProbePath: string;
+  Lines: TStringList;
+  ProbeJson: string;
+begin
+  DefinesText := RunClangOn(['-E', '-dD', '-w'], AHeader, False);
+  Result := ParseDefines(DefinesText, GMatch);
+  if Result.Count = 0 then Exit;
+  ProbePath := GOutPath + '.bindgen-probe.c';
+  Lines := TStringList.Create();
+  Lines.Text := BuildProbeSource(ExpandFileName(AHeader), Result);
+  Lines.SaveToFile(ProbePath);
+  ProbeJson := RunClangOn(['-Xclang', '-ast-dump=json', '-fsyntax-only', '-w'],
+    ProbePath, True);
+  DeleteFile(ProbePath);
+  HarvestProbeValues(ProbeJson, Result);
 end;
 
 procedure Main;
@@ -174,9 +223,12 @@ var
   Source: string;
   Skipped: Integer;
   I: Integer;
+  Macros: TList<TCMacro>;
+  MacroCount: Integer;
 begin
   ParseArgs();
 
+  Macros := nil;
   if GHeaderPath <> '' then
     JsonText := RunClang(GHeaderPath)
   else
@@ -190,12 +242,22 @@ begin
 
   Model := LoadClangASTText(JsonText, GMatch);
 
+  { #define constants need clang, so only the --header mode has them. }
+  MacroCount := 0;
+  if GHeaderPath <> '' then
+  begin
+    Macros := HarvestMacros(GHeaderPath);
+    for I := 0 to Macros.Count - 1 do
+      if Macros[I].HasValue or Macros[I].IsString then
+        MacroCount := MacroCount + 1;
+  end;
+
   Skipped := 0;
   for I := 0 to Model.Functions.Count - 1 do
     if Model.Functions[I].IsVariadic then
       Skipped := Skipped + 1;
 
-  Source := EmitBinding(Model, GUnitName, GLibName);
+  Source := EmitBinding(Model, GUnitName, GLibName, Macros);
   Lines := TStringList.Create();
   Lines.Text := Source;
   Lines.SaveToFile(GOutPath);
@@ -206,6 +268,8 @@ begin
   WriteLn('  records:   ' + IntToStr(Model.Records.Count));
   WriteLn('  typedefs:  ' + IntToStr(Model.Typedefs.Count));
   WriteLn('  enums:     ' + IntToStr(Model.Enums.Count));
+  if GHeaderPath <> '' then
+    WriteLn('  constants: ' + IntToStr(MacroCount) + ' (from #defines)');
 end;
 
 begin

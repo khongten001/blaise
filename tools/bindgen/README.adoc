@@ -1,0 +1,218 @@
+= bindgen — Blaise binding generator for C libraries
+:toc:
+:toclevels: 2
+
+`bindgen` generates a compilable Blaise binding unit for a C library
+directly from its header file.  It does not parse C itself: it runs
+clang and consumes clang's JSON AST dump, so every declaration arrives
+preprocessed and type-checked — macros expanded, typedefs resolved,
+struct layouts computed, enum values evaluated.  What clang believes
+about the library's ABI is exactly what ends up in the generated unit.
+
+clang is required only when *generating* a binding.  The generated
+`.pas` unit is self-contained and compiles with no C toolchain
+installed.
+
+== How it works
+
+[source]
+----
+header.h ──clang -ast-dump=json──▶ Bindgen.Clang   (JSON → C decl model)
+                                   Bindgen.TypeMap (C types → Blaise types)
+                                   Bindgen.Layout  (C size/align calculator)
+header.h ──clang -E -dD─────────▶  Bindgen.Macros  (#define constants)
+                                   Bindgen.Emit    (model → Blaise unit)
+----
+
+Notable mechanics:
+
+* Functions become `cdecl` externals naming both the library and the C
+  symbol, e.g. `external 'X11' name 'XOpenDisplay'`, so the compiler
+  records the link dependency automatically.
+* Pointers to named types synthesise `PName = ^Name` aliases; aliases
+  whose pointee lives in a filtered-out system header degrade to
+  untyped `Pointer`.
+* Unions are emitted as records containing a single `raw` array of the
+  union's *exact* C byte size (computed by the layout calculator), so
+  by-value use — `var ev: XEvent` — reserves the right amount of
+  stack.  Member access is by pointer cast until variant emission
+  lands.
+* `#define` constants never appear in the AST, so a second pass
+  re-preprocesses the header with `-dD`, collects the object-like
+  macros, and lets clang substitute and type-check each body inside a
+  probe translation unit; the resulting expression trees are
+  constant-folded into `const` declarations.  Macros that are not
+  integer constants (type aliases, function-like macros) are skipped.
+
+== Usage
+
+[source,shell]
+----
+bindgen --header <file.h> --unit <name> --lib <name> [options]
+bindgen --json <ast.json> --unit <name> --lib <name> [options]
+----
+
+Options:
+
+* `--header <file>` — run clang on the header and consume its AST.
+* `--json <file>` — read a pre-dumped AST instead
+  (`clang -Xclang -ast-dump=json -fsyntax-only header.h`).  No macro
+  constants in this mode, since it never runs clang.
+* `--unit <name>` — name of the generated Blaise unit (required).
+* `--lib <name>` — library for the external declarations, e.g. `X11`
+  links `-lX11` (required).
+* `--out <file>` — output path; defaults to `<unit>.pas`.
+* `--match <list>` — comma-separated substrings; keep only
+  declarations from files whose path contains one of them.  Defaults
+  to the header's file name.  Real headers pull typedefs from sibling
+  headers, so multiple matches are the norm: `--match zlib.h,zconf.h`,
+  or a directory match like `--match /X11/`.  An empty string keeps
+  everything.
+* `--clang-arg <arg>` — extra argument passed to clang (repeatable),
+  e.g. `--clang-arg -I/opt/include`.
+
+== Worked example: zlib
+
+Generate the binding:
+
+[source,shell]
+----
+$ bindgen --header /usr/include/zlib.h --unit zlib --lib z \
+          --match zlib.h,zconf.h --out zlib.pas
+bindgen: wrote zlib.pas
+  functions: 80  (variadic skipped: 1)
+  records:   4
+  typedefs:  22
+  enums:     0
+  constants: 85 (from #defines)
+----
+
+Use it:
+
+[source,pascal]
+----
+program zdemo;
+
+uses
+  zlib;
+
+var
+  Data: string;
+  Crc: uLong;
+begin
+  WriteLn('zlib version: ' + string(zlibVersion()));
+  Data := 'hello';
+  Crc := crc32(0, PBytef(PChar(Data)), Length(Data));
+  WriteLn('crc32(hello) = ' + IntToStr(Int64(Crc)));
+end.
+----
+
+[source,shell]
+----
+$ blaise --source zdemo.pas --output zdemo --unit-path . \
+         --unit-path <repo>/stdlib/src/main/pascal
+$ ./zdemo
+zlib version: 1.3
+crc32(hello) = 907060870
+----
+
+No linker flags needed: the `external 'z'` declarations make the
+compiler link `-lz` itself.
+
+== Worked example: Xlib
+
+[source,shell]
+----
+$ bindgen --header /usr/include/X11/Xlib.h --unit x11 --lib X11 \
+          --match /X11/ --out x11.pas
+bindgen: wrote x11.pas
+  functions: 403  (variadic skipped: 11)
+  records:   97
+  typedefs:  61
+  enums:     4
+  constants: 455 (from #defines)
+----
+
+The `--match /X11/` directory filter keeps declarations from `Xlib.h`
+and everything it includes under `/usr/include/X11/` — including the
+`#define` event names and masks from `X.h` (`KeyPress`, `ExposureMask`,
+…), which are emitted as constants with their clang-evaluated values.
+
+[source,pascal]
+----
+program xdemo;
+
+uses
+  x11;
+
+var
+  Dpy: PDisplay;
+begin
+  Dpy := XOpenDisplay(nil);
+  if Dpy = nil then
+  begin
+    WriteLn('no X server');
+    Exit;
+  end;
+  WriteLn('vendor: ' + string(XServerVendor(Dpy)));
+  WriteLn('screens: ' + IntToStr(XScreenCount(Dpy)));
+  WriteLn('ExposureMask = ' + IntToStr(Int64(ExposureMask)));
+  XCloseDisplay(Dpy);
+end.
+----
+
+== Type mapping (LP64)
+
+[cols="1,1",options="header"]
+|===
+| C type | Blaise type
+
+| `char`, `signed char`, `unsigned char`, `int8_t`, `uint8_t` | `Byte`
+| `short` / `unsigned short`, `int16_t` / `uint16_t` | `SmallInt` / `Word`
+| `int` / `unsigned int`, `int32_t` / `uint32_t` | `Integer` / `Cardinal`
+| `long`, `long long`, `int64_t`, `ssize_t`, `ptrdiff_t`, `time_t`, `off_t` | `Int64`
+| `unsigned long`, `unsigned long long`, `uint64_t`, `size_t`, `uintptr_t` | `UInt64`
+| `float` / `double` | `Single` / `Double`
+| `_Bool` | `Boolean`
+| `char *`, `const char *` | `PChar`
+| `void *`, `va_list`, function pointers | `Pointer`
+| `T *` (named `T`) | `PT = ^T` (synthesised)
+| `T [N]` | `array[0..N-1] of T`
+|===
+
+Notes:
+
+* Blaise has no signed 8-bit type; `signed char` and `int8_t` map to
+  `Byte` (identical size and ABI class; only arithmetic interpretation
+  differs).
+* Parameter names that collide with Blaise keywords get a trailing
+  underscore (`type` → `type_`); unnamed C parameters become `a0`,
+  `a1`, ….
+
+== Current limitations
+
+Each of these is marked with a `TODO` comment in the generated output
+where it applies:
+
+* *Function-pointer typedefs* degrade to untyped `Pointer` — calls
+  work (it is just an address) but there is no type-checked way to
+  install a Blaise routine as a C callback yet.
+* *Unions* are exact-size raw arrays, not variant records; access
+  members by pointer cast.
+* *Variadic functions* are skipped (not callable from Blaise).
+* *Bitfields* are not handled.
+* *Function-like macros* are code, not constants, and are skipped.
+
+== Development
+
+The module is `blaise-bindgen`; source lives in `src/main/pascal`,
+tests in `src/test/pascal`:
+
+[source,shell]
+----
+pasbuild test -m blaise-bindgen --compiler compiler/target/blaise
+----
+
+Tests run against checked-in fixtures generated from real clang output
+by `src/test/fixtures/gen-fixtures.sh` (requires clang; rerun it after
+changing `sample.h`).

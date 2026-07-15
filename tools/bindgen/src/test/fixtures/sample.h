@@ -45,3 +45,14 @@ typedef enum {
 } XSampleDirection;
 
 extern void XSampleSetDirection(XSampleDirection dir);
+
+/* Macro constants — invisible in the AST, harvested via -E -dD plus a
+   clang-evaluated probe file. */
+#define SAMPLE_A 2
+#define SAMPLE_MASK (1L<<15)
+#define SAMPLE_NEG (-5)
+#define SAMPLE_ALL (~0L)
+#define SAMPLE_COMBO (SAMPLE_A | SAMPLE_MASK)
+#define SAMPLE_STR "hello"
+#define SAMPLE_FN(x) ((x)+1)
+#define SAMPLE_TYPE int

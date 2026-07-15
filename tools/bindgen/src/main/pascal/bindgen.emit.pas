@@ -28,11 +28,15 @@ interface
 
 uses
   SysUtils, StrUtils, generics.collections, classes,
-  Bindgen.Model, Bindgen.TypeMap, Bindgen.Layout;
+  Bindgen.Model, Bindgen.TypeMap, Bindgen.Layout, Bindgen.Macros;
 
 { Render AModel as a complete Blaise unit named AUnitName whose external
-  declarations link against ALibName. }
-function EmitBinding(AModel: TCModel; const AUnitName, ALibName: string): string;
+  declarations link against ALibName.  The AMacros overload also emits
+  harvested #define constants (integer values and simple strings) into
+  the const section; macros without a folded value are skipped. }
+function EmitBinding(AModel: TCModel; const AUnitName, ALibName: string): string; overload;
+function EmitBinding(AModel: TCModel; const AUnitName, ALibName: string;
+  AMacros: TList<TCMacro>): string; overload;
 
 { Make a C identifier safe as a Blaise identifier: reserved words get a
   trailing underscore; an empty name becomes 'a<index>'. }
@@ -235,13 +239,19 @@ begin
 end;
 
 function EmitBinding(AModel: TCModel; const AUnitName, ALibName: string): string;
+begin
+  Result := EmitBinding(AModel, AUnitName, ALibName, nil);
+end;
+
+function EmitBinding(AModel: TCModel; const AUnitName, ALibName: string;
+  AMacros: TList<TCMacro>): string;
 var
   Mapper: TTypeMapper;
   Lines: TStringList;
   TypeLines: TStringList;
   ConstLines: TStringList;
   FuncLines: TStringList;
-  I: Integer;
+  I, J: Integer;
   D: TCDecl;
   Declared: TSet<string>;
   Target: string;
@@ -293,6 +303,31 @@ begin
       EmitEnum(TCEnum(D), TypeLines, ConstLines)
     else if D is TCFunction then
       EmitFunction(TCFunction(D), ALibName, Mapper, FuncLines);
+  end;
+
+  { -------- macro constants -------- }
+  if AMacros <> nil then
+  begin
+    { Track every name the unit already uses so a macro that collides
+      with a type, enum member, or function is skipped, not shadowed. }
+    for I := 0 to AModel.Enums.Count - 1 do
+      for J := 0 to AModel.Enums[I].Members.Count - 1 do
+        Declared.Include(UpperCase(AModel.Enums[I].Members[J].Name));
+    for I := 0 to AModel.Functions.Count - 1 do
+      Declared.Include(UpperCase(AModel.Functions[I].Name));
+    for I := 0 to AMacros.Count - 1 do
+    begin
+      if Declared.Contains(UpperCase(AMacros[I].Name)) then Continue;
+      if AMacros[I].IsString then
+        ConstLines.Add('  ' + SanitiseIdent(AMacros[I].Name, I) + ' = ''' +
+          ReplaceAll(AMacros[I].StrValue, '''', '''''') + ''';')
+      else if AMacros[I].HasValue then
+        ConstLines.Add('  ' + SanitiseIdent(AMacros[I].Name, I) + ' = ' +
+          IntToStr(AMacros[I].Value) + ';')
+      else
+        Continue;
+      Declared.Include(UpperCase(AMacros[I].Name));
+    end;
   end;
 
   { -------- assemble -------- }
