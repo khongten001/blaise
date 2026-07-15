@@ -73,7 +73,8 @@ type
     procedure TestManagedRecord_ScopeExitRelease;
     { slice 10: units — routines + record types from a used unit }
     procedure TestUnit_RoutinesAndCrossUnitCalls;
-    procedure TestUnit_InitSectionStillNotYet;
+    procedure TestUnit_VarsAndInitSection;
+    procedure TestUnit_FinalizationStillNotYet;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -189,19 +190,22 @@ begin
     L.Free();
   end;
   try
+    { the analyser must OUTLIVE codegen: the backend's GlobalSym calls
+      FSymTable.Lookup, which walks scope state the analyser's destructor
+      tears down (same lifetime rule as the e2e harness) }
     A := TSemanticAnalyser.Create();
     try
       A.Analyse(Prog);
+      MakeTarget(osMacOS, cpuArm64, T);
+      CG := TArm64Backend.Create(T);
+      try
+        CG.SetSymbolTable(Prog.SymbolTable);
+        Result := CG.GenerateProgram(Prog);
+      finally
+        CG.Free();
+      end;
     finally
       A.Free();
-    end;
-    MakeTarget(osMacOS, cpuArm64, T);
-    CG := TArm64Backend.Create(T);
-    try
-      CG.SetSymbolTable(Prog.SymbolTable);
-      Result := CG.GenerateProgram(Prog);
-    finally
-      CG.Free();
     end;
   finally
     Prog.Free();
@@ -239,18 +243,18 @@ begin
     try
       A.AnalyseUnitForExport(U);
       A.Analyse(Prog);
+      MakeTarget(osMacOS, cpuArm64, T);
+      CG := TArm64Backend.Create(T);
+      try
+        CG.SetSymbolTable(Prog.SymbolTable);
+        CG.AppendUnit(U);
+        CG.AppendProgram(Prog);
+        Result := CG.GetOutput();
+      finally
+        CG.Free();
+      end;
     finally
       A.Free();
-    end;
-    MakeTarget(osMacOS, cpuArm64, T);
-    CG := TArm64Backend.Create(T);
-    try
-      CG.SetSymbolTable(Prog.SymbolTable);
-      CG.AppendUnit(U);
-      CG.AppendProgram(Prog);
-      Result := CG.GetOutput();
-    finally
-      CG.Free();
     end;
   finally
     Prog.Free();
@@ -952,7 +956,47 @@ begin
   end;
 end;
 
-procedure TArm64BackendTests.TestUnit_InitSectionStillNotYet;
+procedure TArm64BackendTests.TestUnit_VarsAndInitSection;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsmWithUnit(
+    '''
+    unit counters;
+    interface
+    var
+      Total: Int64;
+    procedure Bump;
+    implementation
+    procedure Bump;
+    begin
+      Total := Total + 1
+    end;
+    initialization
+      Total := 40
+    end.
+    ''',
+    '''
+    program P;
+    uses counters;
+    begin
+      Bump();
+      Bump();
+      WriteLn(Total)
+    end.
+    ''');
+  { the unit var gets an owning-unit-prefixed symbol — same-named vars in
+    other units or the program cannot collide }
+  AssertTrue('unit var symbol prefixed', Pos('_g_counters_Total:', AsmT) >= 0);
+  AssertTrue('references target the prefixed symbol',
+    Pos('_g_counters_Total@PAGE', AsmT) >= 0);
+  { the init section becomes <unit>_init, and _main calls it }
+  AssertTrue('init routine emitted', Pos('counters_init:', AsmT) >= 0);
+  AssertTrue('main calls the init routine',
+    Pos(#9'bl counters_init', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestUnit_FinalizationStillNotYet;
 var
   Raised: Boolean;
   Msg: string;
@@ -962,7 +1006,7 @@ begin
   try
     GenAsmWithUnit(
       '''
-      unit withinit;
+      unit withfinal;
       interface
       function One: Int64;
       implementation
@@ -970,13 +1014,13 @@ begin
       begin
         Result := 1
       end;
-      initialization
+      finalization
         One()
       end.
       ''',
       '''
       program P;
-      uses withinit;
+      uses withfinal;
       begin
         WriteLn(One())
       end.
@@ -988,9 +1032,8 @@ begin
       Msg := E.Message;
     end;
   end;
-  AssertTrue('init section raises', Raised);
-  AssertTrue('message names the hole',
-    Pos('initialization', Msg) >= 0);
+  AssertTrue('finalization section raises', Raised);
+  AssertTrue('message names the hole', Pos('finalization', Msg) >= 0);
 end;
 
 procedure TArm64BackendTests.TestStringParams_ValueRetainsConstBorrows;

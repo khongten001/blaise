@@ -68,6 +68,10 @@ type
     FFloatLits:   TStringList;   { .rodata double-literal texts }
     FStrLocals:   TStringList;   { string locals of the current routine —
                                    released at the shared exit label }
+    FCurrentUnitName: string;    { '' = program context; else the unit being emitted }
+    FModuleVarNames: TStringList; { unit-level var names (both sections) — these
+                                    take the owning-unit symbol prefix }
+    FUnitInits:   TStringList;   { emitted <unit>_init symbols, called by _main }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -127,6 +131,7 @@ type
     procedure RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
     procedure RegisterForSlots(AStmt: TASTStmt);
     function  RoutineSym(ADecl: TMethodDecl; const AName: string): string;
+    function  GlobalSym(const AName: string): string;
     { AAPCS64 record-return shape for ARec: 0 = sret via x8, 1 = x0,
       2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
       (encoded as 100+N).  Derived from the shared classifier; the
@@ -138,6 +143,8 @@ type
   protected
     procedure EmitProgram(AProg: TProgram); override;
     procedure EmitUnit(AUnit: TUnit); override;
+    procedure EmitUnitInit(AUnit: TUnit);
+    procedure RegisterUnitVars(ABlock: TBlock);
     procedure FinalizeEmit; override;
 
     { ---- ARC walk primitives (TNativeBackend contract) ----
@@ -187,6 +194,8 @@ begin
   FFloatNames  := TStringList.Create();
   FStrLocals   := TStringList.Create();
   FStrGlobals  := TStringList.Create();
+  FModuleVarNames := TStringList.Create();
+  FUnitInits   := TStringList.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -201,6 +210,8 @@ begin
   FRecGlobals.Free();
   FRecLocals.Free();
   FStrGlobals.Free();
+  FModuleVarNames.Free();
+  FUnitInits.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -254,6 +265,7 @@ end;
 procedure TArm64Backend.EmitLoadSlot(const AReg, AName: string);
 var
   Off: Integer;
+  Sym: string;
 begin
   if FFrame.TryGetValue(AName, Off) then
   begin
@@ -266,10 +278,11 @@ begin
     end;
     Exit;
   end;
-  if FGlobalNames.IndexOf(AName) >= 0 then
+  Sym := GlobalSym(AName);
+  if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
-    Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [AName]));
-    Self.Emit(Format(#9'ldr %s, [x9, _g_%s@PAGEOFF]', [AReg, AName]));
+    Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
+    Self.Emit(Format(#9'ldr %s, [x9, _g_%s@PAGEOFF]', [AReg, Sym]));
     Exit;
   end;
   NotYet('load of variable ''' + AName + '''', nil);
@@ -278,6 +291,7 @@ end;
 procedure TArm64Backend.EmitStoreSlot(const AReg, AName: string);
 var
   Off: Integer;
+  Sym: string;
 begin
   if FFrame.TryGetValue(AName, Off) then
   begin
@@ -290,10 +304,11 @@ begin
     end;
     Exit;
   end;
-  if FGlobalNames.IndexOf(AName) >= 0 then
+  Sym := GlobalSym(AName);
+  if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
-    Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [AName]));
-    Self.Emit(Format(#9'str %s, [x9, _g_%s@PAGEOFF]', [AReg, AName]));
+    Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
+    Self.Emit(Format(#9'str %s, [x9, _g_%s@PAGEOFF]', [AReg, Sym]));
     Exit;
   end;
   NotYet('store to variable ''' + AName + '''', nil);
@@ -302,16 +317,18 @@ end;
 procedure TArm64Backend.EmitSlotAddr(const AReg, AName: string);
 var
   Off: Integer;
+  Sym: string;
 begin
   if FFrame.TryGetValue(AName, Off) then
   begin
     Self.Emit(Format(#9'sub %s, x29, #%d', [AReg, Off]));
     Exit;
   end;
-  if FGlobalNames.IndexOf(AName) >= 0 then
+  Sym := GlobalSym(AName);
+  if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
-    Self.Emit(Format(#9'adrp %s, _g_%s@PAGE', [AReg, AName]));
-    Self.Emit(Format(#9'add %s, %s, _g_%s@PAGEOFF', [AReg, AReg, AName]));
+    Self.Emit(Format(#9'adrp %s, _g_%s@PAGE', [AReg, Sym]));
+    Self.Emit(Format(#9'add %s, %s, _g_%s@PAGEOFF', [AReg, AReg, Sym]));
     Exit;
   end;
   NotYet('address of variable ''' + AName + '''', nil);
@@ -1113,6 +1130,31 @@ begin
     Result := CodegenMangle(AName);
 end;
 
+function TArm64Backend.GlobalSym(const AName: string): string;
+var
+  Sym: TSymbol;
+  Owner: string;
+begin
+  { Owner resolution mirrors TX86_64Backend.GlobalSymName: an exported
+    unit var carries its OwningUnit in the symbol table; an implementation-
+    private one is invisible to Lookup and only ever referenced from its
+    own unit, so the emitting unit is the owner.  The program name (and
+    unmangled RTL units, via MangleUnitPrefix) map to a bare name. }
+  Result := AName;
+  Owner := '';
+  if FSymTable <> nil then
+  begin
+    Sym := FSymTable.Lookup(AName);
+    if (Sym <> nil) and (Sym.Kind = skVariable) and (Sym.OwningUnit <> '') then
+      Owner := Sym.OwningUnit;
+  end;
+  if (Owner = '') and (FModuleVarNames.IndexOf(AName) >= 0) then
+    Owner := FCurrentUnitName;
+  if Owner = '' then Exit;
+  if (FProgramName <> '') and SameText(Owner, FProgramName) then Exit;
+  Result := MangleUnitPrefix(Owner) + AName;
+end;
+
 function TArm64Backend.RecReturnShape(ARec: TRecordTypeDesc): Integer;
 var
   I, NDoubles: Integer;
@@ -1699,6 +1741,7 @@ var
   FrameAligned: Integer;
 begin
   FProgramName := AProg.Name;
+  FCurrentUnitName := '';
   for I := 0 to AProg.Block.TypeDecls.Count - 1 do
     if not (TTypeDecl(AProg.Block.TypeDecls.Items[I]).Def is TRecordTypeDef) then
       NotYet('non-record type declarations', nil)
@@ -1714,6 +1757,10 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
       NotYet('program variable of this type', VD);
+    if VD.InitConst <> nil then
+      { silently zeroing an initialised global would be WRONG code —
+        keep the hole honest until the data-section initialiser lands }
+      NotYet('initialised global variables', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       FGlobalNames.Add(VD.Names.Strings[J]);
@@ -1766,6 +1813,9 @@ begin
     Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
   Self.Emit(#9'bl _SetArgs');
   Self.Emit(#9'bl _BlaiseInit');
+  { unit initialization sections, in dependency (append) order }
+  for I := 0 to FUnitInits.Count - 1 do
+    Self.Emit(Format(#9'bl %s', [FUnitInits.Strings[I]]));
 
   EmitStmtList(AProg.Block.Stmts);
 
@@ -1820,16 +1870,14 @@ begin
     semantic pass's ResolvedQbeName on both the definition and the call. }
   CheckTypeSubset(AUnit.IntfBlock.TypeDecls);
   CheckTypeSubset(AUnit.ImplBlock.TypeDecls);
-  if (AUnit.IntfBlock.Decls.Count > 0) or (AUnit.ImplBlock.Decls.Count > 0) then
-    { unit globals need the owning-unit symbol-prefix machinery }
-    NotYet('unit variables (' + AUnit.Name + ')', nil);
+  FCurrentUnitName := AUnit.Name;
+  RegisterUnitVars(AUnit.IntfBlock);
+  RegisterUnitVars(AUnit.ImplBlock);
   if (AUnit.GenericInstances.Count > 0) or
      (AUnit.GenericRecordInstances.Count > 0) or
      (AUnit.GenericMethodInstances.Count > 0) or
      (AUnit.GenericFuncInstances.Count > 0) then
     NotYet('generic instances in unit ' + AUnit.Name, nil);
-  if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
-    NotYet('unit initialization section (' + AUnit.Name + ')', nil);
   if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
     NotYet('unit finalization section (' + AUnit.Name + ')', nil);
 
@@ -1842,6 +1890,86 @@ begin
     if Decl.Body = nil then Continue;            { forward decls }
     if Decl.IsExternal then Continue;            { externals: call-site only }
     EmitFunctionDef(Decl);
+  end;
+
+  { Initialization section: a parameterless <unit>_init routine that _main
+    calls (in dependency order) right after _BlaiseInit.  Finalization is a
+    NotYet above rather than the x86 emit-but-never-call shape. }
+  if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
+    EmitUnitInit(AUnit);
+  FCurrentUnitName := '';
+end;
+
+procedure TArm64Backend.EmitUnitInit(AUnit: TUnit);
+var
+  I: Integer;
+  Sym: string;
+  FrameAligned: Integer;
+begin
+  Sym := CodegenMangle(AUnit.Name) + '_init';
+  FUnitInits.Add(Sym);
+  FIsFunction := False;
+  FResultFloat := False;
+  FExitLabel := NewLabel('uinitexit');
+  FFrame.Clear();
+  FFrameSize := 0;
+  FStrLocals.Clear();
+  FRecLocals.Clear();
+  FForN := 0;
+  for I := 0 to AUnit.InitStmts.Count - 1 do
+    RegisterForSlots(TASTStmt(AUnit.InitStmts.Items[I]));
+  FForN := 0;
+  FrameAligned := (FFrameSize + 15) and (not 15);
+  Self.Emit('');
+  Self.Emit(Format('.globl %s', [Sym]));
+  Self.Emit(Sym + ':');
+  Self.Emit(#9'stp x29, x30, [sp, #-16]!');
+  Self.Emit(#9'mov x29, sp');
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  EmitStmtList(AUnit.InitStmts);
+  Self.Emit(FExitLabel + ':');
+  Self.Emit(#9'mov sp, x29');
+  Self.Emit(#9'ldp x29, x30, [sp], #16');
+  Self.Emit(#9'ret');
+  FFrame.Clear();
+  FFrameSize := 0;
+end;
+
+procedure TArm64Backend.RegisterUnitVars(ABlock: TBlock);
+var
+  I, J: Integer;
+  VD: TVarDecl;
+  N: string;
+begin
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(ABlock.Decls.Items[I]);
+    if not (IsIntFam(VD.ResolvedType) or
+            ((VD.ResolvedType <> nil) and
+             (VD.ResolvedType.Kind in [tyDouble, tyString, tyRecord]))) then
+      NotYet('unit variable of this type', VD);
+    if VD.IsThreadVar then
+      NotYet('unit threadvars', VD);
+    if VD.InitConst <> nil then
+      NotYet('initialised unit variables', VD);
+    for J := 0 to VD.Names.Count - 1 do
+    begin
+      FModuleVarNames.Add(VD.Names.Strings[J]);
+      { register under the owning-unit-prefixed symbol so same-named vars
+        in different units (or the program) cannot collide }
+      N := GlobalSym(VD.Names.Strings[J]);
+      FGlobalNames.Add(N);
+      if VD.ResolvedType.Kind = tyString then
+        FStrGlobals.Add(N);
+      if VD.ResolvedType.Kind = tyRecord then
+      begin
+        FRecGlobals.AddObject(N, VD.ResolvedType);
+        FGlobalSize.Add(N, VD.ResolvedType.RawSize());
+      end
+      else
+        FGlobalSize.Add(N, 8);
+    end;
   end;
 end;
 
