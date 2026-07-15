@@ -36,6 +36,7 @@ type
     procedure TestSize_Struct_WithPadding;
     procedure TestSize_Union_MaxMember;
     procedure TestSize_Unknown_ReturnsFalse;
+    procedure TestSize_BitfieldStruct_MatchesC;
   end;
 
 implementation
@@ -138,6 +139,24 @@ var
   Size, Align: Integer;
 begin
   AssertTrue(not CTypeSizeAlign(FModel, 'struct never_declared', Size, Align));
+end;
+
+procedure TLayoutTests.TestSize_BitfieldStruct_MatchesC;
+var
+  R: TCRecord;
+  Size, Align: Integer;
+begin
+  { After loader collapsing, the bitfield struct is uint + int + ushort:
+    4 + 4 + 2 (+2 pad) = 12, align 4 — matches C sizeof. }
+  R := TCRecord.Create('Flags');
+  R.IsComplete := True;
+  R.Fields.Add(TCField.Create('__bits0', 'unsigned int'));
+  R.Fields.Add(TCField.Create('plain', 'int'));
+  R.Fields.Add(TCField.Create('__bits1', 'unsigned short'));
+  FModel.AddRecord(R);
+  AssertTrue(CTypeSizeAlign(FModel, 'struct Flags', Size, Align));
+  AssertEquals('size', 12, Size);
+  AssertEquals('align', 4, Align);
 end;
 
 initialization

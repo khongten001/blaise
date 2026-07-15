@@ -69,6 +69,10 @@ type
   public
     Name: string;
     CType: string;
+    IsBitfield: Boolean;
+    BitWidth: Integer;
+    Note: string;      { emitter appends this as a comment, e.g. the
+                         member:width list of a collapsed bitfield run }
     constructor Create(const AName, ACType: string);
   end;
 
@@ -143,6 +147,9 @@ begin
   inherited Create();
   Name := AName;
   CType := ACType;
+  IsBitfield := False;
+  BitWidth := 0;
+  Note := '';
 end;
 
 constructor TCRecord.Create(const AName: string);

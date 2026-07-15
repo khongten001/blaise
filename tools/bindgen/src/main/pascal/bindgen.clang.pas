@@ -35,7 +35,7 @@ interface
 uses
   SysUtils, StrUtils, generics.collections,
   Json.Types, Json.Reader,
-  Bindgen.Model;
+  Bindgen.Model, Bindgen.TypeMap;
 
 { Harvest a parsed clang AST.  AFileMatch: comma-separated substrings;
   only declarations from files whose path contains at least one of them
@@ -136,6 +136,96 @@ begin
   end;
 end;
 
+{ Size in bytes of a bitfield's base type, or 0 if unknown.  Bitfield
+  bases are integer builtins by C rules. }
+function BitfieldUnitSize(const ACType: string): Integer;
+var
+  S: string;
+begin
+  S := StripQualifiers(ACType);
+  S := ReplaceAll(S, 'unsigned ', '');
+  S := ReplaceAll(S, 'signed ', '');
+  S := Trim(S);
+  if (S = 'char') or (S = '_Bool') then Result := 1
+  else if S = 'short' then Result := 2
+  else if (S = 'int') or (S = 'unsigned') then Result := 4
+  else if (S = 'long') or (S = 'long long') or (S = 'long int') then Result := 8
+  else Result := 0;
+end;
+
+{ Collapse each run of consecutive bitfields into one synthetic field
+  of the run's base type — '__bits<n>: unsigned int' — so the layout
+  calculator and emitter only ever see plain fields.  A run closes on
+  a non-bitfield, a base-type size change, unit overflow, or an
+  explicit ':0' separator (all also unit breaks in C).  The member
+  names and widths are preserved in the synthetic field's Note. }
+procedure CollapseBitfields(ARec: TCRecord);
+var
+  OutFields: TList<TCField>;
+  I: Integer;
+  F: TCField;
+  Group: TCField;
+  InGroup: Boolean;
+  UnitSize: Integer;
+  BitsUsed: Integer;
+  GroupIdx: Integer;
+  Sz: Integer;
+  Any: Boolean;
+begin
+  { Fast path: nothing to do for the vast majority of records. }
+  Any := False;
+  for I := 0 to ARec.Fields.Count - 1 do
+    if ARec.Fields[I].IsBitfield then
+      Any := True;
+  if not Any then Exit;
+
+  OutFields := TList<TCField>.Create();
+  Group := nil;
+  InGroup := False;
+  UnitSize := 0;
+  BitsUsed := 0;
+  GroupIdx := 0;
+  for I := 0 to ARec.Fields.Count - 1 do
+  begin
+    F := ARec.Fields[I];
+    if not F.IsBitfield then
+    begin
+      InGroup := False;
+      OutFields.Add(F);
+      Continue;
+    end;
+    Sz := BitfieldUnitSize(F.CType);
+    if (Sz = 0) or (F.BitWidth = 0) then
+    begin
+      { Unknown base or a ':0' separator: close the unit.  A zero-width
+        field itself is never emitted. }
+      InGroup := False;
+      if Sz = 0 then
+        OutFields.Add(F);   { unknown base — leave visible, will surface }
+      Continue;
+    end;
+    if InGroup and
+       ((Sz <> UnitSize) or (BitsUsed + F.BitWidth > UnitSize * 8)) then
+      InGroup := False;
+    if not InGroup then
+    begin
+      Group := TCField.Create('__bits' + IntToStr(GroupIdx), F.CType);
+      GroupIdx := GroupIdx + 1;
+      Group.Note := 'C bitfields:';
+      OutFields.Add(Group);
+      InGroup := True;
+      UnitSize := Sz;
+      BitsUsed := 0;
+    end;
+    if F.Name <> '' then
+      Group.Note := Group.Note + ' ' + F.Name + ':' + IntToStr(F.BitWidth)
+    else
+      Group.Note := Group.Note + ' (pad):' + IntToStr(F.BitWidth);
+    BitsUsed := BitsUsed + F.BitWidth;
+  end;
+  ARec.Fields := OutFields;
+end;
+
 { Load ARec's fields.  A nested unnamed RecordDecl (an anonymous union
   or struct used as a field's type) is LIFTED into the model as its own
   record named 'anon_<n>' — added to the model BEFORE the outer record
@@ -152,6 +242,8 @@ var
   QT: string;
   Lifted: TCRecord;
   LastLifted: string;
+  Fld: TCField;
+  Width: Int64;
 begin
   LastLifted := '';
   Inner := ANode.Find('inner');
@@ -188,9 +280,18 @@ begin
         QT := LastLifted;
         LastLifted := '';
       end;
-      ARec.Fields.Add(TCField.Create(GetStr(Child, 'name'), QT));
+      Fld := TCField.Create(GetStr(Child, 'name'), QT);
+      if GetBool(Child, 'isBitfield') then
+      begin
+        Fld.IsBitfield := True;
+        Width := 0;
+        if FindConstantValue(Child, Width) then
+          Fld.BitWidth := Integer(Width);
+      end;
+      ARec.Fields.Add(Fld);
     end;
   end;
+  CollapseBitfields(ARec);
 end;
 
 { Post-pass: rename lifted 'anon_<n>' records to '<Owner>_<field>_t'

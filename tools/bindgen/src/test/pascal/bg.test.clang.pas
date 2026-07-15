@@ -52,6 +52,7 @@ type
     procedure TestLoad_Function_Variadic;
     procedure TestLoad_StaticFunction_Excluded;
     procedure TestLoad_AnonEnum_TakesTypedefName;
+    procedure TestLoad_Bitfields_CollapsedIntoStorageUnits;
     procedure TestLoad_NamedUnion_Loaded;
     procedure TestLoad_AnonUnionField_LiftedAndNamed;
     procedure TestLoad_LiftedUnion_PrecedesOwnerInDecls;
@@ -265,6 +266,24 @@ begin
   AssertEquals('members', 2, E.Members.Count);
   AssertEquals('explicit value', 10, Integer(E.Members[1].Value));
   AssertTrue('typedef dropped', Self.FindTypedef(FModel, 'XSampleDirection') = nil);
+end;
+
+procedure TClangLoadTests.TestLoad_Bitfields_CollapsedIntoStorageUnits;
+var
+  R: TCRecord;
+begin
+  { a:1 b:3 c:12 (one uint unit), plain, d:4 e:4 (one ushort unit)
+    — C sizeof is 12, which the collapsed layout reproduces. }
+  R := FModel.FindRecord('XSampleFlags');
+  AssertTrue('found', R <> nil);
+  AssertEquals('field count', 3, R.Fields.Count);
+  AssertEquals('__bits0', R.Fields[0].Name);
+  AssertEquals('unsigned int', R.Fields[0].CType);
+  AssertTrue('members noted', Pos('a:1', R.Fields[0].Note) >= 0);
+  AssertTrue('members noted b', Pos('b:3', R.Fields[0].Note) >= 0);
+  AssertEquals('plain', R.Fields[1].Name);
+  AssertEquals('__bits1', R.Fields[2].Name);
+  AssertEquals('unsigned short', R.Fields[2].CType);
 end;
 
 procedure TClangLoadTests.TestLoad_NamedUnion_Loaded;

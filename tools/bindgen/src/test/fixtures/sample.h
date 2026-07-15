@@ -62,3 +62,13 @@ extern int XSampleIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID ar
 extern int XSampleCheckIfEvent(Display *dpy, int (*predicate)(Display *, XID), XID arg);
 /* Variadic function pointer — must degrade to Pointer. */
 typedef int (*XSampleVaHandler)(Display *dpy, ...);
+
+/* Bitfields — consecutive runs collapse into storage units. */
+typedef struct {
+    unsigned int a : 1;
+    unsigned int b : 3;
+    unsigned int c : 12;
+    int plain;
+    unsigned short d : 4;
+    unsigned short e : 4;
+} XSampleFlags;

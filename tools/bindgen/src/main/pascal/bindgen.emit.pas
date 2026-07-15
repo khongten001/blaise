@@ -246,8 +246,12 @@ begin
   end;
   ATypeLines.Add('  ' + R.Name + ' = record');
   for J := 0 to R.Fields.Count - 1 do
-    ATypeLines.Add('    ' + SanitiseIdent(R.Fields[J].Name, J) + ': ' +
-      AMapper.Map(R.Fields[J].CType) + ';');
+    if R.Fields[J].Note <> '' then
+      ATypeLines.Add('    ' + SanitiseIdent(R.Fields[J].Name, J) + ': ' +
+        AMapper.Map(R.Fields[J].CType) + '; { ' + R.Fields[J].Note + ' }')
+    else
+      ATypeLines.Add('    ' + SanitiseIdent(R.Fields[J].Name, J) + ': ' +
+        AMapper.Map(R.Fields[J].CType) + ';');
   ATypeLines.Add('  end;');
 end;
 
