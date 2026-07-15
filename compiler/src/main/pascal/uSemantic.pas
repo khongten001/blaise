@@ -400,6 +400,8 @@ type
       non-lvalue (e.g. a function-call result) passed to a var parameter slipped
       through the semantic pass and crashed codegen with 'var/out argument must
       be a variable or field' (BUG-011).  Call after AppendDefaultArgs. }
+    procedure ValidateVarArgsExtras(AArgs: TObjectList; AMDecl: TMethodDecl;
+      const AName: string; ALine, ACol: Integer);
     procedure ValidateMethodVarArgs(AArgs: TObjectList; AMDecl: TMethodDecl;
       const AName: string; ALine, ACol: Integer);
     { Interface-dispatch arm of the same check: no TMethodDecl is available at
@@ -7707,6 +7709,16 @@ begin
         FTable.Define(Sym);
       end;
 
+    if ADecl.IsVarArgs and not ADecl.IsExternal then
+      SemanticError(
+        Format('''%s'': varargs is only valid on external declarations',
+          [ADecl.Name]),
+        ADecl.Line, ADecl.Col);
+    if ADecl.IsVarArgs and ADecl.IsOverload then
+      SemanticError(
+        Format('''%s'': varargs cannot be combined with overload',
+          [ADecl.Name]),
+        ADecl.Line, ADecl.Col);
     if (not ADecl.IsExternal) and (ADecl.Body <> nil) then
     begin
       AnalyseBlock(ADecl.Body);
@@ -10521,6 +10533,47 @@ begin
       ASrc.Line, ASrc.Col);
 end;
 
+{ Extra arguments to a 'varargs' external (beyond its fixed parameter
+  list) must be C-passable: integers, floats, pointers, PChar, nil.
+  Two deliberate errors guide the caller: a Blaise string needs an
+  explicit PChar() borrow, and a Single needs promotion to Double
+  (C's default argument promotions — the callee reads a double). }
+procedure TSemanticAnalyser.ValidateVarArgsExtras(AArgs: TObjectList;
+  AMDecl: TMethodDecl; const AName: string; ALine, ACol: Integer);
+var
+  I: Integer;
+  T: TTypeDesc;
+begin
+  if AArgs.Count <= AMDecl.Params.Count then Exit;
+  for I := AMDecl.Params.Count to AArgs.Count - 1 do
+  begin
+    T := TASTExpr(AArgs.Items[I]).ResolvedType;
+    if T = nil then
+      SemanticError(
+        Format('varargs argument %d of ''%s'' has no type', [I + 1, AName]),
+        ALine, ACol);
+    case T.Kind of
+      tyInteger, tyInt64, tyUInt32, tyUInt64, tySmallInt, tyWord, tyByte,
+      tyBoolean, tyEnum, tyDouble, tyPChar, tyPointer, tyNil: ;
+      tySingle:
+        SemanticError(
+          Format('varargs argument %d of ''%s'': C promotes float to ' +
+            'double — pass Double(...) explicitly', [I + 1, AName]),
+          ALine, ACol);
+      tyString:
+        SemanticError(
+          Format('varargs argument %d of ''%s'': a Blaise string cannot ' +
+            'cross a C varargs boundary — pass PChar(...)', [I + 1, AName]),
+          ALine, ACol);
+      else
+        SemanticError(
+          Format('varargs argument %d of ''%s'': type ''%s'' cannot be ' +
+            'passed to a C variadic function', [I + 1, AName, T.Name]),
+          ALine, ACol);
+    end;
+  end;
+end;
+
 procedure TSemanticAnalyser.AppendDefaultArgs(AArgs: TObjectList;
   ADecl: TMethodDecl; const AContext: string; ALine, ACol: Integer);
 var
@@ -10766,6 +10819,8 @@ var
   ExactNew:    Integer;
   ExactBest:   Integer;
   S1, S2:      Integer;
+  FixedN:      Integer;
+  DefaultedN:  Integer;
 begin
   Result    := nil;
   TotalCnt  := 0;
@@ -10788,7 +10843,11 @@ begin
            not SameText(Cand.OwningUnit, FCurrentUnitName) then
           Continue;
         Inc(TotalCnt);
-        if (AArity >= MinArity(Cand)) and (AArity <= Cand.Params.Count) then
+        { A varargs external accepts any argument count >= its fixed
+          parameter list (the extras are the C '...' part). }
+        if (AArity >= MinArity(Cand)) and
+           ((AArity <= Cand.Params.Count) or
+            (Cand.IsVarArgs and (AArity > Cand.Params.Count))) then
           ArityMatch.Add(Cand);
       end;
 
@@ -10835,7 +10894,11 @@ begin
     begin
       Cand  := TMethodDecl(ArityMatch.Items[I]);
       Score := 0;
-      for J := 0 to AArity - 1 do
+      { Varargs extras beyond the fixed parameters are not scored —
+        they have no declared type to score against. }
+      FixedN := AArity;
+      if Cand.Params.Count < FixedN then FixedN := Cand.Params.Count;
+      for J := 0 to FixedN - 1 do
       begin
         Par      := TMethodParam(Cand.Params.Items[J]);
         Arg      := TASTExpr(AArgs.Items[J]);
@@ -10852,7 +10915,9 @@ begin
         parameters — i.e. Params.Count closest to AArity.  Score in the
         high bits, defaulting penalty in the low bits.  Each defaulted
         slot subtracts 1 from the composite score. }
-      Score := (Score * 16) - (Cand.Params.Count - AArity);
+      DefaultedN := Cand.Params.Count - AArity;
+      if DefaultedN < 0 then DefaultedN := 0;   { varargs extras, not defaults }
+      Score := (Score * 16) - DefaultedN;
       if Score > BestScore then
       begin
         BestScore := Score;
@@ -10865,7 +10930,10 @@ begin
           More exact matches = better candidate. }
         ExactNew  := 0;
         ExactBest := 0;
-        for J := 0 to AArity - 1 do
+        FixedN := AArity;
+        if Cand.Params.Count < FixedN then FixedN := Cand.Params.Count;
+        if Best.Params.Count < FixedN then FixedN := Best.Params.Count;
+        for J := 0 to FixedN - 1 do
         begin
           S1 := ArgMatchScore(TMethodParam(Cand.Params.Items[J]).ResolvedType,
                               TASTExpr(AArgs.Items[J]).ResolvedType,
@@ -11116,6 +11184,7 @@ begin
 
     for I := 0 to ACall.Args.Count - 1 do
     begin
+      if I >= MDecl.Params.Count then Break;   { varargs extras }
       Par := TMethodParam(MDecl.Params.Items[I]);
       if Par.IsVarParam then
       begin
@@ -11136,6 +11205,8 @@ begin
         no second CheckTypesMatch needed here. }
     end;
     RetypeSetLiteralArgs(ACall.Args, MDecl);
+    if MDecl.IsVarArgs then
+      ValidateVarArgsExtras(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     AppendDefaultArgs(ACall.Args, MDecl, ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedDecl := MDecl;
   end
@@ -12427,6 +12498,7 @@ begin
     so a non-lvalue slipped through to codegen (BUG-011). }
   for I := 0 to AExpr.Args.Count - 1 do
   begin
+    if I >= MDecl.Params.Count then Break;   { varargs extras }
     Par := TMethodParam(MDecl.Params.Items[I]);
     if Par.IsVarParam then
     begin
@@ -12444,6 +12516,8 @@ begin
   end;
 
   RetypeSetLiteralArgs(AExpr.Args, MDecl);
+  if MDecl.IsVarArgs then
+    ValidateVarArgsExtras(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
   AppendDefaultArgs(AExpr.Args, MDecl, AExpr.Name, AExpr.Line, AExpr.Col);
   AExpr.ResolvedDecl := MDecl;
   Result := MDecl.ResolvedReturnType;

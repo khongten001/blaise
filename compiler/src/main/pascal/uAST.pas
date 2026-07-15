@@ -966,6 +966,12 @@ type
                                        empty for program-scope.  Set by uSemantic;
                                        consumed by codegen for cross-unit references. }
     IsExternal:         Boolean;     { declared with 'external' directive — no body }
+    IsVarArgs:          Boolean;     { declared 'varargs' — a C variadic external:
+                                       call sites may pass extra arguments after the
+                                       declared (fixed) parameters.  Only valid
+                                       together with 'external' (enforced by
+                                       uSemantic); QBE emits the '...' marker at the
+                                       fixed/variadic boundary. }
     ExternalName:       string;      { C symbol name from 'external name ''c_foo'''; empty = use Pascal name }
     ExternalLib:        string;      { library from 'external ''c'' name ''malloc'''; bare name, link layer expands per platform. Also recorded unit-level in LinkLibs. }
     NoStackFrame:       Boolean;     { declared 'nostackframe' — body is an asm
@@ -2756,6 +2762,7 @@ begin
   Result.IsOverload     := ASrc.IsOverload;
   Result.IsPublished    := ASrc.IsPublished;
   Result.IsExternal     := ASrc.IsExternal;
+  Result.IsVarArgs      := ASrc.IsVarArgs;
   Result.ExternalName   := ASrc.ExternalName;
   Result.ExternalLib    := ASrc.ExternalLib;
   Result.CallingConv    := ASrc.CallingConv;

@@ -2746,6 +2746,7 @@ begin
                SameText(FCurrent.Value, 'final')       or
                SameText(FCurrent.Value, 'assembler')   or
                SameText(FCurrent.Value, 'nostackframe') or
+               SameText(FCurrent.Value, 'varargs')     or
                SameText(FCurrent.Value, 'forward')     or
                SameText(FCurrent.Value, 'deprecated')  or
                SameText(FCurrent.Value, 'platform')    or
@@ -2755,6 +2756,8 @@ begin
           Result.IsInline := True
         else if SameText(FCurrent.Value, 'nostackframe') then
           Result.NoStackFrame := True
+        else if SameText(FCurrent.Value, 'varargs') then
+          Result.IsVarArgs := True
         else if SameText(FCurrent.Value, 'forward') then
           IsForward := True
         else if SameText(FCurrent.Value, 'cdecl')    or
@@ -4790,6 +4793,7 @@ begin
                SameText(FCurrent.Value, 'register')    or
                SameText(FCurrent.Value, 'pascal')      or
                SameText(FCurrent.Value, 'safecall')    or
+               SameText(FCurrent.Value, 'varargs')     or
                SameText(FCurrent.Value, 'forward')     or
                SameText(FCurrent.Value, 'deprecated')  or
                SameText(FCurrent.Value, 'platform')    or
@@ -4797,6 +4801,8 @@ begin
       begin
         if SameText(FCurrent.Value, 'inline') then
           Result.IsInline := True
+        else if SameText(FCurrent.Value, 'varargs') then
+          Result.IsVarArgs := True
         else if SameText(FCurrent.Value, 'cdecl')    or
                 SameText(FCurrent.Value, 'stdcall')  or
                 SameText(FCurrent.Value, 'register') or

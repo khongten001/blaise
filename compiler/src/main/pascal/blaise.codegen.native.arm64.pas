@@ -1408,6 +1408,13 @@ begin
   NFloat := 0;
   if ADecl = nil then
     NotYet('call to unresolved routine ''' + AName + '''', nil);
+  { Apple's AArch64 ABI passes ALL variadic arguments on the stack
+    (unlike Linux AAPCS64, where anonymous args continue the register
+    sequence).  Until that is implemented, reject rather than emit a
+    silently wrong call. }
+  if ADecl.IsVarArgs and (AArgs.Count > ADecl.Params.Count) then
+    NotYet('varargs call (Apple AArch64 passes variadic args on the stack)',
+      ADecl);
   if ADecl.IsExternal and (ADecl.ExternalName = '') then
     NotYet('external routine without a link name', nil);
   if AArgs.Count > 8 then

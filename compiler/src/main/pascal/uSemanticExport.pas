@@ -248,6 +248,7 @@ begin
   Result.IsPublished  := ASrc.IsPublished;
   Result.VTableSlot   := ASrc.VTableSlot;
   Result.IsExternal   := ASrc.IsExternal;
+  Result.IsVarArgs    := ASrc.IsVarArgs;
   Result.ExternalName := ASrc.ExternalName;
   Result.CallingConv  := ASrc.CallingConv;
   Result.ResolvedQbeName := ASrc.ResolvedQbeName;

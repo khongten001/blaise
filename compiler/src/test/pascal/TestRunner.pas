@@ -17,6 +17,7 @@ uses
   cp.test.highlow,
   cp.test.sizeof,
   cp.test.charcast,
+  cp.test.varargs,
   cp.test.smallint_word,
   cp.test.lexer,
   cp.test.parser,

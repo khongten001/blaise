@@ -54,7 +54,9 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 13; { v13: record payload gains a method list (record
+  IFACE_VERSION = 14; { v14: ROUT entries gain an IsVarArgs bool after
+                          ExternalName (C-variadic externals).
+                        v13: record payload gains a method list (record
                           methods incl. statics — TUuid.RandomUuid — used to
                           vanish on cached import, BUG-043 follow-on). }
                       { v12 (this cycle): 'anonm' payload carries the '->'
@@ -813,6 +815,9 @@ begin
         reference.  (Before v9 these were dropped; Net.Sockets.Socket linked from
         source but not from cache.) }
       Line := Line + EncodeBool(R.IsExternal) + EncodeLpstr(R.ExternalName);
+      { varargs (v14): a C-variadic external accepts extra call arguments;
+        without the flag a cached import re-imposes the fixed arity. }
+      Line := Line + EncodeBool(R.IsVarArgs);
       SB.AppendLine(Line);
     end;
     SB.AppendLine('END');
@@ -2602,6 +2607,7 @@ begin
     R.ResolvedQbeName := ReadLpstrAt(AText, APos);
     R.IsExternal := DecodeBool(AText, APos);
     R.ExternalName := ReadLpstrAt(AText, APos);
+    R.IsVarArgs := DecodeBool(AText, APos);
     AIface.AddRoutine(R);
   end;
   if ReadTag(AText, APos) <> 'END' then

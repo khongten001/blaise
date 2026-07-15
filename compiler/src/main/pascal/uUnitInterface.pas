@@ -72,6 +72,7 @@ type
                                    a 'published' section; carries through
                                    for RTL MethodAddress lookups }
     IsExternal:   Boolean;
+    IsVarArgs:    Boolean;       { C-variadic external ('varargs' directive) }
     ExternalName: string;
     CallingConv:  string;        { 'cdecl', 'stdcall', '' }
     VTableSlot:   Integer;       { -1 = static; >= 0 = vtable index.

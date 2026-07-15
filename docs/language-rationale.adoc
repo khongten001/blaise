@@ -6016,3 +6016,59 @@ C++ treats ODR violations — except diagnosed instead of undefined.
   genuine collision without new marker metadata in every object; and builds
   that link through the external toolchain would bypass the check entirely.
   The registration-time check covers every build shape the front end sees.
+
+== C-Variadic Externals — the `varargs` Directive
+
+=== Decision
+
+An external routine may be declared with the `varargs` directive:
+
+[source,pascal]
+----
+function printf(AFormat: PChar): Integer; cdecl; varargs; external 'c' name 'printf';
+----
+
+Call sites may then pass any number of extra arguments after the declared
+(fixed) parameters.  The syntax and semantics follow Delphi and FPC, which
+both use exactly this directive for C variadic imports.
+
+Rules:
+
+* `varargs` is only valid together with `external` — a Blaise routine body
+  has no way to receive the anonymous arguments (there is no `va_list`
+  equivalent, by design).
+* `varargs` cannot combine with `overload`: the variadic arity range would
+  make overload resolution ambiguous by construction.
+* Fewer arguments than the fixed parameter list remains an arity error.
+* Extra arguments must be C-passable: integers, enums, Boolean, Double,
+  pointers, PChar, nil.  Two cases get targeted errors instead of silent
+  ABI breakage:
+** a Blaise `string` is rejected with a hint to pass `PChar(S)` — the
+   managed string header must not cross a C varargs boundary;
+** a `Single` is rejected with a hint to pass `Double(F)` — C's default
+   argument promotions mean the callee always reads a `double`, so passing
+   a 4-byte float silently produces garbage.
+
+=== Backend behaviour
+
+* The QBE backend emits QBE's native variadic marker at the fixed/variadic
+  boundary — `call $printf(l %fmt, ..., w %n)` — and QBE applies the C
+  variadic ABI.
+* The native x86_64 backend already passes the System V register sequences
+  and sets `%al` to the vector-register count before every call, which is
+  precisely the varargs contract; anonymous arguments continue the same
+  register sequence as named ones on this ABI, so no extra work is needed.
+* The AArch64 (Apple) backend rejects varargs calls with extras for now:
+  Apple's ABI passes ALL anonymous arguments on the stack, unlike Linux
+  AAPCS64.  Support requires a dedicated lowering there.
+
+=== Alternatives rejected
+
+* *`array of const` bridging* — Blaise's `array of const` boxes each element
+  into a TVarRec; C callees expect raw promoted values.  The two models do
+  not meet without a translation shim per callee.
+* *Fixed-arity generated overloads* (h2pas style: `printf1`, `printf2`, …) —
+  pollutes the API surface and still caps the arity.
+* *Silently passing extras without a directive* — arity checking is a load-
+  bearing part of the type system; opting out must be explicit and visible
+  in the declaration.

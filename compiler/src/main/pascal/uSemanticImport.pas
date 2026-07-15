@@ -1017,6 +1017,7 @@ begin
     non-existent 'Unit_Name' — and a caller built against the cached .bif fails
     to link (undefined symbol).  See WriteRoutines (IFACE v9). }
   Result.IsExternal   := ASig.IsExternal;
+  Result.IsVarArgs    := ASig.IsVarArgs;
   Result.ExternalName := ASig.ExternalName;
   { Propagate the vtable-dispatch facts.  Without these, a call to a virtual
     method resolved from a cached .bif keeps VTableSlot = -1 (the TMethodDecl

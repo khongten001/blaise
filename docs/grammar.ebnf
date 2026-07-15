@@ -440,6 +440,9 @@ MethodDirective
     | ExternalDirective
     | "overload"                          (* required on every overload of a same-named proc/func/method *)
     | "nostackframe"                      (* asm body owns the frame; no compiler prologue/epilogue *)
+    | "varargs"                           (* C-variadic external: call sites may pass extra args after
+                                             the declared parameters.  Only valid together with EXTERNAL;
+                                             cannot combine with "overload".  See language-rationale.adoc. *)
     | IDENT                               (* inline, stdcall, cdecl, abstract, reintroduce, assembler, … *)
     ;
 

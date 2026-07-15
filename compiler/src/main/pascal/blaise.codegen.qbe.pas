@@ -10659,6 +10659,22 @@ begin
     try
       for I := 0 to ACall.Args.Count - 1 do
       begin
+        { varargs extra: no declared parameter — pass by the argument's
+          own type, with QBE's '...' variadic marker at the boundary so
+          the backend applies the C variadic ABI (AL count etc.). }
+        if I >= MDecl.Params.Count then
+        begin
+          if I = MDecl.Params.Count then
+          begin
+            if ArgLine <> '' then ArgLine := ArgLine + ', ';
+            ArgLine := ArgLine + '...';
+          end;
+          ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[I]));
+          ArgTemps.Add(ArgTemp);
+          ArgLine := ArgLine + Format(', %s %s',
+            [QbeTypeOf(TASTExpr(ACall.Args.Items[I]).ResolvedType), ArgTemp]);
+          Continue;
+        end;
         Par := TMethodParam(MDecl.Params.Items[I]);
         if ArgLine <> '' then ArgLine := ArgLine + ', ';
         if Par.IsOpenArray then
@@ -12775,6 +12791,21 @@ begin
       try
         for I := 0 to FC.Args.Count - 1 do
         begin
+          { varargs extra: no declared parameter — pass by the argument's
+            own type, with QBE's '...' variadic marker at the boundary. }
+          if I >= MDecl.Params.Count then
+          begin
+            if I = MDecl.Params.Count then
+            begin
+              if ArgLine <> '' then ArgLine := ArgLine + ', ';
+              ArgLine := ArgLine + '...';
+            end;
+            ArgTemp := EmitExpr(TASTExpr(FC.Args.Items[I]));
+            ArgTemps.Add(ArgTemp);
+            ArgLine := ArgLine + Format(', %s %s',
+              [QbeTypeOf(TASTExpr(FC.Args.Items[I]).ResolvedType), ArgTemp]);
+            Continue;
+          end;
           Par := TMethodParam(MDecl.Params.Items[I]);
           if ArgLine <> '' then ArgLine := ArgLine + ', ';
           if Par.IsOpenArray then

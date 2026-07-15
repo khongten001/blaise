@@ -275,7 +275,7 @@ TMethodCallStmt.IsProcFieldCall  safe
 TInheritedCallStmt.Name  serialise
 TInheritedCallStmt.Args  serialise
 
-# TAnonMethodExpr (uAST.pas:1053)
+# TAnonMethodExpr (uAST.pas:1059)
 TAnonMethodExpr.Decl  serialise
 TAnonMethodExpr.WeakCaptures  serialise
 TAnonMethodExpr.LiftedName  safe
@@ -283,7 +283,7 @@ TAnonMethodExpr.IsArrow  serialise
 TAnonMethodExpr.ArrowExpr  serialise
 TAnonMethodExpr.ValueSlotName  safe
 
-# TMethodCallExpr (uAST.pas:1089)
+# TMethodCallExpr (uAST.pas:1095)
 TMethodCallExpr.ObjectName  serialise
 TMethodCallExpr.Name  serialise
 TMethodCallExpr.QualifierUnit  serialise
@@ -309,6 +309,7 @@ TRoutineSig.ReturnType  serialise
 TRoutineSig.IsInline  safe
 TRoutineSig.IsPublished  safe
 TRoutineSig.IsExternal  serialise
+TRoutineSig.IsVarArgs  serialise
 TRoutineSig.ExternalName  serialise
 TRoutineSig.CallingConv  serialise
 TRoutineSig.VTableSlot  serialise
@@ -321,16 +322,16 @@ TRoutineSig.Visibility  serialise
 TRoutineSig.TypeParams  serialise
 TRoutineSig.TypeParamConstraints  serialise
 
-# TConstEntry (uUnitInterface.pas:116)
+# TConstEntry (uUnitInterface.pas:117)
 TConstEntry.Decl  serialise
 TConstEntry.TypeRef  serialise
 
-# TVarEntry (uUnitInterface.pas:124)
+# TVarEntry (uUnitInterface.pas:125)
 TVarEntry.Name  serialise
 TVarEntry.TypeRef  serialise
 TVarEntry.IsThreadVar  serialise
 
-# TUnitInterface (uUnitInterface.pas:188)
+# TUnitInterface (uUnitInterface.pas:189)
 TUnitInterface.Name  serialise
 TUnitInterface.SourceFile  serialise
 TUnitInterface.SourceHash  serialise
