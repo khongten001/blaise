@@ -52,6 +52,8 @@ type
     procedure TestEmit_MacroConsts_InOutput;
     procedure TestEmit_UnevaluatedMacro_NotEmitted;
     procedure TestEmit_TrueFalseMacros_NotEmitted;
+    procedure TestEmit_CaseCollidingMacros_BothEmitted;
+    procedure TestEmit_MacroCollidingWithFunction_Skipped;
   end;
 
 implementation
@@ -219,6 +221,62 @@ begin
   Src := EmitBinding(Model, 'sample', 'sample', FMacros);
   AssertTrue('True not emitted', not ContainsStr(Src, 'True ='));
   AssertTrue('False not emitted', not ContainsStr(Src, 'False ='));
+end;
+
+procedure TMacroTests.TestEmit_CaseCollidingMacros_BothEmitted;
+var
+  Model: TCModel;
+  Macros: TList<TCMacro>;
+  M: TCMacro;
+  Src: string;
+begin
+  { X11's keysymdef.h defines XK_Q = 0x51 and XK_q = 0x71 — distinct C
+    constants whose names collide once Pascal folds case.  Dropping the
+    later one silently rebinds XK_q to the WRONG value at use sites
+    (Pascal resolves it to XK_Q).  The later twin must be emitted under
+    a deterministic underscore-suffixed name instead. }
+  Model := TCModel.Create();
+  Macros := TList<TCMacro>.Create();
+  M := TCMacro.Create('XK_Q', '0x0051');
+  M.HasValue := True;
+  M.Value := 81;
+  Macros.Add(M);
+  M := TCMacro.Create('XK_q', '0x0071');
+  M.HasValue := True;
+  M.Value := 113;
+  Macros.Add(M);
+  Src := EmitBinding(Model, 'sample', 'sample', Macros);
+  AssertTrue('first twin kept', ContainsStr(Src, 'XK_Q = 81;'));
+  AssertTrue('later twin renamed, value preserved',
+    ContainsStr(Src, 'XK_q_ = 113;'));
+  AssertTrue('original C name recorded in a comment',
+    ContainsStr(Src, '{ C name: XK_q'));
+end;
+
+procedure TMacroTests.TestEmit_MacroCollidingWithFunction_Skipped;
+var
+  Model: TCModel;
+  Macros: TList<TCMacro>;
+  M: TCMacro;
+  F: TCFunction;
+  Src: string;
+begin
+  { A macro colliding with a declared FUNCTION (or type/enum member) is
+    a redundant alias, not a distinct constant — it stays skipped. }
+  Model := TCModel.Create();
+  F := TCFunction.Create('XSync');
+  F.ReturnCType := 'int';
+  Model.AddFunction(F);
+  Macros := TList<TCMacro>.Create();
+  M := TCMacro.Create('XSYNC', '1');
+  M.HasValue := True;
+  M.Value := 1;
+  Macros.Add(M);
+  Src := EmitBinding(Model, 'sample', 'sample', Macros);
+  AssertTrue('function still declared', ContainsStr(Src, 'function XSync'));
+  AssertTrue('macro twin of a function not emitted as a const',
+    not ContainsStr(Src, 'XSYNC = 1;'));
+  AssertTrue('and not renamed either', not ContainsStr(Src, 'XSYNC_'));
 end;
 
 initialization

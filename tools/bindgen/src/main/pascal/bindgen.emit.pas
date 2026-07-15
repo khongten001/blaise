@@ -381,6 +381,8 @@ var
   I, J: Integer;
   D: TCDecl;
   Declared: TSet<string>;
+  MacroNames: TSet<string>;
+  MName, MSuffix: string;
   Target: string;
 begin
   Mapper := TTypeMapper.Create();
@@ -452,23 +454,41 @@ begin
         Declared.Include(UpperCase(AModel.Enums[I].Members[J].Name));
     for I := 0 to AModel.Functions.Count - 1 do
       Declared.Include(UpperCase(AModel.Functions[I].Name));
+    MacroNames := TSet<string>.Create();
     for I := 0 to AMacros.Count - 1 do
     begin
-      if Declared.Contains(UpperCase(AMacros[I].Name)) then Continue;
       { X.h defines True/False (= 1/0).  The Blaise builtins carry the
         same values, and a const would SHADOW them — 'Running := True'
         would suddenly assign an Integer.  Drop them. }
       if (UpperCase(AMacros[I].Name) = 'TRUE') or
          (UpperCase(AMacros[I].Name) = 'FALSE') then Continue;
+      if not (AMacros[I].IsString or AMacros[I].HasValue) then Continue;
+      MName := SanitiseIdent(AMacros[I].Name, I);
+      MSuffix := '';
+      if Declared.Contains(UpperCase(MName)) then
+      begin
+        { A case-insensitive twin (Pascal folds identifier case).  When
+          the twin is another MACRO — keysymdef.h's XK_Q ($51) vs XK_q
+          ($71) — the two are distinct C constants, and dropping this one
+          silently rebinds its C name to the twin's value at Pascal use
+          sites.  Rename it deterministically (append underscores until
+          unique) and record the C name in a trailing comment.  A twin
+          that is a type, enum member, or function stays skipped: there
+          the macro is a redundant alias of the declaration, not a
+          distinct constant. }
+        if not MacroNames.Contains(UpperCase(MName)) then Continue;
+        while Declared.Contains(UpperCase(MName)) do
+          MName := MName + '_';
+        MSuffix := '  { C name: ' + AMacros[I].Name + ' (case-collides) }';
+      end;
       if AMacros[I].IsString then
-        ConstLines.Add('  ' + SanitiseIdent(AMacros[I].Name, I) + ' = ''' +
-          ReplaceAll(AMacros[I].StrValue, '''', '''''') + ''';')
-      else if AMacros[I].HasValue then
-        ConstLines.Add('  ' + SanitiseIdent(AMacros[I].Name, I) + ' = ' +
-          IntToStr(AMacros[I].Value) + ';')
+        ConstLines.Add('  ' + MName + ' = ''' +
+          ReplaceAll(AMacros[I].StrValue, '''', '''''') + ''';' + MSuffix)
       else
-        Continue;
-      Declared.Include(UpperCase(AMacros[I].Name));
+        ConstLines.Add('  ' + MName + ' = ' +
+          IntToStr(AMacros[I].Value) + ';' + MSuffix);
+      Declared.Include(UpperCase(MName));
+      MacroNames.Include(UpperCase(MName));
     end;
   end;
 
