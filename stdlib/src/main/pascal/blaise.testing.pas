@@ -812,9 +812,12 @@ begin
   AResult.StartTest(Self.FClassName, Self.DisplayName());
   Outcome := 'OK';
   try
-    Self.SetUp();
     try
+      { SetUp sits INSIDE the exception-mapping block: a SetUp failure
+        is this test's ERROR (JUnit semantics), never a runner abort.
+        The body is skipped when SetUp raises; TearDown still runs. }
       try
+        Self.SetUp();
         Self.RunTest();
       except
         on E: EAssertionFailed do
@@ -839,7 +842,26 @@ begin
         end;
       end;
     finally
-      Self.TearDown();
+      { A TearDown failure must not abort the runner either; it marks
+        the test as an ERROR unless a worse outcome is already set. }
+      try
+        Self.TearDown();
+      except
+        on E: Exception do
+          if Outcome = 'OK' then
+          begin
+            Outcome := 'ERROR';
+            AResult.AddError(Self.DisplayName(),
+              'TearDown: ' + E.ClassName + ': ' + E.Message);
+          end;
+        on E: TObject do
+          if Outcome = 'OK' then
+          begin
+            Outcome := 'ERROR';
+            AResult.AddError(Self.DisplayName(),
+              'TearDown: unhandled exception: ' + E.ClassName);
+          end;
+      end;
     end;
   finally
     AResult.EndTest(Outcome);

@@ -21,6 +21,7 @@ unit Test.Registry;
 interface
 
 uses
+  Testing.Tests,
   Json.Tests,
   Functional.Tests,
   ListOps.Tests,
