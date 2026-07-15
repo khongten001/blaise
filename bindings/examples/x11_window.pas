@@ -16,7 +16,7 @@
       XDrawString) on Expose
     * the XEvent union via the generated typed accessors
       (XEvent_type_, XEvent_xkey, XEvent_xbutton, XEvent_xclient)
-    * keysym constants (XK_Escape / XK_q) via XLookupKeysym
+    * keysym constants (XK_Escape / XK_q_) via XLookupKeysym
     * clean shutdown through the window manager's close button,
       Escape/q, or a self-sent ClientMessage
 
@@ -138,7 +138,10 @@ begin
     else if XEvent_type_(Ev)^ = KeyPress then
     begin
       Key := XLookupKeysym(XEvent_xkey(Ev), 0);
-      if (Key = XK_Escape) or (Key = XK_q) then
+      { XLookupKeysym with index 0 returns the UNSHIFTED keysym, so a
+        letter key always reports its lowercase form — XK_q_ (the C
+        XK_q; renamed by bindgen because Pascal folds case with XK_Q). }
+      if (Key = XK_Escape) or (Key = XK_q_) then
         Running := False;
     end
     else if XEvent_type_(Ev)^ = ButtonPress then
