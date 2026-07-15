@@ -189,19 +189,33 @@ Notes:
   underscore (`type` → `type_`); unnamed C parameters become `a0`,
   `a1`, ….
 
-== Current limitations
+== C feature coverage
 
-Each of these is marked with a `TODO` comment in the generated output
-where it applies:
+* *Function pointers* become real procedural types: typedefs emit
+  under their own name, inline callback parameters get synthesised
+  named types (deduplicated by signature).  A Blaise routine passed
+  with `@` is callable from C — verified with qsort and
+  XSetErrorHandler.
+* *Unions* are exact-size records (`raw` array) plus one typed
+  accessor function per nameable member:
+  `XEvent_xkey(Ev)^.keycode`.
+* *Variadic functions* are emitted with the `varargs` directive
+  (compiler support since IFACE v14): `printf(PChar('%d'), N)` works.
+  Extra args must be C-passable; the compiler rejects `string`
+  (pass `PChar(...)`) and `Single` (pass `Double(...)`).
+* *Bitfields* collapse into storage-unit fields
+  (`__bits0: Cardinal; { C bitfields: a:1 b:3 c:12 }`) with C-exact
+  record sizes; individual bit accessors remain a TODO.
+* A function whose signature uses a BY-VALUE type from a filtered-out
+  header is skipped with a note (a pointer would have degraded to
+  `Pointer`, but a by-value unknown has no safe mapping).
 
-* *Function-pointer typedefs* degrade to untyped `Pointer` — calls
-  work (it is just an address) but there is no type-checked way to
-  install a Blaise routine as a C callback yet.
-* *Unions* are exact-size raw arrays, not variant records; access
-  members by pointer cast.
-* *Variadic functions* are skipped (not callable from Blaise).
-* *Bitfields* are not handled.
+== Remaining limitations
+
 * *Function-like macros* are code, not constants, and are skipped.
+* Doubly-nested anonymous records keep synthetic `anon_<n>` names.
+* Apple AArch64 varargs calls are rejected by the compiler for now
+  (Apple's ABI stacks anonymous args; Linux x86_64 and QBE work).
 
 == Development
 

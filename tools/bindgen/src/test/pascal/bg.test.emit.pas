@@ -36,7 +36,7 @@ type
     procedure TestEmit_EnumAlias_AndMemberConsts;
     procedure TestEmit_Record_WithMappedFields;
     procedure TestEmit_OpaqueRecord_EmptyRecord;
-    procedure TestEmit_Variadic_SkippedWithComment;
+    procedure TestEmit_Variadic_EmittedWithVarargs;
     procedure TestEmit_ReservedWordParam_Renamed;
     procedure TestEmit_UnnamedParam_Synthesised;
     procedure TestEmit_PtrAliases_PrecedeOtherTypes;
@@ -51,6 +51,7 @@ type
     procedure TestEmit_FnPtrTypedef_ProceduralType;
     procedure TestEmit_InlineFnPtrParam_SynthesisedType;
     procedure TestEmit_VariadicFnPtrTypedef_DegradesToPointer;
+    procedure TestEmit_UnresolvedByValueParam_FunctionSkipped;
   end;
 
 implementation
@@ -174,14 +175,16 @@ begin
   AssertTrue(ContainsStr(Self.Emit(), '_XDisplay = record end;'));
 end;
 
-procedure TEmitTests.TestEmit_Variadic_SkippedWithComment;
+procedure TEmitTests.TestEmit_Variadic_EmittedWithVarargs;
 var
   Src: string;
 begin
+  { Since the compiler's 'varargs' directive landed, variadic functions
+    are emitted as callable declarations, not skipped. }
   Src := Self.Emit();
-  AssertTrue('no declaration', not ContainsStr(Src, 'function XVariadicThing'));
-  AssertTrue('skip note', ContainsStr(Src, 'XVariadicThing'));
-  AssertTrue('reason stated', ContainsStr(Src, 'variadic'));
+  AssertTrue(ContainsStr(Src,
+    'function XVariadicThing(mode: Integer): Integer; cdecl; varargs; ' +
+    'external ''X11'' name ''XVariadicThing'';'));
 end;
 
 procedure TEmitTests.TestEmit_ReservedWordParam_Renamed;
@@ -371,6 +374,25 @@ begin
   FModel.AddTypedef(TCTypedef.Create('XVaHandler', 'int (*)(Display *, ...)'));
   Src := Self.Emit();
   AssertTrue(ContainsStr(Src, 'XVaHandler = Pointer;'));
+end;
+
+procedure TEmitTests.TestEmit_UnresolvedByValueParam_FunctionSkipped;
+var
+  F: TCFunction;
+  Src: string;
+begin
+  { fopencookie takes cookie_io_functions_t BY VALUE — a type declared
+    in a filtered-out header.  Unlike a pointer, a by-value unknown
+    cannot degrade (its size/ABI class is unknown), so the function is
+    skipped with a note rather than emitted broken. }
+  F := TCFunction.Create('fopencookie');
+  F.ReturnCType := 'int';
+  F.Params.Add(TCParam.Create('io_funcs', 'cookie_io_functions_t'));
+  FModel.AddFunction(F);
+  Src := Self.Emit();
+  AssertTrue('no declaration', not ContainsStr(Src, 'function fopencookie('));
+  AssertTrue('skip note names the type',
+    ContainsStr(Src, 'cookie_io_functions_t'));
 end;
 
 initialization

@@ -312,18 +312,33 @@ begin
 end;
 
 procedure EmitFunction(F: TCFunction; const ALibName: string;
-  AMapper: TTypeMapper; AFuncLines: TStringList);
+  AMapper: TTypeMapper; AFuncLines: TStringList; ADeclared: TSet<string>);
 var
   J: Integer;
   ParamStr: string;
   Ret: string;
   Sig: string;
+  Mapped: string;
 begin
-  if F.IsVariadic then
+  { A signature referencing a type from a filtered-out header cannot be
+    bound: a pointer would have degraded already, so what remains is a
+    BY-VALUE use whose size/ABI class is unknown.  Skip with a note. }
+  Ret := AMapper.Map(F.ReturnCType);
+  if IsUnresolvedName(ADeclared, Ret) then
   begin
-    AFuncLines.Add('{ ' + F.Name +
-      ': skipped — variadic C functions are not callable from Blaise }');
+    AFuncLines.Add('{ ' + F.Name + ': skipped — return type ''' +
+      F.ReturnCType + ''' comes from a filtered-out header }');
     Exit;
+  end;
+  for J := 0 to F.Params.Count - 1 do
+  begin
+    Mapped := ParamTypeName(F, J, AMapper);
+    if IsUnresolvedName(ADeclared, Mapped) then
+    begin
+      AFuncLines.Add('{ ' + F.Name + ': skipped — parameter type ''' +
+        F.Params[J].CType + ''' comes from a filtered-out header }');
+      Exit;
+    end;
   end;
   ParamStr := '';
   for J := 0 to F.Params.Count - 1 do
@@ -340,7 +355,12 @@ begin
     Sig := 'procedure ' + F.Name + ParamStr
   else
     Sig := 'function ' + F.Name + ParamStr + ': ' + Ret;
-  AFuncLines.Add(Sig + '; cdecl; external ''' + ALibName + ''' name ''' +
+  Sig := Sig + '; cdecl;';
+  { A C-variadic function maps to the 'varargs' directive: call sites
+    may pass extra C-passable arguments after the fixed parameters. }
+  if F.IsVariadic then
+    Sig := Sig + ' varargs;';
+  AFuncLines.Add(Sig + ' external ''' + ALibName + ''' name ''' +
     F.Name + ''';');
 end;
 
@@ -412,7 +432,7 @@ begin
     else if D is TCEnum then
       EmitEnum(TCEnum(D), TypeLines, ConstLines)
     else if D is TCFunction then
-      EmitFunction(TCFunction(D), ALibName, Mapper, FuncLines);
+      EmitFunction(TCFunction(D), ALibName, Mapper, FuncLines, Declared);
   end;
 
   { Synthesised procedural types go LAST in the type section: they may

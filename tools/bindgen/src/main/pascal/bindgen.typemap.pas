@@ -103,9 +103,13 @@ begin
     Result := StripPrefixWord(Result, 'struct');
     Result := StripPrefixWord(Result, 'union');
     Result := StripPrefixWord(Result, 'enum');
+    { Trailing qualifiers: 'char *const', and glibc's 'char *restrict'
+      (restrict binds to the pointer, written as a suffix). }
+    if EndsStr(' const', Result) then
+      Result := Trim(LeftStr(Result, Length(Result) - 6));
+    if EndsStr('restrict', Result) then
+      Result := Trim(LeftStr(Result, Length(Result) - 8));
   until Result = Prev;
-  if EndsStr(' const', Result) then
-    Result := Trim(LeftStr(Result, Length(Result) - 6));
 end;
 
 function MapBuiltin(const AType: string): string;

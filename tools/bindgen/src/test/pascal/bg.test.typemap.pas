@@ -173,6 +173,9 @@ end;
 procedure TTypeMapTests.TestMap_ConstCharPtr_IsPChar;
 begin
   AssertEquals('PChar', FMapper.Map('const char *'));
+  { glibc writes restrict as a pointer suffix: 'char *restrict'. }
+  AssertEquals('PChar', FMapper.Map('char *restrict'));
+  AssertEquals('PChar', FMapper.Map('const char *restrict'));
 end;
 
 procedure TTypeMapTests.TestMap_VoidPtr_IsPointer;

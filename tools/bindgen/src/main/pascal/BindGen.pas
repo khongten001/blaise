@@ -263,8 +263,8 @@ begin
   Lines.SaveToFile(GOutPath);
 
   WriteLn('bindgen: wrote ' + GOutPath);
-  WriteLn('  functions: ' + IntToStr(Model.Functions.Count - Skipped) +
-          '  (variadic skipped: ' + IntToStr(Skipped) + ')');
+  WriteLn('  functions: ' + IntToStr(Model.Functions.Count) +
+          '  (variadic: ' + IntToStr(Skipped) + ')');
   WriteLn('  records:   ' + IntToStr(Model.Records.Count));
   WriteLn('  typedefs:  ' + IntToStr(Model.Typedefs.Count));
   WriteLn('  enums:     ' + IntToStr(Model.Enums.Count));
