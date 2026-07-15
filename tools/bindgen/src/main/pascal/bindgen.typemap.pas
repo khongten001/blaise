@@ -65,6 +65,9 @@ type
       named procedural type 'T<AHint>' (deduped by signature, so
       look-alike callbacks share one type) and returns its name. }
     function MapCallback(const AQualType, AHint: string): string;
+    { Pointer-to-mapped-type: maps APointee and registers/returns the
+      'P<Name>' alias.  Used for union member accessors. }
+    function MapPointerTo(const APointee: string): string;
     property PtrAliases: TList<TPtrAlias> read FPtrAliases;
     property ProcTypes: TList<TProcTypeDecl> read FProcTypes;
   end;
@@ -319,6 +322,11 @@ begin
   end;
   Result := 'P' + Mapped;
   RegisterAlias(Result, Mapped);
+end;
+
+function TTypeMapper.MapPointerTo(const APointee: string): string;
+begin
+  Result := Self.MapPointer(APointee);
 end;
 
 function TTypeMapper.Map(const AQualType: string): string;

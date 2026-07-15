@@ -105,11 +105,22 @@ begin
   Result := AMapper.Map(T.CType);
 end;
 
+{ True when a union member can get a typed accessor: its mapped type
+  is a plain name (not an array or inline construct). }
+function AccessibleMemberType(AMapper: TTypeMapper; const ACType: string;
+  var AMapped: string): Boolean;
+begin
+  AMapped := AMapper.Map(ACType);
+  Result := (AMapped <> '') and (Pos(' ', AMapped) < 0) and
+    (Pos('(', AMapped) < 0) and (Pos('^', AMapped) < 0);
+end;
+
 procedure PreMapModel(AModel: TCModel; AMapper: TTypeMapper);
 var
   I, J: Integer;
   R: TCRecord;
   F: TCFunction;
+  Hint: string;
 begin
   { Walk everything once so the mapper registers every pointer alias
     and synthesised procedural type before any line is emitted. }
@@ -119,7 +130,14 @@ begin
   begin
     R := AModel.Records[I];
     for J := 0 to R.Fields.Count - 1 do
+    begin
       AMapper.Map(R.Fields[J].CType);
+      { Union member accessors return P<member> — register the alias
+        now so it is emitted with the others. }
+      if R.IsUnion and R.IsComplete and
+         AccessibleMemberType(AMapper, R.Fields[J].CType, Hint) then
+        AMapper.MapPointerTo(R.Fields[J].CType);
+    end;
   end;
   for I := 0 to AModel.Functions.Count - 1 do
   begin
@@ -134,13 +152,39 @@ end;
 { A C union becomes a record with a single 'raw' array of its exact
   byte size, so by-value use (XEvent!) reserves the right amount of
   stack.  UInt64 elements when the size allows carry the union's usual
-  8-byte alignment; member access is by pointer cast until proper
-  variant emission lands. }
-procedure EmitUnion(R: TCRecord; AModel: TCModel; ATypeLines: TStringList);
+  8-byte alignment.  Blaise has no variant records, so each nameable
+  member additionally gets a typed accessor function —
+  'XEvent_xkey(ev)^.keycode' — declared with the externals and
+  implemented as a pointer cast. }
+{ The name user code should see for a record: the first typedef that
+  aliases its tag ('XEvent' for 'union _XEvent'), else the tag itself. }
+function FriendlyRecordName(AModel: TCModel; R: TCRecord): string;
+var
+  I: Integer;
+  T: TCTypedef;
+begin
+  Result := R.Name;
+  for I := 0 to AModel.Typedefs.Count - 1 do
+  begin
+    T := AModel.Typedefs[I];
+    if (T.CType = 'union ' + R.Name) or (T.CType = 'struct ' + R.Name) then
+    begin
+      Result := T.Name;
+      Exit;
+    end;
+  end;
+end;
+
+procedure EmitUnion(R: TCRecord; AModel: TCModel; AMapper: TTypeMapper;
+  ATypeLines, AFuncLines, AImplLines: TStringList);
 var
   Size, Align: Integer;
   J: Integer;
   Members: string;
+  Mapped: string;
+  PtrName: string;
+  AccName: string;
+  ViewName: string;
 begin
   if not RecordSizeAlign(AModel, R, Size, Align) then
   begin
@@ -162,10 +206,30 @@ begin
   else
     ATypeLines.Add('    raw: array[0..' + IntToStr(Size - 1) + '] of Byte;');
   ATypeLines.Add('  end;');
+
+  { Accessor declarations come after the whole type section, so the
+    friendlier typedef alias (XEvent, not _XEvent) is already legal. }
+  ViewName := FriendlyRecordName(AModel, R);
+  for J := 0 to R.Fields.Count - 1 do
+  begin
+    if not AccessibleMemberType(AMapper, R.Fields[J].CType, Mapped) then
+      Continue;
+    PtrName := AMapper.MapPointerTo(R.Fields[J].CType);
+    AccName := ViewName + '_' + SanitiseIdent(R.Fields[J].Name, J);
+    AFuncLines.Add('function ' + AccName + '(var AUnion: ' + ViewName +
+      '): ' + PtrName + '; { typed view of C union member ''' +
+      R.Fields[J].Name + ''' }');
+    AImplLines.Add('function ' + AccName + '(var AUnion: ' + ViewName +
+      '): ' + PtrName + ';');
+    AImplLines.Add('begin');
+    AImplLines.Add('  Result := ' + PtrName + '(@AUnion);');
+    AImplLines.Add('end;');
+    AImplLines.Add('');
+  end;
 end;
 
 procedure EmitRecord(R: TCRecord; AModel: TCModel; AMapper: TTypeMapper;
-  ATypeLines: TStringList);
+  ATypeLines, AFuncLines, AImplLines: TStringList);
 var
   J: Integer;
 begin
@@ -177,7 +241,7 @@ begin
   end;
   if R.IsUnion then
   begin
-    EmitUnion(R, AModel, ATypeLines);
+    EmitUnion(R, AModel, AMapper, ATypeLines, AFuncLines, AImplLines);
     Exit;
   end;
   ATypeLines.Add('  ' + R.Name + ' = record');
@@ -289,6 +353,7 @@ var
   TypeLines: TStringList;
   ConstLines: TStringList;
   FuncLines: TStringList;
+  ImplLines: TStringList;
   I, J: Integer;
   D: TCDecl;
   Declared: TSet<string>;
@@ -299,6 +364,7 @@ begin
   TypeLines := TStringList.Create();
   ConstLines := TStringList.Create();
   FuncLines := TStringList.Create();
+  ImplLines := TStringList.Create();
 
   PreMapModel(AModel, Mapper);
 
@@ -336,7 +402,7 @@ begin
   begin
     D := AModel.Decls[I];
     if D is TCRecord then
-      EmitRecord(TCRecord(D), AModel, Mapper, TypeLines)
+      EmitRecord(TCRecord(D), AModel, Mapper, TypeLines, FuncLines, ImplLines)
     else if D is TCTypedef then
       EmitTypedef(TCTypedef(D), Mapper, TypeLines, Declared)
     else if D is TCEnum then
@@ -407,6 +473,8 @@ begin
   Lines.Add('');
   Lines.Add('implementation');
   Lines.Add('');
+  for I := 0 to ImplLines.Count - 1 do
+    Lines.Add(ImplLines[I]);
   Lines.Add('end.');
 
   Result := Lines.Text;

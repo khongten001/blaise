@@ -45,6 +45,9 @@ type
     procedure TestEmit_UnknownTypedefRHS_DegradesToPointer;
     procedure TestEmit_Union_ExactSizeRawArray;
     procedure TestEmit_Union_Uncomputable_Placeholder;
+    procedure TestEmit_UnionAccessor_InterfaceAndBody;
+    procedure TestEmit_UnionAccessor_ArrayMemberSkipped;
+    procedure TestEmit_UnionAccessor_UsesTypedefName;
     procedure TestEmit_FnPtrTypedef_ProceduralType;
     procedure TestEmit_InlineFnPtrParam_SynthesisedType;
     procedure TestEmit_VariadicFnPtrTypedef_DegradesToPointer;
@@ -272,6 +275,66 @@ begin
   FModel.AddRecord(R);
   Src := Self.Emit();
   AssertTrue(ContainsStr(Src, 'BadUnion = record end;'));
+end;
+
+procedure TEmitTests.TestEmit_UnionAccessor_InterfaceAndBody;
+var
+  R: TCRecord;
+  Src: string;
+begin
+  { Blaise has no variant records, so each union member gets a typed
+    accessor: XEvent_xkey(ev)^.keycode style. }
+  R := TCRecord.Create('XSampleEvent');
+  R.IsUnion := True;
+  R.IsComplete := True;
+  R.Fields.Add(TCField.Create('kind', 'int'));
+  R.Fields.Add(TCField.Create('pt', 'XPoint'));
+  FModel.AddRecord(R);
+  Src := Self.Emit();
+  AssertTrue('scalar accessor decl', ContainsStr(Src,
+    'function XSampleEvent_kind(var AUnion: XSampleEvent): PInteger;'));
+  AssertTrue('record accessor decl', ContainsStr(Src,
+    'function XSampleEvent_pt(var AUnion: XSampleEvent): PXPoint;'));
+  AssertTrue('body cast', ContainsStr(Src, 'Result := PXPoint(@AUnion);'));
+  AssertTrue('PInteger alias', ContainsStr(Src, 'PInteger = ^Integer;'));
+end;
+
+procedure TEmitTests.TestEmit_UnionAccessor_ArrayMemberSkipped;
+var
+  R: TCRecord;
+  Src: string;
+begin
+  R := TCRecord.Create('XSampleEvent');
+  R.IsUnion := True;
+  R.IsComplete := True;
+  R.Fields.Add(TCField.Create('kind', 'int'));
+  R.Fields.Add(TCField.Create('pad', 'long[24]'));
+  FModel.AddRecord(R);
+  Src := Self.Emit();
+  AssertTrue('scalar member has accessor',
+    ContainsStr(Src, 'function XSampleEvent_kind'));
+  AssertTrue('array member has none',
+    not ContainsStr(Src, 'function XSampleEvent_pad'));
+end;
+
+procedure TEmitTests.TestEmit_UnionAccessor_UsesTypedefName;
+var
+  R: TCRecord;
+  Src: string;
+begin
+  { A union tag _XEvent typedef'd to XEvent — accessors must carry the
+    friendly typedef name, not the tag. }
+  R := TCRecord.Create('_XEvent');
+  R.IsUnion := True;
+  R.IsComplete := True;
+  R.Fields.Add(TCField.Create('kind', 'int'));
+  FModel.AddRecord(R);
+  FModel.AddTypedef(TCTypedef.Create('XEvent', 'union _XEvent'));
+  Src := Self.Emit();
+  AssertTrue('typedef-named accessor', ContainsStr(Src,
+    'function XEvent_kind(var AUnion: XEvent): PInteger;'));
+  AssertTrue('tag-named accessor absent',
+    not ContainsStr(Src, 'function _XEvent_kind'));
 end;
 
 procedure TEmitTests.TestEmit_FnPtrTypedef_ProceduralType;
