@@ -1224,9 +1224,14 @@ begin
           AddLocal('__sret', 8);   { the incoming x8 destination pointer }
       end
       else if not (IsIntFam(ADecl.ResolvedReturnType) or
-                   (ADecl.ResolvedReturnType.Kind = tyDouble)) then
+                   (ADecl.ResolvedReturnType.Kind = tyDouble) or
+                   (ADecl.ResolvedReturnType.Kind = tyString)) then
         NotYet('function result of this type', ADecl)
       else
+        { a string Result is a plain pointer slot.  It is deliberately NOT
+          in FStrLocals: the +1 it holds transfers to the caller at return
+          (ArcExprOwnsRef treats call results as owned), so the scope-exit
+          release must skip it. }
         AddLocal('Result', 8);
     end;
   end;
@@ -1756,8 +1761,52 @@ begin
 end;
 
 procedure TArm64Backend.EmitUnit(AUnit: TUnit);
+var
+  I: Integer;
+  Decl: TMethodDecl;
+
+  procedure CheckTypeSubset(ATypeDecls: TObjectList);
+  var
+    K: Integer;
+  begin
+    for K := 0 to ATypeDecls.Count - 1 do
+      if not (TTypeDecl(ATypeDecls.Items[K]).Def is TRecordTypeDef) then
+        NotYet('non-record type declarations in unit ' + AUnit.Name, nil)
+      else if TRecordTypeDef(
+                TTypeDecl(ATypeDecls.Items[K]).Def).Methods.Count > 0 then
+        NotYet('record methods in unit ' + AUnit.Name, nil);
+  end;
+
 begin
-  NotYet('unit compilation (' + AUnit.Name + ')', nil);
+  { Same deliberately-incremental subset as EmitProgram: routines and
+    record types lower; everything else stays an honest hole.  Cross-unit
+    call sites need nothing here — RoutineSym mangles through the
+    semantic pass's ResolvedQbeName on both the definition and the call. }
+  CheckTypeSubset(AUnit.IntfBlock.TypeDecls);
+  CheckTypeSubset(AUnit.ImplBlock.TypeDecls);
+  if (AUnit.IntfBlock.Decls.Count > 0) or (AUnit.ImplBlock.Decls.Count > 0) then
+    { unit globals need the owning-unit symbol-prefix machinery }
+    NotYet('unit variables (' + AUnit.Name + ')', nil);
+  if (AUnit.GenericInstances.Count > 0) or
+     (AUnit.GenericRecordInstances.Count > 0) or
+     (AUnit.GenericMethodInstances.Count > 0) or
+     (AUnit.GenericFuncInstances.Count > 0) then
+    NotYet('generic instances in unit ' + AUnit.Name, nil);
+  if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
+    NotYet('unit initialization section (' + AUnit.Name + ')', nil);
+  if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
+    NotYet('unit finalization section (' + AUnit.Name + ')', nil);
+
+  Self.Emit('.text');
+  for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
+  begin
+    Decl := TMethodDecl(AUnit.ImplBlock.ProcDecls.Items[I]);
+    if Decl.OwnerTypeName <> '' then Continue;   { method stubs — types NotYet above }
+    if Decl.TypeParams <> nil then Continue;     { generic templates }
+    if Decl.Body = nil then Continue;            { forward decls }
+    if Decl.IsExternal then Continue;            { externals: call-site only }
+    EmitFunctionDef(Decl);
+  end;
 end;
 
 procedure TArm64Backend.FinalizeEmit;

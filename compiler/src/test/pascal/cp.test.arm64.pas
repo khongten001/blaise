@@ -32,6 +32,7 @@ type
   TArm64BackendTests = class(TTestCase)
   private
     function GenAsm(const ASrc: string): string;
+    function GenAsmWithUnit(const AUnitSrc, ASrc: string): string;
   published
     procedure TestHello_PrologueAndFrameChain;
     procedure TestHello_StringLiteral_AdrpAddPair;
@@ -70,6 +71,9 @@ type
     { slice 9: records with ARC-managed fields via the base walks }
     procedure TestManagedRecord_CopyAndFieldStore;
     procedure TestManagedRecord_ScopeExitRelease;
+    { slice 10: units — routines + record types from a used unit }
+    procedure TestUnit_RoutinesAndCrossUnitCalls;
+    procedure TestUnit_InitSectionStillNotYet;
   end;
 
 implementation
@@ -199,6 +203,56 @@ begin
     end;
   finally
     Prog.Free();
+  end;
+end;
+
+function TArm64BackendTests.GenAsmWithUnit(const AUnitSrc, ASrc: string): string;
+var
+  L:    TLexer;
+  P:    TParser;
+  U:    TUnit;
+  Prog: TProgram;
+  A:    TSemanticAnalyser;
+  CG:   TArm64Backend;
+  T:    TTargetDesc;
+begin
+  L := TLexer.Create(AUnitSrc);
+  P := TParser.Create(L);
+  try
+    U := P.ParseUnit();
+  finally
+    P.Free();
+    L.Free();
+  end;
+  L := TLexer.Create(ASrc);
+  P := TParser.Create(L);
+  try
+    Prog := P.Parse();
+  finally
+    P.Free();
+    L.Free();
+  end;
+  try
+    A := TSemanticAnalyser.Create();
+    try
+      A.AnalyseUnitForExport(U);
+      A.Analyse(Prog);
+    finally
+      A.Free();
+    end;
+    MakeTarget(osMacOS, cpuArm64, T);
+    CG := TArm64Backend.Create(T);
+    try
+      CG.SetSymbolTable(Prog.SymbolTable);
+      CG.AppendUnit(U);
+      CG.AppendProgram(Prog);
+      Result := CG.GetOutput();
+    finally
+      CG.Free();
+    end;
+  finally
+    Prog.Free();
+    U.Free();
   end;
 end;
 
@@ -844,6 +898,97 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestUnit_RoutinesAndCrossUnitCalls;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsmWithUnit(
+    '''
+    unit mathu;
+    interface
+    function AddTwo(A, B: Int64): Int64;
+    function Banner: string;
+    implementation
+    function AddTwo(A, B: Int64): Int64;
+    begin
+      Result := A + B
+    end;
+    function Banner: string;
+    begin
+      Result := 'sum='
+    end;
+    end.
+    ''',
+    '''
+    program P;
+    uses mathu;
+    begin
+      Write(Banner());
+      WriteLn(AddTwo(20, 22))
+    end.
+    ''');
+  { the unit routine is defined under its unit-mangled symbol and the
+    program's call site targets the same symbol }
+  AssertTrue('unit routine defined', Pos('mathu_AddTwo:', AsmT) >= 0);
+  AssertTrue('cross-unit call mangled', Pos(#9'bl mathu_AddTwo', AsmT) >= 0);
+  AssertTrue('string-returning unit routine defined',
+    Pos('mathu_Banner:', AsmT) >= 0);
+  { the unit's string literal lands in the shared rodata dump }
+  AssertTrue('unit string literal emitted', Pos('sum=', AsmT) >= 0);
+  { and the multi-unit module assembles to a valid Mach-O object }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64unit.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestUnit_InitSectionStillNotYet;
+var
+  Raised: Boolean;
+  Msg: string;
+begin
+  Raised := False;
+  Msg := '';
+  try
+    GenAsmWithUnit(
+      '''
+      unit withinit;
+      interface
+      function One: Int64;
+      implementation
+      function One: Int64;
+      begin
+        Result := 1
+      end;
+      initialization
+        One()
+      end.
+      ''',
+      '''
+      program P;
+      uses withinit;
+      begin
+        WriteLn(One())
+      end.
+      ''');
+  except
+    on E: ENativeCodeGenError do
+    begin
+      Raised := True;
+      Msg := E.Message;
+    end;
+  end;
+  AssertTrue('init section raises', Raised);
+  AssertTrue('message names the hole',
+    Pos('initialization', Msg) >= 0);
 end;
 
 initialization
