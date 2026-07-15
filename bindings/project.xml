@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <name>blaise-bindings</name>
+  <!-- version inherited from root aggregator -->
+
+  <!-- Machine-generated C library bindings (see generate.sh).  Kept as a
+       separate module so the hand-written stdlib stays curated: these
+       units are regenerated wholesale by tools/bindgen and never edited.
+       End users need no C toolchain — the generated .pas is committed;
+       clang is only required to REgenerate after a header/tool change. -->
+
+  <build>
+    <packaging>library</packaging>
+  </build>
+</project>
