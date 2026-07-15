@@ -84,6 +84,9 @@ type
     { slice 16: classes — create, methods, fields, ARC, metadata }
     procedure TestClass_CreateFieldsMethodsMetadata;
     procedure TestClass_VirtualDispatchAndDestroy;
+    { slice 17: unit classes, statics, class consts, inherited, ToString }
+    procedure TestClass_InUnit_PrefixedSymbols;
+    procedure TestClass_StaticsConstsInheritedToString;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1322,6 +1325,103 @@ begin
   { parent typeinfo chains to the base class }
   AssertTrue('parent typeinfo link',
     Pos(#9'.quad typeinfo_TAnimal', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestClass_InUnit_PrefixedSymbols;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsmWithUnit(
+    '''
+    unit zoo;
+    interface
+    type
+      TCat = class
+        FLives: Int64;
+        procedure Init;
+      end;
+    implementation
+    procedure TCat.Init;
+    begin
+      FLives := 9
+    end;
+    end.
+    ''',
+    '''
+    program P;
+    uses zoo;
+    var
+      C: TCat;
+    begin
+      C := TCat.Create();
+      C.Init();
+      WriteLn(C.FLives)
+    end.
+    ''');
+  { the unit class's metadata symbols carry the owning-unit prefix, and
+    the Create site targets the same typeinfo }
+  AssertTrue('prefixed typeinfo', Pos('typeinfo_zoo_TCat:', AsmT) >= 0);
+  AssertTrue('prefixed vtable', Pos('vtable_zoo_TCat:', AsmT) >= 0);
+  AssertTrue('create targets prefixed typeinfo',
+    Pos('typeinfo_zoo_TCat@PAGEOFF', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestClass_StaticsConstsInheritedToString;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBase = class
+        function Tag: Int64; virtual;
+      end;
+      TKid = class(TBase)
+        const Answer = 42;
+        static function Twice(N: Int64): Int64;
+        function Tag: Int64; override;
+      end;
+    function TBase.Tag: Int64;
+    begin
+      Result := 1
+    end;
+    static function TKid.Twice(N: Int64): Int64;
+    begin
+      Result := N * 2
+    end;
+    function TKid.Tag: Int64;
+    begin
+      Result := inherited Tag() + 10
+    end;
+    var
+      K: TKid;
+    begin
+      K := TKid.Create();
+      WriteLn(K.Tag());
+      WriteLn(TKid.Twice(21));
+      WriteLn(TKid.Answer);
+      WriteLn(K.ToString())
+    end.
+    ''');
+  { inherited: static dispatch straight to the parent implementation }
+  AssertTrue('inherited call is direct', Pos(#9'bl TBase_Tag', AsmT) >= 0);
+  { static method: plain call, no receiver }
+  AssertTrue('static method direct call', Pos(#9'bl TKid_Twice', AsmT) >= 0);
+  { class const folded to its literal }
+  AssertTrue('class const folded', Pos(#9'movz x0, #42', AsmT) >= 0);
+  { ToString: virtual through vtable slot 1 (offset 16) }
+  AssertTrue('ToString via vtable', Pos(#9'ldr x9, [x9, #16]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64class17.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

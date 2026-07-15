@@ -155,6 +155,7 @@ type
     procedure EmitProgram(AProg: TProgram); override;
     procedure EmitUnit(AUnit: TUnit); override;
     procedure EmitUnitInit(AUnit: TUnit);
+    function  ClassPrefixOwner(const AOwner: string): string;
     function  ClassSym(ATD: TTypeDecl): string;
     function  ClassDescOf(ATD: TTypeDecl): TRecordTypeDesc;
     procedure EmitClassCleanupFns;
@@ -570,6 +571,7 @@ var
   BE: TBinaryExpr;
   DivGuardOk: string;
   CondName: string;
+  Idx: Integer;
 begin
   if AExpr is TIntLiteral then
   begin
@@ -759,6 +761,19 @@ begin
     end;
     Exit;
   end;
+  if AExpr is TInheritedCallExpr then
+  begin
+    if TInheritedCallExpr(AExpr).ResolvedMethod = nil then
+      NotYet('unresolved inherited call', AExpr);
+    if IsFloatExpr(AExpr) then
+      NotYet('float-returning inherited call in integer context', AExpr);
+    EmitLoadSlot('x0', 'Self');
+    EmitPushX0();
+    EmitCall(TMethodDecl(TInheritedCallExpr(AExpr).ResolvedMethod),
+      TInheritedCallExpr(AExpr).Name, TInheritedCallExpr(AExpr).Args,
+      '', True, VIRT_NONE);
+    Exit;
+  end;
   if AExpr is TMethodCallExpr then
   begin
     if IsFloatExpr(AExpr) then
@@ -767,6 +782,23 @@ begin
        (AExpr.ResolvedType.Kind = tyRecord) then
       NotYet('record-returning method call', AExpr);
     EmitMethodCallExpr(TMethodCallExpr(AExpr));
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and TFieldAccessExpr(AExpr).IsConstant then
+  begin
+    { TypeName.ConstName — folded by the semantic pass }
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tyString) then
+    begin
+      Idx := FStrLits.IndexOf(TFieldAccessExpr(AExpr).ConstString);
+      if Idx < 0 then
+        Idx := FStrLits.Add(TFieldAccessExpr(AExpr).ConstString);
+      Self.Emit(Format(#9'adrp x0, __s%d@PAGE', [Idx]));
+      Self.Emit(Format(#9'add x0, x0, __s%d@PAGEOFF', [Idx]));
+      Self.Emit(#9'add x0, x0, #12');
+      Exit;
+    end;
+    EmitIntLiteral('x0', TFieldAccessExpr(AExpr).ConstValue);
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and
@@ -953,6 +985,18 @@ begin
   if AStmt is TMethodCallStmt then
   begin
     EmitMethodCallStmt(TMethodCallStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TInheritedCallStmt then
+  begin
+    { static dispatch to the parent implementation with the current Self }
+    if TInheritedCallStmt(AStmt).ResolvedMethod = nil then
+      NotYet('unresolved inherited call', AStmt);
+    EmitLoadSlot('x0', 'Self');
+    EmitPushX0();
+    EmitCall(TMethodDecl(TInheritedCallStmt(AStmt).ResolvedMethod),
+      TInheritedCallStmt(AStmt).Name, TInheritedCallStmt(AStmt).Args,
+      '', True, VIRT_NONE);
     Exit;
   end;
   if AStmt is TIfStmt then
@@ -2094,9 +2138,25 @@ end;
 
 { ---- classes ------------------------------------------------------------- }
 
-function TArm64Backend.ClassSym(ATD: TTypeDecl): string;
+function TArm64Backend.ClassPrefixOwner(const AOwner: string): string;
 begin
-  Result := CodegenMangle(ATD.Name);
+  { mirror of TCodeGenQBE.ClassUnitPrefixOwner: the program name and the
+    unmangled RTL units keep bare class symbols }
+  Result := '';
+  if AOwner = '' then Exit;
+  if (FProgramName <> '') and SameText(AOwner, FProgramName) then Exit;
+  if SameText(AOwner, 'System') then Exit;
+  if (Length(AOwner) >= 4) and SameText(Copy(AOwner, 0, 4), 'rtl.') then Exit;
+  if (Length(AOwner) >= 7) and SameText(Copy(AOwner, 0, 7), 'blaise_') then Exit;
+  Result := CodegenMangle(AOwner) + '_';
+end;
+
+function TArm64Backend.ClassSym(ATD: TTypeDecl): string;
+var
+  D: TRecordTypeDesc;
+begin
+  D := ClassDescOf(ATD);
+  Result := ClassPrefixOwner(D.OwningUnit) + CodegenMangle(ATD.Name);
 end;
 
 function TArm64Backend.ClassDescOf(ATD: TTypeDecl): TRecordTypeDesc;
@@ -2214,7 +2274,8 @@ begin
     Self.Emit(Format(#9'.ascii "%s"', [TD.Name]));
     Self.Emit(#9'.byte 0');
     if (RT.Parent <> nil) and (RT.Parent.Name <> 'TObject') then
-      ParentRef := 'typeinfo_' + CodegenMangle(RT.Parent.Name)
+      ParentRef := 'typeinfo_' + ClassPrefixOwner(RT.Parent.OwningUnit) +
+        CodegenMangle(RT.Parent.Name)
     else
       ParentRef := 'typeinfo_TObject';
     Self.Emit('.section .data');
@@ -2262,13 +2323,17 @@ var
   MD: TMethodDecl;
 begin
   if AStmt.IsConstructorCall or AStmt.IsImplicitSelf or
-     (AStmt.ObjExpr <> nil) or (AStmt.ObjectName = '') then
+     (AStmt.ObjExpr <> nil) or
+     ((AStmt.ObjectName = '') and not AStmt.IsStaticCall) then
     NotYet('this method-call form', AStmt);
   MD := TMethodDecl(AStmt.ResolvedMethod);
   if MD = nil then
     NotYet('unresolved method ''' + AStmt.Name + '''', AStmt);
-  if MD.IsStatic then
-    NotYet('static method calls', AStmt);
+  if AStmt.IsStaticCall or MD.IsStatic then
+  begin
+    EmitCall(MD, AStmt.Name, AStmt.Args);
+    Exit;
+  end;
   if (AStmt.ResolvedReturnTypeDesc <> nil) and
      (AStmt.ResolvedReturnTypeDesc.Kind in [tyRecord, tyInterface]) then
     NotYet('discarded aggregate-returning method call', AStmt);
@@ -2325,16 +2390,34 @@ begin
       NotYet('constructor arguments without a declared constructor', AExpr);
     Exit;
   end;
-  if AExpr.IsStaticCall or AExpr.IsMetaclassDispatch or
-     AExpr.IsBuiltinToString or AExpr.IsBuiltinInheritsFrom or
+  if AExpr.IsBuiltinToString then
+  begin
+    { built-in TObject.ToString: always-virtual through vtable slot 1
+      (offset 16 past the typeinfo back-pointer).  Returns an owned +1
+      string. }
+    if (AExpr.ObjExpr <> nil) or (AExpr.ObjectName = '') then
+      NotYet('ToString on this receiver form', AExpr);
+    EmitLoadSlot('x0', AExpr.ObjectName);
+    if AExpr.IsVarParam then
+      Self.Emit(#9'ldr x0, [x0]');
+    Self.Emit(#9'ldr x9, [x0]');
+    Self.Emit(#9'ldr x9, [x9, #16]');
+    Self.Emit(#9'blr x9');
+    Exit;
+  end;
+  if AExpr.IsMetaclassDispatch or AExpr.IsBuiltinInheritsFrom or
      AExpr.IsProcFieldCall or (AExpr.ObjExpr <> nil) or
-     (AExpr.ObjectName = '') then
+     ((AExpr.ObjectName = '') and not AExpr.IsStaticCall) then
     NotYet('this method-call form', AExpr);
   MD := TMethodDecl(AExpr.ResolvedMethod);
   if MD = nil then
     NotYet('unresolved method ''' + AExpr.Name + '''', AExpr);
-  if MD.IsStatic then
-    NotYet('static method calls', AExpr);
+  if AExpr.IsStaticCall or MD.IsStatic then
+  begin
+    { static (class-level) call: no Self, plain call to the mangled name }
+    EmitCall(MD, AExpr.Name, AExpr.Args);
+    Exit;
+  end;
   EmitLoadSlot('x0', AExpr.ObjectName);
   if AExpr.IsVarParam then
     Self.Emit(#9'ldr x0, [x0]');
@@ -2366,8 +2449,6 @@ begin
         NotYet('class properties', nil);
       if CDef.Attributes.Count > 0 then
         NotYet('class attributes', nil);
-      if CDef.ConstDecls.Count > 0 then
-        NotYet('class constants', nil);
       FClassDecls.Add(TDcl);
     end
     else if not (TDcl.Def is TRecordTypeDef) then
@@ -2426,8 +2507,6 @@ begin
     begin
       Decl := TMethodDecl(CDef.Methods.Items[J]);
       if Decl.Body = nil then Continue;
-      if Decl.IsStatic then
-        NotYet('static class methods', Decl);
       if Decl.TypeParams <> nil then
         NotYet('generic methods', Decl);
       EmitFunctionDef(Decl);
@@ -2506,14 +2585,39 @@ var
 
   procedure CheckTypeSubset(ATypeDecls: TObjectList);
   var
-    K: Integer;
+    K, M: Integer;
+    UDcl: TTypeDecl;
+    UDef: TClassTypeDef;
+    MDcl: TMethodDecl;
   begin
     for K := 0 to ATypeDecls.Count - 1 do
-      if not (TTypeDecl(ATypeDecls.Items[K]).Def is TRecordTypeDef) then
+    begin
+      UDcl := TTypeDecl(ATypeDecls.Items[K]);
+      if UDcl.Def is TClassTypeDef then
+      begin
+        UDef := TClassTypeDef(UDcl.Def);
+        if UDef.ImplementsNames.Count > 0 then
+          NotYet('classes implementing interfaces', nil);
+        if UDef.Properties.Count > 0 then
+          NotYet('class properties', nil);
+        if UDef.Attributes.Count > 0 then
+          NotYet('class attributes', nil);
+        FClassDecls.Add(UDcl);
+        for M := 0 to UDef.Methods.Count - 1 do
+        begin
+          MDcl := TMethodDecl(UDef.Methods.Items[M]);
+          if MDcl.Body = nil then Continue;
+          if MDcl.TypeParams <> nil then
+            NotYet('generic methods', MDcl);
+          EmitFunctionDef(MDcl);
+        end;
+        Continue;
+      end;
+      if not (UDcl.Def is TRecordTypeDef) then
         NotYet('non-record type declarations in unit ' + AUnit.Name, nil)
-      else if TRecordTypeDef(
-                TTypeDecl(ATypeDecls.Items[K]).Def).Methods.Count > 0 then
+      else if TRecordTypeDef(UDcl.Def).Methods.Count > 0 then
         NotYet('record methods in unit ' + AUnit.Name, nil);
+    end;
   end;
 
 begin
@@ -2521,11 +2625,12 @@ begin
     record types lower; everything else stays an honest hole.  Cross-unit
     call sites need nothing here — RoutineSym mangles through the
     semantic pass's ResolvedQbeName on both the definition and the call. }
-  CheckTypeSubset(AUnit.IntfBlock.TypeDecls);
-  CheckTypeSubset(AUnit.ImplBlock.TypeDecls);
   FCurrentUnitName := AUnit.Name;
   RegisterUnitVars(AUnit.IntfBlock);
   RegisterUnitVars(AUnit.ImplBlock);
+  Self.Emit('.text');
+  CheckTypeSubset(AUnit.IntfBlock.TypeDecls);
+  CheckTypeSubset(AUnit.ImplBlock.TypeDecls);
   if (AUnit.GenericInstances.Count > 0) or
      (AUnit.GenericRecordInstances.Count > 0) or
      (AUnit.GenericMethodInstances.Count > 0) or
