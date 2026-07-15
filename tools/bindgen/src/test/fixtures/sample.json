@@ -1,5 +1,5 @@
 {
-  "id": "0x59d088285168",
+  "id": "0x585137216168",
   "kind": "TranslationUnitDecl",
   "loc": {},
   "range": {
@@ -8,7 +8,7 @@
   },
   "inner": [
     {
-      "id": "0x59d088285998",
+      "id": "0x585137216998",
       "kind": "TypedefDecl",
       "loc": {},
       "range": {
@@ -22,7 +22,7 @@
       },
       "inner": [
         {
-          "id": "0x59d088285730",
+          "id": "0x585137216730",
           "kind": "BuiltinType",
           "type": {
             "qualType": "__int128"
@@ -31,7 +31,7 @@
       ]
     },
     {
-      "id": "0x59d088285a08",
+      "id": "0x585137216a08",
       "kind": "TypedefDecl",
       "loc": {},
       "range": {
@@ -45,7 +45,7 @@
       },
       "inner": [
         {
-          "id": "0x59d088285750",
+          "id": "0x585137216750",
           "kind": "BuiltinType",
           "type": {
             "qualType": "unsigned __int128"
@@ -54,7 +54,7 @@
       ]
     },
     {
-      "id": "0x59d088285d10",
+      "id": "0x585137216d10",
       "kind": "TypedefDecl",
       "loc": {},
       "range": {
@@ -68,13 +68,13 @@
       },
       "inner": [
         {
-          "id": "0x59d088285ae0",
+          "id": "0x585137216ae0",
           "kind": "RecordType",
           "type": {
             "qualType": "struct __NSConstantString_tag"
           },
           "decl": {
-            "id": "0x59d088285a60",
+            "id": "0x585137216a60",
             "kind": "RecordDecl",
             "name": "__NSConstantString_tag"
           }
@@ -82,7 +82,7 @@
       ]
     },
     {
-      "id": "0x59d088285db8",
+      "id": "0x585137216db8",
       "kind": "TypedefDecl",
       "loc": {},
       "range": {
@@ -96,14 +96,14 @@
       },
       "inner": [
         {
-          "id": "0x59d088285d70",
+          "id": "0x585137216d70",
           "kind": "PointerType",
           "type": {
             "qualType": "char *"
           },
           "inner": [
             {
-              "id": "0x59d088285210",
+              "id": "0x585137216210",
               "kind": "BuiltinType",
               "type": {
                 "qualType": "char"
@@ -114,7 +114,7 @@
       ]
     },
     {
-      "id": "0x59d0882860b0",
+      "id": "0x5851372170b0",
       "kind": "TypedefDecl",
       "loc": {},
       "range": {
@@ -128,7 +128,7 @@
       },
       "inner": [
         {
-          "id": "0x59d088286050",
+          "id": "0x585137217050",
           "kind": "ConstantArrayType",
           "type": {
             "qualType": "struct __va_list_tag[1]"
@@ -136,13 +136,13 @@
           "size": 1,
           "inner": [
             {
-              "id": "0x59d088285e90",
+              "id": "0x585137216e90",
               "kind": "RecordType",
               "type": {
                 "qualType": "struct __va_list_tag"
               },
               "decl": {
-                "id": "0x59d088285e10",
+                "id": "0x585137216e10",
                 "kind": "RecordDecl",
                 "name": "__va_list_tag"
               }
@@ -152,7 +152,7 @@
       ]
     },
     {
-      "id": "0x59d0882e5ba0",
+      "id": "0x585137276d20",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 143,
@@ -189,7 +189,7 @@
       },
       "inner": [
         {
-          "id": "0x59d088285310",
+          "id": "0x585137216310",
           "kind": "BuiltinType",
           "type": {
             "qualType": "unsigned int"
@@ -198,7 +198,7 @@
       ]
     },
     {
-      "id": "0x59d0882e5d80",
+      "id": "0x585137276f00",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 167,
@@ -235,7 +235,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e5c78",
+          "id": "0x585137276df8",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 180,
@@ -271,7 +271,7 @@
       ]
     },
     {
-      "id": "0x59d0882e5e90",
+      "id": "0x585137277010",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 201,
@@ -299,7 +299,7 @@
       },
       "inner": [
         {
-          "id": "0x59d088285330",
+          "id": "0x585137216330",
           "kind": "BuiltinType",
           "type": {
             "qualType": "unsigned long"
@@ -308,7 +308,7 @@
       ]
     },
     {
-      "id": "0x59d0882e5f60",
+      "id": "0x5851372770e0",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 218,
@@ -332,30 +332,30 @@
       "type": {
         "desugaredQualType": "unsigned long",
         "qualType": "XID",
-        "typeAliasDeclId": "0x59d0882e5e90"
+        "typeAliasDeclId": "0x585137277010"
       },
       "inner": [
         {
-          "id": "0x59d0882e5f20",
+          "id": "0x5851372770a0",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "XID"
           },
           "inner": [
             {
-              "id": "0x59d0882e5ef0",
+              "id": "0x585137277070",
               "kind": "TypedefType",
               "type": {
                 "qualType": "XID"
               },
               "decl": {
-                "id": "0x59d0882e5e90",
+                "id": "0x585137277010",
                 "kind": "TypedefDecl",
                 "name": "XID"
               },
               "inner": [
                 {
-                  "id": "0x59d088285330",
+                  "id": "0x585137216330",
                   "kind": "BuiltinType",
                   "type": {
                     "qualType": "unsigned long"
@@ -368,7 +368,7 @@
       ]
     },
     {
-      "id": "0x59d0882e5fb8",
+      "id": "0x585137277138",
       "kind": "EnumDecl",
       "loc": {
         "offset": 232,
@@ -391,7 +391,7 @@
       "name": "XOrientation",
       "inner": [
         {
-          "id": "0x59d0882e6080",
+          "id": "0x585137277200",
           "kind": "EnumConstantDecl",
           "loc": {
             "offset": 247,
@@ -416,7 +416,7 @@
           }
         },
         {
-          "id": "0x59d0882e6118",
+          "id": "0x585137277298",
           "kind": "EnumConstantDecl",
           "loc": {
             "offset": 264,
@@ -441,7 +441,7 @@
           },
           "inner": [
             {
-              "id": "0x59d0882e60f8",
+              "id": "0x585137277278",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -462,7 +462,7 @@
               "value": "5",
               "inner": [
                 {
-                  "id": "0x59d0882e60d8",
+                  "id": "0x585137277258",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -487,7 +487,7 @@
           ]
         },
         {
-          "id": "0x59d0882e6170",
+          "id": "0x5851372772f0",
           "kind": "EnumConstantDecl",
           "loc": {
             "offset": 287,
@@ -514,7 +514,7 @@
       ]
     },
     {
-      "id": "0x59d0882e61c8",
+      "id": "0x585137277348",
       "kind": "RecordDecl",
       "loc": {
         "offset": 312,
@@ -538,7 +538,7 @@
       "completeDefinition": true,
       "inner": [
         {
-          "id": "0x59d0882e6288",
+          "id": "0x585137277408",
           "kind": "FieldDecl",
           "loc": {
             "offset": 325,
@@ -563,7 +563,7 @@
           }
         },
         {
-          "id": "0x59d0882e62f0",
+          "id": "0x585137277470",
           "kind": "FieldDecl",
           "loc": {
             "offset": 342,
@@ -588,7 +588,7 @@
           }
         },
         {
-          "id": "0x59d0882e6358",
+          "id": "0x5851372774d8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 362,
@@ -615,7 +615,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6408",
+      "id": "0x585137277588",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 370,
@@ -642,25 +642,25 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e63b0",
+          "id": "0x585137277530",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "struct XPoint"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e61c8",
+            "id": "0x585137277348",
             "kind": "RecordDecl",
             "name": ""
           },
           "inner": [
             {
-              "id": "0x59d0882e6250",
+              "id": "0x5851372773d0",
               "kind": "RecordType",
               "type": {
                 "qualType": "XPoint"
               },
               "decl": {
-                "id": "0x59d0882e61c8",
+                "id": "0x585137277348",
                 "kind": "RecordDecl",
                 "name": ""
               }
@@ -670,7 +670,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6478",
+      "id": "0x5851372775f8",
       "kind": "RecordDecl",
       "loc": {
         "offset": 394,
@@ -694,7 +694,7 @@
       "tagUsed": "struct"
     },
     {
-      "id": "0x59d0882e6578",
+      "id": "0x5851372776f8",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 404,
@@ -720,25 +720,25 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e6520",
+          "id": "0x5851372776a0",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "struct _XDisplay"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e6478",
+            "id": "0x5851372775f8",
             "kind": "RecordDecl",
             "name": "_XDisplay"
           },
           "inner": [
             {
-              "id": "0x59d0882e6500",
+              "id": "0x585137277680",
               "kind": "RecordType",
               "type": {
                 "qualType": "struct _XDisplay"
               },
               "decl": {
-                "id": "0x59d0882e6478",
+                "id": "0x5851372775f8",
                 "kind": "RecordDecl",
                 "name": "_XDisplay"
               }
@@ -748,7 +748,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6908",
+      "id": "0x585137277a88",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 443,
@@ -774,21 +774,21 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e6890",
+          "id": "0x585137277a10",
           "kind": "PointerType",
           "type": {
             "qualType": "int (*)(Display *, int)"
           },
           "inner": [
             {
-              "id": "0x59d0882e6830",
+              "id": "0x5851372779b0",
               "kind": "ParenType",
               "type": {
                 "qualType": "int (Display *, int)"
               },
               "inner": [
                 {
-                  "id": "0x59d0882e67f0",
+                  "id": "0x585137277970",
                   "kind": "FunctionProtoType",
                   "type": {
                     "qualType": "int (Display *, int)"
@@ -796,58 +796,58 @@
                   "cc": "cdecl",
                   "inner": [
                     {
-                      "id": "0x59d088285270",
+                      "id": "0x585137216270",
                       "kind": "BuiltinType",
                       "type": {
                         "qualType": "int"
                       }
                     },
                     {
-                      "id": "0x59d0882e6680",
+                      "id": "0x585137277800",
                       "kind": "PointerType",
                       "type": {
                         "qualType": "Display *"
                       },
                       "inner": [
                         {
-                          "id": "0x59d0882e6620",
+                          "id": "0x5851372777a0",
                           "kind": "ElaboratedType",
                           "type": {
                             "qualType": "Display"
                           },
                           "inner": [
                             {
-                              "id": "0x59d0882e65f0",
+                              "id": "0x585137277770",
                               "kind": "TypedefType",
                               "type": {
                                 "qualType": "Display"
                               },
                               "decl": {
-                                "id": "0x59d0882e6578",
+                                "id": "0x5851372776f8",
                                 "kind": "TypedefDecl",
                                 "name": "Display"
                               },
                               "inner": [
                                 {
-                                  "id": "0x59d0882e6520",
+                                  "id": "0x5851372776a0",
                                   "kind": "ElaboratedType",
                                   "type": {
                                     "qualType": "struct _XDisplay"
                                   },
                                   "ownedTagDecl": {
-                                    "id": "0x59d0882e6478",
+                                    "id": "0x5851372775f8",
                                     "kind": "RecordDecl",
                                     "name": "_XDisplay"
                                   },
                                   "inner": [
                                     {
-                                      "id": "0x59d0882e6500",
+                                      "id": "0x585137277680",
                                       "kind": "RecordType",
                                       "type": {
                                         "qualType": "struct _XDisplay"
                                       },
                                       "decl": {
-                                        "id": "0x59d0882e6478",
+                                        "id": "0x5851372775f8",
                                         "kind": "RecordDecl",
                                         "name": "_XDisplay"
                                       }
@@ -861,7 +861,7 @@
                       ]
                     },
                     {
-                      "id": "0x59d088285270",
+                      "id": "0x585137216270",
                       "kind": "BuiltinType",
                       "type": {
                         "qualType": "int"
@@ -876,7 +876,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6a88",
+      "id": "0x585137277c08",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 500,
@@ -904,7 +904,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e6978",
+          "id": "0x585137277af8",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 525,
@@ -931,7 +931,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6cc8",
+      "id": "0x585137277e48",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 551,
@@ -959,7 +959,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e6bb0",
+          "id": "0x585137277d30",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 574,
@@ -986,7 +986,7 @@
       ]
     },
     {
-      "id": "0x59d0882e6e40",
+      "id": "0x585137277fc0",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 592,
@@ -1014,7 +1014,7 @@
       "storageClass": "extern"
     },
     {
-      "id": "0x59d0882e7260",
+      "id": "0x5851372783e0",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 624,
@@ -1042,7 +1042,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e6f00",
+          "id": "0x585137278080",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 646,
@@ -1067,7 +1067,7 @@
           }
         },
         {
-          "id": "0x59d0882e6fe0",
+          "id": "0x585137278160",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 658,
@@ -1089,11 +1089,11 @@
           "name": "pt",
           "type": {
             "qualType": "XPoint",
-            "typeAliasDeclId": "0x59d0882e6408"
+            "typeAliasDeclId": "0x585137277588"
           }
         },
         {
-          "id": "0x59d0882e7098",
+          "id": "0x585137278218",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 669,
@@ -1118,7 +1118,7 @@
           }
         },
         {
-          "id": "0x59d0882e7118",
+          "id": "0x585137278298",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 683,
@@ -1145,7 +1145,7 @@
       ]
     },
     {
-      "id": "0x59d0882e7500",
+      "id": "0x585137278680",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 702,
@@ -1174,7 +1174,7 @@
       "variadic": true,
       "inner": [
         {
-          "id": "0x59d0882e7340",
+          "id": "0x5851372784c0",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 726,
@@ -1199,7 +1199,7 @@
           }
         },
         {
-          "id": "0x59d0882e73c0",
+          "id": "0x585137278540",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 735,
@@ -1226,7 +1226,7 @@
       ]
     },
     {
-      "id": "0x59d0882e76a8",
+      "id": "0x585137278828",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 758,
@@ -1254,7 +1254,7 @@
       "storageClass": "static",
       "inner": [
         {
-          "id": "0x59d0882e75d0",
+          "id": "0x585137278750",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 776,
@@ -1280,7 +1280,7 @@
           }
         },
         {
-          "id": "0x59d0882e77a0",
+          "id": "0x585137278920",
           "kind": "CompoundStmt",
           "range": {
             "begin": {
@@ -1296,7 +1296,7 @@
           },
           "inner": [
             {
-              "id": "0x59d0882e7790",
+              "id": "0x585137278910",
               "kind": "ReturnStmt",
               "range": {
                 "begin": {
@@ -1312,7 +1312,7 @@
               },
               "inner": [
                 {
-                  "id": "0x59d0882e7778",
+                  "id": "0x5851372788f8",
                   "kind": "ImplicitCastExpr",
                   "range": {
                     "begin": {
@@ -1333,7 +1333,7 @@
                   "castKind": "LValueToRValue",
                   "inner": [
                     {
-                      "id": "0x59d0882e7758",
+                      "id": "0x5851372788d8",
                       "kind": "DeclRefExpr",
                       "range": {
                         "begin": {
@@ -1352,7 +1352,7 @@
                       },
                       "valueCategory": "lvalue",
                       "referencedDecl": {
-                        "id": "0x59d0882e75d0",
+                        "id": "0x585137278750",
                         "kind": "ParmVarDecl",
                         "name": "a",
                         "type": {
@@ -1369,7 +1369,7 @@
       ]
     },
     {
-      "id": "0x59d0882e77b8",
+      "id": "0x585137278938",
       "kind": "RecordDecl",
       "loc": {
         "offset": 879,
@@ -1395,7 +1395,7 @@
       "completeDefinition": true,
       "inner": [
         {
-          "id": "0x59d0882e7878",
+          "id": "0x5851372789f8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 903,
@@ -1421,7 +1421,7 @@
           }
         },
         {
-          "id": "0x59d0882e7978",
+          "id": "0x585137278af8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 918,
@@ -1449,7 +1449,7 @@
       ]
     },
     {
-      "id": "0x59d0882e7a28",
+      "id": "0x585137278ba8",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 929,
@@ -1478,25 +1478,25 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e79d0",
+          "id": "0x585137278b50",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "union _XSampleEvent"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e77b8",
+            "id": "0x585137278938",
             "kind": "RecordDecl",
             "name": "_XSampleEvent"
           },
           "inner": [
             {
-              "id": "0x59d0882e7840",
+              "id": "0x5851372789c0",
               "kind": "RecordType",
               "type": {
                 "qualType": "union _XSampleEvent"
               },
               "decl": {
-                "id": "0x59d0882e77b8",
+                "id": "0x585137278938",
                 "kind": "RecordDecl",
                 "name": "_XSampleEvent"
               }
@@ -1506,7 +1506,7 @@
       ]
     },
     {
-      "id": "0x59d0882e7a98",
+      "id": "0x585137278c18",
       "kind": "RecordDecl",
       "loc": {
         "offset": 952,
@@ -1531,7 +1531,7 @@
       "completeDefinition": true,
       "inner": [
         {
-          "id": "0x59d0882e7b58",
+          "id": "0x585137278cd8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 969,
@@ -1557,7 +1557,7 @@
           }
         },
         {
-          "id": "0x59d0882e7bc0",
+          "id": "0x585137278d40",
           "kind": "RecordDecl",
           "loc": {
             "offset": 981,
@@ -1582,7 +1582,7 @@
           "completeDefinition": true,
           "inner": [
             {
-              "id": "0x59d0882e7d00",
+              "id": "0x585137278e80",
               "kind": "FieldDecl",
               "loc": {
                 "offset": 1002,
@@ -1608,7 +1608,7 @@
               }
             },
             {
-              "id": "0x59d0882e7df8",
+              "id": "0x585137278f78",
               "kind": "FieldDecl",
               "loc": {
                 "offset": 1023,
@@ -1634,7 +1634,7 @@
               }
             },
             {
-              "id": "0x59d0882e7ef8",
+              "id": "0x585137279078",
               "kind": "FieldDecl",
               "loc": {
                 "offset": 1043,
@@ -1662,7 +1662,7 @@
           ]
         },
         {
-          "id": "0x59d0882e7fa8",
+          "id": "0x585137279128",
           "kind": "FieldDecl",
           "loc": {
             "offset": 1055,
@@ -1693,7 +1693,7 @@
       ]
     },
     {
-      "id": "0x59d0882e8058",
+      "id": "0x5851372791d8",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 1063,
@@ -1722,25 +1722,25 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e8000",
+          "id": "0x585137279180",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "struct XSampleMessage"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e7a98",
+            "id": "0x585137278c18",
             "kind": "RecordDecl",
             "name": ""
           },
           "inner": [
             {
-              "id": "0x59d0882e7b20",
+              "id": "0x585137278ca0",
               "kind": "RecordType",
               "type": {
                 "qualType": "XSampleMessage"
               },
               "decl": {
-                "id": "0x59d0882e7a98",
+                "id": "0x585137278c18",
                 "kind": "RecordDecl",
                 "name": ""
               }
@@ -1750,7 +1750,7 @@
       ]
     },
     {
-      "id": "0x59d0882e8348",
+      "id": "0x5851372794c8",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 1091,
@@ -1778,7 +1778,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e80e0",
+          "id": "0x585137279260",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1117,
@@ -1803,7 +1803,7 @@
           }
         },
         {
-          "id": "0x59d0882e8228",
+          "id": "0x5851372793a8",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1136,
@@ -1830,7 +1830,7 @@
       ]
     },
     {
-      "id": "0x59d0882e8400",
+      "id": "0x585137279580",
       "kind": "EnumDecl",
       "loc": {
         "offset": 1217,
@@ -1853,7 +1853,7 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e84c0",
+          "id": "0x585137279640",
           "kind": "EnumConstantDecl",
           "loc": {
             "offset": 1228,
@@ -1879,7 +1879,7 @@
           }
         },
         {
-          "id": "0x59d0882e8558",
+          "id": "0x5851372796d8",
           "kind": "EnumConstantDecl",
           "loc": {
             "offset": 1251,
@@ -1905,7 +1905,7 @@
           },
           "inner": [
             {
-              "id": "0x59d0882e8538",
+              "id": "0x5851372796b8",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -1926,7 +1926,7 @@
               "value": "10",
               "inner": [
                 {
-                  "id": "0x59d0882e8518",
+                  "id": "0x585137279698",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -1953,7 +1953,7 @@
       ]
     },
     {
-      "id": "0x59d0882e8608",
+      "id": "0x585137279788",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 1277,
@@ -1983,25 +1983,25 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e85b0",
+          "id": "0x585137279730",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "enum XSampleDirection"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e8400",
+            "id": "0x585137279580",
             "kind": "EnumDecl",
             "name": ""
           },
           "inner": [
             {
-              "id": "0x59d0882e84a0",
+              "id": "0x585137279620",
               "kind": "EnumType",
               "type": {
                 "qualType": "XSampleDirection"
               },
               "decl": {
-                "id": "0x59d0882e8400",
+                "id": "0x585137279580",
                 "kind": "EnumDecl",
                 "name": ""
               }
@@ -2011,7 +2011,7 @@
       ]
     },
     {
-      "id": "0x59d0882e8800",
+      "id": "0x585137279980",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 1308,
@@ -2039,7 +2039,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e86f0",
+          "id": "0x585137279870",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1345,
@@ -2061,13 +2061,13 @@
           "name": "dir",
           "type": {
             "qualType": "XSampleDirection",
-            "typeAliasDeclId": "0x59d0882e8608"
+            "typeAliasDeclId": "0x585137279788"
           }
         }
       ]
     },
     {
-      "id": "0x59d0882e8d88",
+      "id": "0x585137279f08",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 1770,
@@ -2095,7 +2095,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e88c8",
+          "id": "0x585137279a48",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1794,
@@ -2120,7 +2120,7 @@
           }
         },
         {
-          "id": "0x59d0882e8bd0",
+          "id": "0x585137279d50",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1805,
@@ -2145,7 +2145,7 @@
           }
         },
         {
-          "id": "0x59d0882e8c48",
+          "id": "0x585137279dc8",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1837,
@@ -2168,13 +2168,13 @@
           "type": {
             "desugaredQualType": "unsigned long",
             "qualType": "XID",
-            "typeAliasDeclId": "0x59d0882e5e90"
+            "typeAliasDeclId": "0x585137277010"
           }
         }
       ]
     },
     {
-      "id": "0x59d0882e9128",
+      "id": "0x58513727a2a8",
       "kind": "FunctionDecl",
       "loc": {
         "offset": 1854,
@@ -2202,7 +2202,7 @@
       "storageClass": "extern",
       "inner": [
         {
-          "id": "0x59d0882e8e60",
+          "id": "0x585137279fe0",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1883,
@@ -2227,7 +2227,7 @@
           }
         },
         {
-          "id": "0x59d0882e9008",
+          "id": "0x58513727a188",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1894,
@@ -2252,7 +2252,7 @@
           }
         },
         {
-          "id": "0x59d0882e9080",
+          "id": "0x58513727a200",
           "kind": "ParmVarDecl",
           "loc": {
             "offset": 1926,
@@ -2275,13 +2275,13 @@
           "type": {
             "desugaredQualType": "unsigned long",
             "qualType": "XID",
-            "typeAliasDeclId": "0x59d0882e5e90"
+            "typeAliasDeclId": "0x585137277010"
           }
         }
       ]
     },
     {
-      "id": "0x59d0882e93c0",
+      "id": "0x58513727a540",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 2007,
@@ -2307,21 +2307,21 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e9350",
+          "id": "0x58513727a4d0",
           "kind": "PointerType",
           "type": {
             "qualType": "int (*)(Display *, ...)"
           },
           "inner": [
             {
-              "id": "0x59d0882e92f0",
+              "id": "0x58513727a470",
               "kind": "ParenType",
               "type": {
                 "qualType": "int (Display *, ...)"
               },
               "inner": [
                 {
-                  "id": "0x59d0882e92b0",
+                  "id": "0x58513727a430",
                   "kind": "FunctionProtoType",
                   "type": {
                     "qualType": "int (Display *, ...)"
@@ -2330,58 +2330,58 @@
                   "cc": "cdecl",
                   "inner": [
                     {
-                      "id": "0x59d088285270",
+                      "id": "0x585137216270",
                       "kind": "BuiltinType",
                       "type": {
                         "qualType": "int"
                       }
                     },
                     {
-                      "id": "0x59d0882e6680",
+                      "id": "0x585137277800",
                       "kind": "PointerType",
                       "type": {
                         "qualType": "Display *"
                       },
                       "inner": [
                         {
-                          "id": "0x59d0882e6620",
+                          "id": "0x5851372777a0",
                           "kind": "ElaboratedType",
                           "type": {
                             "qualType": "Display"
                           },
                           "inner": [
                             {
-                              "id": "0x59d0882e65f0",
+                              "id": "0x585137277770",
                               "kind": "TypedefType",
                               "type": {
                                 "qualType": "Display"
                               },
                               "decl": {
-                                "id": "0x59d0882e6578",
+                                "id": "0x5851372776f8",
                                 "kind": "TypedefDecl",
                                 "name": "Display"
                               },
                               "inner": [
                                 {
-                                  "id": "0x59d0882e6520",
+                                  "id": "0x5851372776a0",
                                   "kind": "ElaboratedType",
                                   "type": {
                                     "qualType": "struct _XDisplay"
                                   },
                                   "ownedTagDecl": {
-                                    "id": "0x59d0882e6478",
+                                    "id": "0x5851372775f8",
                                     "kind": "RecordDecl",
                                     "name": "_XDisplay"
                                   },
                                   "inner": [
                                     {
-                                      "id": "0x59d0882e6500",
+                                      "id": "0x585137277680",
                                       "kind": "RecordType",
                                       "type": {
                                         "qualType": "struct _XDisplay"
                                       },
                                       "decl": {
-                                        "id": "0x59d0882e6478",
+                                        "id": "0x5851372775f8",
                                         "kind": "RecordDecl",
                                         "name": "_XDisplay"
                                       }
@@ -2403,7 +2403,7 @@
       ]
     },
     {
-      "id": "0x59d0882e9418",
+      "id": "0x58513727a598",
       "kind": "RecordDecl",
       "loc": {
         "offset": 2120,
@@ -2428,7 +2428,7 @@
       "completeDefinition": true,
       "inner": [
         {
-          "id": "0x59d0882e9518",
+          "id": "0x58513727a698",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2146,
@@ -2455,7 +2455,7 @@
           "isBitfield": true,
           "inner": [
             {
-              "id": "0x59d0882e94f8",
+              "id": "0x58513727a678",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -2476,7 +2476,7 @@
               "value": "1",
               "inner": [
                 {
-                  "id": "0x59d0882e94c0",
+                  "id": "0x58513727a640",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -2501,7 +2501,7 @@
           ]
         },
         {
-          "id": "0x59d0882e95c0",
+          "id": "0x58513727a740",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2170,
@@ -2528,7 +2528,7 @@
           "isBitfield": true,
           "inner": [
             {
-              "id": "0x59d0882e95a0",
+              "id": "0x58513727a720",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -2549,7 +2549,7 @@
               "value": "3",
               "inner": [
                 {
-                  "id": "0x59d0882e9568",
+                  "id": "0x58513727a6e8",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -2574,7 +2574,7 @@
           ]
         },
         {
-          "id": "0x59d0882e9668",
+          "id": "0x58513727a7e8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2194,
@@ -2601,7 +2601,7 @@
           "isBitfield": true,
           "inner": [
             {
-              "id": "0x59d0882e9648",
+              "id": "0x58513727a7c8",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -2622,7 +2622,7 @@
               "value": "12",
               "inner": [
                 {
-                  "id": "0x59d0882e9610",
+                  "id": "0x58513727a790",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -2647,7 +2647,7 @@
           ]
         },
         {
-          "id": "0x59d0882e96d0",
+          "id": "0x58513727a850",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2210,
@@ -2673,7 +2673,7 @@
           }
         },
         {
-          "id": "0x59d0882e9778",
+          "id": "0x58513727a8f8",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2236,
@@ -2700,7 +2700,7 @@
           "isBitfield": true,
           "inner": [
             {
-              "id": "0x59d0882e9758",
+              "id": "0x58513727a8d8",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -2721,7 +2721,7 @@
               "value": "4",
               "inner": [
                 {
-                  "id": "0x59d0882e9720",
+                  "id": "0x58513727a8a0",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -2746,7 +2746,7 @@
           ]
         },
         {
-          "id": "0x59d0882e9820",
+          "id": "0x58513727a9a0",
           "kind": "FieldDecl",
           "loc": {
             "offset": 2262,
@@ -2773,7 +2773,7 @@
           "isBitfield": true,
           "inner": [
             {
-              "id": "0x59d0882e9800",
+              "id": "0x58513727a980",
               "kind": "ConstantExpr",
               "range": {
                 "begin": {
@@ -2794,7 +2794,7 @@
               "value": "4",
               "inner": [
                 {
-                  "id": "0x59d0882e97c8",
+                  "id": "0x58513727a948",
                   "kind": "IntegerLiteral",
                   "range": {
                     "begin": {
@@ -2821,7 +2821,7 @@
       ]
     },
     {
-      "id": "0x59d0882e98c8",
+      "id": "0x58513727aa48",
       "kind": "TypedefDecl",
       "loc": {
         "offset": 2271,
@@ -2850,25 +2850,271 @@
       },
       "inner": [
         {
-          "id": "0x59d0882e9870",
+          "id": "0x58513727a9f0",
           "kind": "ElaboratedType",
           "type": {
             "qualType": "struct XSampleFlags"
           },
           "ownedTagDecl": {
-            "id": "0x59d0882e9418",
+            "id": "0x58513727a598",
             "kind": "RecordDecl",
             "name": ""
           },
           "inner": [
             {
-              "id": "0x59d0882e94a0",
+              "id": "0x58513727a620",
               "kind": "RecordType",
               "type": {
                 "qualType": "XSampleFlags"
               },
               "decl": {
-                "id": "0x59d0882e9418",
+                "id": "0x58513727a598",
+                "kind": "RecordDecl",
+                "name": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x58513727aab8",
+      "kind": "RecordDecl",
+      "loc": {
+        "offset": 2417,
+        "line": 78,
+        "col": 9,
+        "tokLen": 6
+      },
+      "range": {
+        "begin": {
+          "offset": 2417,
+          "col": 9,
+          "tokLen": 6
+        },
+        "end": {
+          "offset": 2514,
+          "line": 84,
+          "col": 1,
+          "tokLen": 1
+        }
+      },
+      "tagUsed": "struct",
+      "completeDefinition": true,
+      "inner": [
+        {
+          "id": "0x58513727ab78",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 2434,
+            "line": 79,
+            "col": 9,
+            "tokLen": 5
+          },
+          "range": {
+            "begin": {
+              "offset": 2430,
+              "col": 5,
+              "tokLen": 3
+            },
+            "end": {
+              "offset": 2434,
+              "col": 9,
+              "tokLen": 5
+            }
+          },
+          "name": "flags",
+          "type": {
+            "qualType": "int"
+          }
+        },
+        {
+          "id": "0x58513727abc8",
+          "kind": "RecordDecl",
+          "loc": {
+            "offset": 2445,
+            "line": 80,
+            "col": 5,
+            "tokLen": 6
+          },
+          "range": {
+            "begin": {
+              "offset": 2445,
+              "col": 5,
+              "tokLen": 6
+            },
+            "end": {
+              "offset": 2488,
+              "line": 83,
+              "col": 5,
+              "tokLen": 1
+            }
+          },
+          "tagUsed": "struct",
+          "completeDefinition": true,
+          "inner": [
+            {
+              "id": "0x58513727ac88",
+              "kind": "FieldDecl",
+              "loc": {
+                "offset": 2466,
+                "line": 81,
+                "col": 13,
+                "tokLen": 1
+              },
+              "range": {
+                "begin": {
+                  "offset": 2462,
+                  "col": 9,
+                  "tokLen": 3
+                },
+                "end": {
+                  "offset": 2466,
+                  "col": 13,
+                  "tokLen": 1
+                }
+              },
+              "name": "x",
+              "type": {
+                "qualType": "int"
+              }
+            },
+            {
+              "id": "0x58513727acf0",
+              "kind": "FieldDecl",
+              "loc": {
+                "offset": 2481,
+                "line": 82,
+                "col": 13,
+                "tokLen": 1
+              },
+              "range": {
+                "begin": {
+                  "offset": 2477,
+                  "col": 9,
+                  "tokLen": 3
+                },
+                "end": {
+                  "offset": 2481,
+                  "col": 13,
+                  "tokLen": 1
+                }
+              },
+              "name": "y",
+              "type": {
+                "qualType": "int"
+              }
+            }
+          ]
+        },
+        {
+          "id": "0x58513727b1c8",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 2490,
+            "line": 83,
+            "col": 7,
+            "tokLen": 10
+          },
+          "range": {
+            "begin": {
+              "offset": 2445,
+              "line": 80,
+              "col": 5,
+              "tokLen": 6
+            },
+            "end": {
+              "offset": 2490,
+              "line": 83,
+              "col": 7,
+              "tokLen": 10
+            }
+          },
+          "name": "min_aspect",
+          "type": {
+            "desugaredQualType": "struct XSampleHints::(unnamed at sample.h:80:5)",
+            "qualType": "struct (unnamed struct at sample.h:80:5)"
+          }
+        },
+        {
+          "id": "0x58513727b238",
+          "kind": "FieldDecl",
+          "loc": {
+            "offset": 2502,
+            "col": 19,
+            "tokLen": 10
+          },
+          "range": {
+            "begin": {
+              "offset": 2445,
+              "line": 80,
+              "col": 5,
+              "tokLen": 6
+            },
+            "end": {
+              "offset": 2502,
+              "line": 83,
+              "col": 19,
+              "tokLen": 10
+            }
+          },
+          "name": "max_aspect",
+          "type": {
+            "desugaredQualType": "struct XSampleHints::(unnamed at sample.h:80:5)",
+            "qualType": "struct (unnamed struct at sample.h:80:5)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0x58513727b2e8",
+      "kind": "TypedefDecl",
+      "loc": {
+        "offset": 2516,
+        "line": 84,
+        "col": 3,
+        "tokLen": 12
+      },
+      "range": {
+        "begin": {
+          "offset": 2409,
+          "line": 78,
+          "col": 1,
+          "tokLen": 7
+        },
+        "end": {
+          "offset": 2516,
+          "line": 84,
+          "col": 3,
+          "tokLen": 12
+        }
+      },
+      "name": "XSampleHints",
+      "type": {
+        "desugaredQualType": "XSampleHints",
+        "qualType": "struct XSampleHints"
+      },
+      "inner": [
+        {
+          "id": "0x58513727b290",
+          "kind": "ElaboratedType",
+          "type": {
+            "qualType": "struct XSampleHints"
+          },
+          "ownedTagDecl": {
+            "id": "0x58513727aab8",
+            "kind": "RecordDecl",
+            "name": ""
+          },
+          "inner": [
+            {
+              "id": "0x58513727ab40",
+              "kind": "RecordType",
+              "type": {
+                "qualType": "XSampleHints"
+              },
+              "decl": {
+                "id": "0x58513727aab8",
                 "kind": "RecordDecl",
                 "name": ""
               }

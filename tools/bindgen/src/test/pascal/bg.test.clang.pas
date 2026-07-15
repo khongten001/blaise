@@ -56,6 +56,7 @@ type
     procedure TestLoad_NamedUnion_Loaded;
     procedure TestLoad_AnonUnionField_LiftedAndNamed;
     procedure TestLoad_LiftedUnion_PrecedesOwnerInDecls;
+    procedure TestLoad_SharedAnonStruct_BothFieldsRetyped;
   end;
 
 implementation
@@ -338,6 +339,26 @@ begin
   AssertTrue('lifted present', LiftedIdx >= 0);
   AssertTrue('owner present', OwnerIdx >= 0);
   AssertTrue('lifted first', LiftedIdx < OwnerIdx);
+end;
+
+procedure TClangLoadTests.TestLoad_SharedAnonStruct_BothFieldsRetyped;
+var
+  R: TCRecord;
+  Lifted: TCRecord;
+begin
+  { XSizeHints pattern: two fields declared against ONE anonymous
+    struct — 'min_aspect, max_aspect' after the closing brace.  Both
+    must be retyped to the same lifted record (keyed by the location-
+    unique qualType); it is named after the FIRST referencing field. }
+  R := FModel.FindRecord('XSampleHints');
+  AssertTrue('outer found', R <> nil);
+  AssertEquals('field count', 3, R.Fields.Count);
+  AssertEquals('XSampleHints_min_aspect_t', R.Fields[1].CType);
+  AssertEquals('both fields share the lifted type',
+    'XSampleHints_min_aspect_t', R.Fields[2].CType);
+  Lifted := FModel.FindRecord('XSampleHints_min_aspect_t');
+  AssertTrue('lifted found', Lifted <> nil);
+  AssertEquals('lifted members', 2, Lifted.Fields.Count);
 end;
 
 initialization

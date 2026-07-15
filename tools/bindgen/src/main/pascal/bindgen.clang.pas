@@ -244,8 +244,11 @@ var
   LastLifted: string;
   Fld: TCField;
   Width: Int64;
+  AnonByQT: TDictionary<string, string>;
+  LiftedName: string;
 begin
   LastLifted := '';
+  AnonByQT := TDictionary<string, string>.Create();
   Inner := ANode.Find('inner');
   if not (Inner is TJSONArray) then Exit;
   Arr := TJSONArray(Inner);
@@ -259,7 +262,7 @@ begin
       { Nested record declarations are file-scope in C semantics.  A
         NAMED one (XImage's 'struct funcs') keeps its tag — the field
         references it by name; an unnamed one gets a counter name and
-        the next field is retyped to it. }
+        the referencing field(s) are retyped to it. }
       if GetStr(Child, 'name') <> '' then
         Lifted := TCRecord.Create(GetStr(Child, 'name'))
       else
@@ -274,11 +277,21 @@ begin
     else if GetStr(Child, 'kind') = 'FieldDecl' then
     begin
       QT := GetQualType(Child);
-      if (LastLifted <> '') and
-         ((Pos('(unnamed', QT) >= 0) or (Pos('(anonymous', QT) >= 0)) then
+      if (Pos('(unnamed', QT) >= 0) or (Pos('(anonymous', QT) >= 0) then
       begin
-        QT := LastLifted;
-        LastLifted := '';
+        { The XSizeHints pattern declares SEVERAL fields against one
+          anonymous struct ('min_aspect, max_aspect') — every such
+          field carries the same location-unique qualType, so the
+          first binds it to the freshly lifted record and the rest
+          resolve through the map. }
+        if LastLifted <> '' then
+        begin
+          AnonByQT.Add(QT, LastLifted);
+          QT := LastLifted;
+          LastLifted := '';
+        end
+        else if AnonByQT.TryGetValue(QT, LiftedName) then
+          QT := LiftedName;
       end;
       Fld := TCField.Create(GetStr(Child, 'name'), QT);
       if GetBool(Child, 'isBitfield') then
@@ -303,9 +316,13 @@ var
   R: TCRecord;
   Lifted: TCRecord;
   NewName: string;
+  Renames: TDictionary<string, string>;
 begin
-  { Records is in lifted-before-owner order, so a doubly-nested anon
-    member keeps its counter name (rare; still compiles). }
+  { Pass 1: rename each lifted record after the FIRST field that
+    references it, recording old→new.  (Records is in lifted-before-
+    owner order, so a doubly-nested anon member keeps its counter
+    name — rare; still compiles.) }
+  Renames := TDictionary<string, string>.Create();
   for I := 0 to AModel.Records.Count - 1 do
   begin
     R := AModel.Records[I];
@@ -313,12 +330,22 @@ begin
     for J := 0 to R.Fields.Count - 1 do
     begin
       if not StartsStr('anon_', R.Fields[J].CType) then Continue;
+      if Renames.ContainsKey(R.Fields[J].CType) then Continue;
       Lifted := AModel.FindRecord(R.Fields[J].CType);
       if Lifted = nil then Continue;
       NewName := R.Name + '_' + R.Fields[J].Name + '_t';
+      Renames.Add(Lifted.Name, NewName);
       Lifted.Name := NewName;
-      R.Fields[J].CType := NewName;
     end;
+  end;
+  { Pass 2: retype EVERY field that referenced a renamed record — the
+    XSizeHints pattern has several fields sharing one lifted type. }
+  for I := 0 to AModel.Records.Count - 1 do
+  begin
+    R := AModel.Records[I];
+    for J := 0 to R.Fields.Count - 1 do
+      if Renames.TryGetValue(R.Fields[J].CType, NewName) then
+        R.Fields[J].CType := NewName;
   end;
 end;
 

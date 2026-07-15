@@ -473,3 +473,13 @@ typedef struct {
     unsigned short d : 4;
     unsigned short e : 4;
 } XSampleFlags;
+
+
+
+typedef struct {
+    int flags;
+    struct {
+        int x;
+        int y;
+    } min_aspect, max_aspect;
+} XSampleHints;

@@ -72,3 +72,13 @@ typedef struct {
     unsigned short d : 4;
     unsigned short e : 4;
 } XSampleFlags;
+
+/* Two fields sharing ONE anonymous struct (the XSizeHints pattern):
+   both must be retyped to the same lifted record. */
+typedef struct {
+    int flags;
+    struct {
+        int x;
+        int y;
+    } min_aspect, max_aspect;
+} XSampleHints;
