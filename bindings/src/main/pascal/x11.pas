@@ -1427,8 +1427,6 @@ const
   FUNCPROTO = 15;
   NeedWidePrototypes = 0;
   X_HAVE_UTF8_STRING = 1;
-  True = 1;
-  False = 0;
   QueuedAlready = 0;
   QueuedAfterReading = 1;
   QueuedAfterFlush = 2;

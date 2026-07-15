@@ -82,3 +82,7 @@ typedef struct {
         int y;
     } min_aspect, max_aspect;
 } XSampleHints;
+
+/* X.h defines these — they must NOT shadow the Blaise builtins. */
+#define True 1
+#define False 0

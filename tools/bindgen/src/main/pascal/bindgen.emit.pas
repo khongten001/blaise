@@ -455,6 +455,11 @@ begin
     for I := 0 to AMacros.Count - 1 do
     begin
       if Declared.Contains(UpperCase(AMacros[I].Name)) then Continue;
+      { X.h defines True/False (= 1/0).  The Blaise builtins carry the
+        same values, and a const would SHADOW them — 'Running := True'
+        would suddenly assign an Integer.  Drop them. }
+      if (UpperCase(AMacros[I].Name) = 'TRUE') or
+         (UpperCase(AMacros[I].Name) = 'FALSE') then Continue;
       if AMacros[I].IsString then
         ConstLines.Add('  ' + SanitiseIdent(AMacros[I].Name, I) + ' = ''' +
           ReplaceAll(AMacros[I].StrValue, '''', '''''') + ''';')

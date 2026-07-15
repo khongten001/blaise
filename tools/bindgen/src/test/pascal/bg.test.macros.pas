@@ -51,6 +51,7 @@ type
     procedure TestHarvest_TypeMacro_NoValue;
     procedure TestEmit_MacroConsts_InOutput;
     procedure TestEmit_UnevaluatedMacro_NotEmitted;
+    procedure TestEmit_TrueFalseMacros_NotEmitted;
   end;
 
 implementation
@@ -203,6 +204,21 @@ begin
   Model := TCModel.Create();
   Src := EmitBinding(Model, 'sample', 'sample', FMacros);
   AssertTrue('type macro absent', not ContainsStr(Src, 'SAMPLE_TYPE'));
+end;
+
+procedure TMacroTests.TestEmit_TrueFalseMacros_NotEmitted;
+var
+  Model: TCModel;
+  Src: string;
+begin
+  { X.h defines True/False; emitting them as consts would shadow the
+    Blaise builtins (Running := True suddenly assigns Integer 1).  The
+    Pascal builtins already carry the same protocol values, so these
+    macros are dropped. }
+  Model := TCModel.Create();
+  Src := EmitBinding(Model, 'sample', 'sample', FMacros);
+  AssertTrue('True not emitted', not ContainsStr(Src, 'True ='));
+  AssertTrue('False not emitted', not ContainsStr(Src, 'False ='));
 end;
 
 initialization
