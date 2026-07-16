@@ -267,8 +267,9 @@ const
 
   { Serialisation order: file-backed sections first, zerofill LAST (a
     Mach-O segment rule).  Indexed by emission position. }
-  SectionEmitOrder: array[0..5] of TContainerSectionKind = (
-    cskText, cskRodata, cskData, cskOpdf, cskBss, cskTbss);
+  SectionEmitOrder: array[0..7] of TContainerSectionKind = (
+    cskText, cskRodata, cskData, cskTdata, cskTvars, cskOpdf,
+    cskBss, cskTbss);
 
 procedure MachOSectionNames(AKind: TContainerSectionKind;
   out ASegName, ASectName: string);
@@ -294,6 +295,14 @@ begin
     begin
       ASegName := '__DATA'; ASectName := '__thread_bss';
     end;
+    cskTdata:
+    begin
+      ASegName := '__DATA'; ASectName := '__thread_data';
+    end;
+    cskTvars:
+    begin
+      ASegName := '__DATA'; ASectName := '__thread_vars';
+    end;
     cskOpdf:
     begin
       ASegName := '__OPDF'; ASectName := '__opdf';
@@ -312,6 +321,8 @@ begin
                          or S_ATTR_SOME_INSTRUCTIONS;
     cskBss:    Result := S_ZEROFILL;
     cskTbss:   Result := S_THREAD_LOCAL_ZEROFILL;
+    cskTdata:  Result := S_THREAD_LOCAL_REGULAR;
+    cskTvars:  Result := S_THREAD_LOCAL_VARIABLES;
   else
     Result := S_REGULAR;
   end;
@@ -416,8 +427,10 @@ var
   I: Integer;
 begin
   inherited Create();
-  SetLength(FSections, 6);
-  for I := 0 to 5 do
+  { sized from the enum — a new TContainerSectionKind member must never
+    silently shift ordinals past the array (BUG-045) }
+  SetLength(FSections, Ord(High(TContainerSectionKind)) + 1);
+  for I := 0 to Ord(High(TContainerSectionKind)) do
     FSections[I] := nil;
   FSymbols := TList<TMachOWriterSym>.Create();
   FSymMap  := TDictionary<string, Integer>.Create();
@@ -723,10 +736,10 @@ begin
   { ---- collect non-empty sections in emission order (zerofill last) ---- }
   SetLength(Emitted, 0);
   NSects := 0;
-  SetLength(SectOrdinalOf, 6);
-  for I := 0 to 5 do
+  SetLength(SectOrdinalOf, Ord(High(TContainerSectionKind)) + 1);
+  for I := 0 to Ord(High(TContainerSectionKind)) do
     SectOrdinalOf[I] := 0;
-  for I := 0 to 5 do
+  for I := 0 to Length(SectionEmitOrder) - 1 do
   begin
     Sec := FSections[Ord(SectionEmitOrder[I])];
     if Sec = nil then Continue;

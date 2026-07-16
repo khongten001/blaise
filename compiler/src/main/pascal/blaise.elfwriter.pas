@@ -337,8 +337,10 @@ var
   I: Integer;
 begin
   inherited Create();
-  SetLength(FSections, 6);
-  for I := 0 to 5 do
+  { sized from the enum (BUG-045): ELF never emits the Mach-O-only TLV
+    kinds, but every ordinal must stay in bounds }
+  SetLength(FSections, Ord(High(TContainerSectionKind)) + 1);
+  for I := 0 to Ord(High(TContainerSectionKind)) do
     FSections[I] := nil;
   FSymbols  := TList<TElfWriterSym>.Create();
   FSymMap   := TDictionary<string, Integer>.Create();
