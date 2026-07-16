@@ -131,6 +131,8 @@ type
     procedure TestGlobalArrayInitialisers;
     { slice 38: class attributes — attrs/methattrs tables + RTTI builtins }
     procedure TestClassAttributes_TablesAndBuiltins;
+    { slice 39: generic class/function instances — bare names, weak bind }
+    procedure TestGenericInstances_WeakEmission;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -415,24 +417,14 @@ begin
       '''
       program P;
       type
-        IThing = interface
-          procedure Go;
-        end;
-        TThing = class(TObject, IThing)
-          procedure Go;
-        end;
-      procedure TThing.Go;
-      begin
-      end;
-      type
-        TBox<T> = class
-          FVal: T;
+        TPair<T> = record
+          A, B: T;
         end;
       var
-        B: TBox<Int64>;
+        Q: TPair<Int64>;
       begin
-        B := TBox<Int64>.Create();
-        WriteLn(B.FVal)
+        Q.A := 1;
+        WriteLn(Q.A)
       end.
       ''');
   except
@@ -2520,6 +2512,66 @@ begin
   AssertTrue('count call', Pos(#9'bl _MethodAttributeCount', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64attrs.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestGenericInstances_WeakEmission;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBox<T> = class
+        FVal: T;
+        procedure Put(AV: T);
+        function Get(): T;
+      end;
+    procedure TBox<T>.Put(AV: T);
+    begin
+      FVal := AV
+    end;
+    function TBox<T>.Get(): T;
+    begin
+      Result := FVal
+    end;
+    function Pick<T>(A, B: T): T;
+    begin
+      Result := A
+    end;
+    var
+      B: TBox<Int64>;
+    begin
+      B := TBox<Int64>.Create();
+      B.Put(41);
+      WriteLn(B.Get() + 1);
+      WriteLn(Pick<Int64>(7, 9))
+    end.
+    ''');
+  { instance symbols are BARE (no unit prefix) and WEAK — every object
+    that materialises the same instance carries an identical copy and
+    the linker keeps one (BUG-004) }
+  AssertTrue('weak typeinfo', Pos('.weak typeinfo_TBox_Int64', AsmT) >= 0);
+  AssertTrue('weak vtable', Pos('.weak vtable_TBox_Int64', AsmT) >= 0);
+  AssertTrue('weak cleanup',
+    Pos('.weak _FieldCleanup_TBox_Int64', AsmT) >= 0);
+  AssertTrue('instance method body', Pos('TBox_Int64_Put:', AsmT) >= 0);
+  AssertTrue('weak method bind', Pos('.weak TBox_Int64_Put', AsmT) >= 0);
+  { instance is constructed through its own typeinfo }
+  AssertTrue('ctor typeinfo ref',
+    Pos('adrp x0, typeinfo_TBox_Int64@PAGE', AsmT) >= 0);
+  { the generic FUNCTION instance is emitted weak too }
+  AssertTrue('weak func instance', Pos('.weak Pick_Int64', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64gen.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

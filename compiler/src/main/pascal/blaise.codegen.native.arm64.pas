@@ -83,6 +83,9 @@ type
     FGlobalStrInits: TStringList; { symbols of string-initialised globals }
     FGlobalStrVals:  TStringList; { parallel: the literal values }
     FClassDecls:  TObjectList;   { not owned — program-level class TTypeDecls }
+    FGenericDecls: TObjectList;  { owned — synthetic TTypeDecl wrappers around
+                                   TGenericInstance clones so instances flow
+                                   through the ordinary class machinery }
     FObjLocals:   TStringList;   { class-typed locals — released at scope exit }
     FObjGlobals:  TStringList;   { class-typed globals — released at program exit }
     FTlvGlobals:  TStringList;   { threadvar globals — Mach-O TLV descriptors }
@@ -160,7 +163,8 @@ type
     procedure EmitForIn(AStmt: TForInStmt);
     procedure EmitForInAssignX0(AStmt: TForInStmt; AOwned: Boolean);
     procedure EmitExit(AStmt: TExitStmt);
-    procedure EmitFunctionDef(ADecl: TMethodDecl);
+    procedure EmitFunctionDef(ADecl: TMethodDecl;
+      AWeakBind: Boolean = False);
     function  StackArgSize(AArg: TASTExpr): Integer;
     function  StackParamSize(APar: TMethodParam): Integer;
     function  AlignTo(AValue, AAlign: Integer): Integer;
@@ -289,6 +293,7 @@ begin
   FGlobalStrInits := TStringList.Create();
   FGlobalStrVals  := TStringList.Create();
   FClassDecls  := TObjectList.Create(False);
+  FGenericDecls := TObjectList.Create(True);
   FObjLocals   := TStringList.Create();
   FObjGlobals  := TStringList.Create();
   FTlvGlobals  := TStringList.Create();
@@ -320,6 +325,7 @@ begin
   FGlobalStrInits.Free();
   FGlobalStrVals.Free();
   FClassDecls.Free();
+  FGenericDecls.Free();
   FObjLocals.Free();
   FObjGlobals.Free();
   FTlvGlobals.Free();
@@ -3531,7 +3537,8 @@ begin
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
 end;
 
-procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
+procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl;
+  AWeakBind: Boolean);
 var
   I, J, K, FIdx: Integer;
   SPOff, SPSz: Integer;
@@ -3561,7 +3568,10 @@ begin
   FrameAligned := (FFrameSize + 15) and (not 15);
 
   Self.Emit('');
-  Self.Emit(Format('.globl %s', [Sym]));
+  if AWeakBind then
+    Self.Emit(Format('.weak %s', [Sym]))
+  else
+    Self.Emit(Format('.globl %s', [Sym]));
   Self.Emit(Sym + ':');
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
@@ -4499,6 +4509,11 @@ function TArm64Backend.ClassSym(ATD: TTypeDecl): string;
 var
   D: TRecordTypeDesc;
 begin
+  { generic instances are ALWAYS bare — the same instance is materialised
+    by every compilation that touches it, so its symbols must be
+    unit-independent (emitted weak; the linker dedups — BUG-004) }
+  if Pos('<', ATD.Name) >= 0 then
+    Exit(CodegenMangle(ATD.Name));
   D := ClassDescOf(ATD);
   Result := ClassPrefixOwner(D.OwningUnit) + CodegenMangle(ATD.Name);
 end;
@@ -4540,7 +4555,10 @@ begin
     RT := ClassDescOf(TD);
     Sym := '_FieldCleanup_' + ClassSym(TD);
     Self.Emit('');
-    Self.Emit(Format('.globl %s', [Sym]));
+    if Pos('<', TD.Name) >= 0 then
+      Self.Emit(Format('.weak %s', [Sym]))
+    else
+      Self.Emit(Format('.globl %s', [Sym]));
     Self.Emit(Sym + ':');
     Self.Emit(#9'stp x29, x30, [sp, #-16]!');
     Self.Emit(#9'mov x29, sp');
@@ -4768,7 +4786,10 @@ begin
     EmitAttrTables(TClassTypeDef(TD.Def), Sym, AttrsRef, MethAttrsRef);
     Self.Emit('.section .data');
     Self.Emit('.balign 8');
-    Self.Emit(Format('.globl typeinfo_%s', [Sym]));
+    if Pos('<', TD.Name) >= 0 then
+      Self.Emit(Format('.weak typeinfo_%s', [Sym]))
+    else
+      Self.Emit(Format('.globl typeinfo_%s', [Sym]));
     Self.Emit(Format('typeinfo_%s:', [Sym]));
     Self.Emit(Format(#9'.quad %s', [ParentRef]));
     if ClassImplementsAny(TD) then
@@ -4782,7 +4803,10 @@ begin
     Self.Emit(Format(#9'.quad vtable_%s', [Sym]));
     Self.Emit(Format(#9'.quad %s', [AttrsRef]));
     Self.Emit(Format(#9'.quad %s', [MethAttrsRef]));
-    Self.Emit(Format('.globl vtable_%s', [Sym]));
+    if Pos('<', TD.Name) >= 0 then
+      Self.Emit(Format('.weak vtable_%s', [Sym]))
+    else
+      Self.Emit(Format('.globl vtable_%s', [Sym]));
     Self.Emit(Format('vtable_%s:', [Sym]));
     Self.Emit(Format(#9'.quad typeinfo_%s', [Sym]));
     for S := 0 to RT.VTableCount() - 1 do
@@ -5203,6 +5227,7 @@ var
   FrameAligned: Integer;
   TDcl: TTypeDecl;
   CDef: TClassTypeDef;
+  GI: TGenericInstance;
   SavedAsm, BodyBuf: TStringBuilder;
 begin
   FProgramName := AProg.Name;
@@ -5215,10 +5240,15 @@ begin
     else if TDcl.Def is TInterfaceTypeDef then
       FIntfDecls.Add(TDcl)
     else if (TDcl.Def is TTypeAliasDef) or (TDcl.Def is TEnumTypeDef) or
-            (TDcl.Def is TSetTypeDef) or (TDcl.Def is TProceduralTypeDef) then
+            (TDcl.Def is TSetTypeDef) or (TDcl.Def is TProceduralTypeDef) or
+            (TDcl.Def is TGenericTypeDef) or
+            (TDcl.Def is TGenericInterfaceDef) or
+            (TDcl.Def is TGenericRecordDef) or
+            (TDcl.Def is TGenericProcDef) then
       { declaration-only: aliases (incl. 'class of'), enums, sets and
-        procedural types need no emission — unsupported USES still gate
-        at their expression/variable sites }
+        procedural types need no emission; generic TEMPLATES emit nothing
+        either — their INSTANCES arrive monomorphised via the
+        GenericInstances lists }
     else if not (TDcl.Def is TRecordTypeDef) then
       NotYet('non-record type declarations', nil)
     else if TRecordTypeDef(TDcl.Def).Methods.Count > 0 then
@@ -5280,12 +5310,28 @@ begin
     end;
   end;
 
-  { generic instantiations need monomorphised emission — honest hole }
-  if (AProg.GenericInstances.Count > 0) or
-     (AProg.GenericRecordInstances.Count > 0) or
-     (AProg.GenericFuncInstances.Count > 0) or
+  { record instances need record methods; method-level <T> instances need
+    their own mangling story — both stay honest holes }
+  if (AProg.GenericRecordInstances.Count > 0) or
      (AProg.GenericMethodInstances.Count > 0) then
-    NotYet('generic instantiations', nil);
+    NotYet('generic record/method instantiations', nil);
+
+  { generic CLASS instances: wrap each monomorphised clone in a synthetic
+    TTypeDecl so it flows through the ordinary class machinery (methods,
+    metadata, cleanup, constructor lookup).  All instance symbols emit
+    WEAK with bare names — see ClassSym. }
+  for I := 0 to AProg.GenericInstances.Count - 1 do
+  begin
+    GI := TGenericInstance(AProg.GenericInstances.Items[I]);
+    if GI.ClassDef.ImplementsNames.Count > 0 then
+      NotYet('generic instance implementing interfaces', nil);
+    TDcl := TTypeDecl.Create();
+    TDcl.Name := GI.TypeName;
+    TDcl.Def := GI.ClassDef;
+    TDcl.ResolvedDesc := GI.TypeDesc;
+    FGenericDecls.Add(TDcl);
+    FClassDecls.Add(TDcl);
+  end;
 
   Self.Emit('.text');
 
@@ -5300,6 +5346,13 @@ begin
     EmitFunctionDef(Decl);
   end;
 
+  { Generic function instances: concrete monomorphised bodies, weak-bound
+    like every other instance symbol. }
+  for I := 0 to AProg.GenericFuncInstances.Count - 1 do
+    EmitFunctionDef(
+      TGenericFuncInstance(AProg.GenericFuncInstances.Items[I]).MethodDecl,
+      True);
+
   { Class method bodies (LinkClassMethodImpls placed them on the class
     defs), then the ARC field-cleanup functions. }
   for I := 0 to FClassDecls.Count - 1 do
@@ -5311,7 +5364,8 @@ begin
       if Decl.Body = nil then Continue;
       if Decl.TypeParams <> nil then
         NotYet('generic methods', Decl);
-      EmitFunctionDef(Decl);
+      EmitFunctionDef(Decl,
+        Pos('<', TTypeDecl(FClassDecls.Items[I]).Name) >= 0);
     end;
   end;
   EmitClassCleanupFns();
