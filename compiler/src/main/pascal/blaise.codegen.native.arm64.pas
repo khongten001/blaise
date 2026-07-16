@@ -82,6 +82,9 @@ type
     FObjLocals:   TStringList;   { class-typed locals — released at scope exit }
     FObjGlobals:  TStringList;   { class-typed globals — released at program exit }
     FTlvGlobals:  TStringList;   { threadvar globals — Mach-O TLV descriptors }
+    FIntfDecls:   TObjectList;   { not owned — program-level interface TTypeDecls }
+    FIntfLocals:  TStringList;   { interface locals (base name) — obj released at exit }
+    FIntfGlobals: TStringList;   { interface globals (prefixed base name) }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -179,6 +182,14 @@ type
     procedure EmitInstanceFieldStore(AFld: TFieldInfo;
       AValueExpr: TASTExpr; const AInstSlot: string);
     procedure EmitImplicitSelfStore(AAsgn: TAssignment);
+    procedure EmitInterfaceAssign(AAsgn: TAssignment);
+    function  IntfItabSym(const AClassName, AIntfName: string): string;
+    procedure EmitIntfDispatch(const AVarName: string; AIdx: Integer;
+      AArgs: TObjectList);
+    procedure EmitIntfMetaSections;
+    function  FindClassMethodImpl(ATD: TTypeDecl;
+      const AName: string): TMethodDecl;
+    function  ClassImplementsAny(ATD: TTypeDecl): Boolean;
     procedure EmitInstanceFieldStoreStacked(AFld: TFieldInfo;
       AValueExpr: TASTExpr);
     procedure RegisterUnitVars(ABlock: TBlock);
@@ -238,6 +249,9 @@ begin
   FObjLocals   := TStringList.Create();
   FObjGlobals  := TStringList.Create();
   FTlvGlobals  := TStringList.Create();
+  FIntfDecls   := TObjectList.Create(False);
+  FIntfLocals  := TStringList.Create();
+  FIntfGlobals := TStringList.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -259,6 +273,9 @@ begin
   FObjLocals.Free();
   FObjGlobals.Free();
   FTlvGlobals.Free();
+  FIntfDecls.Free();
+  FIntfLocals.Free();
+  FIntfGlobals.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -1266,6 +1283,68 @@ begin
   NotYet('statement ' + AStmt.ClassName, AStmt);
 end;
 
+procedure TArm64Backend.EmitInterfaceAssign(AAsgn: TAssignment);
+var
+  ItabSym: string;
+begin
+  { fat-pointer stores: the obj half co-owns the backing instance (retain
+    on store unless the source owns a +1, release the old); the itab half
+    is static rodata — never refcounted. }
+  if AAsgn.IsWeakLhs then
+    NotYet('[Weak] interface assignment', AAsgn);
+  if AAsgn.IsVarParam or (AAsgn.ImplicitSelfField <> nil) then
+    NotYet('interface assignment to this target', AAsgn);
+  if (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyClass) then
+  begin
+    { narrowing a class value: the itab is known statically }
+    ItabSym := IntfItabSym(TRecordTypeDesc(AAsgn.Expr.ResolvedType).Name,
+      AAsgn.ResolvedLhsType.Name);
+    Self.EmitExprToX0(AAsgn.Expr);
+    if not ArcExprOwnsRef(AAsgn.Expr) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AAsgn.Name);
+    Self.Emit(Format(#9'adrp x0, %s@PAGE', [ItabSym]));
+    Self.Emit(Format(#9'add x0, x0, %s@PAGEOFF', [ItabSym]));
+    EmitStoreSlot('x0', AAsgn.Name + '_itab');
+    Exit;
+  end;
+  if (AAsgn.Expr is TIdentExpr) and (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyInterface) then
+  begin
+    { interface-to-interface copy of both halves }
+    if TIdentExpr(AAsgn.Expr).ParamMode = pmVar then
+      NotYet('var interface parameter', AAsgn);
+    EmitLoadSlot('x0', TIdentExpr(AAsgn.Expr).Name);
+    EmitPushX0();
+    Self.Emit(#9'bl _ClassAddRef');
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AAsgn.Name);
+    EmitLoadSlot('x0', TIdentExpr(AAsgn.Expr).Name + '_itab');
+    EmitStoreSlot('x0', AAsgn.Name + '_itab');
+    Exit;
+  end;
+  if AAsgn.Expr is TNilLiteral then
+  begin
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitStoreSlot('xzr', AAsgn.Name);
+    EmitStoreSlot('xzr', AAsgn.Name + '_itab');
+    Exit;
+  end;
+  NotYet('interface assignment from this expression', AAsgn);
+end;
+
 procedure TArm64Backend.EmitAssignment(AAsgn: TAssignment);
 var
   I, Shape: Integer;
@@ -1301,6 +1380,12 @@ begin
     Self.Emit(#9'bl _StringRelease');
     EmitPopTo('x0');
     EmitStoreSlot('x0', AAsgn.Name);
+    Exit;
+  end;
+  if (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyInterface) then
+  begin
+    EmitInterfaceAssign(AAsgn);
     Exit;
   end;
   if (AAsgn.ResolvedLhsType <> nil) and
@@ -1737,6 +1822,7 @@ begin
   FStrLocals.Clear();
   FRecLocals.Clear();
   FObjLocals.Clear();
+  FIntfLocals.Clear();
   if ADecl <> nil then
   begin
     if (ADecl.OwnerTypeName <> '') and not ADecl.IsStatic then
@@ -1813,7 +1899,7 @@ begin
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
-                                       tyRecord, tyClass]))) then
+                                       tyRecord, tyClass, tyInterface]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -1830,6 +1916,13 @@ begin
         FStrLocals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyClass then
         FObjLocals.Add(VD.Names.Strings[J]);
+      if VD.ResolvedType.Kind = tyInterface then
+      begin
+        { fat pointer: split obj/itab slots; the obj half co-owns the
+          backing instance }
+        AddLocal(VD.Names.Strings[J] + '_itab', 8);
+        FIntfLocals.Add(VD.Names.Strings[J]);
+      end;
     end;
   end;
   for I := 0 to ABody.Stmts.Count - 1 do
@@ -2054,6 +2147,12 @@ begin
   for I := 0 to FObjLocals.Count - 1 do
   begin
     EmitLoadSlot('x0', FObjLocals.Strings[I]);
+    Self.Emit(#9'bl _ClassRelease');
+  end;
+  { release the obj half of interface locals }
+  for I := 0 to FIntfLocals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FIntfLocals.Strings[I]);
     Self.Emit(#9'bl _ClassRelease');
   end;
   { release the managed fields of record locals — the base-class walk needs
@@ -2582,6 +2681,23 @@ begin
   Result := Pfx + CodegenMangle(AOwnerType) + '_' + CodegenMangle(AMethod);
 end;
 
+function TArm64Backend.IntfItabSym(const AClassName,
+  AIntfName: string): string;
+var
+  D: TTypeDesc;
+  Pfx: string;
+begin
+  Pfx := '';
+  if FSymTable <> nil then
+  begin
+    D := FSymTable.FindType(AClassName);
+    if D <> nil then
+      Pfx := ClassPrefixOwner(D.OwningUnit);
+  end;
+  Result := 'itab_' + Pfx + CodegenMangle(AClassName) + '_' +
+    CodegenMangle(AIntfName);
+end;
+
 function TArm64Backend.ClassSym(ATD: TTypeDecl): string;
 var
   D: TRecordTypeDesc;
@@ -2714,7 +2830,10 @@ begin
     Self.Emit(Format('.globl typeinfo_%s', [Sym]));
     Self.Emit(Format('typeinfo_%s:', [Sym]));
     Self.Emit(Format(#9'.quad %s', [ParentRef]));
-    Self.Emit(#9'.quad 0');
+    if ClassImplementsAny(TD) then
+      Self.Emit(Format(#9'.quad impllist_%s', [Sym]))
+    else
+      Self.Emit(#9'.quad 0');
     Self.Emit(Format(#9'.quad __cn_%s', [Sym]));
     Self.Emit(#9'.quad 0');
     Self.Emit(Format(#9'.quad %d', [RT.RawSize()]));
@@ -2738,6 +2857,179 @@ begin
       else
         Self.Emit(Format(#9'.quad %s', [CodegenMangle(E.ImplName)]));
     end;
+  end;
+end;
+
+procedure TArm64Backend.EmitIntfDispatch(const AVarName: string;
+  AIdx: Integer; AArgs: TObjectList);
+var
+  I: Integer;
+  Arg: TASTExpr;
+begin
+  { itab dispatch: obj in x0, args in x1.., fptr = itab[AIdx*8].  Only
+    int-class scalar args in this slice — a dedicated emitter because the
+    interface has no TMethodDecl to drive EmitCall's classification. }
+  if AArgs.Count > 7 then
+    NotYet('interface call with more than 7 arguments', nil);
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if not (IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) or
+            ((Arg.ResolvedType <> nil) and
+             (Arg.ResolvedType.Kind in [tyClass, tyPChar, tyPointer]))) then
+      NotYet('interface-call argument of this type', Arg);
+    Self.EmitExprToX0(Arg);
+    EmitPushX0();
+  end;
+  for I := AArgs.Count - 1 downto 0 do
+    EmitPopTo('x' + IntToStr(I + 1));
+  EmitLoadSlot('x0', AVarName);
+  EmitLoadSlot('x9', AVarName + '_itab');
+  Self.Emit(Format(#9'ldr x9, [x9, #%d]', [AIdx * 8]));
+  Self.Emit(#9'blr x9');
+end;
+
+procedure TArm64Backend.EmitIntfMetaSections;
+var
+  I, J, K: Integer;
+  ITD, TD: TTypeDecl;
+  CDef, Walk: TClassTypeDef;
+  ID: TInterfaceTypeDesc;
+  MD, Impl: TMethodDecl;
+  Names: TStringList;
+  Sym, ISym, WalkName: string;
+begin
+  if (FIntfDecls.Count = 0) and (FClassDecls.Count = 0) then Exit;
+  Self.Emit('.section .data');
+  { interface typeinfo: the address IS the identity token }
+  for I := 0 to FIntfDecls.Count - 1 do
+  begin
+    ITD := TTypeDecl(FIntfDecls.Items[I]);
+    Self.Emit('.balign 8');
+    Self.Emit(Format('.globl typeinfo_%s', [CodegenMangle(ITD.Name)]));
+    Self.Emit(Format('typeinfo_%s:', [CodegenMangle(ITD.Name)]));
+    Self.Emit(#9'.quad 0');
+  end;
+  { itab + impllist per implementing class.  Interface names are collected
+    across the class's ancestor chain — a descendant inherits its parent's
+    interfaces and still needs its own itab (method lookup starts at the
+    most-derived class). }
+  for I := 0 to FClassDecls.Count - 1 do
+  begin
+    TD := TTypeDecl(FClassDecls.Items[I]);
+    CDef := TClassTypeDef(TD.Def);
+    Names := TStringList.Create();
+    try
+      Walk := CDef;
+      WalkName := TD.Name;
+      while Walk <> nil do
+      begin
+        for J := 0 to Walk.ImplementsNames.Count - 1 do
+          if Names.IndexOf(Walk.ImplementsNames.Strings[J]) < 0 then
+            Names.Add(Walk.ImplementsNames.Strings[J]);
+        WalkName := Walk.ParentName;
+        Walk := nil;
+        for J := 0 to FClassDecls.Count - 1 do
+          if SameText(TTypeDecl(FClassDecls.Items[J]).Name, WalkName) then
+          begin
+            Walk := TClassTypeDef(TTypeDecl(FClassDecls.Items[J]).Def);
+            Break;
+          end;
+      end;
+      if Names.Count = 0 then Continue;
+      Sym := ClassSym(TD);
+      for J := 0 to Names.Count - 1 do
+      begin
+        ID := TInterfaceTypeDesc(FSymTable.FindType(Names.Strings[J]));
+        if (ID = nil) or not (ID is TInterfaceTypeDesc) then
+          NotYet('unresolved interface ''' + Names.Strings[J] + '''', nil);
+        ISym := IntfItabSym(TD.Name, Names.Strings[J]);
+        Self.Emit('.balign 8');
+        Self.Emit(Format('%s:', [ISym]));
+        for K := 0 to ID.MethodCount() - 1 do
+        begin
+          Impl := FindClassMethodImpl(TD, ID.MethodName(K));
+          if Impl = nil then
+            NotYet('implementation of interface method ''' +
+              ID.MethodName(K) + '''', nil);
+          Self.Emit(Format(#9'.quad %s',
+            [RoutineSym(Impl, ID.MethodName(K))]));
+        end;
+      end;
+      Self.Emit('.balign 8');
+      Self.Emit(Format('impllist_%s:', [Sym]));
+      for J := 0 to Names.Count - 1 do
+      begin
+        Self.Emit(Format(#9'.quad typeinfo_%s',
+          [CodegenMangle(Names.Strings[J])]));
+        Self.Emit(Format(#9'.quad %s', [IntfItabSym(TD.Name,
+          Names.Strings[J])]));
+      end;
+      Self.Emit(#9'.quad 0');
+    finally
+      Names.Free();
+    end;
+  end;
+end;
+
+function TArm64Backend.ClassImplementsAny(ATD: TTypeDecl): Boolean;
+var
+  J: Integer;
+  Walk: TClassTypeDef;
+  WalkName: string;
+begin
+  Result := False;
+  Walk := TClassTypeDef(ATD.Def);
+  WalkName := ATD.Name;
+  while Walk <> nil do
+  begin
+    if Walk.ImplementsNames.Count > 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+    WalkName := Walk.ParentName;
+    Walk := nil;
+    for J := 0 to FClassDecls.Count - 1 do
+      if SameText(TTypeDecl(FClassDecls.Items[J]).Name, WalkName) then
+      begin
+        Walk := TClassTypeDef(TTypeDecl(FClassDecls.Items[J]).Def);
+        Break;
+      end;
+  end;
+end;
+
+function TArm64Backend.FindClassMethodImpl(ATD: TTypeDecl;
+  const AName: string): TMethodDecl;
+var
+  J, K: Integer;
+  Walk: TClassTypeDef;
+  WalkName: string;
+  MD: TMethodDecl;
+begin
+  { walk the ancestor chain for the nearest implementation }
+  Result := nil;
+  Walk := TClassTypeDef(ATD.Def);
+  WalkName := ATD.Name;
+  while Walk <> nil do
+  begin
+    for K := 0 to Walk.Methods.Count - 1 do
+    begin
+      MD := TMethodDecl(Walk.Methods.Items[K]);
+      if SameText(MD.Name, AName) and (MD.Body <> nil) then
+      begin
+        Result := MD;
+        Exit;
+      end;
+    end;
+    WalkName := Walk.ParentName;
+    Walk := nil;
+    for J := 0 to FClassDecls.Count - 1 do
+      if SameText(TTypeDecl(FClassDecls.Items[J]).Name, WalkName) then
+      begin
+        Walk := TClassTypeDef(TTypeDecl(FClassDecls.Items[J]).Def);
+        Break;
+      end;
   end;
 end;
 
@@ -2782,6 +3074,26 @@ begin
      ((AStmt.ObjectName = '') and (AStmt.ObjExpr = nil)
       and not AStmt.IsStaticCall) then
     NotYet('this method-call form', AStmt);
+  if (AStmt.ResolvedClassType <> nil) and
+     (AStmt.ResolvedClassType.Kind = tyInterface) then
+  begin
+    { itab dispatch on an interface-typed receiver }
+    if AStmt.IsVarParam or (AStmt.ObjExpr <> nil) then
+      NotYet('interface dispatch on this receiver form', AStmt);
+    if (AStmt.ResolvedReturnTypeDesc <> nil) and
+       (AStmt.ResolvedReturnTypeDesc.Kind in [tyRecord, tyInterface]) then
+      NotYet('discarded aggregate-returning interface call', AStmt);
+    EmitIntfDispatch(AStmt.ObjectName,
+      TInterfaceTypeDesc(AStmt.ResolvedClassType).MethodIndex(AStmt.Name),
+      AStmt.Args);
+    if (AStmt.ResolvedReturnTypeDesc <> nil) and
+       (AStmt.ResolvedReturnTypeDesc.Kind = tyClass) then
+      Self.Emit(#9'bl _ClassRelease');
+    if (AStmt.ResolvedReturnTypeDesc <> nil) and
+       (AStmt.ResolvedReturnTypeDesc.Kind = tyString) then
+      Self.Emit(#9'bl _StringRelease');
+    Exit;
+  end;
   MD := TMethodDecl(AStmt.ResolvedMethod);
   if MD = nil then
     NotYet('unresolved method ''' + AStmt.Name + '''', AStmt);
@@ -2871,6 +3183,19 @@ begin
      ((AExpr.ObjectName = '') and (AExpr.ObjExpr = nil)
       and not AExpr.IsStaticCall) then
     NotYet('this method-call form', AExpr);
+  if (AExpr.ResolvedClassType <> nil) and
+     (AExpr.ResolvedClassType.Kind = tyInterface) then
+  begin
+    if AExpr.IsVarParam or (AExpr.ObjExpr <> nil) then
+      NotYet('interface dispatch on this receiver form', AExpr);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind in [tyRecord, tyInterface]) then
+      NotYet('aggregate-returning interface call', AExpr);
+    EmitIntfDispatch(AExpr.ObjectName,
+      TInterfaceTypeDesc(AExpr.ResolvedClassType).MethodIndex(AExpr.Name),
+      AExpr.Args);
+    Exit;
+  end;
   MD := TMethodDecl(AExpr.ResolvedMethod);
   if MD = nil then
     NotYet('unresolved method ''' + AExpr.Name + '''', AExpr);
@@ -2910,12 +3235,12 @@ begin
     if TDcl.Def is TClassTypeDef then
     begin
       CDef := TClassTypeDef(TDcl.Def);
-      if CDef.ImplementsNames.Count > 0 then
-        NotYet('classes implementing interfaces', nil);
       if CDef.Attributes.Count > 0 then
         NotYet('class attributes', nil);
       FClassDecls.Add(TDcl);
     end
+    else if TDcl.Def is TInterfaceTypeDef then
+      FIntfDecls.Add(TDcl)
     else if not (TDcl.Def is TRecordTypeDef) then
       NotYet('non-record type declarations', nil)
     else if TRecordTypeDef(TDcl.Def).Methods.Count > 0 then
@@ -2929,7 +3254,7 @@ begin
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
-                                       tyRecord, tyClass]))) then
+                                       tyRecord, tyClass, tyInterface]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -2940,6 +3265,12 @@ begin
         FStrGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyClass then
         FObjGlobals.Add(VD.Names.Strings[J]);
+      if VD.ResolvedType.Kind = tyInterface then
+      begin
+        FGlobalNames.Add(VD.Names.Strings[J] + '_itab');
+        FGlobalSize.Add(VD.Names.Strings[J] + '_itab', 8);
+        FIntfGlobals.Add(VD.Names.Strings[J]);
+      end;
       if VD.IsThreadVar then
       begin
         { threadvars get a Mach-O TLV descriptor; only unmanaged scalar
@@ -3044,6 +3375,11 @@ begin
     EmitLoadSlot('x0', FObjGlobals.Strings[I]);
     Self.Emit(#9'bl _ClassRelease');
   end;
+  for I := 0 to FIntfGlobals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FIntfGlobals.Strings[I]);
+    Self.Emit(#9'bl _ClassRelease');
+  end;
   Self.Emit(#9'movz w0, #0');
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
@@ -3054,6 +3390,7 @@ begin
   EmitGlobalsSection();
   if FClassDecls.Count > 0 then
     EmitClassMetaSections();
+  EmitIntfMetaSections();
   EmitTlvSections();
 end;
 

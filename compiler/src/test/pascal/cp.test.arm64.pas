@@ -95,6 +95,8 @@ type
     procedure TestThreadvar_TlvDescriptorsAndAccess;
     { slice 21: Apple stack args (>8) + variadic calls }
     procedure TestStackArgs_VariadicAndOverflow;
+    { slice 22: interfaces — itab dispatch, fat-pointer ARC, metadata }
+    procedure TestInterfaces_DispatchAndMetadata;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -382,7 +384,19 @@ begin
         IThing = interface
           procedure Go;
         end;
+        TThing = class(TObject, IThing)
+          procedure Go;
+        end;
+      procedure TThing.Go;
       begin
+      end;
+      var
+        T: TThing;
+        I: IThing;
+      begin
+        T := TThing.Create();
+        I := T as IThing;
+        I.Go()
       end.
       ''');
   except
@@ -1602,6 +1616,55 @@ begin
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestInterfaces_DispatchAndMetadata;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      IGreeter = interface
+        function Greet(N: Int64): Int64;
+      end;
+      THi = class(TObject, IGreeter)
+        function Greet(N: Int64): Int64;
+      end;
+    function THi.Greet(N: Int64): Int64;
+    begin
+      Result := N + 1
+    end;
+    var
+      G: IGreeter;
+      H: THi;
+    begin
+      H := THi.Create();
+      G := H;
+      WriteLn(G.Greet(41));
+      G := nil
+    end.
+    ''');
+  { narrowing stores the static itab; dispatch loads fptr from itab[0] }
+  AssertTrue('itab emitted', Pos('itab_THi_IGreeter:', AsmT) >= 0);
+  AssertTrue('itab slot names the impl', Pos(#9'.quad THi_Greet', AsmT) >= 0);
+  AssertTrue('impllist emitted', Pos('impllist_THi:', AsmT) >= 0);
+  AssertTrue('interface typeinfo', Pos('typeinfo_IGreeter:', AsmT) >= 0);
+  AssertTrue('narrow stores itab', Pos('itab_THi_IGreeter@PAGEOFF', AsmT) >= 0);
+  AssertTrue('dispatch through itab slot 0',
+    Pos(#9'ldr x9, [x9, #0]', AsmT) >= 0);
+  AssertTrue('dispatch call', Pos(#9'blr x9', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64intf.o');
+  try
+    AssertTrue('has a data section',
+      F.FindSection('__DATA', '__data') <> nil);
   finally
     F.Free();
   end;
