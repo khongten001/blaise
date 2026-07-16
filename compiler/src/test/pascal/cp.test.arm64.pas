@@ -89,6 +89,8 @@ type
     procedure TestClass_StaticsConstsInheritedToString;
     { slice 18: properties (field- and method-backed, virtual accessors) }
     procedure TestClass_Properties;
+    { slice 19: chained receivers + owned-transient release }
+    procedure TestClass_ChainedReceivers;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1475,6 +1477,55 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestClass_ChainedReceivers;
+var
+  AsmT: string;
+  PosCall, PosRel: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TInner = class
+        FVal: Int64;
+        function Get: Int64;
+      end;
+      TOuter = class
+        FInner: TInner;
+        function Inner: TInner;
+      end;
+    function TInner.Get: Int64;
+    begin
+      Result := FVal
+    end;
+    function TOuter.Inner: TInner;
+    begin
+      Result := FInner
+    end;
+    var
+      O: TOuter;
+    begin
+      O := TOuter.Create();
+      O.FInner := TInner.Create();
+      O.FInner.FVal := 7;
+      WriteLn(O.FInner.FVal);
+      WriteLn(O.FInner.Get())
+    end.
+    ''');
+  { chained field read (O.FInner.FVal) derefs through the base expr, and
+    a method on a chained field (O.FInner.Get) receives the loaded ptr }
+  AssertTrue('chained method call', Pos(#9'bl TInner_Get', AsmT) >= 0);
+  { O.FInner.Get(): the receiver O.FInner is a BORROWED field read — an
+    owned method result gets released; make sure the owned-receiver
+    release plumbing appears for owned receivers only when used.  Here
+    Inner() is unused, so no blr-owned pattern is required — assert the
+    borrow shape: field load feeding the call. }
+  PosCall := Pos(#9'bl TInner_Get', AsmT);
+  PosRel := Pos('ldr x0, [sp, #16]', AsmT);
+  AssertTrue('no owned-receiver bracket for borrowed chains', PosRel < 0);
+  AssertTrue('call present', PosCall >= 0);
 end;
 
 initialization

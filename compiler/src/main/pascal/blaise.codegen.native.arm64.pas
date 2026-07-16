@@ -163,11 +163,15 @@ type
     procedure EmitClassMetaSections;
     procedure EmitMethodCallCommon(AMethod: TMethodDecl; const AName: string;
       AArgs: TObjectList);
+    procedure EmitMethodCallOnExpr(AMethod: TMethodDecl; const AName: string;
+      AArgs: TObjectList; AObjExpr: TASTExpr);
     procedure EmitMethodCallStmt(AStmt: TMethodCallStmt);
     procedure EmitMethodCallExpr(AExpr: TMethodCallExpr);
     procedure EmitInstanceFieldStore(AFld: TFieldInfo;
       AValueExpr: TASTExpr; const AInstSlot: string);
     procedure EmitImplicitSelfStore(AAsgn: TAssignment);
+    procedure EmitInstanceFieldStoreStacked(AFld: TFieldInfo;
+      AValueExpr: TASTExpr);
     procedure RegisterUnitVars(ABlock: TBlock);
     procedure FinalizeEmit; override;
 
@@ -414,6 +418,52 @@ begin
   Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
 end;
 
+procedure TArm64Backend.EmitInstanceFieldStoreStacked(AFld: TFieldInfo;
+  AValueExpr: TASTExpr);
+begin
+  { like EmitInstanceFieldStore, but the instance pointer is on TOP of the
+    stack (pushed by the caller); consumed on exit.  Needed for chained
+    bases (A.B.C := v), which have no frame slot to re-derive from. }
+  if AFld.TypeDesc.IsString() or (AFld.TypeDesc.Kind = tyClass) then
+  begin
+    Self.EmitExprToX0(AValueExpr);
+    if (AFld.TypeDesc.IsString() and not OwnsStringRef(AValueExpr)) or
+       ((AFld.TypeDesc.Kind = tyClass) and
+        not ArcExprOwnsRef(AValueExpr)) then
+    begin
+      EmitPushX0();
+      if AFld.TypeDesc.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();                       { [base][value] }
+    Self.Emit(#9'ldr x9, [sp, #16]');
+    Self.Emit(Format(#9'ldr x0, [x9, #%d]', [AFld.Offset]));
+    if AFld.TypeDesc.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    Self.Emit(#9'ldr x9, [sp, #16]');
+    EmitPopTo('x0');
+    Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
+    Self.Emit(#9'add sp, sp, #16');     { drop the base }
+    Exit;
+  end;
+  if AFld.TypeDesc.Kind = tyDouble then
+  begin
+    Self.EmitExprToD0OrConvert(AValueExpr);
+    Self.Emit(#9'fmov x0, d0');
+  end
+  else if IsIntFam(AFld.TypeDesc) then
+    Self.EmitExprToX0(AValueExpr)
+  else
+    NotYet('store to a field of this type', AValueExpr);
+  Self.Emit(#9'ldr x9, [sp], #16');     { pop the base }
+  Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
+end;
+
 procedure TArm64Backend.EmitImplicitSelfStore(AAsgn: TAssignment);
 begin
   EmitInstanceFieldStore(TFieldInfo(AAsgn.ImplicitSelfField), AAsgn.Expr,
@@ -466,8 +516,19 @@ begin
           TPropertyInfo(AStmt.PropWriteInfo).WriteMethod)]));
     Exit;
   end;
-  if (AStmt.ObjExpr <> nil) or AStmt.IsVarParam or
-     (AStmt.PropIndexExpr <> nil) then
+  if AStmt.ObjExpr <> nil then
+  begin
+    { chained base: A.B.C := v — the base expression yields the instance }
+    if AStmt.FieldInfo = nil then
+      NotYet('unresolved field assignment', AStmt);
+    if ArcExprOwnsRef(AStmt.ObjExpr) then
+      NotYet('field store on an owned transient base', AStmt);
+    Self.EmitExprToX0(AStmt.ObjExpr);
+    EmitPushX0();
+    EmitInstanceFieldStoreStacked(AStmt.FieldInfo, AStmt.Expr);
+    Exit;
+  end;
+  if AStmt.IsVarParam or (AStmt.PropIndexExpr <> nil) then
     NotYet('this field-assignment form', AStmt);
   if AStmt.FieldInfo = nil then
     NotYet('unresolved field assignment', AStmt);
@@ -876,6 +937,27 @@ begin
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base <> nil) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     TFieldAccessExpr(AExpr).IsClassAccess and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { chained field read A.B.C: the base expression yields the instance
+      pointer.  Owned transient bases stay NotYet — releasing them here
+      would free the object before the field value is consumed. }
+    if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
+      NotYet('field read on an owned transient base', AExpr);
+    if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
+              [tyDouble, tyClass]) or
+            TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
+      NotYet('read of a field of this type', AExpr);
+    Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
+    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+      [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
      (TFieldAccessExpr(AExpr).Base = nil) and
      (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
      (TFieldAccessExpr(AExpr).IsClassAccess or
@@ -983,6 +1065,15 @@ begin
     { Double field: load the bit pattern via the integer path, fmov to d0 }
     Self.EmitExprToX0(AExpr);
     Self.Emit(#9'fmov d0, x0');
+    Exit;
+  end;
+  if AExpr is TMethodCallExpr then
+  begin
+    { float-returning method call: the integer emitter's method paths end
+      at the call, and the value is already in d0 }
+    if TMethodCallExpr(AExpr).IsConstructorCall then
+      NotYet('constructor in float context', AExpr);
+    EmitMethodCallExpr(TMethodCallExpr(AExpr));
     Exit;
   end;
   if AExpr is TFuncCallExpr then
@@ -1649,13 +1740,13 @@ begin
       end
       else if not (IsIntFam(ADecl.ResolvedReturnType) or
                    (ADecl.ResolvedReturnType.Kind in [tyDouble, tySingle]) or
-                   (ADecl.ResolvedReturnType.Kind = tyString)) then
+                   (ADecl.ResolvedReturnType.Kind in [tyString, tyClass])) then
         NotYet('function result of this type', ADecl)
       else
-        { a string Result is a plain pointer slot.  It is deliberately NOT
-          in FStrLocals: the +1 it holds transfers to the caller at return
-          (ArcExprOwnsRef treats call results as owned), so the scope-exit
-          release must skip it. }
+        { a string/class Result is a plain pointer slot.  It is deliberately
+          NOT in FStrLocals/FObjLocals: the +1 it holds transfers to the
+          caller at return (ArcExprOwnsRef treats call results as owned),
+          so the scope-exit release must skip it. }
         AddLocal('Result', 8);
     end;
   end;
@@ -2417,13 +2508,38 @@ begin
   EmitCall(AMethod, AName, AArgs, '', True, AMethod.VTableSlot);
 end;
 
+procedure TArm64Backend.EmitMethodCallOnExpr(AMethod: TMethodDecl;
+  const AName: string; AArgs: TObjectList; AObjExpr: TASTExpr);
+var
+  Owned: Boolean;
+begin
+  { chained receiver: the object pointer is the value of AObjExpr.  An
+    OWNED +1 receiver (Create()/call result) is kept in a stack slot
+    across the call and released afterwards — the transient must outlive
+    the method invocation. }
+  Owned := ArcExprOwnsRef(AObjExpr);
+  Self.EmitExprToX0(AObjExpr);
+  if Owned then
+    EmitPushX0();               { copy for the post-call release }
+  EmitPushX0();                 { the receiver EmitCall pops into x0 }
+  EmitCall(AMethod, AName, AArgs, '', True, AMethod.VTableSlot);
+  if Owned then
+  begin
+    EmitPushX0();               { park the result }
+    Self.Emit(#9'ldr x0, [sp, #16]');
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    Self.Emit(#9'add sp, sp, #16');   { drop the receiver copy }
+  end;
+end;
+
 procedure TArm64Backend.EmitMethodCallStmt(AStmt: TMethodCallStmt);
 var
   MD: TMethodDecl;
 begin
   if AStmt.IsConstructorCall or AStmt.IsImplicitSelf or
-     (AStmt.ObjExpr <> nil) or
-     ((AStmt.ObjectName = '') and not AStmt.IsStaticCall) then
+     ((AStmt.ObjectName = '') and (AStmt.ObjExpr = nil)
+      and not AStmt.IsStaticCall) then
     NotYet('this method-call form', AStmt);
   MD := TMethodDecl(AStmt.ResolvedMethod);
   if MD = nil then
@@ -2436,10 +2552,15 @@ begin
   if (AStmt.ResolvedReturnTypeDesc <> nil) and
      (AStmt.ResolvedReturnTypeDesc.Kind in [tyRecord, tyInterface]) then
     NotYet('discarded aggregate-returning method call', AStmt);
-  EmitLoadSlot('x0', AStmt.ObjectName);
-  if AStmt.IsVarParam then
-    Self.Emit(#9'ldr x0, [x0]');
-  EmitMethodCallCommon(MD, AStmt.Name, AStmt.Args);
+  if AStmt.ObjExpr <> nil then
+    EmitMethodCallOnExpr(MD, AStmt.Name, AStmt.Args, AStmt.ObjExpr)
+  else
+  begin
+    EmitLoadSlot('x0', AStmt.ObjectName);
+    if AStmt.IsVarParam then
+      Self.Emit(#9'ldr x0, [x0]');
+    EmitMethodCallCommon(MD, AStmt.Name, AStmt.Args);
+  end;
   { a discarded owned result (class-typed) must be released }
   if (AStmt.ResolvedReturnTypeDesc <> nil) and
      (AStmt.ResolvedReturnTypeDesc.Kind = tyClass) then
@@ -2505,8 +2626,9 @@ begin
     Exit;
   end;
   if AExpr.IsMetaclassDispatch or AExpr.IsBuiltinInheritsFrom or
-     AExpr.IsProcFieldCall or (AExpr.ObjExpr <> nil) or
-     ((AExpr.ObjectName = '') and not AExpr.IsStaticCall) then
+     AExpr.IsProcFieldCall or
+     ((AExpr.ObjectName = '') and (AExpr.ObjExpr = nil)
+      and not AExpr.IsStaticCall) then
     NotYet('this method-call form', AExpr);
   MD := TMethodDecl(AExpr.ResolvedMethod);
   if MD = nil then
@@ -2515,6 +2637,11 @@ begin
   begin
     { static (class-level) call: no Self, plain call to the mangled name }
     EmitCall(MD, AExpr.Name, AExpr.Args);
+    Exit;
+  end;
+  if AExpr.ObjExpr <> nil then
+  begin
+    EmitMethodCallOnExpr(MD, AExpr.Name, AExpr.Args, AExpr.ObjExpr);
     Exit;
   end;
   EmitLoadSlot('x0', AExpr.ObjectName);
