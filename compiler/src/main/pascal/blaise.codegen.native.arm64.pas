@@ -80,6 +80,8 @@ type
                                     program exit in REVERSE dependency order }
     FGlobalInits: TDictionary<string, string>;  { prefixed symbol -> .data
                                     directive for initialised globals }
+    FGlobalStrInits: TStringList; { symbols of string-initialised globals }
+    FGlobalStrVals:  TStringList; { parallel: the literal values }
     FClassDecls:  TObjectList;   { not owned — program-level class TTypeDecls }
     FObjLocals:   TStringList;   { class-typed locals — released at scope exit }
     FObjGlobals:  TStringList;   { class-typed globals — released at program exit }
@@ -189,6 +191,7 @@ type
       AValueExpr: TASTExpr; const AInstSlot: string);
     procedure EmitImplicitSelfStore(AAsgn: TAssignment);
     procedure EmitInterfaceAssign(AAsgn: TAssignment);
+    procedure EmitPropReadCall(AFld: TFieldAccessExpr);
     procedure EmitInterfaceAsCast(AAsgn: TAssignment);
     function  IntfItabSym(const AClassName, AIntfName: string): string;
     procedure EmitTypeinfoAddr(const AReg, ATypeName: string);
@@ -254,6 +257,8 @@ begin
   FUnitInits   := TStringList.Create();
   FUnitFinals  := TStringList.Create();
   FGlobalInits := TDictionary<string, string>.Create();
+  FGlobalStrInits := TStringList.Create();
+  FGlobalStrVals  := TStringList.Create();
   FClassDecls  := TObjectList.Create(False);
   FObjLocals   := TStringList.Create();
   FObjGlobals  := TStringList.Create();
@@ -279,6 +284,8 @@ begin
   FUnitInits.Free();
   FUnitFinals.Free();
   FGlobalInits.Free();
+  FGlobalStrInits.Free();
+  FGlobalStrVals.Free();
   FClassDecls.Free();
   FObjLocals.Free();
   FObjGlobals.Free();
@@ -983,30 +990,7 @@ begin
   if (AExpr is TFieldAccessExpr) and
      (TFieldAccessExpr(AExpr).PropRead <> nil) then
   begin
-    { method-backed property read: a getter call on the receiver }
-    if TFieldAccessExpr(AExpr).PropRead.IndexParamName <> '' then
-      NotYet('indexed property read', AExpr);
-    if TFieldAccessExpr(AExpr).Base <> nil then
-      NotYet('chained property read', AExpr);
-    if TFieldAccessExpr(AExpr).PropRead.IsStatic then
-      NotYet('static property read', AExpr);
-    if TFieldAccessExpr(AExpr).IsImplicitSelf then
-      EmitLoadSlot('x0', 'Self')
-    else
-      EmitLoadSlot('x0', TFieldAccessExpr(AExpr).RecordName);
-    if TFieldAccessExpr(AExpr).IsVarParam then
-      Self.Emit(#9'ldr x0, [x0]');
-    if TFieldAccessExpr(AExpr).PropAccessorVSlot >= 0 then
-    begin
-      Self.Emit(#9'ldr x9, [x0]');
-      Self.Emit(Format(#9'ldr x9, [x9, #%d]',
-        [(TFieldAccessExpr(AExpr).PropAccessorVSlot + 1) * 8]));
-      Self.Emit(#9'blr x9');
-    end
-    else
-      Self.Emit(Format(#9'bl %s',
-        [PropAccessorSym(TFieldAccessExpr(AExpr).PropOwnerType,
-          TFieldAccessExpr(AExpr).PropRead.ReadMethod)]));
+    EmitPropReadCall(TFieldAccessExpr(AExpr));
     Exit;
   end;
   if AExpr is TSupportsExpr then
@@ -1136,6 +1120,16 @@ begin
     Self.Emit(Format(#9'ldr d0, [x9, __d%d@PAGEOFF]', [Idx]));
     Exit;
   end;
+  if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsImplicitSelf and
+     (TIdentExpr(AExpr).ImplicitFieldInfo <> nil) and IsFloatExpr(AExpr) then
+  begin
+    { bare float field inside a method — the X0 path loads the bit
+      pattern through Self (symmetry rule: every TIdentExpr branch needs
+      its implicit-Self twin) }
+    Self.EmitExprToX0(AExpr);
+    Self.Emit(#9'fmov d0, x0');
+    Exit;
+  end;
   if (AExpr is TIdentExpr) and IsFloatExpr(AExpr) then
   begin
     if (AExpr.ResolvedType <> nil) and
@@ -1159,10 +1153,13 @@ begin
   if (AExpr is TFieldAccessExpr) and
      (TFieldAccessExpr(AExpr).PropRead <> nil) and IsFloatExpr(AExpr) then
   begin
-    { float property read: the getter call leaves the value in d0 —
-      route through the integer emitter's property branch, which ends
-      at the call, then the result is already where we need it }
-    NotYet('float property read', AExpr);
+    { float property read: the getter leaves the value in d0 (or s0 for
+      Single — widen) }
+    EmitPropReadCall(TFieldAccessExpr(AExpr));
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tySingle) then
+      Self.Emit(#9'fcvt d0, s0');
+    Exit;
   end;
   if (AExpr is TFieldAccessExpr) and IsFloatExpr(AExpr) then
   begin
@@ -1311,6 +1308,35 @@ begin
     Exit;
   end;
   NotYet('statement ' + AStmt.ClassName, AStmt);
+end;
+
+procedure TArm64Backend.EmitPropReadCall(AFld: TFieldAccessExpr);
+begin
+  { method-backed property read: a getter call on the receiver.  The value
+    lands wherever the getter's return convention puts it (x0 for scalars,
+    d0 for floats) — callers pick the register that matches the context. }
+  if AFld.PropRead.IndexParamName <> '' then
+    NotYet('indexed property read', AFld);
+  if AFld.Base <> nil then
+    NotYet('chained property read', AFld);
+  if AFld.PropRead.IsStatic then
+    NotYet('static property read', AFld);
+  if AFld.IsImplicitSelf then
+    EmitLoadSlot('x0', 'Self')
+  else
+    EmitLoadSlot('x0', AFld.RecordName);
+  if AFld.IsVarParam then
+    Self.Emit(#9'ldr x0, [x0]');
+  if AFld.PropAccessorVSlot >= 0 then
+  begin
+    Self.Emit(#9'ldr x9, [x0]');
+    Self.Emit(Format(#9'ldr x9, [x9, #%d]',
+      [(AFld.PropAccessorVSlot + 1) * 8]));
+    Self.Emit(#9'blr x9');
+  end
+  else
+    Self.Emit(Format(#9'bl %s',
+      [PropAccessorSym(AFld.PropOwnerType, AFld.PropRead.ReadMethod)]));
 end;
 
 procedure TArm64Backend.EmitInterfaceAssign(AAsgn: TAssignment);
@@ -1824,11 +1850,19 @@ end;
 
 procedure TArm64Backend.RegisterGlobalInit(const ASym: string; AVD: TVarDecl);
 begin
-  { Integer and float literal initialisers become .data directives; string,
-    aggregate, and const-expression initialisers stay honest holes. }
-  if AVD.InitConst.IsString or AVD.InitConst.IsArrayConst or
-     (AVD.InitConst.ConstParts <> nil) then
+  { Integer, float and string literal initialisers become .data entries;
+    aggregate and const-expression initialisers stay honest holes. }
+  if AVD.InitConst.IsArrayConst or (AVD.InitConst.ConstParts <> nil) then
     NotYet('initialised global of this form', AVD);
+  if AVD.InitConst.IsString then
+  begin
+    { the global points at an immortal blob emitted beside the .data
+      entry; program-exit _StringRelease is a no-op on refcnt -1 }
+    FGlobalStrInits.Add(ASym);
+    FGlobalStrVals.Add(AVD.InitConst.StrVal);
+    FGlobalInits.Add(ASym, Format(#9'.quad __gi_%s_d', [ASym]));
+    Exit;
+  end;
   if AVD.InitConst.IsFloat then
     FGlobalInits.Add(ASym, #9'.double ' + AVD.InitConst.StrVal)
   else
@@ -2847,6 +2881,26 @@ begin
       Self.Emit('.balign 8');
       Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
       Self.Emit(Directive);
+    end;
+  end;
+  if FGlobalStrInits.Count > 0 then
+  begin
+    { immortal blobs for string-initialised globals: refcnt -1, length,
+      capacity, bytes, NUL — the __gi_<sym>_d label sits AT the data so
+      the .data pointer needs no symbol arithmetic }
+    Self.Emit('.section .rodata');
+    for I := 0 to FGlobalStrInits.Count - 1 do
+    begin
+      Self.Emit('.balign 4');
+      Self.Emit(Format('__gi_%s_h:', [FGlobalStrInits.Strings[I]]));
+      Self.Emit(#9'.word -1');
+      Self.Emit(Format(#9'.word %d', [Length(FGlobalStrVals.Strings[I])]));
+      Self.Emit(Format(#9'.word %d', [Length(FGlobalStrVals.Strings[I])]));
+      Self.Emit(Format('__gi_%s_d:', [FGlobalStrInits.Strings[I]]));
+      if Length(FGlobalStrVals.Strings[I]) > 0 then
+        Self.Emit(Format(#9'.ascii "%s"',
+          [AsmEscape(FGlobalStrVals.Strings[I])]));
+      Self.Emit(#9'.byte 0');
     end;
   end;
 end;

@@ -103,6 +103,8 @@ type
     procedure TestReflection_SupportsInheritsFromMetaclass;
     { slice 25: interface parameters and results }
     procedure TestInterfaceParamsAndResults;
+    { slice 26: float property reads + string global initialisers }
+    procedure TestFloatPropRead_And_StringGlobalInit;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1827,6 +1829,42 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestFloatPropRead_And_StringGlobalInit;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TTank = class
+      private
+        FVol: Double;
+        function GetVol: Double;
+      public
+        property Vol: Double read GetVol;
+      end;
+    function TTank.GetVol: Double;
+    begin
+      Result := FVol
+    end;
+    var
+      Banner: string = 'ready';
+      T: TTank;
+    begin
+      T := TTank.Create();
+      WriteLn(T.Vol);
+      WriteLn(Banner)
+    end.
+    ''');
+  { float property read: getter call, value already in d0 }
+  AssertTrue('getter called', Pos(#9'bl TTank_GetVol', AsmT) >= 0);
+  { string-initialised global: .data pointer to an immortal blob }
+  AssertTrue('data pointer', Pos(#9'.quad __gi_Banner_d', AsmT) >= 0);
+  AssertTrue('immortal header', Pos('__gi_Banner_h:', AsmT) >= 0);
+  AssertTrue('blob bytes', Pos(#9'.ascii "ready"', AsmT) >= 0);
 end;
 
 initialization
