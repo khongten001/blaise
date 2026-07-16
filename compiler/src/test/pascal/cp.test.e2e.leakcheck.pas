@@ -80,6 +80,23 @@ type
       locals entirely, so every stored element leaked on BOTH backends.  The
       fix releases each element at scope exit. }
     procedure TestDebug_StaticArrayOfInterface_NoLeak;
+    { A string-returning call result passed DIRECTLY to a BY-VALUE string
+      parameter — SinkVal(MakeStr(I)) — hands the callee an owned (+1) temp it
+      only co-owns (entry retain / exit release nets to zero); the CALLER must
+      release the temp after the call or one string leaks per call.  Covers
+      plain procedure calls and method calls (the TList<string>.Add shape that
+      leaked ~10 strings per directory-watcher poll in luhmann).  QBE already
+      balances this via EmitOwnedArgReleases; pins the native fix. }
+    procedure TestDebug_ValueStrCallResultArg_NoLeak;
+    procedure TestDebug_ValueStrCallResultArg_NoLeak_Native;
+    { An owned (+1) string temp passed to a BUILT-IN — FileAge(PathOf()),
+      Trim(Get()), Length(Make()), StrToInt(Make()), nested
+      LowerCase(Trim(Make())) — the built-in emission paths call straight into
+      the RTL and historically never released the argument temp (both
+      backends).  One string leaked per call; the luhmann directory watcher
+      hit this once per note per poll via FileAge(AbsPathOf(Id)). }
+    procedure TestDebug_BuiltinOwnedStrArg_NoLeak;
+    procedure TestDebug_BuiltinOwnedStrArg_NoLeak_Native;
     { A string-returning call/getter used DIRECTLY as a Write/WriteLn argument
       (WriteLn(GetBar)) returns a fresh +1 string that _SysWriteStr only borrows.
       EmitWrite previously never released it, leaking one string per call.  The
@@ -1021,6 +1038,156 @@ begin
     CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfInterface, Output, ExitCode, True));
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertEquals('stdout (native)', 'abc' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+const
+  { Owned (+1) string temporaries passed to BY-VALUE string parameters: a
+    plain procedure call, a method call, and a bare implicit-Self method-call
+    ident.  The callee's entry-retain/exit-release pair nets to zero, so the
+    caller must release each call-result temp after the call — 3 x 20 strings
+    leak otherwise. }
+  SrcValueStrCallResultArg = '''
+    program P;
+    type
+      TSink = class
+        Total: Integer;
+        function Tag(): string;
+        procedure Push(S: string);
+        procedure PushTag();
+      end;
+    function TSink.Tag(): string;
+    begin
+      Result := 'tag-' + IntToStr(Self.Total);
+    end;
+    procedure TSink.Push(S: string);
+    begin
+      Total := Total + Length(S);
+    end;
+    procedure TSink.PushTag();
+    begin
+      Push(Tag());
+    end;
+    function MakeStr(I: Integer): string;
+    begin
+      Result := 'value-' + IntToStr(I);
+    end;
+    procedure SinkVal(S: string);
+    begin
+      if Length(S) = 0 then WriteLn('never');
+    end;
+    var
+      K: TSink;
+      I: Integer;
+    begin
+      K := TSink.Create();
+      for I := 1 to 20 do
+      begin
+        SinkVal(MakeStr(I));
+        K.Push(MakeStr(I));
+        K.PushTag();
+      end;
+      if K.Total > 0 then
+        WriteLn('done');
+      K := nil;
+    end.
+    ''';
+
+const
+  { Owned (+1) string temporaries as BUILT-IN arguments.  Each shape leaked
+    one string per call before the built-in arg-release fix:
+      - int-returning file built-in:   FileAge(MakePath(I))
+      - string-returning built-in:     Trim(MakeStr(I))  (result consumed by
+                                       assignment; the ARG temp is the leak)
+      - inline built-in (no RTL call): Length(MakeStr(I))
+      - checked-routed built-in:       StrToInt(MakeNum(I))
+      - nested built-ins:              LowerCase(Trim(MakeStr(I))) — the inner
+                                       result is an owned temp of the outer. }
+  SrcBuiltinOwnedStrArg = '''
+    program P;
+    function MakeStr(I: Integer): string;
+    begin
+      Result := '  v-' + IntToStr(I) + '  ';
+    end;
+    function MakePath(I: Integer): string;
+    begin
+      Result := '/nonexistent/dir/f' + IntToStr(I) + '.txt';
+    end;
+    function MakeNum(I: Integer): string;
+    begin
+      Result := IntToStr(1000 + I);
+    end;
+    var
+      I, N: Integer;
+      A: Int64;
+      S: string;
+    begin
+      N := 0;
+      for I := 1 to 20 do
+      begin
+        A := FileAge(MakePath(I));
+        if A < -1 then WriteLn('never');
+        S := Trim(MakeStr(I));
+        N := N + Length(S);
+        N := N + Length(MakeStr(I));
+        N := N + StrToInt(MakeNum(I));
+        S := LowerCase(Trim(MakeStr(I)));
+        N := N + Length(S);
+      end;
+      if N > 0 then
+        WriteLn('done');
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_BuiltinOwnedStrArg_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcBuiltinOwnedStrArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'done' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_BuiltinOwnedStrArg_NoLeak_Native;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcBuiltinOwnedStrArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'done' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_ValueStrCallResultArg_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcValueStrCallResultArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'done' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_ValueStrCallResultArg_NoLeak_Native;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcValueStrCallResultArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'done' + LE, Output);
   AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
 end;
 

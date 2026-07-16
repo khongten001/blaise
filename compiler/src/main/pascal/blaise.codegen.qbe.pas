@@ -394,6 +394,12 @@ type
                       var-param reads, captured or address-taken locals,
                       rc=0 concat results — AddRef before, Release after. }
     function  ConstArgMode(AArg: TASTExpr; AParams: TObjectList): TConstArgMode;
+    { Release the owned (+1) string transient behind a BUILT-IN's argument
+      after the built-in call (FileAge(AbsPathOf(Id)), Trim(L.Get(I)), ...).
+      Owned shapes per ArcBuiltinStrArgOwnsRef: user function/method/getter
+      results and string-returning built-in results.  No-op for borrowed
+      arguments (locals, literals, fields). }
+    procedure ReleaseOwnedBuiltinStrArg(AArg: TASTExpr; const ATemp: string);
     procedure EnsureConstStringRef(const AArgTemp: string; APar: TMethodParam;
       AArg: TASTExpr; AParams: TObjectList);
     procedure ReleaseConstStringArgs(AArgs: TObjectList;
@@ -4446,6 +4452,14 @@ begin
   end;
   if ExprOwnsRef(AArg) then
     Exit(camConsume);     { function/method/getter return — +1 owned temp }
+end;
+
+procedure TCodeGenQBE.ReleaseOwnedBuiltinStrArg(AArg: TASTExpr;
+  const ATemp: string);
+begin
+  if (AArg = nil) or (ATemp = '') then Exit;
+  if ArcBuiltinStrArgOwnsRef(AArg) then
+    EmitLine(Format('  call $_StringRelease(l %s)', [ATemp]));
 end;
 
 procedure TCodeGenQBE.EnsureConstStringRef(const AArgTemp: string;
@@ -10635,6 +10649,7 @@ begin
         end;
         EmitLine(Format('  call %s(%s)', [CallTgt, ArgLine]));
         FlushPendingReleases(PMark);
+        EmitOwnedArgReleases(ACall.Args, ArgTemps, MDecl.Params);
         ReleaseConstStringArgs(ACall.Args, ArgTemps, MDecl.Params);
         Exit;
       finally
@@ -10803,12 +10818,16 @@ begin
     ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_WriteFile(l %s, l %s)', [ArgTemp, ArgTemp2]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[0]), ArgTemp);
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[1]), ArgTemp2);
   end
   else if UCaseName = 'APPENDFILE' then
   begin
     ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_AppendFile(l %s, l %s)', [ArgTemp, ArgTemp2]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[0]), ArgTemp);
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[1]), ArgTemp2);
   end
   else if UCaseName = 'HALT' then
   begin
@@ -10994,16 +11013,19 @@ begin
   begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_DeleteFile(l %s)', [ArgTemp]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[0]), ArgTemp);
   end
   else if UCaseName = 'REMOVEDIR' then
   begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_RemoveDir(l %s)', [ArgTemp]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[0]), ArgTemp);
   end
   else if UCaseName = 'FORCEDIRECTORIES' then
   begin
     ArgTemp := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     EmitLine(Format('  call $_ForceDirectories(l %s)', [ArgTemp]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[0]), ArgTemp);
   end
   else if UCaseName = 'SLEEP' then
   begin
@@ -11015,12 +11037,14 @@ begin
     ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_ProcessSetExe(l %s, l %s)', [ArgTemp, ArgTemp2]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[1]), ArgTemp2);
   end
   else if UCaseName = 'PROCESSADDARG' then
   begin
     ArgTemp  := EmitExpr(TASTExpr(ACall.Args.Items[0]));
     ArgTemp2 := EmitExpr(TASTExpr(ACall.Args.Items[1]));
     EmitLine(Format('  call $_ProcessAddArg(l %s, l %s)', [ArgTemp, ArgTemp2]));
+    ReleaseOwnedBuiltinStrArg(TASTExpr(ACall.Args.Items[1]), ArgTemp2);
   end
   else if UCaseName = 'PROCESSEXECUTE' then
   begin
@@ -11570,6 +11594,7 @@ begin
           { tyString: delegate to RTL }
           L := EmitExpr(TASTExpr(FC.Args.Items[0]));
           EmitLine(Format('  %s =w call $_StringLength(l %s)', [T, L]));
+          ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         end;
         Exit(T);
       end;
@@ -11580,6 +11605,8 @@ begin
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_StringPos(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -11591,6 +11618,8 @@ begin
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_StringPosEx(l %s, l %s, w %s)',
           [T, L, R, ArgTemp]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -11602,6 +11631,7 @@ begin
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_StringCopy(l %s, w %s, w %s)',
           [T, L, R, ArgTemp]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -11610,6 +11640,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_StringUpperCase(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -11618,6 +11649,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_StringLowerCase(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -11626,6 +11658,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_StringTrim(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -11635,6 +11668,8 @@ begin
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_StringSameText(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -11725,6 +11760,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =d call $_StrToDouble(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12029,6 +12065,7 @@ begin
           EmitLine(Format('  %s =w call $SysUtils__StrToIntChecked(l %s)', [T, L]))
         else
           EmitLine(Format('  %s =w call $_StrToInt(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12131,6 +12168,7 @@ begin
           EmitLine(Format('  %s =l call $SysUtils__StrToInt64Checked(l %s)', [T, L]))
         else
           EmitLine(Format('  %s =l call $_StrToInt64(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12282,6 +12320,8 @@ begin
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_StringCompare(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -12291,6 +12331,8 @@ begin
         R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_StringCompareText(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -12329,6 +12371,8 @@ begin
         R       := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_GetTempFileName(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -12346,6 +12390,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ReadFile(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12354,6 +12399,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_FileExists(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12362,6 +12408,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_DirectoryExists(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12370,6 +12417,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_ForceDirectories(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12378,6 +12426,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_FileAge(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12387,6 +12436,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_GetEnvVar(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12402,6 +12452,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_Exec(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12409,9 +12460,11 @@ begin
       if SameText(FC.Name,'ChangeFileExt') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
-        EmitLine(Format('  %s =l call $_ChangeFileExt(l %s, l %s)',
-          [T, L, EmitExpr(TASTExpr(FC.Args.Items[1]))]));
+        EmitLine(Format('  %s =l call $_ChangeFileExt(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -12420,6 +12473,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ExtractFileName(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12428,6 +12482,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ExtractFilePath(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12436,6 +12491,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ExtractFileDir(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12444,6 +12500,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ExtractFileExt(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12452,6 +12509,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_ExcludeTrailingPathDelimiter(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -12460,15 +12518,18 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =l call $_IncludeTrailingPathDelimiter(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
       if SameText(FC.Name,'RenameFile') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        R := EmitExpr(TASTExpr(FC.Args.Items[1]));
         T := AllocTemp();
-        EmitLine(Format('  %s =w call $_RenameFile(l %s, l %s)',
-          [T, L, EmitExpr(TASTExpr(FC.Args.Items[1]))]));
+        EmitLine(Format('  %s =w call $_RenameFile(l %s, l %s)', [T, L, R]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[1]), R);
         Exit(T);
       end;
 
@@ -12477,6 +12538,7 @@ begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
         T := AllocTemp();
         EmitLine(Format('  %s =w call $_SetCurrentDir(l %s)', [T, L]));
+        ReleaseOwnedBuiltinStrArg(TASTExpr(FC.Args.Items[0]), L);
         Exit(T);
       end;
 
@@ -14742,6 +14804,8 @@ begin
        (BinExpr.Op in [boEQ, boNE]) then
     begin
       EmitLine(Format('  %s =w call $_StringEquals(l %s, l %s)', [T, L, R]));
+      ReleaseOwnedBuiltinStrArg(BinExpr.Left, L);
+      ReleaseOwnedBuiltinStrArg(BinExpr.Right, R);
       if BinExpr.Op = boNE then
       begin
         ArgTemp := AllocTemp();
@@ -14761,6 +14825,8 @@ begin
     begin
       ArgTemp := AllocTemp();
       EmitLine(Format('  %s =w call $_StringCompare(l %s, l %s)', [ArgTemp, L, R]));
+      ReleaseOwnedBuiltinStrArg(BinExpr.Left, L);
+      ReleaseOwnedBuiltinStrArg(BinExpr.Right, R);
       case BinExpr.Op of
         boLT: EmitLine(Format('  %s =w csltw %s, 0', [T, ArgTemp]));
         boGT: EmitLine(Format('  %s =w csgtw %s, 0', [T, ArgTemp]));

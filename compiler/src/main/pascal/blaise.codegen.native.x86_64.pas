@@ -965,6 +965,19 @@ type
       backend's ConstArgMode.  APinPlainLocals forces plain locals to pin
       (var/out string sibling param, or unknown parameter types). }
     function  ConstStrShape(AArg: TASTExpr; APinPlainLocals: Boolean): TConstArgMode;
+    { Built-in call with ONE string argument (FileAge, Trim, StrToInt, ...):
+      evaluate AArg, call ARtl with it in %rdi, and release the argument temp
+      after the call when it is an owned (+1) transient (function/method/
+      getter/built-in result — see ArcBuiltinStrArgOwnsRef), preserving the
+      call's result (%rax, or %xmm0 when AResultXmm).  Without the release,
+      one string leaks per call. }
+    procedure EmitBuiltinStrCall1(AArg: TASTExpr; const ARtl: string;
+                                  AResultXmm: Boolean = False);
+    { Built-in call with TWO arguments in %rdi/%rsi where either may be an
+      owned string transient (Pos, SameText, RenameFile, string '='/compare
+      operators, ...).  AStr0/AStr1 pass nil for a non-string operand slot
+      (its value still travels through the same stack slot untouched). }
+    procedure EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr; const ARtl: string);
     { True when AArg is a record-returning function/method call (its
       evaluation materialises an sret buffer on the stack). }
     function  IsRecCallArg(AArg: TASTExpr): Boolean;
@@ -6710,9 +6723,7 @@ begin
     %xmm0) is discarded and the leftover %rax is cvtsi2sd'd into garbage. }
   if SameText(FC.Name, 'StrToDouble') and (FC.Args.Count = 1) then
   begin
-    Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-    Self.Emit(#9'movq %rax, %rdi');
-    Self.Emit(#9'callq _StrToDouble');
+    Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StrToDouble', True);
     Exit;
   end;
   if SameText(FC.Name, 'Sqrt') and (FC.Args.Count = 1) then
@@ -7253,26 +7264,43 @@ begin
         end;
       else
         { String: delegate to RTL. }
-        Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-        Self.Emit(#9'movq %rax, %rdi');
-        Self.Emit(#9'callq _StringLength');
+        Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StringLength');
         Self.Emit(#9'movslq %eax, %rax');
       end;
       Exit;
     end;
     if SameText(FC.Name, 'Pos') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringPos');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_StringPos');
       Self.Emit(#9'movslq %eax, %rax');
       Exit;
     end;
     if SameText(FC.Name, 'Copy') and (FC.Args.Count = 3) then
     begin
+      if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[0])) then
+      begin
+        { Owned (+1) source transient — Copy(GetStr(), ..): park it in a
+          16-byte slot pair and release it after the call (result preserved). }
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+        Self.Emit(#9'subq $16, %rsp');
+        Self.Emit(#9'movq %rax, (%rsp)');
+        Self.Emit(#9'pushq %rax');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+        Self.Emit(#9'pushq %rax');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[2]));
+        Self.Emit(#9'movl %eax, %edx');
+        Self.Emit(#9'popq %rax');
+        Self.Emit(#9'movl %eax, %esi');
+        Self.Emit(#9'popq %rdi');
+        Self.Emit(#9'callq _StringCopy');
+        Self.Emit(#9'movq %rax, 8(%rsp)');
+        Self.Emit(#9'movq (%rsp), %rdi');
+        Self.Emit(#9'callq _StringRelease');
+        Self.Emit(#9'movq 8(%rsp), %rax');
+        Self.Emit(#9'addq $16, %rsp');
+        Exit;
+      end;
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
       Self.Emit(#9'pushq %rax');
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
@@ -7287,23 +7315,17 @@ begin
     end;
     if SameText(FC.Name, 'UpperCase') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StringUpperCase');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StringUpperCase');
       Exit;
     end;
     if SameText(FC.Name, 'LowerCase') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StringLowerCase');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StringLowerCase');
       Exit;
     end;
     if SameText(FC.Name, 'Trim') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StringTrim');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StringTrim');
       Exit;
     end;
     { GetMem(N) → _BlaiseGetMem(N) → pointer.  Size arg is Integer (32-bit). }
@@ -7327,12 +7349,8 @@ begin
     end;
     if SameText(FC.Name, 'SameText') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringSameText');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_StringSameText');
       Self.Emit(#9'movslq %eax, %rax');
       Exit;
     end;
@@ -7383,23 +7401,21 @@ begin
     end;
     if SameText(FC.Name, 'StrToInt') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
       if Self.StrToIntChecked() then
-        Self.Emit(#9'callq SysUtils__StrToIntChecked')
+        Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]),
+          'SysUtils__StrToIntChecked')
       else
-        Self.Emit(#9'callq _StrToInt');
+        Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StrToInt');
       Self.Emit(#9'movslq %eax, %rax');
       Exit;
     end;
     if SameText(FC.Name, 'StrToInt64') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
       if Self.StrToIntChecked() then
-        Self.Emit(#9'callq SysUtils__StrToInt64Checked')
+        Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]),
+          'SysUtils__StrToInt64Checked')
       else
-        Self.Emit(#9'callq _StrToInt64');
+        Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StrToInt64');
       Exit;
     end;
     if SameText(FC.Name, 'PChar') and (FC.Args.Count = 1) then
@@ -7499,9 +7515,7 @@ begin
     end;
     if SameText(FC.Name, 'StrToDouble') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _StrToDouble');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_StrToDouble', True);
       Exit;
     end;
     if SameText(FC.Name, 'Round') and (FC.Args.Count = 1) then
@@ -7547,26 +7561,47 @@ begin
     end;
     if SameText(FC.Name, 'CompareStr') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringCompare');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_StringCompare');
       Exit;
     end;
     if SameText(FC.Name, 'CompareText') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringCompareText');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_StringCompareText');
       Exit;
     end;
     if SameText(FC.Name, 'PosEx') and (FC.Args.Count = 3) then
     begin
+      if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[0])) or
+         ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[1])) then
+      begin
+        { Owned (+1) string transient(s) — slots: 0=sub, 8=s, 16=result. }
+        Self.Emit(#9'subq $32, %rsp');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
+        Self.Emit(#9'movq %rax, (%rsp)');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
+        Self.Emit(#9'movq %rax, 8(%rsp)');
+        Self.EmitExprToEax(TASTExpr(FC.Args.Items[2]));
+        Self.Emit(#9'movl %eax, %edx');
+        Self.Emit(#9'movq (%rsp), %rdi');
+        Self.Emit(#9'movq 8(%rsp), %rsi');
+        Self.Emit(#9'callq _StringPosEx');
+        Self.Emit(#9'movq %rax, 16(%rsp)');
+        if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[0])) then
+        begin
+          Self.Emit(#9'movq (%rsp), %rdi');
+          Self.Emit(#9'callq _StringRelease');
+        end;
+        if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[1])) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringRelease');
+        end;
+        Self.Emit(#9'movq 16(%rsp), %rax');
+        Self.Emit(#9'addq $32, %rsp');
+        Exit;
+      end;
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
       Self.Emit(#9'pushq %rax');
       Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
@@ -7659,99 +7694,71 @@ begin
     end;
     if SameText(FC.Name, 'FileExists') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _FileExists');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_FileExists');
       Exit;
     end;
     if SameText(FC.Name, 'DirectoryExists') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _DirectoryExists');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_DirectoryExists');
       Exit;
     end;
     if SameText(FC.Name, 'ReadFile') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ReadFile');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ReadFile');
       Exit;
     end;
     if SameText(FC.Name, 'ExtractFilePath') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ExtractFilePath');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ExtractFilePath');
       Exit;
     end;
     if SameText(FC.Name, 'ExtractFileName') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ExtractFileName');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ExtractFileName');
       Exit;
     end;
     if SameText(FC.Name, 'ExtractFileDir') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ExtractFileDir');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ExtractFileDir');
       Exit;
     end;
     if SameText(FC.Name, 'ExtractFileExt') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ExtractFileExt');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ExtractFileExt');
       Exit;
     end;
     if SameText(FC.Name, 'ChangeFileExt') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _ChangeFileExt');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_ChangeFileExt');
       Exit;
     end;
     if SameText(FC.Name, 'ForceDirectories') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ForceDirectories');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_ForceDirectories');
       Exit;
     end;
     if SameText(FC.Name, 'ExcludeTrailingPathDelimiter') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ExcludeTrailingPathDelimiter');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]),
+        '_ExcludeTrailingPathDelimiter');
       Exit;
     end;
     if SameText(FC.Name, 'IncludeTrailingPathDelimiter') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _IncludeTrailingPathDelimiter');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]),
+        '_IncludeTrailingPathDelimiter');
       Exit;
     end;
     if SameText(FC.Name, 'RenameFile') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _RenameFile');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_RenameFile');
       Exit;
     end;
     if SameText(FC.Name, 'SetCurrentDir') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _SetCurrentDir');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_SetCurrentDir');
       Exit;
     end;
     if SameText(FC.Name, 'GetCurrentDir') and (FC.Args.Count = 0) then
@@ -7774,9 +7781,7 @@ begin
     if (SameText(FC.Name, 'GetEnvVar') or SameText(FC.Name, 'GetEnvironmentVariable'))
        and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _GetEnvVar');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_GetEnvVar');
       Exit;
     end;
     if SameText(FC.Name, 'GetProcessID') and (FC.Args.Count = 0) then
@@ -7791,19 +7796,13 @@ begin
     end;
     if SameText(FC.Name, 'GetTempFileName') and (FC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _GetTempFileName');
+      Self.EmitBuiltinStrCall2(TASTExpr(FC.Args.Items[0]),
+        TASTExpr(FC.Args.Items[1]), '_GetTempFileName');
       Exit;
     end;
     if SameText(FC.Name, 'Exec') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _Exec');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_Exec');
       Exit;
     end;
     if SameText(FC.Name, 'CurrentExceptionMessage') and (FC.Args.Count = 0) then
@@ -7839,9 +7838,7 @@ begin
     end;
     if SameText(FC.Name, 'FileAge') and (FC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(FC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _FileAge');
+      Self.EmitBuiltinStrCall1(TASTExpr(FC.Args.Items[0]), '_FileAge');
       Exit;
     end;
     if SameText(FC.Name, 'Floor') and (FC.Args.Count = 1) then
@@ -8264,12 +8261,7 @@ begin
        (BE.Left.ResolvedType <> nil) and
        (BE.Left.ResolvedType.Kind = tyString) then
     begin
-      Self.EmitExprToEax(BE.Left);
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(BE.Right);
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringEquals');
+      Self.EmitBuiltinStrCall2(BE.Left, BE.Right, '_StringEquals');
       if BE.Op = boNE then
         Self.Emit(#9'xorl $1, %eax');
       Exit;
@@ -8282,12 +8274,7 @@ begin
        (BE.Left.ResolvedType <> nil) and
        (BE.Left.ResolvedType.Kind = tyString) then
     begin
-      Self.EmitExprToEax(BE.Left);
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(BE.Right);
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _StringCompare');
+      Self.EmitBuiltinStrCall2(BE.Left, BE.Right, '_StringCompare');
       Self.Emit(#9'cmpl $0, %eax');
       case BE.Op of
         boLT: Self.Emit(#9'setl %al');
@@ -14342,63 +14329,43 @@ begin
     end;
     if SameText(PC.Name, 'DeleteFile') and (PC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _DeleteFile');
+      Self.EmitBuiltinStrCall1(TASTExpr(PC.Args.Items[0]), '_DeleteFile');
       Exit;
     end;
     if SameText(PC.Name, 'RemoveDir') and (PC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _RemoveDir');
+      Self.EmitBuiltinStrCall1(TASTExpr(PC.Args.Items[0]), '_RemoveDir');
       Exit;
     end;
     if SameText(PC.Name, 'ForceDirectories') and (PC.Args.Count = 1) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'movq %rax, %rdi');
-      Self.Emit(#9'callq _ForceDirectories');
+      Self.EmitBuiltinStrCall1(TASTExpr(PC.Args.Items[0]), '_ForceDirectories');
       Exit;
     end;
     if SameText(PC.Name, 'WriteFile') and (PC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _WriteFile');
+      Self.EmitBuiltinStrCall2(TASTExpr(PC.Args.Items[0]),
+        TASTExpr(PC.Args.Items[1]), '_WriteFile');
       Exit;
     end;
     if SameText(PC.Name, 'AppendFile') and (PC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _AppendFile');
+      Self.EmitBuiltinStrCall2(TASTExpr(PC.Args.Items[0]),
+        TASTExpr(PC.Args.Items[1]), '_AppendFile');
       Exit;
     end;
     if SameText(PC.Name, 'ProcessSetExe') and (PC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _ProcessSetExe');
+      { Arg1 (the string) may be an owned (+1) transient — EmitBuiltinStrCall2
+        handles both operand slots; the pointer arg0 just travels through. }
+      Self.EmitBuiltinStrCall2(TASTExpr(PC.Args.Items[0]),
+        TASTExpr(PC.Args.Items[1]), '_ProcessSetExe');
       Exit;
     end;
     if SameText(PC.Name, 'ProcessAddArg') and (PC.Args.Count = 2) then
     begin
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[0]));
-      Self.Emit(#9'pushq %rax');
-      Self.EmitExprToEax(TASTExpr(PC.Args.Items[1]));
-      Self.Emit(#9'movq %rax, %rsi');
-      Self.Emit(#9'popq %rdi');
-      Self.Emit(#9'callq _ProcessAddArg');
+      Self.EmitBuiltinStrCall2(TASTExpr(PC.Args.Items[0]),
+        TASTExpr(PC.Args.Items[1]), '_ProcessAddArg');
       Exit;
     end;
     if SameText(PC.Name, 'ProcessExecute') and (PC.Args.Count = 1) then
@@ -16284,6 +16251,77 @@ begin
     Exit(camConsume);     { function/method/getter return — +1 owned temp }
 end;
 
+procedure TX86_64Backend.EmitBuiltinStrCall1(AArg: TASTExpr; const ARtl: string;
+  AResultXmm: Boolean);
+begin
+  Self.EmitExprToEax(AArg);
+  if not ArcBuiltinStrArgOwnsRef(AArg) then
+  begin
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq ' + ARtl);
+    Exit;
+  end;
+  { Owned (+1) argument transient: park it (16 bytes keeps %rsp alignment
+    unchanged), call, save the result across the release, release, restore. }
+  Self.Emit(#9'subq $16, %rsp');
+  Self.Emit(#9'movq %rax, (%rsp)');
+  Self.Emit(#9'movq %rax, %rdi');
+  Self.Emit(#9'callq ' + ARtl);
+  if AResultXmm then
+    Self.Emit(#9'movsd %xmm0, 8(%rsp)')
+  else
+    Self.Emit(#9'movq %rax, 8(%rsp)');
+  Self.Emit(#9'movq (%rsp), %rdi');
+  Self.Emit(#9'callq _StringRelease');
+  if AResultXmm then
+    Self.Emit(#9'movsd 8(%rsp), %xmm0')
+  else
+    Self.Emit(#9'movq 8(%rsp), %rax');
+  Self.Emit(#9'addq $16, %rsp');
+end;
+
+procedure TX86_64Backend.EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr;
+  const ARtl: string);
+var
+  O0, O1: Boolean;
+begin
+  O0 := ArcBuiltinStrArgOwnsRef(AArg0);
+  O1 := ArcBuiltinStrArgOwnsRef(AArg1);
+  { Fast path — neither operand owned: the classic push/eval/pop sequence. }
+  if not (O0 or O1) then
+  begin
+    Self.EmitExprToEax(AArg0);
+    Self.Emit(#9'pushq %rax');
+    Self.EmitExprToEax(AArg1);
+    Self.Emit(#9'movq %rax, %rsi');
+    Self.Emit(#9'popq %rdi');
+    Self.Emit(#9'callq ' + ARtl);
+    Exit;
+  end;
+  { Slots: 0 = arg0, 8 = arg1, 16 = result, 24 = pad (32 keeps alignment). }
+  Self.Emit(#9'subq $32, %rsp');
+  Self.EmitExprToEax(AArg0);
+  Self.Emit(#9'movq %rax, (%rsp)');
+  Self.EmitExprToEax(AArg1);
+  Self.Emit(#9'movq %rax, 8(%rsp)');
+  Self.Emit(#9'movq (%rsp), %rdi');
+  Self.Emit(#9'movq 8(%rsp), %rsi');
+  Self.Emit(#9'callq ' + ARtl);
+  Self.Emit(#9'movq %rax, 16(%rsp)');
+  if O0 then
+  begin
+    Self.Emit(#9'movq (%rsp), %rdi');
+    Self.Emit(#9'callq _StringRelease');
+  end;
+  if O1 then
+  begin
+    Self.Emit(#9'movq 8(%rsp), %rdi');
+    Self.Emit(#9'callq _StringRelease');
+  end;
+  Self.Emit(#9'movq 16(%rsp), %rax');
+  Self.Emit(#9'addq $32, %rsp');
+end;
+
 function TX86_64Backend.IsRecCallArg(AArg: TASTExpr): Boolean;
 begin
   Result := False;
@@ -17210,6 +17248,7 @@ var
   Arg: TASTExpr;
   IsVarPos: Boolean;
   ConstStr: Boolean;
+  ValStr: Boolean;
   PinPlain: Boolean;
   Mode: TConstArgMode;
 begin
@@ -17328,9 +17367,31 @@ begin
         are safe for value params too (the callee pair nets to zero on top). }
       ConstStr := (not IsVarPos) and (Arg.ResolvedType <> nil) and
                   (Arg.ResolvedType.Kind = tyString);
-    if ConstStr then
+    { By-value string param taking an owned (+1) temp (SinkVal(MakeStr(I))):
+      the callee's entry-retain/exit-release pair nets to zero, so the caller
+      still owns the temp and must release it after the call — same consume
+      hoist as a const param, without the pin cases (a borrowed local/global
+      needs no protection: the entry retain fires before any user code runs).
+      Mirrors the QBE backend's EmitOwnedArgReleases. }
+    ValStr := False;
+    if not ConstStr then
     begin
-      Mode := Self.ConstStrShape(Arg, PinPlain);
+      if Par <> nil then
+        ValStr := (not Par.IsConstParam) and (not IsVarPos) and
+                  (not Par.IsOpenArray) and (Par.ResolvedType <> nil) and
+                  (Par.ResolvedType.Kind = tyString)
+      else if PP <> nil then
+        ValStr := (not PP.IsConstParam) and (not IsVarPos) and
+                  (PP.TypeDesc <> nil) and (PP.TypeDesc.Kind = tyString);
+      if ValStr then
+        ValStr := Self.ConstStrShape(Arg, PinPlain) = camConsume;
+    end;
+    if ConstStr or ValStr then
+    begin
+      if ValStr then
+        Mode := camConsume
+      else
+        Mode := Self.ConstStrShape(Arg, PinPlain);
       if Mode <> camBorrowed then
       begin
         Self.EmitExprToEax(Arg);

@@ -152,6 +152,16 @@ function RecretClassify(ARec: TRecordTypeDesc;
   twins ExprOwnsRef / NativeExprOwnsRef). }
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
 
+{ Ownership predicate for a STRING argument to a BUILT-IN (FileAge, Trim,
+  Length, StrToInt, ...).  Extends ArcExprOwnsRef with string-returning
+  built-in call results: those are fresh (+1) temporaries too, but
+  ArcExprOwnsRef deliberately reports False for a TFuncCallExpr with no
+  ResolvedDecl so the assignment paths keep their own built-in handling.
+  The built-in emitters release every owned argument temp after the call —
+  without this the temp leaks (one string per call; e.g. the luhmann
+  directory watcher leaked one per note per poll via FileAge(AbsPathOf(Id))). }
+function ArcBuiltinStrArgOwnsRef(AExpr: TASTExpr): Boolean;
+
 { Mangle a Blaise symbol name into an assembler-legal identifier, shared by
   both backends (formerly QBEMangle / NativeMangle).  Replaces the generic/
   overload metacharacters '<' ',' ' ' -> '_', drops '>', and maps the type-code
@@ -381,6 +391,24 @@ begin
        (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead.ReadMethod <> '') then
       Result := True;
   end;
+end;
+
+function ArcBuiltinStrArgOwnsRef(AExpr: TASTExpr): Boolean;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  if AExpr.ResolvedType = nil then Exit;
+  if not AExpr.ResolvedType.IsString() then Exit;
+  { Any string-typed call result is a fresh +1 buffer: user functions/methods
+    and getters via ArcExprOwnsRef, built-ins (Trim, Copy, IntToStr, ParamStr,
+    ...) via the TFuncCallExpr catch-all.  EXCEPT the 'string(x)' conversion:
+    string(pchar) allocates, but string(string) can be a pointer-preserving
+    no-op — releasing that would over-release the source, so a cast-shaped
+    call is conservatively treated as borrowed (worst case one leaked buffer
+    for a nested string(pchar), never a corruption). }
+  if (AExpr is TFuncCallExpr) and SameText(TFuncCallExpr(AExpr).Name, 'string') then
+    Exit;
+  Result := ArcExprOwnsRef(AExpr) or (AExpr is TFuncCallExpr);
 end;
 
 function CodegenMangle(const AName: string): string;
