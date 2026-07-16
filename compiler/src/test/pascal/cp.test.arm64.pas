@@ -91,6 +91,8 @@ type
     procedure TestClass_Properties;
     { slice 19: chained receivers + owned-transient release }
     procedure TestClass_ChainedReceivers;
+    { slice 20: Mach-O TLV threadvars }
+    procedure TestThreadvar_TlvDescriptorsAndAccess;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1526,6 +1528,44 @@ begin
   PosRel := Pos('ldr x0, [sp, #16]', AsmT);
   AssertTrue('no owned-receiver bracket for borrowed chains', PosRel < 0);
   AssertTrue('call present', PosCall >= 0);
+end;
+
+procedure TArm64BackendTests.TestThreadvar_TlvDescriptorsAndAccess;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    threadvar
+      Counter: Int64;
+    begin
+      Counter := 5;
+      WriteLn(Counter)
+    end.
+    ''');
+  { access: materialise the descriptor, call its thunk, deref the result }
+  AssertTrue('TLVP page ref', Pos('_tv_Counter@TLVPPAGE', AsmT) >= 0);
+  AssertTrue('thunk call', Pos(#9'blr x9', AsmT) >= 0);
+  { descriptor: three quads with the bootstrap thunk }
+  AssertTrue('descriptor label', Pos('_tv_Counter:', AsmT) >= 0);
+  AssertTrue('bootstrap slot', Pos(#9'.quad __tlv_bootstrap', AsmT) >= 0);
+  AssertTrue('storage slot ref', Pos(#9'.quad _ts_Counter', AsmT) >= 0);
+  AssertTrue('thread_vars section',
+    Pos('.section __DATA,__thread_vars', AsmT) >= 0);
+  { and the module assembles: the writer emits the S_THREAD_LOCAL sections }
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64tlv.o');
+  try
+    AssertTrue('has __thread_vars',
+      F.FindSection('__DATA', '__thread_vars') <> nil);
+    AssertTrue('has __thread_bss',
+      F.FindSection('__DATA', '__thread_bss') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

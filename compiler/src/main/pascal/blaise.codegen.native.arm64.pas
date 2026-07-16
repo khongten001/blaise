@@ -81,6 +81,7 @@ type
     FClassDecls:  TObjectList;   { not owned — program-level class TTypeDecls }
     FObjLocals:   TStringList;   { class-typed locals — released at scope exit }
     FObjGlobals:  TStringList;   { class-typed globals — released at program exit }
+    FTlvGlobals:  TStringList;   { threadvar globals — Mach-O TLV descriptors }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -161,6 +162,8 @@ type
     function  ClassDescOf(ATD: TTypeDecl): TRecordTypeDesc;
     procedure EmitClassCleanupFns;
     procedure EmitClassMetaSections;
+    procedure EmitTlvAddr(const ASym: string);
+    procedure EmitTlvSections;
     procedure EmitMethodCallCommon(AMethod: TMethodDecl; const AName: string;
       AArgs: TObjectList);
     procedure EmitMethodCallOnExpr(AMethod: TMethodDecl; const AName: string;
@@ -228,6 +231,7 @@ begin
   FClassDecls  := TObjectList.Create(False);
   FObjLocals   := TStringList.Create();
   FObjGlobals  := TStringList.Create();
+  FTlvGlobals  := TStringList.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -248,6 +252,7 @@ begin
   FClassDecls.Free();
   FObjLocals.Free();
   FObjGlobals.Free();
+  FTlvGlobals.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -298,6 +303,18 @@ begin
   Result := FFrame.TryGetValue(AName, Off);
 end;
 
+procedure TArm64Backend.EmitTlvAddr(const ASym: string);
+begin
+  { Mach-O TLV access: materialise the descriptor address (the linker may
+    relax the ldr to an add for a same-image variable), call its thunk
+    with x0 = descriptor — the thunk returns the per-thread address in
+    x0.  Clobbers caller-saved registers, like any call. }
+  Self.Emit(Format(#9'adrp x0, _tv_%s@TLVPPAGE', [ASym]));
+  Self.Emit(Format(#9'ldr x0, [x0, _tv_%s@TLVPPAGEOFF]', [ASym]));
+  Self.Emit(#9'ldr x9, [x0]');
+  Self.Emit(#9'blr x9');
+end;
+
 procedure TArm64Backend.EmitLoadSlot(const AReg, AName: string);
 var
   Off: Integer;
@@ -315,6 +332,12 @@ begin
     Exit;
   end;
   Sym := GlobalSym(AName);
+  if FTlvGlobals.IndexOf(Sym) >= 0 then
+  begin
+    EmitTlvAddr(Sym);
+    Self.Emit(Format(#9'ldr %s, [x0]', [AReg]));
+    Exit;
+  end;
   if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
     Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
@@ -341,6 +364,16 @@ begin
     Exit;
   end;
   Sym := GlobalSym(AName);
+  if FTlvGlobals.IndexOf(Sym) >= 0 then
+  begin
+    { park the value across the thunk call }
+    Self.Emit(Format(#9'str %s, [sp, #-16]!', [AReg]));
+    EmitTlvAddr(Sym);
+    Self.Emit(#9'mov x9, x0');
+    Self.Emit(#9'ldr x0, [sp], #16');
+    Self.Emit(#9'str x0, [x9]');
+    Exit;
+  end;
   if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
     Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
@@ -361,6 +394,13 @@ begin
     Exit;
   end;
   Sym := GlobalSym(AName);
+  if FTlvGlobals.IndexOf(Sym) >= 0 then
+  begin
+    EmitTlvAddr(Sym);
+    if AReg <> 'x0' then
+      Self.Emit(Format(#9'mov %s, x0', [AReg]));
+    Exit;
+  end;
   if FGlobalNames.IndexOf(Sym) >= 0 then
   begin
     Self.Emit(Format(#9'adrp %s, _g_%s@PAGE', [AReg, Sym]));
@@ -2699,6 +2739,19 @@ begin
         FStrGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyClass then
         FObjGlobals.Add(VD.Names.Strings[J]);
+      if VD.IsThreadVar then
+      begin
+        { threadvars get a Mach-O TLV descriptor; only unmanaged scalar
+          kinds for now (per-thread ARC teardown is its own problem) }
+        if not (IsIntFam(VD.ResolvedType) or
+                (VD.ResolvedType.Kind = tyDouble)) then
+          NotYet('threadvar of this type', VD);
+        if VD.InitConst <> nil then
+          NotYet('initialised threadvar', VD);
+        FTlvGlobals.Add(VD.Names.Strings[J]);
+        { not an ordinary global: no _g_ bss entry }
+        FGlobalNames.Delete(FGlobalNames.Count - 1);
+      end;
       if VD.ResolvedType.Kind = tyRecord then
       begin
         FRecGlobals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
@@ -2800,6 +2853,33 @@ begin
   EmitGlobalsSection();
   if FClassDecls.Count > 0 then
     EmitClassMetaSections();
+  EmitTlvSections();
+end;
+
+procedure TArm64Backend.EmitTlvSections;
+var
+  I: Integer;
+begin
+  if FTlvGlobals.Count = 0 then Exit;
+  { per-thread storage: zerofill in __thread_bss }
+  Self.Emit('.section __DATA,__thread_bss');
+  for I := 0 to FTlvGlobals.Count - 1 do
+  begin
+    Self.Emit('.balign 8');
+    Self.Emit(Format('_ts_%s:', [FTlvGlobals.Strings[I]]));
+    Self.Emit(#9'.zero 8');
+  end;
+  { TLV descriptors: three quads — __tlv_bootstrap, 0, storage.  dyld
+    rebinds the thunk slot at load; the access sequence calls through it }
+  Self.Emit('.section __DATA,__thread_vars');
+  for I := 0 to FTlvGlobals.Count - 1 do
+  begin
+    Self.Emit('.balign 8');
+    Self.Emit(Format('_tv_%s:', [FTlvGlobals.Strings[I]]));
+    Self.Emit(#9'.quad __tlv_bootstrap');
+    Self.Emit(#9'.quad 0');
+    Self.Emit(Format(#9'.quad _ts_%s', [FTlvGlobals.Strings[I]]));
+  end;
 end;
 
 procedure TArm64Backend.EmitUnit(AUnit: TUnit);
@@ -2931,8 +3011,7 @@ begin
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord]))) then
       NotYet('unit variable of this type', VD);
-    if VD.IsThreadVar then
-      NotYet('unit threadvars', VD);
+
     for J := 0 to VD.Names.Count - 1 do
     begin
       FModuleVarNames.Add(VD.Names.Strings[J]);
@@ -2942,6 +3021,17 @@ begin
       FGlobalNames.Add(N);
       if VD.InitConst <> nil then
         RegisterGlobalInit(N, VD);
+      if VD.IsThreadVar then
+      begin
+        if not (IsIntFam(VD.ResolvedType) or
+                (VD.ResolvedType.Kind = tyDouble)) then
+          NotYet('threadvar of this type', VD);
+        if VD.InitConst <> nil then
+          NotYet('initialised threadvar', VD);
+        FTlvGlobals.Add(N);
+        FGlobalNames.Delete(FGlobalNames.Count - 1);
+        FGlobalSize.Remove(N);
+      end;
       if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(N);
       if VD.ResolvedType.Kind = tyRecord then

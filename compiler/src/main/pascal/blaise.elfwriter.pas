@@ -374,6 +374,8 @@ begin
     cskRodata: Result := '.rodata';
     cskBss:    Result := '.bss';
     cskTbss:   Result := '.tbss';
+    cskTdata:  Result := '.tdata';
+    cskTvars:  Result := '.tvars';   { never emitted for ELF — Mach-O only }
     cskOpdf:   Result := '.opdf';
   else
     Result := '.text';

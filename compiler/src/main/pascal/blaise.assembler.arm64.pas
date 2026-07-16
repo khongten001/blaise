@@ -707,6 +707,10 @@ procedure TArm64Assembler.HandleDirective;
       else if Pos('.bss', FL.Args) >= 0 then FSection := cskBss
       else if Pos('.tbss', FL.Args) >= 0 then FSection := cskTbss
       else if Pos('__thread_bss', FL.Args) >= 0 then FSection := cskTbss
+      else if Pos('__thread_data', FL.Args) >= 0 then FSection := cskTdata
+      else if Pos('__thread_vars', FL.Args) >= 0 then FSection := cskTvars
+      else if Pos('.tdata', FL.Args) >= 0 then FSection := cskTdata
+      else if Pos('.thread_vars', FL.Args) >= 0 then FSection := cskTvars
       else if Pos('.opdf', FL.Args) >= 0 then FSection := cskOpdf
       else if Pos('.data', FL.Args) >= 0 then FSection := cskData
       else LineError('unsupported section: ' + FL.Args);

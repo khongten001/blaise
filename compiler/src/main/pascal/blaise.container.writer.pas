@@ -55,6 +55,8 @@ type
     cskRodata,   { read-only data }
     cskBss,      { zero-initialised read-write data (no file bytes) }
     cskTbss,     { thread-local zero-initialised data }
+    cskTdata,    { thread-local initialised data (Mach-O __thread_data) }
+    cskTvars,    { Mach-O TLV descriptors (__thread_vars) }
     cskOpdf      { OPDF debug info (alloc+write, progbits) }
   );
 
