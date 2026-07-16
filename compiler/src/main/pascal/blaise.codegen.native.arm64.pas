@@ -134,6 +134,12 @@ type
     procedure EmitFor(AStmt: TForStmt);
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl);
+    function  StackArgSize(AArg: TASTExpr): Integer;
+    function  StackParamSize(APar: TMethodParam): Integer;
+    function  AlignTo(AValue, AAlign: Integer): Integer;
+    function  ComputeStackArgArea(ADecl: TMethodDecl; AArgs: TObjectList;
+      ASelfPushed: Boolean): Integer;
+    procedure DecodeMemArg(const AEntry: string; out AOff, ASize: Integer);
     procedure EmitCall(ADecl: TMethodDecl; const AName: string;
       AArgs: TObjectList; const ASretDest: string = '';
       ASelfPushed: Boolean = False; AVirtSlot: Integer = VIRT_NONE);
@@ -743,6 +749,17 @@ begin
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
     if TIdentExpr(AExpr).ParamMode = pmVar then
       Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (SameText(TFuncCallExpr(AExpr).Name, 'PChar') or
+      SameText(TFuncCallExpr(AExpr).Name, 'Pointer')) then
+  begin
+    { PChar(x)/Pointer(x): bit-level reinterpret — a Blaise string data
+      pointer is already NUL-terminated, so it IS the PChar value }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
     Exit;
   end;
   if AExpr is TFuncCallExpr then
@@ -1822,6 +1839,7 @@ end;
 procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
 var
   I, J, K, FIdx: Integer;
+  SPOff, SPSz: Integer;
   FrameAligned: Integer;
   Sym: string;
   RecShape, ParShape: Integer;
@@ -1854,10 +1872,9 @@ begin
   { spill register args to their slots.  Integer and float parameters
     consume INDEPENDENT register sequences (x0.. / d0..) per AAPCS64;
     floats hop through x9 so the slot store machinery stays uniform. }
-  if ADecl.Params.Count > 8 then
-    NotYet('more than 8 parameters', ADecl);
   J := 0;      { int register index }
   FIdx := 0;   { float register index }
+  SPOff := 0;  { caller outgoing-area offset for stack params }
   if (ADecl.OwnerTypeName <> '') and not ADecl.IsStatic then
   begin
     { method: Self arrives first in x0 }
@@ -1870,9 +1887,18 @@ begin
     if Par.IsVarParam then
     begin
       { var/out param: one x register carrying the caller's address }
-      if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
-      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
-      J := J + 1;
+      if J >= 8 then
+      begin
+        SPOff := AlignTo(SPOff, 8);
+        Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+        EmitStoreSlot('x9', Par.ParamName);
+        SPOff := SPOff + 8;
+      end
+      else
+      begin
+        EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+        J := J + 1;
+      end;
     end
     else if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
     begin
@@ -1912,10 +1938,19 @@ begin
     else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tyDouble) then
     begin
-      if FIdx >= 8 then NotYet('parameters spilling to the stack', ADecl);
-      Self.Emit(Format(#9'fmov x9, d%d', [FIdx]));
-      EmitStoreSlot('x9', Par.ParamName);
-      FIdx := FIdx + 1;
+      if FIdx >= 8 then
+      begin
+        SPOff := AlignTo(SPOff, 8);
+        Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+        EmitStoreSlot('x9', Par.ParamName);
+        SPOff := SPOff + 8;
+      end
+      else
+      begin
+        Self.Emit(Format(#9'fmov x9, d%d', [FIdx]));
+        EmitStoreSlot('x9', Par.ParamName);
+        FIdx := FIdx + 1;
+      end;
     end
     else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tySingle) then
@@ -1928,9 +1963,22 @@ begin
     end
     else
     begin
-      if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
-      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
-      J := J + 1;
+      if J >= 8 then
+      begin
+        SPSz := StackParamSize(Par);
+        SPOff := AlignTo(SPOff, SPSz);
+        if SPSz = 4 then
+          Self.Emit(Format(#9'ldr w9, [x29, #%d]', [16 + SPOff]))
+        else
+          Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+        EmitStoreSlot('x9', Par.ParamName);
+        SPOff := SPOff + SPSz;
+      end
+      else
+      begin
+        EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+        J := J + 1;
+      end;
     end;
   end;
   { sret: park the incoming x8 destination pointer in its hidden slot }
@@ -2072,6 +2120,110 @@ begin
   FFrameSize := 0;
 end;
 
+function TArm64Backend.StackArgSize(AArg: TASTExpr): Integer;
+begin
+  { Apple packs stack args to natural size, with the C default promotions
+    for variadic args: sub-int widths promote to 4, floats to 8. }
+  Result := 8;
+  if (AArg.ResolvedType <> nil) and IsIntFam(AArg.ResolvedType) then
+  begin
+    Result := AArg.ResolvedType.RawSize();
+    if Result < 4 then Result := 4;
+    if Result > 8 then Result := 8;
+  end;
+end;
+
+function TArm64Backend.StackParamSize(APar: TMethodParam): Integer;
+begin
+  { natural size for a FIXED param passed on the stack.  Floats stay 8
+    (a deliberate simplification also applied on the callee side —
+    a fixed Single stack param occupies 8 bytes here, matching both
+    ends of every Blaise-internal call). }
+  Result := 8;
+  if APar.IsVarParam then Exit;
+  if IsIntFam(APar.ResolvedType) then
+  begin
+    Result := APar.ResolvedType.RawSize();
+    if Result < 4 then Result := 4;
+    if Result > 8 then Result := 8;
+  end;
+end;
+
+function TArm64Backend.AlignTo(AValue, AAlign: Integer): Integer;
+begin
+  Result := (AValue + AAlign - 1) and (not (AAlign - 1));
+end;
+
+function TArm64Backend.ComputeStackArgArea(ADecl: TMethodDecl;
+  AArgs: TObjectList; ASelfPushed: Boolean): Integer;
+var
+  I, NInt, NFloat, Off, Sz: Integer;
+  Arg: TASTExpr;
+begin
+  { dry-run of the classification walk in EmitCall — must stay in
+    lockstep with it }
+  NInt := 0;
+  NFloat := 0;
+  if ASelfPushed then NInt := 1;
+  Off := 0;
+  for I := 0 to AArgs.Count - 1 do
+  begin
+    Arg := TASTExpr(AArgs.Items[I]);
+    if (I < ADecl.Params.Count) and
+       TMethodParam(ADecl.Params.Items[I]).IsVarParam then
+    begin
+      Inc(NInt);
+      Continue;
+    end;
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyRecord) then
+    begin
+      { record args never go to the stack in this subset (guarded in
+        EmitCall); the register consumption mirrors its classification }
+      case RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) of
+        0, 1: Inc(NInt);
+        2: NInt := NInt + 2;
+      else
+        NFloat := NFloat +
+          (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100);
+      end;
+      Continue;
+    end;
+    if IsFloatExpr(Arg) then
+    begin
+      if (ADecl.IsVarArgs and (I >= ADecl.Params.Count)) or (NFloat >= 8) then
+      begin
+        Off := AlignTo(Off, 8) + 8;
+      end
+      else
+        Inc(NFloat);
+      Continue;
+    end;
+    { everything else travels int-class }
+    if (ADecl.IsVarArgs and (I >= ADecl.Params.Count)) or (NInt >= 8) then
+    begin
+      if I < ADecl.Params.Count then
+        Sz := StackParamSize(TMethodParam(ADecl.Params.Items[I]))
+      else
+        Sz := StackArgSize(Arg);
+      Off := AlignTo(Off, Sz) + Sz;
+    end
+    else
+      Inc(NInt);
+  end;
+  Result := AlignTo(Off, 16);
+end;
+
+procedure TArm64Backend.DecodeMemArg(const AEntry: string;
+  out AOff, ASize: Integer);
+var
+  P: Integer;
+begin
+  { entry shape: m<offset>_<size> }
+  P := Pos('_', AEntry);
+  AOff := StrToInt(Copy(AEntry, 1, P - 1));
+  ASize := StrToInt(Copy(AEntry, P + 1, Length(AEntry) - P - 1));
+end;
+
 procedure TArm64Backend.EmitCall(ADecl: TMethodDecl; const AName: string;
   AArgs: TObjectList; const ASretDest: string;
   ASelfPushed: Boolean; AVirtSlot: Integer);
@@ -2081,26 +2233,28 @@ var
   NInt, NFloat: Integer;
   PopRegs: TStringList;
   Reg: string;
+  StackOff, StackArea, ASz: Integer;
+  IsVariadicArg: Boolean;
 begin
   NInt := 0;
   NFloat := 0;
+  StackOff := 0;
   if ADecl = nil then
     NotYet('call to unresolved routine ''' + AName + '''', nil);
   { a method receiver was pushed by the caller BEFORE this call: it is the
     first int-class value, popped last into x0 }
   if ASelfPushed then
     NInt := 1;
-  { Apple's AArch64 ABI passes ALL variadic arguments on the stack
-    (unlike Linux AAPCS64, where anonymous args continue the register
-    sequence).  Until that is implemented, reject rather than emit a
-    silently wrong call. }
-  if ADecl.IsVarArgs and (AArgs.Count > ADecl.Params.Count) then
-    NotYet('varargs call (Apple AArch64 passes variadic args on the stack)',
-      ADecl);
   if ADecl.IsExternal and (ADecl.ExternalName = '') then
     NotYet('external routine without a link name', nil);
-  if AArgs.Count > 8 then
-    NotYet('call with more than 8 arguments', nil);
+  { Outgoing stack-arg area: args past the register files, and ALL
+    variadic anonymous args (Apple divergence — Linux AAPCS64 would
+    continue the register sequence).  Apple packs stack args to natural
+    size with the C default promotions; the area is allocated BEFORE the
+    argument pushes so its offsets stay fixed during the pop walk. }
+  StackArea := ComputeStackArgArea(ADecl, AArgs, ASelfPushed);
+  if StackArea > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [StackArea]));
   { Evaluate args left-to-right onto the stack (calls inside an argument
     cannot clobber earlier args), floats as their 8-byte bit pattern.
     Integer and float args consume INDEPENDENT register sequences
@@ -2200,33 +2354,67 @@ begin
           NotYet('owned string transient as argument', Arg);
         if not ((Arg is TIdentExpr) or (Arg is TStringLiteral)) then
           NotYet('string argument from this expression', Arg);
-        if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
         Self.EmitExprToX0(Arg);
         EmitPushX0();
-        PopRegs.Add('x' + IntToStr(NInt));
-        Inc(NInt);
+        if (ADecl.IsVarArgs and (I >= ADecl.Params.Count)) or (NInt >= 8) then
+        begin
+          StackOff := AlignTo(StackOff, 8);
+          PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+          StackOff := StackOff + 8;
+        end
+        else
+        begin
+          PopRegs.Add('x' + IntToStr(NInt));
+          Inc(NInt);
+        end;
       end
       else if IsFloatExpr(Arg) then
       begin
-        if NFloat >= 8 then NotYet('arguments spilling to the stack', Arg);
+        IsVariadicArg := ADecl.IsVarArgs and (I >= ADecl.Params.Count);
         Self.EmitExprToD0(Arg);
         Self.Emit(#9'fmov x0, d0');
         EmitPushX0();
-        { a Single param wants the value in s(N) — the pop walk narrows }
-        if (Arg.ResolvedType <> nil) and
+        if IsVariadicArg or (NFloat >= 8) then
+        begin
+          { variadic floats promote to double (8 bytes) }
+          StackOff := AlignTo(StackOff, 8);
+          PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+          StackOff := StackOff + 8;
+        end
+        else if (Arg.ResolvedType <> nil) and
            (Arg.ResolvedType.Kind = tySingle) then
-          PopRegs.Add('s' + IntToStr(NFloat))
+        begin
+          PopRegs.Add('s' + IntToStr(NFloat));
+          Inc(NFloat);
+        end
         else
+        begin
           PopRegs.Add('d' + IntToStr(NFloat));
-        Inc(NFloat);
+          Inc(NFloat);
+        end;
       end
-      else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) then
+      else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) or
+              ((Arg.ResolvedType <> nil) and
+               (Arg.ResolvedType.Kind in [tyPChar, tyPointer])) then
       begin
-        if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+        IsVariadicArg := ADecl.IsVarArgs and (I >= ADecl.Params.Count);
         Self.EmitExprToX0(Arg);
         EmitPushX0();
-        PopRegs.Add('x' + IntToStr(NInt));
-        Inc(NInt);
+        if IsVariadicArg or (NInt >= 8) then
+        begin
+          if I < ADecl.Params.Count then
+            ASz := StackParamSize(TMethodParam(ADecl.Params.Items[I]))
+          else
+            ASz := StackArgSize(Arg);
+          StackOff := AlignTo(StackOff, ASz);
+          PopRegs.Add(Format('m%d_%d', [StackOff, ASz]));
+          StackOff := StackOff + ASz;
+        end
+        else
+        begin
+          PopRegs.Add('x' + IntToStr(NInt));
+          Inc(NInt);
+        end;
       end
       else
         NotYet('call argument of this type', Arg);
@@ -2235,7 +2423,18 @@ begin
     for I := PopRegs.Count - 1 downto 0 do
     begin
       Reg := PopRegs.Strings[I];
-      if Copy(Reg, 0, 1) = 'd' then
+      if Copy(Reg, 0, 1) = 'm' then
+      begin
+        { memory-class arg: the outgoing area sits ABOVE the still-pushed
+          eval slots — I of them remain (16 bytes each) at pop time }
+        EmitPopTo('x9');
+        DecodeMemArg(Reg, StackOff, ASz);
+        if ASz = 4 then
+          Self.Emit(Format(#9'str w9, [sp, #%d]', [I * 16 + StackOff]))
+        else
+          Self.Emit(Format(#9'str x9, [sp, #%d]', [I * 16 + StackOff]));
+      end
+      else if Copy(Reg, 0, 1) = 'd' then
       begin
         EmitPopTo('x9');
         Self.Emit(Format(#9'fmov %s, x9', [Reg]));
@@ -2269,6 +2468,8 @@ begin
   end
   else
     Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
+  if StackArea > 0 then
+    Self.Emit(Format(#9'add sp, sp, #%d', [StackArea]));
 end;
 
 { ---- data sections ------------------------------------------------------- }

@@ -93,6 +93,8 @@ type
     procedure TestClass_ChainedReceivers;
     { slice 20: Mach-O TLV threadvars }
     procedure TestThreadvar_TlvDescriptorsAndAccess;
+    { slice 21: Apple stack args (>8) + variadic calls }
+    procedure TestStackArgs_VariadicAndOverflow;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1563,6 +1565,43 @@ begin
       F.FindSection('__DATA', '__thread_vars') <> nil);
     AssertTrue('has __thread_bss',
       F.FindSection('__DATA', '__thread_bss') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestStackArgs_VariadicAndOverflow;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    function printf(Fmt: PChar): Integer; cdecl; varargs;
+      external 'c' name 'printf';
+    function Sum10(A, B, C, D, E, F, G, H, I, J: Int64): Int64;
+    begin
+      Result := A + B + C + D + E + F + G + H + I + J
+    end;
+    begin
+      printf(PChar('%lld and %lld'), 40, 2);
+      WriteLn(Sum10(1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    end.
+    ''');
+  { variadic anonymous args go to the outgoing stack area (Apple
+    divergence), stored through w/x into [sp, #..] }
+  AssertTrue('outgoing area allocated', Pos(#9'sub sp, sp, #16', AsmT) >= 0);
+  AssertTrue('variadic call to printf', Pos(#9'bl printf', AsmT) >= 0);
+  { the 9th/10th args of Sum10 overflow the register file to the stack }
+  AssertTrue('call to Sum10', Pos(#9'bl Sum10', AsmT) >= 0);
+  AssertTrue('area released', Pos(#9'add sp, sp, #16', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64stackargs.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
   finally
     F.Free();
   end;
