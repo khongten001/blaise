@@ -1603,6 +1603,13 @@ begin
     EmitStmtList(TCompoundStmt(AStmt).Stmts);
     Exit;
   end;
+  if AStmt is TAsmStmt then
+  begin
+    { verbatim inline-asm block — the text is already arm64 (asm routines
+      in the RTL are guarded by the target OS define) }
+    Self.Emit(TAsmStmt(AStmt).Code);
+    Exit;
+  end;
   if AStmt is TAssignment then
   begin
     EmitAssignment(TAssignment(AStmt));
@@ -3551,6 +3558,21 @@ begin
   if ADecl.Body.ProcDecls.Count > 0 then
     NotYet('nested routines', ADecl);
   Sym := RoutineSym(ADecl, ADecl.Name);
+  { nostackframe: the body is an inline-asm block that owns the entire
+    frame (prologue, args-from-registers, ret).  No compiler prologue/
+    epilogue, no frame registration, no param spill, no ARC — the
+    verbatim block only. }
+  if ADecl.NoStackFrame then
+  begin
+    Self.Emit('');
+    if AWeakBind then
+      Self.Emit(Format('.weak %s', [Sym]))
+    else
+      Self.Emit(Format('.globl %s', [Sym]));
+    Self.Emit(Sym + ':');
+    EmitStmtList(ADecl.Body.Stmts);
+    Exit;
+  end;
   FIsFunction := ADecl.ResolvedReturnType <> nil;
   FResultFloat := FIsFunction and
     (ADecl.ResolvedReturnType.Kind = tyDouble);

@@ -133,6 +133,8 @@ type
     procedure TestClassAttributes_TablesAndBuiltins;
     { slice 39: generic class/function instances — bare names, weak bind }
     procedure TestGenericInstances_WeakEmission;
+    { slice 40: assembler/nostackframe routines — verbatim arm64 bodies }
+    procedure TestAsmRoutines_NoStackFrame;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2572,6 +2574,41 @@ begin
   AssertTrue('weak func instance', Pos('.weak Pick_Int64', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64gen.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestAsmRoutines_NoStackFrame;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    function AddOne(A: Int64): Int64; assembler; nostackframe;
+    asm
+        add x0, x0, #1
+        ret
+    end;
+    begin
+      WriteLn(AddOne(41))
+    end.
+    ''');
+  { the body is emitted verbatim: no compiler prologue/epilogue around it }
+  AssertTrue('label emitted', Pos('AddOne:', AsmT) >= 0);
+  AssertTrue('verbatim body', Pos('add x0, x0, #1', AsmT) >= 0);
+  { no stp/ldp frame bracket between the label and the ret }
+  AssertTrue('no prologue',
+    Pos(#9'stp x29, x30', Copy(AsmT, Pos('AddOne:', AsmT),
+      Pos('add x0, x0, #1', AsmT) - Pos('AddOne:', AsmT))) < 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64asmfn.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
