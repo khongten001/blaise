@@ -1173,6 +1173,33 @@ procedure TArm64Assembler.EncodeInstr;
       Exit;
     end;
 
+    { LSE atomics (acquire+release variants) — runtime.atomic.arm64.
+      LDADDAL Rs, Rt, [Xn]: Rt := [Xn]; [Xn] += Rs (atomic fetch-add).
+      SWPAL   Rs, Rt, [Xn]: Rt := [Xn]; [Xn] := Rs (atomic exchange).
+      CASAL   Rs, Rt, [Xn]: if [Xn] = Rs then [Xn] := Rt; Rs := old. }
+    if (FL.Mnemonic = 'ldaddal') or (FL.Mnemonic = 'swpal')
+       or (FL.Mnemonic = 'casal') then
+    begin
+      NeedOps(3);
+      if FA[2].Kind <> okMem then
+        LineError('memory operand expected');
+      if FA[2].MemImm <> 0 then
+        LineError('LSE atomics take a plain [Xn] operand');
+      if FL.Mnemonic = 'casal' then
+      begin
+        if FA[0].Is64 then Wd := Integer($C8E0FC00)
+        else Wd := Integer($88E0FC00);
+      end
+      else
+      begin
+        if FA[0].Is64 then Wd := Integer($F8E00000)
+        else Wd := Integer($B8E00000);
+        if FL.Mnemonic = 'swpal' then Wd := Wd or $8000;
+      end;
+      EmitW(Wd or (FA[0].Reg shl 16) or (FA[2].Base shl 5) or FA[1].Reg);
+      Exit;
+    end;
+
     if (FL.Mnemonic = 'ldp') or (FL.Mnemonic = 'stp') then
     begin
       { post-index '[sp], #16' splits at the top-level comma into a 4th

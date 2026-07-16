@@ -42,6 +42,7 @@ type
     procedure TestGotAndTlvRelocs;
     procedure TestDataDirectives_QuadSymbolReloc;
     procedure TestCsetAndConditionals;
+    procedure TestLseAtomics;
     procedure TestErrors_HaveLineNumbers;
   end;
 
@@ -302,6 +303,19 @@ begin
   { cset w0, eq  ->  csinc w0, wzr, wzr, ne }
   AssertWord('cset w0, eq', Integer($1A9F17E0));
   AssertWord('cset x0, lt', Integer($9A9FA7E0));
+end;
+
+procedure TArm64AsmTests.TestLseAtomics;
+begin
+  { LSE atomics for runtime.atomic.arm64 (acquire+release variants only —
+    that is what ARC and the allocator's remote-free queue need).
+    Reference encodings cross-checked against GNU as. }
+  AssertWord('ldaddal w1, w2, [x0]', Integer($B8E10002));
+  AssertWord('ldaddal x1, x9, [x0]', Integer($F8E10009));
+  AssertWord('swpal x1, x9, [x0]', Integer($F8E18009));
+  AssertWord('swpal w1, w2, [x0]', Integer($B8E18002));
+  AssertWord('casal x1, x2, [x0]', Integer($C8E1FC02));
+  AssertWord('casal w1, w2, [x0]', Integer($88E1FC02));
 end;
 
 procedure TArm64AsmTests.TestErrors_HaveLineNumbers;
