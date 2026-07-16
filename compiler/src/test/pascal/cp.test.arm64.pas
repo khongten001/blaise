@@ -117,6 +117,8 @@ type
     procedure TestExceptions_FramesHandlersUnwind;
     { slice 32: static arrays — width-aware element access, managed elems }
     procedure TestStaticArrays_ElementsAndArc;
+    { slice 33: dynamic arrays — SetLength/Length/subscripts/ARC }
+    procedure TestDynArrays_LifecycleAndElements;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2155,6 +2157,45 @@ begin
   AssertTrue('string elem release', Pos(#9'bl _StringRelease', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64sarr.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestDynArrays_LifecycleAndElements;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      A, B: array of Int64;
+      I: Int64;
+    begin
+      SetLength(A, 4);
+      for I := 0 to 3 do
+        A[I] := I * I;
+      B := A;
+      WriteLn(Length(B));
+      WriteLn(B[3])
+    end.
+    ''');
+  { lifecycle through the RTL }
+  AssertTrue('setlength', Pos(#9'bl _DynArraySetLength', AsmT) >= 0);
+  AssertTrue('length', Pos(#9'bl _DynArrayLength', AsmT) >= 0);
+  { whole-value assignment: retain new, release old }
+  AssertTrue('retain', Pos(#9'bl _DynArrayAddRef', AsmT) >= 0);
+  AssertTrue('release', Pos(#9'bl _DynArrayRelease', AsmT) >= 0);
+  { element access scales off the data pointer }
+  AssertTrue('scaled elem', Pos(#9'mul x1, x1, x2', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64dyn.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

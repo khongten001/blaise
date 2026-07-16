@@ -95,6 +95,8 @@ type
                                    except frame); mirrors the runtime stack }
     FLoopExcDepth: TStringList;  { FExcDepth at each enclosing loop's entry —
                                    break/continue unwind to it }
+    FDynLocals:   TStringList;   { dyn-array locals — released at scope exit }
+    FDynGlobals:  TStringList;   { dyn-array globals — released at exit }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -181,6 +183,7 @@ type
       (encoded as 100+N).  Derived from the shared classifier; the
       register choice is this leaf's per-CPU step. }
     procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
+    procedure EmitDynElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitElemLoad(AElem: TTypeDesc);
     function  AggHasManaged(AType: TTypeDesc): Boolean;
     function  RecReturnShape(ARec: TRecordTypeDesc): Integer;
@@ -288,6 +291,8 @@ begin
   FIntfGlobals := TStringList.Create();
   FFinallyBodies := TObjectList.Create(False);
   FLoopExcDepth := TStringList.Create();
+  FDynLocals := TStringList.Create();
+  FDynGlobals := TStringList.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -317,6 +322,8 @@ begin
   FIntfGlobals.Free();
   FFinallyBodies.Free();
   FLoopExcDepth.Free();
+  FDynLocals.Free();
+  FDynGlobals.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -883,6 +890,17 @@ begin
     Exit;
   end;
   if (AExpr is TFuncCallExpr) and
+     SameText(TFuncCallExpr(AExpr).Name, 'Length') and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind =
+       tyDynArray) then
+  begin
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    Self.Emit(#9'bl _DynArrayLength');
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
      (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
      (TFuncCallExpr(AExpr).Args.Count = 1) and
      (SameText(TFuncCallExpr(AExpr).Name, 'PChar') or
@@ -1075,6 +1093,16 @@ begin
   begin
     EmitStaticElemAddr(TStringSubscriptExpr(AExpr));
     EmitElemLoad(TStaticArrayTypeDesc(
+      TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType);
+    Exit;
+  end;
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind =
+       tyDynArray) then
+  begin
+    EmitDynElemAddr(TStringSubscriptExpr(AExpr));
+    EmitElemLoad(TDynArrayTypeDesc(
       TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType);
     Exit;
   end;
@@ -1742,6 +1770,27 @@ begin
     Exit;
   end;
   if (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyDynArray) then
+  begin
+    { data-pointer ARC, mirroring the string discipline }
+    if AAsgn.IsWeakLhs or AAsgn.IsVarParam or
+       (AAsgn.ImplicitSelfField <> nil) then
+      NotYet('dyn-array assignment to this target', AAsgn);
+    Self.EmitExprToX0(AAsgn.Expr);
+    if not ArcExprOwnsRef(AAsgn.Expr) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'bl _DynArrayAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _DynArrayRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AAsgn.Name);
+    Exit;
+  end;
+  if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyClass) then
   begin
     if AAsgn.ImplicitSelfField <> nil then
@@ -1935,6 +1984,26 @@ begin
   if SameText(ACall.Name, 'Write') then
   begin
     EmitWrite(ACall, False);
+    Exit;
+  end;
+  if SameText(ACall.Name, 'SetLength') and (ACall.Args.Count = 2) and
+     (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tyDynArray) then
+  begin
+    { arr := _DynArraySetLength(arr, n, elemsize) — plain ident lvalue }
+    if not (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) then
+      NotYet('SetLength on this lvalue form', ACall);
+    if TIdentExpr(TASTExpr(ACall.Args.Items[0])).ParamMode = pmVar then
+      NotYet('SetLength on a var parameter', ACall);
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+    EmitPushX0();
+    EmitLoadSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    EmitPopTo('x1');
+    EmitIntLiteral('x2', TDynArrayTypeDesc(
+      TASTExpr(ACall.Args.Items[0]).ResolvedType).ElementType.RawSize());
+    Self.Emit(#9'bl _DynArraySetLength');
+    EmitStoreSlot('x0',
+      TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
     Exit;
   end;
   if (ACall.ResolvedDecl <> nil) and (ACall.ResolvedDecl is TMethodDecl) and
@@ -2205,7 +2274,6 @@ end;
 
 procedure TArm64Backend.EmitStaticElemAssign(AStmt: TStaticSubscriptAssign);
 var
-  AT: TStaticArrayTypeDesc;
   Elem: TTypeDesc;
 begin
   { Arr[I] := V for a plain local/global static array.  The element
@@ -2214,13 +2282,18 @@ begin
   if (AStmt.BaseExpr <> nil) or AStmt.IsVarParam or AStmt.IsImplicitSelf then
     NotYet('subscript write on this array form', AStmt);
   if (AStmt.ResolvedArrayType = nil) or
-     (AStmt.ResolvedArrayType.Kind <> tyStaticArray) then
-    NotYet('subscript write on a non-static-array base', AStmt);
-  AT := TStaticArrayTypeDesc(AStmt.ResolvedArrayType);
-  Elem := AT.ElementType;
+     not (AStmt.ResolvedArrayType.Kind in [tyStaticArray, tyDynArray]) then
+    NotYet('subscript write on this base type', AStmt);
+  if AStmt.ResolvedArrayType.Kind = tyDynArray then
+    Elem := TDynArrayTypeDesc(AStmt.ResolvedArrayType).ElementType
+  else
+    Elem := TStaticArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
   Self.EmitExprToX0(AStmt.IndexExpr);
   EmitPushX0();
-  EmitSlotAddr('x0', AStmt.ArrayName);
+  if AStmt.ResolvedArrayType.Kind = tyDynArray then
+    EmitLoadSlot('x0', AStmt.ArrayName)   { data pointer value }
+  else
+    EmitSlotAddr('x0', AStmt.ArrayName);
   EmitPopTo('x1');
   EmitIntLiteral('x2', Elem.RawSize());
   Self.Emit(#9'mul x1, x1, x2');
@@ -2503,6 +2576,27 @@ begin
   Self.Emit(#9'add x0, x0, x1');
 end;
 
+procedure TArm64Backend.EmitDynElemAddr(ASub: TStringSubscriptExpr);
+var
+  ESz: Integer;
+begin
+  { x0 := dataptr + index*elemsize — the base VALUE is the element-0
+    pointer (dyn-array header sits below it) }
+  if not (ASub.StrExpr is TIdentExpr) then
+    NotYet('subscript on this dyn-array expression', ASub);
+  if TIdentExpr(ASub.StrExpr).ParamMode = pmVar then
+    NotYet('subscript on a var dyn-array parameter', ASub);
+  ESz := TDynArrayTypeDesc(
+    ASub.StrExpr.ResolvedType).ElementType.RawSize();
+  Self.EmitExprToX0(ASub.IndexExpr);
+  EmitPushX0();
+  EmitLoadSlot('x0', TIdentExpr(ASub.StrExpr).Name);
+  EmitPopTo('x1');
+  EmitIntLiteral('x2', ESz);
+  Self.Emit(#9'mul x1, x1, x2');
+  Self.Emit(#9'add x0, x0, x1');
+end;
+
 procedure TArm64Backend.EmitElemLoad(AElem: TTypeDesc);
 begin
   { load the element at [x0] into x0, width by element kind.  2-byte
@@ -2693,6 +2787,7 @@ begin
   FRecLocals.Clear();
   FObjLocals.Clear();
   FIntfLocals.Clear();
+  FDynLocals.Clear();
   if ADecl <> nil then
   begin
     if (ADecl.OwnerTypeName <> '') and not ADecl.IsStatic then
@@ -2788,7 +2883,8 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
-                                       tyMetaClass, tyStaticArray]))) then
+                                       tyMetaClass, tyStaticArray,
+                                       tyDynArray]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -2805,6 +2901,8 @@ begin
         FStrLocals.Add(VD.Names.Strings[J]);
       if (VD.ResolvedType.Kind = tyClass) and not VD.IsWeak then
         FObjLocals.Add(VD.Names.Strings[J]);
+      if VD.ResolvedType.Kind = tyDynArray then
+        FDynLocals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyInterface then
       begin
         { fat pointer: split obj/itab slots; the obj half co-owns the
@@ -3100,6 +3198,11 @@ begin
   begin
     EmitLoadSlot('x0', FIntfLocals.Strings[I]);
     Self.Emit(#9'bl _ClassRelease');
+  end;
+  for I := 0 to FDynLocals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FDynLocals.Strings[I]);
+    Self.Emit(#9'bl _DynArrayRelease');
   end;
   { release the managed fields of record locals — the base-class walk needs
     a callee-saved base register across its release calls }
@@ -4356,7 +4459,8 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
-                                       tyMetaClass, tyStaticArray]))) then
+                                       tyMetaClass, tyStaticArray,
+                                       tyDynArray]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -4367,6 +4471,8 @@ begin
         FStrGlobals.Add(VD.Names.Strings[J]);
       if (VD.ResolvedType.Kind = tyClass) and not VD.IsWeak then
         FObjGlobals.Add(VD.Names.Strings[J]);
+      if VD.ResolvedType.Kind = tyDynArray then
+        FDynGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyInterface then
       begin
         FGlobalNames.Add(VD.Names.Strings[J] + '_itab');
@@ -4507,6 +4613,11 @@ begin
   begin
     EmitLoadSlot('x0', FIntfGlobals.Strings[I]);
     Self.Emit(#9'bl _ClassRelease');
+  end;
+  for I := 0 to FDynGlobals.Count - 1 do
+  begin
+    EmitLoadSlot('x0', FDynGlobals.Strings[I]);
+    Self.Emit(#9'bl _DynArrayRelease');
   end;
   Self.Emit(#9'movz w0, #0');
   Self.Emit(#9'mov sp, x29');
