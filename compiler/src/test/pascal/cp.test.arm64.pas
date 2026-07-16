@@ -111,6 +111,8 @@ type
     procedure TestSingleFields_Supports3_StaticProps;
     { slice 29: [Weak] refs, metaclass constructors, indexed properties }
     procedure TestWeak_MetaclassCtor_IndexedProps;
+    { slice 30: case and repeat/until }
+    procedure TestCaseAndRepeat;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2010,6 +2012,50 @@ begin
   { indexed property accessors }
   AssertTrue('indexed getter', Pos(#9'bl TNode_GetItem', AsmT) >= 0);
   AssertTrue('indexed setter', Pos(#9'bl TNode_SetItem', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestCaseAndRepeat;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    const
+      Marker = 9;
+    var
+      N, Acc: Int64;
+    begin
+      Acc := 0;
+      N := 0;
+      repeat
+        Acc := Acc + N;
+        N := N + 1
+      until N > 4;
+      case Acc of
+        10, 11: WriteLn('ten-ish');
+        Marker: WriteLn('nine');
+      else
+        WriteLn(Acc)
+      end
+    end.
+    ''');
+  { repeat: bottom-tested loop (cbz back to the top) }
+  AssertTrue('repeat back-branch', Pos(#9'cbz x0, Lrep', AsmT) >= 0);
+  { case: selector parked on the stack, chained equality tests }
+  AssertTrue('case compare', Pos(#9'b.eq Lcbody', AsmT) >= 0);
+  AssertTrue('selector reloaded per test', Pos(#9'ldr x0, [sp]', AsmT) >= 0);
+  AssertTrue('named-const case value', Pos(#9'movz x1, #9', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64case.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

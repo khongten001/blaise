@@ -138,6 +138,9 @@ type
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     procedure EmitIf(AStmt: TIfStmt);
     procedure EmitWhile(AStmt: TWhileStmt);
+    procedure EmitRepeat(AStmt: TRepeatStmt);
+    procedure EmitCase(AStmt: TCaseStmt);
+    procedure EmitExprToX0Aux(AExpr: TASTExpr);
     procedure EmitFor(AStmt: TForStmt);
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl);
@@ -1400,6 +1403,16 @@ begin
     EmitWhile(TWhileStmt(AStmt));
     Exit;
   end;
+  if AStmt is TRepeatStmt then
+  begin
+    EmitRepeat(TRepeatStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TCaseStmt then
+  begin
+    EmitCase(TCaseStmt(AStmt));
+    Exit;
+  end;
   if AStmt is TForStmt then
   begin
     EmitFor(TForStmt(AStmt));
@@ -1959,6 +1972,80 @@ begin
   Self.Emit(EndL + ':');
 end;
 
+procedure TArm64Backend.EmitRepeat(AStmt: TRepeatStmt);
+var
+  TopL, EndL: string;
+begin
+  { repeat..until: body always runs once; break/continue target the
+    loop's exit / condition re-test }
+  TopL := NewLabel('rep');
+  EndL := NewLabel('rend');
+  FBreakLbls.Add(EndL);
+  FContLbls.Add(TopL);
+  Self.Emit(TopL + ':');
+  EmitStmtList(AStmt.Body.Stmts);
+  Self.EmitExprToX0(AStmt.Condition);
+  Self.Emit(Format(#9'cbz x0, %s', [TopL]));
+  Self.Emit(EndL + ':');
+  FBreakLbls.Delete(FBreakLbls.Count - 1);
+  FContLbls.Delete(FContLbls.Count - 1);
+end;
+
+procedure TArm64Backend.EmitCase(AStmt: TCaseStmt);
+var
+  I, J: Integer;
+  Br: TCaseBranch;
+  EndL, NextL, BodyL: string;
+begin
+  { ordinal case: chained compares — selector evaluated ONCE and kept on
+    the stack across the branch tests (a value expression can be a call).
+    String cases need _StringEquals chains — NotYet. }
+  if AStmt.IsStringCase then
+    NotYet('string case statements', AStmt);
+  EndL := NewLabel('cend');
+  Self.EmitExprToX0(AStmt.Selector);
+  EmitPushX0();
+  for I := 0 to AStmt.Branches.Count - 1 do
+  begin
+    Br := TCaseBranch(AStmt.Branches.Items[I]);
+    NextL := NewLabel('cnxt');
+    BodyL := NewLabel('cbody');
+    for J := 0 to Br.Values.Count - 1 do
+    begin
+      Self.Emit(#9'ldr x0, [sp]');
+      Self.EmitExprToX0Aux(TASTExpr(Br.Values.Items[J]));
+      Self.Emit(#9'cmp x0, x1');
+      Self.Emit(Format(#9'b.eq %s', [BodyL]));
+    end;
+    Self.Emit(Format(#9'b %s', [NextL]));
+    Self.Emit(BodyL + ':');
+    EmitStmt(Br.Stmt);
+    Self.Emit(Format(#9'b %s', [EndL]));
+    Self.Emit(NextL + ':');
+  end;
+  if AStmt.ElseStmt <> nil then
+    EmitStmt(AStmt.ElseStmt);
+  Self.Emit(EndL + ':');
+  Self.Emit(#9'add sp, sp, #16');   { drop the selector }
+end;
+
+procedure TArm64Backend.EmitExprToX0Aux(AExpr: TASTExpr);
+begin
+  { evaluate AExpr into x1 while [sp] holds a live value: literal/const
+    values only (case branch values are literals by grammar) }
+  if AExpr is TIntLiteral then
+  begin
+    EmitIntLiteral('x1', TIntLiteral(AExpr).Value);
+    Exit;
+  end;
+  if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsConstant then
+  begin
+    EmitIntLiteral('x1', TIdentExpr(AExpr).ConstValue);
+    Exit;
+  end;
+  NotYet('case value of this form', AExpr);
+end;
+
 procedure TArm64Backend.EmitFor(AStmt: TForStmt);
 var
   TopL, EndL, ContL: string;
@@ -2129,7 +2216,22 @@ begin
     Exit;
   end;
   if AStmt is TWhileStmt then
+  begin
     RegisterForSlots(TWhileStmt(AStmt).Body);
+    Exit;
+  end;
+  if AStmt is TRepeatStmt then
+  begin
+    for I := 0 to TRepeatStmt(AStmt).Body.Stmts.Count - 1 do
+      RegisterForSlots(TASTStmt(TRepeatStmt(AStmt).Body.Stmts.Items[I]));
+    Exit;
+  end;
+  if AStmt is TCaseStmt then
+  begin
+    for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
+      RegisterForSlots(TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Stmt);
+    RegisterForSlots(TCaseStmt(AStmt).ElseStmt);
+  end;
 end;
 
 function TArm64Backend.MaxManagedRecRet(AStmt: TASTStmt): Integer;
@@ -2170,7 +2272,26 @@ begin
   if AStmt is TWhileStmt then
     Result := MaxManagedRecRet(TWhileStmt(AStmt).Body)
   else if AStmt is TForStmt then
-    Result := MaxManagedRecRet(TForStmt(AStmt).Body);
+    Result := MaxManagedRecRet(TForStmt(AStmt).Body)
+  else if AStmt is TRepeatStmt then
+  begin
+    for I := 0 to TRepeatStmt(AStmt).Body.Stmts.Count - 1 do
+    begin
+      N := MaxManagedRecRet(TASTStmt(TRepeatStmt(AStmt).Body.Stmts.Items[I]));
+      if N > Result then Result := N;
+    end;
+  end
+  else if AStmt is TCaseStmt then
+  begin
+    for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
+    begin
+      N := MaxManagedRecRet(
+        TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Stmt);
+      if N > Result then Result := N;
+    end;
+    N := MaxManagedRecRet(TCaseStmt(AStmt).ElseStmt);
+    if N > Result then Result := N;
+  end;
 end;
 
 procedure TArm64Backend.RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
