@@ -184,6 +184,9 @@ type
       2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
       (encoded as 100+N).  Derived from the shared classifier; the
       register choice is this leaf's per-CPU step. }
+    function  TypeinfoSymFor(const ATypeName: string): string;
+    procedure EmitAttrTables(ACD: TClassTypeDef; const ACSym: string;
+      out AAttrsRef, AMethAttrsRef: string);
     procedure EmitSmallSetLiteral(AExpr: TArrayLiteralExpr);
     procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitDynElemAddr(ASub: TStringSubscriptExpr);
@@ -929,6 +932,42 @@ begin
     { PChar(x)/Pointer(x): bit-level reinterpret — a Blaise string data
       pointer is already NUL-terminated, so it IS the PChar value }
     Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     TFuncCallExpr(AExpr).IsBuiltinHasClassAttr and
+     (TFuncCallExpr(AExpr).Args.Count = 2) then
+  begin
+    { HasClassAttribute(AClass, AAttrClass): both args lower to typeinfo
+      pointers; the walk lives in the RTL helper }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+    Self.Emit(#9'mov x1, x0');
+    EmitPopTo('x0');
+    Self.Emit(#9'bl _HasClassAttribute');
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).AttrRTTIBuiltin <> '') and
+     (TFuncCallExpr(AExpr).Args.Count >= 2) then
+  begin
+    { GetClassAttribute / HasMethodAttribute / GetMethodAttribute /
+      MethodAttributeCount / GetMethodAttributeAt — args in x0..x2, the
+      same-named RTL helper does the table walk.  The helpers are Blaise
+      functions, so results come back as clean 64-bit values. }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+    EmitPushX0();
+    if TFuncCallExpr(AExpr).Args.Count = 3 then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[2]));
+      Self.Emit(#9'mov x2, x0');
+    end;
+    EmitPopTo('x1');
+    EmitPopTo('x0');
+    Self.Emit(#9'bl _' + TFuncCallExpr(AExpr).AttrRTTIBuiltin);
     Exit;
   end;
   if AExpr is TFuncCallExpr then
@@ -1856,6 +1895,16 @@ var
   I, Shape: Integer;
   RD: TMethodDecl;
 begin
+  if (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind in [tyString, tyClass]) and
+     (AAsgn.ImplicitSelfField <> nil) and not AAsgn.IsWeakLhs then
+  begin
+    { bare managed field := value inside a method — the instance-field
+      store machinery runs the retain/release discipline against the
+      field slot, not a frame slot }
+    EmitImplicitSelfStore(AAsgn);
+    Exit;
+  end;
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyString) then
   begin
@@ -4481,6 +4530,10 @@ begin
   Self.Emit('.globl _FieldCleanup_TObject');
   Self.Emit('_FieldCleanup_TObject:');
   Self.Emit(#9'ret');
+  Self.Emit('');
+  Self.Emit('.globl _FieldCleanup_TCustomAttribute');
+  Self.Emit('_FieldCleanup_TCustomAttribute:');
+  Self.Emit(#9'ret');
   for I := 0 to FClassDecls.Count - 1 do
   begin
     TD := TTypeDecl(FClassDecls.Items[I]);
@@ -4514,13 +4567,122 @@ begin
   end;
 end;
 
+function TArm64Backend.TypeinfoSymFor(const ATypeName: string): string;
+var
+  D: TTypeDesc;
+  Pfx: string;
+begin
+  { typeinfo symbol for a class NAME, owning-unit prefixed — the string
+    twin of EmitTypeinfoAddr for data-section references }
+  Pfx := '';
+  if FSymTable <> nil then
+  begin
+    D := FSymTable.FindType(ATypeName);
+    if D <> nil then
+      Pfx := ClassPrefixOwner(D.OwningUnit);
+  end;
+  Result := 'typeinfo_' + Pfx + CodegenMangle(ATypeName);
+end;
+
+procedure TArm64Backend.EmitAttrTables(ACD: TClassTypeDef;
+  const ACSym: string; out AAttrsRef, AMethAttrsRef: string);
+var
+  J, K, N, Count: Integer;
+  AU: TAttributeUse;
+  MD: TMethodDecl;
+begin
+  { attrs_<C>: count then (attr typeinfo, factory thunk) pairs;
+    methattrs_<C>: count then (method name, attr typeinfo, thunk) triples
+    for PUBLISHED methods.  Emitted into .data (the entries carry
+    relocations); the method-name blobs go to .rodata first so the
+    tables' .quad runs are not interleaved. }
+  AAttrsRef := '0';
+  AMethAttrsRef := '0';
+
+  Count := 0;
+  for J := 0 to ACD.AttrUses.Count - 1 do
+    if TAttributeUse(ACD.AttrUses.Items[J]).ThunkDecl <> nil then
+      Count := Count + 1;
+  if Count > 0 then
+  begin
+    Self.Emit('.section .data');
+    Self.Emit('.balign 8');
+    Self.Emit(Format('attrs_%s:', [ACSym]));
+    Self.Emit(Format(#9'.quad %d', [Count]));
+    for J := 0 to ACD.AttrUses.Count - 1 do
+    begin
+      AU := TAttributeUse(ACD.AttrUses.Items[J]);
+      if AU.ThunkDecl = nil then Continue;
+      Self.Emit(Format(#9'.quad %s', [TypeinfoSymFor(AU.ResolvedClassName)]));
+      Self.Emit(Format(#9'.quad %s',
+        [RoutineSym(TMethodDecl(AU.ThunkDecl), '')]));
+    end;
+    AAttrsRef := 'attrs_' + ACSym;
+  end;
+
+  Count := 0;
+  for J := 0 to ACD.Methods.Count - 1 do
+  begin
+    MD := TMethodDecl(ACD.Methods.Items[J]);
+    if not MD.IsPublished then Continue;
+    for K := 0 to MD.AttrUses.Count - 1 do
+      if TAttributeUse(MD.AttrUses.Items[K]).ThunkDecl <> nil then
+        Count := Count + 1;
+  end;
+  if Count = 0 then Exit;
+  { per-entry method-name blobs — the label sits AT the data (bare-symbol
+    .quad, same scheme as string globals), prefixed by the class symbol
+    so repeated method names across classes cannot collide }
+  Self.Emit('.section .rodata');
+  N := 0;
+  for J := 0 to ACD.Methods.Count - 1 do
+  begin
+    MD := TMethodDecl(ACD.Methods.Items[J]);
+    if not MD.IsPublished then Continue;
+    for K := 0 to MD.AttrUses.Count - 1 do
+    begin
+      if TAttributeUse(MD.AttrUses.Items[K]).ThunkDecl = nil then Continue;
+      Self.Emit('.balign 4');
+      Self.Emit(Format('__ma_%s_%d_h:', [ACSym, N]));
+      Self.Emit(#9'.word -1');
+      Self.Emit(Format(#9'.word %d', [Length(MD.Name)]));
+      Self.Emit(Format(#9'.word %d', [Length(MD.Name)]));
+      Self.Emit(Format('__ma_%s_%d:', [ACSym, N]));
+      Self.Emit(Format(#9'.ascii "%s"', [MD.Name]));
+      Self.Emit(#9'.byte 0');
+      N := N + 1;
+    end;
+  end;
+  Self.Emit('.section .data');
+  Self.Emit('.balign 8');
+  Self.Emit(Format('methattrs_%s:', [ACSym]));
+  Self.Emit(Format(#9'.quad %d', [Count]));
+  N := 0;
+  for J := 0 to ACD.Methods.Count - 1 do
+  begin
+    MD := TMethodDecl(ACD.Methods.Items[J]);
+    if not MD.IsPublished then Continue;
+    for K := 0 to MD.AttrUses.Count - 1 do
+    begin
+      AU := TAttributeUse(MD.AttrUses.Items[K]);
+      if AU.ThunkDecl = nil then Continue;
+      Self.Emit(Format(#9'.quad __ma_%s_%d', [ACSym, N]));
+      Self.Emit(Format(#9'.quad %s', [TypeinfoSymFor(AU.ResolvedClassName)]));
+      Self.Emit(Format(#9'.quad %s',
+        [RoutineSym(TMethodDecl(AU.ThunkDecl), '')]));
+      N := N + 1;
+    end;
+  end;
+  AMethAttrsRef := 'methattrs_' + ACSym;
+end;
+
 procedure TArm64Backend.EmitClassMetaSections;
 var
   I, S: Integer;
   TD: TTypeDecl;
   RT: TRecordTypeDesc;
   E: TVTableEntry;
-  Sym, ParentRef: string;
+  Sym, ParentRef, AttrsRef, MethAttrsRef: string;
 begin
   { TObject stubs once per program: root typeinfo, a vtable carrying the
     built-in virtuals, and the class-name blob.  TObject_Destroy /
@@ -4554,6 +4716,36 @@ begin
   Self.Emit(#9'.quad TObject_Destroy');
   Self.Emit(#9'.quad TObject_ToString');
 
+  { TCustomAttribute base stubs: attribute classes declare it as their
+    parent, so the typeinfo chain needs a real symbol here }
+  Self.Emit('.section .rodata');
+  Self.Emit('.balign 4');
+  Self.Emit('__cn_TCustomAttribute_h:');
+  Self.Emit(#9'.word -1');
+  Self.Emit(#9'.word 16');
+  Self.Emit(#9'.word 16');
+  Self.Emit('__cn_TCustomAttribute:');
+  Self.Emit(#9'.ascii "TCustomAttribute"');
+  Self.Emit(#9'.byte 0');
+  Self.Emit('.section .data');
+  Self.Emit('.balign 8');
+  Self.Emit('.globl typeinfo_TCustomAttribute');
+  Self.Emit('typeinfo_TCustomAttribute:');
+  Self.Emit(#9'.quad typeinfo_TObject');
+  Self.Emit(#9'.quad 0');
+  Self.Emit(#9'.quad __cn_TCustomAttribute');
+  Self.Emit(#9'.quad 0');
+  Self.Emit(#9'.quad 8');
+  Self.Emit(#9'.quad _FieldCleanup_TCustomAttribute');
+  Self.Emit(#9'.quad vtable_TCustomAttribute');
+  Self.Emit(#9'.quad 0');
+  Self.Emit(#9'.quad 0');
+  Self.Emit('.globl vtable_TCustomAttribute');
+  Self.Emit('vtable_TCustomAttribute:');
+  Self.Emit(#9'.quad typeinfo_TCustomAttribute');
+  Self.Emit(#9'.quad TObject_Destroy');
+  Self.Emit(#9'.quad TObject_ToString');
+
   for I := 0 to FClassDecls.Count - 1 do
   begin
     TD := TTypeDecl(FClassDecls.Items[I]);
@@ -4573,6 +4765,7 @@ begin
         CodegenMangle(RT.Parent.Name)
     else
       ParentRef := 'typeinfo_TObject';
+    EmitAttrTables(TClassTypeDef(TD.Def), Sym, AttrsRef, MethAttrsRef);
     Self.Emit('.section .data');
     Self.Emit('.balign 8');
     Self.Emit(Format('.globl typeinfo_%s', [Sym]));
@@ -4587,8 +4780,8 @@ begin
     Self.Emit(Format(#9'.quad %d', [RT.RawSize()]));
     Self.Emit(Format(#9'.quad _FieldCleanup_%s', [Sym]));
     Self.Emit(Format(#9'.quad vtable_%s', [Sym]));
-    Self.Emit(#9'.quad 0');
-    Self.Emit(#9'.quad 0');
+    Self.Emit(Format(#9'.quad %s', [AttrsRef]));
+    Self.Emit(Format(#9'.quad %s', [MethAttrsRef]));
     Self.Emit(Format('.globl vtable_%s', [Sym]));
     Self.Emit(Format('vtable_%s:', [Sym]));
     Self.Emit(Format(#9'.quad typeinfo_%s', [Sym]));
@@ -5018,12 +5211,7 @@ begin
   begin
     TDcl := TTypeDecl(AProg.Block.TypeDecls.Items[I]);
     if TDcl.Def is TClassTypeDef then
-    begin
-      CDef := TClassTypeDef(TDcl.Def);
-      if CDef.Attributes.Count > 0 then
-        NotYet('class attributes', nil);
-      FClassDecls.Add(TDcl);
-    end
+      FClassDecls.Add(TDcl)
     else if TDcl.Def is TInterfaceTypeDef then
       FIntfDecls.Add(TDcl)
     else if (TDcl.Def is TTypeAliasDef) or (TDcl.Def is TEnumTypeDef) or
@@ -5274,9 +5462,6 @@ var
         UDef := TClassTypeDef(UDcl.Def);
         if UDef.ImplementsNames.Count > 0 then
           NotYet('classes implementing interfaces', nil);
-
-        if UDef.Attributes.Count > 0 then
-          NotYet('class attributes', nil);
         FClassDecls.Add(UDcl);
         for M := 0 to UDef.Methods.Count - 1 do
         begin

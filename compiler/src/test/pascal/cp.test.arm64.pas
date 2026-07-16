@@ -129,6 +129,8 @@ type
     procedure TestCase_StringSelectors;
     { slice 37: aggregate global initialisers — array element lists }
     procedure TestGlobalArrayInitialisers;
+    { slice 38: class attributes — attrs/methattrs tables + RTTI builtins }
+    procedure TestClassAttributes_TablesAndBuiltins;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2457,6 +2459,70 @@ begin
   try
     AssertTrue('has a data section',
       F.FindSection('__DATA', '__data') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestClassAttributes_TablesAndBuiltins;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      ThreadedAttribute = class(TCustomAttribute)
+      end;
+      MarkAttribute = class(TCustomAttribute)
+        FTag: string;
+        constructor Create(ATag: string);
+      end;
+      [Threaded]
+      [Mark('alpha')]
+      TJob = class(TObject)
+      published
+        [Threaded]
+        procedure Run;
+      end;
+    constructor MarkAttribute.Create(ATag: string);
+    begin
+      FTag := ATag
+    end;
+    procedure TJob.Run;
+    begin
+    end;
+    var
+      B: Boolean;
+    begin
+      B := HasClassAttribute(TJob, ThreadedAttribute);
+      WriteLn(B);
+      WriteLn(HasMethodAttribute(TJob, 'Run', ThreadedAttribute));
+      WriteLn(MethodAttributeCount(TJob, 'Run'))
+    end.
+    ''');
+  { attribute tables: (typeinfo, thunk) pairs behind typeinfo slot 7,
+    (name, typeinfo, thunk) triples behind slot 8 }
+  AssertTrue('class attrs table', Pos('attrs_TJob:', AsmT) >= 0);
+  AssertTrue('factory thunk referenced',
+    Pos(#9'.quad __attr_TJob_c0', AsmT) >= 0);
+  AssertTrue('method attrs table', Pos('methattrs_TJob:', AsmT) >= 0);
+  AssertTrue('typeinfo slot 7 wired', Pos(#9'.quad attrs_TJob', AsmT) >= 0);
+  { TCustomAttribute base stubs exist for the parent chain }
+  AssertTrue('TCustomAttribute typeinfo',
+    Pos('typeinfo_TCustomAttribute:', AsmT) >= 0);
+  { RTTI builtins lower to the runtime helpers }
+  AssertTrue('has-class-attr call', Pos(#9'bl _HasClassAttribute', AsmT) >= 0);
+  AssertTrue('has-method-attr call',
+    Pos(#9'bl _HasMethodAttribute', AsmT) >= 0);
+  AssertTrue('count call', Pos(#9'bl _MethodAttributeCount', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64attrs.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
   finally
     F.Free();
   end;
