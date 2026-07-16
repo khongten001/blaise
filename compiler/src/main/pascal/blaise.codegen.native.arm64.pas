@@ -571,12 +571,43 @@ procedure TArm64Backend.EmitFieldAssign(AStmt: TFieldAssignment);
 begin
   if AStmt.PropWriteInfo <> nil then
   begin
-    { method-backed property write: a setter call with the value as the
-      single argument (self in x0, value in x1/d0) }
-    if AStmt.PropIndexExpr <> nil then
-      NotYet('indexed property write', AStmt);
+    { method-backed property write: setter(self, value) — or
+      setter(self, index, value) for the indexed form }
     if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf then
       NotYet('property write on this receiver form', AStmt);
+    if AStmt.PropIndexExpr <> nil then
+    begin
+      if AStmt.IsElemWrite then
+        NotYet('array-field element write via subscript', AStmt);
+      if TPropertyInfo(AStmt.PropWriteInfo).IsStatic then
+        NotYet('static indexed property write', AStmt);
+      if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
+        NotYet('float indexed property write', AStmt);
+      if not (IsIntFam(AStmt.PropIndexExpr.ResolvedType) or
+              (AStmt.PropIndexExpr is TIntLiteral)) then
+        NotYet('indexed property with a non-integer index', AStmt);
+      Self.EmitExprToX0(AStmt.PropIndexExpr);
+      EmitPushX0();
+      Self.EmitExprToX0(AStmt.Expr);
+      EmitPushX0();
+      EmitLoadSlot('x0', AStmt.RecordName);
+      if AStmt.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');
+      EmitPopTo('x2');
+      EmitPopTo('x1');
+      if AStmt.PropAccessorVSlot >= 0 then
+      begin
+        Self.Emit(#9'ldr x9, [x0]');
+        Self.Emit(Format(#9'ldr x9, [x9, #%d]',
+          [(AStmt.PropAccessorVSlot + 1) * 8]));
+        Self.Emit(#9'blr x9');
+      end
+      else
+        Self.Emit(Format(#9'bl %s',
+          [PropAccessorSym(AStmt.PropOwnerType,
+            TPropertyInfo(AStmt.PropWriteInfo).WriteMethod)]));
+      Exit;
+    end;
     if TPropertyInfo(AStmt.PropWriteInfo).IsStatic then
     begin
       { static setter: the value is the FIRST argument (no Self) }
@@ -1400,9 +1431,10 @@ procedure TArm64Backend.EmitPropReadCall(AFld: TFieldAccessExpr);
 begin
   { method-backed property read: a getter call on the receiver.  The value
     lands wherever the getter's return convention puts it (x0 for scalars,
-    d0 for floats) — callers pick the register that matches the context. }
-  if AFld.PropRead.IndexParamName <> '' then
-    NotYet('indexed property read', AFld);
+    d0 for floats) — callers pick the register that matches the context.
+    An indexed read calls getter(self, index). }
+  if (AFld.PropRead.IndexParamName <> '') and (AFld.PropIndexExpr = nil) then
+    NotYet('indexed property read without an index', AFld);
   if AFld.Base <> nil then
     NotYet('chained property read', AFld);
   if AFld.PropRead.IsStatic then
@@ -1412,12 +1444,22 @@ begin
       [PropAccessorSym(AFld.PropOwnerType, AFld.PropRead.ReadMethod)]));
     Exit;
   end;
+  if AFld.PropIndexExpr <> nil then
+  begin
+    if not (IsIntFam(AFld.PropIndexExpr.ResolvedType) or
+            (AFld.PropIndexExpr is TIntLiteral)) then
+      NotYet('indexed property with a non-integer index', AFld);
+    Self.EmitExprToX0(AFld.PropIndexExpr);
+    EmitPushX0();
+  end;
   if AFld.IsImplicitSelf then
     EmitLoadSlot('x0', 'Self')
   else
     EmitLoadSlot('x0', AFld.RecordName);
   if AFld.IsVarParam then
     Self.Emit(#9'ldr x0, [x0]');
+  if AFld.PropIndexExpr <> nil then
+    EmitPopTo('x1');
   if AFld.PropAccessorVSlot >= 0 then
   begin
     Self.Emit(#9'ldr x9, [x0]');
@@ -1437,10 +1479,30 @@ begin
   { fat-pointer stores: the obj half co-owns the backing instance (retain
     on store unless the source owns a +1, release the old); the itab half
     is static rodata — never refcounted. }
-  if AAsgn.IsWeakLhs then
-    NotYet('[Weak] interface assignment', AAsgn);
   if AAsgn.IsVarParam or (AAsgn.ImplicitSelfField <> nil) then
     NotYet('interface assignment to this target', AAsgn);
+  if AAsgn.IsWeakLhs then
+  begin
+    { weak interface: the obj half goes through the weak table; the itab
+      half is plain data }
+    if ArcExprOwnsRef(AAsgn.Expr) then
+      NotYet('owned transient into a [Weak] interface', AAsgn);
+    if (AAsgn.Expr.ResolvedType <> nil) and
+       (AAsgn.Expr.ResolvedType.Kind = tyClass) then
+    begin
+      Self.EmitExprToX0(AAsgn.Expr);
+      Self.Emit(#9'mov x1, x0');
+      EmitSlotAddr('x0', AAsgn.Name);
+      Self.Emit(#9'bl _WeakAssign');
+      ItabSym := IntfItabSym(TRecordTypeDesc(AAsgn.Expr.ResolvedType).Name,
+        AAsgn.ResolvedLhsType.Name);
+      Self.Emit(Format(#9'adrp x0, %s@PAGE', [ItabSym]));
+      Self.Emit(Format(#9'add x0, x0, %s@PAGEOFF', [ItabSym]));
+      EmitStoreSlot('x0', AAsgn.Name + '_itab');
+      Exit;
+    end;
+    NotYet('[Weak] interface assignment from this expression', AAsgn);
+  end;
   if (AAsgn.Expr.ResolvedType <> nil) and
      (AAsgn.Expr.ResolvedType.Kind = tyClass) then
   begin
@@ -1594,10 +1656,20 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyClass) then
   begin
-    if AAsgn.IsWeakLhs then
-      NotYet('[Weak] assignment', AAsgn);
     if AAsgn.ImplicitSelfField <> nil then
       NotYet('implicit-Self class-field assignment via TAssignment', AAsgn);
+    if AAsgn.IsWeakLhs then
+    begin
+      { weak slot: registered in the weak table, no refcount held.  An
+        owned +1 RHS would leak into a non-owning slot — keep it honest }
+      if ArcExprOwnsRef(AAsgn.Expr) then
+        NotYet('owned transient into a [Weak] variable', AAsgn);
+      Self.EmitExprToX0(AAsgn.Expr);
+      Self.Emit(#9'mov x1, x0');
+      EmitSlotAddr('x0', AAsgn.Name);
+      Self.Emit(#9'bl _WeakAssign');
+      Exit;
+    end;
     { same ARC discipline as strings, through _Class* }
     Self.EmitExprToX0(AAsgn.Expr);
     if not ArcExprOwnsRef(AAsgn.Expr) then
@@ -2223,14 +2295,15 @@ begin
         AddLocal(VD.Names.Strings[J], 8);
       if VD.ResolvedType.Kind = tyString then
         FStrLocals.Add(VD.Names.Strings[J]);
-      if VD.ResolvedType.Kind = tyClass then
+      if (VD.ResolvedType.Kind = tyClass) and not VD.IsWeak then
         FObjLocals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyInterface then
       begin
         { fat pointer: split obj/itab slots; the obj half co-owns the
-          backing instance }
+          backing instance (weak slots hold no ref — not released) }
         AddLocal(VD.Names.Strings[J] + '_itab', 8);
-        FIntfLocals.Add(VD.Names.Strings[J]);
+        if not VD.IsWeak then
+          FIntfLocals.Add(VD.Names.Strings[J]);
       end;
     end;
   end;
@@ -3596,9 +3669,26 @@ begin
   begin
     { TFoo.Create(args): _ClassCreate(typeinfo) allocates, installs the
       vtable and takes the +1; a declared constructor body then runs as a
-      plain method on the new instance. }
+      plain method on the new instance.  A metaclass receiver loads the
+      typeinfo VALUE from its variable — _ClassCreate reads size/cleanup/
+      vtable from it at runtime, and a virtual constructor dispatches
+      through the NEW INSTANCE's vtable (EmitMethodCallCommon keys on the
+      ctor's VTableSlot). }
     if AExpr.IsMetaclassDispatch then
-      NotYet('metaclass constructor dispatch', AExpr);
+    begin
+      EmitLoadSlot('x0', AExpr.ObjectName);
+      Self.Emit(#9'bl _ClassCreate');
+      MD := TMethodDecl(AExpr.ResolvedMethod);
+      if (MD <> nil) and (MD.Body <> nil) then
+      begin
+        EmitPushX0();
+        EmitMethodCallCommon(MD, 'Create', AExpr.Args);
+        EmitPopTo('x0');
+      end
+      else if AExpr.Args.Count > 0 then
+        NotYet('constructor arguments without a declared constructor', AExpr);
+      Exit;
+    end;
     Sym := '';
     for I := 0 to FClassDecls.Count - 1 do
     begin
@@ -3750,13 +3840,14 @@ begin
         RegisterGlobalInit(VD.Names.Strings[J], VD);
       if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(VD.Names.Strings[J]);
-      if VD.ResolvedType.Kind = tyClass then
+      if (VD.ResolvedType.Kind = tyClass) and not VD.IsWeak then
         FObjGlobals.Add(VD.Names.Strings[J]);
       if VD.ResolvedType.Kind = tyInterface then
       begin
         FGlobalNames.Add(VD.Names.Strings[J] + '_itab');
         FGlobalSize.Add(VD.Names.Strings[J] + '_itab', 8);
-        FIntfGlobals.Add(VD.Names.Strings[J]);
+        if not VD.IsWeak then
+          FIntfGlobals.Add(VD.Names.Strings[J]);
       end;
       if VD.IsThreadVar then
       begin
@@ -3780,6 +3871,13 @@ begin
         FGlobalSize.Add(VD.Names.Strings[J], 8);
     end;
   end;
+
+  { generic instantiations need monomorphised emission — honest hole }
+  if (AProg.GenericInstances.Count > 0) or
+     (AProg.GenericRecordInstances.Count > 0) or
+     (AProg.GenericFuncInstances.Count > 0) or
+     (AProg.GenericMethodInstances.Count > 0) then
+    NotYet('generic instantiations', nil);
 
   Self.Emit('.text');
 

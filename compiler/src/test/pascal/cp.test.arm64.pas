@@ -109,6 +109,8 @@ type
     procedure TestManagedRecord_ParamsAndResults;
     { slice 28: Single record fields, 3-arg Supports, static properties }
     procedure TestSingleFields_Supports3_StaticProps;
+    { slice 29: [Weak] refs, metaclass constructors, indexed properties }
+    procedure TestWeak_MetaclassCtor_IndexedProps;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -403,14 +405,14 @@ begin
       begin
       end;
       type
-        TThingClass = class of TThing;
+        TBox<T> = class
+          FVal: T;
+        end;
       var
-        T: TThing;
-        MC: TThingClass;
+        B: TBox<Int64>;
       begin
-        MC := TThing;
-        T := MC.Create();
-        T.Go()
+        B := TBox<Int64>.Create();
+        WriteLn(B.FVal)
       end.
       ''');
   except
@@ -1959,6 +1961,55 @@ begin
   AssertTrue('supports lookup', Pos(#9'bl _GetItab', AsmT) >= 0);
   AssertTrue('failure path leaves out-var untouched (skip branch)',
     Pos(#9'add sp, sp, #32', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestWeak_MetaclassCtor_IndexedProps;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TNode = class;
+      TNodeClass = class of TNode;
+      TNode = class
+        [Weak] FParent: TNode;
+        FVal: Int64;
+        function GetItem(I: Int64): Int64;
+        procedure SetItem(I: Int64; V: Int64);
+        property Items[I: Int64]: Int64 read GetItem write SetItem;
+      end;
+    function TNode.GetItem(I: Int64): Int64;
+    begin
+      Result := FVal + I
+    end;
+    procedure TNode.SetItem(I: Int64; V: Int64);
+    begin
+      FVal := V - I
+    end;
+    var
+      A, B: TNode;
+      NC: TNodeClass;
+      [Weak] W: TNode;
+    begin
+      A := TNode.Create();
+      B := TNode.Create();
+      B.FParent := A;
+      W := A;
+      NC := TNode;
+      B := NC.Create();
+      B.Items[2] := 10;
+      WriteLn(B.Items[1])
+    end.
+    ''');
+  { weak var + weak field go through the weak table }
+  AssertTrue('weak assign', Pos(#9'bl _WeakAssign', AsmT) >= 0);
+  { metaclass ctor: _ClassCreate on the metaclass VALUE }
+  AssertTrue('metaclass create', Pos(#9'bl _ClassCreate', AsmT) >= 0);
+  { indexed property accessors }
+  AssertTrue('indexed getter', Pos(#9'bl TNode_GetItem', AsmT) >= 0);
+  AssertTrue('indexed setter', Pos(#9'bl TNode_SetItem', AsmT) >= 0);
 end;
 
 initialization
