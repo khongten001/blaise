@@ -87,6 +87,8 @@ type
     { slice 17: unit classes, statics, class consts, inherited, ToString }
     procedure TestClass_InUnit_PrefixedSymbols;
     procedure TestClass_StaticsConstsInheritedToString;
+    { slice 18: properties (field- and method-backed, virtual accessors) }
+    procedure TestClass_Properties;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1416,6 +1418,57 @@ begin
   AssertTrue('ToString via vtable', Pos(#9'ldr x9, [x9, #16]', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64class17.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestClass_Properties;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TGauge = class
+      private
+        FLevel: Int64;
+        function GetPercent: Int64;
+        procedure SetPercent(AValue: Int64);
+      public
+        property Level: Int64 read FLevel write FLevel;
+        property Percent: Int64 read GetPercent write SetPercent;
+      end;
+    function TGauge.GetPercent: Int64;
+    begin
+      Result := FLevel * 10
+    end;
+    procedure TGauge.SetPercent(AValue: Int64);
+    begin
+      FLevel := AValue div 10
+    end;
+    var
+      G: TGauge;
+    begin
+      G := TGauge.Create();
+      G.Level := 3;
+      WriteLn(G.Percent);
+      G.Percent := 70;
+      WriteLn(G.Level)
+    end.
+    ''');
+  { field-backed accessors are rewritten to plain field access by the
+    semantic pass; method-backed ones call the accessors directly }
+  AssertTrue('getter called', Pos(#9'bl TGauge_GetPercent', AsmT) >= 0);
+  AssertTrue('setter called', Pos(#9'bl TGauge_SetPercent', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64props.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

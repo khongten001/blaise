@@ -156,6 +156,7 @@ type
     procedure EmitUnit(AUnit: TUnit); override;
     procedure EmitUnitInit(AUnit: TUnit);
     function  ClassPrefixOwner(const AOwner: string): string;
+    function  PropAccessorSym(const AOwnerType, AMethod: string): string;
     function  ClassSym(ATD: TTypeDecl): string;
     function  ClassDescOf(ATD: TTypeDecl): TRecordTypeDesc;
     procedure EmitClassCleanupFns;
@@ -421,6 +422,50 @@ end;
 
 procedure TArm64Backend.EmitFieldAssign(AStmt: TFieldAssignment);
 begin
+  if AStmt.PropWriteInfo <> nil then
+  begin
+    { method-backed property write: a setter call with the value as the
+      single argument (self in x0, value in x1/d0) }
+    if AStmt.PropIndexExpr <> nil then
+      NotYet('indexed property write', AStmt);
+    if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf then
+      NotYet('property write on this receiver form', AStmt);
+    if TPropertyInfo(AStmt.PropWriteInfo).IsStatic then
+      NotYet('static property write', AStmt);
+    if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
+    begin
+      Self.EmitExprToD0OrConvert(AStmt.Expr);
+      EmitLoadSlot('x0', AStmt.RecordName);
+      if AStmt.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');
+    end
+    else
+    begin
+      if (TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsString() and
+          OwnsStringRef(AStmt.Expr)) or
+         ((TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.Kind = tyClass) and
+          ArcExprOwnsRef(AStmt.Expr)) then
+        NotYet('owned transient as property value', AStmt);
+      Self.EmitExprToX0(AStmt.Expr);
+      EmitPushX0();
+      EmitLoadSlot('x0', AStmt.RecordName);
+      if AStmt.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');
+      EmitPopTo('x1');
+    end;
+    if AStmt.PropAccessorVSlot >= 0 then
+    begin
+      Self.Emit(#9'ldr x9, [x0]');
+      Self.Emit(Format(#9'ldr x9, [x9, #%d]',
+        [(AStmt.PropAccessorVSlot + 1) * 8]));
+      Self.Emit(#9'blr x9');
+    end
+    else
+      Self.Emit(Format(#9'bl %s',
+        [PropAccessorSym(AStmt.PropOwnerType,
+          TPropertyInfo(AStmt.PropWriteInfo).WriteMethod)]));
+    Exit;
+  end;
   if (AStmt.ObjExpr <> nil) or AStmt.IsVarParam or
      (AStmt.PropIndexExpr <> nil) then
     NotYet('this field-assignment form', AStmt);
@@ -784,6 +829,35 @@ begin
     EmitMethodCallExpr(TMethodCallExpr(AExpr));
     Exit;
   end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).PropRead <> nil) then
+  begin
+    { method-backed property read: a getter call on the receiver }
+    if TFieldAccessExpr(AExpr).PropRead.IndexParamName <> '' then
+      NotYet('indexed property read', AExpr);
+    if TFieldAccessExpr(AExpr).Base <> nil then
+      NotYet('chained property read', AExpr);
+    if TFieldAccessExpr(AExpr).PropRead.IsStatic then
+      NotYet('static property read', AExpr);
+    if TFieldAccessExpr(AExpr).IsImplicitSelf then
+      EmitLoadSlot('x0', 'Self')
+    else
+      EmitLoadSlot('x0', TFieldAccessExpr(AExpr).RecordName);
+    if TFieldAccessExpr(AExpr).IsVarParam then
+      Self.Emit(#9'ldr x0, [x0]');
+    if TFieldAccessExpr(AExpr).PropAccessorVSlot >= 0 then
+    begin
+      Self.Emit(#9'ldr x9, [x0]');
+      Self.Emit(Format(#9'ldr x9, [x9, #%d]',
+        [(TFieldAccessExpr(AExpr).PropAccessorVSlot + 1) * 8]));
+      Self.Emit(#9'blr x9');
+    end
+    else
+      Self.Emit(Format(#9'bl %s',
+        [PropAccessorSym(TFieldAccessExpr(AExpr).PropOwnerType,
+          TFieldAccessExpr(AExpr).PropRead.ReadMethod)]));
+    Exit;
+  end;
   if (AExpr is TFieldAccessExpr) and TFieldAccessExpr(AExpr).IsConstant then
   begin
     { TypeName.ConstName — folded by the semantic pass }
@@ -895,6 +969,14 @@ begin
       Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
     Self.Emit(#9'fmov d0, x0');
     Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).PropRead <> nil) and IsFloatExpr(AExpr) then
+  begin
+    { float property read: the getter call leaves the value in d0 —
+      route through the integer emitter's property branch, which ends
+      at the call, then the result is already where we need it }
+    NotYet('float property read', AExpr);
   end;
   if (AExpr is TFieldAccessExpr) and IsFloatExpr(AExpr) then
   begin
@@ -2151,6 +2233,23 @@ begin
   Result := CodegenMangle(AOwner) + '_';
 end;
 
+function TArm64Backend.PropAccessorSym(const AOwnerType,
+  AMethod: string): string;
+var
+  D: TTypeDesc;
+  Pfx: string;
+begin
+  { mirror of TCodeGenQBE.PropAccessorTarget's direct-call arm }
+  Pfx := '';
+  if FSymTable <> nil then
+  begin
+    D := FSymTable.FindType(AOwnerType);
+    if D <> nil then
+      Pfx := ClassPrefixOwner(D.OwningUnit);
+  end;
+  Result := Pfx + CodegenMangle(AOwnerType) + '_' + CodegenMangle(AMethod);
+end;
+
 function TArm64Backend.ClassSym(ATD: TTypeDecl): string;
 var
   D: TRecordTypeDesc;
@@ -2445,8 +2544,6 @@ begin
       CDef := TClassTypeDef(TDcl.Def);
       if CDef.ImplementsNames.Count > 0 then
         NotYet('classes implementing interfaces', nil);
-      if CDef.Properties.Count > 0 then
-        NotYet('class properties', nil);
       if CDef.Attributes.Count > 0 then
         NotYet('class attributes', nil);
       FClassDecls.Add(TDcl);
@@ -2598,8 +2695,7 @@ var
         UDef := TClassTypeDef(UDcl.Def);
         if UDef.ImplementsNames.Count > 0 then
           NotYet('classes implementing interfaces', nil);
-        if UDef.Properties.Count > 0 then
-          NotYet('class properties', nil);
+
         if UDef.Attributes.Count > 0 then
           NotYet('class attributes', nil);
         FClassDecls.Add(UDcl);
