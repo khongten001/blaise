@@ -2949,11 +2949,63 @@ begin
 end;
 
 procedure TArm64Backend.RegisterGlobalInit(const ASym: string; AVD: TVarDecl);
+var
+  SAT: TStaticArrayTypeDesc;
+  ElemDir, Lines, ElemSym: string;
+  J: Integer;
 begin
-  { Integer, float and string literal initialisers become .data entries;
-    aggregate and const-expression initialisers stay honest holes. }
-  if AVD.InitConst.IsArrayConst or (AVD.InitConst.ConstParts <> nil) then
+  { Integer, float, string and static-array initialisers become .data
+    entries; const-expression initialisers stay honest holes. }
+  if AVD.InitConst.ConstParts <> nil then
     NotYet('initialised global of this form', AVD);
+  if AVD.InitConst.IsArrayConst then
+  begin
+    if (AVD.ResolvedType = nil) or
+       (AVD.ResolvedType.Kind <> tyStaticArray) then
+      NotYet('initialised global of this form', AVD);
+    { multi-dim const arrays are nested static-array types: the directive
+      is governed by the INNERMOST scalar element and the flat row-major
+      element list already matches the contiguous layout }
+    SAT := TStaticArrayTypeDesc(AVD.ResolvedType);
+    while (SAT.ElementType <> nil) and
+          (SAT.ElementType.Kind = tyStaticArray) do
+      SAT := TStaticArrayTypeDesc(SAT.ElementType);
+    if SAT.ElementType = nil then
+      NotYet('initialised global of this form', AVD);
+    Lines := '';
+    if SAT.ElementType.Kind = tyString then
+    begin
+      { each element points at its own immortal blob — .quad takes a bare
+        symbol only (no addend arithmetic), so the _d label sits AT the
+        element's data, same scheme as scalar string globals }
+      for J := 0 to AVD.InitConst.ArrayElements.Count - 1 do
+      begin
+        ElemSym := Format('%s_e%d', [ASym, J]);
+        FGlobalStrInits.Add(ElemSym);
+        FGlobalStrVals.Add(AVD.InitConst.ArrayElements.Strings[J]);
+        if J > 0 then Lines := Lines + #10;
+        Lines := Lines + Format(#9'.quad __gi_%s_d', [ElemSym]);
+      end;
+      FGlobalInits.Add(ASym, Lines);
+      Exit;
+    end;
+    case SAT.ElementType.Kind of
+      tyByte, tyBoolean: ElemDir := #9'.byte ';
+      tySmallInt, tyWord: ElemDir := #9'.hword ';
+      tyInt64, tyUInt64, tyPointer, tyPChar: ElemDir := #9'.quad ';
+      tyDouble: ElemDir := #9'.double ';
+      tySingle: ElemDir := #9'.float ';
+    else
+      ElemDir := #9'.word ';
+    end;
+    for J := 0 to AVD.InitConst.ArrayElements.Count - 1 do
+    begin
+      if J > 0 then Lines := Lines + #10;
+      Lines := Lines + ElemDir + AVD.InitConst.ArrayElements.Strings[J];
+    end;
+    FGlobalInits.Add(ASym, Lines);
+    Exit;
+  end;
   if AVD.InitConst.IsString then
   begin
     { the global points at an immortal blob emitted beside the .data

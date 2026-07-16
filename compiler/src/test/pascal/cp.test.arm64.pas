@@ -127,6 +127,8 @@ type
     procedure TestForIn_ClassEnumerator;
     { slice 36: case over strings — _StringEquals chains }
     procedure TestCase_StringSelectors;
+    { slice 37: aggregate global initialisers — array element lists }
+    procedure TestGlobalArrayInitialisers;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2415,6 +2417,46 @@ begin
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestGlobalArrayInitialisers;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      Nums: array[0..3] of Integer = (10, 20, 30, 40);
+      Names: array[0..1] of string = ('alpha', 'beta');
+      Longs: array[0..1] of Int64 = (3, 4);
+      Ds: array[0..1] of Double = (1.5, 2.5);
+    begin
+      WriteLn(Nums[2]);
+      WriteLn(Names[1])
+    end.
+    ''');
+  { integer elements laid out inline in .data }
+  AssertTrue('int elements', Pos(#9'.word 30', AsmT) >= 0);
+  { 8-byte elements }
+  AssertTrue('int64 elements', Pos(#9'.quad 4', AsmT) >= 0);
+  { double elements }
+  AssertTrue('double elements', Pos(#9'.double 2.5', AsmT) >= 0);
+  { string elements point at immortal blobs (no symbol arithmetic) }
+  AssertTrue('string element pointer',
+    Pos(#9'.quad __gi_Names_e1_d', AsmT) >= 0);
+  AssertTrue('string element blob', Pos('__gi_Names_e1_d:', AsmT) >= 0);
+  AssertTrue('string element bytes', Pos(#9'.ascii "beta"', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ginit.o');
+  try
+    AssertTrue('has a data section',
+      F.FindSection('__DATA', '__data') <> nil);
   finally
     F.Free();
   end;
