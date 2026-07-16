@@ -121,6 +121,12 @@ type
     procedure TestDynArrays_LifecycleAndElements;
     { slice 35: small sets — literals, membership, union/inter/diff }
     procedure TestSmallSets_LiteralsInOps;
+    { slice 36: for-in over static/dyn arrays, string bytes, small sets }
+    procedure TestForIn_ArraysStringsSets;
+    { slice 36: for-in via the class enumerator protocol }
+    procedure TestForIn_ClassEnumerator;
+    { slice 36: case over strings — _StringEquals chains }
+    procedure TestCase_StringSelectors;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2253,6 +2259,159 @@ begin
   AssertTrue('difference complement', Pos(#9'movn x2, #0', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64sets.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestForIn_ArraysStringsSets;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TDay = (Mon, Tue, Wed);
+    var
+      A: array[0..2] of Int64;
+      D: array of Int64;
+      S: string;
+      Days: set of TDay;
+      V, Total: Int64;
+      B: Byte;
+      E: TDay;
+    begin
+      A[0] := 1; A[1] := 2; A[2] := 3;
+      SetLength(D, 2);
+      D[0] := 5; D[1] := 6;
+      S := 'hi';
+      Days := [Mon, Wed];
+      Total := 0;
+      for V in A do
+        Total := Total + V;
+      for V in D do
+        Total := Total + V;
+      for B in S do
+        Total := Total + B;
+      for E in Days do
+        Total := Total + 1;
+      WriteLn(Total)
+    end.
+    ''');
+  { dyn-array iteration re-reads the length each pass }
+  AssertTrue('dyn length', Pos(#9'bl _DynArrayLength', AsmT) >= 0);
+  { string byte-iteration: length at dataptr-8, byte loads }
+  AssertTrue('string length read', Pos(#9'ldur w1, [x0, #-8]', AsmT) >= 0);
+  AssertTrue('string byte load', Pos(#9'ldrb w0, [x0]', AsmT) >= 0);
+  { set iteration: mask bit test per ordinal }
+  AssertTrue('set bit test', Pos(#9'lsr x0, x0, x1', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64forin.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestForIn_ClassEnumerator;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TEnum = class
+        FIdx: Int64;
+        function MoveNext(): Boolean;
+        function GetCurrent(): Int64;
+        property Current: Int64 read GetCurrent;
+      end;
+      TColl = class
+        function GetEnumerator(): TEnum;
+      end;
+    function TEnum.MoveNext(): Boolean;
+    begin
+      FIdx := FIdx + 1;
+      Result := FIdx < 3
+    end;
+    function TEnum.GetCurrent(): Int64;
+    begin
+      Result := FIdx
+    end;
+    function TColl.GetEnumerator(): TEnum;
+    begin
+      Result := TEnum.Create();
+    end;
+    var
+      C: TColl;
+      V: Int64;
+    begin
+      C := TColl.Create();
+      for V in C do
+        WriteLn(V)
+    end.
+    ''');
+  { the three protocol methods are all called }
+  AssertTrue('GetEnumerator call', Pos(#9'bl TColl_GetEnumerator', AsmT) >= 0);
+  AssertTrue('MoveNext call', Pos(#9'bl TEnum_MoveNext', AsmT) >= 0);
+  AssertTrue('Current getter call', Pos(#9'bl TEnum_GetCurrent', AsmT) >= 0);
+  { the enumerator is transferred into its slot (release old, no AddRef) }
+  AssertTrue('enumerator slot release', Pos(#9'bl _ClassRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64forinenum.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestCase_StringSelectors;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      S: string;
+      N: Int64;
+    begin
+      S := 'beta';
+      case S of
+        'alpha': N := 1;
+        'beta', 'gamma': N := 2;
+      else
+        N := 0
+      end;
+      case S + 'x' of
+        'betax': N := N + 1;
+      end;
+      WriteLn(N)
+    end.
+    ''');
+  { each label compares via the RTL — pointer cmp would be silently wrong }
+  AssertTrue('string equals chain', Pos(#9'bl _StringEquals', AsmT) >= 0);
+  AssertTrue('match branches to body', Pos(#9'cbnz x0, Lcbody', AsmT) >= 0);
+  { the concat selector is an rc=0 transient: pinned (AddRef then Release)
+    after the dispatch — a bare release would make it immortal }
+  AssertTrue('rc0 selector pinned', Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64strcase.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

@@ -157,6 +157,8 @@ type
     procedure EmitCase(AStmt: TCaseStmt);
     procedure EmitExprToX0Aux(AExpr: TASTExpr);
     procedure EmitFor(AStmt: TForStmt);
+    procedure EmitForIn(AStmt: TForInStmt);
+    procedure EmitForInAssignX0(AStmt: TForInStmt; AOwned: Boolean);
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl);
     function  StackArgSize(AArg: TASTExpr): Integer;
@@ -1633,6 +1635,11 @@ begin
     EmitFor(TForStmt(AStmt));
     Exit;
   end;
+  if AStmt is TForInStmt then
+  begin
+    EmitForIn(TForInStmt(AStmt));
+    Exit;
+  end;
   if AStmt is TExitStmt then
   begin
     EmitExit(TExitStmt(AStmt));
@@ -2523,11 +2530,10 @@ var
   Br: TCaseBranch;
   EndL, NextL, BodyL: string;
 begin
-  { ordinal case: chained compares — selector evaluated ONCE and kept on
-    the stack across the branch tests (a value expression can be a call).
-    String cases need _StringEquals chains — NotYet. }
-  if AStmt.IsStringCase then
-    NotYet('string case statements', AStmt);
+  { chained compares — selector evaluated ONCE and kept on the stack
+    across the branch tests (a value expression can be a call).  Ordinal
+    labels compare registers; string labels compare content via
+    _StringEquals (a pointer cmp would be silently wrong). }
   EndL := NewLabel('cend');
   Self.EmitExprToX0(AStmt.Selector);
   EmitPushX0();
@@ -2538,10 +2544,23 @@ begin
     BodyL := NewLabel('cbody');
     for J := 0 to Br.Values.Count - 1 do
     begin
-      Self.Emit(#9'ldr x0, [sp]');
-      Self.EmitExprToX0Aux(TASTExpr(Br.Values.Items[J]));
-      Self.Emit(#9'cmp x0, x1');
-      Self.Emit(Format(#9'b.eq %s', [BodyL]));
+      if AStmt.IsStringCase then
+      begin
+        { label values are string constants by grammar — immortal, so
+          the value needs no disposal }
+        Self.EmitExprToX0(TASTExpr(Br.Values.Items[J]));
+        Self.Emit(#9'mov x1, x0');
+        Self.Emit(#9'ldr x0, [sp]');
+        Self.Emit(#9'bl _StringEquals');
+        Self.Emit(Format(#9'cbnz x0, %s', [BodyL]));
+      end
+      else
+      begin
+        Self.Emit(#9'ldr x0, [sp]');
+        Self.EmitExprToX0Aux(TASTExpr(Br.Values.Items[J]));
+        Self.Emit(#9'cmp x0, x1');
+        Self.Emit(Format(#9'b.eq %s', [BodyL]));
+      end;
     end;
     Self.Emit(Format(#9'b %s', [NextL]));
     Self.Emit(BodyL + ':');
@@ -2552,6 +2571,14 @@ begin
   if AStmt.ElseStmt <> nil then
     EmitStmt(AStmt.ElseStmt);
   Self.Emit(EndL + ':');
+  if AStmt.IsStringCase and ArcBuiltinStrArgOwnsRef(AStmt.Selector) then
+  begin
+    { transient selector (concat/call result): dispose by refcount shape
+      once dispatch is done — all branch bodies rejoin at EndL with the
+      selector bracket still live }
+    Self.Emit(#9'ldr x0, [sp]');
+    EmitStrDisposeX0(AStmt.Selector);
+  end;
   Self.Emit(#9'add sp, sp, #16');   { drop the selector }
 end;
 
@@ -2612,6 +2639,262 @@ begin
   EmitStoreSlot('x0', AStmt.VarName);
   Self.Emit(Format(#9'b %s', [TopL]));
   Self.Emit(EndL + ':');
+end;
+
+procedure TArm64Backend.EmitForInAssignX0(AStmt: TForInStmt; AOwned: Boolean);
+begin
+  { assign the value in x0 to the loop variable.  Managed loop vars run
+    the retain/release discipline: a BORROWED element value (array/string/
+    set paths) is retained before it replaces the old binding; an OWNED
+    value (enumerator Current getter result, +1) transfers straight in —
+    an extra AddRef there would leak one ref per iteration. }
+  if (AStmt.ResolvedVarType <> nil) and
+     (AStmt.ResolvedVarType.IsString() or
+      (AStmt.ResolvedVarType.Kind = tyClass)) then
+  begin
+    EmitPushX0();
+    if not AOwned then
+    begin
+      if AStmt.ResolvedVarType.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+    end;
+    EmitLoadSlot('x0', AStmt.VarName);
+    if AStmt.ResolvedVarType.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AStmt.VarName);
+    Exit;
+  end;
+  EmitStoreSlot('x0', AStmt.VarName);
+end;
+
+procedure TArm64Backend.EmitForIn(AStmt: TForInStmt);
+var
+  CondL, NextL, EndL: string;
+  Elem: TTypeDesc;
+  ESz: Integer;
+  GetE, MN, Cur: TMethodDecl;
+  EmptyArgs: TObjectList;
+begin
+  if (AStmt.ResolvedVarType <> nil) and
+     (AStmt.ResolvedVarType.Kind in [tyRecord, tyInterface]) then
+    NotYet('for-in loop variable of this type', AStmt);
+  CondL := NewLabel('ficond');
+  NextL := NewLabel('finext');
+  EndL := NewLabel('fiend');
+
+  if AStmt.IsArrayIter or AStmt.IsDynArrayIter then
+  begin
+    { array iteration: idx runs low..high (static) / 0..len-1 (dynamic);
+      element address = base + (idx - low) * elemsize.  The collection
+      must be a plain ident — matches the subscript emitters. }
+    if not (AStmt.CollExpr is TIdentExpr) then
+      NotYet('for-in over this array expression', AStmt);
+    if TIdentExpr(AStmt.CollExpr).ParamMode = pmVar then
+      NotYet('for-in over a var array parameter', AStmt);
+    if AStmt.IsArrayIter then
+      Elem := TStaticArrayTypeDesc(AStmt.CollExpr.ResolvedType).ElementType
+    else
+      Elem := TDynArrayTypeDesc(AStmt.CollExpr.ResolvedType).ElementType;
+    if (Elem = nil) or (Elem.Kind = tyRecord) or (Elem.RawSize() > 8) then
+      NotYet('for-in over aggregate elements', AStmt);
+    ESz := Elem.RawSize();
+    if AStmt.IsArrayIter then
+      EmitIntLiteral('x0', AStmt.ArrayLow)
+    else
+      Self.Emit(#9'movz x0, #0');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(CondL + ':');
+    if AStmt.IsArrayIter then
+    begin
+      EmitLoadSlot('x0', AStmt.IdxVarName);
+      EmitIntLiteral('x1', AStmt.ArrayHigh);
+      Self.Emit(#9'cmp x0, x1');
+      Self.Emit(Format(#9'b.gt %s', [EndL]));
+    end
+    else
+    begin
+      { length re-read every pass — the body may SetLength }
+      EmitLoadSlot('x0', TIdentExpr(AStmt.CollExpr).Name);
+      Self.Emit(#9'bl _DynArrayLength');
+      Self.Emit(#9'mov x1, x0');
+      EmitLoadSlot('x0', AStmt.IdxVarName);
+      Self.Emit(#9'cmp x0, x1');
+      Self.Emit(Format(#9'b.ge %s', [EndL]));
+    end;
+    if AStmt.IsArrayIter then
+      EmitSlotAddr('x0', TIdentExpr(AStmt.CollExpr).Name)
+    else
+      EmitLoadSlot('x0', TIdentExpr(AStmt.CollExpr).Name);
+    EmitLoadSlot('x1', AStmt.IdxVarName);
+    if AStmt.IsArrayIter and (AStmt.ArrayLow <> 0) then
+    begin
+      EmitIntLiteral('x2', AStmt.ArrayLow);
+      Self.Emit(#9'sub x1, x1, x2');
+    end;
+    EmitIntLiteral('x2', ESz);
+    Self.Emit(#9'mul x1, x1, x2');
+    Self.Emit(#9'add x0, x0, x1');
+    EmitElemLoad(Elem);
+    EmitForInAssignX0(AStmt, False);
+    FBreakLbls.Add(EndL);
+    FLoopExcDepth.Add(IntToStr(FExcDepth));
+    FContLbls.Add(NextL);
+    Self.EmitStmt(AStmt.Body);
+    FContLbls.Delete(FContLbls.Count - 1);
+    FBreakLbls.Delete(FBreakLbls.Count - 1);
+    FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
+    Self.Emit(NextL + ':');
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    Self.Emit(#9'add x0, x0, #1');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(Format(#9'b %s', [CondL]));
+    Self.Emit(EndL + ':');
+    Exit;
+  end;
+
+  if AStmt.IsStringIter or AStmt.IsCodePointIter then
+  begin
+    { string iteration: length lives 8 bytes below the data pointer.
+      Byte mode loads one byte per pass; codepoint mode calls
+      _Utf8DecodeAt (packed result: low 32 = codepoint, high 32 = byte
+      advance) and steps by the advance. }
+    if ArcBuiltinStrArgOwnsRef(AStmt.CollExpr) then
+      NotYet('for-in over a transient string', AStmt);
+    Self.Emit(#9'movz x0, #0');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(CondL + ':');
+    Self.EmitExprToX0(AStmt.CollExpr);
+    Self.Emit(#9'ldur w1, [x0, #-8]');
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    Self.Emit(#9'cmp x0, x1');
+    Self.Emit(Format(#9'b.ge %s', [EndL]));
+    Self.EmitExprToX0(AStmt.CollExpr);
+    if AStmt.IsCodePointIter then
+    begin
+      EmitLoadSlot('x1', AStmt.IdxVarName);
+      Self.Emit(#9'bl _Utf8DecodeAt');
+      EmitPushX0();
+      Self.Emit(#9'lsr x0, x0, #32');
+      EmitStoreSlot('x0', AStmt.AdvVarName);
+      EmitPopTo('x0');
+      Self.Emit(#9'sxtw x0, w0');
+    end
+    else
+    begin
+      EmitLoadSlot('x1', AStmt.IdxVarName);
+      Self.Emit(#9'add x0, x0, x1');
+      Self.Emit(#9'ldrb w0, [x0]');
+    end;
+    EmitForInAssignX0(AStmt, False);
+    FBreakLbls.Add(EndL);
+    FLoopExcDepth.Add(IntToStr(FExcDepth));
+    FContLbls.Add(NextL);
+    Self.EmitStmt(AStmt.Body);
+    FContLbls.Delete(FContLbls.Count - 1);
+    FBreakLbls.Delete(FBreakLbls.Count - 1);
+    FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
+    Self.Emit(NextL + ':');
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    if AStmt.IsCodePointIter then
+    begin
+      EmitLoadSlot('x1', AStmt.AdvVarName);
+      Self.Emit(#9'add x0, x0, x1');
+    end
+    else
+      Self.Emit(#9'add x0, x0, #1');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(Format(#9'b %s', [CondL]));
+    Self.Emit(EndL + ':');
+    Exit;
+  end;
+
+  if AStmt.IsSetIter then
+  begin
+    { set iteration: evaluate the mask ONCE into its synthetic slot, then
+      walk bit positions 0..BitCount-1 and run the body for each set bit }
+    if AStmt.SetIsJumbo then
+      NotYet('for-in over a jumbo set', AStmt);
+    Self.EmitExprToX0(AStmt.CollExpr);
+    EmitStoreSlot('x0', AStmt.SetMaskVarName);
+    Self.Emit(#9'movz x0, #0');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(CondL + ':');
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    EmitIntLiteral('x1', AStmt.SetBitCount);
+    Self.Emit(#9'cmp x0, x1');
+    Self.Emit(Format(#9'b.ge %s', [EndL]));
+    EmitLoadSlot('x0', AStmt.SetMaskVarName);
+    EmitLoadSlot('x1', AStmt.IdxVarName);
+    Self.Emit(#9'lsr x0, x0, x1');
+    Self.Emit(#9'movz x2, #1');
+    Self.Emit(#9'and x0, x0, x2');
+    Self.Emit(Format(#9'cbz x0, %s', [NextL]));
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    EmitForInAssignX0(AStmt, False);
+    FBreakLbls.Add(EndL);
+    FLoopExcDepth.Add(IntToStr(FExcDepth));
+    FContLbls.Add(NextL);
+    Self.EmitStmt(AStmt.Body);
+    FContLbls.Delete(FContLbls.Count - 1);
+    FBreakLbls.Delete(FBreakLbls.Count - 1);
+    FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
+    Self.Emit(NextL + ':');
+    EmitLoadSlot('x0', AStmt.IdxVarName);
+    Self.Emit(#9'add x0, x0, #1');
+    EmitStoreSlot('x0', AStmt.IdxVarName);
+    Self.Emit(Format(#9'b %s', [CondL]));
+    Self.Emit(EndL + ':');
+    Exit;
+  end;
+
+  { class enumerator protocol: GetEnumerator -> owned enumerator object;
+    while MoveNext do LoopVar := Current.  The enumerator TRANSFERS into
+    its synthetic slot (the getter result is +1; the slot's scope-exit
+    release balances it — an AddRef here would leak one enumerator per
+    loop). }
+  GetE := TMethodDecl(AStmt.GetEnumDecl);
+  MN := TMethodDecl(AStmt.MoveNextDecl);
+  Cur := TMethodDecl(AStmt.CurrentDecl);
+  if (GetE = nil) or (MN = nil) or (Cur = nil) then
+    NotYet('for-in over this collection', AStmt);
+  if (AStmt.ResolvedVarType <> nil) and
+     (AStmt.ResolvedVarType.Kind in [tyDouble, tySingle]) then
+    NotYet('float-typed enumerator Current', AStmt);
+  if ArcExprOwnsRef(AStmt.CollExpr) then
+    NotYet('for-in over an owned transient collection', AStmt);
+  EmptyArgs := TObjectList.Create(False);
+  try
+    Self.EmitExprToX0(AStmt.CollExpr);
+    EmitMethodCallCommon(GetE, 'GetEnumerator', EmptyArgs);
+    EmitPushX0();
+    EmitLoadSlot('x0', AStmt.EnumVarName);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', AStmt.EnumVarName);
+    Self.Emit(CondL + ':');
+    EmitLoadSlot('x0', AStmt.EnumVarName);
+    EmitMethodCallCommon(MN, 'MoveNext', EmptyArgs);
+    Self.Emit(Format(#9'cbz x0, %s', [EndL]));
+    EmitLoadSlot('x0', AStmt.EnumVarName);
+    EmitMethodCallCommon(Cur, Cur.Name, EmptyArgs);
+    EmitForInAssignX0(AStmt, True);
+    FBreakLbls.Add(EndL);
+    FLoopExcDepth.Add(IntToStr(FExcDepth));
+    FContLbls.Add(CondL);
+    Self.EmitStmt(AStmt.Body);
+    FContLbls.Delete(FContLbls.Count - 1);
+    FBreakLbls.Delete(FBreakLbls.Count - 1);
+    FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
+    Self.Emit(Format(#9'b %s', [CondL]));
+    Self.Emit(EndL + ':');
+  finally
+    EmptyArgs.Free();
+  end;
 end;
 
 procedure TArm64Backend.EmitExit(AStmt: TExitStmt);
@@ -2882,6 +3165,30 @@ begin
     for I := 0 to TCaseStmt(AStmt).Branches.Count - 1 do
       RegisterForSlots(TCaseBranch(TCaseStmt(AStmt).Branches.Items[I]).Stmt);
     RegisterForSlots(TCaseStmt(AStmt).ElseStmt);
+    Exit;
+  end;
+  if AStmt is TForInStmt then
+  begin
+    RegisterForSlots(TForInStmt(AStmt).Body);
+    Exit;
+  end;
+  { try bodies can hold for statements too — skipping them here would
+    pair registration and emission on DIFFERENT walk orders and make two
+    loops share one hidden end slot (silent wrong code, not a NotYet) }
+  if AStmt is TTryFinallyStmt then
+  begin
+    RegisterForSlots(TTryFinallyStmt(AStmt).TryBody);
+    RegisterForSlots(TTryFinallyStmt(AStmt).FinallyBody);
+    Exit;
+  end;
+  if AStmt is TTryExceptStmt then
+  begin
+    RegisterForSlots(TTryExceptStmt(AStmt).TryBody);
+    for I := 0 to TTryExceptStmt(AStmt).Handlers.Count - 1 do
+      RegisterForSlots(TExceptHandlerClause(
+        TTryExceptStmt(AStmt).Handlers.Items[I]).Body);
+    RegisterForSlots(TTryExceptStmt(AStmt).ElseBody);
+    RegisterForSlots(TTryExceptStmt(AStmt).ExceptBody);
   end;
 end;
 
@@ -2941,6 +3248,30 @@ begin
       if N > Result then Result := N;
     end;
     N := MaxManagedRecRet(TCaseStmt(AStmt).ElseStmt);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TForInStmt then
+    Result := MaxManagedRecRet(TForInStmt(AStmt).Body)
+  else if AStmt is TTryFinallyStmt then
+  begin
+    { an undersized __rret for an assignment inside a try body would be a
+      silent buffer overflow, not a NotYet — walk try bodies too }
+    Result := MaxManagedRecRet(TTryFinallyStmt(AStmt).TryBody);
+    N := MaxManagedRecRet(TTryFinallyStmt(AStmt).FinallyBody);
+    if N > Result then Result := N;
+  end
+  else if AStmt is TTryExceptStmt then
+  begin
+    Result := MaxManagedRecRet(TTryExceptStmt(AStmt).TryBody);
+    for I := 0 to TTryExceptStmt(AStmt).Handlers.Count - 1 do
+    begin
+      N := MaxManagedRecRet(TExceptHandlerClause(
+        TTryExceptStmt(AStmt).Handlers.Items[I]).Body);
+      if N > Result then Result := N;
+    end;
+    N := MaxManagedRecRet(TTryExceptStmt(AStmt).ElseBody);
+    if N > Result then Result := N;
+    N := MaxManagedRecRet(TTryExceptStmt(AStmt).ExceptBody);
     if N > Result then Result := N;
   end;
 end;
