@@ -133,7 +133,7 @@ type
       backend consumes concat's +1 directly instead of the deferred
       transient-release machinery the mature backends use (a concat result
       here is always consumed exactly once by its statement). }
-    function  OwnsStringRef(AExpr: TASTExpr): Boolean;
+    procedure EmitStrDisposeX0(AExpr: TASTExpr);
     procedure EmitFloatLitSection;
     procedure EmitStrLitAddr(AValue: string);
     function  AsmEscape(const AValue: string): string;
@@ -491,7 +491,7 @@ begin
   if AFld.TypeDesc.IsString() or (AFld.TypeDesc.Kind = tyClass) then
   begin
     Self.EmitExprToX0(AValueExpr);
-    if (AFld.TypeDesc.IsString() and not OwnsStringRef(AValueExpr)) or
+    if (AFld.TypeDesc.IsString() and not ArcExprOwnsRef(AValueExpr)) or
        ((AFld.TypeDesc.Kind = tyClass) and
         not ArcExprOwnsRef(AValueExpr)) then
     begin
@@ -546,7 +546,7 @@ begin
   if AFld.TypeDesc.IsString() or (AFld.TypeDesc.Kind = tyClass) then
   begin
     Self.EmitExprToX0(AValueExpr);
-    if (AFld.TypeDesc.IsString() and not OwnsStringRef(AValueExpr)) or
+    if (AFld.TypeDesc.IsString() and not ArcExprOwnsRef(AValueExpr)) or
        ((AFld.TypeDesc.Kind = tyClass) and
         not ArcExprOwnsRef(AValueExpr)) then
     begin
@@ -660,7 +660,7 @@ begin
     else
     begin
       if (TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsString() and
-          OwnsStringRef(AStmt.Expr)) or
+          ArcBuiltinStrArgOwnsRef(AStmt.Expr)) or
          ((TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.Kind = tyClass) and
           ArcExprOwnsRef(AStmt.Expr)) then
         NotYet('owned transient as property value', AStmt);
@@ -732,7 +732,7 @@ begin
       address is re-derived after the release call (it clobbers x9). }
     Self.EmitExprToX0(AStmt.Expr);
     if (AStmt.FieldInfo.TypeDesc.IsString() and
-        not OwnsStringRef(AStmt.Expr)) or
+        not ArcExprOwnsRef(AStmt.Expr)) or
        ((AStmt.FieldInfo.TypeDesc.Kind = tyClass) and
         not ArcExprOwnsRef(AStmt.Expr)) then
     begin
@@ -936,9 +936,29 @@ begin
       Self.EmitExprToX0(BE.Left);
       EmitPushX0();
       Self.EmitExprToX0(BE.Right);
-      Self.Emit(#9'mov x1, x0');
-      EmitPopTo('x0');
+      EmitPushX0();
+      Self.Emit(#9'ldur x1, [sp]');        { right }
+      Self.Emit(#9'ldur x0, [sp, #16]');   { left  }
       Self.Emit(#9'bl _StringConcat');
+      { dispose operand transients by shape — nested concats produce rc=0
+        intermediates that would otherwise leak permanently }
+      if ArcBuiltinStrArgOwnsRef(BE.Left) or
+         ArcBuiltinStrArgOwnsRef(BE.Right) then
+      begin
+        EmitPushX0();                      { park the result }
+        if ArcBuiltinStrArgOwnsRef(BE.Right) then
+        begin
+          Self.Emit(#9'ldur x0, [sp, #16]');
+          EmitStrDisposeX0(BE.Right);
+        end;
+        if ArcBuiltinStrArgOwnsRef(BE.Left) then
+        begin
+          Self.Emit(#9'ldur x0, [sp, #32]');
+          EmitStrDisposeX0(BE.Left);
+        end;
+        EmitPopTo('x0');
+      end;
+      Self.Emit(#9'add sp, sp, #32');      { drop the operand brackets }
       Exit;
     end;
     { string comparisons: content comparison via the RTL helpers — an int
@@ -960,15 +980,15 @@ begin
       else
         Self.Emit(#9'bl _StringCompare');
       EmitPushX0();                        { result bracket }
-      if OwnsStringRef(BE.Right) then
+      if ArcBuiltinStrArgOwnsRef(BE.Right) then
       begin
         Self.Emit(#9'ldur x0, [sp, #16]');
-        Self.Emit(#9'bl _StringRelease');
+        EmitStrDisposeX0(BE.Right);
       end;
-      if OwnsStringRef(BE.Left) then
+      if ArcBuiltinStrArgOwnsRef(BE.Left) then
       begin
         Self.Emit(#9'ldur x0, [sp, #32]');
-        Self.Emit(#9'bl _StringRelease');
+        EmitStrDisposeX0(BE.Left);
       end;
       EmitPopTo('x0');
       Self.Emit(#9'add sp, sp, #32');      { drop the operand brackets }
@@ -1255,11 +1275,23 @@ begin
   NotYet('expression ' + AExpr.ClassName, AExpr);
 end;
 
-function TArm64Backend.OwnsStringRef(AExpr: TASTExpr): Boolean;
+procedure TArm64Backend.EmitStrDisposeX0(AExpr: TASTExpr);
 begin
-  Result := ArcExprOwnsRef(AExpr)
-    or ((AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).Op = boAdd) and
-        (AExpr.ResolvedType <> nil) and (AExpr.ResolvedType.Kind = tyString));
+  { dispose the string transient whose value is in x0, by refcount shape
+    (docs/arc-string-transient-handover.adoc):
+      rc = 1 (ArcExprOwnsRef, user routine results)  -> one Release
+      rc = 0 (concat/built-in results)               -> AddRef THEN Release
+    A bare release on an rc = 0 buffer drives it to -1 = IMMORTAL — a
+    permanent leak the --debug tracker cannot see. }
+  if ArcExprOwnsRef(AExpr) then
+    Self.Emit(#9'bl _StringRelease')
+  else if ArcExprIsUnownedStrTransient(AExpr) then
+  begin
+    EmitPushX0();
+    Self.Emit(#9'bl _StringAddRef');
+    EmitPopTo('x0');
+    Self.Emit(#9'bl _StringRelease');
+  end;
 end;
 
 function TArm64Backend.IsFloatExpr(AExpr: TASTExpr): Boolean;
@@ -1740,7 +1772,7 @@ begin
       caller's ADDRESS — the old-value load and the store deref it (the
       address is re-loaded after the release call clobbers x9). }
     Self.EmitExprToX0(AAsgn.Expr);
-    if not OwnsStringRef(AAsgn.Expr) then
+    if not ArcExprOwnsRef(AAsgn.Expr) then
     begin
       EmitPushX0();
       Self.Emit(#9'bl _StringAddRef');
@@ -2010,6 +2042,19 @@ begin
      (TMethodDecl(ACall.ResolvedDecl).OwnerTypeName = '') then
   begin
     EmitCall(TMethodDecl(ACall.ResolvedDecl), ACall.Name, ACall.Args);
+    { a DISCARDED owned result must be disposed (user routine results are
+      rc=1 — one release) }
+    if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType <> nil then
+    begin
+      if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.IsString() then
+        Self.Emit(#9'bl _StringRelease')
+      else if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
+              tyClass then
+        Self.Emit(#9'bl _ClassRelease')
+      else if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
+              tyDynArray then
+        Self.Emit(#9'bl _DynArrayRelease');
+    end;
     Exit;
   end;
   NotYet('call to ''' + ACall.Name + '''', ACall);
@@ -2031,16 +2076,16 @@ begin
     if (K in [tyString, tyPChar]) or (Arg is TStringLiteral) then
     begin
       Self.EmitExprToX0(Arg);
-      if (K = tyString) and OwnsStringRef(Arg) then
+      if (K = tyString) and ArcBuiltinStrArgOwnsRef(Arg) then
       begin
-        { an owned +1 transient (concat/call result) is borrowed by
-          _SysWriteStr — release it after the write or it leaks }
+        { a transient is borrowed by _SysWriteStr — dispose it by shape
+          after the write (rc=1 releases; rc=0 AddRef-then-Release) }
         EmitPushX0();
         Self.Emit(#9'mov x1, x0');
         Self.Emit(#9'movz w0, #1');
         Self.Emit(#9'bl _SysWriteStr');
         EmitPopTo('x0');
-        Self.Emit(#9'bl _StringRelease');
+        EmitStrDisposeX0(Arg);
       end
       else
       begin
@@ -2302,7 +2347,7 @@ begin
   if Elem.IsString() or (Elem.Kind = tyClass) then
   begin
     Self.EmitExprToX0(AStmt.ValueExpr);
-    if (Elem.IsString() and not OwnsStringRef(AStmt.ValueExpr)) or
+    if (Elem.IsString() and not ArcExprOwnsRef(AStmt.ValueExpr)) or
        ((Elem.Kind = tyClass) and not ArcExprOwnsRef(AStmt.ValueExpr)) then
     begin
       EmitPushX0();
@@ -3342,10 +3387,20 @@ begin
   for I := 0 to AArgs.Count - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
-    { owned +1 string transients get a release slot after the call }
-    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyString) and
-       OwnsStringRef(Arg) then
-      Inc(Trans);
+    { string transients get a release slot after the call when the CALLER
+      must dispose them: rc=1 always (the callee pair nets to zero); rc=0
+      only for const params (no callee pair — the caller pins).  A by-value
+      rc=0 arg is freed by the callee's entry-retain/exit-release pair; a
+      caller-side dispose would double-free. }
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyString) then
+    begin
+      if ArcExprOwnsRef(Arg) then
+        Inc(Trans)
+      else if ArcExprIsUnownedStrTransient(Arg) and
+              (I < ADecl.Params.Count) and
+              TMethodParam(ADecl.Params.Items[I]).IsConstParam then
+        Inc(Trans);
+    end;
     if (I < ADecl.Params.Count) and
        TMethodParam(ADecl.Params.Items[I]).IsVarParam then
     begin
@@ -3419,6 +3474,7 @@ var
   Reg: string;
   StackOff, StackArea, ASz: Integer;
   TransBase, TransN: Integer;
+  TransShapes: string;
   IsVariadicArg: Boolean;
 begin
   NInt := 0;
@@ -3439,6 +3495,7 @@ begin
     argument pushes so its offsets stay fixed during the pop walk. }
   StackArea := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, TransBase);
   TransN := 0;
+  TransShapes := '';
   if StackArea > 0 then
     Self.Emit(Format(#9'sub sp, sp, #%d', [StackArea]));
   { Evaluate args left-to-right onto the stack (calls inside an argument
@@ -3553,15 +3610,26 @@ begin
       begin
         { the callee owns its copy (by-value params retain in the callee
           prologue; const params borrow), so the caller passes a BORROWED
-          pointer.  An owned +1 transient (concat/call result) is parked
-          in a release slot in the outgoing area and released after the
-          call — it must outlive the callee's borrow. }
+          pointer.  Caller-side disposal by shape: rc=1 parks for ONE
+          post-call release (also for const params); rc=0 parks only for
+          const params (pin: AddRef+Release) — a by-value rc=0 arg is
+          freed by the callee pair and must NOT be touched again. }
         Self.EmitExprToX0(Arg);
         EmitPushX0();
-        if OwnsStringRef(Arg) then
+        if ArcExprOwnsRef(Arg) then
         begin
           Self.Emit(Format(#9'str x0, [sp, #%d]',
             [(PopRegs.Count + 1) * 16 + TransBase + TransN * 8]));
+          TransShapes := TransShapes + '1';
+          Inc(TransN);
+        end
+        else if ArcExprIsUnownedStrTransient(Arg) and
+                (I < ADecl.Params.Count) and
+                TMethodParam(ADecl.Params.Items[I]).IsConstParam then
+        begin
+          Self.Emit(Format(#9'str x0, [sp, #%d]',
+            [(PopRegs.Count + 1) * 16 + TransBase + TransN * 8]));
+          TransShapes := TransShapes + '0';
           Inc(TransN);
         end;
         if (ADecl.IsVarArgs and (I >= ADecl.Params.Count)) or (NInt >= 8) then
@@ -3685,6 +3753,13 @@ begin
     for I := 0 to TransN - 1 do
     begin
       Self.Emit(Format(#9'ldr x0, [sp, #%d]', [32 + TransBase + I * 8]));
+      if Copy(TransShapes, I, 1) = '0' then
+      begin
+        { rc=0 pin: 0 -> 1 -> 0 frees exactly once }
+        EmitPushX0();
+        Self.Emit(#9'bl _StringAddRef');
+        EmitPopTo('x0');
+      end;
       Self.Emit(#9'bl _StringRelease');
     end;
     Self.Emit(#9'ldr x9, [sp], #16');

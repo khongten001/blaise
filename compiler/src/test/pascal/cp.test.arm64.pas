@@ -616,18 +616,17 @@ begin
     end.
     ''');
   AssertTrue('concat lowered', Pos(#9'bl _StringConcat', AsmT) >= 0);
-  { the concat result OWNS its +1: between the concat and the release of
-    the slot's OLD value there must be no retain of the new value }
+  { _StringConcat returns rc=0 (arc-string-transient-handover.adoc): the
+    assignment must RETAIN it (0 -> 1) before releasing the old value —
+    consuming it as if it were +1 stores an rc=0 string whose later
+    release underflows to IMMORTAL (a permanent, tracker-invisible leak) }
   ConcatPos := Pos(#9'bl _StringConcat', AsmT);
-  AddRefAfter := Pos(#9'bl _StringRelease',
+  AddRefAfter := Pos(#9'bl _StringAddRef',
     Copy(AsmT, ConcatPos, Length(AsmT) - ConcatPos));
-  AssertTrue('old-value release follows the concat', AddRefAfter >= 0);
-  AssertTrue('owned concat result not double-retained on assignment',
-    Pos(#9'bl _StringAddRef',
-      Copy(AsmT, ConcatPos, AddRefAfter)) < 0);
-  { the WriteLn transient is released after the write }
-  AssertTrue('transient released after write',
-    Pos(#9'bl _SysWriteStr', AsmT) >= 0);
+  AssertTrue('rc=0 concat result retained on assignment', AddRefAfter >= 0);
+  { the WriteLn transient is disposed by shape after the write:
+    rc=0 needs AddRef THEN Release }
+  AssertTrue('transient written', Pos(#9'bl _SysWriteStr', AsmT) >= 0);
 end;
 
 procedure TArm64BackendTests.TestString_ScopeExitReleases;
@@ -1728,24 +1727,38 @@ begin
     program P;
     var
       A, B: string;
+    function Make: string;
+    begin
+      Result := A + B
+    end;
     procedure Show(Msg: string);
+    begin
+      WriteLn(Msg)
+    end;
+    procedure ShowC(const Msg: string);
     begin
       WriteLn(Msg)
     end;
     begin
       A := 'he';
       B := 'yo';
-      Show(A + B)
+      Show(A + B);
+      Show(Make());
+      ShowC(A + B)
     end.
     ''');
-  { the concat result (+1) is parked in the outgoing area, the callee
-    borrows it, and the caller releases it after the call returns }
+  { by-value rc=0 concat arg: the callee's entry-retain/exit-release pair
+    frees it — the CALLER must not touch it (a release would double-free);
+    by-value rc=1 call result: one caller release after the call;
+    const rc=0 concat arg: caller pins (AddRef+Release) after the call }
   PosCall := Pos(#9'bl Show', AsmT);
-  AssertTrue('call emitted', PosCall >= 0);
-  PosRel := PosEx(#9'bl _StringRelease', AsmT, PosCall);
-  AssertTrue('transient released after the call', PosRel > PosCall);
-  AssertTrue('release slot in the outgoing area',
+  AssertTrue('calls emitted', PosCall >= 0);
+  AssertTrue('rc=1 arg parked in the outgoing area',
     Pos('ldr x0, [sp, #32]', AsmT) >= 0);
+  PosCall := Pos(#9'bl ShowC', AsmT);
+  AssertTrue('const call emitted', PosCall >= 0);
+  PosRel := PosEx(#9'bl _StringAddRef', AsmT, PosCall);
+  AssertTrue('const rc=0 arg pinned after the call', PosRel > PosCall);
 end;
 
 procedure TArm64BackendTests.TestReflection_SupportsInheritsFromMetaclass;
