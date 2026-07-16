@@ -4382,6 +4382,12 @@ begin
         AArgTemps.Strings[I]);
       Continue;
     end;
+    { rc=0 string transients (concat / built-in results) passed to a
+      by-value param need NO caller action: the callee's entry-retain /
+      exit-release pair takes them 0 -> 1 -> 0 and frees them.  (Const
+      params have no callee pair; they are balanced by the camPin
+      AddRef/Release in EnsureConstStringRef/ReleaseConstStringArgs.)
+      Adding a caller-side dispose here double-frees. }
     if not ExprOwnsRef(Arg) then Continue;
     Par := nil;
     if (AParams <> nil) and (I < AParams.Count) then
@@ -4458,8 +4464,14 @@ procedure TCodeGenQBE.ReleaseOwnedBuiltinStrArg(AArg: TASTExpr;
   const ATemp: string);
 begin
   if (AArg = nil) or (ATemp = '') then Exit;
-  if ArcBuiltinStrArgOwnsRef(AArg) then
-    EmitLine(Format('  call $_StringRelease(l %s)', [ATemp]));
+  if not ArcBuiltinStrArgOwnsRef(AArg) then Exit;
+  { rc=0 transients (built-in / concat results — StrAlloc buffers) need an
+    AddRef first so the release actually frees (0 -> 1 -> 0); a bare release
+    would drive the count to -1 = IMMORTAL and leak the buffer silently.
+    rc=1 owned temps (user-call results) take the single release. }
+  if ArcExprIsUnownedStrTransient(AArg) then
+    EmitLine(Format('  call $_StringAddRef(l %s)', [ATemp]));
+  EmitLine(Format('  call $_StringRelease(l %s)', [ATemp]));
 end;
 
 procedure TCodeGenQBE.EnsureConstStringRef(const AArgTemp: string;
@@ -11290,13 +11302,12 @@ begin
     if IsString then
     begin
       EmitLine(Format('  call $_SysWriteStr(w %s, l %s)', [FdLit, ArgTemp]));
-      { A string argument that OWNS its reference (a call/concat result that
-        returned a fresh +1 string) is borrowed by _SysWriteStr and nothing
-        else holds it — release the transient here, or it leaks once per
-        Write/WriteLn.  Plain variables / literals are borrowed (ExprOwnsRef
-        false) and must not be released. }
-      if ExprOwnsRef(ArgExpr) then
-        EmitLine(Format('  call $_StringRelease(l %s)', [ArgTemp]));
+      { A transient string argument is borrowed by _SysWriteStr and nothing
+        else holds it — dispose it here (by refcount shape: rc=1 owned
+        call results take one release, rc=0 built-in/concat results take
+        AddRef+Release) or it leaks once per Write/WriteLn.  Plain
+        variables / literals are borrowed and must not be touched. }
+      ReleaseOwnedBuiltinStrArg(ArgExpr, ArgTemp);
     end
     else if (ArgExpr.ResolvedType <> nil) and
             (ArgExpr.ResolvedType.Kind = tyBoolean) then
@@ -14764,19 +14775,14 @@ begin
     begin
       { Temporarily own any unowned intermediate string temps so they can be
         properly freed after the concat copies their bytes into the result. }
-      if BinExpr.Left is TBinaryExpr then
-        EmitLine(Format('  call $_StringAddRef(l %s)', [L]));
-      if (BinExpr.Right is TBinaryExpr) or
-         (BinExpr.Right is TFuncCallExpr) or
-         (BinExpr.Right is TMethodCallExpr) then
-        EmitLine(Format('  call $_StringAddRef(l %s)', [R]));
+      { Transient operands are disposed after the concat by shape: an rc=0
+        transient (nested concat / built-in result) takes AddRef + Release
+        (0 -> 1 -> 0 frees; a bare release would corrupt it to IMMORTAL and
+        leak), an rc=1 owned temp (user function/method result) takes the
+        single release.  Borrowed operands take nothing. }
       EmitLine(Format('  %s =l call $_StringConcat(l %s, l %s)', [T, L, R]));
-      if BinExpr.Left is TBinaryExpr then
-        EmitLine(Format('  call $_StringRelease(l %s)', [L]));
-      if (BinExpr.Right is TBinaryExpr) or
-         (BinExpr.Right is TFuncCallExpr) or
-         (BinExpr.Right is TMethodCallExpr) then
-        EmitLine(Format('  call $_StringRelease(l %s)', [R]));
+      ReleaseOwnedBuiltinStrArg(BinExpr.Left, L);
+      ReleaseOwnedBuiltinStrArg(BinExpr.Right, R);
       Exit(T);
     end;
     { Pointer arithmetic: Pointer/PChar +/- Integer — result is same pointer type }

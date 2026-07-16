@@ -152,14 +152,31 @@ function RecretClassify(ARec: TRecordTypeDesc;
   twins ExprOwnsRef / NativeExprOwnsRef). }
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
 
+{ String transients come in TWO refcount shapes, and disposing them
+  differs:
+
+    rc = 1 (owned)    — user function/method/getter results: the callee's
+                        `Result := x` AddRef'd.  ArcExprOwnsRef is True.
+                        Dispose with ONE _StringRelease (1 -> 0 frees).
+    rc = 0 (unowned)  — RTL-built strings: built-in call results (IntToStr,
+                        Trim, Copy, ...) and _StringConcat results all come
+                        from StrAlloc with RefCount = 0 ("caller must
+                        AddRef").  A bare _StringRelease drives the count to
+                        -1 = IMMORTAL and the block leaks silently (the leak
+                        tracker never saw it either — it registers on the
+                        0 -> 1 AddRef).  Dispose with _StringAddRef THEN
+                        _StringRelease (0 -> 1 -> 0 frees).
+
+  ArcExprIsUnownedStrTransient identifies the rc = 0 shapes. }
+function ArcExprIsUnownedStrTransient(AExpr: TASTExpr): Boolean;
+
 { Ownership predicate for a STRING argument to a BUILT-IN (FileAge, Trim,
-  Length, StrToInt, ...).  Extends ArcExprOwnsRef with string-returning
-  built-in call results: those are fresh (+1) temporaries too, but
-  ArcExprOwnsRef deliberately reports False for a TFuncCallExpr with no
-  ResolvedDecl so the assignment paths keep their own built-in handling.
-  The built-in emitters release every owned argument temp after the call —
-  without this the temp leaks (one string per call; e.g. the luhmann
-  directory watcher leaked one per note per poll via FileAge(AbsPathOf(Id))). }
+  Length, StrToInt, ...) or a string-operator operand: True when the
+  argument is a transient of either refcount shape that the emitting site
+  must dispose after the call.  Consult ArcExprIsUnownedStrTransient to
+  pick the disposal sequence (release vs addref+release).  Without the
+  disposal the temp leaks (e.g. the luhmann directory watcher leaked one
+  string per note per poll via FileAge(AbsPathOf(Id))). }
 function ArcBuiltinStrArgOwnsRef(AExpr: TASTExpr): Boolean;
 
 { Mangle a Blaise symbol name into an assembler-legal identifier, shared by
@@ -393,22 +410,35 @@ begin
   end;
 end;
 
+function ArcExprIsUnownedStrTransient(AExpr: TASTExpr): Boolean;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  if AExpr.ResolvedType = nil then Exit;
+  if not AExpr.ResolvedType.IsString() then Exit;
+  { String concatenation: _StringConcat returns an rc = 0 StrAlloc buffer. }
+  if AExpr is TBinaryExpr then
+    Exit(True);
+  { Built-in call (no resolved decl, not an indirect call through a proc
+    variable): the RTL helpers return rc = 0 StrAlloc buffers.  EXCEPT the
+    'string(x)' conversion: string(pchar) allocates, but string(string) can
+    be a pointer-preserving no-op — disposing that would free the source,
+    so a cast-shaped call is conservatively treated as borrowed (worst case
+    one leaked buffer for a nested string(pchar), never a corruption). }
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (not SameText(TFuncCallExpr(AExpr).Name, 'string')) then
+    Exit(True);
+end;
+
 function ArcBuiltinStrArgOwnsRef(AExpr: TASTExpr): Boolean;
 begin
   Result := False;
   if AExpr = nil then Exit;
   if AExpr.ResolvedType = nil then Exit;
   if not AExpr.ResolvedType.IsString() then Exit;
-  { Any string-typed call result is a fresh +1 buffer: user functions/methods
-    and getters via ArcExprOwnsRef, built-ins (Trim, Copy, IntToStr, ParamStr,
-    ...) via the TFuncCallExpr catch-all.  EXCEPT the 'string(x)' conversion:
-    string(pchar) allocates, but string(string) can be a pointer-preserving
-    no-op — releasing that would over-release the source, so a cast-shaped
-    call is conservatively treated as borrowed (worst case one leaked buffer
-    for a nested string(pchar), never a corruption). }
-  if (AExpr is TFuncCallExpr) and SameText(TFuncCallExpr(AExpr).Name, 'string') then
-    Exit;
-  Result := ArcExprOwnsRef(AExpr) or (AExpr is TFuncCallExpr);
+  Result := ArcExprOwnsRef(AExpr) or ArcExprIsUnownedStrTransient(AExpr);
 end;
 
 function CodegenMangle(const AName: string): string;

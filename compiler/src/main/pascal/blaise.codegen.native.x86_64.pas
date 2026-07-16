@@ -978,6 +978,13 @@ type
       operators, ...).  AStr0/AStr1 pass nil for a non-string operand slot
       (its value still travels through the same stack slot untouched). }
     procedure EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr; const ARtl: string);
+    { Dispose a string transient parked in stack slot ASlot (an operand like
+      '(%rsp)' or '8(%rsp)').  rc=1 owned temps (user-call results) take one
+      _StringRelease; rc=0 unowned temps (built-in/concat results — see
+      ArcExprIsUnownedStrTransient) take _StringAddRef + _StringRelease,
+      because a bare release would drive the count to -1 = IMMORTAL and the
+      buffer would silently leak.  Clobbers %rdi only. }
+    procedure EmitStrDisposeFromSlot(AArg: TASTExpr; const ASlot: string);
     { True when AArg is a record-returning function/method call (its
       evaluation materialises an sret buffer on the stack). }
     function  IsRecCallArg(AArg: TASTExpr): Boolean;
@@ -7295,8 +7302,7 @@ begin
         Self.Emit(#9'popq %rdi');
         Self.Emit(#9'callq _StringCopy');
         Self.Emit(#9'movq %rax, 8(%rsp)');
-        Self.Emit(#9'movq (%rsp), %rdi');
-        Self.Emit(#9'callq _StringRelease');
+        Self.EmitStrDisposeFromSlot(TASTExpr(FC.Args.Items[0]), '(%rsp)');
         Self.Emit(#9'movq 8(%rsp), %rax');
         Self.Emit(#9'addq $16, %rsp');
         Exit;
@@ -7589,15 +7595,9 @@ begin
         Self.Emit(#9'callq _StringPosEx');
         Self.Emit(#9'movq %rax, 16(%rsp)');
         if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[0])) then
-        begin
-          Self.Emit(#9'movq (%rsp), %rdi');
-          Self.Emit(#9'callq _StringRelease');
-        end;
+          Self.EmitStrDisposeFromSlot(TASTExpr(FC.Args.Items[0]), '(%rsp)');
         if ArcBuiltinStrArgOwnsRef(TASTExpr(FC.Args.Items[1])) then
-        begin
-          Self.Emit(#9'movq 8(%rsp), %rdi');
-          Self.Emit(#9'callq _StringRelease');
-        end;
+          Self.EmitStrDisposeFromSlot(TASTExpr(FC.Args.Items[1]), '8(%rsp)');
         Self.Emit(#9'movq 16(%rsp), %rax');
         Self.Emit(#9'addq $32, %rsp');
         Exit;
@@ -8243,11 +8243,36 @@ begin
       Self.Emit(#9'movzbl %al, %eax');
       Exit;
     end;
-    { String concatenation (boAdd on tyString): call _StringConcat(left, right). }
+    { String concatenation (boAdd on tyString): call _StringConcat(left, right).
+      Transient operands must be disposed after the concat or every nested
+      concat / call operand leaks its buffer: an rc=1 user-call result takes
+      one release, an rc=0 built-in/concat result takes addref+release (see
+      EmitStrDisposeFromSlot).  Borrowed operands (locals, fields, literals)
+      take nothing — the fast path below keeps them at the plain sequence. }
     if (BE.Op = boAdd) and
        (BE.Left.ResolvedType <> nil) and
        (BE.Left.ResolvedType.Kind = tyString) then
     begin
+      if ArcBuiltinStrArgOwnsRef(BE.Left) or ArcBuiltinStrArgOwnsRef(BE.Right) then
+      begin
+        { Slots: 0 = left, 8 = right, 16 = result, 24 = pad. }
+        Self.Emit(#9'subq $32, %rsp');
+        Self.EmitExprToEax(BE.Left);
+        Self.Emit(#9'movq %rax, (%rsp)');
+        Self.EmitExprToEax(BE.Right);
+        Self.Emit(#9'movq %rax, 8(%rsp)');
+        Self.Emit(#9'movq (%rsp), %rdi');
+        Self.Emit(#9'movq 8(%rsp), %rsi');
+        Self.Emit(#9'callq _StringConcat');
+        Self.Emit(#9'movq %rax, 16(%rsp)');
+        if ArcBuiltinStrArgOwnsRef(BE.Left) then
+          Self.EmitStrDisposeFromSlot(BE.Left, '(%rsp)');
+        if ArcBuiltinStrArgOwnsRef(BE.Right) then
+          Self.EmitStrDisposeFromSlot(BE.Right, '8(%rsp)');
+        Self.Emit(#9'movq 16(%rsp), %rax');
+        Self.Emit(#9'addq $32, %rsp');
+        Exit;
+      end;
       Self.EmitExprToEax(BE.Left);
       Self.Emit(#9'pushq %rax');
       Self.EmitExprToEax(BE.Right);
@@ -11715,12 +11740,19 @@ begin
         once per Write/WriteLn.  Stash the pointer across the call, then
         release.  Plain variables / literals / PChars are borrowed and are
         not released. }
-      if (K = tyString) and NativeExprOwnsRef(ArgExpr) then
+      if (K = tyString) and ArcBuiltinStrArgOwnsRef(ArgExpr) then
       begin
         Self.Emit(#9'pushq %rax');
         Self.Emit(#9'movq %rax, %rsi');
         Self.Emit(Format(#9'movl %s, %%edi', [FdLit]));
         Self.Emit(#9'callq _SysWriteStr');
+        { rc=0 transients (concat / built-in results) need the extra AddRef
+          so the release actually frees — see EmitStrDisposeFromSlot. }
+        if ArcExprIsUnownedStrTransient(ArgExpr) then
+        begin
+          Self.Emit(#9'movq (%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+        end;
         Self.Emit(#9'popq %rdi');
         Self.Emit(#9'callq _StringRelease');
       end
@@ -16251,6 +16283,18 @@ begin
     Exit(camConsume);     { function/method/getter return — +1 owned temp }
 end;
 
+procedure TX86_64Backend.EmitStrDisposeFromSlot(AArg: TASTExpr;
+  const ASlot: string);
+begin
+  if ArcExprIsUnownedStrTransient(AArg) then
+  begin
+    Self.Emit(Format(#9'movq %s, %%rdi', [ASlot]));
+    Self.Emit(#9'callq _StringAddRef');
+  end;
+  Self.Emit(Format(#9'movq %s, %%rdi', [ASlot]));
+  Self.Emit(#9'callq _StringRelease');
+end;
+
 procedure TX86_64Backend.EmitBuiltinStrCall1(AArg: TASTExpr; const ARtl: string;
   AResultXmm: Boolean);
 begin
@@ -16271,8 +16315,7 @@ begin
     Self.Emit(#9'movsd %xmm0, 8(%rsp)')
   else
     Self.Emit(#9'movq %rax, 8(%rsp)');
-  Self.Emit(#9'movq (%rsp), %rdi');
-  Self.Emit(#9'callq _StringRelease');
+  Self.EmitStrDisposeFromSlot(AArg, '(%rsp)');
   if AResultXmm then
     Self.Emit(#9'movsd 8(%rsp), %xmm0')
   else
@@ -16309,15 +16352,9 @@ begin
   Self.Emit(#9'callq ' + ARtl);
   Self.Emit(#9'movq %rax, 16(%rsp)');
   if O0 then
-  begin
-    Self.Emit(#9'movq (%rsp), %rdi');
-    Self.Emit(#9'callq _StringRelease');
-  end;
+    Self.EmitStrDisposeFromSlot(AArg0, '(%rsp)');
   if O1 then
-  begin
-    Self.Emit(#9'movq 8(%rsp), %rdi');
-    Self.Emit(#9'callq _StringRelease');
-  end;
+    Self.EmitStrDisposeFromSlot(AArg1, '8(%rsp)');
   Self.Emit(#9'movq 16(%rsp), %rax');
   Self.Emit(#9'addq $32, %rsp');
 end;
@@ -17367,12 +17404,16 @@ begin
         are safe for value params too (the callee pair nets to zero on top). }
       ConstStr := (not IsVarPos) and (Arg.ResolvedType <> nil) and
                   (Arg.ResolvedType.Kind = tyString);
-    { By-value string param taking an owned (+1) temp (SinkVal(MakeStr(I))):
-      the callee's entry-retain/exit-release pair nets to zero, so the caller
-      still owns the temp and must release it after the call — same consume
-      hoist as a const param, without the pin cases (a borrowed local/global
-      needs no protection: the entry retain fires before any user code runs).
-      Mirrors the QBE backend's EmitOwnedArgReleases. }
+    { By-value string param: the callee's entry-retain/exit-release pair nets
+      to zero, so the caller still owns any transient it passes and must
+      dispose it after the call — the SAME shape treatment as a const param:
+        camConsume — owned (+1) user-call result: release after the call;
+        camPin     — aliasable value OR an rc=0 transient (concat / built-in
+                     result, which ConstStrShape defaults to camPin):
+                     AddRef before + release after — for the rc=0 shapes
+                     that pair IS the disposal (0 -> 1 -> 0 frees);
+        camBorrowed — plain local/literal: nothing.
+      Mirrors the QBE backend's EmitOwnedArgReleases + pin handling. }
     ValStr := False;
     if not ConstStr then
     begin
@@ -17383,15 +17424,10 @@ begin
       else if PP <> nil then
         ValStr := (not PP.IsConstParam) and (not IsVarPos) and
                   (PP.TypeDesc <> nil) and (PP.TypeDesc.Kind = tyString);
-      if ValStr then
-        ValStr := Self.ConstStrShape(Arg, PinPlain) = camConsume;
     end;
     if ConstStr or ValStr then
     begin
-      if ValStr then
-        Mode := camConsume
-      else
-        Mode := Self.ConstStrShape(Arg, PinPlain);
+      Mode := Self.ConstStrShape(Arg, PinPlain);
       if Mode <> camBorrowed then
       begin
         Self.EmitExprToEax(Arg);

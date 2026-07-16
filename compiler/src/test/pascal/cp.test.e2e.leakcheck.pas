@@ -97,6 +97,22 @@ type
       hit this once per note per poll via FileAge(AbsPathOf(Id)). }
     procedure TestDebug_BuiltinOwnedStrArg_NoLeak;
     procedure TestDebug_BuiltinOwnedStrArg_NoLeak_Native;
+    { rc=0 string transients (built-in results, _StringConcat results — all
+      StrAlloc buffers with RefCount = 0) leak INVISIBLY: a bare
+      _StringRelease drives the count to -1 = IMMORTAL, and the leak tracker
+      never saw the block (it registers on the 0 -> 1 AddRef).  Disposal must
+      be AddRef + Release.  Because the tracker is blind to a regression
+      here, this test pins the fix through the ALLOCATOR instead: 50k
+      iterations of the shapes that used to leak one 48-byte buffer each
+      (inline concat operand, user-call concat operand, nested built-in arg,
+      concat-as-built-in-arg) would grow the arena count by ~150; the fixed
+      compiler keeps it flat. }
+    { QBE variant: runtime.mem (inline asm) cannot be compiled by the QBE
+      backend, so no arena counting — the tracker-visible rc=1 shapes are
+      asserted instead; the rc=0 disposal is pinned by the NATIVE arena
+      test (the shape predicate is shared code in blaise.codegen). }
+    procedure TestDebug_StrTransientDispose_TrackerClean;
+    procedure TestDebug_StrTransientDispose_NoArenaGrowth_Native;
     { A string-returning call/getter used DIRECTLY as a Write/WriteLn argument
       (WriteLn(GetBar)) returns a fresh +1 string that _SysWriteStr only borrows.
       EmitWrite previously never released it, leaking one string per call.  The
@@ -1138,6 +1154,107 @@ const
         WriteLn('done');
     end.
     ''';
+
+const
+  { Every shape that used to leak an rc=0 (or unreleased rc=1) string
+    transient, hammered enough that a regression visibly grows the arena
+    registry.  Warm-up first so free-list steady state is reached before
+    the baseline arena count is taken. }
+  SrcStrTransientDispose = '''
+    program P;
+    uses runtime.mem;
+    function MakeStr(I: Integer): string;
+    begin
+      Result := 'value-' + IntToStr(I);
+    end;
+    procedure SinkVal(S: string);
+    begin
+      if Length(S) = 0 then WriteLn('never');
+    end;
+    var
+      I, A0, A1: Integer;
+      S: string;
+    begin
+      for I := 1 to 200 do
+      begin
+        S := 'x' + IntToStr(I) + 'y';
+        S := MakeStr(I) + 'y';
+      end;
+      A0 := _MemArenaCount();
+      for I := 1 to 50000 do
+      begin
+        S := 'x' + IntToStr(I) + 'y';          { rc=0 concat operands }
+        S := MakeStr(I) + 'y';                 { rc=1 user-call operand }
+        S := LowerCase(Trim(MakeStr(I)));      { rc=0 built-in result as arg }
+        SinkVal('v-' + IntToStr(I));           { rc=0 concat as value arg }
+        if FileExists('/nonexistent/' + IntToStr(I)) then
+          WriteLn('never');                    { rc=0 concat as built-in arg }
+      end;
+      A1 := _MemArenaCount();
+      if A1 - A0 <= 2 then
+        WriteLn('done')
+      else
+        WriteLn('arena growth: ', A1 - A0);
+    end.
+    ''';
+
+const
+  { Same transient shapes without the runtime.mem arena probe (QBE cannot
+    compile inline asm).  The user-call concat operand (rc=1) is
+    tracker-visible; a regression there reports leaks. }
+  SrcStrTransientDisposeQbe = '''
+    program P;
+    function MakeStr(I: Integer): string;
+    begin
+      Result := 'value-' + IntToStr(I);
+    end;
+    procedure SinkVal(S: string);
+    begin
+      if Length(S) = 0 then WriteLn('never');
+    end;
+    var
+      I: Integer;
+      S: string;
+    begin
+      for I := 1 to 200 do
+      begin
+        S := 'x' + IntToStr(I) + 'y';
+        S := MakeStr(I) + 'y';
+        S := LowerCase(Trim(MakeStr(I)));
+        SinkVal('v-' + IntToStr(I));
+        if FileExists('/nonexistent/' + IntToStr(I)) then
+          WriteLn('never');
+      end;
+      if Length(S) > 0 then
+        WriteLn('done');
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_StrTransientDispose_TrackerClean;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStrTransientDisposeQbe, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'done' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_StrTransientDispose_NoArenaGrowth_Native;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStrTransientDispose, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'done' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
 
 procedure TE2ELeakCheckTests.TestDebug_BuiltinOwnedStrArg_NoLeak;
 var
