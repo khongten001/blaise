@@ -99,6 +99,8 @@ type
     procedure TestInterfaces_DispatchAndMetadata;
     procedure TestInterfaces_AsCast;
     procedure TestOwnedStringTransientArg_Released;
+    { slice 24: Supports, InheritsFrom, metaclass values }
+    procedure TestReflection_SupportsInheritsFromMetaclass;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -394,10 +396,11 @@ begin
       end;
       var
         T: TThing;
+        I: IThing;
         Ok: Boolean;
       begin
         T := TThing.Create();
-        Ok := Supports(T, IThing);
+        Ok := Supports(T, IThing, I);
         WriteLn(Ok)
       end.
       ''');
@@ -1723,6 +1726,49 @@ begin
   AssertTrue('transient released after the call', PosRel > PosCall);
   AssertTrue('release slot in the outgoing area',
     Pos('ldr x0, [sp, #32]', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestReflection_SupportsInheritsFromMetaclass;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      IThing = interface
+        procedure Go;
+      end;
+      TBase = class(TObject, IThing)
+        procedure Go;
+      end;
+      TKid = class(TBase)
+      end;
+      TBaseClass = class of TBase;
+    procedure TBase.Go;
+    begin
+    end;
+    var
+      K: TKid;
+      MC: TBaseClass;
+      Ok: Boolean;
+    begin
+      K := TKid.Create();
+      Ok := Supports(K, IThing);
+      WriteLn(Ok);
+      WriteLn(K.InheritsFrom(TBase));
+      MC := TKid;
+      WriteLn(MC.InheritsFrom(TBase))
+    end.
+    ''');
+  { Supports: runtime itab probe folded to a boolean }
+  AssertTrue('supports via _GetItab', Pos(#9'bl _GetItab', AsmT) >= 0);
+  AssertTrue('boolean fold', Pos(#9'cset x0, ne', AsmT) >= 0);
+  { InheritsFrom: instance receiver reads typeinfo via vtable[0];
+    metaclass receiver passes its value directly }
+  AssertTrue('inheritsfrom call', Pos(#9'bl _InheritsFrom', AsmT) >= 0);
+  { bare class name as a value = typeinfo address }
+  AssertTrue('metaclass value', Pos('typeinfo_TKid@PAGEOFF', AsmT) >= 0);
 end;
 
 initialization

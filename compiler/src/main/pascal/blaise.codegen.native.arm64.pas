@@ -191,6 +191,7 @@ type
     procedure EmitInterfaceAssign(AAsgn: TAssignment);
     procedure EmitInterfaceAsCast(AAsgn: TAssignment);
     function  IntfItabSym(const AClassName, AIntfName: string): string;
+    procedure EmitTypeinfoAddr(const AReg, ATypeName: string);
     procedure EmitIntfDispatch(const AVarName: string; AIdx: Integer;
       AArgs: TObjectList);
     procedure EmitIntfMetaSections;
@@ -761,6 +762,12 @@ begin
     EmitStrLitAddr(TStringLiteral(AExpr).Value);
     Exit;
   end;
+  if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsMetaclassRef then
+  begin
+    { bare class name as a value: the typeinfo address IS the metaclass }
+    EmitTypeinfoAddr('x0', TIdentExpr(AExpr).Name);
+    Exit;
+  end;
   if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsImplicitSelf and
      (TIdentExpr(AExpr).ImplicitFieldInfo <> nil) then
   begin
@@ -1000,6 +1007,20 @@ begin
       Self.Emit(Format(#9'bl %s',
         [PropAccessorSym(TFieldAccessExpr(AExpr).PropOwnerType,
           TFieldAccessExpr(AExpr).PropRead.ReadMethod)]));
+    Exit;
+  end;
+  if AExpr is TSupportsExpr then
+  begin
+    { Supports(Obj, IFoo): non-nil itab in the impllist chain }
+    if TSupportsExpr(AExpr).OutVarName <> '' then
+      NotYet('3-arg Supports', AExpr);
+    if ArcExprOwnsRef(TSupportsExpr(AExpr).Obj) then
+      NotYet('Supports on an owned transient', AExpr);
+    Self.EmitExprToX0(TSupportsExpr(AExpr).Obj);
+    EmitTypeinfoAddr('x1', TSupportsExpr(AExpr).IntfTypeName);
+    Self.Emit(#9'bl _GetItab');
+    Self.Emit(#9'cmp x0, #0');
+    Self.Emit(#9'cset x0, ne');
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and TFieldAccessExpr(AExpr).IsConstant then
@@ -1557,7 +1578,8 @@ begin
   end;
   if (AAsgn.ResolvedLhsType <> nil) and
      not IsIntFam(AAsgn.ResolvedLhsType) and
-     not (AAsgn.ResolvedLhsType.Kind = tyBoolean) then
+     not (AAsgn.ResolvedLhsType.Kind in [tyBoolean, tyMetaClass,
+                                         tyPointer, tyPChar]) then
     NotYet('assignment to non-integer variable', AAsgn);
   Self.EmitExprToX0(AAsgn.Expr);
   if AAsgn.IsVarParam then
@@ -1944,7 +1966,8 @@ begin
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
-                                       tyRecord, tyClass, tyInterface]))) then
+                                       tyRecord, tyClass, tyInterface,
+                                       tyMetaClass]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -2760,6 +2783,24 @@ begin
   Result := Pfx + CodegenMangle(AOwnerType) + '_' + CodegenMangle(AMethod);
 end;
 
+procedure TArm64Backend.EmitTypeinfoAddr(const AReg, ATypeName: string);
+var
+  D: TTypeDesc;
+  Pfx: string;
+begin
+  Pfx := '';
+  if FSymTable <> nil then
+  begin
+    D := FSymTable.FindType(ATypeName);
+    if D <> nil then
+      Pfx := ClassPrefixOwner(D.OwningUnit);
+  end;
+  Self.Emit(Format(#9'adrp %s, typeinfo_%s@PAGE',
+    [AReg, Pfx + CodegenMangle(ATypeName)]));
+  Self.Emit(Format(#9'add %s, %s, typeinfo_%s@PAGEOFF',
+    [AReg, AReg, Pfx + CodegenMangle(ATypeName)]));
+end;
+
 function TArm64Backend.IntfItabSym(const AClassName,
   AIntfName: string): string;
 var
@@ -3257,8 +3298,27 @@ begin
     Self.Emit(#9'blr x9');
     Exit;
   end;
-  if AExpr.IsMetaclassDispatch or AExpr.IsBuiltinInheritsFrom or
-     AExpr.IsProcFieldCall or
+  if AExpr.IsBuiltinInheritsFrom then
+  begin
+    { _InheritsFrom(child_ti, parent_ti): the receiver is a class
+      instance (typeinfo from vtable[0]) or a metaclass variable }
+    if (AExpr.ObjExpr <> nil) or AExpr.IsVarParam or
+       (AExpr.ObjectName = '') then
+      NotYet('InheritsFrom on this receiver form', AExpr);
+    Self.EmitExprToX0(TASTExpr(AExpr.Args.Items[0]));
+    EmitPushX0();
+    EmitLoadSlot('x0', AExpr.ObjectName);
+    if (AExpr.ResolvedClassType <> nil) and
+       (AExpr.ResolvedClassType.Kind = tyClass) then
+    begin
+      Self.Emit(#9'ldr x0, [x0]');    { vtable }
+      Self.Emit(#9'ldr x0, [x0]');    { slot 0 = typeinfo }
+    end;
+    EmitPopTo('x1');
+    Self.Emit(#9'bl _InheritsFrom');
+    Exit;
+  end;
+  if AExpr.IsMetaclassDispatch or AExpr.IsProcFieldCall or
      ((AExpr.ObjectName = '') and (AExpr.ObjExpr = nil)
       and not AExpr.IsStaticCall) then
     NotYet('this method-call form', AExpr);
@@ -3320,6 +3380,11 @@ begin
     end
     else if TDcl.Def is TInterfaceTypeDef then
       FIntfDecls.Add(TDcl)
+    else if (TDcl.Def is TTypeAliasDef) or (TDcl.Def is TEnumTypeDef) or
+            (TDcl.Def is TSetTypeDef) or (TDcl.Def is TProceduralTypeDef) then
+      { declaration-only: aliases (incl. 'class of'), enums, sets and
+        procedural types need no emission — unsupported USES still gate
+        at their expression/variable sites }
     else if not (TDcl.Def is TRecordTypeDef) then
       NotYet('non-record type declarations', nil)
     else if TRecordTypeDef(TDcl.Def).Methods.Count > 0 then
@@ -3333,7 +3398,8 @@ begin
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
-                                       tyRecord, tyClass, tyInterface]))) then
+                                       tyRecord, tyClass, tyInterface,
+                                       tyMetaClass]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
