@@ -119,6 +119,8 @@ type
     procedure TestStaticArrays_ElementsAndArc;
     { slice 33: dynamic arrays — SetLength/Length/subscripts/ARC }
     procedure TestDynArrays_LifecycleAndElements;
+    { slice 35: small sets — literals, membership, union/inter/diff }
+    procedure TestSmallSets_LiteralsInOps;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2209,6 +2211,48 @@ begin
   AssertTrue('scaled elem', Pos(#9'mul x1, x1, x2', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64dyn.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSmallSets_LiteralsInOps;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TDay = (Mon, Tue, Wed, Thu, Fri);
+      TDays = set of TDay;
+    var
+      D, E: TDays;
+    begin
+      D := [Mon, Wed];
+      E := D + [Fri];
+      E := E - [Mon];
+      D := D * E;
+      WriteLn(Wed in D);
+      WriteLn(D = E)
+    end.
+    ''');
+  { const literal folds to an immediate mask (Mon|Wed = bits 0,2 = 5) }
+  AssertTrue('folded mask', Pos(#9'movz x0, #5', AsmT) >= 0);
+  { membership: shift + bit test + range guard }
+  AssertTrue('bit shift', Pos(#9'lsr x0, x0, x1', AsmT) >= 0);
+  AssertTrue('bit test', Pos(#9'and x0, x0, x2', AsmT) >= 0);
+  AssertTrue('range guard', Pos(#9'cset x2, lt', AsmT) >= 0);
+  { set ops: or / and / and-not }
+  AssertTrue('union', Pos(#9'orr x0, x0, x1', AsmT) >= 0);
+  AssertTrue('difference complement', Pos(#9'movn x2, #0', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64sets.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

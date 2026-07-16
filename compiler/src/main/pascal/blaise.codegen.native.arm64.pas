@@ -182,6 +182,7 @@ type
       2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
       (encoded as 100+N).  Derived from the shared classifier; the
       register choice is this leaf's per-CPU step. }
+    procedure EmitSmallSetLiteral(AExpr: TArrayLiteralExpr);
     procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitDynElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitElemLoad(AElem: TTypeDesc);
@@ -882,6 +883,23 @@ begin
       [TFieldInfo(TIdentExpr(AExpr).ImplicitFieldInfo).Offset]));
     Exit;
   end;
+  if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsConstant then
+  begin
+    { named constant / enum member — folded by the semantic pass }
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tyString) then
+    begin
+      Idx := FStrLits.IndexOf(TIdentExpr(AExpr).ConstString);
+      if Idx < 0 then
+        Idx := FStrLits.Add(TIdentExpr(AExpr).ConstString);
+      Self.Emit(Format(#9'adrp x0, __s%d@PAGE', [Idx]));
+      Self.Emit(Format(#9'add x0, x0, __s%d@PAGEOFF', [Idx]));
+      Self.Emit(#9'add x0, x0, #12');
+      Exit;
+    end;
+    EmitIntLiteral('x0', TIdentExpr(AExpr).ConstValue);
+    Exit;
+  end;
   if AExpr is TIdentExpr then
   begin
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
@@ -929,6 +947,66 @@ begin
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
+    { X in SmallSet: ((set shr ord) and 1) and (ord < BitCount) — the
+      range guard forces 0 for ordinals past the set width (a shift past
+      the register width is undefined) }
+    if (BE.Op = boIn) and (BE.Right.ResolvedType <> nil) and
+       (BE.Right.ResolvedType.Kind = tySet) then
+    begin
+      if TSetTypeDesc(BE.Right.ResolvedType).IsJumbo() then
+        NotYet('jumbo set membership', AExpr);
+      Self.EmitExprToX0(BE.Right);
+      EmitPushX0();
+      Self.EmitExprToX0(BE.Left);
+      Self.Emit(#9'mov x1, x0');
+      EmitPopTo('x0');
+      Self.Emit(#9'lsr x0, x0, x1');
+      Self.Emit(#9'movz x2, #1');
+      Self.Emit(#9'and x0, x0, x2');
+      EmitIntLiteral('x2',
+        TSetTypeDesc(BE.Right.ResolvedType).BitCount);
+      Self.Emit(#9'cmp x1, x2');
+      Self.Emit(#9'cset x2, lt');
+      Self.Emit(#9'and x0, x0, x2');
+      Exit;
+    end;
+    { small-set arithmetic: union/intersection/difference are plain bit
+      ops on the mask; equality compares the masks }
+    if (BE.Left.ResolvedType <> nil) and
+       (BE.Left.ResolvedType.Kind = tySet) then
+    begin
+      if TSetTypeDesc(BE.Left.ResolvedType).IsJumbo() then
+        NotYet('jumbo set operations', AExpr);
+      Self.EmitExprToX0(BE.Left);
+      EmitPushX0();
+      Self.EmitExprToX0(BE.Right);
+      Self.Emit(#9'mov x1, x0');
+      EmitPopTo('x0');
+      case BE.Op of
+        boAdd: Self.Emit(#9'orr x0, x0, x1');
+        boMul: Self.Emit(#9'and x0, x0, x1');
+        boSub:
+        begin
+          { A - B = A and (not B): complement via eor with all-ones }
+          Self.Emit(#9'movn x2, #0');
+          Self.Emit(#9'eor x1, x1, x2');
+          Self.Emit(#9'and x0, x0, x1');
+        end;
+        boEQ:
+        begin
+          Self.Emit(#9'cmp x0, x1');
+          Self.Emit(#9'cset x0, eq');
+        end;
+        boNE:
+        begin
+          Self.Emit(#9'cmp x0, x1');
+          Self.Emit(#9'cset x0, ne');
+        end;
+      else
+        NotYet('this set operation', AExpr);
+      end;
+      Exit;
+    end;
     { string concatenation: _StringConcat returns an owned +1 string }
     if (BE.Op = boAdd) and (AExpr.ResolvedType <> nil) and
        (AExpr.ResolvedType.Kind = tyString) then
@@ -1180,6 +1258,14 @@ begin
     Self.Emit(#9'add sp, sp, #32');
     Self.Emit(#9'movz x0, #0');
     Self.Emit(Lit + ':');
+    Exit;
+  end;
+  if (AExpr is TArrayLiteralExpr) and (AExpr.ResolvedType <> nil) and
+     (AExpr.ResolvedType.Kind = tySet) then
+  begin
+    if TSetTypeDesc(AExpr.ResolvedType).IsJumbo() then
+      NotYet('jumbo set literals', AExpr);
+    EmitSmallSetLiteral(TArrayLiteralExpr(AExpr));
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and TFieldAccessExpr(AExpr).IsConstant then
@@ -1994,7 +2080,7 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and
      not IsIntFam(AAsgn.ResolvedLhsType) and
      not (AAsgn.ResolvedLhsType.Kind in [tyBoolean, tyMetaClass,
-                                         tyPointer, tyPChar]) then
+                                         tyPointer, tyPChar, tySet]) then
     NotYet('assignment to non-integer variable', AAsgn);
   Self.EmitExprToX0(AAsgn.Expr);
   if AAsgn.IsVarParam then
@@ -2600,6 +2686,45 @@ begin
     FGlobalInits.Add(ASym, Format(#9'.quad %d', [AVD.InitConst.IntVal]));
 end;
 
+procedure TArm64Backend.EmitSmallSetLiteral(AExpr: TArrayLiteralExpr);
+var
+  Mask: Int64;
+  I: Integer;
+  Elem: TASTExpr;
+  HasRuntime: Boolean;
+begin
+  { small set (<= 64 members): compile-time members fold into an
+    immediate mask; runtime members OR their bit in afterwards }
+  Mask := 0;
+  HasRuntime := False;
+  for I := 0 to AExpr.Elements.Count - 1 do
+  begin
+    Elem := TASTExpr(AExpr.Elements.Items[I]);
+    if Elem is TIntLiteral then
+      Mask := Mask or (Int64(1) shl TIntLiteral(Elem).Value)
+    else if (Elem is TIdentExpr) and TIdentExpr(Elem).IsConstant then
+      Mask := Mask or (Int64(1) shl TIdentExpr(Elem).ConstValue)
+    else
+      HasRuntime := True;
+  end;
+  EmitIntLiteral('x0', Mask);
+  if not HasRuntime then Exit;
+  for I := 0 to AExpr.Elements.Count - 1 do
+  begin
+    Elem := TASTExpr(AExpr.Elements.Items[I]);
+    if (Elem is TIntLiteral) or
+       ((Elem is TIdentExpr) and TIdentExpr(Elem).IsConstant) then
+      Continue;
+    EmitPushX0();
+    Self.EmitExprToX0(Elem);
+    Self.Emit(#9'mov x1, x0');
+    EmitPopTo('x0');
+    Self.Emit(#9'movz x2, #1');
+    Self.Emit(#9'lsl x2, x2, x1');
+    Self.Emit(#9'orr x0, x0, x2');
+  end;
+end;
+
 procedure TArm64Backend.EmitStaticElemAddr(ASub: TStringSubscriptExpr);
 var
   ESz: Integer;
@@ -2929,8 +3054,11 @@ begin
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
                                        tyMetaClass, tyStaticArray,
-                                       tyDynArray]))) then
+                                       tyDynArray, tySet]))) then
       NotYet('local variable of this type', VD);
+    if (VD.ResolvedType.Kind = tySet) and
+       TSetTypeDesc(VD.ResolvedType).IsJumbo() then
+      NotYet('jumbo sets (more than 64 members)', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       if VD.ResolvedType.Kind in [tyRecord, tyStaticArray] then
@@ -4535,8 +4663,11 @@ begin
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
                                        tyMetaClass, tyStaticArray,
-                                       tyDynArray]))) then
+                                       tyDynArray, tySet]))) then
       NotYet('program variable of this type', VD);
+    if (VD.ResolvedType.Kind = tySet) and
+       TSetTypeDesc(VD.ResolvedType).IsJumbo() then
+      NotYet('jumbo sets (more than 64 members)', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
       FGlobalNames.Add(VD.Names.Strings[J]);
