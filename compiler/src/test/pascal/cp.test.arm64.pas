@@ -105,6 +105,8 @@ type
     procedure TestInterfaceParamsAndResults;
     { slice 26: float property reads + string global initialisers }
     procedure TestFloatPropRead_And_StringGlobalInit;
+    { slice 27: managed record params/results across call boundaries }
+    procedure TestManagedRecord_ParamsAndResults;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -1865,6 +1867,47 @@ begin
   AssertTrue('data pointer', Pos(#9'.quad __gi_Banner_d', AsmT) >= 0);
   AssertTrue('immortal header', Pos('__gi_Banner_h:', AsmT) >= 0);
   AssertTrue('blob bytes', Pos(#9'.ascii "ready"', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestManagedRecord_ParamsAndResults;
+var
+  AsmT: string;
+  PosCall, PosRel: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TNamed = record
+        Id: Int64;
+        Name: string;
+      end;
+    function Make(N: Int64): TNamed;
+    begin
+      Result.Id := N;
+      Result.Name := 'x'
+    end;
+    function Describe(R: TNamed): Int64;
+    begin
+      Result := R.Id
+    end;
+    var
+      A: TNamed;
+    begin
+      A := Make(1);
+      WriteLn(Describe(A));
+      A := Make(2)
+    end.
+    ''');
+  { callee retains its by-value copy's managed fields }
+  AssertTrue('param field retain', Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  { managed result: sret into the __rret scratch, old LHS fields released
+    AFTER the call, then the fresh value moves in }
+  PosCall := Pos(#9'bl Make', AsmT);
+  AssertTrue('call present', PosCall >= 0);
+  PosRel := PosEx(#9'bl _StringRelease', AsmT, PosCall);
+  AssertTrue('LHS released after the call', PosRel > PosCall);
+  AssertTrue('scratch move-in', PosEx(#9'bl memcpy', AsmT, PosRel) > PosRel);
 end;
 
 initialization

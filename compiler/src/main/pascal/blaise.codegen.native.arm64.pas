@@ -154,6 +154,7 @@ type
       ASelfPushed: Boolean = False; AVirtSlot: Integer = VIRT_NONE);
     { Pre-pass: register every local/param/hidden slot a routine body needs
       so the frame size is final before the prologue's sub sp. }
+    function  MaxManagedRecRet(AStmt: TASTStmt): Integer;
     procedure RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
     procedure RegisterForSlots(AStmt: TASTStmt);
     function  RoutineSym(ADecl: TMethodDecl; const AName: string): string;
@@ -1544,6 +1545,43 @@ begin
           validation on real hardware first — keep the hole honest }
         NotYet('external record-returning call', AAsgn);
       Shape := RecReturnShape(TRecordTypeDesc(AAsgn.ResolvedLhsType));
+      if not RecretManagedClean(TRecordTypeDesc(AAsgn.ResolvedLhsType)) then
+      begin
+        { managed LHS: the callee's fresh value lands in the __rret
+          scratch first — the LHS may alias an argument, so its old field
+          refs are released only AFTER the call — then moves in with the
+          +1 field refs transferring (no retain). }
+        if Shape = 0 then
+          EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
+            TFuncCallExpr(AAsgn.Expr).Args, '__rret')
+        else
+        begin
+          EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
+            TFuncCallExpr(AAsgn.Expr).Args);
+          EmitSlotAddr('x9', '__rret');
+          case Shape of
+            1: Self.Emit(#9'str x0, [x9]');
+            2:
+            begin
+              Self.Emit(#9'str x0, [x9]');
+              Self.Emit(#9'str x1, [x9, #8]');
+            end;
+          else
+            for I := 0 to (Shape - 100) - 1 do
+              Self.Emit(Format(#9'str d%d, [x9, #%d]', [I, I * 8]));
+          end;
+        end;
+        Self.Emit(#9'str x19, [sp, #-16]!');
+        EmitSlotAddr('x19', AAsgn.Name);
+        Self.EmitRecordFieldReleases(
+          TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x19');
+        Self.Emit(#9'ldr x19, [sp], #16');
+        EmitSlotAddr('x0', AAsgn.Name);
+        EmitSlotAddr('x1', '__rret');
+        EmitIntLiteral('x2', AAsgn.ResolvedLhsType.RawSize());
+        Self.Emit(#9'bl memcpy');
+        Exit;
+      end;
       if Shape = 0 then
       begin
         EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
@@ -1932,6 +1970,47 @@ begin
     RegisterForSlots(TWhileStmt(AStmt).Body);
 end;
 
+function TArm64Backend.MaxManagedRecRet(AStmt: TASTStmt): Integer;
+var
+  I, N: Integer;
+begin
+  { largest RawSize among managed-record-returning call assignments — the
+    caller routes those through a __rret scratch so the LHS's old field
+    refs can be released AFTER the callee produced the fresh value }
+  Result := 0;
+  if AStmt = nil then Exit;
+  if AStmt is TAssignment then
+  begin
+    if (TAssignment(AStmt).ResolvedLhsType <> nil) and
+       (TAssignment(AStmt).ResolvedLhsType.Kind = tyRecord) and
+       (TAssignment(AStmt).Expr is TFuncCallExpr) and
+       not RecretManagedClean(
+         TRecordTypeDesc(TAssignment(AStmt).ResolvedLhsType)) then
+      Result := TAssignment(AStmt).ResolvedLhsType.RawSize();
+    Exit;
+  end;
+  if AStmt is TCompoundStmt then
+  begin
+    for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
+    begin
+      N := MaxManagedRecRet(TASTStmt(TCompoundStmt(AStmt).Stmts.Items[I]));
+      if N > Result then Result := N;
+    end;
+    Exit;
+  end;
+  if AStmt is TIfStmt then
+  begin
+    Result := MaxManagedRecRet(TIfStmt(AStmt).ThenStmt);
+    N := MaxManagedRecRet(TIfStmt(AStmt).ElseStmt);
+    if N > Result then Result := N;
+    Exit;
+  end;
+  if AStmt is TWhileStmt then
+    Result := MaxManagedRecRet(TWhileStmt(AStmt).Body)
+  else if AStmt is TForStmt then
+    Result := MaxManagedRecRet(TForStmt(AStmt).Body);
+end;
+
 procedure TArm64Backend.RegisterFrameSlots(ADecl: TMethodDecl; ABody: TBlock);
 var
   I, J: Integer;
@@ -1979,8 +2058,6 @@ begin
       end;
       if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
       begin
-        if not RecretManagedClean(TRecordTypeDesc(Par.ResolvedType)) then
-          NotYet('managed-record parameter', ADecl);
         AddLocal(Par.ParamName, Par.ResolvedType.RawSize());
         FRecLocals.AddObject(Par.ParamName, Par.ResolvedType);
         if RecReturnShape(TRecordTypeDesc(Par.ResolvedType)) = 0 then
@@ -2008,8 +2085,8 @@ begin
     begin
       if ADecl.ResolvedReturnType.Kind = tyRecord then
       begin
-        if not RecretManagedClean(TRecordTypeDesc(ADecl.ResolvedReturnType)) then
-          NotYet('managed-record function result', ADecl);
+        { the field refs a record Result holds TRANSFER to the caller —
+          Result deliberately stays out of the FRecLocals release walk }
         AddLocal('Result', ADecl.ResolvedReturnType.RawSize());
         if RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType)) = 0 then
           AddLocal('__sret', 8);   { the incoming x8 destination pointer }
@@ -2070,6 +2147,12 @@ begin
   { 16-byte scratch for interface-returning calls (sret target).  Always
     reserved — cheap, and avoids a body pre-scan. }
   AddLocal('__iret', 16);
+  J := 0;
+  for I := 0 to ABody.Stmts.Count - 1 do
+    if MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I])) > J then
+      J := MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I]));
+  if J > 0 then
+    AddLocal('__rret', J);
   for I := 0 to ABody.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
 end;
@@ -2233,6 +2316,21 @@ begin
   { sret: park the incoming x8 destination pointer in its hidden slot }
   if RecShape = 0 then
     EmitStoreSlot('x8', '__sret');
+  { by-value record params with managed fields: the callee owns its copy,
+    so retain every managed field (walk anchored on callee-saved x19). }
+  for I := 0 to ADecl.Params.Count - 1 do
+  begin
+    Par := TMethodParam(ADecl.Params.Items[I]);
+    if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) and
+       not Par.IsVarParam and
+       not RecretManagedClean(TRecordTypeDesc(Par.ResolvedType)) then
+    begin
+      Self.Emit(#9'str x19, [sp, #-16]!');
+      EmitSlotAddr('x19', Par.ParamName);
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(Par.ResolvedType), 'x19');
+      Self.Emit(#9'ldr x19, [sp], #16');
+    end;
+  end;
   { by-value string params: retain the callee's copy (the caller keeps its
     own reference).  Runs after every register is parked — _StringAddRef
     clobbers the caller-saved argument registers. }
@@ -3630,6 +3728,12 @@ begin
   FFrameSize := 0;
   FForN := 0;
   AddLocal('__iret', 16);   { interface-returning call scratch }
+  J := 0;
+  for I := 0 to AProg.Block.Stmts.Count - 1 do
+    if MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I])) > J then
+      J := MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I]));
+  if J > 0 then
+    AddLocal('__rret', J);
   for I := 0 to AProg.Block.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(AProg.Block.Stmts.Items[I]));
   FForN := 0;
@@ -3814,7 +3918,7 @@ end;
 procedure TArm64Backend.EmitUnitSection(AUnit: TUnit; AStmts: TObjectList;
   const ASym: string; ARegistry: TStringList);
 var
-  I: Integer;
+  I, J: Integer;
   FrameAligned: Integer;
 begin
   ARegistry.Add(ASym);
@@ -3830,6 +3934,12 @@ begin
   FIntfLocals.Clear();
   FForN := 0;
   AddLocal('__iret', 16);
+  J := 0;
+  for I := 0 to AStmts.Count - 1 do
+    if MaxManagedRecRet(TASTStmt(AStmts.Items[I])) > J then
+      J := MaxManagedRecRet(TASTStmt(AStmts.Items[I]));
+  if J > 0 then
+    AddLocal('__rret', J);
   for I := 0 to AStmts.Count - 1 do
     RegisterForSlots(TASTStmt(AStmts.Items[I]));
   FForN := 0;
