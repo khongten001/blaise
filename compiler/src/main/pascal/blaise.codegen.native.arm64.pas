@@ -484,6 +484,14 @@ begin
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
     Exit;
   end;
+  if AFld.TypeDesc.Kind = tySingle then
+  begin
+    Self.EmitExprToD0OrConvert(AValueExpr);
+    Self.Emit(#9'fcvt s0, d0');
+    EmitLoadSlot('x9', AInstSlot);
+    Self.Emit(Format(#9'str s0, [x9, #%d]', [AFld.Offset]));
+    Exit;
+  end;
   if AFld.TypeDesc.Kind = tyDouble then
   begin
     Self.EmitExprToD0OrConvert(AValueExpr);
@@ -532,6 +540,14 @@ begin
     Self.Emit(#9'add sp, sp, #16');     { drop the base }
     Exit;
   end;
+  if AFld.TypeDesc.Kind = tySingle then
+  begin
+    Self.EmitExprToD0OrConvert(AValueExpr);
+    Self.Emit(#9'fcvt s0, d0');
+    Self.Emit(#9'ldr x9, [sp], #16');   { pop the base }
+    Self.Emit(Format(#9'str s0, [x9, #%d]', [AFld.Offset]));
+    Exit;
+  end;
   if AFld.TypeDesc.Kind = tyDouble then
   begin
     Self.EmitExprToD0OrConvert(AValueExpr);
@@ -562,7 +578,17 @@ begin
     if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf then
       NotYet('property write on this receiver form', AStmt);
     if TPropertyInfo(AStmt.PropWriteInfo).IsStatic then
-      NotYet('static property write', AStmt);
+    begin
+      { static setter: the value is the FIRST argument (no Self) }
+      if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
+        Self.EmitExprToD0OrConvert(AStmt.Expr)
+      else
+        Self.EmitExprToX0(AStmt.Expr);
+      Self.Emit(Format(#9'bl %s',
+        [PropAccessorSym(AStmt.PropOwnerType,
+          TPropertyInfo(AStmt.PropWriteInfo).WriteMethod)]));
+      Exit;
+    end;
     if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
     begin
       Self.EmitExprToD0OrConvert(AStmt.Expr);
@@ -625,9 +651,18 @@ begin
     Exit;
   end;
   if not (IsIntFam(AStmt.FieldInfo.TypeDesc) or
-          (AStmt.FieldInfo.TypeDesc.Kind in [tyDouble, tyClass]) or
+          (AStmt.FieldInfo.TypeDesc.Kind in [tyDouble, tySingle,
+                                             tyClass]) or
           AStmt.FieldInfo.TypeDesc.IsString()) then
     NotYet('field of this type', AStmt);
+  if AStmt.FieldInfo.TypeDesc.Kind = tySingle then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.Expr);
+    Self.Emit(#9'fcvt s0, d0');
+    EmitSlotAddr('x9', AStmt.RecordName);
+    Self.Emit(Format(#9'str s0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
+    Exit;
+  end;
   if AStmt.FieldInfo.TypeDesc.IsString() or
      (AStmt.FieldInfo.TypeDesc.Kind = tyClass) then
   begin
@@ -758,6 +793,7 @@ var
   BE: TBinaryExpr;
   DivGuardOk: string;
   CondName: string;
+  Lit: string;
   Idx: Integer;
 begin
   if AExpr is TIntLiteral then
@@ -996,16 +1032,42 @@ begin
   end;
   if AExpr is TSupportsExpr then
   begin
-    { Supports(Obj, IFoo): non-nil itab in the impllist chain }
-    if TSupportsExpr(AExpr).OutVarName <> '' then
-      NotYet('3-arg Supports', AExpr);
+    { Supports(Obj, IFoo): non-nil itab in the impllist chain.  The
+      3-arg form populates the out-var's fat pointer on success and
+      leaves it UNTOUCHED on failure (QBE parity). }
     if ArcExprOwnsRef(TSupportsExpr(AExpr).Obj) then
       NotYet('Supports on an owned transient', AExpr);
+    if TSupportsExpr(AExpr).OutVarName = '' then
+    begin
+      Self.EmitExprToX0(TSupportsExpr(AExpr).Obj);
+      EmitTypeinfoAddr('x1', TSupportsExpr(AExpr).IntfTypeName);
+      Self.Emit(#9'bl _GetItab');
+      Self.Emit(#9'cmp x0, #0');
+      Self.Emit(#9'cset x0, ne');
+      Exit;
+    end;
     Self.EmitExprToX0(TSupportsExpr(AExpr).Obj);
+    EmitPushX0();                                    { [obj] }
     EmitTypeinfoAddr('x1', TSupportsExpr(AExpr).IntfTypeName);
     Self.Emit(#9'bl _GetItab');
-    Self.Emit(#9'cmp x0, #0');
-    Self.Emit(#9'cset x0, ne');
+    EmitPushX0();                                    { [obj][itab] }
+    CondName := NewLabel('supno');
+    Lit := NewLabel('supend');
+    Self.Emit(Format(#9'cbz x0, %s', [CondName]));
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', TSupportsExpr(AExpr).OutVarName + '_itab');
+    Self.Emit(#9'ldr x0, [sp]');
+    Self.Emit(#9'bl _ClassAddRef');
+    EmitLoadSlot('x0', TSupportsExpr(AExpr).OutVarName);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', TSupportsExpr(AExpr).OutVarName);
+    Self.Emit(#9'movz x0, #1');
+    Self.Emit(Format(#9'b %s', [Lit]));
+    Self.Emit(CondName + ':');
+    Self.Emit(#9'add sp, sp, #32');
+    Self.Emit(#9'movz x0, #0');
+    Self.Emit(Lit + ':');
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and TFieldAccessExpr(AExpr).IsConstant then
@@ -1038,12 +1100,16 @@ begin
       NotYet('field read on an owned transient base', AExpr);
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tyClass]) or
+              [tyDouble, tySingle, tyClass]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
-    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
-      [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+    if TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tySingle then
+      Self.Emit(Format(#9'ldr w0, [x0, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]))
+    else
+      Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and
@@ -1057,15 +1123,19 @@ begin
       Self for a bare field name inside a method }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tyClass]) or
+              [tyDouble, tySingle, tyClass]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     if TFieldAccessExpr(AExpr).IsImplicitSelf then
       EmitLoadSlot('x0', 'Self')
     else
       EmitLoadSlot('x0', TFieldAccessExpr(AExpr).RecordName);
-    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
-      [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+    if TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tySingle then
+      Self.Emit(Format(#9'ldr w0, [x0, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]))
+    else
+      Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and
@@ -1078,12 +1148,16 @@ begin
     { plain Rec.Field read of a local/global record }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tyClass]) or
+              [tyDouble, tySingle, tyClass]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
-    Self.Emit(Format(#9'ldr x0, [x9, #%d]',
-      [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+    if TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tySingle then
+      Self.Emit(Format(#9'ldr w0, [x9, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]))
+    else
+      Self.Emit(Format(#9'ldr x0, [x9, #%d]',
+        [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
     Exit;
   end;
   NotYet('expression ' + AExpr.ClassName, AExpr);
@@ -1164,9 +1238,20 @@ begin
   end;
   if (AExpr is TFieldAccessExpr) and IsFloatExpr(AExpr) then
   begin
-    { Double field: load the bit pattern via the integer path, fmov to d0 }
+    { float field: load the bit pattern via the integer path.  A Single
+      field arrives as 4 bytes in w0 — bounce it through the stack into
+      s0 and widen (no fmov s,w encoding in the assembler yet). }
     Self.EmitExprToX0(AExpr);
-    Self.Emit(#9'fmov d0, x0');
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tySingle) then
+    begin
+      Self.Emit(#9'str w0, [sp, #-16]!');
+      Self.Emit(#9'ldr s0, [sp]');
+      Self.Emit(#9'add sp, sp, #16');
+      Self.Emit(#9'fcvt d0, s0');
+    end
+    else
+      Self.Emit(#9'fmov d0, x0');
     Exit;
   end;
   if AExpr is TMethodCallExpr then
@@ -1321,7 +1406,12 @@ begin
   if AFld.Base <> nil then
     NotYet('chained property read', AFld);
   if AFld.PropRead.IsStatic then
-    NotYet('static property read', AFld);
+  begin
+    { static property: the getter is a class-level routine — no receiver }
+    Self.Emit(Format(#9'bl %s',
+      [PropAccessorSym(AFld.PropOwnerType, AFld.PropRead.ReadMethod)]));
+    Exit;
+  end;
   if AFld.IsImplicitSelf then
     EmitLoadSlot('x0', 'Self')
   else

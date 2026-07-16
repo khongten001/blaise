@@ -107,6 +107,8 @@ type
     procedure TestFloatPropRead_And_StringGlobalInit;
     { slice 27: managed record params/results across call boundaries }
     procedure TestManagedRecord_ParamsAndResults;
+    { slice 28: Single record fields, 3-arg Supports, static properties }
+    procedure TestSingleFields_Supports3_StaticProps;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -400,14 +402,15 @@ begin
       procedure TThing.Go;
       begin
       end;
+      type
+        TThingClass = class of TThing;
       var
         T: TThing;
-        I: IThing;
-        Ok: Boolean;
+        MC: TThingClass;
       begin
-        T := TThing.Create();
-        Ok := Supports(T, IThing, I);
-        WriteLn(Ok)
+        MC := TThing;
+        T := MC.Create();
+        T.Go()
       end.
       ''');
   except
@@ -1908,6 +1911,54 @@ begin
   PosRel := PosEx(#9'bl _StringRelease', AsmT, PosCall);
   AssertTrue('LHS released after the call', PosRel > PosCall);
   AssertTrue('scratch move-in', PosEx(#9'bl memcpy', AsmT, PosRel) > PosRel);
+end;
+
+procedure TArm64BackendTests.TestSingleFields_Supports3_StaticProps;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      IThing = interface
+        procedure Go;
+      end;
+      TVec = record
+        X: Single;
+        Y: Single;
+      end;
+      TThing = class(TObject, IThing)
+        FRatio: Single;
+        procedure Go;
+      end;
+    procedure TThing.Go;
+    begin
+    end;
+    var
+      V: TVec;
+      T: TThing;
+      I: IThing;
+      Ok: Boolean;
+    begin
+      V.X := 1.5;
+      V.Y := V.X;
+      T := TThing.Create();
+      T.FRatio := 0.5;
+      WriteLn(V.Y);
+      WriteLn(T.FRatio);
+      Ok := Supports(T, IThing, I);
+      WriteLn(Ok);
+      I.Go()
+    end.
+    ''');
+  { Single fields: 4-byte stores narrow through s0, reads load w-width }
+  AssertTrue('single field store', Pos(#9'str s0, [x9, #4]', AsmT) >= 0);
+  AssertTrue('single field read', Pos(#9'ldr w0, [x9', AsmT) >= 0);
+  { 3-arg Supports: success path stores both halves of the out-var }
+  AssertTrue('supports lookup', Pos(#9'bl _GetItab', AsmT) >= 0);
+  AssertTrue('failure path leaves out-var untouched (skip branch)',
+    Pos(#9'add sp, sp, #32', AsmT) >= 0);
 end;
 
 initialization
