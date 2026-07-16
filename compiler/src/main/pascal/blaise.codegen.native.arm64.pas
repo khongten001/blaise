@@ -149,6 +149,7 @@ type
     procedure EmitExcUnwindTo(ATargetDepth: Integer);
     procedure EmitTryFinally(AStmt: TTryFinallyStmt);
     procedure EmitTryExcept(AStmt: TTryExceptStmt);
+    procedure EmitStaticElemAssign(AStmt: TStaticSubscriptAssign);
     procedure EmitRaise(AStmt: TRaiseStmt);
     procedure EmitRepeat(AStmt: TRepeatStmt);
     procedure EmitCase(AStmt: TCaseStmt);
@@ -179,6 +180,9 @@ type
       2 = x0:x1 memory image, 3/4 = HFA of N Doubles in d0..d(N-1)
       (encoded as 100+N).  Derived from the shared classifier; the
       register choice is this leaf's per-CPU step. }
+    procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
+    procedure EmitElemLoad(AElem: TTypeDesc);
+    function  AggHasManaged(AType: TTypeDesc): Boolean;
     function  RecReturnShape(ARec: TRecordTypeDesc): Integer;
 
     procedure EmitStrLitSection;
@@ -1064,6 +1068,16 @@ begin
       '', True, VIRT_NONE);
     Exit;
   end;
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind =
+       tyStaticArray) then
+  begin
+    EmitStaticElemAddr(TStringSubscriptExpr(AExpr));
+    EmitElemLoad(TStaticArrayTypeDesc(
+      TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType);
+    Exit;
+  end;
   if AExpr is TMethodCallExpr then
   begin
     if IsFloatExpr(AExpr) then
@@ -1275,6 +1289,25 @@ begin
     Self.Emit(#9'fmov d0, x0');
     Exit;
   end;
+  if (AExpr is TStringSubscriptExpr) and IsFloatExpr(AExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind =
+       tyStaticArray) then
+  begin
+    { float array element: the integer path loads the bit pattern }
+    Self.EmitExprToX0(AExpr);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind = tySingle) then
+    begin
+      Self.Emit(#9'str w0, [sp, #-16]!');
+      Self.Emit(#9'ldr s0, [sp]');
+      Self.Emit(#9'add sp, sp, #16');
+      Self.Emit(#9'fcvt d0, s0');
+    end
+    else
+      Self.Emit(#9'fmov d0, x0');
+    Exit;
+  end;
   if (AExpr is TFieldAccessExpr) and
      (TFieldAccessExpr(AExpr).PropRead <> nil) and IsFloatExpr(AExpr) then
   begin
@@ -1442,6 +1475,11 @@ begin
   if AStmt is TRaiseStmt then
   begin
     EmitRaise(TRaiseStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TStaticSubscriptAssign then
+  begin
+    EmitStaticElemAssign(TStaticSubscriptAssign(AStmt));
     Exit;
   end;
   if AStmt is TForStmt then
@@ -2165,6 +2203,82 @@ begin
   Self.Emit(EndL + ':');
 end;
 
+procedure TArm64Backend.EmitStaticElemAssign(AStmt: TStaticSubscriptAssign);
+var
+  AT: TStaticArrayTypeDesc;
+  Elem: TTypeDesc;
+begin
+  { Arr[I] := V for a plain local/global static array.  The element
+    ADDRESS is computed first and parked on the stack so the value
+    expression (and any ARC release call) cannot invalidate it. }
+  if (AStmt.BaseExpr <> nil) or AStmt.IsVarParam or AStmt.IsImplicitSelf then
+    NotYet('subscript write on this array form', AStmt);
+  if (AStmt.ResolvedArrayType = nil) or
+     (AStmt.ResolvedArrayType.Kind <> tyStaticArray) then
+    NotYet('subscript write on a non-static-array base', AStmt);
+  AT := TStaticArrayTypeDesc(AStmt.ResolvedArrayType);
+  Elem := AT.ElementType;
+  Self.EmitExprToX0(AStmt.IndexExpr);
+  EmitPushX0();
+  EmitSlotAddr('x0', AStmt.ArrayName);
+  EmitPopTo('x1');
+  EmitIntLiteral('x2', Elem.RawSize());
+  Self.Emit(#9'mul x1, x1, x2');
+  Self.Emit(#9'add x0, x0, x1');
+  EmitPushX0();                                { [elemaddr] }
+  if Elem.IsString() or (Elem.Kind = tyClass) then
+  begin
+    Self.EmitExprToX0(AStmt.ValueExpr);
+    if (Elem.IsString() and not OwnsStringRef(AStmt.ValueExpr)) or
+       ((Elem.Kind = tyClass) and not ArcExprOwnsRef(AStmt.ValueExpr)) then
+    begin
+      EmitPushX0();
+      if Elem.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();                              { [addr][val] }
+    Self.Emit(#9'ldr x9, [sp, #16]');
+    Self.Emit(#9'ldr x0, [x9]');
+    if Elem.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    Self.Emit(#9'ldr x9, [sp, #16]');
+    EmitPopTo('x0');
+    Self.Emit(#9'str x0, [x9]');
+    Self.Emit(#9'add sp, sp, #16');
+    Exit;
+  end;
+  if Elem.Kind = tyDouble then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.ValueExpr);
+    Self.Emit(#9'fmov x0, d0');
+  end
+  else if Elem.Kind = tySingle then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.ValueExpr);
+    Self.Emit(#9'fcvt s0, d0');
+    Self.Emit(#9'ldr x9, [sp], #16');
+    Self.Emit(#9'str s0, [x9]');
+    Exit;
+  end
+  else if IsIntFam(Elem) or (Elem.Kind = tyBoolean) then
+    Self.EmitExprToX0(AStmt.ValueExpr)
+  else
+    NotYet('array element of this type', AStmt);
+  Self.Emit(#9'ldr x9, [sp], #16');
+  case Elem.RawSize() of
+    1: Self.Emit(#9'strb w0, [x9]');
+    4: Self.Emit(#9'str w0, [x9]');
+    8: Self.Emit(#9'str x0, [x9]');
+  else
+    NotYet('array element of this width', AStmt);
+  end;
+end;
+
 procedure TArm64Backend.EmitRaise(AStmt: TRaiseStmt);
 begin
   if AStmt.Expr = nil then
@@ -2366,6 +2480,67 @@ begin
     FGlobalInits.Add(ASym, #9'.double ' + AVD.InitConst.StrVal)
   else
     FGlobalInits.Add(ASym, Format(#9'.quad %d', [AVD.InitConst.IntVal]));
+end;
+
+procedure TArm64Backend.EmitStaticElemAddr(ASub: TStringSubscriptExpr);
+var
+  ESz: Integer;
+begin
+  { x0 := &base[index].  The base must be a plain local/global array
+    identifier; chained/field bases stay NotYet. }
+  if not (ASub.StrExpr is TIdentExpr) then
+    NotYet('subscript on this array expression', ASub);
+  if TIdentExpr(ASub.StrExpr).ParamMode = pmVar then
+    NotYet('subscript on a var array parameter', ASub);
+  ESz := TStaticArrayTypeDesc(
+    ASub.StrExpr.ResolvedType).ElementType.RawSize();
+  Self.EmitExprToX0(ASub.IndexExpr);
+  EmitPushX0();
+  EmitSlotAddr('x0', TIdentExpr(ASub.StrExpr).Name);
+  EmitPopTo('x1');
+  EmitIntLiteral('x2', ESz);
+  Self.Emit(#9'mul x1, x1, x2');
+  Self.Emit(#9'add x0, x0, x1');
+end;
+
+procedure TArm64Backend.EmitElemLoad(AElem: TTypeDesc);
+begin
+  { load the element at [x0] into x0, width by element kind.  2-byte
+    integers need ldrsh/ldrh (no assembler encodings yet) — NotYet. }
+  if AElem = nil then NotYet('unresolved element type', nil);
+  case AElem.RawSize() of
+    1: Self.Emit(#9'ldrb w0, [x0]');
+    4:
+      if AElem.Kind = tyUInt32 then
+        Self.Emit(#9'ldr w0, [x0]')
+      else if AElem.Kind = tySingle then
+        Self.Emit(#9'ldr w0, [x0]')
+      else
+        Self.Emit(#9'ldrsw x0, [x0]');
+    8: Self.Emit(#9'ldr x0, [x0]');
+  else
+    NotYet('array element of this width', nil);
+  end;
+end;
+
+function TArm64Backend.AggHasManaged(AType: TTypeDesc): Boolean;
+begin
+  { records: any managed field; static arrays: managed element kind }
+  Result := False;
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+    Result := not RecretManagedClean(TRecordTypeDesc(AType))
+  else if AType.Kind = tyStaticArray then
+  begin
+    if TStaticArrayTypeDesc(AType).ElementType = nil then Exit;
+    case TStaticArrayTypeDesc(AType).ElementType.Kind of
+      tyString, tyClass, tyInterface, tyDynArray: Result := True;
+      tyRecord: Result := not RecretManagedClean(
+        TRecordTypeDesc(TStaticArrayTypeDesc(AType).ElementType));
+      tyStaticArray: Result := AggHasManaged(
+        TStaticArrayTypeDesc(AType).ElementType);
+    end;
+  end;
 end;
 
 function TArm64Backend.RecReturnShape(ARec: TRecordTypeDesc): Integer;
@@ -2613,14 +2788,14 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
-                                       tyMetaClass]))) then
+                                       tyMetaClass, tyStaticArray]))) then
       NotYet('local variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
-      if VD.ResolvedType.Kind = tyRecord then
+      if VD.ResolvedType.Kind in [tyRecord, tyStaticArray] then
       begin
-        { managed fields are fine: zero-init nils them, the base-class ARC
-          walks handle copies and the scope-exit release }
+        { managed fields/elements are fine: zero-init nils them, the
+          base-class ARC walks handle the scope-exit release }
         AddLocal(VD.Names.Strings[J], VD.ResolvedType.RawSize());
         FRecLocals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
       end
@@ -2889,9 +3064,10 @@ begin
   for I := 0 to ADecl.Body.Decls.Count - 1 do
     for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
     begin
-      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyRecord then
+      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind in
+         [tyRecord, tyStaticArray] then
       begin
-        { records zero-initialise their whole storage }
+        { aggregates zero-initialise their whole storage }
         EmitSlotAddr('x0',
           TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J]);
         Self.Emit(#9'movz w1, #0');
@@ -2928,12 +3104,12 @@ begin
   { release the managed fields of record locals — the base-class walk needs
     a callee-saved base register across its release calls }
   for I := 0 to FRecLocals.Count - 1 do
-    if not RecretManagedClean(TRecordTypeDesc(FRecLocals.Objects[I])) then
+    if AggHasManaged(TTypeDesc(FRecLocals.Objects[I])) then
     begin
       Self.Emit(#9'str x19, [sp, #-16]!');
       EmitSlotAddr('x19', FRecLocals.Strings[I]);
-      Self.EmitRecordFieldReleases(
-        TRecordTypeDesc(FRecLocals.Objects[I]), 'x19');
+      Self.EmitManagedReleaseAt(TTypeDesc(FRecLocals.Objects[I]),
+        'x19', False);
       Self.Emit(#9'ldr x19, [sp], #16');
     end;
   if FIsFunction and (RecShape >= 0) and
@@ -4180,7 +4356,7 @@ begin
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
-                                       tyMetaClass]))) then
+                                       tyMetaClass, tyStaticArray]))) then
       NotYet('program variable of this type', VD);
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -4211,7 +4387,7 @@ begin
         { not an ordinary global: no _g_ bss entry }
         FGlobalNames.Delete(FGlobalNames.Count - 1);
       end;
-      if VD.ResolvedType.Kind = tyRecord then
+      if VD.ResolvedType.Kind in [tyRecord, tyStaticArray] then
       begin
         FRecGlobals.AddObject(VD.Names.Strings[J], VD.ResolvedType);
         FGlobalSize.Add(VD.Names.Strings[J], VD.ResolvedType.RawSize());
@@ -4314,12 +4490,12 @@ begin
     Self.Emit(#9'bl _StringRelease');
   end;
   for I := 0 to FRecGlobals.Count - 1 do
-    if not RecretManagedClean(TRecordTypeDesc(FRecGlobals.Objects[I])) then
+    if AggHasManaged(TTypeDesc(FRecGlobals.Objects[I])) then
     begin
       Self.Emit(#9'str x19, [sp, #-16]!');
       EmitSlotAddr('x19', FRecGlobals.Strings[I]);
-      Self.EmitRecordFieldReleases(
-        TRecordTypeDesc(FRecGlobals.Objects[I]), 'x19');
+      Self.EmitManagedReleaseAt(TTypeDesc(FRecGlobals.Objects[I]),
+        'x19', False);
       Self.Emit(#9'ldr x19, [sp], #16');
     end;
   for I := 0 to FObjGlobals.Count - 1 do

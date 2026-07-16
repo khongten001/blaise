@@ -115,6 +115,8 @@ type
     procedure TestCaseAndRepeat;
     { slice 31: exceptions — try/finally, try/except, raise, unwind }
     procedure TestExceptions_FramesHandlersUnwind;
+    { slice 32: static arrays — width-aware element access, managed elems }
+    procedure TestStaticArrays_ElementsAndArc;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2114,6 +2116,45 @@ begin
   AssertTrue('unwind pops', Pos(#9'bl _PopExcFrame', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64exc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestStaticArrays_ElementsAndArc;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      Nums: array[0..3] of Integer;
+      Names: array[0..1] of string;
+      I: Int64;
+    begin
+      for I := 0 to 3 do
+        Nums[I] := I * 2;
+      Names[0] := 'a';
+      Names[1] := Names[0];
+      WriteLn(Nums[2]);
+      WriteLn(Names[1])
+    end.
+    ''');
+  { width-aware element access: 4-byte Integer elements }
+  AssertTrue('scaled index', Pos(#9'mul x1, x1, x2', AsmT) >= 0);
+  AssertTrue('4-byte store', Pos(#9'str w0, [x9]', AsmT) >= 0);
+  AssertTrue('signed 4-byte load', Pos(#9'ldrsw x0, [x0]', AsmT) >= 0);
+  { managed elements: retain/release through the parked element address }
+  AssertTrue('string elem retain', Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('string elem release', Pos(#9'bl _StringRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64sarr.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
