@@ -113,6 +113,8 @@ type
     procedure TestWeak_MetaclassCtor_IndexedProps;
     { slice 30: case and repeat/until }
     procedure TestCaseAndRepeat;
+    { slice 31: exceptions — try/finally, try/except, raise, unwind }
+    procedure TestExceptions_FramesHandlersUnwind;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2050,6 +2052,68 @@ begin
   AssertTrue('named-const case value', Pos(#9'movz x1, #9', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64case.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestExceptions_FramesHandlersUnwind;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      EBoom = class
+      end;
+    function Risky(N: Int64): Int64;
+    begin
+      Result := 0;
+      try
+        if N = 0 then
+        begin
+          Exit(7)
+        end;
+        if N > 5 then
+          raise EBoom.Create();
+        Result := N
+      finally
+        WriteLn('cleanup')
+      end
+    end;
+    begin
+      WriteLn(Risky(0));
+      try
+        WriteLn(Risky(9))
+      except
+        on E: EBoom do WriteLn('caught')
+      end;
+      try
+        WriteLn(Risky(2))
+      except
+        WriteLn('never')
+      end
+    end.
+    ''');
+  { frames: push + setjmp guard, 512-byte static slot in the frame }
+  AssertTrue('frame push', Pos(#9'bl _PushExcFrame', AsmT) >= 0);
+  AssertTrue('setjmp guard', Pos(#9'bl _blaise_setjmp', AsmT) >= 0);
+  AssertTrue('exception branch', Pos(#9'cbnz w0, Lfinexc', AsmT) >= 0);
+  { raise + handler matching + rebind }
+  AssertTrue('raise', Pos(#9'bl _Raise', AsmT) >= 0);
+  AssertTrue('handler match', Pos(#9'bl _IsInstance', AsmT) >= 0);
+  AssertTrue('finally re-raise', Pos(#9'bl _Reraise', AsmT) >= 0);
+  { Exit inside try runs the finally on the way out (unwind emits an
+    extra PopExcFrame before the exit branch) }
+  AssertTrue('unwind pops', Pos(#9'bl _PopExcFrame', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64exc.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

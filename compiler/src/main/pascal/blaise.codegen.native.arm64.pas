@@ -46,7 +46,7 @@ interface
 
 uses
   SysUtils, Classes, contnrs, Generics.Collections, uAST, uSymbolTable,
-  uStrCompat, blaise.codegen, blaise.codegen.native.backend,
+  uStrCompat, blaise.codegen, blaise.codegen.native.backend, strutils,
   blaise.codegen.target;
 
 const
@@ -89,6 +89,12 @@ type
     FIntfDecls:   TObjectList;   { not owned — program-level interface TTypeDecls }
     FIntfLocals:  TStringList;   { interface locals (base name) — obj released at exit }
     FIntfGlobals: TStringList;   { interface globals (prefixed base name) }
+    FExcDepth:    Integer;       { active exception frames at emission point }
+    FExcSlotN:    Integer;       { next _excf_N frame slot ordinal }
+    FFinallyBodies: TObjectList; { not owned — TCompoundStmt per frame (nil =
+                                   except frame); mirrors the runtime stack }
+    FLoopExcDepth: TStringList;  { FExcDepth at each enclosing loop's entry —
+                                   break/continue unwind to it }
     FStrGlobals:  TStringList;   { string program globals — released at
                                    the program exit }
     FRecLocals:   TStringList;   { record locals; Objects = TRecordTypeDesc }
@@ -138,6 +144,12 @@ type
     procedure EmitWrite(ACall: TProcCall; ANewline: Boolean);
     procedure EmitIf(AStmt: TIfStmt);
     procedure EmitWhile(AStmt: TWhileStmt);
+    function  NewExcFrameSlot: string;
+    procedure EmitExcPrologue(const AFrameSlot, AExcLbl, ATryLbl: string);
+    procedure EmitExcUnwindTo(ATargetDepth: Integer);
+    procedure EmitTryFinally(AStmt: TTryFinallyStmt);
+    procedure EmitTryExcept(AStmt: TTryExceptStmt);
+    procedure EmitRaise(AStmt: TRaiseStmt);
     procedure EmitRepeat(AStmt: TRepeatStmt);
     procedure EmitCase(AStmt: TCaseStmt);
     procedure EmitExprToX0Aux(AExpr: TASTExpr);
@@ -270,6 +282,8 @@ begin
   FIntfDecls   := TObjectList.Create(False);
   FIntfLocals  := TStringList.Create();
   FIntfGlobals := TStringList.Create();
+  FFinallyBodies := TObjectList.Create(False);
+  FLoopExcDepth := TStringList.Create();
   FRecLocals   := TStringList.Create();
   FRecGlobals  := TStringList.Create();
   FGlobalSize  := TDictionary<string, Integer>.Create();
@@ -297,6 +311,8 @@ begin
   FIntfDecls.Free();
   FIntfLocals.Free();
   FIntfGlobals.Free();
+  FFinallyBodies.Free();
+  FLoopExcDepth.Free();
   FStrLocals.Free();
   FFloatNames.Free();
   FFloatLits.Free();
@@ -1413,6 +1429,21 @@ begin
     EmitCase(TCaseStmt(AStmt));
     Exit;
   end;
+  if AStmt is TTryFinallyStmt then
+  begin
+    EmitTryFinally(TTryFinallyStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TTryExceptStmt then
+  begin
+    EmitTryExcept(TTryExceptStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TRaiseStmt then
+  begin
+    EmitRaise(TRaiseStmt(AStmt));
+    Exit;
+  end;
   if AStmt is TForStmt then
   begin
     EmitFor(TForStmt(AStmt));
@@ -1427,6 +1458,9 @@ begin
   begin
     if FBreakLbls.Count = 0 then
       NotYet('break outside a loop', AStmt);
+    if FLoopExcDepth.Count > 0 then
+      EmitExcUnwindTo(StrToInt(
+        FLoopExcDepth.Strings[FLoopExcDepth.Count - 1]));
     Self.Emit(Format(#9'b %s', [FBreakLbls.Strings[FBreakLbls.Count - 1]]));
     Exit;
   end;
@@ -1434,6 +1468,9 @@ begin
   begin
     if FContLbls.Count = 0 then
       NotYet('continue outside a loop', AStmt);
+    if FLoopExcDepth.Count > 0 then
+      EmitExcUnwindTo(StrToInt(
+        FLoopExcDepth.Strings[FLoopExcDepth.Count - 1]));
     Self.Emit(Format(#9'b %s', [FContLbls.Strings[FContLbls.Count - 1]]));
     Exit;
   end;
@@ -1972,6 +2009,175 @@ begin
   Self.Emit(EndL + ':');
 end;
 
+function TArm64Backend.NewExcFrameSlot: string;
+begin
+  { one static 512-byte, 16-aligned frame slot per emitted try — the body
+    is buffered, so lazily growing the frame here is exact (BUG-045). }
+  if (FFrameSize and 15) <> 0 then
+    AddLocal('__excpad_' + IntToStr(FExcSlotN), 8);
+  Result := '__excf_' + IntToStr(FExcSlotN);
+  FExcSlotN := FExcSlotN + 1;
+  if not FFrame.ContainsKey(Result) then
+    AddLocal(Result, 512);
+end;
+
+procedure TArm64Backend.EmitExcPrologue(const AFrameSlot, AExcLbl,
+  ATryLbl: string);
+begin
+  EmitSlotAddr('x0', AFrameSlot);
+  Self.Emit(#9'bl _PushExcFrame');
+  EmitSlotAddr('x0', AFrameSlot);
+  Self.Emit(#9'bl _blaise_setjmp');
+  Self.Emit(Format(#9'cbnz w0, %s', [AExcLbl]));
+  Self.Emit(ATryLbl + ':');
+end;
+
+procedure TArm64Backend.EmitExcUnwindTo(ATargetDepth: Integer);
+var
+  I, J: Integer;
+  FinBody: TCompoundStmt;
+begin
+  { non-local exit (Exit/Break/Continue) crossing try regions: pop each
+    frame and run try/finally bodies inline on the way out }
+  for I := FExcDepth downto ATargetDepth + 1 do
+  begin
+    Self.Emit(#9'bl _PopExcFrame');
+    if I - 1 < FFinallyBodies.Count then
+    begin
+      FinBody := TCompoundStmt(FFinallyBodies.Items[I - 1]);
+      if FinBody <> nil then
+        for J := 0 to FinBody.Stmts.Count - 1 do
+          EmitStmt(TASTStmt(FinBody.Stmts.Items[J]));
+    end;
+  end;
+end;
+
+procedure TArm64Backend.EmitTryFinally(AStmt: TTryFinallyStmt);
+var
+  I: Integer;
+  FrameSlot, ExcL, TryL, EndL: string;
+begin
+  FrameSlot := NewExcFrameSlot();
+  ExcL := NewLabel('finexc');
+  TryL := NewLabel('trybody');
+  EndL := NewLabel('finend');
+  EmitExcPrologue(FrameSlot, ExcL, TryL);
+  FExcDepth := FExcDepth + 1;
+  FFinallyBodies.Add(AStmt.FinallyBody);
+  for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
+  Self.Emit(#9'bl _PopExcFrame');
+  FExcDepth := FExcDepth - 1;
+  FFinallyBodies.Delete(FFinallyBodies.Count - 1);
+  for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
+  Self.Emit(Format(#9'b %s', [EndL]));
+  { exception path: capture, pop, run the finally, re-raise.  Codegen-time
+    depth bookkeeping balances independently per path. }
+  FExcDepth := FExcDepth + 1;
+  FFinallyBodies.Add(AStmt.FinallyBody);
+  Self.Emit(ExcL + ':');
+  Self.Emit(#9'bl _CurrentException');
+  Self.Emit(#9'str x0, [sp, #-16]!');
+  Self.Emit(#9'bl _PopExcFrame');
+  FExcDepth := FExcDepth - 1;
+  FFinallyBodies.Delete(FFinallyBodies.Count - 1);
+  for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
+  Self.Emit(#9'ldr x0, [sp], #16');
+  Self.Emit(#9'bl _Reraise');
+  Self.Emit(EndL + ':');
+end;
+
+procedure TArm64Backend.EmitTryExcept(AStmt: TTryExceptStmt);
+var
+  I, J: Integer;
+  H: TExceptHandlerClause;
+  FrameSlot, ExcL, TryL, EndL, BodyL, NextL: string;
+begin
+  FrameSlot := NewExcFrameSlot();
+  ExcL := NewLabel('exch');
+  TryL := NewLabel('trybody');
+  EndL := NewLabel('excend');
+  EmitExcPrologue(FrameSlot, ExcL, TryL);
+  FExcDepth := FExcDepth + 1;
+  FFinallyBodies.Add(nil);
+  for I := 0 to AStmt.TryBody.Stmts.Count - 1 do
+    EmitStmt(TASTStmt(AStmt.TryBody.Stmts.Items[I]));
+  Self.Emit(#9'bl _PopExcFrame');
+  FExcDepth := FExcDepth - 1;
+  FFinallyBodies.Delete(FFinallyBodies.Count - 1);
+  Self.Emit(Format(#9'b %s', [EndL]));
+  Self.Emit(ExcL + ':');
+  if AStmt.Handlers.Count > 0 then
+  begin
+    { capture while our frame is still the top, then pop }
+    Self.Emit(#9'bl _CurrentException');
+    Self.Emit(#9'str x0, [sp, #-16]!');
+    Self.Emit(#9'bl _PopExcFrame');
+    for I := 0 to AStmt.Handlers.Count - 1 do
+    begin
+      H := TExceptHandlerClause(AStmt.Handlers.Items[I]);
+      BodyL := NewLabel('hbody');
+      NextL := NewLabel('hnext');
+      Self.Emit(#9'ldr x0, [sp]');
+      EmitTypeinfoAddr('x1', H.TypeName);
+      Self.Emit(#9'bl _IsInstance');
+      Self.Emit(Format(#9'cbz w0, %s', [NextL]));
+      Self.Emit(BodyL + ':');
+      if H.VarName <> '' then
+      begin
+        { bind: retain the exception (balances the scope-exit release of
+          the handler var), release any prior binding, store }
+        Self.Emit(#9'ldr x0, [sp]');
+        Self.Emit(#9'bl _ClassAddRef');
+        EmitLoadSlot('x0', H.VarName);
+        Self.Emit(#9'bl _ClassRelease');
+        Self.Emit(#9'ldr x0, [sp]');
+        EmitStoreSlot('x0', H.VarName);
+      end;
+      for J := 0 to H.Body.Stmts.Count - 1 do
+        EmitStmt(TASTStmt(H.Body.Stmts.Items[J]));
+      Self.Emit(#9'add sp, sp, #16');
+      Self.Emit(Format(#9'b %s', [EndL]));
+      Self.Emit(NextL + ':');
+    end;
+    if AStmt.ElseBody <> nil then
+    begin
+      for J := 0 to AStmt.ElseBody.Stmts.Count - 1 do
+        EmitStmt(TASTStmt(AStmt.ElseBody.Stmts.Items[J]));
+      Self.Emit(#9'add sp, sp, #16');
+      Self.Emit(Format(#9'b %s', [EndL]));
+    end
+    else
+    begin
+      Self.Emit(#9'ldr x0, [sp], #16');
+      Self.Emit(#9'bl _Reraise');
+    end;
+  end
+  else
+  begin
+    { bare except: catch-all body }
+    Self.Emit(#9'bl _PopExcFrame');
+    for I := 0 to AStmt.ExceptBody.Stmts.Count - 1 do
+      EmitStmt(TASTStmt(AStmt.ExceptBody.Stmts.Items[I]));
+  end;
+  Self.Emit(EndL + ':');
+end;
+
+procedure TArm64Backend.EmitRaise(AStmt: TRaiseStmt);
+begin
+  if AStmt.Expr = nil then
+  begin
+    { bare re-raise: the in-flight exception }
+    Self.Emit(#9'bl _CurrentException');
+    Self.Emit(#9'bl _Reraise');
+    Exit;
+  end;
+  Self.EmitExprToX0(AStmt.Expr);
+  Self.Emit(#9'bl _Raise');
+end;
+
 procedure TArm64Backend.EmitRepeat(AStmt: TRepeatStmt);
 var
   TopL, EndL: string;
@@ -1981,6 +2187,7 @@ begin
   TopL := NewLabel('rep');
   EndL := NewLabel('rend');
   FBreakLbls.Add(EndL);
+  FLoopExcDepth.Add(IntToStr(FExcDepth));
   FContLbls.Add(TopL);
   Self.Emit(TopL + ':');
   EmitStmtList(AStmt.Body.Stmts);
@@ -1988,6 +2195,7 @@ begin
   Self.Emit(Format(#9'cbz x0, %s', [TopL]));
   Self.Emit(EndL + ':');
   FBreakLbls.Delete(FBreakLbls.Count - 1);
+  FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
   FContLbls.Delete(FContLbls.Count - 1);
 end;
 
@@ -2071,10 +2279,12 @@ begin
   else
     Self.Emit(Format(#9'b.gt %s', [EndL]));
   FBreakLbls.Add(EndL);
+  FLoopExcDepth.Add(IntToStr(FExcDepth));
   FContLbls.Add(ContL);
   Self.EmitStmt(AStmt.Body);
   FContLbls.Delete(FContLbls.Count - 1);
   FBreakLbls.Delete(FBreakLbls.Count - 1);
+  FLoopExcDepth.Delete(FLoopExcDepth.Count - 1);
   Self.Emit(ContL + ':');
   EmitLoadSlot('x0', AStmt.VarName);
   if AStmt.IsDownTo then
@@ -2092,6 +2302,8 @@ begin
     Self.EmitStmt(AStmt.ResultAssign)
   else if AStmt.Value <> nil then
     NotYet('exit with a value in this position', AStmt);
+  { leaving through try regions runs their finally bodies on the way out }
+  EmitExcUnwindTo(0);
   Self.Emit(Format(#9'b %s', [FExitLabel]));
 end;
 
@@ -2445,6 +2657,7 @@ procedure TArm64Backend.EmitFunctionDef(ADecl: TMethodDecl);
 var
   I, J, K, FIdx: Integer;
   SPOff, SPSz: Integer;
+  SavedAsm, BodyBuf: TStringBuilder;
   FrameAligned: Integer;
   Sym: string;
   RecShape, ParShape: Integer;
@@ -2474,8 +2687,16 @@ begin
   Self.Emit(Sym + ':');
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
-  if FrameAligned > 0 then
-    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  { the rest is buffered so try statements can lazily grow the frame —
+    the frame-reserve sub is written with the FINAL size (BUG-045 lesson:
+    never pre-count exception frames from source) }
+  SavedAsm := FAsm;
+  BodyBuf := TStringBuilder.Create();
+  FAsm := BodyBuf;
+  FExcDepth := 0;
+  FExcSlotN := 0;
+  FFinallyBodies.Clear();
+  FLoopExcDepth.Clear();
   { spill register args to their slots.  Integer and float parameters
     consume INDEPENDENT register sequences (x0.. / d0..) per AAPCS64;
     floats hop through x9 so the slot store machinery stays uniform. }
@@ -2774,6 +2995,12 @@ begin
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
   Self.Emit(#9'ret');
+  FAsm := SavedAsm;
+  FrameAligned := (FFrameSize + 15) and (not 15);
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  FAsm.Append(BodyBuf.ToString());
+  BodyBuf.Free();
   FFrame.Clear();
   FFrameSize := 0;
 end;
@@ -3918,6 +4145,7 @@ var
   FrameAligned: Integer;
   TDcl: TTypeDecl;
   CDef: TClassTypeDef;
+  SavedAsm, BodyBuf: TStringBuilder;
 begin
   FProgramName := AProg.Name;
   FCurrentUnitName := '';
@@ -4053,11 +4281,18 @@ begin
   Self.Emit('_main:');
   { Prologue: fp/lr pair + frame chain — ALWAYS (Darwin unwind).  argc/argv
     arrive in x0/x1 and pass straight through to _SetArgs, which must run
-    before _BlaiseInit (that clobbers the argument registers). }
+    before _BlaiseInit (that clobbers the argument registers).  The body is
+    buffered so try statements can lazily grow the frame (see
+    EmitFunctionDef). }
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
-  if FrameAligned > 0 then
-    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  SavedAsm := FAsm;
+  BodyBuf := TStringBuilder.Create();
+  FAsm := BodyBuf;
+  FExcDepth := 0;
+  FExcSlotN := 0;
+  FFinallyBodies.Clear();
+  FLoopExcDepth.Clear();
   Self.Emit(#9'bl _SetArgs');
   Self.Emit(#9'bl _BlaiseInit');
   { unit initialization sections, in dependency (append) order }
@@ -4101,6 +4336,12 @@ begin
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
   Self.Emit(#9'ret');
+  FAsm := SavedAsm;
+  FrameAligned := (FFrameSize + 15) and (not 15);
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  FAsm.Append(BodyBuf.ToString());
+  BodyBuf.Free();
 
   EmitStrLitSection();
   EmitFloatLitSection();
@@ -4229,6 +4470,7 @@ procedure TArm64Backend.EmitUnitSection(AUnit: TUnit; AStmts: TObjectList;
 var
   I, J: Integer;
   FrameAligned: Integer;
+  SavedAsm, BodyBuf: TStringBuilder;
 begin
   ARegistry.Add(ASym);
   FIsFunction := False;
@@ -4258,13 +4500,24 @@ begin
   Self.Emit(ASym + ':');
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
-  if FrameAligned > 0 then
-    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  SavedAsm := FAsm;
+  BodyBuf := TStringBuilder.Create();
+  FAsm := BodyBuf;
+  FExcDepth := 0;
+  FExcSlotN := 0;
+  FFinallyBodies.Clear();
+  FLoopExcDepth.Clear();
   EmitStmtList(AStmts);
   Self.Emit(FExitLabel + ':');
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
   Self.Emit(#9'ret');
+  FAsm := SavedAsm;
+  FrameAligned := (FFrameSize + 15) and (not 15);
+  if FrameAligned > 0 then
+    Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
+  FAsm.Append(BodyBuf.ToString());
+  BodyBuf.Free();
   FFrame.Clear();
   FFrameSize := 0;
 end;
