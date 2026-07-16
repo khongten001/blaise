@@ -1380,6 +1380,26 @@ begin
     EmitInterfaceAsCast(AAsgn);
     Exit;
   end;
+  if (AAsgn.Expr is TFuncCallExpr) and
+     (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) then
+  begin
+    { interface-returning call: the callee fills the 16-byte __iret
+      scratch through x8; the returned obj is OWNED (+1) — release the
+      old value, store both halves, no caller retain }
+    if TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl).IsExternal then
+      NotYet('external interface-returning call', AAsgn);
+    EmitCall(TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl),
+      TFuncCallExpr(AAsgn.Expr).Name, TFuncCallExpr(AAsgn.Expr).Args,
+      '__iret');
+    EmitLoadSlot('x0', AAsgn.Name);
+    Self.Emit(#9'bl _ClassRelease');
+    EmitSlotAddr('x9', '__iret');
+    Self.Emit(#9'ldr x0, [x9]');
+    EmitStoreSlot('x0', AAsgn.Name);
+    Self.Emit(#9'ldr x0, [x9, #8]');
+    EmitStoreSlot('x0', AAsgn.Name + '_itab');
+    Exit;
+  end;
   NotYet('interface assignment from this expression', AAsgn);
 end;
 
@@ -1911,6 +1931,18 @@ begin
         AddLocal(Par.ParamName, 8);
         Continue;
       end;
+      if (Par.ResolvedType <> nil) and
+         (Par.ResolvedType.Kind = tyInterface) then
+      begin
+        { fat pointer: two int-class registers (obj, itab).  A BY-VALUE
+          interface param is the callee's co-owning copy — retained in the
+          prologue, obj half released at exit; const params borrow. }
+        AddLocal(Par.ParamName, 8);
+        AddLocal(Par.ParamName + '_itab', 8);
+        if not Par.IsConstParam then
+          FIntfLocals.Add(Par.ParamName);
+        Continue;
+      end;
       if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) then
       begin
         if not RecretManagedClean(TRecordTypeDesc(Par.ResolvedType)) then
@@ -1947,6 +1979,14 @@ begin
         AddLocal('Result', ADecl.ResolvedReturnType.RawSize());
         if RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType)) = 0 then
           AddLocal('__sret', 8);   { the incoming x8 destination pointer }
+      end
+      else if ADecl.ResolvedReturnType.Kind = tyInterface then
+      begin
+        { fat-pointer result: written to the caller's 16-byte x8 buffer
+          at return; the +1 on the obj half transfers to the caller }
+        AddLocal('Result', 8);
+        AddLocal('Result_itab', 8);
+        AddLocal('__sret', 8);
       end
       else if not (IsIntFam(ADecl.ResolvedReturnType) or
                    (ADecl.ResolvedReturnType.Kind in [tyDouble, tySingle]) or
@@ -1993,6 +2033,9 @@ begin
       end;
     end;
   end;
+  { 16-byte scratch for interface-returning calls (sret target).  Always
+    reserved — cheap, and avoids a body pre-scan. }
+  AddLocal('__iret', 16);
   for I := 0 to ABody.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
 end;
@@ -2017,6 +2060,8 @@ begin
   RecShape := -1;
   if FIsFunction and (ADecl.ResolvedReturnType.Kind = tyRecord) then
     RecShape := RecReturnShape(TRecordTypeDesc(ADecl.ResolvedReturnType));
+  if FIsFunction and (ADecl.ResolvedReturnType.Kind = tyInterface) then
+    RecShape := 0;   { interface results use the x8 sret path }
   FExitLabel := NewLabel('rexit');
   FForN := 0;
   RegisterFrameSlots(ADecl, ADecl.Body);
@@ -2097,6 +2142,15 @@ begin
       end;
     end
     else if (Par.ResolvedType <> nil) and
+            (Par.ResolvedType.Kind = tyInterface) then
+    begin
+      { fat pointer in two consecutive x registers }
+      if J >= 7 then NotYet('interface parameters spilling to the stack', ADecl);
+      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+      EmitStoreSlot('x' + IntToStr(J + 1), Par.ParamName + '_itab');
+      J := J + 2;
+    end
+    else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tyDouble) then
     begin
       if FIdx >= 8 then
@@ -2157,6 +2211,12 @@ begin
       EmitLoadSlot('x0', Par.ParamName);
       Self.Emit(#9'bl _StringAddRef');
     end;
+    if (Par.ResolvedType <> nil) and
+       (Par.ResolvedType.Kind = tyInterface) and not Par.IsConstParam then
+    begin
+      EmitLoadSlot('x0', Par.ParamName);
+      Self.Emit(#9'bl _ClassAddRef');
+    end;
   end;
   { pass 2: copy the bytes of every pointer-passed record param into its
     own slot.  This runs only after every register is parked, because the
@@ -2175,7 +2235,12 @@ begin
   end;
   { zero-initialise Result and every declared local (language rule: ALL
     variables are zero-initialised) }
-  if FIsFunction and (RecShape >= 0) then
+  if FIsFunction and (ADecl.ResolvedReturnType.Kind = tyInterface) then
+  begin
+    EmitStoreSlot('xzr', 'Result');
+    EmitStoreSlot('xzr', 'Result_itab');
+  end
+  else if FIsFunction and (RecShape >= 0) then
   begin
     EmitSlotAddr('x0', 'Result');
     Self.Emit(#9'movz w1, #0');
@@ -2234,7 +2299,8 @@ begin
         TRecordTypeDesc(FRecLocals.Objects[I]), 'x19');
       Self.Emit(#9'ldr x19, [sp], #16');
     end;
-  if FIsFunction and (RecShape >= 0) then
+  if FIsFunction and (RecShape >= 0) and
+     (ADecl.ResolvedReturnType.Kind = tyRecord) then
   begin
     case RecShape of
       0:
@@ -2267,6 +2333,15 @@ begin
           Self.Emit(Format(#9'ldr d%d, [x9, #%d]', [I, I * 8]));
       end;
     end;
+  end
+  else if FIsFunction and
+          (ADecl.ResolvedReturnType.Kind = tyInterface) then
+  begin
+    EmitLoadSlot('x9', '__sret');
+    EmitLoadSlot('x0', 'Result');
+    Self.Emit(#9'str x0, [x9]');
+    EmitLoadSlot('x0', 'Result_itab');
+    Self.Emit(#9'str x0, [x9, #8]');
   end
   else if FIsFunction and FResultSingle then
   begin
@@ -2366,6 +2441,12 @@ begin
         NFloat := NFloat +
           (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100);
       end;
+      Continue;
+    end;
+    if (Arg.ResolvedType <> nil) and
+       (Arg.ResolvedType.Kind = tyInterface) then
+    begin
+      NInt := NInt + 2;
       Continue;
     end;
     if IsFloatExpr(Arg) then
@@ -2525,6 +2606,25 @@ begin
           end;
           NFloat := NFloat + (Shape - 100);
         end;
+      end
+      else if (Arg.ResolvedType <> nil) and
+              (Arg.ResolvedType.Kind = tyInterface) then
+      begin
+        { fat pointer: obj + itab in two consecutive int registers.
+          The callee makes its own co-owning copy (by-value retains in
+          the prologue), so the caller passes a borrow. }
+        if not (Arg is TIdentExpr) then
+          NotYet('interface argument from this expression', Arg);
+        if TIdentExpr(Arg).ParamMode = pmVar then
+          NotYet('var interface parameter', Arg);
+        if NInt >= 7 then NotYet('interface arguments spilling to the stack', Arg);
+        EmitLoadSlot('x0', TIdentExpr(Arg).Name);
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt));
+        EmitLoadSlot('x0', TIdentExpr(Arg).Name + '_itab');
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt + 1));
+        NInt := NInt + 2;
       end
       else if (Arg.ResolvedType <> nil) and
               (Arg.ResolvedType.Kind = tyString) then
@@ -3475,6 +3575,7 @@ begin
   FFrame.Clear();
   FFrameSize := 0;
   FForN := 0;
+  AddLocal('__iret', 16);   { interface-returning call scratch }
   for I := 0 to AProg.Block.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(AProg.Block.Stmts.Items[I]));
   FForN := 0;
@@ -3674,6 +3775,7 @@ begin
   FObjLocals.Clear();
   FIntfLocals.Clear();
   FForN := 0;
+  AddLocal('__iret', 16);
   for I := 0 to AStmts.Count - 1 do
     RegisterForSlots(TASTStmt(AStmts.Items[I]));
   FForN := 0;

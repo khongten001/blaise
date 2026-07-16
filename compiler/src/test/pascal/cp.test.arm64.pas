@@ -101,6 +101,8 @@ type
     procedure TestOwnedStringTransientArg_Released;
     { slice 24: Supports, InheritsFrom, metaclass values }
     procedure TestReflection_SupportsInheritsFromMetaclass;
+    { slice 25: interface parameters and results }
+    procedure TestInterfaceParamsAndResults;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -487,8 +489,9 @@ var
 begin
   AsmT := GenAsm(SrcForLoop);
   { the loop bound lives in a hidden frame slot, compared each iteration }
+  { offset-agnostic: the __iret scratch shifts hidden-slot offsets }
   AssertTrue('bound stored to the hidden slot',
-    Pos(#9'stur x0, [x29, #-8]', AsmT) >= 0);
+    Pos(#9'stur x0, [x29, #-24]', AsmT) >= 0);
   AssertTrue('signed compare against the bound', Pos(#9'cmp x0, x1', AsmT) >= 0);
   AssertTrue('exit branch on greater', Pos(#9'b.gt Lfend', AsmT) >= 0);
 end;
@@ -1769,6 +1772,61 @@ begin
   AssertTrue('inheritsfrom call', Pos(#9'bl _InheritsFrom', AsmT) >= 0);
   { bare class name as a value = typeinfo address }
   AssertTrue('metaclass value', Pos('typeinfo_TKid@PAGEOFF', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestInterfaceParamsAndResults;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      IGreeter = interface
+        function Greet(N: Int64): Int64;
+      end;
+      THi = class(TObject, IGreeter)
+        function Greet(N: Int64): Int64;
+      end;
+    function THi.Greet(N: Int64): Int64;
+    begin
+      Result := N + 1
+    end;
+    function MakeGreeter: IGreeter;
+    var
+      H: THi;
+    begin
+      H := THi.Create();
+      Result := H
+    end;
+    function UseGreeter(G: IGreeter): Int64;
+    begin
+      Result := G.Greet(1)
+    end;
+    var
+      G: IGreeter;
+    begin
+      G := MakeGreeter();
+      WriteLn(UseGreeter(G))
+    end.
+    ''');
+  { result: callee writes the fat pointer through the parked x8 buffer }
+  AssertTrue('sret buffer store', Pos(#9'str x0, [x9, #8]', AsmT) >= 0);
+  { caller receives through the __iret scratch }
+  AssertTrue('call with sret dest', Pos(#9'bl MakeGreeter', AsmT) >= 0);
+  { param: two-register fat pointer, by-value retain in the callee }
+  AssertTrue('param call', Pos(#9'bl UseGreeter', AsmT) >= 0);
+  AssertTrue('callee retains its copy', Pos(#9'bl _ClassAddRef', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64intfpr.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization
