@@ -97,6 +97,8 @@ type
     procedure TestStackArgs_VariadicAndOverflow;
     { slice 22: interfaces — itab dispatch, fat-pointer ARC, metadata }
     procedure TestInterfaces_DispatchAndMetadata;
+    procedure TestInterfaces_AsCast;
+    procedure TestOwnedStringTransientArg_Released;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -392,11 +394,11 @@ begin
       end;
       var
         T: TThing;
-        I: IThing;
+        Ok: Boolean;
       begin
         T := TThing.Create();
-        I := T as IThing;
-        I.Go()
+        Ok := Supports(T, IThing);
+        WriteLn(Ok)
       end.
       ''');
   except
@@ -1033,42 +1035,33 @@ end;
 
 procedure TArm64BackendTests.TestUnit_FinalizationStillNotYet;
 var
-  Raised: Boolean;
-  Msg: string;
+  AsmT: string;
 begin
-  Raised := False;
-  Msg := '';
-  try
-    GenAsmWithUnit(
-      '''
-      unit withfinal;
-      interface
-      function One: Int64;
-      implementation
-      function One: Int64;
-      begin
-        Result := 1
-      end;
-      finalization
-        One()
-      end.
-      ''',
-      '''
-      program P;
-      uses withfinal;
-      begin
-        WriteLn(One())
-      end.
-      ''');
-  except
-    on E: ENativeCodeGenError do
+  { historical name — finalization now LOWERS: <unit>_final is emitted
+    and called at program exit (reverse dependency order) }
+  AsmT := GenAsmWithUnit(
+    '''
+    unit withfinal;
+    interface
+    function One: Int64;
+    implementation
+    function One: Int64;
     begin
-      Raised := True;
-      Msg := E.Message;
+      Result := 1
     end;
-  end;
-  AssertTrue('finalization section raises', Raised);
-  AssertTrue('message names the hole', Pos('finalization', Msg) >= 0);
+    finalization
+      One()
+    end.
+    ''',
+    '''
+    program P;
+    uses withfinal;
+    begin
+      WriteLn(One())
+    end.
+    ''');
+  AssertTrue('final routine emitted', Pos('withfinal_final:', AsmT) >= 0);
+  AssertTrue('main exit calls it', Pos(#9'bl withfinal_final', AsmT) >= 0);
 end;
 
 procedure TArm64BackendTests.TestStringParams_ValueRetainsConstBorrows;
@@ -1668,6 +1661,68 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestInterfaces_AsCast;
+var
+  AsmT: string;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      IThing = interface
+        procedure Go;
+      end;
+      TThing = class(TObject, IThing)
+        procedure Go;
+      end;
+    procedure TThing.Go;
+    begin
+    end;
+    var
+      T: TThing;
+      I: IThing;
+    begin
+      T := TThing.Create();
+      I := T as IThing;
+      I.Go()
+    end.
+    ''');
+  { runtime lookup + invalid-cast guard }
+  AssertTrue('runtime itab lookup', Pos(#9'bl _GetItab', AsmT) >= 0);
+  AssertTrue('nil-itab guard', Pos(#9'bl _Raise_InvalidCast', AsmT) >= 0);
+  AssertTrue('typeinfo operand', Pos('typeinfo_IThing@PAGEOFF', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestOwnedStringTransientArg_Released;
+var
+  AsmT: string;
+  PosCall, PosRel: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      A, B: string;
+    procedure Show(Msg: string);
+    begin
+      WriteLn(Msg)
+    end;
+    begin
+      A := 'he';
+      B := 'yo';
+      Show(A + B)
+    end.
+    ''');
+  { the concat result (+1) is parked in the outgoing area, the callee
+    borrows it, and the caller releases it after the call returns }
+  PosCall := Pos(#9'bl Show', AsmT);
+  AssertTrue('call emitted', PosCall >= 0);
+  PosRel := PosEx(#9'bl _StringRelease', AsmT, PosCall);
+  AssertTrue('transient released after the call', PosRel > PosCall);
+  AssertTrue('release slot in the outgoing area',
+    Pos('ldr x0, [sp, #32]', AsmT) >= 0);
 end;
 
 initialization

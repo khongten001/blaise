@@ -76,6 +76,8 @@ type
     FModuleVarNames: TStringList; { unit-level var names (both sections) — these
                                     take the owning-unit symbol prefix }
     FUnitInits:   TStringList;   { emitted <unit>_init symbols, called by _main }
+    FUnitFinals:  TStringList;   { emitted <unit>_final symbols — called at
+                                    program exit in REVERSE dependency order }
     FGlobalInits: TDictionary<string, string>;  { prefixed symbol -> .data
                                     directive for initialised globals }
     FClassDecls:  TObjectList;   { not owned — program-level class TTypeDecls }
@@ -142,6 +144,8 @@ type
     function  AlignTo(AValue, AAlign: Integer): Integer;
     function  ComputeStackArgArea(ADecl: TMethodDecl; AArgs: TObjectList;
       ASelfPushed: Boolean): Integer;
+    function  ComputeStackArgAreaEx(ADecl: TMethodDecl; AArgs: TObjectList;
+      ASelfPushed: Boolean; out ATransBase: Integer): Integer;
     procedure DecodeMemArg(const AEntry: string; out AOff, ASize: Integer);
     procedure EmitCall(ADecl: TMethodDecl; const AName: string;
       AArgs: TObjectList; const ASretDest: string = '';
@@ -165,6 +169,8 @@ type
     procedure EmitProgram(AProg: TProgram); override;
     procedure EmitUnit(AUnit: TUnit); override;
     procedure EmitUnitInit(AUnit: TUnit);
+    procedure EmitUnitSection(AUnit: TUnit; AStmts: TObjectList;
+      const ASym: string; ARegistry: TStringList);
     function  ClassPrefixOwner(const AOwner: string): string;
     function  PropAccessorSym(const AOwnerType, AMethod: string): string;
     function  ClassSym(ATD: TTypeDecl): string;
@@ -183,6 +189,7 @@ type
       AValueExpr: TASTExpr; const AInstSlot: string);
     procedure EmitImplicitSelfStore(AAsgn: TAssignment);
     procedure EmitInterfaceAssign(AAsgn: TAssignment);
+    procedure EmitInterfaceAsCast(AAsgn: TAssignment);
     function  IntfItabSym(const AClassName, AIntfName: string): string;
     procedure EmitIntfDispatch(const AVarName: string; AIdx: Integer;
       AArgs: TObjectList);
@@ -244,6 +251,7 @@ begin
   FStrGlobals  := TStringList.Create();
   FModuleVarNames := TStringList.Create();
   FUnitInits   := TStringList.Create();
+  FUnitFinals  := TStringList.Create();
   FGlobalInits := TDictionary<string, string>.Create();
   FClassDecls  := TObjectList.Create(False);
   FObjLocals   := TStringList.Create();
@@ -268,6 +276,7 @@ begin
   FStrGlobals.Free();
   FModuleVarNames.Free();
   FUnitInits.Free();
+  FUnitFinals.Free();
   FGlobalInits.Free();
   FClassDecls.Free();
   FObjLocals.Free();
@@ -1342,7 +1351,43 @@ begin
     EmitStoreSlot('xzr', AAsgn.Name + '_itab');
     Exit;
   end;
+  if (AAsgn.Expr is TAsExpr) and (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyInterface) then
+  begin
+    { I := Obj as IFoo — runtime itab lookup through the impllist chain;
+      a nil result is an invalid cast }
+    EmitInterfaceAsCast(AAsgn);
+    Exit;
+  end;
   NotYet('interface assignment from this expression', AAsgn);
+end;
+
+procedure TArm64Backend.EmitInterfaceAsCast(AAsgn: TAssignment);
+var
+  AE: TAsExpr;
+  OkL: string;
+begin
+  AE := TAsExpr(AAsgn.Expr);
+  if ArcExprOwnsRef(AE.Obj) then
+    NotYet('as-cast of an owned transient', AAsgn);
+  Self.EmitExprToX0(AE.Obj);
+  EmitPushX0();                     { the obj value }
+  Self.Emit(Format(#9'adrp x1, typeinfo_%s@PAGE', [CodegenMangle(AE.TypeName)]));
+  Self.Emit(Format(#9'add x1, x1, typeinfo_%s@PAGEOFF',
+    [CodegenMangle(AE.TypeName)]));
+  Self.Emit(#9'bl _GetItab');       { x0 = itab or nil }
+  OkL := NewLabel('asok');
+  Self.Emit(Format(#9'cbnz x0, %s', [OkL]));
+  Self.Emit(#9'bl _Raise_InvalidCast');
+  Self.Emit(OkL + ':');
+  EmitStoreSlot('x0', AAsgn.Name + '_itab');
+  { obj half with the usual ARC: retain new (borrowed source), release old }
+  Self.Emit(#9'ldr x0, [sp]');      { peek the obj }
+  Self.Emit(#9'bl _ClassAddRef');
+  EmitLoadSlot('x0', AAsgn.Name);
+  Self.Emit(#9'bl _ClassRelease');
+  EmitPopTo('x0');
+  EmitStoreSlot('x0', AAsgn.Name);
 end;
 
 procedure TArm64Backend.EmitAssignment(AAsgn: TAssignment);
@@ -2256,18 +2301,31 @@ end;
 function TArm64Backend.ComputeStackArgArea(ADecl: TMethodDecl;
   AArgs: TObjectList; ASelfPushed: Boolean): Integer;
 var
-  I, NInt, NFloat, Off, Sz: Integer;
+  TB: Integer;
+begin
+  Result := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, TB);
+end;
+
+function TArm64Backend.ComputeStackArgAreaEx(ADecl: TMethodDecl;
+  AArgs: TObjectList; ASelfPushed: Boolean; out ATransBase: Integer): Integer;
+var
+  I, NInt, NFloat, Off, Sz, Trans: Integer;
   Arg: TASTExpr;
 begin
   { dry-run of the classification walk in EmitCall — must stay in
     lockstep with it }
   NInt := 0;
   NFloat := 0;
+  Trans := 0;
   if ASelfPushed then NInt := 1;
   Off := 0;
   for I := 0 to AArgs.Count - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
+    { owned +1 string transients get a release slot after the call }
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyString) and
+       OwnsStringRef(Arg) then
+      Inc(Trans);
     if (I < ADecl.Params.Count) and
        TMethodParam(ADecl.Params.Items[I]).IsVarParam then
     begin
@@ -2309,7 +2367,8 @@ begin
     else
       Inc(NInt);
   end;
-  Result := AlignTo(Off, 16);
+  ATransBase := AlignTo(Off, 8);
+  Result := AlignTo(ATransBase + Trans * 8, 16);
 end;
 
 procedure TArm64Backend.DecodeMemArg(const AEntry: string;
@@ -2333,6 +2392,7 @@ var
   PopRegs: TStringList;
   Reg: string;
   StackOff, StackArea, ASz: Integer;
+  TransBase, TransN: Integer;
   IsVariadicArg: Boolean;
 begin
   NInt := 0;
@@ -2351,7 +2411,8 @@ begin
     continue the register sequence).  Apple packs stack args to natural
     size with the C default promotions; the area is allocated BEFORE the
     argument pushes so its offsets stay fixed during the pop walk. }
-  StackArea := ComputeStackArgArea(ADecl, AArgs, ASelfPushed);
+  StackArea := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, TransBase);
+  TransN := 0;
   if StackArea > 0 then
     Self.Emit(Format(#9'sub sp, sp, #%d', [StackArea]));
   { Evaluate args left-to-right onto the stack (calls inside an argument
@@ -2447,14 +2508,17 @@ begin
       begin
         { the callee owns its copy (by-value params retain in the callee
           prologue; const params borrow), so the caller passes a BORROWED
-          pointer.  Owned +1 transients (concat/call results) would need a
-          post-call release slot — honest hole until then. }
-        if OwnsStringRef(Arg) then
-          NotYet('owned string transient as argument', Arg);
-        if not ((Arg is TIdentExpr) or (Arg is TStringLiteral)) then
-          NotYet('string argument from this expression', Arg);
+          pointer.  An owned +1 transient (concat/call result) is parked
+          in a release slot in the outgoing area and released after the
+          call — it must outlive the callee's borrow. }
         Self.EmitExprToX0(Arg);
         EmitPushX0();
+        if OwnsStringRef(Arg) then
+        begin
+          Self.Emit(Format(#9'str x0, [sp, #%d]',
+            [(PopRegs.Count + 1) * 16 + TransBase + TransN * 8]));
+          Inc(TransN);
+        end;
         if (ADecl.IsVarArgs and (I >= ADecl.Params.Count)) or (NInt >= 8) then
         begin
           StackOff := AlignTo(StackOff, 8);
@@ -2567,6 +2631,21 @@ begin
   end
   else
     Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
+  if TransN > 0 then
+  begin
+    { the call result (x0/d0) must survive the releases }
+    EmitPushX0();
+    Self.Emit(#9'fmov x9, d0');
+    Self.Emit(#9'str x9, [sp, #-16]!');
+    for I := 0 to TransN - 1 do
+    begin
+      Self.Emit(Format(#9'ldr x0, [sp, #%d]', [32 + TransBase + I * 8]));
+      Self.Emit(#9'bl _StringRelease');
+    end;
+    Self.Emit(#9'ldr x9, [sp], #16');
+    Self.Emit(#9'fmov d0, x9');
+    EmitPopTo('x0');
+  end;
   if StackArea > 0 then
     Self.Emit(Format(#9'add sp, sp, #%d', [StackArea]));
 end;
@@ -3354,6 +3433,10 @@ begin
   EmitStmtList(AProg.Block.Stmts);
 
   Self.Emit(FExitLabel + ':');
+  { unit finalization sections, REVERSE dependency order, before the
+    global releases (finalizers may still touch their unit's globals) }
+  for I := FUnitFinals.Count - 1 downto 0 do
+    Self.Emit(Format(#9'bl %s', [FUnitFinals.Strings[I]]));
   { release string globals before returning (ARC parity with x86-64's
     program-exit global release) }
   for I := 0 to FStrGlobals.Count - 1 do
@@ -3477,8 +3560,6 @@ begin
      (AUnit.GenericMethodInstances.Count > 0) or
      (AUnit.GenericFuncInstances.Count > 0) then
     NotYet('generic instances in unit ' + AUnit.Name, nil);
-  if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
-    NotYet('unit finalization section (' + AUnit.Name + ')', nil);
 
   Self.Emit('.text');
   for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
@@ -3492,41 +3573,53 @@ begin
   end;
 
   { Initialization section: a parameterless <unit>_init routine that _main
-    calls (in dependency order) right after _BlaiseInit.  Finalization is a
-    NotYet above rather than the x86 emit-but-never-call shape. }
+    calls (in dependency order) right after _BlaiseInit.  Finalization
+    becomes <unit>_final, called at program exit in REVERSE order —
+    genuinely invoked, unlike the x86 emit-but-never-call shape. }
   if (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0) then
     EmitUnitInit(AUnit);
+  if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
+    EmitUnitSection(AUnit, AUnit.FinalStmts,
+      CodegenMangle(AUnit.Name) + '_final', FUnitFinals);
   FCurrentUnitName := '';
 end;
 
 procedure TArm64Backend.EmitUnitInit(AUnit: TUnit);
+begin
+  EmitUnitSection(AUnit, AUnit.InitStmts,
+    CodegenMangle(AUnit.Name) + '_init', FUnitInits);
+end;
+
+procedure TArm64Backend.EmitUnitSection(AUnit: TUnit; AStmts: TObjectList;
+  const ASym: string; ARegistry: TStringList);
 var
   I: Integer;
-  Sym: string;
   FrameAligned: Integer;
 begin
-  Sym := CodegenMangle(AUnit.Name) + '_init';
-  FUnitInits.Add(Sym);
+  ARegistry.Add(ASym);
   FIsFunction := False;
   FResultFloat := False;
-  FExitLabel := NewLabel('uinitexit');
+  FResultSingle := False;
+  FExitLabel := NewLabel('usectexit');
   FFrame.Clear();
   FFrameSize := 0;
   FStrLocals.Clear();
   FRecLocals.Clear();
+  FObjLocals.Clear();
+  FIntfLocals.Clear();
   FForN := 0;
-  for I := 0 to AUnit.InitStmts.Count - 1 do
-    RegisterForSlots(TASTStmt(AUnit.InitStmts.Items[I]));
+  for I := 0 to AStmts.Count - 1 do
+    RegisterForSlots(TASTStmt(AStmts.Items[I]));
   FForN := 0;
   FrameAligned := (FFrameSize + 15) and (not 15);
   Self.Emit('');
-  Self.Emit(Format('.globl %s', [Sym]));
-  Self.Emit(Sym + ':');
+  Self.Emit(Format('.globl %s', [ASym]));
+  Self.Emit(ASym + ':');
   Self.Emit(#9'stp x29, x30, [sp, #-16]!');
   Self.Emit(#9'mov x29, sp');
   if FrameAligned > 0 then
     Self.Emit(Format(#9'sub sp, sp, #%d', [FrameAligned]));
-  EmitStmtList(AUnit.InitStmts);
+  EmitStmtList(AStmts);
   Self.Emit(FExitLabel + ':');
   Self.Emit(#9'mov sp, x29');
   Self.Emit(#9'ldp x29, x30, [sp], #16');
