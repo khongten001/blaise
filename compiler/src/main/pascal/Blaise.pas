@@ -371,6 +371,12 @@ begin
   Result := ADriver.LowerToObject(AIRFile, AOutputFile, AOpts);
   if Result <> '' then Exit;
 
+  { Mach-O objects (macos-arm64) have no iface-embed support yet — the
+    embedder rewrites ELF only.  The unit-cache sidecar .bif still serves
+    same-build imports; a loader probing the bare .o just recompiles from
+    source.  Mach-O embedding is tracked for the macOS warm-cache story. }
+  if AOpts.Target.CPU = cpuArm64 then Exit;
+
   if (ABifFile <> '') and FileExists(ABifFile) then
     if not EmbedBifInObject(AOutputFile, ABifFile, ofELF) then
       Exit('Failed to embed .bif in ' + AOutputFile);

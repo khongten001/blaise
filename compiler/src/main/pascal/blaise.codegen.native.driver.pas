@@ -79,9 +79,23 @@ uses
   SysUtils, Classes,
   uToolchain,
   blaise.codegen.toolkit,
+  blaise.codegen.target,
   blaise.assembler.x86_64,
+  blaise.assembler.arm64,
   blaise.elfreader,
   blaise.linker.elf;
+
+{ In-process assembly, keyed on the target CPU: x86-64 text goes to the
+  ELF-emitting assembler, arm64 text to the Mach-O-emitting one.  Each
+  raises its own exception class; callers catch plain Exception. }
+procedure AssembleForTarget(const AAsmText, AObjFile: string;
+  const ATarget: TTargetDesc);
+begin
+  if ATarget.CPU = cpuArm64 then
+    AssembleArm64ToObject(AAsmText, AObjFile)
+  else
+    AssembleToObject(AAsmText, AObjFile);
+end;
 
 function TNativeBackendDriver.Kind: TBackendKind;
 begin
@@ -153,7 +167,7 @@ begin
     try
       try
         AsmText.LoadFromFile(AIRFile);
-        AssembleToObject(AsmText.Text, AObjFile);
+        AssembleForTarget(AsmText.Text, AObjFile, AOpts.Target);
       except
         on E: EAssembler do
           Exit('Internal assembler error: ' + Exception(E).Message);
@@ -223,6 +237,14 @@ begin
   if Toolkit = nil then
     Exit('internal linker: no toolkit registered for target ' +
       TargetName(AOpts.Target));
+  { A toolkit without ELF link facts (macos-arm64) cannot drive this
+    linker — the Mach-O linker + ad-hoc signature land in a later phase. }
+  LinkTarget := Toolkit.MakeLinkTarget();
+  if LinkTarget = nil then
+    Exit('internal linker: executable linking for ' +
+      TargetName(AOpts.Target) +
+      ' is not available yet (Mach-O linker + code signing pending); ' +
+      'object emission and --emit-asm work today');
 
   { Build the implicit RTL objects from source (cached beside the compiler).
     Every Blaise program emits calls to RTL symbols (_SetArgs, _BlaiseGetMem,
@@ -240,8 +262,8 @@ begin
     Result := Self.EnsureRTLObjects(AOpts, True, AExtraObjects, RTLObjs);
     if Result <> '' then Exit;
 
-    { TLinker.Create(ATarget) borrows the target — we own and free it here. }
-    LinkTarget := Toolkit.MakeLinkTarget();
+    { TLinker.Create(ATarget) borrows the target — created at the nil gate
+      above; freed in the finally below. }
     Lk := TLinker.Create(LinkTarget);
     try
       try
@@ -291,10 +313,10 @@ begin
       end;
     finally
       Lk.Free();
-      LinkTarget.Free();
     end;
   finally
     RTLObjs.Free();
+    LinkTarget.Free();
   end;
 end;
 
@@ -314,7 +336,7 @@ begin
     try
       try
         AsmText.LoadFromFile(AIRFile);
-        AssembleToObject(AsmText.Text, ObjFile);
+        AssembleForTarget(AsmText.Text, ObjFile, AOpts.Target);
       except
         on E: EAssembler do
           Exit('Internal assembler error: ' + Exception(E).Message);

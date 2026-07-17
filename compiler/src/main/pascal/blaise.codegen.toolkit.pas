@@ -65,6 +65,18 @@ type
     function MakeLinkTarget: TLinkTarget; override;
   end;
 
+  { macOS arm64 — the first Mach-O target: TArm64Backend + the in-process
+    arm64 assembler produce Mach-O MH_OBJECT files.  MakeLinkTarget returns
+    nil for now: the executable link needs the Mach-O linker + ad-hoc code
+    signature (Phase 4/5 of the macOS bring-up); until then the target
+    supports object emission and --emit-asm only. }
+  TMacOSArm64Toolkit = class(TTargetToolkit)
+  public
+    function Name: string; override;
+    function MakeBackend: TNativeBackend; override;
+    function MakeLinkTarget: TLinkTarget; override;
+  end;
+
   { Toolkit registry.  Owns the registered toolkit instances.  A linear list
     is correct here: the target count is tiny (one per supported OS/CPU), so a
     name scan is cheaper than a hash map and avoids instantiating a generic
@@ -94,7 +106,7 @@ function RegisteredHasNativeBackend(const ATarget: TTargetDesc): Boolean;
 implementation
 
 uses
-  blaise.codegen.native.x86_64;
+  blaise.codegen.native.x86_64, blaise.codegen.native.arm64;
 
 { ---- TLinuxX86_64Toolkit --------------------------------------------- }
 
@@ -134,6 +146,28 @@ end;
 function TFreeBSDX86_64Toolkit.MakeLinkTarget: TLinkTarget;
 begin
   Result := FreeBSDX86_64Target();
+end;
+
+{ ---- TMacOSArm64Toolkit ----------------------------------------------- }
+
+function TMacOSArm64Toolkit.Name: string;
+begin
+  Result := 'macos-arm64';
+end;
+
+function TMacOSArm64Toolkit.MakeBackend: TNativeBackend;
+var
+  T: TTargetDesc;
+begin
+  MakeTarget(osMacOS, cpuArm64, T);
+  Result := TArm64Backend.Create(T);
+end;
+
+function TMacOSArm64Toolkit.MakeLinkTarget: TLinkTarget;
+begin
+  { no ELF link facts for a Mach-O target — the executable link path
+    checks for nil and reports the honest gap }
+  Result := nil;
 end;
 
 { ---- TTargetRegistry ------------------------------------------------- }
@@ -203,6 +237,7 @@ begin
     R := TTargetRegistry.Create();
     R.Register(TLinuxX86_64Toolkit.Create());
     R.Register(TFreeBSDX86_64Toolkit.Create());
+    R.Register(TMacOSArm64Toolkit.Create());
     GRegistry := R;
   end;
 end;

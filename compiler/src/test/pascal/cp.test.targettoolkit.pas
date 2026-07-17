@@ -49,6 +49,10 @@ type
       Linux is not (dynamic libc by default). }
     procedure TestTargetIsFreestanding_FreeBSD_True;
     procedure TestTargetIsFreestanding_Linux_False;
+
+    procedure TestResolve_MacOSArm64_ReturnsToolkit;
+    procedure TestMacOSToolkit_MakeBackend_NotNil;
+    procedure TestMacOSToolkit_MakeLinkTarget_NilUntilMachOLinker;
   end;
 
 implementation
@@ -149,6 +153,46 @@ procedure TTargetToolkitTests.TestTargetIsFreestanding_Linux_False;
 begin
   AssertFalse('Linux links dynamic libc by default, not freestanding',
     TargetIsFreestanding(Self.LinuxTarget()));
+end;
+
+procedure TTargetToolkitTests.TestResolve_MacOSArm64_ReturnsToolkit;
+var
+  T:  TTargetDesc;
+  Tk: TTargetToolkit;
+begin
+  MakeTarget(osMacOS, cpuArm64, T);
+  Tk := ResolveToolkit(T);
+  AssertTrue('macos-arm64 must resolve to a toolkit', Tk <> nil);
+  AssertEquals('macos-arm64', Tk.Name());
+end;
+
+procedure TTargetToolkitTests.TestMacOSToolkit_MakeBackend_NotNil;
+var
+  T:  TTargetDesc;
+  Tk: TTargetToolkit;
+  B:  TNativeBackend;
+begin
+  MakeTarget(osMacOS, cpuArm64, T);
+  Tk := ResolveToolkit(T);
+  B  := Tk.MakeBackend();
+  try
+    AssertTrue('macOS toolkit must produce a backend', B <> nil);
+  finally
+    B.Free();
+  end;
+end;
+
+procedure TTargetToolkitTests.TestMacOSToolkit_MakeLinkTarget_NilUntilMachOLinker;
+var
+  T:  TTargetDesc;
+  Tk: TTargetToolkit;
+begin
+  { the ELF internal linker cannot drive a Mach-O target; the nil link
+    target is the driver's honest gate until the Mach-O linker lands }
+  MakeTarget(osMacOS, cpuArm64, T);
+  Tk := ResolveToolkit(T);
+  AssertTrue('no ELF link facts for macos-arm64',
+    Tk.MakeLinkTarget() = nil);
 end;
 
 initialization
