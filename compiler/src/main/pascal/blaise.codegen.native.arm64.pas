@@ -3576,7 +3576,7 @@ begin
     register value matches the target type's domain }
   if AType = nil then Exit;
   case AType.Kind of
-    tyInteger: Self.Emit(#9'sxtw x0, w0');
+    tyInteger, tyEnum: Self.Emit(#9'sxtw x0, w0');
     tyUInt32:  Self.Emit(#9'mov w0, w0');
     tyByte:
     begin
@@ -5097,6 +5097,18 @@ begin
   end
   else
     Self.Emit(Format(#9'bl %s', [RoutineSym(ADecl, AName)]));
+  { C ABI boundary: a C function returning a 32-bit int leaves the value
+    in w0 ONLY — bits 32-63 of x0 are UNDEFINED per AAPCS64.  Blaise
+    code consumes full x0, so normalise an external's sub-64-bit result
+    to its declared width here.  Intermittent by nature (the garbage
+    depends on the libSystem build and code path) — open()/stat() on the
+    M1 misread as negative/huge; SMOKE_MAC_FILEIO_HANDOVER.md has the
+    interposer proof.  Internal Blaise calls stay untouched: both sides
+    are ours and already 64-bit-clean. }
+  if (ADecl <> nil) and ADecl.IsExternal and
+     (ADecl.ResolvedReturnType <> nil) and
+     (ADecl.ResolvedReturnType.RawSize() < 8) then
+    EmitNarrowX0(ADecl.ResolvedReturnType);
   if TransN > 0 then
   begin
     { the call result (x0/d0) must survive the releases }

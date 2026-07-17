@@ -141,6 +141,9 @@ type
       like (P <> nil) and (P^.X > 0) crashed on hardware because both
       operands were evaluated eagerly }
     procedure TestBooleanAndOr_ShortCircuits;
+    { M1 round-trip 5: a C function returning 32-bit int leaves x0's
+      upper half UNDEFINED — external results must be width-normalised }
+    procedure TestExternalCall_NarrowsIntReturn;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2704,6 +2707,41 @@ begin
   AssertTrue('or skips on true LHS', Pos(#9'cbnz x0, Lscend', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64sc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestExternalCall_NarrowsIntReturn;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+  CallPos, SxtwPos: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    function c_open(Path: PChar; Flags: Integer): Integer;
+      external name 'open';
+    var
+      Fd: Int64;
+    begin
+      Fd := c_open(PChar('x'), 0);
+      WriteLn(Fd)
+    end.
+    ''');
+  { the int-returning external's result must be sign-extended before any
+    64-bit use — bits 32-63 of x0 are undefined at the C ABI boundary }
+  CallPos := Pos(#9'bl open', AsmT);
+  AssertTrue('external call emitted', CallPos >= 0);
+  SxtwPos := Pos(#9'sxtw x0, w0', Copy(AsmT, CallPos, 64));
+  AssertTrue('return narrowed right after the call', SxtwPos >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ext.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
