@@ -158,6 +158,10 @@ type
     procedure TestJumboSetMembership_ViaSetIn;
     { self-cross-compile: Inc/Dec on an implicit-Self field }
     procedure TestIncDecImplicitSelfField;
+    { self-cross-compile: var class parameter — ARC store through address }
+    procedure TestVarClassParam_ArcThroughAddress;
+    { self-cross-compile: scalar field read on an owned transient base }
+    procedure TestFieldReadOnTransientBase;
   end;
 
 implementation
@@ -3011,6 +3015,86 @@ begin
   AssertTrue('adjusted value stored back', Pos(#9'str w0, [x9]', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64id.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestVarClassParam_ArcThroughAddress;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class
+      public
+        V: Integer;
+      end;
+    procedure Grab(var T: TThing);
+    begin
+      if T = nil then
+        T := TThing.Create()
+    end;
+    var
+      X: TThing;
+    begin
+      X := nil;
+      Grab(X);
+      X.Free()
+    end.
+    ''');
+  { the var-class store releases the OLD value through the address and
+    stores the new one back — a str-through-address after _ClassRelease }
+  AssertTrue('releases old value', Pos(#9'bl _ClassRelease', AsmT) >= 0);
+  AssertTrue('stores new value through address',
+    Pos(#9'str x0, [x9]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64vc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestFieldReadOnTransientBase;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBox = class
+      public
+        N: Integer;
+      end;
+    function MakeBox: TBox;
+    begin
+      Result := TBox.Create()
+    end;
+    var
+      K: Integer;
+    begin
+      K := MakeBox().N;
+      WriteLn(K)
+    end.
+    ''');
+  { the transient base (+1) is released AFTER its scalar field is loaded }
+  AssertTrue('base released after field load',
+    Pos(#9'bl _ClassRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ft.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

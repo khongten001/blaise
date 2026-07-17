@@ -55,6 +55,11 @@ type
     procedure TestRun_Supports_TwoArg_BooleanResult;
     procedure TestRun_Supports_ThreeArg_AssignsAndCalls;
     procedure TestRun_ConstructorOverload_PicksCorrectArity;
+    { A var class parameter aliases the caller's variable: the callee can
+      allocate into it (store through the address with ARC) and the caller
+      sees the new instance.  Exercises the var-class read (double deref)
+      and the ARC store-through-address discipline. }
+    procedure TestRun_VarClassParam_CalleeAllocatesForCaller;
     { Regression: native backend passed float args to methods/constructors via
       integer registers instead of the SysV xmm registers — a literal crashed
       codegen, a variable silently used the wrong register. }
@@ -1341,6 +1346,34 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcCtorOverloadArity, Output, RCode));
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('1-arg constructor body ran', '42' + LE, Output);
+end;
+
+procedure TE2EClasses2Tests.TestRun_VarClassParam_CalleeAllocatesForCaller;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(
+    '''
+    program P;
+    type
+      TThing = class
+      public
+        V: Integer;
+      end;
+    procedure EnsureThing(var T: TThing);
+    begin
+      if T = nil then
+        T := TThing.Create();
+      T.V := 7
+    end;
+    var X: TThing;
+    begin
+      X := nil;
+      EnsureThing(X);
+      WriteLn(X.V);
+      X.Free()
+    end.
+    ''',
+    '7' + LE, 0);
 end;
 
 procedure TE2EClasses2Tests.TestRun_MethodFloatArg_Literal_PassedInXmm;

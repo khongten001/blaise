@@ -2346,15 +2346,39 @@ begin
      (not TFieldAccessExpr(AExpr).IsConstant) then
   begin
     { chained field read A.B.C: the base expression yields the instance
-      pointer.  Owned transient bases stay NotYet — releasing them here
-      would free the object before the field value is consumed. }
-    if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
-      NotYet('field read on an owned transient base', AExpr);
+      pointer.  An OWNED transient base (a call result, +1) is kept across
+      the field load and released after — the loaded scalar field value
+      survives the release. }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
               [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
+    if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
+    begin
+      { A RETAINED managed field value could be freed when the base is
+        released — that shape needs pinning first, still a hole.  An
+        [Unretained] class field (a back-reference) is owned elsewhere and
+        survives the base's release, so it reads safely; scalar fields are
+        values and are trivially safe. }
+      if (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString() or
+          (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyClass)) and
+         not TFieldAccessExpr(AExpr).FieldInfo.IsUnretained then
+        NotYet('retained managed field read on an owned transient base',
+          AExpr);
+      Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
+      EmitPushX0();                    { [base] — released after the load }
+      if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
+        Self.Emit(Format(#9'add x0, x0, #%d',
+          [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+      EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+      EmitPushX0();                    { [base][fieldval] }
+      Self.Emit(#9'ldr x0, [sp, #16]');
+      Self.Emit(#9'bl _ClassRelease');
+      EmitPopTo('x0');                 { fieldval }
+      Self.Emit(#9'add sp, sp, #16');  { drop base }
+      Exit;
+    end;
     Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
     if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
       Self.Emit(Format(#9'add x0, x0, #%d',
@@ -3103,9 +3127,19 @@ begin
       Self.Emit(#9'bl _ClassAddRef');
       EmitPopTo('x0');
     end;
-    EmitPushX0();
+    EmitPushX0();                       { [newval] — survives the release }
     if AAsgn.IsVarParam then
-      NotYet('var class parameter', AAsgn);
+    begin
+      { var-param class: the slot holds the caller's ADDRESS.  Release the
+        old value THROUGH the address, then store the new value there. }
+      EmitLoadSlot('x9', AAsgn.Name);   { caller var address }
+      Self.Emit(#9'ldr x0, [x9]');      { old value }
+      Self.Emit(#9'bl _ClassRelease');
+      EmitLoadSlot('x9', AAsgn.Name);   { re-load addr (release clobbers x9) }
+      EmitPopTo('x0');                  { newval }
+      Self.Emit(#9'str x0, [x9]');
+      Exit;
+    end;
     EmitLoadSlot('x0', AAsgn.Name);
     Self.Emit(#9'bl _ClassRelease');
     EmitPopTo('x0');
@@ -5299,10 +5333,14 @@ begin
       begin
         { var/out param: the 8-byte slot holds the caller's ADDRESS.
           Record pointees are supported FIELD-WISE (assign/read deref the
-          slot); whole-record stores into one stay NotYet. }
+          slot); whole-record stores into one stay NotYet.  A var CLASS
+          pointee aliases the caller's class variable — reads deref twice
+          (slot -> caller var -> instance), stores run ARC through the
+          slot (release old, store new). }
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
                  (Par.ResolvedType.Kind in [tyDouble, tyString, tyRecord,
+                                            tyClass,
                                             tyPointer, tyPChar]))) then
           NotYet('var parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
