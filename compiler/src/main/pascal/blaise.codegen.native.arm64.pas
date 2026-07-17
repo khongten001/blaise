@@ -1077,6 +1077,112 @@ begin
         '_StringUpperCase');
       Exit;
     end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ExtractFilePath') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ExtractFilePath');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ExtractFileName') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ExtractFileName');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ExtractFileDir') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ExtractFileDir');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ExtractFileExt') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ExtractFileExt');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetEnvVar') or
+       SameText(TFuncCallExpr(AExpr).Name, 'GetEnvironmentVariable') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_GetEnvVar');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'SetCurrentDir') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_SetCurrentDir');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'StrToInt') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_StrToInt');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'StrToInt64') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_StrToInt64');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'Exec') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_Exec');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name,
+         'IncludeTrailingPathDelimiter') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_IncludeTrailingPathDelimiter');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name,
+         'ExcludeTrailingPathDelimiter') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ExcludeTrailingPathDelimiter');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ParamStr') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _ParamStr');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'UpCase') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _UpCase');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'Assigned') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'cmp x0, #0');
+      Self.Emit(#9'cset x0, ne');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'Pred') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'sub x0, x0, #1');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'Succ') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'add x0, x0, #1');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetMem') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _BlaiseGetMem');
+      Exit;
+    end;
     if SameText(TFuncCallExpr(AExpr).Name, 'IntToStr') then
     begin
       { integer argument — no transient to dispose }
@@ -1084,6 +1190,127 @@ begin
       Self.Emit(#9'bl _Int64ToStr');
       Exit;
     end;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 0) then
+  begin
+    if SameText(TFuncCallExpr(AExpr).Name, 'ParamCount') then
+    begin
+      Self.Emit(#9'bl _ParamCount');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetCurrentDir') then
+    begin
+      Self.Emit(#9'bl _GetCurrentDir');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetTempDir') then
+    begin
+      Self.Emit(#9'bl _GetTempDir');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'CurrentExceptionMessage') then
+    begin
+      Self.Emit(#9'bl _CurrentExceptionMessage');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetProcessID') then
+    begin
+      Self.Emit(#9'bl _GetProcessID');
+      Exit;
+    end;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 2) then
+  begin
+    if SameText(TFuncCallExpr(AExpr).Name, 'Pos') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_StringPos');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'SameText') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_StringSameText');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'CompareStr') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_StringCompare');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ChangeFileExt') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_ChangeFileExt');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'RenameFile') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_RenameFile');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'GetTempFileName') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_GetTempFileName');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ReallocMem') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      EmitPushX0();
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+      Self.Emit(#9'mov x1, x0');
+      EmitPopTo('x0');
+      Self.Emit(#9'bl _BlaiseReallocMem');
+      Exit;
+    end;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 3) and
+     (SameText(TFuncCallExpr(AExpr).Name, 'Copy') or
+      SameText(TFuncCallExpr(AExpr).Name, 'PosEx')) then
+  begin
+    { Copy(S, I, N) / PosEx(Sub, S, From): three args, first two may be
+      string transients — full parking bracket like the 2-arg helper }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[2]));
+    Self.Emit(#9'mov x2, x0');
+    Self.Emit(#9'ldr x1, [sp]');
+    Self.Emit(#9'ldr x0, [sp, #16]');
+    if SameText(TFuncCallExpr(AExpr).Name, 'Copy') then
+      Self.Emit(#9'bl _StringCopy')
+    else
+      Self.Emit(#9'bl _StringPosEx');
+    EmitPushX0();
+    if ArcBuiltinStrArgOwnsRef(
+         TASTExpr(TFuncCallExpr(AExpr).Args.Items[1])) then
+    begin
+      Self.Emit(#9'ldr x0, [sp, #16]');
+      EmitStrDisposeX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+    end;
+    if ArcBuiltinStrArgOwnsRef(
+         TASTExpr(TFuncCallExpr(AExpr).Args.Items[0])) then
+    begin
+      Self.Emit(#9'ldr x0, [sp, #32]');
+      EmitStrDisposeX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    end;
+    EmitPopTo('x0');
+    Self.Emit(#9'add sp, sp, #32');
+    Exit;
   end;
   if (AExpr is TFuncCallExpr) and
      (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
@@ -1489,9 +1716,11 @@ begin
   end;
   if (AExpr is TStringSubscriptExpr) and
      (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
-     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyPChar) then
+     ((TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyPChar) or
+      TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.IsString()) then
   begin
-    { P[I] on a PChar: byte at value+index }
+    { S[I] / P[I]: byte at data-pointer+index (Blaise strings are
+      0-based and the value IS the data pointer) }
     Self.EmitExprToX0(TStringSubscriptExpr(AExpr).IndexExpr);
     EmitPushX0();
     Self.EmitExprToX0(TStringSubscriptExpr(AExpr).StrExpr);
@@ -2034,9 +2263,11 @@ begin
   end;
   if AStmt is TInheritedCallStmt then
   begin
-    { static dispatch to the parent implementation with the current Self }
+    { static dispatch to the parent implementation with the current Self.
+      `inherited` resolving to NO parent body (TObject's default) is a
+      no-op, matching the x86-64 backend. }
     if TInheritedCallStmt(AStmt).ResolvedMethod = nil then
-      NotYet('unresolved inherited call', AStmt);
+      Exit;
     EmitLoadSlot('x0', 'Self');
     EmitPushX0();
     EmitCall(TMethodDecl(TInheritedCallStmt(AStmt).ResolvedMethod),
@@ -2586,6 +2817,26 @@ begin
   end;
   if SameText(ACall.Name, 'SetLength') and (ACall.Args.Count = 2) and
      (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
+     TASTExpr(ACall.Args.Items[0]).ResolvedType.IsString() and
+     (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) and
+     (TIdentExpr(TASTExpr(ACall.Args.Items[0])).ParamMode = pmNone) then
+  begin
+    { SetLength(S, N): S := _StringSetLength(S, N) — the result carries
+      its own +1, so release the old value and store (no extra retain) }
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+    EmitPushX0();
+    EmitLoadSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    EmitPopTo('x1');
+    Self.Emit(#9'bl _StringSetLength');
+    EmitPushX0();
+    EmitLoadSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    Self.Emit(#9'bl _StringRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    Exit;
+  end;
+  if SameText(ACall.Name, 'SetLength') and (ACall.Args.Count = 2) and
+     (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
      (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tyDynArray) then
   begin
     { arr := _DynArraySetLength(arr, n, elemsize) — plain ident lvalue }
@@ -2602,6 +2853,77 @@ begin
     Self.Emit(#9'bl _DynArraySetLength');
     EmitStoreSlot('x0',
       TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    Exit;
+  end;
+  if SameText(ACall.Name, 'FreeMem') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    Self.Emit(#9'bl _BlaiseFreeMem');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'Halt') and (ACall.ResolvedDecl = nil) then
+  begin
+    if ACall.Args.Count = 1 then
+      Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]))
+    else
+      Self.Emit(#9'movz x0, #0');
+    Self.Emit(#9'bl exit');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'Sleep') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    Self.Emit(#9'bl _Sleep');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'ZeroMem') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 2) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+    Self.Emit(#9'mov x2, x0');
+    Self.Emit(#9'movz x1, #0');
+    EmitPopTo('x0');
+    Self.Emit(#9'bl memset');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'RemoveDir') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    EmitBuiltinStrCall1(TASTExpr(ACall.Args.Items[0]), '_RemoveDir');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'AppendFile') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 2) then
+  begin
+    EmitBuiltinStrCall2(TASTExpr(ACall.Args.Items[0]),
+      TASTExpr(ACall.Args.Items[1]), '_AppendFile');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'Delete') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 3) and
+     (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) then
+  begin
+    { Delete(S, I, N): _StringDelete returns the new string — retain it,
+      release the ident's old value, store back (x86 parity) }
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+    EmitPushX0();
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[2]));
+    Self.Emit(#9'mov x2, x0');
+    EmitPopTo('x1');
+    EmitPopTo('x0');
+    Self.Emit(#9'bl _StringDelete');
+    EmitPushX0();
+    Self.Emit(#9'bl _StringAddRef');
+    EmitLoadSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
+    Self.Emit(#9'bl _StringRelease');
+    EmitPopTo('x0');
+    EmitStoreSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
     Exit;
   end;
   if SameText(ACall.Name, 'DeleteFile') and (ACall.ResolvedDecl = nil) and
@@ -6466,6 +6788,7 @@ procedure TArm64Backend.EmitUnit(AUnit: TUnit);
 var
   I: Integer;
   Decl: TMethodDecl;
+  UTD: TTypeDecl;
 
   procedure CheckTypeSubset(ATypeDecls: TObjectList);
   var
@@ -6480,8 +6803,6 @@ var
       if UDcl.Def is TClassTypeDef then
       begin
         UDef := TClassTypeDef(UDcl.Def);
-        if UDef.ImplementsNames.Count > 0 then
-          NotYet('classes implementing interfaces', nil);
         FClassDecls.Add(UDcl);
         for M := 0 to UDef.Methods.Count - 1 do
         begin
@@ -6491,6 +6812,13 @@ var
             NotYet('generic methods', MDcl);
           EmitFunctionDef(MDcl);
         end;
+        Continue;
+      end;
+      if UDcl.Def is TInterfaceTypeDef then
+      begin
+        { unit interfaces get their typeinfo via EmitIntfMetaSections,
+          same as the program path }
+        FIntfDecls.Add(UDcl);
         Continue;
       end;
       if (UDcl.Def is TTypeAliasDef) or (UDcl.Def is TEnumTypeDef) or
@@ -6518,11 +6846,30 @@ begin
   Self.Emit('.text');
   CheckTypeSubset(AUnit.IntfBlock.TypeDecls);
   CheckTypeSubset(AUnit.ImplBlock.TypeDecls);
-  if (AUnit.GenericInstances.Count > 0) or
-     (AUnit.GenericRecordInstances.Count > 0) or
-     (AUnit.GenericMethodInstances.Count > 0) or
-     (AUnit.GenericFuncInstances.Count > 0) then
-    NotYet('generic instances in unit ' + AUnit.Name, nil);
+  { generic record/method instances still need their stories; CLASS and
+    FUNCTION instances flow through the same wrapper machinery as the
+    program path — weak symbols collapse duplicates across units }
+  if (AUnit.GenericRecordInstances.Count > 0) or
+     (AUnit.GenericMethodInstances.Count > 0) then
+    NotYet('generic record/method instantiations in unit ' + AUnit.Name,
+      nil);
+  for I := 0 to AUnit.GenericInstances.Count - 1 do
+  begin
+    if TGenericInstance(AUnit.GenericInstances.Items[I])
+         .ClassDef.ImplementsNames.Count > 0 then
+      NotYet('generic instance implementing interfaces', nil);
+    UTD := TTypeDecl.Create();
+    UTD.Name := TGenericInstance(AUnit.GenericInstances.Items[I]).TypeName;
+    UTD.Def := TGenericInstance(AUnit.GenericInstances.Items[I]).ClassDef;
+    UTD.ResolvedDesc :=
+      TGenericInstance(AUnit.GenericInstances.Items[I]).TypeDesc;
+    FGenericDecls.Add(UTD);
+    FClassDecls.Add(UTD);
+  end;
+  for I := 0 to AUnit.GenericFuncInstances.Count - 1 do
+    EmitFunctionDef(
+      TGenericFuncInstance(AUnit.GenericFuncInstances.Items[I]).MethodDecl,
+      True);
 
   Self.Emit('.text');
   for I := 0 to AUnit.ImplBlock.ProcDecls.Count - 1 do
