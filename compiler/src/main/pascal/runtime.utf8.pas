@@ -29,6 +29,26 @@ function _Utf8CountCodePoints(Data: Pointer; Len: Integer): Integer;
 
 implementation
 
+{$IFDEF CPUARM64}
+{ Portable body for arm64: count the bytes that are NOT UTF-8
+  continuation bytes (top two bits <> 10).  The x86-64 body below is a
+  SIMD-optimised version of exactly this loop; a NEON port can follow
+  once the macOS bring-up settles. }
+function _Utf8CountCodePoints(Data: Pointer; Len: Integer): Integer;
+var
+  P: ^Byte;
+  I, N: Integer;
+begin
+  N := 0;
+  for I := 0 to Len - 1 do
+  begin
+    P := Pointer(PChar(Data) + I);
+    if (P^ and $C0) <> $80 then
+      N := N + 1;
+  end;
+  Result := N;
+end;
+{$ELSE}
 function _Utf8CountCodePoints(Data: Pointer; Len: Integer): Integer;
   assembler; nostackframe;
 asm
@@ -143,5 +163,6 @@ asm
 .Lavx2_flag:
     .long 0
 end;
+{$ENDIF}
 
 end.

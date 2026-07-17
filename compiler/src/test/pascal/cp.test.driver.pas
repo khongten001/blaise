@@ -46,6 +46,7 @@ type
     procedure TestRTLUnits_Errno_LinuxDynamic_LibcVariant;
     procedure TestRTLUnits_Errno_LinuxStatic_StaticVariant;
     procedure TestRTLUnits_Errno_FreeBSD_FollowsTarget;
+    procedure TestRTLUnits_MacOSArm64_DarwinProfile;
 
     { ClaimsEmitIR selection policy. }
     procedure TestQBE_ClaimsEmitIR_True;
@@ -203,6 +204,34 @@ begin
       ListContains(U, 'runtime.errno.static.linux'));
     AssertFalse('libc errno leaf dropped',
       ListContains(U, 'runtime.errno.linux'));
+  finally
+    U.Free();
+  end;
+end;
+
+procedure TBackendDriverContractTests.TestRTLUnits_MacOSArm64_DarwinProfile;
+var
+  U: TStringList;
+begin
+  { macos-arm64: darwin OS leaves, arm64 CPU leaves, and NO start unit at
+    all — LC_MAIN + dyld's libSystem glue call main directly and exit()
+    its return, and the backend's _main already follows that contract. }
+  U := BuildRTLUnitList(False, osMacOS, cpuArm64);
+  try
+    AssertTrue('darwin layout present',
+      ListContains(U, 'rtl.platform.layout.darwin'));
+    AssertTrue('darwin errno leaf present',
+      ListContains(U, 'runtime.errno.darwin'));
+    AssertTrue('atomics unit present (CPU picked via defines)',
+      ListContains(U, 'runtime.atomic'));
+    AssertTrue('setjmp unit present (CPU picked via defines)',
+      ListContains(U, 'runtime.setjmp'));
+    AssertFalse('no start unit under LC_MAIN',
+      ListContains(U, 'runtime.start'));
+    AssertFalse('no linux layout on darwin',
+      ListContains(U, 'rtl.platform.layout.linux'));
+    AssertFalse('no syscall leaf — libSystem only',
+      ListContains(U, 'runtime.syscall.darwin'));
   finally
     U.Free();
   end;

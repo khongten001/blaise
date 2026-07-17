@@ -1985,7 +1985,9 @@ begin
     ''');
   { Single fields: 4-byte stores narrow through s0, reads load w-width }
   AssertTrue('single field store', Pos(#9'str s0, [x9, #4]', AsmT) >= 0);
-  AssertTrue('single field read', Pos(#9'ldr w0, [x9', AsmT) >= 0);
+  { field reads are width-keyed through the element loader now: the
+    address is formed first, then a w-width load through it }
+  AssertTrue('single field read', Pos(#9'ldr w0, [x0]', AsmT) >= 0);
   { 3-arg Supports: success path stores both halves of the out-var }
   AssertTrue('supports lookup', Pos(#9'bl _GetItab', AsmT) >= 0);
   AssertTrue('failure path leaves out-var untouched (skip branch)',

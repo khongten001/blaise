@@ -261,7 +261,7 @@ function RunProcess(const AExe: string; AArgs: TStringList;
   swapped.  Exposed for unit testing; EnsureRTLObjects drives it off
   AOpts.Static and AOpts.Target.OS.  Caller owns and frees the result. }
 function BuildRTLUnitList(AStatic: Boolean;
-  AOS: TTargetOS): TStringList;
+  AOS: TTargetOS; ACPU: TTargetCPU = cpuX86_64): TStringList;
 
 { Format one --help flag line with the shared 2-space indent and flag
   column.  Single source of truth for the column width so the common
@@ -456,6 +456,7 @@ function RTLOSSuffix(AOS: TTargetOS): string;
 begin
   case AOS of
     osFreeBSD: Result := 'freebsd';
+    osMacOS:   Result := 'darwin';
   else
     { Linux is the default host leaf; other OSes gain their own suffix as
       their adapter set lands. }
@@ -463,22 +464,34 @@ begin
   end;
 end;
 
-function BuildRTLUnitList(AStatic: Boolean; AOS: TTargetOS): TStringList;
+function BuildRTLUnitList(AStatic: Boolean; AOS: TTargetOS;
+  ACPU: TTargetCPU): TStringList;
 var
   I: Integer;
   OS: string;
 begin
   OS := RTLOSSuffix(AOS);
   Result := TStringList.Create();
-  { The base list, in leaf-first order.  Two OS-specific substitutions:
-    the platform-layout adapter always follows the target, and for a --static
-    link the libc entry point (runtime.start) is replaced by the freestanding
-    per-OS start.  A dynamic link keeps runtime.start. }
+  { The base list, in leaf-first order.  Substitutions: the platform-layout
+    and errno adapters always follow the target OS; the CPU-keyed asm leaves
+    (atomics, setjmp) follow the target CPU; and the entry point is
+    per-profile — a --static link replaces runtime.start with the
+    freestanding per-OS start, a dynamic link keeps runtime.start, and
+    macOS has NO start unit at all (LC_MAIN + dyld's libSystem glue call
+    main directly and exit() its return; the backend's _main follows that
+    contract). }
   for I := 0 to High(RTL_UNITS) do
     if SameText(RTL_UNITS[I], 'rtl.platform.layout.linux') then
       Result.Add('rtl.platform.layout.' + OS)
-    else if AStatic and SameText(RTL_UNITS[I], 'runtime.start') then
-      Result.Add('runtime.start.static.' + OS)
+    else if SameText(RTL_UNITS[I], 'runtime.start') then
+    begin
+      if AOS = osMacOS then
+        { omitted — see the LC_MAIN note above }
+      else if AStatic then
+        Result.Add('runtime.start.static.' + OS)
+      else
+        Result.Add(RTL_UNITS[I]);
+    end
     else if SameText(RTL_UNITS[I], 'runtime.errno.linux') then
     begin
       { The errno-classification leaf (P3, async design) follows the target OS
@@ -491,6 +504,11 @@ begin
     end
     else
       Result.Add(RTL_UNITS[I]);
+  { NOTE on the CPU dimension: the CPU-keyed asm units (runtime.atomic,
+    runtime.setjmp, runtime.utf8) carry BOTH bodies behind CPUX86_64 /
+    CPUARM64 defines that follow --target, so the unit NAMES never change —
+    a filename split would break `uses runtime.atomic` in shared units.
+    ACPU is accepted for future list-level divergence only. }
   { The freestanding kernel leaf that replaces libc under --static: the raw
     syscall stubs, the OS-invariant freestanding C functions (runtime.cstub),
     the libc-shim layers, and the static-TLS thread leaf. }
@@ -575,7 +593,7 @@ begin
     See BuildRTLUnitList. }
   Units := BuildRTLUnitList(
     (AOpts.Static or TargetIsFreestanding(AOpts.Target)) and AIncludeStartup,
-    AOpts.Target.OS);
+    AOpts.Target.OS, AOpts.Target.CPU);
 
   for I := 0 to Units.Count - 1 do
   begin

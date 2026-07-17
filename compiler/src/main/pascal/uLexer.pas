@@ -154,6 +154,7 @@ type
     procedure AddDefine(const ASym: string);
     { Drop the host OS predefines so a cross-target's OS symbol replaces them. }
     procedure ClearOSDefines;
+    procedure ClearCPUDefines;
     function Next: TToken;
   end;
 
@@ -244,6 +245,16 @@ begin
   Self.UndefSymbol('WINDOWS');
   Self.UndefSymbol('DARWIN');
   Self.UndefSymbol('UNIX');
+end;
+
+{ CPU twin of ClearOSDefines: a cross --target's CPU symbol replaces the
+  host-seeded ones so IFDEF CPUX86_64 guards reflect the target CPU. }
+procedure TLexer.ClearCPUDefines;
+begin
+  Self.UndefSymbol('CPUX86_64');
+  Self.UndefSymbol('CPUAMD64');
+  Self.UndefSymbol('CPUARM64');
+  Self.UndefSymbol('CPUAARCH64');
 end;
 
 procedure TLexer.AddDefine(const ASym: string);

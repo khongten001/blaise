@@ -112,6 +112,12 @@ begin
             SameText(ASym, 'UNIX');
 end;
 
+function DefineIsCPU(const ASym: string): Boolean;
+begin
+  Result := SameText(ASym, 'CPUX86_64') or SameText(ASym, 'CPUAMD64') or
+            SameText(ASym, 'CPUARM64')  or SameText(ASym, 'CPUAARCH64');
+end;
+
 function TUnitLoader.IsBuiltin(const AName: string): Boolean;
 begin
   Result :=
@@ -262,6 +268,7 @@ var
   P:  TParser;
   DI: Integer;
   HasOS: Boolean;
+  HasCPU: Boolean;
 begin
   SL := TStringList.Create();
   try
@@ -275,10 +282,16 @@ begin
     if FDefines <> nil then
     begin
       HasOS := False;
+      HasCPU := False;
       for DI := 0 to FDefines.Count - 1 do
+      begin
         if DefineIsOS(FDefines.Strings[DI]) then HasOS := True;
+        if DefineIsCPU(FDefines.Strings[DI]) then HasCPU := True;
+      end;
       if HasOS then
         L.ClearOSDefines();
+      if HasCPU then
+        L.ClearCPUDefines();
       for DI := 0 to FDefines.Count - 1 do
         L.AddDefine(FDefines.Strings[DI]);
     end;
