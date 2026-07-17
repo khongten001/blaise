@@ -7344,9 +7344,10 @@ begin
         EmitMethodCallCommon(MD, 'Create', AExpr.Args);
         EmitPopTo('x0');
       end;
-      { MD = nil with args: undeclared Create* variant (CreateFmt on
-        Exception) — QBE and x86-64 both skip the ctor call and drop the
-        args; mirrored for parity (see bugs.txt BUG: CreateFmt) }
+      { MD = nil here means a parameterless ctor with no user body (the
+        implicit default constructor).  An undeclared Create* variant WITH
+        args never reaches codegen — the semantic pass desugars CreateFmt
+        and rejects any other arg-bearing undeclared ctor (BUG-046 fix). }
       Exit;
     end;
     Sym := '';
@@ -7385,9 +7386,10 @@ begin
       EmitMethodCallCommon(MD, 'Create', AExpr.Args);
       EmitPopTo('x0');
     end;
-    { MD = nil with args: undeclared Create* variant (CreateFmt on
-      Exception) — QBE and x86-64 both skip the ctor call and drop the
-      args; mirrored for parity (see bugs.txt BUG: CreateFmt) }
+    { MD = nil here means a parameterless ctor with no user body (the
+      implicit default constructor).  An undeclared Create* variant WITH
+      args never reaches codegen — the semantic pass desugars CreateFmt
+      and rejects any other arg-bearing undeclared ctor (BUG-046 fix). }
     Exit;
   end;
   if AExpr.IsBuiltinToString then

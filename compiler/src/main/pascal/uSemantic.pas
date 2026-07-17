@@ -12535,6 +12535,7 @@ var
   ObjType:  TTypeDesc;
   ResolvedObjName: string;
   FldInfo: TFieldInfo;
+  FmtCall: TFuncCallExpr;
 begin
   { Call on an arbitrary expression (e.g. TCast(x).Method(y)) }
   if AExpr.ObjExpr <> nil then
@@ -12832,6 +12833,42 @@ begin
       AExpr.Args, AExpr.Line, AExpr.Col);
     if MDecl = nil then
       MDecl := FindMethodDecl(ObjSym.Name, AExpr.Name);
+    { CreateFmt(fmt, [args]) with no declared CreateFmt method desugars to
+      Create(Format(fmt, [args])): move the two args into a synthesized
+      Format call and re-resolve as a plain Create.  Without this the args
+      were silently DROPPED — the raised exception had an empty message
+      (BUG-046).  Only the bracket-literal form desugars; a forwarded
+      'array of const' param cannot (Format needs the literal). }
+    if (MDecl = nil) and SameText(AExpr.Name, 'CreateFmt') and
+       (AExpr.Args.Count = 2) and
+       (AExpr.Args.Items[1] is TArrayLiteralExpr) then
+    begin
+      FmtCall := TFuncCallExpr.Create();
+      FmtCall.Name := 'Format';
+      FmtCall.Line := AExpr.Line;
+      FmtCall.Col  := AExpr.Col;
+      FmtCall.Args.Add(AExpr.Args.Extract(AExpr.Args.Items[0]));
+      FmtCall.Args.Add(AExpr.Args.Extract(AExpr.Args.Items[0]));
+      AExpr.Args.Add(FmtCall);   { AExpr.Args now holds just the Format call }
+      AExpr.Name := 'Create';
+      { the args were analysed as CreateFmt's args, but the synthesized
+        Format node is new — analyse it so its string ResolvedType is set
+        before overload resolution matches it against Create(string) }
+      AnalyseExpr(FmtCall);
+      MDecl := ResolveMethodOverload(ObjSym.Name, 'Create',
+        AExpr.Args, AExpr.Line, AExpr.Col);
+      if MDecl = nil then
+        MDecl := FindMethodDecl(ObjSym.Name, 'Create');
+    end;
+    { Any remaining undeclared Create* variant WITH args is an error — a
+      silent arg-drop (as CreateFmt did before the desugar above) is never
+      correct.  A parameterless Create* on a class with no user ctor is
+      still fine (the implicit default constructor). }
+    if (MDecl = nil) and (AExpr.Args.Count > 0) then
+      SemanticError(
+        Format('No constructor ''%s'' declared on ''%s'' — its arguments ' +
+               'would be silently discarded', [AExpr.Name, ObjSym.Name]),
+        AExpr.Line, AExpr.Col);
     if MDecl <> nil then
     begin
       { Re-type a bracket-literal argument bound to a `set of` parameter to that

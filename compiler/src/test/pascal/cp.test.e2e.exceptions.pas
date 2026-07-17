@@ -60,6 +60,11 @@ type
       stdlib loaded + linked, which the in-process harness cannot do; that
       is covered by the shell-out test in cp.test.cli.pas. }
     procedure TestRun_DivNonZero_StillWorks;
+
+    { BUG-046: Exception.CreateFmt(fmt, [args]) with no declared CreateFmt
+      method must desugar to Create(Format(fmt, [args])) — before the fix
+      the args were silently dropped and Message came back empty. }
+    procedure TestRun_CreateFmt_FormatsMessage;
   end;
 
 implementation
@@ -232,6 +237,32 @@ const
       a := 20; b := 4;
       WriteLn(a div b);
       WriteLn(a mod 7)
+    end.
+    ''';
+
+  { BUG-046: CreateFmt desugars to Create(Format(...)); the message must
+    carry the formatted text, not be dropped.  Exception declares Create
+    (string) but NOT CreateFmt — the desugar must synthesize the Format
+    call and bind it to Create. }
+  SrcCreateFmtFormatsMessage = '''
+    program P;
+    type
+      Exception = class
+        FMessage: string;
+        constructor Create(AMessage: string);
+        property Message: string read FMessage;
+      end;
+      EFoo = class(Exception) end;
+    constructor Exception.Create(AMessage: string);
+    begin
+      Self.FMessage := AMessage
+    end;
+    begin
+      try
+        raise EFoo.CreateFmt('code %d msg %s', [42, 'boom'])
+      except
+        on E: Exception do WriteLn(E.Message)
+      end
     end.
     ''';
 
@@ -549,6 +580,12 @@ procedure TE2EExceptionTests.TestRun_DivNonZero_StillWorks;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcDivNonZeroStillWorks, '5' + LE + '6' + LE, 0);
+end;
+
+procedure TE2EExceptionTests.TestRun_CreateFmt_FormatsMessage;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcCreateFmtFormatsMessage, 'code 42 msg boom' + LE, 0);
 end;
 
 initialization
