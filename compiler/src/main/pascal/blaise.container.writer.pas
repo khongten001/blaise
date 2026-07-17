@@ -57,7 +57,11 @@ type
     cskTbss,     { thread-local zero-initialised data }
     cskTdata,    { thread-local initialised data (Mach-O __thread_data) }
     cskTvars,    { Mach-O TLV descriptors (__thread_vars) }
-    cskOpdf      { OPDF debug info (alloc+write, progbits) }
+    cskOpdf,     { OPDF debug info (alloc+write, progbits) }
+    cskInitArray { load-time constructor pointers the dynamic loader runs.
+                   ELF .init_array (DT_INIT_ARRAY); the Mach-O analogue is
+                   __DATA,__mod_init_func (S_MOD_INIT_FUNC_POINTERS), not yet
+                   emitted — a shared object's load constructor registers here }
   );
 
   TContainerSymBind = (

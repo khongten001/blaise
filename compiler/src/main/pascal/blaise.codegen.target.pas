@@ -61,6 +61,11 @@ function TargetName(const ATarget: TTargetDesc): string;
 { True when the native backend can actually generate code for this target. }
 function TargetHasNativeBackend(const ATarget: TTargetDesc): Boolean;
 
+{ True when the target's object/executable container is ELF.  macOS uses
+  Mach-O; everything else we target is ELF.  Gate ELF-specific output on this
+  rather than on an OS blocklist, so a new ELF OS needs no edit here. }
+function TargetUsesElf(const ATarget: TTargetDesc): Boolean;
+
 { True when the target is FREESTANDING — reached via direct syscalls with no
   libc, so it is always linked as a static ET_EXEC with a self-supplied _start
   and no PT_INTERP / libc NEEDED (Strategy B, see
@@ -183,6 +188,13 @@ function TargetHasNativeBackend(const ATarget: TTargetDesc): Boolean;
 begin
   { Only x86_64-linux is implemented so far. }
   Result := (ATarget.OS = osLinux) and (ATarget.CPU = cpuX86_64);
+end;
+
+function TargetUsesElf(const ATarget: TTargetDesc): Boolean;
+begin
+  { macOS is Mach-O; Linux/FreeBSD are ELF.  Windows would be PE, and is not a
+    native-backend target yet — it is excluded here rather than assumed ELF. }
+  Result := (ATarget.OS = osLinux) or (ATarget.OS = osFreeBSD);
 end;
 
 function TargetIsFreestanding(const ATarget: TTargetDesc): Boolean;

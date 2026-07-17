@@ -294,7 +294,12 @@ const
   RELOC_INFO_SIZE    = 8;
 
   { Serialisation order: file-backed sections first, zerofill LAST (a
-    Mach-O segment rule).  Indexed by emission position. }
+    Mach-O segment rule).  Indexed by emission position.
+
+    cskInitArray is deliberately absent: it is the ELF .init_array kind.  The
+    Mach-O analogue is __DATA,__mod_init_func (S_MOD_INIT_FUNC_POINTERS), which
+    is not emitted yet — shared-object output is ELF-only, gated by
+    TBackendDriver.SupportsLibrary.  Add it here when Darwin libraries land. }
   SectionEmitOrder: array[0..7] of TContainerSectionKind = (
     cskText, cskRodata, cskData, cskTdata, cskTvars, cskOpdf,
     cskBss, cskTbss);

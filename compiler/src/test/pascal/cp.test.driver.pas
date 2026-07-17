@@ -52,6 +52,14 @@ type
     procedure TestQBE_ClaimsEmitIR_True;
     procedure TestNative_ClaimsEmitIR_False;
 
+    { SupportsLibrary is keyed on the TARGET, not just the backend: shared
+      objects are ELF-specific, so the native backend supports a library for
+      an ELF target and refuses for Mach-O.  QBE refuses outright. }
+    procedure TestNative_SupportsLibrary_LinuxX86_64_True;
+    procedure TestNative_SupportsLibrary_FreeBSDX86_64_True;
+    procedure TestNative_SupportsLibrary_MacOSArm64_False;
+    procedure TestQBE_SupportsLibrary_LinuxX86_64_False;
+
     { Native owns --assembler via AcceptOption. }
     procedure TestNative_AcceptInternal_ConsumesValue_SetsFlag;
     procedure TestNative_AcceptExternal_ConsumesValue_ClearsFlag;
@@ -272,6 +280,44 @@ procedure TBackendDriverContractTests.TestNative_ClaimsEmitIR_False;
 begin
   AssertFalse('native must not claim --emit-ir (its IR is --emit-asm)',
     GetDriver(bkNative).ClaimsEmitIR());
+end;
+
+procedure TBackendDriverContractTests.TestNative_SupportsLibrary_LinuxX86_64_True;
+var
+  T: TTargetDesc;
+begin
+  MakeTarget(osLinux, cpuX86_64, T);
+  AssertTrue('native emits shared objects for an ELF target',
+    GetDriver(bkNative).SupportsLibrary(T));
+end;
+
+procedure TBackendDriverContractTests.TestNative_SupportsLibrary_FreeBSDX86_64_True;
+var
+  T: TTargetDesc;
+begin
+  MakeTarget(osFreeBSD, cpuX86_64, T);
+  AssertTrue('native emits shared objects for FreeBSD (also ELF)',
+    GetDriver(bkNative).SupportsLibrary(T));
+end;
+
+procedure TBackendDriverContractTests.TestNative_SupportsLibrary_MacOSArm64_False;
+var
+  T: TTargetDesc;
+begin
+  { The gate that stops an ELF ET_DYN being written for a Mach-O target.
+    Lift this only when __mod_init_func + LC_DYLD_INFO exports are emitted. }
+  MakeTarget(osMacOS, cpuArm64, T);
+  AssertFalse('native must refuse a library for a Mach-O target',
+    GetDriver(bkNative).SupportsLibrary(T));
+end;
+
+procedure TBackendDriverContractTests.TestQBE_SupportsLibrary_LinuxX86_64_False;
+var
+  T: TTargetDesc;
+begin
+  MakeTarget(osLinux, cpuX86_64, T);
+  AssertFalse('QBE emits no shared objects',
+    GetDriver(bkQBE).SupportsLibrary(T));
 end;
 
 procedure TBackendDriverContractTests.TestNative_AcceptInternal_ConsumesValue_SetsFlag;

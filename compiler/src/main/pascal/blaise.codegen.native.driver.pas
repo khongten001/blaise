@@ -59,6 +59,7 @@ type
       native backend instead of falling back to QBE. }
     function SupportsIncremental: Boolean; override;
     function SupportsWarmCache: Boolean; override;
+    function SupportsLibrary(const ATarget: TTargetDesc): Boolean; override;
 
     { --- Option contract: owns --assembler/--linker internal|external --- }
     function AcceptOption(const AFlag, ANextArg: string;
@@ -149,6 +150,15 @@ end;
 function TNativeBackendDriver.SupportsWarmCache: Boolean;
 begin
   Result := True;
+end;
+
+function TNativeBackendDriver.SupportsLibrary(const ATarget: TTargetDesc): Boolean;
+begin
+  { Shared-object emission is ELF-only: the internal linker writes ET_DYN with
+    .init_array load constructors and .dynsym exports.  A Mach-O target needs
+    __mod_init_func and LC_DYLD_INFO exports instead, which are not written
+    yet — refuse rather than emit an ELF object for a Darwin target. }
+  Result := TargetUsesElf(ATarget);
 end;
 
 function TNativeBackendDriver.LowerToObject(const AIRFile, AObjFile: string;

@@ -167,6 +167,7 @@ const
   SHT_STRTAB   = 3;
   SHT_RELA     = 4;
   SHT_NOBITS   = 8;
+  SHT_INIT_ARRAY = 14;
 
   SHF_WRITE     = $1;
   SHF_ALLOC     = $2;
@@ -377,6 +378,7 @@ begin
     cskTdata:  Result := '.tdata';
     cskTvars:  Result := '.tvars';   { never emitted for ELF — Mach-O only }
     cskOpdf:   Result := '.opdf';
+    cskInitArray: Result := '.init_array';
   else
     Result := '.text';
   end;
@@ -711,17 +713,26 @@ begin
 end;
 
 function TElfObjectWriter.Finish: string;
+const
+  { Upper bound of the SecOrder emit list below.  This list is hand-maintained
+    and position-indexed (SecOrder[I] maps a position to a kind), so it is NOT
+    sized from the enum: TContainerSectionKind carries Mach-O-only kinds that
+    ELF never emits.  Adding a kind that ELF *does* emit means extending the
+    list AND this bound — otherwise the section is silently dropped from the
+    object with no error. }
+  MaxSecOrder = 6;
+
 var
   Buf: string;
-  { Section ordering: NULL, .text, .data, .rodata, .bss, .tbss,
-    then .rela.text, .rela.data, .rela.rodata,
+  { Section ordering: NULL, .text, .data, .rodata, .bss, .tbss, .opdf,
+    .init_array, then .rela.text, .rela.data, .rela.rodata,
     then .symtab, .strtab, .shstrtab.
     We track which sections exist and their SHT indices. }
-  SecOrder: array[0..5] of TContainerSectionKind;
-  SecPresent: array[0..5] of Boolean;
-  SecShtIdx: array[0..5] of Integer;
+  SecOrder: array[0..MaxSecOrder] of TContainerSectionKind;
+  SecPresent: array[0..MaxSecOrder] of Boolean;
+  SecShtIdx: array[0..MaxSecOrder] of Integer;
   NumDataSecs: Integer;
-  RelaShtIdx: array[0..5] of Integer;
+  RelaShtIdx: array[0..MaxSecOrder] of Integer;
   NumRelaSecs: Integer;
   SymtabIdx, StrtabIdx, ShstrtabIdx, NoteIdx: Integer;
   TotalShNum: Integer;
@@ -736,8 +747,8 @@ var
   ShdrOff: Int64;
   CurOff: Int64;
 
-  SecFileOff: array[0..5] of Int64;
-  RelaFileOff: array[0..5] of Int64;
+  SecFileOff: array[0..MaxSecOrder] of Int64;
+  RelaFileOff: array[0..MaxSecOrder] of Int64;
   SymtabFileOff, StrtabFileOff, ShstrtabFileOff, NoteFileOff: Int64;
 
   SymtabBuf: TByteBuf;
@@ -745,8 +756,8 @@ var
   SymSecIdx: Integer;
   StInfo: Integer;
 
-  RelaBuf: array[0..5] of TByteBuf;
-  RelaCount: array[0..5] of Integer;
+  RelaBuf: array[0..MaxSecOrder] of TByteBuf;
+  RelaCount: array[0..MaxSecOrder] of Integer;
   SymRemapIdx: array of Integer;
   LocalSymCount, GlobalSymCount: Integer;
   LocalSyms, GlobalSyms: TList<Integer>;
@@ -754,8 +765,8 @@ var
 
   ShFlags: Int64;
   ShType: Integer;
-  SecNameIdx: array[0..5] of Integer;
-  RelaNameIdx: array[0..5] of Integer;
+  SecNameIdx: array[0..MaxSecOrder] of Integer;
+  RelaNameIdx: array[0..MaxSecOrder] of Integer;
   SymtabNameIdx, StrtabNameIdx, ShstrtabNameIdx, NoteNameIdx: Integer;
 
 begin
@@ -765,9 +776,10 @@ begin
   SecOrder[3] := cskBss;
   SecOrder[4] := cskTbss;
   SecOrder[5] := cskOpdf;
+  SecOrder[6] := cskInitArray;
 
   NumDataSecs := 0;
-  for I := 0 to 5 do
+  for I := 0 to MaxSecOrder do
   begin
     SecPresent[I] := FSections[Ord(SecOrder[I])] <> nil;
     if SecPresent[I] then
@@ -780,7 +792,7 @@ begin
   end;
 
   NumRelaSecs := 0;
-  for I := 0 to 5 do
+  for I := 0 to MaxSecOrder do
   begin
     if SecPresent[I] and (GetSection(SecOrder[I]).RelocCount > 0) then
     begin
@@ -805,7 +817,7 @@ begin
   Strtab := TByteBuf.Create();
   Shstrtab := TByteBuf.Create();
   SymtabBuf := TByteBuf.Create();
-  for I := 0 to 5 do
+  for I := 0 to MaxSecOrder do
     RelaBuf[I] := nil;
   LocalSyms := TList<Integer>.Create();
   GlobalSyms := TList<Integer>.Create();
@@ -816,7 +828,7 @@ begin
 
     { Build .shstrtab — section name string table }
     Shstrtab.PushByte(0);
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       SecNameIdx[I] := 0;
       RelaNameIdx[I] := 0;
@@ -860,7 +872,7 @@ begin
       else
       begin
         SymSecIdx := 0;
-        for J := 0 to 5 do
+        for J := 0 to MaxSecOrder do
           if SecPresent[J] and (SecOrder[J] = Sym.Section) then
           begin
             SymSecIdx := SecShtIdx[J];
@@ -880,7 +892,7 @@ begin
       else
       begin
         SymSecIdx := 0;
-        for J := 0 to 5 do
+        for J := 0 to MaxSecOrder do
           if SecPresent[J] and (SecOrder[J] = Sym.Section) then
           begin
             SymSecIdx := SecShtIdx[J];
@@ -893,7 +905,7 @@ begin
     end;
 
     { Build .rela.* sections }
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       RelaBuf[I] := TByteBuf.Create();
       RelaCount[I] := 0;
@@ -913,7 +925,7 @@ begin
       then the section header table at the end. }
     CurOff := Int64(ELF64_EHDR_SIZE);
 
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       SecFileOff[I] := Int64(0);
       if not SecPresent[I] then Continue;
@@ -925,7 +937,7 @@ begin
         CurOff := CurOff + Int64(Sec.Count);
     end;
 
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       RelaFileOff[I] := Int64(0);
       if RelaShtIdx[I] = 0 then Continue;
@@ -985,7 +997,7 @@ begin
     OutBuf.AppendBytes(Buf);
 
     { Emit section data bodies }
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       if not SecPresent[I] then Continue;
       Sec := GetSection(SecOrder[I]);
@@ -995,7 +1007,7 @@ begin
     end;
 
     { Emit .rela.* bodies }
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       if RelaShtIdx[I] = 0 then Continue;
       OutBuf.PadTo(Integer(RelaFileOff[I]));
@@ -1023,7 +1035,7 @@ begin
     ElfEmitShdr(Buf, 0, SHT_NULL, 0, 0, 0, 0, 0, 0, 0, 0);
 
     { Data sections }
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       if not SecPresent[I] then Continue;
       Sec := GetSection(SecOrder[I]);
@@ -1061,6 +1073,15 @@ begin
           ShFlags := SHF_ALLOC or SHF_WRITE;
           ShType  := SHT_PROGBITS;
         end;
+        cskInitArray:
+        begin
+          { .init_array: an array of load-time constructor pointers the dynamic
+            loader runs (DT_INIT_ARRAY).  SHT_INIT_ARRAY rather than PROGBITS —
+            the linker recognises the type, not the name, when building the
+            DT_INIT_ARRAY entry.  Writable: the entries are relocated. }
+          ShFlags := SHF_ALLOC or SHF_WRITE;
+          ShType  := SHT_INIT_ARRAY;
+        end;
       end;
       ElfEmitShdr(Buf, SecNameIdx[I], ShType, ShFlags, 0,
                SecFileOff[I], Int64(Sec.Size), 0, 0,
@@ -1068,7 +1089,7 @@ begin
     end;
 
     { .rela.* sections }
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
     begin
       if RelaShtIdx[I] = 0 then Continue;
       ElfEmitShdr(Buf, RelaNameIdx[I], SHT_RELA,
@@ -1108,7 +1129,7 @@ begin
     Strtab.Free();
     Shstrtab.Free();
     SymtabBuf.Free();
-    for I := 0 to 5 do
+    for I := 0 to MaxSecOrder do
       RelaBuf[I].Free();
     LocalSyms.Free();
     GlobalSyms.Free();

@@ -123,6 +123,14 @@ type
       learns to write .bif sidecars and the loader trusts them. }
     function SupportsWarmCache: Boolean; virtual;
 
+    { True when the driver can emit a shared object (the `library` and
+      `package` source forms) for ATarget.  Keyed on the TARGET, not just the
+      backend: shared-object emission is ELF-specific (ET_DYN, .init_array
+      load constructors, .dynsym exports), so a native backend that can emit a
+      library for linux-x86_64 cannot for macos-arm64, whose container is
+      Mach-O.  The base refuses — a backend opts in by overriding. }
+    function SupportsLibrary(const ATarget: TTargetDesc): Boolean; virtual;
+
     { The external tools this backend needs for ATarget, as resolvable
       specs.  uToolchain.ResolveSpec turns each into a path (env override,
       $BLAISE_TOOLCHAIN_PREFIX, cross-triple prefix, $PATH, host ext).  The
@@ -355,6 +363,13 @@ end;
 
 function TBackendDriver.SupportsWarmCache: Boolean;
 begin
+  Result := False;
+end;
+
+function TBackendDriver.SupportsLibrary(const ATarget: TTargetDesc): Boolean;
+begin
+  { Refuse by default: a backend that has not implemented shared-object
+    emission must not silently produce a malformed object. }
   Result := False;
 end;
 
