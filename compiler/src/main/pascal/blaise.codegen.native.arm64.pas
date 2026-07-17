@@ -90,6 +90,8 @@ type
     FObjGlobals:  TStringList;   { class-typed globals — released at program exit }
     FTlvGlobals:  TStringList;   { threadvar globals — Mach-O TLV descriptors }
     FTlvSize:     TDictionary<string, Integer>;  { per-thread storage bytes }
+    FGlobalWeak:  TStringList;   { globals bound weak: RTL-unit-owned copies
+                                   collapse across per-unit objects (GH #174) }
     FIntfDecls:   TObjectList;   { not owned — program-level interface TTypeDecls }
     FIntfLocals:  TStringList;   { interface locals (base name) — obj released at exit }
     FIntfGlobals: TStringList;   { interface globals (prefixed base name) }
@@ -303,6 +305,7 @@ begin
   FObjGlobals  := TStringList.Create();
   FTlvGlobals  := TStringList.Create();
   FTlvSize     := TDictionary<string, Integer>.Create();
+  FGlobalWeak  := TStringList.Create();
   FIntfDecls   := TObjectList.Create(False);
   FIntfLocals  := TStringList.Create();
   FIntfGlobals := TStringList.Create();
@@ -336,6 +339,7 @@ begin
   FObjGlobals.Free();
   FTlvGlobals.Free();
   FTlvSize.Free();
+  FGlobalWeak.Free();
   FIntfDecls.Free();
   FIntfLocals.Free();
   FIntfGlobals.Free();
@@ -4108,6 +4112,13 @@ begin
     frame (prologue, args-from-registers, ret).  No compiler prologue/
     epilogue, no frame registration, no param spill, no ARC — the
     verbatim block only. }
+  { RTL-owned routines bind WEAK (GH #180): a whole-program-per-unit
+    build inlines dependency bodies into every importing object, so two
+    objects may define the same bare RTL symbol — weak copies collapse
+    at link.  _main stays strong: it is the LC_MAIN entry. }
+  if (ADecl.OwningUnit <> '') and IsUnmangledUnit(ADecl.OwningUnit) and
+     (Sym <> '_main') then
+    AWeakBind := True;
   if ADecl.NoStackFrame then
   begin
     Self.Emit('');
@@ -4983,6 +4994,10 @@ begin
     begin
       if FGlobalInits.ContainsKey(FGlobalNames.Strings[I]) then Continue;
       Self.Emit('.balign 8');
+      if FGlobalWeak.IndexOf(FGlobalNames.Strings[I]) >= 0 then
+        Self.Emit(Format('.weak _g_%s', [FGlobalNames.Strings[I]]))
+      else
+        Self.Emit(Format('.globl _g_%s', [FGlobalNames.Strings[I]]));
       Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
       if FGlobalSize.TryGetValue(FGlobalNames.Strings[I], J) then
         Self.Emit(Format(#9'.zero %d', [J]))
@@ -4998,6 +5013,10 @@ begin
       if not FGlobalInits.TryGetValue(FGlobalNames.Strings[I], Directive) then
         Continue;
       Self.Emit('.balign 8');
+      if FGlobalWeak.IndexOf(FGlobalNames.Strings[I]) >= 0 then
+        Self.Emit(Format('.weak _g_%s', [FGlobalNames.Strings[I]]))
+      else
+        Self.Emit(Format('.globl _g_%s', [FGlobalNames.Strings[I]]));
       Self.Emit(Format('_g_%s:', [FGlobalNames.Strings[I]]));
       Self.Emit(Directive);
     end;
@@ -5128,11 +5147,11 @@ begin
     managed fields (inherited fields are merged into this class's list
     by the semantic pass, so one walk covers everything). }
   Self.Emit('');
-  Self.Emit('.globl _FieldCleanup_TObject');
+  Self.Emit('.weak _FieldCleanup_TObject');
   Self.Emit('_FieldCleanup_TObject:');
   Self.Emit(#9'ret');
   Self.Emit('');
-  Self.Emit('.globl _FieldCleanup_TCustomAttribute');
+  Self.Emit('.weak _FieldCleanup_TCustomAttribute');
   Self.Emit('_FieldCleanup_TCustomAttribute:');
   Self.Emit(#9'ret');
   for I := 0 to FClassDecls.Count - 1 do
@@ -5141,7 +5160,8 @@ begin
     RT := ClassDescOf(TD);
     Sym := '_FieldCleanup_' + ClassSym(TD);
     Self.Emit('');
-    if Pos('<', TD.Name) >= 0 then
+    if (Pos('<', TD.Name) >= 0) or
+       IsUnmangledUnit(ClassDescOf(TD).OwningUnit) then
       Self.Emit(Format('.weak %s', [Sym]))
     else
       Self.Emit(Format('.globl %s', [Sym]));
@@ -5173,7 +5193,7 @@ end;
 
 procedure TArm64Backend.EmitArrayConstData(ABlock: TBlock);
 var
-  I, J: Integer;
+  I, J, K: Integer;
   CD: TConstDecl;
   Decl: TMethodDecl;
   Lbl, Dir: string;
@@ -5194,15 +5214,20 @@ var
     end;
     if not ACD.IsArrayConst then Exit;
     if (ACD.ArrayElements = nil) or (ACD.ArrayElements.Count = 0) then Exit;
-    Self.Emit('.section .rodata');
-    Self.Emit('.balign 8');
-    Self.Emit(ALbl + ':');
     if SameText(ACD.ArrayElemType, 'string') then
     begin
       { per-element immortal blobs, label-at-data (.quad takes bare
-        symbols only) — same scheme as string-initialised globals }
+        symbols only) — same scheme as string-initialised globals.
+        The POINTER TABLE goes to .data: dyld must rebase each entry
+        (PIE), and rebases in a read-only segment are impossible —
+        the Mach-O linker rejects them.  The character blobs are
+        pointer-free and stay in .rodata. }
+      Self.Emit('.section .data');
+      Self.Emit('.balign 8');
+      Self.Emit(ALbl + ':');
       for E := 0 to ACD.ArrayElements.Count - 1 do
         Self.Emit(Format(#9'.quad __bce_%s_%d', [ALbl, E]));
+      Self.Emit('.section .rodata');
       for E := 0 to ACD.ArrayElements.Count - 1 do
       begin
         Self.Emit('.balign 4');
@@ -5220,6 +5245,9 @@ var
       end;
       Exit;
     end;
+    Self.Emit('.section .rodata');
+    Self.Emit('.balign 8');
+    Self.Emit(ALbl + ':');
     if SameText(ACD.ArrayElemType, 'Byte') or
        SameText(ACD.ArrayElemType, 'Boolean') then
       Dir := #9'.byte '
@@ -5269,6 +5297,31 @@ begin
       else
         Lbl := CodegenMangle(CD.Name);
       EmitOne(CD, Lbl);
+    end;
+  end;
+  { class-method bodies carry local consts too — walk THIS block's class
+    decls (not FClassDecls, which spans blocks and would double-emit) }
+  for I := 0 to ABlock.TypeDecls.Count - 1 do
+  begin
+    if not (TTypeDecl(ABlock.TypeDecls.Items[I]).Def is TClassTypeDef) then
+      Continue;
+    for J := 0 to TClassTypeDef(
+      TTypeDecl(ABlock.TypeDecls.Items[I]).Def).Methods.Count - 1 do
+    begin
+      Decl := TMethodDecl(TClassTypeDef(
+        TTypeDecl(ABlock.TypeDecls.Items[I]).Def).Methods.Items[J]);
+      if Decl.Body = nil then Continue;
+      for K := 0 to Decl.Body.ConstDecls.Count - 1 do
+      begin
+        CD := TConstDecl(Decl.Body.ConstDecls.Items[K]);
+        if CD.ResolvedQbeName <> '' then
+          Lbl := CodegenMangle(CD.ResolvedQbeName)
+        else if CD.ResolvedSetQbeName <> '' then
+          Lbl := CodegenMangle(CD.ResolvedSetQbeName)
+        else
+          Lbl := CodegenMangle(CD.Name);
+        EmitOne(CD, Lbl);
+      end;
     end;
   end;
 end;
@@ -5405,7 +5458,7 @@ begin
   Self.Emit(#9'.byte 0');
   Self.Emit('.section .data');
   Self.Emit('.balign 8');
-  Self.Emit('.globl typeinfo_TObject');
+  Self.Emit('.weak typeinfo_TObject');
   Self.Emit('typeinfo_TObject:');
   Self.Emit(#9'.quad 0');                       { parent }
   Self.Emit(#9'.quad 0');                       { impllist }
@@ -5416,7 +5469,7 @@ begin
   Self.Emit(#9'.quad vtable_TObject');
   Self.Emit(#9'.quad 0');                       { class attrs }
   Self.Emit(#9'.quad 0');                       { method attrs }
-  Self.Emit('.globl vtable_TObject');
+  Self.Emit('.weak vtable_TObject');
   Self.Emit('vtable_TObject:');
   Self.Emit(#9'.quad typeinfo_TObject');
   Self.Emit(#9'.quad TObject_Destroy');
@@ -5435,7 +5488,7 @@ begin
   Self.Emit(#9'.byte 0');
   Self.Emit('.section .data');
   Self.Emit('.balign 8');
-  Self.Emit('.globl typeinfo_TCustomAttribute');
+  Self.Emit('.weak typeinfo_TCustomAttribute');
   Self.Emit('typeinfo_TCustomAttribute:');
   Self.Emit(#9'.quad typeinfo_TObject');
   Self.Emit(#9'.quad 0');
@@ -5446,7 +5499,7 @@ begin
   Self.Emit(#9'.quad vtable_TCustomAttribute');
   Self.Emit(#9'.quad 0');
   Self.Emit(#9'.quad 0');
-  Self.Emit('.globl vtable_TCustomAttribute');
+  Self.Emit('.weak vtable_TCustomAttribute');
   Self.Emit('vtable_TCustomAttribute:');
   Self.Emit(#9'.quad typeinfo_TCustomAttribute');
   Self.Emit(#9'.quad TObject_Destroy');
@@ -5474,7 +5527,8 @@ begin
     EmitAttrTables(TClassTypeDef(TD.Def), Sym, AttrsRef, MethAttrsRef);
     Self.Emit('.section .data');
     Self.Emit('.balign 8');
-    if Pos('<', TD.Name) >= 0 then
+    if (Pos('<', TD.Name) >= 0) or
+       IsUnmangledUnit(ClassDescOf(TD).OwningUnit) then
       Self.Emit(Format('.weak typeinfo_%s', [Sym]))
     else
       Self.Emit(Format('.globl typeinfo_%s', [Sym]));
@@ -5491,7 +5545,8 @@ begin
     Self.Emit(Format(#9'.quad vtable_%s', [Sym]));
     Self.Emit(Format(#9'.quad %s', [AttrsRef]));
     Self.Emit(Format(#9'.quad %s', [MethAttrsRef]));
-    if Pos('<', TD.Name) >= 0 then
+    if (Pos('<', TD.Name) >= 0) or
+       IsUnmangledUnit(ClassDescOf(TD).OwningUnit) then
       Self.Emit(Format('.weak vtable_%s', [Sym]))
     else
       Self.Emit(Format('.globl vtable_%s', [Sym]));
@@ -6180,17 +6235,30 @@ begin
     if not FTlvSize.TryGetValue(FTlvGlobals.Strings[I], Sz) then
       Sz := 8;
     Self.Emit('.balign 8');
+    { threadvars follow the same GH #174 collapse rule as plain globals —
+      per-unit objects may each carry a copy of an RTL threadvar, and the
+      copies MUST collapse to one (separate TLS slots would be wrong) }
+    if FGlobalWeak.IndexOf('__tlv_' + FTlvGlobals.Strings[I]) >= 0 then
+      Self.Emit(Format('.weak _ts_%s', [FTlvGlobals.Strings[I]]))
+    else
+      Self.Emit(Format('.globl _ts_%s', [FTlvGlobals.Strings[I]]));
     Self.Emit(Format('_ts_%s:', [FTlvGlobals.Strings[I]]));
     Self.Emit(Format(#9'.zero %d', [Sz]));
   end;
-  { TLV descriptors: three quads — __tlv_bootstrap, 0, storage.  dyld
-    rebinds the thunk slot at load; the access sequence calls through it }
+  { TLV descriptors: three quads — thunk, key, storage.  The thunk
+    references _tlv_bootstrap by its C name; the Mach-O linker's
+    underscore rule binds it to dyld's __tlv_bootstrap, which rewrites
+    the descriptor at load.  The access sequence calls through it. }
   Self.Emit('.section __DATA,__thread_vars');
   for I := 0 to FTlvGlobals.Count - 1 do
   begin
     Self.Emit('.balign 8');
+    if FGlobalWeak.IndexOf('__tlv_' + FTlvGlobals.Strings[I]) >= 0 then
+      Self.Emit(Format('.weak _tv_%s', [FTlvGlobals.Strings[I]]))
+    else
+      Self.Emit(Format('.globl _tv_%s', [FTlvGlobals.Strings[I]]));
     Self.Emit(Format('_tv_%s:', [FTlvGlobals.Strings[I]]));
-    Self.Emit(#9'.quad __tlv_bootstrap');
+    Self.Emit(#9'.quad _tlv_bootstrap');
     Self.Emit(#9'.quad 0');
     Self.Emit(Format(#9'.quad _ts_%s', [FTlvGlobals.Strings[I]]));
   end;
@@ -6374,6 +6442,10 @@ begin
         in different units (or the program) cannot collide }
       N := GlobalSym(VD.Names.Strings[J]);
       FGlobalNames.Add(N);
+      { an RTL-unit global carries a bare symbol every inlining object
+        re-defines — weak binding lets the copies collapse (GH #174) }
+      if (FCurrentUnitName <> '') and IsUnmangledUnit(FCurrentUnitName) then
+        FGlobalWeak.Add(N);
       if VD.InitConst <> nil then
         RegisterGlobalInit(N, VD);
       if VD.IsThreadVar then
@@ -6388,6 +6460,9 @@ begin
         if VD.InitConst <> nil then
           NotYet('initialised threadvar', VD);
         FTlvGlobals.Add(N);
+        if (FCurrentUnitName <> '') and
+           IsUnmangledUnit(FCurrentUnitName) then
+          FGlobalWeak.Add('__tlv_' + N);
         if VD.ResolvedType.Kind = tyStaticArray then
           FTlvSize.Items[N] := VD.ResolvedType.RawSize()
         else
@@ -6422,7 +6497,22 @@ end;
 
 procedure TArm64Backend.FinalizeEmit;
 begin
-  { data sections are emitted at the end of EmitProgram in this subset }
+  { unit-as-top compiles (separate compilation) emit their data sections
+    here — EmitProgram has its own inline tail.  Without this a unit
+    object DEFINES none of its globals/literals/metadata/cleanup fns and
+    every cross-object reference dangles at link (or worse: the Mach-O
+    linker's underscore rule turns a missing _FieldCleanup_X into a
+    phantom libSystem import). }
+  Self.Emit('.text');
+  if FClassDecls.Count > 0 then
+    EmitClassCleanupFns();
+  EmitStrLitSection();
+  EmitFloatLitSection();
+  EmitGlobalsSection();
+  if FClassDecls.Count > 0 then
+    EmitClassMetaSections();
+  EmitIntfMetaSections();
+  EmitTlvSections();
 end;
 
 { ---- ARC walk primitives ------------------------------------------------- }

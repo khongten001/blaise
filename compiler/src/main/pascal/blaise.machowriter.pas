@@ -134,11 +134,30 @@ type
     LC_DYLD_CHAINED_FIXUPS is a Phase 6 decision).  LC_CODE_SIGNATURE is
     Phase 4; its absence makes the binary structurally complete but not
     yet runnable on Apple Silicon. }
+  { Resolved virtual addresses of every payload the exec image carries.
+    Derived purely from the CURRENT payload sizes, so the linker can set
+    its merged (still unfixed) section bytes, read the layout, apply the
+    relocation fixups against these final addresses, and re-set the
+    patched bytes — Finish recomputes the identical layout. }
+  TMachOExecLayout = record
+    TextVm:  Int64;   { __TEXT,__text }
+    ConstVm: Int64;   { __TEXT,__const }
+    DataVm:  Int64;   { __DATA,__data }
+    TvarsVm: Int64;   { __DATA,__thread_vars (TLV descriptors) }
+    TdataVm: Int64;   { __DATA,__thread_data (TLV initial image) }
+    TbssVm:  Int64;   { __DATA,__thread_bss (zerofill, follows tdata so
+                        the TLV content region tdata..tbss is contiguous) }
+    BssVm:   Int64;   { __DATA,__bss }
+  end;
+
   TMachOExecWriter = class
   private
     FText:      string;   { __TEXT,__text bytes }
     FConst:     string;   { __TEXT,__const bytes }
     FData:      string;   { __DATA,__data bytes }
+    FTvars:     string;   { __DATA,__thread_vars bytes }
+    FTdata:     string;   { __DATA,__thread_data bytes }
+    FTbssSize:  Int64;    { __DATA,__thread_bss zerofill size }
     FBssSize:   Int64;    { __DATA,__bss zerofill size }
     FEntryTextOff: Integer;      { entry offset within __text }
     FRebases:   TList<Int64>;    { vm addresses needing slide }
@@ -152,6 +171,9 @@ type
     procedure SetText(const ABytes: string);
     procedure SetConst(const ABytes: string);
     procedure SetData(const ABytes: string);
+    procedure SetTvars(const ABytes: string);
+    procedure SetTdata(const ABytes: string);
+    procedure SetTbssSize(ASize: Int64);
     procedure SetBssSize(ASize: Int64);
     { Entry point, as an offset into the __text payload. }
     procedure SetEntryTextOffset(AOff: Integer);
@@ -164,6 +186,9 @@ type
     { Virtual address the __text payload starts at (fixed for the v1
       load-command configuration, so callers can resolve before Finish). }
     function TextVmAddr: Int64;
+    { Full payload layout for the CURRENT sizes — Finish uses the same
+      computation, so addresses read here are final. }
+    function ComputeLayout: TMachOExecLayout;
     function Finish: string;
   end;
 
@@ -1047,12 +1072,14 @@ const
   DYLIB_CMD_SIZE    = 56;   { 24 + len(libSystem)+1 = 51, padded to 8 }
   DYLDINFO_CMD_SIZE = 48;
   MAIN_CMD_SIZE     = 24;
-  { 72(__PAGEZERO) + 232(__TEXT: 72+2*80) + 232(__DATA) + 72(__LINKEDIT)
+  { 72(__PAGEZERO) + 232(__TEXT: 72+2*80) + 472(__DATA: 72+5*80: data,
+    thread_vars, thread_data, thread_bss, bss) + 72(__LINKEDIT)
     + 48(dyld-info) + 24(symtab) + 80(dysymtab) + 32(dylinker)
     + 24(build-version) + 56(dylib) + 24(main) — the Finish size check
     guards this precomputed literal. }
-  EXEC_SIZEOFCMDS = 896;
+  EXEC_SIZEOFCMDS = 1136;
   EXEC_NCMDS = 11;
+  MH_HAS_TLV_DESCRIPTORS = $800000;
 
 procedure PushUleb(ABuf: TByteBuf; AVal: Int64);
 var
@@ -1118,6 +1145,21 @@ begin
   FData := ABytes;
 end;
 
+procedure TMachOExecWriter.SetTvars(const ABytes: string);
+begin
+  FTvars := ABytes;
+end;
+
+procedure TMachOExecWriter.SetTdata(const ABytes: string);
+begin
+  FTdata := ABytes;
+end;
+
+procedure TMachOExecWriter.SetTbssSize(ASize: Int64);
+begin
+  FTbssSize := ASize;
+end;
+
 procedure TMachOExecWriter.SetBssSize(ASize: Int64);
 begin
   FBssSize := ASize;
@@ -1151,12 +1193,34 @@ begin
     + MoAlignUp(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS, 16);
 end;
 
+function TMachOExecWriter.ComputeLayout: TMachOExecLayout;
+var
+  TextOff, ConstOff: Integer;
+  TextSegFileSize, DataOff: Int64;
+begin
+  TextOff := MoAlignUp(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS, 16);
+  ConstOff := MoAlignUp(TextOff + Length(FText), 16);
+  TextSegFileSize := MoAlignUp64(ConstOff + Length(FConst), MACHO_PAGE_SIZE);
+  DataOff := TextSegFileSize;
+  Result.TextVm := MACHO_EXEC_BASE + TextOff;
+  Result.ConstVm := MACHO_EXEC_BASE + ConstOff;
+  Result.DataVm := MACHO_EXEC_BASE + DataOff;
+  Result.TvarsVm := MoAlignUp64(Result.DataVm + Length(FData), 8);
+  Result.TdataVm := MoAlignUp64(Result.TvarsVm + Length(FTvars), 8);
+  { zerofill sections trail the file-backed bytes: thread_bss directly
+    after thread_data (keeping the TLV content region contiguous), then
+    the plain bss }
+  Result.TbssVm := Result.TdataVm + Length(FTdata);
+  Result.BssVm := MoAlignUp64(Result.TbssVm + FTbssSize, 8);
+end;
+
 function TMachOExecWriter.Finish: string;
 var
   Head, Reb, Bind, SymT, StrT: TByteBuf;
+  L: TMachOExecLayout;
   TextOff, ConstOff: Integer;
   TextSegFileSize: Int64;
-  DataOff: Int64;
+  DataOff, TvarsOff, TdataOff, DataFileEnd: Int64;
   DataVm, BssVm, DataSegVmSize, DataSegFileSize: Int64;
   LinkOff, LinkVm: Int64;
   RebOff, BindOff, SymOff, StrOff: Int64;
@@ -1164,15 +1228,20 @@ var
   A: Int64;
   StrIdx: Integer;
   NSectOf: Integer;
+  HdrFlags: Integer;
 begin
-  TextOff := MoAlignUp(MACH_HEADER_SIZE + EXEC_SIZEOFCMDS, 16);
-  ConstOff := MoAlignUp(TextOff + Length(FText), 16);
+  L := ComputeLayout();
+  TextOff := Integer(L.TextVm - MACHO_EXEC_BASE);
+  ConstOff := Integer(L.ConstVm - MACHO_EXEC_BASE);
   TextSegFileSize := MoAlignUp64(ConstOff + Length(FConst), MACHO_PAGE_SIZE);
-  DataOff := TextSegFileSize;
-  DataVm := MACHO_EXEC_BASE + DataOff;
-  BssVm := DataVm + Length(FData);
-  DataSegVmSize := MoAlignUp64(Length(FData) + FBssSize, MACHO_PAGE_SIZE);
-  DataSegFileSize := MoAlignUp64(Length(FData), MACHO_PAGE_SIZE);
+  DataOff := L.DataVm - MACHO_EXEC_BASE;
+  DataVm := L.DataVm;
+  TvarsOff := L.TvarsVm - MACHO_EXEC_BASE;
+  TdataOff := L.TdataVm - MACHO_EXEC_BASE;
+  DataFileEnd := TdataOff + Length(FTdata);
+  BssVm := L.BssVm;
+  DataSegFileSize := MoAlignUp64(DataFileEnd - DataOff, MACHO_PAGE_SIZE);
+  DataSegVmSize := MoAlignUp64(BssVm + FBssSize - DataVm, MACHO_PAGE_SIZE);
   LinkOff := DataOff + DataSegFileSize;
   LinkVm := DataVm + DataSegVmSize;
 
@@ -1231,7 +1300,10 @@ begin
     for I := 0 to FGlobalNames.Count - 1 do
     begin
       A := FGlobalAddrs.Get(I);
-      if A >= BssVm then NSectOf := 4
+      if A >= BssVm then NSectOf := 7
+      else if A >= L.TbssVm then NSectOf := 6
+      else if A >= L.TdataVm then NSectOf := 5
+      else if A >= L.TvarsVm then NSectOf := 4
       else if A >= DataVm then NSectOf := 3
       else if A >= MACHO_EXEC_BASE + ConstOff then NSectOf := 2
       else NSectOf := 1;
@@ -1253,7 +1325,10 @@ begin
     Head.PushU32(MH_EXECUTE);
     Head.PushU32(EXEC_NCMDS);
     Head.PushU32(EXEC_SIZEOFCMDS);
-    Head.PushU32(MH_NOUNDEFS or MH_DYLDLINK or MH_TWOLEVEL or MH_PIE);
+    HdrFlags := MH_NOUNDEFS or MH_DYLDLINK or MH_TWOLEVEL or MH_PIE;
+    if Length(FTvars) > 0 then
+      HdrFlags := HdrFlags or MH_HAS_TLV_DESCRIPTORS;
+    Head.PushU32(HdrFlags);
     Head.PushU32(0);
 
     { ---- __PAGEZERO ---- }
@@ -1307,9 +1382,9 @@ begin
     Head.PushU32(0);
     Head.PushU32(0);
 
-    { ---- __DATA ---- }
+    { ---- __DATA (data, thread_vars, thread_data, thread_bss, bss) ---- }
     Head.PushU32(LC_SEGMENT_64);
-    Head.PushU32(SEGMENT_CMD_SIZE + 2 * SECTION_64_SIZE);
+    Head.PushU32(SEGMENT_CMD_SIZE + 5 * SECTION_64_SIZE);
     PushName16(Head, '__DATA');
     Head.PushU64(DataVm);
     Head.PushU64(DataSegVmSize);
@@ -1317,7 +1392,7 @@ begin
     Head.PushU64(DataSegFileSize);
     Head.PushU32(3);   { rw- }
     Head.PushU32(3);
-    Head.PushU32(2);
+    Head.PushU32(5);
     Head.PushU32(0);
     PushName16(Head, '__data');
     PushName16(Head, '__DATA');
@@ -1328,6 +1403,42 @@ begin
     Head.PushU32(0);
     Head.PushU32(0);
     Head.PushU32(S_REGULAR);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    PushName16(Head, '__thread_vars');
+    PushName16(Head, '__DATA');
+    Head.PushU64(L.TvarsVm);
+    Head.PushU64(Length(FTvars));
+    Head.PushU32(Integer(TvarsOff));
+    Head.PushU32(3);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_THREAD_LOCAL_VARIABLES);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    PushName16(Head, '__thread_data');
+    PushName16(Head, '__DATA');
+    Head.PushU64(L.TdataVm);
+    Head.PushU64(Length(FTdata));
+    Head.PushU32(Integer(TdataOff));
+    Head.PushU32(3);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_THREAD_LOCAL_REGULAR);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    PushName16(Head, '__thread_bss');
+    PushName16(Head, '__DATA');
+    Head.PushU64(L.TbssVm);
+    Head.PushU64(FTbssSize);
+    Head.PushU32(0);
+    Head.PushU32(3);
+    Head.PushU32(0);
+    Head.PushU32(0);
+    Head.PushU32(S_THREAD_LOCAL_ZEROFILL);
     Head.PushU32(0);
     Head.PushU32(0);
     Head.PushU32(0);
@@ -1435,6 +1546,10 @@ begin
     Head.AppendBytes(FConst);
     Head.PadTo(Integer(DataOff));
     Head.AppendBytes(FData);
+    Head.PadTo(Integer(TvarsOff));
+    Head.AppendBytes(FTvars);
+    Head.PadTo(Integer(TdataOff));
+    Head.AppendBytes(FTdata);
     Head.PadTo(Integer(LinkOff));
     Head.AppendBuf(Reb);
     Head.AppendBuf(Bind);

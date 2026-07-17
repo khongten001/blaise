@@ -67,6 +67,8 @@ type
     function ValidateOptions(AOpts: TBackendOpts): string; override;
 
   private
+    function LinkViaMachOLinker(const AObjFile, AOutputFile: string;
+      AOpts: TBackendOpts; AExtraObjects: TStringList): string;
     function LinkViaInternalLinker(const AObjFile, AOutputFile: string;
       AOpts: TBackendOpts; AExtraObjects: TStringList): string;
     { EnsureRTLObjects is inherited from TBackendDriver — both the native
@@ -83,7 +85,8 @@ uses
   blaise.assembler.x86_64,
   blaise.assembler.arm64,
   blaise.elfreader,
-  blaise.linker.elf;
+  blaise.linker.elf,
+  blaise.linker.macho;
 
 { In-process assembly, keyed on the target CPU: x86-64 text goes to the
   ELF-emitting assembler, arm64 text to the Mach-O-emitting one.  Each
@@ -215,6 +218,45 @@ begin
   else Result := 'lib' + ALibName + '.so';
 end;
 
+function TNativeBackendDriver.LinkViaMachOLinker(
+  const AObjFile, AOutputFile: string;
+  AOpts: TBackendOpts; AExtraObjects: TStringList): string;
+var
+  Lk: TMachOLinker;
+  RTLObjs: TStringList;
+  I: Integer;
+begin
+  Result := '';
+  RTLObjs := TStringList.Create();
+  try
+    { same implicit-RTL machinery as the ELF path: the darwin unit list
+      (BuildRTLUnitList) has no start unit — LC_MAIN enters _main }
+    Result := Self.EnsureRTLObjects(AOpts, True, AExtraObjects, RTLObjs);
+    if Result <> '' then Exit;
+    Lk := TMachOLinker.Create();
+    try
+      try
+        Lk.AddObjectFile(AObjFile);
+        if AExtraObjects <> nil then
+          for I := 0 to AExtraObjects.Count - 1 do
+            Lk.AddObjectFile(AExtraObjects.Strings[I]);
+        for I := 0 to RTLObjs.Count - 1 do
+          Lk.AddObjectFile(RTLObjs.Strings[I]);
+        Lk.LinkToFile('_main', AOutputFile);
+        MakeFileExecutable(AOutputFile);
+      except
+        on E: Exception do
+          Result := 'macho linker error [' + Exception(E).ClassName
+            + ']: ' + Exception(E).Message;
+      end;
+    finally
+      Lk.Free();
+    end;
+  finally
+    RTLObjs.Free();
+  end;
+end;
+
 function TNativeBackendDriver.LinkViaInternalLinker(
   const AObjFile, AOutputFile: string;
   AOpts: TBackendOpts; AExtraObjects: TStringList): string;
@@ -237,14 +279,13 @@ begin
   if Toolkit = nil then
     Exit('internal linker: no toolkit registered for target ' +
       TargetName(AOpts.Target));
-  { A toolkit without ELF link facts (macos-arm64) cannot drive this
-    linker — the Mach-O linker + ad-hoc signature land in a later phase. }
+  { A toolkit without ELF link facts is a Mach-O target — hand the whole
+    link to the Mach-O linker (same RTL-object machinery, different
+    container). }
   LinkTarget := Toolkit.MakeLinkTarget();
   if LinkTarget = nil then
-    Exit('internal linker: executable linking for ' +
-      TargetName(AOpts.Target) +
-      ' is not available yet (Mach-O linker + code signing pending); ' +
-      'object emission and --emit-asm work today');
+    Exit(Self.LinkViaMachOLinker(AObjFile, AOutputFile, AOpts,
+      AExtraObjects));
 
   { Build the implicit RTL objects from source (cached beside the compiler).
     Every Blaise program emits calls to RTL symbols (_SetArgs, _BlaiseGetMem,

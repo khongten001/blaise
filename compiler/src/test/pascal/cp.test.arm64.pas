@@ -1590,7 +1590,7 @@ begin
   AssertTrue('thunk call', Pos(#9'blr x9', AsmT) >= 0);
   { descriptor: three quads with the bootstrap thunk }
   AssertTrue('descriptor label', Pos('_tv_Counter:', AsmT) >= 0);
-  AssertTrue('bootstrap slot', Pos(#9'.quad __tlv_bootstrap', AsmT) >= 0);
+  AssertTrue('bootstrap slot', Pos(#9'.quad _tlv_bootstrap', AsmT) >= 0);
   AssertTrue('storage slot ref', Pos(#9'.quad _ts_Counter', AsmT) >= 0);
   AssertTrue('thread_vars section',
     Pos('.section __DATA,__thread_vars', AsmT) >= 0);

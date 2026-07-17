@@ -574,7 +574,12 @@ begin
     builders (e.g. parallel e2e suites all warming a cold cache) race-free: a
     reader never sees a half-written object, and two builders just publish
     identical results, last-writer-wins. }
-  CacheDir := IncludeTrailingPathDelimiter(CompilerBinDir()) + 'rtl';
+  { the cache is TARGET-KEYED: the same unit compiles to different bytes
+    (and a different container) per --target — a shared directory would
+    hand a macos-arm64 link Linux ELF objects (or a FreeBSD link objects
+    baked with Linux defines) }
+  CacheDir := IncludeTrailingPathDelimiter(CompilerBinDir()) + 'rtl'
+    + '/' + TargetName(AOpts.Target);
   ForceDirectories(CacheDir);
   BuildDir := IncludeTrailingPathDelimiter(CacheDir) + 'build-' +
               IntToStr(_driver_getpid());
