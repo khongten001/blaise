@@ -7747,7 +7747,17 @@ begin
       Self.Emit(#9'str xzr, [x9]');
       Exit;
     end;
-    if AStmt.IsImplicitSelf or (AStmt.ObjExpr <> nil) then
+    if AStmt.ObjExpr <> nil then
+    begin
+      { general-expression receiver (Sections.Get(I).Free()): the receiver
+        is an owned +1 temporary — ArcExprOwnsRef is True for any
+        non-constructor method-call result — so Free is a single balanced
+        release with no slot to nil (mirrors the x86-64 general branch). }
+      Self.EmitExprToX0(AStmt.ObjExpr);
+      Self.Emit(#9'bl _ClassRelease');
+      Exit;
+    end;
+    if AStmt.IsImplicitSelf then
       NotYet('Free on this receiver form', AStmt);
     if AStmt.IsVarParam then
     begin

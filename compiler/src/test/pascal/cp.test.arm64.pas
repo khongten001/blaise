@@ -168,6 +168,8 @@ type
     procedure TestRecordCallFieldRead_ViaRret;
     { self-cross-compile: process-control RTL builtin family }
     procedure TestProcessBuiltins_LowerToRtlCalls;
+    { self-cross-compile: Free on a method-call-result receiver }
+    procedure TestFreeOnCallResult_ReleasesOwnedTemporary;
   end;
 
 implementation
@@ -3234,6 +3236,55 @@ begin
   AssertTrue('ProcessFree', Pos(#9'bl _ProcessFree', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64proc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestFreeOnCallResult_ReleasesOwnedTemporary;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+  GrabPos: Integer;
+begin
+  { B.Grab().Free() — the getter result is an owned +1 temporary, so Free
+    is a single _ClassRelease right after the call with NO slot nil (there
+    is no lvalue) }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class
+      public
+        V: Integer;
+      end;
+      TBox = class
+      public
+        function Grab: TThing;
+      end;
+    function TBox.Grab: TThing;
+    begin
+      Result := TThing.Create();
+      Result.V := 9
+    end;
+    var
+      B: TBox;
+    begin
+      B := TBox.Create();
+      B.Grab().Free();
+      B.Free()
+    end.
+    ''');
+  { the Grab result is released immediately after the call — bl Grab then
+    bl _ClassRelease adjacently, with no str-to-slot between them }
+  GrabPos := Pos(#9'bl TBox_Grab' + LF + #9'bl _ClassRelease', AsmT);
+  AssertTrue('call result released with no slot nil', GrabPos >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64frc.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

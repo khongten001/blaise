@@ -55,6 +55,11 @@ type
       of the chain still dereferences — a use-after-free that crashed when the
       chain had two or more hops before the call.  Guards both backends. }
     procedure TestRun_TransientDeepChainMethodCall_NoUseAfterFree;
+    { Free on a method-call-result receiver (B.Grab().Free()): the getter
+      hands back an owned +1 temporary, so Free is a single balanced
+      release — no leak, no double-free.  Guards the arm64 general-
+      expression Free branch (mirrors x86-64). }
+    procedure TestRun_FreeOnCallResult_NoLeak_Valgrind;
   end;
 
 implementation
@@ -211,6 +216,35 @@ const
       WriteLn(L.Get(1));
       WriteLn(L.Get(2));
       WriteLn(L.Count)
+    end.
+    ''';
+
+  { Free on a method-call-result receiver: Grab returns a freshly-created
+    (+1 owned) instance, Free balances that +1.  No leak (the instance is
+    freed), no double-free (nothing else holds it). }
+  SrcFreeOnCallResult = '''
+    program P;
+    type
+      TThing = class
+      public
+        V: Integer;
+      end;
+      TBox = class
+      public
+        function Grab: TThing;
+      end;
+    function TBox.Grab: TThing;
+    begin
+      Result := TThing.Create();
+      Result.V := 9
+    end;
+    var
+      B: TBox;
+    begin
+      B := TBox.Create();
+      B.Grab().Free();
+      WriteLn(1);
+      B.Free()
     end.
     ''';
 
@@ -625,6 +659,22 @@ begin
   begin
     if Log = '' then Log := '(valgrind produced no output)';
     Fail('native valgrind reported an invalid access (use-after-free):' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_FreeOnCallResult_NoLeak_Valgrind;
+var Output: string; RCode: Integer; Log: string; OK: Boolean;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(SrcFreeOnCallResult, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('ran', '1' + LE, Output);
+  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
+  OK := RunUnderValgrind(SrcFreeOnCallResult, Log);
+  if not OK then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
   end;
 end;
 
