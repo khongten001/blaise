@@ -55,6 +55,8 @@ type
     procedure TestSemantic_Set_EqualityLiteral_OK;
     procedure TestSemantic_Set_BaseTypeMustBeEnum;
     procedure TestSemantic_Set_LiteralElementMustMatchBase;
+    procedure TestSemantic_Set_CtorArgLiteralRetypedToSet;
+    procedure TestSemantic_Set_MetaclassCtorArgLiteralRetypedToSet;
 
     { ------------------------------------------------------------------ }
     { ranges in set literals — [lo..hi] (issue #105)                       }
@@ -647,6 +649,50 @@ const
     '  S := [cRed]' + #10 +  { TColors element in TDirSet → error }
     'end.';
 
+  { A bracket literal passed to a constructor's `set of` parameter.  Analysed
+    without set context it defaults to an open-array type; the constructor
+    branches of AnalyseMethodCallExpr must re-type it to the parameter's set
+    type, as the free-proc and function-call paths already do. }
+  SrcSetCtorArgLiteral =
+    'program P;' + #10 +
+    DirEnum +
+    'type' + #10 +
+    '  TFoo = class' + #10 +
+    '    FDirs: TDirSet;' + #10 +
+    '    constructor Create(ADirs: TDirSet);' + #10 +
+    '  end;' + #10 +
+    'constructor TFoo.Create(ADirs: TDirSet);' + #10 +
+    'begin' + #10 +
+    '  FDirs := ADirs' + #10 +
+    'end;' + #10 +
+    'var F: TFoo;' + #10 +
+    'begin' + #10 +
+    '  F := TFoo.Create([dNorth, dEast])' + #10 +
+    'end.';
+
+  { The same, dispatched through a metaclass variable — the second constructor
+    branch in AnalyseMethodCallExpr. }
+  SrcSetMetaclassCtorArgLiteral =
+    'program P;' + #10 +
+    DirEnum +
+    'type' + #10 +
+    '  TFoo = class' + #10 +
+    '    FDirs: TDirSet;' + #10 +
+    '    constructor Create(ADirs: TDirSet);' + #10 +
+    '  end;' + #10 +
+    '  TFooClass = class of TFoo;' + #10 +
+    'constructor TFoo.Create(ADirs: TDirSet);' + #10 +
+    'begin' + #10 +
+    '  FDirs := ADirs' + #10 +
+    'end;' + #10 +
+    'var' + #10 +
+    '  C: TFooClass;' + #10 +
+    '  F: TFoo;' + #10 +
+    'begin' + #10 +
+    '  C := TFoo;' + #10 +
+    '  F := C.Create([dNorth, dEast])' + #10 +
+    'end.';
+
 { ------------------------------------------------------------------ }
 { Helpers                                                              }
 { ------------------------------------------------------------------ }
@@ -844,6 +890,42 @@ begin
   AssertEquals('in operator resolves to Boolean',
     Ord(tyBoolean), Ord(Assign.Expr.ResolvedType.Kind));
   Prog.Free();
+end;
+
+procedure TSetTests.TestSemantic_Set_CtorArgLiteralRetypedToSet;
+var
+  Prog: TProgram;
+  Assign: TAssignment;
+  Call: TMethodCallExpr;
+begin
+  Prog := AnalyseSrc(SrcSetCtorArgLiteral);
+  try
+    { F := TFoo.Create([dNorth, dEast]) — sole stmt in the main block }
+    Assign := TAssignment(Prog.Block.Stmts[0]);
+    Call := TMethodCallExpr(Assign.Expr);
+    AssertEquals('constructor set-literal arg re-typed to the parameter set type',
+      Ord(tySet), Ord(TASTExpr(Call.Args[0]).ResolvedType.Kind));
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TSetTests.TestSemantic_Set_MetaclassCtorArgLiteralRetypedToSet;
+var
+  Prog: TProgram;
+  Assign: TAssignment;
+  Call: TMethodCallExpr;
+begin
+  Prog := AnalyseSrc(SrcSetMetaclassCtorArgLiteral);
+  try
+    { F := C.Create([dNorth, dEast]) — second stmt in the main block }
+    Assign := TAssignment(Prog.Block.Stmts[1]);
+    Call := TMethodCallExpr(Assign.Expr);
+    AssertEquals('metaclass constructor set-literal arg re-typed to the parameter set type',
+      Ord(tySet), Ord(TASTExpr(Call.Args[0]).ResolvedType.Kind));
+  finally
+    Prog.Free();
+  end;
 end;
 
 procedure TSetTests.TestSemantic_Set_Include_OK;
