@@ -135,6 +135,8 @@ type
     procedure TestGenericInstances_WeakEmission;
     { slice 40: assembler/nostackframe routines — verbatim arm64 bodies }
     procedure TestAsmRoutines_NoStackFrame;
+    { slice 43: pointers — deref reads, pointer writes, addr-of, casts }
+    procedure TestPointers_DerefWriteAddrOf;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2609,6 +2611,51 @@ begin
       Pos('add x0, x0, #1', AsmT) - Pos('AddOne:', AsmT))) < 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64asmfn.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestPointers_DerefWriteAddrOf;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      PInt = ^Integer;
+      PW = ^Word;
+    var
+      N: Integer;
+      Q: PInt;
+      H: PW;
+      B: Int64;
+    begin
+      N := 7;
+      Q := @N;
+      Q^ := Q^ + 1;
+      H := PW(Pointer(Q));
+      B := Integer(H^);
+      WriteLn(N);
+      WriteLn(B)
+    end.
+    ''');
+  { deref read: 4-byte signed load through the pointer }
+  AssertTrue('deref int read', Pos(#9'ldrsw x0, [x0]', AsmT) >= 0);
+  { pointer write: 4-byte store through the parked pointer }
+  AssertTrue('deref int write', Pos(#9'str w0, [x9]', AsmT) >= 0);
+  { unsigned 2-byte deref uses ldrh }
+  AssertTrue('word deref', Pos(#9'ldrh w0, [x0]', AsmT) >= 0);
+  { Integer(x) cast normalises the width }
+  AssertTrue('int cast narrows', Pos(#9'sxtw x0, w0', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ptr.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

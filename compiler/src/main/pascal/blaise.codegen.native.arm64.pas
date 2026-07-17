@@ -162,6 +162,8 @@ type
     procedure EmitFor(AStmt: TForStmt);
     procedure EmitForIn(AStmt: TForInStmt);
     procedure EmitForInAssignX0(AStmt: TForInStmt; AOwned: Boolean);
+    procedure EmitPointerWrite(AStmt: TPointerWriteStmt);
+    procedure EmitNarrowX0(AType: TTypeDesc);
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl;
       AWeakBind: Boolean = False);
@@ -421,8 +423,12 @@ begin
     Self.Emit(Format(#9'ldr %s, [x0]', [AReg]));
     Exit;
   end;
-  if FGlobalNames.IndexOf(Sym) >= 0 then
+  if (FGlobalNames.IndexOf(Sym) >= 0) or
+     ((FSymTable <> nil) and (FSymTable.Lookup(AName) <> nil) and
+      (FSymTable.Lookup(AName).Kind = skVariable)) then
   begin
+    { registered here, or a cross-unit variable defined in a dependency's
+      object — the assembler emits a reloc for the undefined symbol }
     Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
     Self.Emit(Format(#9'ldr %s, [x9, _g_%s@PAGEOFF]', [AReg, Sym]));
     Exit;
@@ -457,7 +463,9 @@ begin
     Self.Emit(#9'str x0, [x9]');
     Exit;
   end;
-  if FGlobalNames.IndexOf(Sym) >= 0 then
+  if (FGlobalNames.IndexOf(Sym) >= 0) or
+     ((FSymTable <> nil) and (FSymTable.Lookup(AName) <> nil) and
+      (FSymTable.Lookup(AName).Kind = skVariable)) then
   begin
     Self.Emit(Format(#9'adrp x9, _g_%s@PAGE', [Sym]));
     Self.Emit(Format(#9'str %s, [x9, _g_%s@PAGEOFF]', [AReg, Sym]));
@@ -484,7 +492,9 @@ begin
       Self.Emit(Format(#9'mov %s, x0', [AReg]));
     Exit;
   end;
-  if FGlobalNames.IndexOf(Sym) >= 0 then
+  if (FGlobalNames.IndexOf(Sym) >= 0) or
+     ((FSymTable <> nil) and (FSymTable.Lookup(AName) <> nil) and
+      (FSymTable.Lookup(AName).Kind = skVariable)) then
   begin
     Self.Emit(Format(#9'adrp %s, _g_%s@PAGE', [AReg, Sym]));
     Self.Emit(Format(#9'add %s, %s, _g_%s@PAGEOFF', [AReg, AReg, Sym]));
@@ -976,6 +986,23 @@ begin
     Self.Emit(#9'bl _' + TFuncCallExpr(AExpr).AttrRTTIBuiltin);
     Exit;
   end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (FSymTable <> nil) and
+     (FSymTable.FindType(TFuncCallExpr(AExpr).Name) <> nil) and
+     (AExpr.ResolvedType <> nil) and
+     (IsIntFam(AExpr.ResolvedType) or
+      (AExpr.ResolvedType.Kind in [tyPointer, tyPChar, tyClass])) then
+  begin
+    { TypeName(x): a value cast, NOT a builtin — the name resolves to a
+      TYPE.  Evaluate the operand and normalise to the target width
+      (pointer-like and class targets pass through). }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    EmitNarrowX0(AExpr.ResolvedType);
+    Exit;
+  end;
   if AExpr is TFuncCallExpr then
   begin
     if TFuncCallExpr(AExpr).IsIndirectCall or
@@ -1266,6 +1293,43 @@ begin
   begin
     EmitPropReadCall(TFieldAccessExpr(AExpr));
     Exit;
+  end;
+  if AExpr is TNilLiteral then
+  begin
+    Self.Emit(#9'movz x0, #0');
+    Exit;
+  end;
+  if AExpr is TDerefExpr then
+  begin
+    { P^: the pointer value is the address; aggregates stay as addresses
+      (field access / assignment work with record addresses), scalars
+      load through with the pointee's width }
+    Self.EmitExprToX0(TDerefExpr(AExpr).Expr);
+    if not ((AExpr.ResolvedType <> nil) and
+            (AExpr.ResolvedType.Kind in [tyRecord, tyStaticArray])) then
+      EmitElemLoad(AExpr.ResolvedType);
+    Exit;
+  end;
+  if AExpr is TAddrOfExpr then
+  begin
+    if TAddrOfExpr(AExpr).ResolvedFreeRoutine <> nil then
+    begin
+      { @Routine: the code address of a standalone routine }
+      Self.Emit(Format(#9'adrp x0, %s@PAGE',
+        [RoutineSym(TMethodDecl(TAddrOfExpr(AExpr).ResolvedFreeRoutine),
+          '')]));
+      Self.Emit(Format(#9'add x0, x0, %s@PAGEOFF',
+        [RoutineSym(TMethodDecl(TAddrOfExpr(AExpr).ResolvedFreeRoutine),
+          '')]));
+      Exit;
+    end;
+    if (TAddrOfExpr(AExpr).Expr is TIdentExpr) and
+       (TIdentExpr(TAddrOfExpr(AExpr).Expr).ParamMode <> pmVar) then
+    begin
+      EmitSlotAddr('x0', TIdentExpr(TAddrOfExpr(AExpr).Expr).Name);
+      Exit;
+    end;
+    NotYet('address-of on this expression', AExpr);
   end;
   if AExpr is TSupportsExpr then
   begin
@@ -1690,6 +1754,11 @@ begin
   if AStmt is TForInStmt then
   begin
     EmitForIn(TForInStmt(AStmt));
+    Exit;
+  end;
+  if AStmt is TPointerWriteStmt then
+  begin
+    EmitPointerWrite(TPointerWriteStmt(AStmt));
     Exit;
   end;
   if AStmt is TExitStmt then
@@ -2959,6 +3028,105 @@ begin
   end;
 end;
 
+procedure TArm64Backend.EmitNarrowX0(AType: TTypeDesc);
+begin
+  { normalise x0 to AType's width: truncate + re-extend so the 64-bit
+    register value matches the target type's domain }
+  if AType = nil then Exit;
+  case AType.Kind of
+    tyInteger: Self.Emit(#9'sxtw x0, w0');
+    tyUInt32:  Self.Emit(#9'mov w0, w0');
+    tyByte:
+    begin
+      Self.Emit(#9'lsl x0, x0, #56');
+      Self.Emit(#9'lsr x0, x0, #56');
+    end;
+    tyWord:
+    begin
+      Self.Emit(#9'lsl x0, x0, #48');
+      Self.Emit(#9'lsr x0, x0, #48');
+    end;
+    tySmallInt:
+    begin
+      Self.Emit(#9'lsl x0, x0, #48');
+      Self.Emit(#9'asr x0, x0, #48');
+    end;
+    tyBoolean:
+    begin
+      Self.Emit(#9'cmp x0, #0');
+      Self.Emit(#9'cset x0, ne');
+    end;
+  else
+    { 64-bit integers, enums, pointer-like and class kinds pass through }
+  end;
+end;
+
+procedure TArm64Backend.EmitPointerWrite(AStmt: TPointerWriteStmt);
+begin
+  { P^ := V.  Value first, then pointer — evaluating the value cannot
+    invalidate a parked pointer, and an ARC release of the old pointee
+    happens only after the new value holds its own reference (a self-
+    assign through the pointer stays safe). }
+  if AStmt.BaseTy = nil then
+    NotYet('pointer write with unresolved base type', AStmt);
+  if AStmt.BaseTy.IsString() or (AStmt.BaseTy.Kind = tyClass) then
+  begin
+    Self.EmitExprToX0(AStmt.ValExpr);
+    if not ArcExprOwnsRef(AStmt.ValExpr) then
+    begin
+      EmitPushX0();
+      if AStmt.BaseTy.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();                          { [val] }
+    Self.EmitExprToX0(AStmt.PtrExpr);
+    EmitPushX0();                          { [val][ptr] }
+    Self.Emit(#9'ldr x0, [x0]');
+    if AStmt.BaseTy.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    Self.Emit(#9'ldr x9, [sp]');
+    Self.Emit(#9'ldr x0, [sp, #16]');
+    Self.Emit(#9'str x0, [x9]');
+    Self.Emit(#9'add sp, sp, #32');
+    Exit;
+  end;
+  if AStmt.BaseTy.Kind in [tyDouble, tySingle] then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.ValExpr);
+    Self.Emit(#9'str d0, [sp, #-16]!');
+    Self.EmitExprToX0(AStmt.PtrExpr);
+    Self.Emit(#9'ldr d0, [sp], #16');
+    if AStmt.BaseTy.Kind = tySingle then
+    begin
+      Self.Emit(#9'fcvt s0, d0');
+      Self.Emit(#9'str s0, [x0]');
+    end
+    else
+      Self.Emit(#9'str d0, [x0]');
+    Exit;
+  end;
+  if AStmt.BaseTy.Kind in [tyRecord, tyStaticArray] then
+    NotYet('pointer write of an aggregate', AStmt);
+  Self.EmitExprToX0(AStmt.ValExpr);
+  EmitPushX0();
+  Self.EmitExprToX0(AStmt.PtrExpr);
+  Self.Emit(#9'mov x9, x0');
+  EmitPopTo('x0');
+  case AStmt.BaseTy.RawSize() of
+    1: Self.Emit(#9'strb w0, [x9]');
+    2: Self.Emit(#9'strh w0, [x9]');
+    4: Self.Emit(#9'str w0, [x9]');
+    8: Self.Emit(#9'str x0, [x9]');
+  else
+    NotYet('pointer write of this width', AStmt);
+  end;
+end;
+
 procedure TArm64Backend.EmitExit(AStmt: TExitStmt);
 begin
   if AStmt.ResultAssign <> nil then
@@ -3166,11 +3334,16 @@ end;
 
 procedure TArm64Backend.EmitElemLoad(AElem: TTypeDesc);
 begin
-  { load the element at [x0] into x0, width by element kind.  2-byte
-    integers need ldrsh/ldrh (no assembler encodings yet) — NotYet. }
+  { load the element at [x0] into x0, width by element kind.  Signed
+    2-byte loads need ldrsh (no assembler encoding yet) — NotYet. }
   if AElem = nil then NotYet('unresolved element type', nil);
   case AElem.RawSize() of
     1: Self.Emit(#9'ldrb w0, [x0]');
+    2:
+      if AElem.Kind = tyWord then
+        Self.Emit(#9'ldrh w0, [x0]')
+      else
+        NotYet('signed 2-byte element load', nil);
     4:
       if AElem.Kind = tyUInt32 then
         Self.Emit(#9'ldr w0, [x0]')
@@ -3449,8 +3622,8 @@ begin
       begin
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
-                 (Par.ResolvedType.Kind in [tyDouble, tySingle,
-                                            tyString]))) then
+                 (Par.ResolvedType.Kind in [tyDouble, tySingle, tyString,
+                                            tyPointer, tyPChar]))) then
           NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
         { a BY-VALUE string param is the callee's own copy: retained in the
@@ -3499,7 +3672,8 @@ begin
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
                                        tyMetaClass, tyStaticArray,
-                                       tyDynArray, tySet]))) then
+                                       tyDynArray, tySet,
+                                       tyPointer, tyPChar]))) then
       NotYet('local variable of this type', VD);
     if (VD.ResolvedType.Kind = tySet) and
        TSetTypeDesc(VD.ResolvedType).IsJumbo() then
@@ -4262,6 +4436,7 @@ begin
         end;
       end
       else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) or
+              (Arg is TNilLiteral) or
               ((Arg.ResolvedType <> nil) and
                (Arg.ResolvedType.Kind in [tyPChar, tyPointer])) then
       begin
@@ -5286,7 +5461,8 @@ begin
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
                                        tyRecord, tyClass, tyInterface,
                                        tyMetaClass, tyStaticArray,
-                                       tyDynArray, tySet]))) then
+                                       tyDynArray, tySet,
+                                       tyPointer, tyPChar]))) then
       NotYet('program variable of this type', VD);
     if (VD.ResolvedType.Kind = tySet) and
        TSetTypeDesc(VD.ResolvedType).IsJumbo() then
@@ -5549,7 +5725,14 @@ var
         end;
         Continue;
       end;
-      if not (UDcl.Def is TRecordTypeDef) then
+      if (UDcl.Def is TTypeAliasDef) or (UDcl.Def is TEnumTypeDef) or
+         (UDcl.Def is TSetTypeDef) or (UDcl.Def is TProceduralTypeDef) or
+         (UDcl.Def is TGenericTypeDef) or
+         (UDcl.Def is TGenericInterfaceDef) or
+         (UDcl.Def is TGenericRecordDef) or
+         (UDcl.Def is TGenericProcDef) then
+        { declaration-only, same set the program path accepts }
+      else if not (UDcl.Def is TRecordTypeDef) then
         NotYet('non-record type declarations in unit ' + AUnit.Name, nil)
       else if TRecordTypeDef(UDcl.Def).Methods.Count > 0 then
         NotYet('record methods in unit ' + AUnit.Name, nil);
@@ -5671,8 +5854,14 @@ begin
     if not (IsIntFam(VD.ResolvedType) or
             ((VD.ResolvedType <> nil) and
              (VD.ResolvedType.Kind in [tyDouble, tySingle, tyString,
-                                       tyRecord]))) then
+                                       tyRecord, tyClass, tyInterface,
+                                       tyMetaClass, tyStaticArray,
+                                       tyDynArray, tySet,
+                                       tyPointer, tyPChar]))) then
       NotYet('unit variable of this type', VD);
+    if (VD.ResolvedType.Kind = tySet) and
+       TSetTypeDesc(VD.ResolvedType).IsJumbo() then
+      NotYet('jumbo sets (more than 64 members)', VD);
 
     for J := 0 to VD.Names.Count - 1 do
     begin
@@ -5696,9 +5885,21 @@ begin
       end;
       if VD.ResolvedType.Kind = tyString then
         FStrGlobals.Add(N);
-      if VD.ResolvedType.Kind = tyRecord then
+      if (VD.ResolvedType.Kind = tyClass) and not VD.IsWeak then
+        FObjGlobals.Add(N);
+      if VD.ResolvedType.Kind = tyDynArray then
+        FDynGlobals.Add(N);
+      if VD.ResolvedType.Kind = tyInterface then
       begin
-        FRecGlobals.AddObject(N, VD.ResolvedType);
+        FGlobalNames.Add(N + '_itab');
+        FGlobalSize.Add(N + '_itab', 8);
+        if not VD.IsWeak then
+          FIntfGlobals.Add(N);
+      end;
+      if VD.ResolvedType.Kind in [tyRecord, tyStaticArray] then
+      begin
+        if VD.ResolvedType.Kind = tyRecord then
+          FRecGlobals.AddObject(N, VD.ResolvedType);
         FGlobalSize.Add(N, VD.ResolvedType.RawSize());
       end
       else
