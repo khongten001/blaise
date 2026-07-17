@@ -168,6 +168,9 @@ type
     procedure EmitForInAssignX0(AStmt: TForInStmt; AOwned: Boolean);
     procedure EmitPointerWrite(AStmt: TPointerWriteStmt);
     procedure EmitNarrowX0(AType: TTypeDesc);
+    procedure EmitBuiltinStrCall1(AArg: TASTExpr; const ASym: string);
+    procedure EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr;
+      const ASym: string);
     procedure EmitExit(AStmt: TExitStmt);
     procedure EmitFunctionDef(ADecl: TMethodDecl;
       AWeakBind: Boolean = False);
@@ -993,6 +996,94 @@ begin
     Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
     Self.Emit(#9'bl _DynArrayLength');
     Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.IsString()
+     and SameText(TFuncCallExpr(AExpr).Name, 'Length') then
+  begin
+    { Length(S): 4-byte length 8 bytes below the data pointer.  A
+      transient argument is disposed by shape with the length parked. }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    if ArcBuiltinStrArgOwnsRef(
+         TASTExpr(TFuncCallExpr(AExpr).Args.Items[0])) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'ldur w0, [x0, #-8]');
+      EmitPushX0();
+      Self.Emit(#9'ldr x0, [sp, #16]');
+      EmitStrDisposeX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      EmitPopTo('x0');
+      Self.Emit(#9'add sp, sp, #16');
+      Exit;
+    end;
+    Self.Emit(#9'ldur w0, [x0, #-8]');
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) then
+  begin
+    { one-string-arg RTL builtins (the sysutils file/string surface) —
+      each disposes a transient argument by shape (handover doc rule) }
+    if SameText(TFuncCallExpr(AExpr).Name, 'FileExists') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_FileExists');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'DirectoryExists') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_DirectoryExists');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ReadFile') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ReadFile');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'FileAge') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_FileAge');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ForceDirectories') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_ForceDirectories');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'Trim') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_Trim');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'LowerCase') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_LowerCase');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'UpperCase') then
+    begin
+      EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        '_UpperCase');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'IntToStr') then
+    begin
+      { integer argument — no transient to dispose }
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _Int64ToStr');
+      Exit;
+    end;
   end;
   if (AExpr is TFuncCallExpr) and
      (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
@@ -2513,6 +2604,19 @@ begin
       TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
     Exit;
   end;
+  if SameText(ACall.Name, 'DeleteFile') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    EmitBuiltinStrCall1(TASTExpr(ACall.Args.Items[0]), '_DeleteFile');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'WriteFile') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 2) then
+  begin
+    EmitBuiltinStrCall2(TASTExpr(ACall.Args.Items[0]),
+      TASTExpr(ACall.Args.Items[1]), '_WriteFile');
+    Exit;
+  end;
   if (SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec')) and
      (ACall.ResolvedDecl = nil) and
      ((ACall.Args.Count = 1) or (ACall.Args.Count = 2)) and
@@ -3411,6 +3515,59 @@ begin
   finally
     EmptyArgs.Free();
   end;
+end;
+
+procedure TArm64Backend.EmitBuiltinStrCall1(AArg: TASTExpr;
+  const ASym: string);
+begin
+  { one-string-arg RTL builtin: evaluate, call, and dispose a transient
+    argument BY SHAPE after the call (the result register is parked
+    across the release) — the day-one rule from
+    docs/arc-string-transient-handover.adoc }
+  Self.EmitExprToX0(AArg);
+  if ArcBuiltinStrArgOwnsRef(AArg) then
+  begin
+    EmitPushX0();                         { [arg] }
+    Self.Emit(Format(#9'bl %s', [ASym]));
+    EmitPushX0();                         { [arg][result] }
+    Self.Emit(#9'ldr x0, [sp, #16]');
+    EmitStrDisposeX0(AArg);
+    EmitPopTo('x0');
+    Self.Emit(#9'add sp, sp, #16');
+    Exit;
+  end;
+  Self.Emit(Format(#9'bl %s', [ASym]));
+end;
+
+procedure TArm64Backend.EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr;
+  const ASym: string);
+begin
+  { two-arg twin: BOTH operands stay parked across the call so either
+    transient can be disposed by shape afterwards (the concat emitter's
+    slot scheme) }
+  Self.EmitExprToX0(AArg0);
+  EmitPushX0();                           { [a0] }
+  Self.EmitExprToX0(AArg1);
+  EmitPushX0();                           { [a0][a1] }
+  Self.Emit(#9'ldr x1, [sp]');
+  Self.Emit(#9'ldr x0, [sp, #16]');
+  Self.Emit(Format(#9'bl %s', [ASym]));
+  if ArcBuiltinStrArgOwnsRef(AArg0) or ArcBuiltinStrArgOwnsRef(AArg1) then
+  begin
+    EmitPushX0();                         { [a0][a1][result] }
+    if ArcBuiltinStrArgOwnsRef(AArg1) then
+    begin
+      Self.Emit(#9'ldr x0, [sp, #16]');
+      EmitStrDisposeX0(AArg1);
+    end;
+    if ArcBuiltinStrArgOwnsRef(AArg0) then
+    begin
+      Self.Emit(#9'ldr x0, [sp, #32]');
+      EmitStrDisposeX0(AArg0);
+    end;
+    EmitPopTo('x0');
+  end;
+  Self.Emit(#9'add sp, sp, #32');
 end;
 
 procedure TArm64Backend.EmitNarrowX0(AType: TTypeDesc);
