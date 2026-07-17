@@ -166,6 +166,8 @@ type
     procedure TestRecordCallArg_MaterialisedInBuffer;
     { self-cross-compile: field read on a record-returning call }
     procedure TestRecordCallFieldRead_ViaRret;
+    { self-cross-compile: process-control RTL builtin family }
+    procedure TestProcessBuiltins_LowerToRtlCalls;
   end;
 
 implementation
@@ -3185,6 +3187,53 @@ begin
     Pos(#9'ldrsw x0', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64rcf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestProcessBuiltins_LowerToRtlCalls;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { the whole process-control family lowers 1:1 to _Process* RTL calls —
+    handle from ProcessCreate (0-arg), pointer-arg queries, string-arg
+    setters (SetExe/AddArg via the string-transient helper), and the
+    void handle procedures }
+  AsmT := GenAsm(
+    '''
+    program P;
+    var
+      H: Pointer;
+      R: Boolean;
+      E: Integer;
+    begin
+      H := ProcessCreate();
+      ProcessSetExe(H, '/bin/echo');
+      ProcessAddArg(H, 'hi');
+      ProcessExecute(H);
+      ProcessWaitOnExit(H);
+      R := ProcessRunning(H);
+      E := ProcessExitCode(H);
+      ProcessFree(H);
+      WriteLn(E)
+    end.
+    ''');
+  AssertTrue('ProcessCreate', Pos(#9'bl _ProcessCreate', AsmT) >= 0);
+  AssertTrue('ProcessSetExe', Pos(#9'bl _ProcessSetExe', AsmT) >= 0);
+  AssertTrue('ProcessAddArg', Pos(#9'bl _ProcessAddArg', AsmT) >= 0);
+  AssertTrue('ProcessExecute', Pos(#9'bl _ProcessExecute', AsmT) >= 0);
+  AssertTrue('ProcessWaitOnExit', Pos(#9'bl _ProcessWaitOnExit', AsmT) >= 0);
+  AssertTrue('ProcessRunning', Pos(#9'bl _ProcessRunning', AsmT) >= 0);
+  AssertTrue('ProcessExitCode', Pos(#9'bl _ProcessExitCode', AsmT) >= 0);
+  AssertTrue('ProcessFree', Pos(#9'bl _ProcessFree', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64proc.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

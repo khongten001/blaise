@@ -1534,6 +1534,27 @@ begin
       Self.Emit(#9'bl _Int64ToStr');
       Exit;
     end;
+    { process-control family (expression context): each takes the process
+      handle (a pointer) and returns an int/pointer — pointer arg, no
+      transient to dispose }
+    if SameText(TFuncCallExpr(AExpr).Name, 'ProcessRunning') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _ProcessRunning');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ProcessReadOutput') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _ProcessReadOutput');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ProcessExitCode') then
+    begin
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      Self.Emit(#9'bl _ProcessExitCode');
+      Exit;
+    end;
   end;
   if (AExpr is TFuncCallExpr) and
      (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
@@ -1563,6 +1584,12 @@ begin
     if SameText(TFuncCallExpr(AExpr).Name, 'GetProcessID') then
     begin
       Self.Emit(#9'bl _GetProcessID');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'ProcessCreate') then
+    begin
+      { allocate a process handle — returns a pointer in x0 }
+      Self.Emit(#9'bl _ProcessCreate');
       Exit;
     end;
   end;
@@ -3564,6 +3591,45 @@ begin
   begin
     EmitBuiltinStrCall2(TASTExpr(ACall.Args.Items[0]),
       TASTExpr(ACall.Args.Items[1]), '_WriteFile');
+    Exit;
+  end;
+  { process-control family (statement context): SetExe/AddArg take (handle,
+    string) — the string arg may be an owned transient, so route both slots
+    through EmitBuiltinStrCall2; Execute/WaitOnExit/Free take the handle
+    pointer only }
+  if SameText(ACall.Name, 'ProcessSetExe') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 2) then
+  begin
+    EmitBuiltinStrCall2(TASTExpr(ACall.Args.Items[0]),
+      TASTExpr(ACall.Args.Items[1]), '_ProcessSetExe');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'ProcessAddArg') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 2) then
+  begin
+    EmitBuiltinStrCall2(TASTExpr(ACall.Args.Items[0]),
+      TASTExpr(ACall.Args.Items[1]), '_ProcessAddArg');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'ProcessExecute') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    Self.Emit(#9'bl _ProcessExecute');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'ProcessWaitOnExit') and
+     (ACall.ResolvedDecl = nil) and (ACall.Args.Count = 1) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    Self.Emit(#9'bl _ProcessWaitOnExit');
+    Exit;
+  end;
+  if SameText(ACall.Name, 'ProcessFree') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    Self.EmitExprToX0(TASTExpr(ACall.Args.Items[0]));
+    Self.Emit(#9'bl _ProcessFree');
     Exit;
   end;
   if (SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec')) and
