@@ -166,7 +166,14 @@ procedure _StringAddRef(Ptr: Pointer);      external name '_StringAddRef';
 procedure _StringRelease(Ptr: Pointer);     external name '_StringRelease';
 
 { POSIX libc — file I/O }
-function  libc_open(Path: PChar; Flags: Integer; Mode: Integer): Integer;   external name 'open';
+{ open(2) is VARIADIC in C — `int open(const char *, int, ...)` — and the
+  mode is a variadic argument.  The declaration must say so: Apple's arm64
+  ABI passes variadic arguments ON THE STACK (never x2-x7), so a fixed
+  3-arg declaration put the mode in x2 and libSystem read garbage off the
+  stack — files were created with mode 0111 on the M1
+  (SMOKE_MAC_VARIADIC_ABI_HANDOVER.md).  On Linux x86-64 the register
+  assignment happens to coincide, which is why this only bit on macOS. }
+function  libc_open(Path: PChar; Flags: Integer): Integer; varargs;       external name 'open';
 function  libc_open2(Path: PChar; Flags: Integer): Integer;                 external name 'open';
 function  libc_read(Fd: Integer; Buf: Pointer; Count: Int64): Int64;        external name 'read';
 function  libc_write(Fd: Integer; Buf: Pointer; Count: Int64): Int64;       external name 'write';
