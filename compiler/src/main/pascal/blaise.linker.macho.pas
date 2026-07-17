@@ -691,6 +691,7 @@ var
   Bytes: string;
   FOut: TFileOutputStream;
 begin
+  FWriter.SetIdentifier(ExtractFileName(AOutPath));
   Bytes := Link(AEntrySym);
   FOut := TFileOutputStream.Create(AOutPath);
   try

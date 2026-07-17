@@ -19,7 +19,7 @@ interface
 
 uses
   SysUtils, blaise.testing, uStrCompat, blaise.container.writer,
-  blaise.machowriter, blaise.machoreader;
+  blaise.machowriter, blaise.machoreader, blaise.sha256;
 
 type
   TMachOWriterTests = class(TTestCase)
@@ -62,6 +62,12 @@ type
     procedure TestRebaseStream_OpcodesDecode;
     procedure TestBindStream_NamesLibSystemSymbol;
     procedure TestGlobals_InSymtab;
+  end;
+
+  TSha256Tests = class(TTestCase)
+  published
+    procedure TestFipsVectors;
+    procedure TestExecSignature_PageHashesRecompute;
   end;
 
 implementation
@@ -669,7 +675,86 @@ begin
   end;
 end;
 
+{ ---- TSha256Tests ---- }
+
+procedure TSha256Tests.TestFipsVectors;
+begin
+  AssertEquals('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    Sha256Hex('abc'));
+  AssertEquals('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    Sha256Hex(''));
+  AssertEquals('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    Sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'));
+end;
+
+procedure TSha256Tests.TestExecSignature_PageHashesRecompute;
+var
+  W: TMachOExecWriter;
+  Img, Page, Slot: string;
+  SigOff, CdOff, HashOff, CodeLimit: Integer;
+  NSlots, I, PageLen: Integer;
+
+  function BeU32(AOff: Integer): Integer;
+  begin
+    Result := (StrAt(Img, AOff) shl 24) or (StrAt(Img, AOff + 1) shl 16)
+      or (StrAt(Img, AOff + 2) shl 8) or StrAt(Img, AOff + 3);
+  end;
+
+  function LeU32(AOff: Integer): Integer;
+  begin
+    Result := StrAt(Img, AOff) or (StrAt(Img, AOff + 1) shl 8)
+      or (StrAt(Img, AOff + 2) shl 16) or (StrAt(Img, AOff + 3) shl 24);
+  end;
+
+var
+  Off, Cmd, CSz, N: Integer;
+begin
+  { emit a minimal signed executable and re-verify every CodeDirectory
+    page hash independently — the structural self-check that runs on
+    Linux CI in place of `codesign --verify` }
+  W := TMachOExecWriter.Create();
+  try
+    W.SetText(Chr($C0) + Chr($03) + Chr($5F) + Chr($D6));   { ret }
+    W.SetIdentifier('probe');
+    W.SetEntryTextOffset(0);
+    Img := W.Finish();
+  finally
+    W.Free();
+  end;
+  { find LC_CODE_SIGNATURE (cmd $1D) }
+  SigOff := 0;
+  Off := 32;
+  for N := 0 to LeU32(16) - 1 do
+  begin
+    Cmd := LeU32(Off);
+    CSz := LeU32(Off + 4);
+    if Cmd = $1D then    { LC_CODE_SIGNATURE }
+      SigOff := LeU32(Off + 8);
+    Off := Off + CSz;
+  end;
+  AssertTrue('LC_CODE_SIGNATURE present', SigOff > 0);
+  { SuperBlob: magic, length, count=1, type=0, cd offset }
+  AssertEquals(Integer($FADE0CC0), BeU32(SigOff));
+  CdOff := SigOff + BeU32(SigOff + 16);
+  AssertEquals(Integer($FADE0C02), BeU32(CdOff));
+  HashOff := CdOff + BeU32(CdOff + 16);
+  NSlots := BeU32(CdOff + 28);
+  CodeLimit := BeU32(CdOff + 32);
+  AssertEquals('codeLimit is the signature start', SigOff, CodeLimit);
+  for I := 0 to NSlots - 1 do
+  begin
+    PageLen := 4096;
+    if I * 4096 + PageLen > CodeLimit then
+      PageLen := CodeLimit - I * 4096;
+    Page := Copy(Img, I * 4096, PageLen);
+    Slot := Copy(Img, HashOff + I * 32, 32);
+    AssertEquals('page ' + IntToStr(I) + ' hash matches',
+      Sha256(Page), Slot);
+  end;
+end;
+
 initialization
+  RegisterTest(TSha256Tests);
   RegisterTest(TMachOWriterTests);
   RegisterTest(TMachOExecWriterTests);
 

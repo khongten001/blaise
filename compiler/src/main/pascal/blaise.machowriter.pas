@@ -165,6 +165,7 @@ type
     FBindNames: TList<string>;   { parallel: bound symbol names }
     FGlobalNames: TList<string>; { exported/global symbols }
     FGlobalAddrs: TList<Int64>;
+    FIdent: string;              { CodeDirectory identifier }
   public
     constructor Create;
     destructor Destroy; override;
@@ -177,6 +178,8 @@ type
     procedure SetBssSize(ASize: Int64);
     { Entry point, as an offset into the __text payload. }
     procedure SetEntryTextOffset(AOff: Integer);
+    { CodeDirectory identifier (conventionally the binary's name). }
+    procedure SetIdentifier(const AName: string);
     { Record a pointer slot at AVmAddr that dyld must slide (rebase). }
     procedure AddRebase(AVmAddr: Int64);
     { Record a pointer slot at AVmAddr bound to libSystem symbol AName. }
@@ -276,7 +279,7 @@ const
 implementation
 
 uses
-  streams, uStrCompat;
+  streams, uStrCompat, blaise.sha256;
 
 procedure _mw_memcpy(Dst, Src: Pointer; N: Int64); external name 'memcpy';
 
@@ -1077,9 +1080,22 @@ const
     + 48(dyld-info) + 24(symtab) + 80(dysymtab) + 32(dylinker)
     + 24(build-version) + 56(dylib) + 24(main) — the Finish size check
     guards this precomputed literal. }
-  EXEC_SIZEOFCMDS = 1136;
-  EXEC_NCMDS = 11;
+  EXEC_SIZEOFCMDS = 1152;   { 1136 + 16 (LC_CODE_SIGNATURE) }
+  EXEC_NCMDS = 12;
   MH_HAS_TLV_DESCRIPTORS = $800000;
+
+  { ad-hoc code signature (Phase 4).  All signature-blob fields are
+    BIG-endian.  Unsigned arm64 binaries are SIGKILLed at exec — the
+    kernel demands at least an ad-hoc CodeDirectory with SHA-256 page
+    hashes covering the whole file up to the signature itself. }
+  LC_CODE_SIGNATURE = $1D;
+  CSMAGIC_EMBEDDED_SIGNATURE = Integer($FADE0CC0);
+  CSMAGIC_CODEDIRECTORY      = Integer($FADE0C02);
+  CS_ADHOC = $2;
+  CS_EXECSEG_MAIN_BINARY = $1;
+  CS_HASHTYPE_SHA256 = 2;
+  CS_PAGE_BITS = 12;      { 4096-byte signature pages }
+  CD_HEADER_SIZE = 88;    { version $20400 layout }
 
 procedure PushUleb(ABuf: TByteBuf; AVal: Int64);
 var
@@ -1170,6 +1186,11 @@ begin
   FEntryTextOff := AOff;
 end;
 
+procedure TMachOExecWriter.SetIdentifier(const AName: string);
+begin
+  FIdent := AName;
+end;
+
 procedure TMachOExecWriter.AddRebase(AVmAddr: Int64);
 begin
   FRebases.Add(AVmAddr);
@@ -1214,6 +1235,19 @@ begin
   Result.BssVm := MoAlignUp64(Result.TbssVm + FTbssSize, 8);
 end;
 
+function Be32(AVal: Int64): string;
+begin
+  Result := Chr(Integer((AVal shr 24) and $FF))
+    + Chr(Integer((AVal shr 16) and $FF))
+    + Chr(Integer((AVal shr 8) and $FF))
+    + Chr(Integer(AVal and $FF));
+end;
+
+function Be64(AVal: Int64): string;
+begin
+  Result := Be32((AVal shr 32) and $FFFFFFFF) + Be32(AVal and $FFFFFFFF);
+end;
+
 function TMachOExecWriter.Finish: string;
 var
   Head, Reb, Bind, SymT, StrT: TByteBuf;
@@ -1224,12 +1258,17 @@ var
   DataVm, BssVm, DataSegVmSize, DataSegFileSize: Int64;
   LinkOff, LinkVm: Int64;
   RebOff, BindOff, SymOff, StrOff: Int64;
+  SigOff, SigSize: Int64;
+  NSlots, PageLen: Integer;
+  Unsigned, Blob, Page: string;
   I: Integer;
   A: Int64;
   StrIdx: Integer;
   NSectOf: Integer;
   HdrFlags: Integer;
 begin
+  if FIdent = '' then
+    FIdent := 'blaise';
   L := ComputeLayout();
   TextOff := Integer(L.TextVm - MACHO_EXEC_BASE);
   ConstOff := Integer(L.ConstVm - MACHO_EXEC_BASE);
@@ -1317,6 +1356,12 @@ begin
       SymT.PushU64(A);
     end;
     StrOff := SymOff + FGlobalNames.Count * NLIST_64_SIZE;
+    { the ad-hoc signature trails everything: 16-aligned, covering the
+      file up to its own start (codeLimit = SigOff) }
+    SigOff := MoAlignUp64(StrOff + StrT.Count, 16);
+    NSlots := Integer((SigOff + 4095) div 4096);
+    SigSize := 12 + 8 + CD_HEADER_SIZE + Length(FIdent) + 1
+      + Int64(NSlots) * 32;
 
     { ---- header ---- }
     Head.PushU32(MH_MAGIC_64);
@@ -1460,12 +1505,9 @@ begin
     Head.PushU32(SEGMENT_CMD_SIZE);
     PushName16(Head, '__LINKEDIT');
     Head.PushU64(LinkVm);
-    Head.PushU64(MoAlignUp64(
-      Reb.Count + Bind.Count + FGlobalNames.Count * NLIST_64_SIZE
-      + StrT.Count, MACHO_PAGE_SIZE));
+    Head.PushU64(MoAlignUp64(SigOff + SigSize - LinkOff, MACHO_PAGE_SIZE));
     Head.PushU64(LinkOff);
-    Head.PushU64(Reb.Count + Bind.Count
-      + FGlobalNames.Count * NLIST_64_SIZE + StrT.Count);
+    Head.PushU64(SigOff + SigSize - LinkOff);
     Head.PushU32(1);   { r-- }
     Head.PushU32(1);
     Head.PushU32(0);
@@ -1534,6 +1576,12 @@ begin
     Head.PushU64(TextOff + FEntryTextOff);   { entryoff (file offset) }
     Head.PushU64(0);                         { stacksize: default }
 
+    { ---- LC_CODE_SIGNATURE (must stay the LAST command) ---- }
+    Head.PushU32(LC_CODE_SIGNATURE);
+    Head.PushU32(16);
+    Head.PushU32(Integer(SigOff));
+    Head.PushU32(Integer(SigSize));
+
     if Head.Count <> MACH_HEADER_SIZE + EXEC_SIZEOFCMDS then
       raise EMachOWriter.Create('machowriter: exec load-command size mismatch: '
         + IntToStr(Head.Count) + ' vs '
@@ -1555,8 +1603,48 @@ begin
     Head.AppendBuf(Bind);
     Head.AppendBuf(SymT);
     Head.AppendBuf(StrT);
+    Head.PadTo(Integer(SigOff));
 
-    Result := Head.AsString();
+    { ---- ad-hoc signature: a SuperBlob holding one CodeDirectory ----
+      Everything BIG-endian.  The page hashes cover [0, SigOff) of the
+      exact bytes emitted above — nothing may change after this point. }
+    Unsigned := Head.AsString();
+    Blob := Be32(CSMAGIC_EMBEDDED_SIGNATURE)
+      + Be32(SigSize)
+      + Be32(1)                                { blob count }
+      + Be32(0)                                { CSSLOT_CODEDIRECTORY }
+      + Be32(20);                              { its offset }
+    Blob := Blob
+      + Be32(CSMAGIC_CODEDIRECTORY)
+      + Be32(SigSize - 20)                     { CD length }
+      + Be32($20400)                           { version }
+      + Be32(CS_ADHOC)
+      + Be32(CD_HEADER_SIZE + Length(FIdent) + 1)   { hashOffset }
+      + Be32(CD_HEADER_SIZE)                   { identOffset }
+      + Be32(0)                                { nSpecialSlots }
+      + Be32(NSlots)                           { nCodeSlots }
+      + Be32(SigOff)                           { codeLimit }
+      + Chr(32) + Chr(CS_HASHTYPE_SHA256)      { hashSize, hashType }
+      + Chr(0) + Chr(CS_PAGE_BITS)             { platform, log2 page }
+      + Be32(0)                                { spare2 }
+      + Be32(0)                                { scatterOffset }
+      + Be32(0)                                { teamOffset }
+      + Be32(0)                                { spare3 }
+      + Be64(0)                                { codeLimit64 }
+      + Be64(0)                                { execSegBase }
+      + Be64(TextSegFileSize)                  { execSegLimit }
+      + Be64(CS_EXECSEG_MAIN_BINARY)           { execSegFlags }
+      + FIdent + Chr(0);
+    for I := 0 to NSlots - 1 do
+    begin
+      PageLen := 4096;
+      if Int64(I) * 4096 + PageLen > SigOff then
+        PageLen := Integer(SigOff - Int64(I) * 4096);
+      Page := Copy(Unsigned, I * 4096, PageLen);
+      Blob := Blob + Sha256(Page);
+    end;
+
+    Result := Unsigned + Blob;
   finally
     Head.Free();
     Reb.Free();
