@@ -399,12 +399,21 @@ end;
 
 procedure TArm64Backend.EmitTlvAddr(const ASym: string);
 begin
-  { Mach-O TLV access: materialise the descriptor address (the linker may
-    relax the ldr to an add for a same-image variable), call its thunk
-    with x0 = descriptor — the thunk returns the per-thread address in
-    x0.  Clobbers caller-saved registers, like any call. }
+  { Mach-O TLV access: FORM the descriptor's address (adrp + ADD), load
+    its thunk (dyld resolved it to _tlv_get_addr at bind time) and call
+    it with x0 = &descriptor; the thunk returns the per-thread address
+    in x0.  Clobbers caller-saved registers, like any call.
+
+    The adrp+LDR shape clang emits pre-link is NOT usable here: it loads
+    THROUGH an indirection slot that only exists after Apple's ld either
+    relaxes the ldr to this add (same-image variable) or materialises a
+    __thread_ptrs slot.  We emit final code with no relaxation pass and
+    create no slot, so the ldr form dereferenced one level too many —
+    it called through descriptor->thunk's CONTENTS (the first code bytes
+    of _tlv_get_addr) and crashed on the M1.  See
+    ARM64_TLS_SEGFAULT_FEEDBACK.md for the on-hardware evidence chain. }
   Self.Emit(Format(#9'adrp x0, _tv_%s@TLVPPAGE', [ASym]));
-  Self.Emit(Format(#9'ldr x0, [x0, _tv_%s@TLVPPAGEOFF]', [ASym]));
+  Self.Emit(Format(#9'add x0, x0, _tv_%s@TLVPPAGEOFF', [ASym]));
   Self.Emit(#9'ldr x9, [x0]');
   Self.Emit(#9'blr x9');
 end;

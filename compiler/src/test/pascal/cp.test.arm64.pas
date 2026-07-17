@@ -1585,8 +1585,15 @@ begin
       WriteLn(Counter)
     end.
     ''');
-  { access: materialise the descriptor, call its thunk, deref the result }
+  { access: FORM the descriptor address (adrp + ADD — the relaxed form;
+    the adrp+LDR shape needs a linker-made indirection slot we never
+    create and crashed on real hardware: ARM64_TLS_SEGFAULT_FEEDBACK.md),
+    then call its thunk with x0 = &descriptor }
   AssertTrue('TLVP page ref', Pos('_tv_Counter@TLVPPAGE', AsmT) >= 0);
+  AssertTrue('descriptor address FORMED, not loaded',
+    Pos(#9'add x0, x0, _tv_Counter@TLVPPAGEOFF', AsmT) >= 0);
+  AssertTrue('no ldr-through-slot TLV access',
+    Pos(#9'ldr x0, [x0, _tv_Counter@TLVPPAGEOFF]', AsmT) < 0);
   AssertTrue('thunk call', Pos(#9'blr x9', AsmT) >= 0);
   { descriptor: three quads with the bootstrap thunk }
   AssertTrue('descriptor label', Pos('_tv_Counter:', AsmT) >= 0);
