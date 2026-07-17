@@ -137,6 +137,10 @@ type
     procedure TestAsmRoutines_NoStackFrame;
     { slice 43: pointers — deref reads, pointer writes, addr-of, casts }
     procedure TestPointers_DerefWriteAddrOf;
+    { M1 round-trip 2: boolean and/or must SHORT-CIRCUIT — a nil guard
+      like (P <> nil) and (P^.X > 0) crashed on hardware because both
+      operands were evaluated eagerly }
+    procedure TestBooleanAndOr_ShortCircuits;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
   end;
@@ -2665,6 +2669,41 @@ begin
   AssertTrue('int cast narrows', Pos(#9'sxtw x0, w0', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64ptr.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestBooleanAndOr_ShortCircuits;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      PNode = ^Int64;
+    var
+      Q: PNode;
+      B: Boolean;
+    begin
+      Q := nil;
+      B := (Q <> nil) and (Q^ > 0);
+      WriteLn(B);
+      B := (Q = nil) or (Q^ = 0);
+      WriteLn(B)
+    end.
+    ''');
+  { and: LHS = 0 skips the RHS; or: LHS <> 0 skips the RHS }
+  AssertTrue('and skips on false LHS', Pos(#9'cbz x0, Lscend', AsmT) >= 0);
+  AssertTrue('or skips on true LHS', Pos(#9'cbnz x0, Lscend', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64sc.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

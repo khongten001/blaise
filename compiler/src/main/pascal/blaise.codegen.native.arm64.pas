@@ -1312,6 +1312,26 @@ begin
       Self.Emit(Format(#9'cset x0, %s', [CondName]));
       Exit;
     end;
+    { short-circuit boolean and/or: evaluate the LHS; skip the RHS when
+      the result is already decided (and: LHS=0 -> 0; or: LHS<>0 -> 1).
+      Eager evaluation here is SILENT WRONG CODE, not a missed
+      optimisation — the RTL's nil-guard idiom
+      (P <> nil) and (P^.Field ...) dereferenced nil on the M1
+      (ARM64_TLS_SEGFAULT_FEEDBACK.md part 2).  Numeric operands keep
+      the bitwise arm below, mirroring the x86-64 backend. }
+    if ((BE.Op = boAnd) or (BE.Op = boOr)) and
+       ((BE.ResolvedType = nil) or not BE.ResolvedType.IsNumeric()) then
+    begin
+      Lit := NewLabel('scend');
+      Self.EmitExprToX0(BE.Left);
+      if BE.Op = boAnd then
+        Self.Emit(Format(#9'cbz x0, %s', [Lit]))
+      else
+        Self.Emit(Format(#9'cbnz x0, %s', [Lit]));
+      Self.EmitExprToX0(BE.Right);
+      Self.Emit(Lit + ':');
+      Exit;
+    end;
     Self.EmitExprToX0(BE.Left);
     EmitPushX0();
     Self.EmitExprToX0(BE.Right);
