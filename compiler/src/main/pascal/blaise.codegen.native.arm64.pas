@@ -122,6 +122,10 @@ type
     procedure EmitStoreSlot(const AReg, AName: string);
     { Address of a variable's storage (record base / slot address). }
     procedure EmitSlotAddr(const AReg, AName: string);
+    procedure EmitRecIdentAddr(const AReg: string; AE: TIdentExpr);
+    procedure EmitRecFieldAddrToX0(AFA: TFieldAccessExpr);
+    procedure EmitRecAddrToX0(AExpr: TASTExpr);
+    procedure EmitPropRecvToX0(AStmt: TFieldAssignment);
     procedure EmitFieldAssign(AStmt: TFieldAssignment);
 
     { ---- expression lowering (result in x0) ---- }
@@ -169,6 +173,8 @@ type
     procedure EmitPointerWrite(AStmt: TPointerWriteStmt);
     procedure EmitNarrowX0(AType: TTypeDesc);
     procedure EmitBuiltinStrCall1(AArg: TASTExpr; const ASym: string);
+    procedure EmitFormatCall(AArgs: TObjectList);
+    procedure EmitRecCallDispatch(AExpr: TASTExpr; const ADest: string);
     procedure EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr;
       const ASym: string);
     procedure EmitExit(AStmt: TExitStmt);
@@ -180,7 +186,8 @@ type
     function  ComputeStackArgArea(ADecl: TMethodDecl; AArgs: TObjectList;
       ASelfPushed: Boolean): Integer;
     function  ComputeStackArgAreaEx(ADecl: TMethodDecl; AArgs: TObjectList;
-      ASelfPushed: Boolean; out ATransBase: Integer): Integer;
+      ASelfPushed: Boolean; out ALitBase: Integer;
+      out ATransBase: Integer): Integer;
     procedure DecodeMemArg(const AEntry: string; out AOff, ASize: Integer);
     procedure EmitCall(ADecl: TMethodDecl; const AName: string;
       AArgs: TObjectList; const ASretDest: string = '';
@@ -524,8 +531,56 @@ begin
   NotYet('address of variable ''' + AName + '''', nil);
 end;
 
+procedure TArm64Backend.EmitRecIdentAddr(const AReg: string; AE: TIdentExpr);
+begin
+  { address of a record-valued identifier: an implicit-Self FIELD lives
+    at Self + field offset (no frame slot exists for it); a var param's
+    slot holds the caller's address; everything else is a frame slot }
+  if AE.IsImplicitSelf and (AE.ImplicitFieldInfo <> nil) then
+  begin
+    EmitLoadSlot(AReg, 'Self');
+    if TFieldInfo(AE.ImplicitFieldInfo).Offset <> 0 then
+      EmitAddSubImm('add', AReg, AReg,
+        TFieldInfo(AE.ImplicitFieldInfo).Offset);
+    Exit;
+  end;
+  if AE.ParamMode = pmVar then
+  begin
+    EmitLoadSlot(AReg, AE.Name);
+    Exit;
+  end;
+  EmitSlotAddr(AReg, AE.Name);
+end;
+
+procedure TArm64Backend.EmitRecFieldAddrToX0(AFA: TFieldAccessExpr);
+begin
+  { x0 := ADDRESS of the record VALUE named by a field access — the
+    base for a chained read like FTok.Token.TextStart, where Token is a
+    record-typed field and the outer access needs its address }
+  if AFA.FieldInfo = nil then
+    NotYet('address of an unresolved field', AFA);
+  if AFA.Base <> nil then
+  begin
+    if not AFA.IsClassAccess then
+      NotYet('record address through this base form', AFA);
+    if ArcExprOwnsRef(AFA.Base) then
+      NotYet('record address on an owned transient base', AFA);
+    Self.EmitExprToX0(AFA.Base);
+  end
+  else if AFA.IsImplicitSelf then
+    EmitLoadSlot('x0', 'Self')
+  else if AFA.IsClassAccess then
+    EmitLoadSlot('x0', AFA.RecordName)
+  else
+    EmitSlotAddr('x0', AFA.RecordName);
+  if AFA.FieldInfo.Offset <> 0 then
+    EmitAddSubImm('add', 'x0', 'x0', AFA.FieldInfo.Offset);
+end;
+
 procedure TArm64Backend.EmitInstanceFieldStore(AFld: TFieldInfo;
   AValueExpr: TASTExpr; const AInstSlot: string);
+var
+  I, Shape: Integer;
 begin
   { store AValueExpr into AFld of the instance whose POINTER lives in the
     frame slot AInstSlot ('Self' or a class-typed variable).  Managed
@@ -555,6 +610,78 @@ begin
     EmitLoadSlot('x9', AInstSlot);
     EmitPopTo('x0');
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
+    Exit;
+  end;
+  if AFld.TypeDesc.Kind = tyRecord then
+  begin
+    if ((AValueExpr is TFuncCallExpr) and
+        (TFuncCallExpr(AValueExpr).ResolvedDecl <> nil)) or
+       ((AValueExpr is TMethodCallExpr) and
+        (TMethodCallExpr(AValueExpr).ResolvedMethod <> nil) and
+        not TMethodCallExpr(AValueExpr).IsConstructorCall) then
+    begin
+      { record-returning call into a field: land the fresh value in the
+        __rret scratch, release the field's OLD refs, then memcpy in —
+        the callee's +1 field refs TRANSFER (no source retain) }
+      Shape := RecReturnShape(TRecordTypeDesc(AFld.TypeDesc));
+      if Shape = 0 then
+        EmitRecCallDispatch(AValueExpr, '__rret')
+      else
+      begin
+        EmitRecCallDispatch(AValueExpr, '');
+        EmitSlotAddr('x9', '__rret');
+        case Shape of
+          1: Self.Emit(#9'str x0, [x9]');
+          2:
+          begin
+            Self.Emit(#9'str x0, [x9]');
+            Self.Emit(#9'str x1, [x9, #8]');
+          end;
+        else
+          for I := 0 to (Shape - 100) - 1 do
+            Self.Emit(Format(#9'str d%d, [x9, #%d]', [I, I * 8]));
+        end;
+      end;
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      EmitLoadSlot('x22', AInstSlot);
+      if AFld.Offset <> 0 then
+        EmitAddSubImm('add', 'x22', 'x22', AFld.Offset);
+      if not RecretManagedClean(TRecordTypeDesc(AFld.TypeDesc)) then
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(AFld.TypeDesc), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      EmitSlotAddr('x1', '__rret');
+      EmitIntLiteral('x2', AFld.TypeDesc.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Exit;
+    end;
+    { record-typed field store: memcpy from the source record's address;
+      managed fields retain-source then release-dest (record-assign rule) }
+    if not RecretManagedClean(TRecordTypeDesc(AFld.TypeDesc)) then
+    begin
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      EmitRecAddrToX0(AValueExpr);
+      Self.Emit(#9'mov x19, x0');
+      EmitLoadSlot('x22', AInstSlot);
+      if AFld.Offset <> 0 then
+        EmitAddSubImm('add', 'x22', 'x22', AFld.Offset);
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(AFld.TypeDesc), 'x19');
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(AFld.TypeDesc), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      Self.Emit(#9'mov x1, x19');
+      EmitIntLiteral('x2', AFld.TypeDesc.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Exit;
+    end;
+    EmitRecAddrToX0(AValueExpr);
+    EmitPushX0();
+    EmitLoadSlot('x0', AInstSlot);
+    if AFld.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0', AFld.Offset);
+    EmitPopTo('x1');
+    EmitIntLiteral('x2', AFld.TypeDesc.RawSize());
+    Self.Emit(#9'bl memcpy');
     Exit;
   end;
   if AFld.TypeDesc.Kind = tySingle then
@@ -656,13 +783,61 @@ begin
     'Self');
 end;
 
+procedure TArm64Backend.EmitRecAddrToX0(AExpr: TASTExpr);
+begin
+  { x0 := address of a record VALUE — every lvalue-ish record shape the
+    copy paths accept: plain/var-param/implicit-Self idents, subscripted
+    elements, and record-typed field accesses }
+  if AExpr is TIdentExpr then
+  begin
+    EmitRecIdentAddr('x0', TIdentExpr(AExpr));
+    Exit;
+  end;
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) then
+  begin
+    case TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind of
+      tyStaticArray:
+        EmitStaticElemAddr(TStringSubscriptExpr(AExpr));
+      tyDynArray, tyOpenArray:
+        EmitDynElemAddr(TStringSubscriptExpr(AExpr));
+    else
+      NotYet('record address of this subscript base', AExpr);
+    end;
+    Exit;
+  end;
+  if AExpr is TFieldAccessExpr then
+  begin
+    EmitRecFieldAddrToX0(TFieldAccessExpr(AExpr));
+    Exit;
+  end;
+  NotYet('record address of this expression', AExpr);
+end;
+
+procedure TArm64Backend.EmitPropRecvToX0(AStmt: TFieldAssignment);
+begin
+  { property-write receiver: a plain slot, a var param's pointee, or a
+    class-typed FIELD of Self (FDefines.CaseSensitive := ...) }
+  if AStmt.IsImplicitSelf and (AStmt.ImplicitBaseInfo <> nil) then
+  begin
+    EmitLoadSlot('x0', 'Self');
+    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+      [AStmt.ImplicitBaseInfo.Offset]));
+    Exit;
+  end;
+  EmitLoadSlot('x0', AStmt.RecordName);
+  if AStmt.IsVarParam then
+    Self.Emit(#9'ldr x0, [x0]');
+end;
+
 procedure TArm64Backend.EmitFieldAssign(AStmt: TFieldAssignment);
 begin
   if AStmt.PropWriteInfo <> nil then
   begin
     { method-backed property write: setter(self, value) — or
       setter(self, index, value) for the indexed form }
-    if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf then
+    if (AStmt.ObjExpr <> nil) or
+       (AStmt.IsImplicitSelf and (AStmt.ImplicitBaseInfo = nil)) then
       NotYet('property write on this receiver form', AStmt);
     if AStmt.PropIndexExpr <> nil then
     begin
@@ -679,9 +854,7 @@ begin
       EmitPushX0();
       Self.EmitExprToX0(AStmt.Expr);
       EmitPushX0();
-      EmitLoadSlot('x0', AStmt.RecordName);
-      if AStmt.IsVarParam then
-        Self.Emit(#9'ldr x0, [x0]');
+      EmitPropRecvToX0(AStmt);
       EmitPopTo('x2');
       EmitPopTo('x1');
       if AStmt.PropAccessorVSlot >= 0 then
@@ -712,9 +885,7 @@ begin
     if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
     begin
       Self.EmitExprToD0OrConvert(AStmt.Expr);
-      EmitLoadSlot('x0', AStmt.RecordName);
-      if AStmt.IsVarParam then
-        Self.Emit(#9'ldr x0, [x0]');
+      EmitPropRecvToX0(AStmt);
     end
     else
     begin
@@ -725,9 +896,7 @@ begin
         NotYet('owned transient as property value', AStmt);
       Self.EmitExprToX0(AStmt.Expr);
       EmitPushX0();
-      EmitLoadSlot('x0', AStmt.RecordName);
-      if AStmt.IsVarParam then
-        Self.Emit(#9'ldr x0, [x0]');
+      EmitPropRecvToX0(AStmt);
       EmitPopTo('x1');
     end;
     if AStmt.PropAccessorVSlot >= 0 then
@@ -755,7 +924,7 @@ begin
     EmitInstanceFieldStoreStacked(AStmt.FieldInfo, AStmt.Expr);
     Exit;
   end;
-  if AStmt.IsVarParam or (AStmt.PropIndexExpr <> nil) then
+  if AStmt.PropIndexExpr <> nil then
     NotYet('this field-assignment form', AStmt);
   if AStmt.FieldInfo = nil then
     NotYet('unresolved field assignment', AStmt);
@@ -779,7 +948,10 @@ begin
   begin
     Self.EmitExprToD0OrConvert(AStmt.Expr);
     Self.Emit(#9'fcvt s0, d0');
-    EmitSlotAddr('x9', AStmt.RecordName);
+    if AStmt.IsVarParam then
+      EmitLoadSlot('x9', AStmt.RecordName)
+    else
+      EmitSlotAddr('x9', AStmt.RecordName);
     Self.Emit(Format(#9'str s0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     Exit;
   end;
@@ -803,13 +975,19 @@ begin
       EmitPopTo('x0');
     end;
     EmitPushX0();
-    EmitSlotAddr('x9', AStmt.RecordName);
+    if AStmt.IsVarParam then
+      EmitLoadSlot('x9', AStmt.RecordName)
+    else
+      EmitSlotAddr('x9', AStmt.RecordName);
     Self.Emit(Format(#9'ldr x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     if AStmt.FieldInfo.TypeDesc.IsString() then
       Self.Emit(#9'bl _StringRelease')
     else
       Self.Emit(#9'bl _ClassRelease');
-    EmitSlotAddr('x9', AStmt.RecordName);
+    if AStmt.IsVarParam then
+      EmitLoadSlot('x9', AStmt.RecordName)
+    else
+      EmitSlotAddr('x9', AStmt.RecordName);
     EmitPopTo('x0');
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     Exit;
@@ -822,7 +1000,10 @@ begin
   else
     Self.EmitExprToX0(AStmt.Expr);
   EmitPushX0();
-  EmitSlotAddr('x9', AStmt.RecordName);
+  if AStmt.IsVarParam then
+    EmitLoadSlot('x9', AStmt.RecordName)
+  else
+    EmitSlotAddr('x9', AStmt.RecordName);
   EmitPopTo('x0');
   case AStmt.FieldInfo.TypeDesc.RawSize() of
     1: Self.Emit(Format(#9'strb w0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
@@ -936,6 +1117,7 @@ var
   CondName: string;
   Lit: string;
   Idx, I: Integer;
+  EmptyArgs: TObjectList;
 begin
   if AExpr is TIntLiteral then
   begin
@@ -979,11 +1161,86 @@ begin
     EmitIntLiteral('x0', TIdentExpr(AExpr).ConstValue);
     Exit;
   end;
+  if (AExpr is TIdentExpr) and TIdentExpr(AExpr).IsImplicitSelfMethod and
+     (TIdentExpr(AExpr).ImplicitMethodDecl <> nil) then
+  begin
+    { bare zero-arg method call on Self written without parens }
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind in [tyRecord, tyInterface]) then
+      NotYet('aggregate-returning bare method call', AExpr);
+    EmitLoadSlot('x0', 'Self');
+    EmptyArgs := TObjectList.Create(False);
+    try
+      EmitMethodCallCommon(
+        TMethodDecl(TIdentExpr(AExpr).ImplicitMethodDecl),
+        TIdentExpr(AExpr).Name, EmptyArgs);
+    finally
+      EmptyArgs.Free();
+    end;
+    Exit;
+  end;
   if AExpr is TIdentExpr then
   begin
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
     if TIdentExpr(AExpr).ParamMode = pmVar then
       Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]) is TIdentExpr) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind =
+       tyOpenArray) and
+     (SameText(TFuncCallExpr(AExpr).Name, 'High') or
+      SameText(TFuncCallExpr(AExpr).Name, 'Low') or
+      SameText(TFuncCallExpr(AExpr).Name, 'Length')) then
+  begin
+    { open-array bounds live in the (ptr, high) slot pair: High reads
+      the companion slot, Length is High + 1, Low is always 0 }
+    if SameText(TFuncCallExpr(AExpr).Name, 'Low') then
+      Self.Emit(#9'movz x0, #0')
+    else
+    begin
+      EmitLoadSlot('x0',
+        TIdentExpr(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0])).Name
+        + '_high');
+      if SameText(TFuncCallExpr(AExpr).Name, 'Length') then
+        Self.Emit(#9'add x0, x0, #1');
+    end;
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind =
+       tyStaticArray) and
+     (SameText(TFuncCallExpr(AExpr).Name, 'High') or
+      SameText(TFuncCallExpr(AExpr).Name, 'Low')) then
+  begin
+    { static-array bounds are compile-time constants }
+    if SameText(TFuncCallExpr(AExpr).Name, 'High') then
+      EmitIntLiteral('x0', TStaticArrayTypeDesc(
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType).HighBound)
+    else
+      EmitIntLiteral('x0', TStaticArrayTypeDesc(
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType).LowBound);
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind =
+       tyDynArray) and
+     SameText(TFuncCallExpr(AExpr).Name, 'High') then
+  begin
+    { High(D) = Length(D) - 1 }
+    Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    Self.Emit(#9'bl _DynArrayLength');
+    Self.Emit(#9'sub x0, x0, #1');
     Exit;
   end;
   if (AExpr is TFuncCallExpr) and
@@ -1227,6 +1484,11 @@ begin
      (not TFuncCallExpr(AExpr).IsIndirectCall) and
      (TFuncCallExpr(AExpr).Args.Count = 2) then
   begin
+    if SameText(TFuncCallExpr(AExpr).Name, 'Format') then
+    begin
+      Self.EmitFormatCall(TFuncCallExpr(AExpr).Args);
+      Exit;
+    end;
     if SameText(TFuncCallExpr(AExpr).Name, 'Pos') then
     begin
       EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
@@ -1243,6 +1505,25 @@ begin
     begin
       EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
         TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_StringCompare');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'CompareText') then
+    begin
+      EmitBuiltinStrCall2(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]), '_StringCompareText');
+      Exit;
+    end;
+    if SameText(TFuncCallExpr(AExpr).Name, 'OrdAt') then
+    begin
+      { OrdAt(S, I): byte value at 0-based index — (str, int) args }
+      if ArcExprOwnsRef(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0])) then
+        NotYet('owned transient argument to OrdAt', AExpr);
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+      EmitPushX0();
+      Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[1]));
+      Self.Emit(#9'mov x1, x0');
+      EmitPopTo('x0');
+      Self.Emit(#9'bl _OrdAt');
       Exit;
     end;
     if SameText(TFuncCallExpr(AExpr).Name, 'ChangeFileExt') then
@@ -1427,8 +1708,13 @@ begin
                   .ResolvedType <> nil) and
                (TASTExpr(TFuncCallExpr(AExpr).Args.Items[I])
                   .ResolvedType.Kind in [tyPChar, tyPointer,
-                                         tyClass]))) then
+                                         tyClass, tyString]))) then
         NotYet('indirect-call argument of this type',
+          TASTExpr(TFuncCallExpr(AExpr).Args.Items[I]));
+      { a string arg passes as a BORROWED pointer; an owned transient
+        would need a park slot — keep the hole honest }
+      if ArcExprOwnsRef(TASTExpr(TFuncCallExpr(AExpr).Args.Items[I])) then
+        NotYet('owned transient argument in an indirect call',
           TASTExpr(TFuncCallExpr(AExpr).Args.Items[I]));
       Self.EmitExprToX0(TASTExpr(TFuncCallExpr(AExpr).Args.Items[I]));
       EmitPushX0();
@@ -1437,6 +1723,22 @@ begin
       EmitPopTo('x' + IntToStr(I));
     EmitLoadSlot('x9', TFuncCallExpr(AExpr).Name);
     Self.Emit(#9'blr x9');
+    Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     TFuncCallExpr(AExpr).IsImplicitSelfMethod and
+     (TFuncCallExpr(AExpr).ResolvedDecl <> nil) then
+  begin
+    { bare method call on Self in expression position }
+    if IsFloatExpr(AExpr) then
+      NotYet('float-returning implicit-Self call in integer context', AExpr);
+    if (AExpr.ResolvedType <> nil) and
+       (AExpr.ResolvedType.Kind in [tyRecord, tyInterface]) then
+      NotYet('aggregate-returning implicit-Self call', AExpr);
+    EmitLoadSlot('x0', 'Self');
+    EmitMethodCallCommon(
+      TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
+      TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
     Exit;
   end;
   if AExpr is TFuncCallExpr then
@@ -1749,6 +2051,18 @@ begin
       TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType);
     Exit;
   end;
+  if (AExpr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind =
+       tyOpenArray) then
+  begin
+    { A[I] on an open-array param: element read through the borrowed
+      data pointer — a string/class element stays a BORROW (no ARC) }
+    EmitDynElemAddr(TStringSubscriptExpr(AExpr));
+    EmitElemLoad(TOpenArrayTypeDesc(
+      TStringSubscriptExpr(AExpr).StrExpr.ResolvedType).ElementType);
+    Exit;
+  end;
   if AExpr is TMethodCallExpr then
   begin
     if IsFloatExpr(AExpr) then
@@ -1768,6 +2082,35 @@ begin
   if AExpr is TNilLiteral then
   begin
     Self.Emit(#9'movz x0, #0');
+    Exit;
+  end;
+  if AExpr is TIsExpr then
+  begin
+    { X is TFoo: _IsInstance(obj, typeinfo) walks the parent chain;
+      interface targets query the impllist via _ImplementsInterface }
+    Self.EmitExprToX0(TIsExpr(AExpr).Obj);
+    EmitTypeinfoAddr('x1', TIsExpr(AExpr).TypeName);
+    if (TIsExpr(AExpr).ResolvedTargetType <> nil) and
+       (TIsExpr(AExpr).ResolvedTargetType.Kind = tyInterface) then
+      Self.Emit(#9'bl _ImplementsInterface')
+    else
+      Self.Emit(#9'bl _IsInstance');
+    Exit;
+  end;
+  if (AExpr is TAsExpr) and (AExpr.ResolvedType <> nil) and
+     (AExpr.ResolvedType.Kind = tyClass) then
+  begin
+    { X as TFoo (class-to-class): checked downcast — raise on mismatch,
+      result is the original pointer }
+    CondName := NewLabel('asok');
+    Self.EmitExprToX0(TAsExpr(AExpr).Obj);
+    EmitPushX0();
+    EmitTypeinfoAddr('x1', TAsExpr(AExpr).TypeName);
+    Self.Emit(#9'bl _IsInstance');
+    Self.Emit(Format(#9'cbnz x0, %s', [CondName]));
+    Self.Emit(#9'bl _Raise_InvalidCast');
+    Self.Emit(CondName + ':');
+    EmitPopTo('x0');
     Exit;
   end;
   if AExpr is TNotExpr then
@@ -1850,7 +2193,7 @@ begin
             TStringSubscriptExpr(TAddrOfExpr(AExpr).Expr));
           Exit;
         end;
-        tyDynArray:
+        tyDynArray, tyOpenArray:
         begin
           EmitDynElemAddr(TStringSubscriptExpr(TAddrOfExpr(AExpr).Expr));
           Exit;
@@ -2004,17 +2347,72 @@ begin
      (not TFieldAccessExpr(AExpr).IsClassAccess) and
      (not TFieldAccessExpr(AExpr).IsConstant) then
   begin
-    { plain Rec.Field read of a local/global record }
+    { plain Rec.Field read of a local/global/var-param record }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
               [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
-    EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
+    if TFieldAccessExpr(AExpr).IsVarParam then
+      EmitLoadSlot('x9', TFieldAccessExpr(AExpr).RecordName)
+    else
+      EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
     if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
       Self.Emit(Format(#9'add x9, x9, #%d',
         [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
     Self.Emit(#9'mov x0, x9');
+    EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base.ResolvedType <> nil) and
+     (TFieldAccessExpr(AExpr).Base.ResolvedType.Kind = tyRecord) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { field of a RECORD-VALUED field access (FTok.Token.TextStart):
+      compute the inner record's address, then load at the outer offset }
+    if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+            TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
+      NotYet('read of a field of this type', AExpr);
+    EmitRecFieldAddrToX0(TFieldAccessExpr(TFieldAccessExpr(AExpr).Base));
+    if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0',
+        TFieldAccessExpr(AExpr).FieldInfo.Offset);
+    EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base is TStringSubscriptExpr) and
+     (TFieldAccessExpr(AExpr).Base.ResolvedType <> nil) and
+     (TFieldAccessExpr(AExpr).Base.ResolvedType.Kind = tyRecord) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { field of a subscripted RECORD element: A[I].Kind — the subscript
+      emitters yield the element address, the field loads at its offset }
+    if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+            TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
+      NotYet('read of a field of this type', AExpr);
+    case TStringSubscriptExpr(TFieldAccessExpr(AExpr).Base)
+           .StrExpr.ResolvedType.Kind of
+      tyStaticArray:
+        EmitStaticElemAddr(
+          TStringSubscriptExpr(TFieldAccessExpr(AExpr).Base));
+      tyDynArray, tyOpenArray:
+        EmitDynElemAddr(
+          TStringSubscriptExpr(TFieldAccessExpr(AExpr).Base));
+    else
+      NotYet('field read on this subscript base', AExpr);
+    end;
+    if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0',
+        TFieldAccessExpr(AExpr).FieldInfo.Offset);
     EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
     Exit;
   end;
@@ -2366,8 +2764,8 @@ begin
     An indexed read calls getter(self, index). }
   if (AFld.PropRead.IndexParamName <> '') and (AFld.PropIndexExpr = nil) then
     NotYet('indexed property read without an index', AFld);
-  if AFld.Base <> nil then
-    NotYet('chained property read', AFld);
+  if (AFld.Base <> nil) and ArcExprOwnsRef(AFld.Base) then
+    NotYet('property read on an owned transient base', AFld);
   if AFld.PropRead.IsStatic then
   begin
     { static property: the getter is a class-level routine — no receiver }
@@ -2383,11 +2781,15 @@ begin
     Self.EmitExprToX0(AFld.PropIndexExpr);
     EmitPushX0();
   end;
-  if AFld.IsImplicitSelf then
+  if AFld.Base <> nil then
+    { chained receiver (A.B.Prop): the base expression yields the
+      instance pointer }
+    Self.EmitExprToX0(AFld.Base)
+  else if AFld.IsImplicitSelf then
     EmitLoadSlot('x0', 'Self')
   else
     EmitLoadSlot('x0', AFld.RecordName);
-  if AFld.IsVarParam then
+  if AFld.IsVarParam and (AFld.Base = nil) then
     Self.Emit(#9'ldr x0, [x0]');
   if AFld.PropIndexExpr <> nil then
     EmitPopTo('x1');
@@ -2659,11 +3061,21 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyRecord) then
   begin
+    if AAsgn.IsVarParam then
+      { the slot holds the caller's ADDRESS — the memcpy/sret paths below
+        all take the slot's own address and would clobber the pointer }
+      NotYet('whole-record store to a var record parameter', AAsgn);
     { record-returning call: classify the callee's return shape }
-    if (AAsgn.Expr is TFuncCallExpr) and
-       (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) then
+    if ((AAsgn.Expr is TFuncCallExpr) and
+        (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil)) or
+       ((AAsgn.Expr is TMethodCallExpr) and
+        (TMethodCallExpr(AAsgn.Expr).ResolvedMethod <> nil) and
+        not TMethodCallExpr(AAsgn.Expr).IsConstructorCall) then
     begin
-      RD := TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl);
+      if AAsgn.Expr is TFuncCallExpr then
+        RD := TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl)
+      else
+        RD := TMethodDecl(TMethodCallExpr(AAsgn.Expr).ResolvedMethod);
       if RD.IsExternal then
         { a C-side small-struct return needs full AAPCS64 marshalling
           validation on real hardware first — keep the hole honest }
@@ -2676,12 +3088,10 @@ begin
           refs are released only AFTER the call — then moves in with the
           +1 field refs transferring (no retain). }
         if Shape = 0 then
-          EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
-            TFuncCallExpr(AAsgn.Expr).Args, '__rret')
+          EmitRecCallDispatch(AAsgn.Expr, '__rret')
         else
         begin
-          EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
-            TFuncCallExpr(AAsgn.Expr).Args);
+          EmitRecCallDispatch(AAsgn.Expr, '');
           EmitSlotAddr('x9', '__rret');
           case Shape of
             1: Self.Emit(#9'str x0, [x9]');
@@ -2708,12 +3118,10 @@ begin
       end;
       if Shape = 0 then
       begin
-        EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
-          TFuncCallExpr(AAsgn.Expr).Args, AAsgn.Name);
+        EmitRecCallDispatch(AAsgn.Expr, AAsgn.Name);
         Exit;
       end;
-      EmitCall(RD, TFuncCallExpr(AAsgn.Expr).Name,
-        TFuncCallExpr(AAsgn.Expr).Args);
+      EmitRecCallDispatch(AAsgn.Expr, '');
       EmitSlotAddr('x9', AAsgn.Name);
       case Shape of
         1: Self.Emit(#9'str x0, [x9]');
@@ -2734,12 +3142,11 @@ begin
       bytes — retain-before-release keeps self-assignment (R := R) exact.
       The walk calls clobber the scratch regs, so the two base addresses
       live in callee-saved x19/x22 for the duration. }
-    if not (AAsgn.Expr is TIdentExpr) then
-      NotYet('record assignment from this expression', AAsgn);
     if not RecretManagedClean(TRecordTypeDesc(AAsgn.ResolvedLhsType)) then
     begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
-      EmitSlotAddr('x19', TIdentExpr(AAsgn.Expr).Name);
+      EmitRecAddrToX0(AAsgn.Expr);
+      Self.Emit(#9'mov x19, x0');
       EmitSlotAddr('x22', AAsgn.Name);
       Self.EmitRecordFieldRetains(
         TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x19');
@@ -2754,7 +3161,7 @@ begin
     end;
     EmitSlotAddr('x0', AAsgn.Name);
     EmitPushX0();
-    EmitSlotAddr('x0', TIdentExpr(AAsgn.Expr).Name);
+    EmitRecAddrToX0(AAsgn.Expr);
     Self.Emit(#9'mov x1, x0');
     EmitPopTo('x0');
     EmitIntLiteral('x2', AAsgn.ResolvedLhsType.RawSize());
@@ -2844,6 +3251,30 @@ begin
       NotYet('SetLength on this lvalue form', ACall);
     if TIdentExpr(TASTExpr(ACall.Args.Items[0])).ParamMode = pmVar then
       NotYet('SetLength on a var parameter', ACall);
+    if TIdentExpr(TASTExpr(ACall.Args.Items[0])).IsImplicitSelf and
+       (TIdentExpr(TASTExpr(ACall.Args.Items[0])).ImplicitFieldInfo
+          <> nil) then
+    begin
+      { dyn-array FIELD of Self: work through the field's address }
+      Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+      EmitPushX0();                                       { [N] }
+      EmitLoadSlot('x0', 'Self');
+      if TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+           .ImplicitFieldInfo).Offset <> 0 then
+        EmitAddSubImm('add', 'x0', 'x0',
+          TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+            .ImplicitFieldInfo).Offset);
+      EmitPushX0();                                       { [N][addr] }
+      Self.Emit(#9'ldr x0, [x0]');                        { old array }
+      Self.Emit(#9'ldr x1, [sp, #16]');                   { N }
+      EmitIntLiteral('x2', TDynArrayTypeDesc(
+        TASTExpr(ACall.Args.Items[0]).ResolvedType).ElementType.RawSize());
+      Self.Emit(#9'bl _DynArraySetLength');
+      Self.Emit(#9'ldr x9, [sp]');                        { addr }
+      Self.Emit(#9'str x0, [x9]');
+      Self.Emit(#9'add sp, sp, #32');
+      Exit;
+    end;
     Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
     EmitPushX0();
     EmitLoadSlot('x0', TIdentExpr(TASTExpr(ACall.Args.Items[0])).Name);
@@ -3023,6 +3454,31 @@ begin
     if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType <> nil then
     begin
       if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.IsString() then
+        Self.Emit(#9'bl _StringRelease')
+      else if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
+              tyClass then
+        Self.Emit(#9'bl _ClassRelease')
+      else if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
+              tyDynArray then
+        Self.Emit(#9'bl _DynArrayRelease');
+    end;
+    Exit;
+  end;
+  if ACall.IsImplicitSelfMethod and (ACall.ResolvedDecl <> nil) then
+  begin
+    { bare method call on Self as a statement: Advance(); }
+    if (TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType <> nil) and
+       (TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind in
+         [tyRecord, tyInterface]) then
+      NotYet('discarded aggregate-returning implicit-Self call', ACall);
+    EmitLoadSlot('x0', 'Self');
+    EmitMethodCallCommon(TMethodDecl(ACall.ResolvedDecl), ACall.Name,
+      ACall.Args);
+    { a discarded owned return must still be released }
+    if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType <> nil then
+    begin
+      if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
+           tyString then
         Self.Emit(#9'bl _StringRelease')
       else if TMethodDecl(ACall.ResolvedDecl).ResolvedReturnType.Kind =
               tyClass then
@@ -3330,7 +3786,10 @@ begin
   { Arr[I] := V for a plain local/global static array.  The element
     ADDRESS is computed first and parked on the stack so the value
     expression (and any ARC release call) cannot invalidate it. }
-  if (AStmt.BaseExpr <> nil) or AStmt.IsVarParam or AStmt.IsImplicitSelf then
+  if (AStmt.BaseExpr <> nil) or AStmt.IsVarParam or
+     (AStmt.IsImplicitSelf and ((AStmt.ImplicitFieldInfo = nil) or
+       (AStmt.ResolvedArrayType = nil) or
+       (AStmt.ResolvedArrayType.Kind <> tyDynArray))) then
     NotYet('subscript write on this array form', AStmt);
   if (AStmt.ResolvedArrayType <> nil) and
      (AStmt.ResolvedArrayType.Kind = tyPChar) then
@@ -3369,7 +3828,14 @@ begin
     Elem := TStaticArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
   Self.EmitExprToX0(AStmt.IndexExpr);
   EmitPushX0();
-  if AStmt.ResolvedArrayType.Kind = tyDynArray then
+  if AStmt.IsImplicitSelf then
+  begin
+    { dyn-array FIELD of Self: the data pointer lives at Self + offset }
+    EmitLoadSlot('x0', 'Self');
+    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+      [TFieldInfo(AStmt.ImplicitFieldInfo).Offset]));
+  end
+  else if AStmt.ResolvedArrayType.Kind = tyDynArray then
     EmitLoadSlot('x0', AStmt.ArrayName)   { data pointer value }
   else
     EmitSlotAddr('x0', AStmt.ArrayName);
@@ -3415,6 +3881,33 @@ begin
     Self.Emit(#9'fcvt s0, d0');
     Self.Emit(#9'ldr x9, [sp], #16');
     Self.Emit(#9'str s0, [x9]');
+    Exit;
+  end
+  else if Elem.Kind = tyRecord then
+  begin
+    { record element: memcpy from the source record's address — managed
+      fields follow the retain-source-then-release-dest discipline }
+    if not RecretManagedClean(TRecordTypeDesc(Elem)) then
+    begin
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      EmitRecAddrToX0(AStmt.ValueExpr);
+      Self.Emit(#9'mov x19, x0');
+      Self.Emit(#9'ldr x22, [sp, #16]');   { the parked element address }
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(Elem), 'x19');
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(Elem), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      Self.Emit(#9'mov x1, x19');
+      EmitIntLiteral('x2', Elem.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Self.Emit(#9'add sp, sp, #16');      { drop the element address }
+      Exit;
+    end;
+    EmitRecAddrToX0(AStmt.ValueExpr);
+    Self.Emit(#9'mov x1, x0');
+    Self.Emit(#9'ldr x0, [sp], #16');      { the parked element address }
+    EmitIntLiteral('x2', Elem.RawSize());
+    Self.Emit(#9'bl memcpy');
     Exit;
   end
   else if IsIntFam(Elem) or
@@ -3537,6 +4030,34 @@ begin
   begin
     EmitIntLiteral('x1', TIdentExpr(AExpr).ConstValue);
     Exit;
+  end;
+  if (AExpr is TFuncCallExpr) and
+     SameText(TFuncCallExpr(AExpr).Name, 'Ord') and
+     (TFuncCallExpr(AExpr).Args.Count = 1) then
+  begin
+    { Ord(x) as a case value is compile-time foldable: a one-char
+      literal folds to its byte, a constant ident to its value }
+    if (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]) is TStringLiteral)
+       and (Length(TStringLiteral(
+         TFuncCallExpr(AExpr).Args.Items[0]).Value) = 1) then
+    begin
+      EmitIntLiteral('x1', StrAt(TStringLiteral(
+        TFuncCallExpr(AExpr).Args.Items[0]).Value, 0));
+      Exit;
+    end;
+    if (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]) is TIdentExpr) and
+       TIdentExpr(TFuncCallExpr(AExpr).Args.Items[0]).IsConstant then
+    begin
+      EmitIntLiteral('x1', TIdentExpr(
+        TFuncCallExpr(AExpr).Args.Items[0]).ConstValue);
+      Exit;
+    end;
+    if TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]) is TIntLiteral then
+    begin
+      EmitIntLiteral('x1', TIntLiteral(
+        TFuncCallExpr(AExpr).Args.Items[0]).Value);
+      Exit;
+    end;
   end;
   NotYet('case value of this form', AExpr);
 end;
@@ -3859,6 +4380,132 @@ begin
     Exit;
   end;
   Self.Emit(Format(#9'bl %s', [ASym]));
+end;
+
+procedure TArm64Backend.EmitRecCallDispatch(AExpr: TASTExpr;
+  const ADest: string);
+var
+  ME: TMethodCallExpr;
+  MD: TMethodDecl;
+begin
+  { record-returning call in an assignment: one dispatcher for free
+    functions AND method receivers, so every return shape shares the
+    same caller-side store logic }
+  if AExpr is TMethodCallExpr then
+  begin
+    ME := TMethodCallExpr(AExpr);
+    MD := TMethodDecl(ME.ResolvedMethod);
+    if ME.IsStaticCall or MD.IsStatic then
+    begin
+      EmitCall(MD, ME.Name, ME.Args, ADest);
+      Exit;
+    end;
+    if ME.ObjExpr <> nil then
+    begin
+      if ArcExprOwnsRef(ME.ObjExpr) then
+        NotYet('record call on an owned transient receiver', AExpr);
+      Self.EmitExprToX0(ME.ObjExpr);
+    end
+    else
+    begin
+      EmitLoadSlot('x0', ME.ObjectName);
+      if ME.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');
+    end;
+    EmitPushX0();
+    EmitCall(MD, ME.Name, ME.Args, ADest, True, MD.VTableSlot);
+    Exit;
+  end;
+  EmitCall(TMethodDecl(TFuncCallExpr(AExpr).ResolvedDecl),
+    TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args, ADest);
+end;
+
+procedure TArm64Backend.EmitFormatCall(AArgs: TObjectList);
+var
+  I, FmtCount, TotalSize: Integer;
+  Arg: TASTExpr;
+  ArrLit: TArrayLiteralExpr;
+  IsIntArg: Boolean;
+begin
+  { Format(Fmt, [a, b, ...]) → _StringFormatN(fmt, block, count).
+    Block layout mirrors x86-64: 16-byte entries, tag at +0 (0 = int,
+    1 = string/pointer, 2 = raw binary64 float bits), value at +8.
+    Elements are BORROWED — same convention as the x86 lowering. }
+  if not (TASTExpr(AArgs.Items[1]) is TArrayLiteralExpr) then
+    NotYet('Format without an array literal', TASTExpr(AArgs.Items[0]));
+  ArrLit := TArrayLiteralExpr(AArgs.Items[1]);
+  FmtCount := ArrLit.Elements.Count;
+  Self.EmitExprToX0(TASTExpr(AArgs.Items[0]));
+  EmitPushX0();                              { [fmt] — parked to the end }
+  if FmtCount = 0 then
+  begin
+    Self.Emit(#9'ldr x0, [sp]');
+    Self.Emit(#9'movz x1, #0');
+    Self.Emit(#9'movz x2, #0');
+    Self.Emit(#9'bl _StringFormatN');
+    if ArcBuiltinStrArgOwnsRef(TASTExpr(AArgs.Items[0])) then
+    begin
+      EmitPushX0();                          { [fmt][result] }
+      Self.Emit(#9'ldr x0, [sp, #16]');
+      EmitStrDisposeX0(TASTExpr(AArgs.Items[0]));
+      EmitPopTo('x0');
+    end;
+    Self.Emit(#9'add sp, sp, #16');          { drop the fmt slot }
+    Exit;
+  end;
+  TotalSize := ((FmtCount * 16) + 15) and (-16);
+  EmitAddSubImm('sub', 'sp', 'sp', TotalSize);
+  for I := 0 to FmtCount - 1 do
+  begin
+    Arg := TASTExpr(ArrLit.Elements.Items[I]);
+    if (Arg.ResolvedType <> nil) and
+       (Arg.ResolvedType.Kind in [tyDouble, tySingle]) then
+    begin
+      { float: tag 2, value = the raw binary64 bit pattern }
+      Self.EmitExprToD0OrConvert(Arg);
+      Self.Emit(#9'fmov x0, d0');
+      Self.Emit(Format(#9'str x0, [sp, #%d]', [I * 16 + 8]));
+      Self.Emit(#9'movz x9, #2');
+      Self.Emit(Format(#9'str x9, [sp, #%d]', [I * 16]));
+      Continue;
+    end;
+    IsIntArg := (Arg.ResolvedType = nil) or
+      (Arg.ResolvedType.Kind in [tyInteger, tyBoolean, tyByte, tyUInt32,
+                                 tyInt64, tyUInt64, tySmallInt, tyWord,
+                                 tyEnum]);
+    Self.EmitExprToX0(Arg);
+    Self.Emit(Format(#9'str x0, [sp, #%d]', [I * 16 + 8]));
+    if IsIntArg then
+      Self.Emit(#9'movz x9, #0')
+    else
+      Self.Emit(#9'movz x9, #1');
+    Self.Emit(Format(#9'str x9, [sp, #%d]', [I * 16]));
+  end;
+  Self.Emit(Format(#9'ldr x0, [sp, #%d]', [TotalSize]));  { parked fmt }
+  Self.Emit(#9'mov x1, sp');
+  EmitIntLiteral('x2', FmtCount);
+  Self.Emit(#9'bl _StringFormatN');
+  { transient disposal by shape: the block still holds every element
+    pointer and the fmt sits above it — park the result, sweep, restore }
+  EmitPushX0();                              { [fmt][block][result] }
+  for I := 0 to FmtCount - 1 do
+  begin
+    Arg := TASTExpr(ArrLit.Elements.Items[I]);
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyString)
+       and ArcBuiltinStrArgOwnsRef(Arg) then
+    begin
+      Self.Emit(Format(#9'ldr x0, [sp, #%d]', [16 + I * 16 + 8]));
+      EmitStrDisposeX0(Arg);
+    end;
+  end;
+  if ArcBuiltinStrArgOwnsRef(TASTExpr(AArgs.Items[0])) then
+  begin
+    Self.Emit(Format(#9'ldr x0, [sp, #%d]', [16 + TotalSize]));
+    EmitStrDisposeX0(TASTExpr(AArgs.Items[0]));
+  end;
+  EmitPopTo('x0');
+  EmitAddSubImm('add', 'sp', 'sp', TotalSize);
+  Self.Emit(#9'add sp, sp, #16');            { drop the fmt slot }
 end;
 
 procedure TArm64Backend.EmitBuiltinStrCall2(AArg0, AArg1: TASTExpr;
@@ -4197,16 +4844,30 @@ var
   ESz: Integer;
 begin
   { x0 := dataptr + index*elemsize — the base VALUE is the element-0
-    pointer (dyn-array header sits below it) }
+    pointer (dyn-array header sits below it; an open-array param slot
+    holds the caller's data pointer directly) }
   if not (ASub.StrExpr is TIdentExpr) then
     NotYet('subscript on this dyn-array expression', ASub);
   if TIdentExpr(ASub.StrExpr).ParamMode = pmVar then
     NotYet('subscript on a var dyn-array parameter', ASub);
-  ESz := TDynArrayTypeDesc(
-    ASub.StrExpr.ResolvedType).ElementType.RawSize();
+  if ASub.StrExpr.ResolvedType.Kind = tyOpenArray then
+    ESz := TOpenArrayTypeDesc(
+      ASub.StrExpr.ResolvedType).ElementType.RawSize()
+  else
+    ESz := TDynArrayTypeDesc(
+      ASub.StrExpr.ResolvedType).ElementType.RawSize();
   Self.EmitExprToX0(ASub.IndexExpr);
   EmitPushX0();
-  EmitLoadSlot('x0', TIdentExpr(ASub.StrExpr).Name);
+  if TIdentExpr(ASub.StrExpr).IsImplicitSelf and
+     (TIdentExpr(ASub.StrExpr).ImplicitFieldInfo <> nil) then
+  begin
+    { dyn-array FIELD of Self: the data pointer sits at Self + offset }
+    EmitLoadSlot('x0', 'Self');
+    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+      [TFieldInfo(TIdentExpr(ASub.StrExpr).ImplicitFieldInfo).Offset]));
+  end
+  else
+    EmitLoadSlot('x0', TIdentExpr(ASub.StrExpr).Name);
   EmitPopTo('x1');
   EmitIntLiteral('x2', ESz);
   Self.Emit(#9'mul x1, x1, x2');
@@ -4373,9 +5034,11 @@ begin
   begin
     if (TAssignment(AStmt).ResolvedLhsType <> nil) and
        (TAssignment(AStmt).ResolvedLhsType.Kind = tyRecord) and
-       (TAssignment(AStmt).Expr is TFuncCallExpr) and
-       not RecretManagedClean(
-         TRecordTypeDesc(TAssignment(AStmt).ResolvedLhsType)) then
+       ((TAssignment(AStmt).Expr is TFuncCallExpr) or
+        (TAssignment(AStmt).Expr is TMethodCallExpr)) and
+       (not RecretManagedClean(
+          TRecordTypeDesc(TAssignment(AStmt).ResolvedLhsType)) or
+        (TAssignment(AStmt).ImplicitSelfField <> nil)) then
       Result := TAssignment(AStmt).ResolvedLhsType.RawSize();
     Exit;
   end;
@@ -4465,15 +5128,27 @@ begin
     begin
       Par := TMethodParam(ADecl.Params.Items[I]);
       if Par.IsOpenArray then
-        NotYet('open-array parameters', ADecl);
+      begin
+        { open array: (data ptr, high index) pair — two 8-byte slots.
+          Elements are read through the pointer; the callee BORROWS the
+          caller's storage (x86 parity — no copy, no ARC on the slots). }
+        if (Par.ResolvedType is TOpenArrayTypeDesc) and
+           (TOpenArrayTypeDesc(Par.ResolvedType).ElementType <> nil) and
+           (TOpenArrayTypeDesc(Par.ResolvedType).ElementType.Name =
+             'TVarRec') then
+          NotYet('array of const parameters', ADecl);
+        AddLocal(Par.ParamName, 8);
+        AddLocal(Par.ParamName + '_high', 8);
+        Continue;
+      end;
       if Par.IsVarParam then
       begin
-        { var/out param: the 8-byte slot holds the caller's ADDRESS.  The
-          pointee is int-family, Double or string for now — records need
-          base-pointer plumbing at every field-access site. }
+        { var/out param: the 8-byte slot holds the caller's ADDRESS.
+          Record pointees are supported FIELD-WISE (assign/read deref the
+          slot); whole-record stores into one stay NotYet. }
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
-                 (Par.ResolvedType.Kind in [tyDouble, tyString,
+                 (Par.ResolvedType.Kind in [tyDouble, tyString, tyRecord,
                                             tyPointer, tyPChar]))) then
           NotYet('var parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
@@ -4502,9 +5177,20 @@ begin
       end
       else
       begin
+        { a by-value CLASS param is a plain borrowed pointer — the caller
+          keeps ownership (only by-value strings retain in the prologue).
+          A PLAIN procedural param is one code pointer; method pointers
+          and closures are 16-byte fat pairs — not in the subset yet. }
+        if (Par.ResolvedType <> nil) and
+           (Par.ResolvedType.Kind = tyProcedural) and
+           (TProceduralTypeDesc(Par.ResolvedType).IsMethodPtr or
+            TProceduralTypeDesc(Par.ResolvedType).IsReference) then
+          NotYet('closure/method-pointer parameter ''' + Par.ParamName
+            + '''', ADecl);
         if not (IsIntFam(Par.ResolvedType) or
                 ((Par.ResolvedType <> nil) and
                  (Par.ResolvedType.Kind in [tyDouble, tySingle, tyString,
+                                            tyClass, tyProcedural,
                                             tyPointer, tyPChar]))) then
           NotYet('parameter ''' + Par.ParamName + ''' of this type', ADecl);
         AddLocal(Par.ParamName, 8);
@@ -4687,7 +5373,34 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params.Items[I]);
-    if Par.IsVarParam then
+    if Par.IsOpenArray then
+    begin
+      { open array: two consecutive int-class values (data ptr, high) —
+        each half falls back to the caller's outgoing area independently,
+        mirroring the scalar walk (both halves are always 8 bytes) }
+      for K := 0 to 1 do
+      begin
+        if J >= 8 then
+        begin
+          SPOff := AlignTo(SPOff, 8);
+          Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+          if K = 0 then
+            EmitStoreSlot('x9', Par.ParamName)
+          else
+            EmitStoreSlot('x9', Par.ParamName + '_high');
+          SPOff := SPOff + 8;
+        end
+        else
+        begin
+          if K = 0 then
+            EmitStoreSlot('x' + IntToStr(J), Par.ParamName)
+          else
+            EmitStoreSlot('x' + IntToStr(J), Par.ParamName + '_high');
+          J := J + 1;
+        end;
+      end;
+    end
+    else if Par.IsVarParam then
     begin
       { var/out param: one x register carrying the caller's address }
       if J >= 8 then
@@ -5023,15 +5736,16 @@ end;
 function TArm64Backend.ComputeStackArgArea(ADecl: TMethodDecl;
   AArgs: TObjectList; ASelfPushed: Boolean): Integer;
 var
-  TB: Integer;
+  LB, TB: Integer;
 begin
-  Result := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, TB);
+  Result := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, LB, TB);
 end;
 
 function TArm64Backend.ComputeStackArgAreaEx(ADecl: TMethodDecl;
-  AArgs: TObjectList; ASelfPushed: Boolean; out ATransBase: Integer): Integer;
+  AArgs: TObjectList; ASelfPushed: Boolean; out ALitBase: Integer;
+  out ATransBase: Integer): Integer;
 var
-  I, NInt, NFloat, Off, Sz, Trans: Integer;
+  I, NInt, NFloat, Off, Sz, Trans, Lit, ESz: Integer;
   Arg: TASTExpr;
 begin
   { dry-run of the classification walk in EmitCall — must stay in
@@ -5039,11 +5753,28 @@ begin
   NInt := 0;
   NFloat := 0;
   Trans := 0;
+  Lit := 0;
   if ASelfPushed then NInt := 1;
   Off := 0;
   for I := 0 to AArgs.Count - 1 do
   begin
     Arg := TASTExpr(AArgs.Items[I]);
+    if (I < ADecl.Params.Count) and
+       TMethodParam(ADecl.Params.Items[I]).IsOpenArray then
+    begin
+      { (ptr, high) pair — two int registers; a literal arg additionally
+        reserves its element block in the literal park area }
+      if Arg is TArrayLiteralExpr then
+      begin
+        ESz := TOpenArrayTypeDesc(
+          TMethodParam(ADecl.Params.Items[I]).ResolvedType)
+          .ElementType.RawSize();
+        Lit := Lit +
+          AlignTo(TArrayLiteralExpr(Arg).Elements.Count * ESz, 8);
+      end;
+      NInt := NInt + 2;
+      Continue;
+    end;
     { string transients get a release slot after the call when the CALLER
       must dispose them: rc=1 always (the callee pair nets to zero); rc=0
       only for const params (no callee pair — the caller pins).  A by-value
@@ -5058,6 +5789,11 @@ begin
               TMethodParam(ADecl.Params.Items[I]).IsConstParam then
         Inc(Trans);
     end;
+    { an owned CLASS transient (call-result argument) parks for one
+      post-call release — the callee only borrows it }
+    if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyClass) and
+       ArcExprOwnsRef(Arg) then
+      Inc(Trans);
     if (I < ADecl.Params.Count) and
        TMethodParam(ADecl.Params.Items[I]).IsVarParam then
     begin
@@ -5112,7 +5848,8 @@ begin
     else
       Inc(NInt);
   end;
-  ATransBase := AlignTo(Off, 8);
+  ALitBase := AlignTo(Off, 8);
+  ATransBase := ALitBase + Lit;
   Result := AlignTo(ATransBase + Trans * 8, 16);
 end;
 
@@ -5140,6 +5877,7 @@ var
   TransBase, TransN: Integer;
   TransShapes: string;
   IsVariadicArg: Boolean;
+  LitBase, LitOff, ESz, N: Integer;
 begin
   NInt := 0;
   NFloat := 0;
@@ -5157,9 +5895,11 @@ begin
     continue the register sequence).  Apple packs stack args to natural
     size with the C default promotions; the area is allocated BEFORE the
     argument pushes so its offsets stay fixed during the pop walk. }
-  StackArea := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, TransBase);
+  StackArea := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, LitBase,
+    TransBase);
   TransN := 0;
   TransShapes := '';
+  LitOff := 0;
   if StackArea > 0 then
     EmitAddSubImm('sub', 'sp', 'sp', StackArea);
   { Evaluate args left-to-right onto the stack (calls inside an argument
@@ -5175,6 +5915,104 @@ begin
     begin
       Arg := TASTExpr(AArgs.Items[I]);
       if (I < ADecl.Params.Count) and
+         TMethodParam(ADecl.Params.Items[I]).IsOpenArray then
+      begin
+        { open array: push (data ptr, high) as two int-class values }
+        if NInt >= 7 then
+          NotYet('open-array arguments spilling to the stack', Arg);
+        if (TMethodParam(ADecl.Params.Items[I]).ResolvedType is
+              TOpenArrayTypeDesc) and
+           (TOpenArrayTypeDesc(TMethodParam(ADecl.Params.Items[I])
+              .ResolvedType).ElementType <> nil) and
+           (TOpenArrayTypeDesc(TMethodParam(ADecl.Params.Items[I])
+              .ResolvedType).ElementType.Name = 'TVarRec') then
+          NotYet('array of const arguments', Arg);
+        if Arg is TArrayLiteralExpr then
+        begin
+          { materialise the element block in the pre-reserved literal
+            park area.  The block's address is ABSOLUTE (sp moves as
+            later args push, the block does not), computed against the
+            CURRENT sp: park base sits PopRegs.Count*16 above it. }
+          ESz := TOpenArrayTypeDesc(
+            TMethodParam(ADecl.Params.Items[I]).ResolvedType)
+            .ElementType.RawSize();
+          N := TArrayLiteralExpr(Arg).Elements.Count;
+          for K := 0 to N - 1 do
+          begin
+            if ArcExprOwnsRef(
+                 TASTExpr(TArrayLiteralExpr(Arg).Elements.Items[K])) then
+              NotYet('owned transient in an open-array literal', Arg);
+            Self.EmitExprToX0(
+              TASTExpr(TArrayLiteralExpr(Arg).Elements.Items[K]));
+            EmitAddSubImm('add', 'x9', 'sp',
+              PopRegs.Count * 16 + LitBase + LitOff + K * ESz);
+            case ESz of
+              1: Self.Emit(#9'strb w0, [x9]');
+              2: Self.Emit(#9'strh w0, [x9]');
+              4: Self.Emit(#9'str w0, [x9]');
+            else
+              Self.Emit(#9'str x0, [x9]');
+            end;
+          end;
+          EmitAddSubImm('add', 'x0', 'sp',
+            PopRegs.Count * 16 + LitBase + LitOff);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt));
+          EmitIntLiteral('x0', N - 1);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt + 1));
+          LitOff := LitOff + AlignTo(N * ESz, 8);
+        end
+        else if (Arg is TIdentExpr) and (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyStaticArray) then
+        begin
+          { static array: base address + compile-time high (0-rebased) }
+          if TIdentExpr(Arg).ConstArraySymbol <> '' then
+          begin
+            Self.Emit(Format(#9'adrp x0, %s@PAGE',
+              [CodegenMangle(TIdentExpr(Arg).ConstArraySymbol)]));
+            Self.Emit(Format(#9'add x0, x0, %s@PAGEOFF',
+              [CodegenMangle(TIdentExpr(Arg).ConstArraySymbol)]));
+          end
+          else
+            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt));
+          EmitIntLiteral('x0',
+            TStaticArrayTypeDesc(Arg.ResolvedType).HighBound -
+            TStaticArrayTypeDesc(Arg.ResolvedType).LowBound);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt + 1));
+        end
+        else if (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyDynArray) then
+        begin
+          { dyn array coerced to open array: data ptr + (length - 1) }
+          Self.EmitExprToX0(Arg);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt));
+          Self.Emit(#9'ldr x0, [sp]');
+          Self.Emit(#9'bl _DynArrayLength');
+          Self.Emit(#9'sub x0, x0, #1');
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt + 1));
+        end
+        else if (Arg is TIdentExpr) and (Arg.ResolvedType <> nil) and
+                (Arg.ResolvedType.Kind = tyOpenArray) then
+        begin
+          { forwarding an open-array param: both slots pass through }
+          EmitLoadSlot('x0', TIdentExpr(Arg).Name);
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt));
+          EmitLoadSlot('x0', TIdentExpr(Arg).Name + '_high');
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt + 1));
+        end
+        else
+          NotYet('open-array argument from this expression', Arg);
+        NInt := NInt + 2;
+      end
+      else if (I < ADecl.Params.Count) and
          TMethodParam(ADecl.Params.Items[I]).IsVarParam then
       begin
         { var/out param: pass the lvalue's address.  A var param handed
@@ -5346,11 +6184,27 @@ begin
       else if IsIntFam(Arg.ResolvedType) or (Arg is TIntLiteral) or
               (Arg is TNilLiteral) or
               ((Arg.ResolvedType <> nil) and
-               (Arg.ResolvedType.Kind in [tyPChar, tyPointer])) then
+               (Arg.ResolvedType.Kind in [tyPChar, tyPointer,
+                                          tyClass, tyProcedural])) then
       begin
+        if (Arg.ResolvedType <> nil) and
+           (Arg.ResolvedType.Kind = tyProcedural) and
+           (TProceduralTypeDesc(Arg.ResolvedType).IsMethodPtr or
+            TProceduralTypeDesc(Arg.ResolvedType).IsReference) then
+          NotYet('closure/method-pointer argument', Arg);
         IsVariadicArg := ADecl.IsVarArgs and (I >= ADecl.Params.Count);
         Self.EmitExprToX0(Arg);
         EmitPushX0();
+        if (Arg.ResolvedType <> nil) and
+           (Arg.ResolvedType.Kind = tyClass) and ArcExprOwnsRef(Arg) then
+        begin
+          { owned class transient: the callee borrows it — park the +1
+            for one post-call release (shape 'C') }
+          Self.Emit(Format(#9'str x0, [sp, #%d]',
+            [(PopRegs.Count + 1) * 16 + TransBase + TransN * 8]));
+          TransShapes := TransShapes + 'C';
+          Inc(TransN);
+        end;
         if IsVariadicArg or (NInt >= 8) then
         begin
           if I < ADecl.Params.Count then
@@ -5440,6 +6294,12 @@ begin
     for I := 0 to TransN - 1 do
     begin
       Self.Emit(Format(#9'ldr x0, [sp, #%d]', [32 + TransBase + I * 8]));
+      if Copy(TransShapes, I, 1) = 'C' then
+      begin
+        { owned class transient: one release drops the borrowed +1 }
+        Self.Emit(#9'bl _ClassRelease');
+        Continue;
+      end;
       if Copy(TransShapes, I, 1) = '0' then
       begin
         { rc=0 pin: 0 -> 1 -> 0 frees exactly once }
@@ -6298,6 +7158,48 @@ procedure TArm64Backend.EmitMethodCallStmt(AStmt: TMethodCallStmt);
 var
   MD: TMethodDecl;
 begin
+  if AStmt.IsImplicitSelf and (AStmt.ImplicitBaseInfo <> nil) and
+     (TMethodDecl(AStmt.ResolvedMethod) = nil) and
+     SameText(AStmt.Name, 'Free') and (AStmt.Args.Count = 0) then
+  begin
+    { FField.Free(): release through the field's address and NIL it —
+      the same stale-alias rule as the local-slot Free }
+    EmitLoadSlot('x0', 'Self');
+    if AStmt.ImplicitBaseInfo.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0', AStmt.ImplicitBaseInfo.Offset);
+    EmitPushX0();
+    Self.Emit(#9'ldr x0, [x0]');
+    Self.Emit(#9'bl _ClassRelease');
+    EmitPopTo('x9');
+    Self.Emit(#9'str xzr, [x9]');
+    Exit;
+  end;
+  if AStmt.IsImplicitSelf and (AStmt.ImplicitBaseInfo <> nil) and
+     not AStmt.IsConstructorCall and (AStmt.ResolvedMethod <> nil) and
+     ((AStmt.ResolvedClassType = nil) or
+      (AStmt.ResolvedClassType.Kind <> tyInterface)) then
+  begin
+    { method call on a class-typed FIELD of Self: FLexer.Next() —
+      the receiver is loaded through Self at the field's offset }
+    if (AStmt.ResolvedReturnTypeDesc <> nil) and
+       (AStmt.ResolvedReturnTypeDesc.Kind in [tyRecord, tyInterface]) then
+      NotYet('discarded aggregate-returning field-method call', AStmt);
+    EmitLoadSlot('x0', 'Self');
+    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+      [AStmt.ImplicitBaseInfo.Offset]));
+    EmitMethodCallCommon(TMethodDecl(AStmt.ResolvedMethod), AStmt.Name,
+      AStmt.Args);
+    if AStmt.ResolvedReturnTypeDesc <> nil then
+    begin
+      if AStmt.ResolvedReturnTypeDesc.Kind = tyString then
+        Self.Emit(#9'bl _StringRelease')
+      else if AStmt.ResolvedReturnTypeDesc.Kind = tyClass then
+        Self.Emit(#9'bl _ClassRelease')
+      else if AStmt.ResolvedReturnTypeDesc.Kind = tyDynArray then
+        Self.Emit(#9'bl _DynArrayRelease');
+    end;
+    Exit;
+  end;
   if AStmt.IsConstructorCall or AStmt.IsImplicitSelf or
      ((AStmt.ObjectName = '') and (AStmt.ObjExpr = nil)
       and not AStmt.IsStaticCall) then
@@ -6320,6 +7222,67 @@ begin
     if (AStmt.ResolvedReturnTypeDesc <> nil) and
        (AStmt.ResolvedReturnTypeDesc.Kind = tyString) then
       Self.Emit(#9'bl _StringRelease');
+    Exit;
+  end;
+  if (TMethodDecl(AStmt.ResolvedMethod) = nil) and
+     SameText(AStmt.Name, 'Free') and (AStmt.Args.Count = 0) then
+  begin
+    { Obj.Free(): release AND nil the slot — a stale pointer left here
+      aliases the next same-size allocation and the following ARC store
+      double-releases it (QBE/x86 parity: both nil the slot) }
+    if AStmt.ObjExpr is TFieldAccessExpr then
+    begin
+      { X.Field.Free(): release AND nil through the field's address }
+      if TFieldAccessExpr(AStmt.ObjExpr).FieldInfo = nil then
+        NotYet('Free on this receiver form', AStmt);
+      if TFieldAccessExpr(AStmt.ObjExpr).Base <> nil then
+      begin
+        { chained receiver: the base expression yields the instance }
+        if ArcExprOwnsRef(TFieldAccessExpr(AStmt.ObjExpr).Base) then
+          NotYet('Free through an owned transient base', AStmt);
+        Self.EmitExprToX0(TFieldAccessExpr(AStmt.ObjExpr).Base);
+        Self.Emit(#9'mov x9, x0');
+      end
+      else if TFieldAccessExpr(AStmt.ObjExpr).IsImplicitSelf then
+        EmitLoadSlot('x9', 'Self')
+      else if TFieldAccessExpr(AStmt.ObjExpr).IsClassAccess then
+      begin
+        EmitLoadSlot('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName);
+        if TFieldAccessExpr(AStmt.ObjExpr).IsVarParam then
+          Self.Emit(#9'ldr x9, [x9]');
+      end
+      else if TFieldAccessExpr(AStmt.ObjExpr).IsVarParam then
+        EmitLoadSlot('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName)
+      else
+        EmitSlotAddr('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName);
+      if TFieldAccessExpr(AStmt.ObjExpr).FieldInfo.Offset <> 0 then
+        EmitAddSubImm('add', 'x9', 'x9',
+          TFieldAccessExpr(AStmt.ObjExpr).FieldInfo.Offset);
+      Self.Emit(#9'mov x0, x9');
+      EmitPushX0();
+      Self.Emit(#9'ldr x0, [x0]');
+      Self.Emit(#9'bl _ClassRelease');
+      EmitPopTo('x9');
+      Self.Emit(#9'str xzr, [x9]');
+      Exit;
+    end;
+    if AStmt.IsImplicitSelf or (AStmt.ObjExpr <> nil) then
+      NotYet('Free on this receiver form', AStmt);
+    if AStmt.IsVarParam then
+    begin
+      { the slot holds the caller's ADDRESS: free through it, nil it }
+      EmitLoadSlot('x0', AStmt.ObjectName);
+      EmitPushX0();
+      Self.Emit(#9'ldr x0, [x0]');
+      Self.Emit(#9'bl _ClassRelease');
+      EmitPopTo('x9');
+      Self.Emit(#9'str xzr, [x9]');
+      Exit;
+    end;
+    EmitLoadSlot('x0', AStmt.ObjectName);
+    Self.Emit(#9'bl _ClassRelease');
+    Self.Emit(#9'movz x0, #0');
+    EmitStoreSlot('x0', AStmt.ObjectName);
     Exit;
   end;
   MD := TMethodDecl(AStmt.ResolvedMethod);
@@ -6372,14 +7335,18 @@ begin
       EmitLoadSlot('x0', AExpr.ObjectName);
       Self.Emit(#9'bl _ClassCreate');
       MD := TMethodDecl(AExpr.ResolvedMethod);
-      if (MD <> nil) and (MD.Body <> nil) then
+      { a resolved ctor is CALLED even when Body = nil — imported unit
+        interfaces carry declaration stubs; the body lives in the
+        owning unit's object }
+      if MD <> nil then
       begin
         EmitPushX0();
         EmitMethodCallCommon(MD, 'Create', AExpr.Args);
         EmitPopTo('x0');
-      end
-      else if AExpr.Args.Count > 0 then
-        NotYet('constructor arguments without a declared constructor', AExpr);
+      end;
+      { MD = nil with args: undeclared Create* variant (CreateFmt on
+        Exception) — QBE and x86-64 both skip the ctor call and drop the
+        args; mirrored for parity (see bugs.txt BUG: CreateFmt) }
       Exit;
     end;
     Sym := '';
@@ -6392,20 +7359,35 @@ begin
         Break;
       end;
     end;
+    if (Sym = '') and (AExpr.ResolvedClassType is TRecordTypeDesc) then
+    begin
+      { class declared in ANOTHER unit (or later in this one with no
+        local decl entry): mangle from the resolved desc — the owning
+        unit's own emission defines the typeinfo/vtable symbols }
+      if Pos('<', TRecordTypeDesc(AExpr.ResolvedClassType).Name) >= 0 then
+        Sym := CodegenMangle(TRecordTypeDesc(AExpr.ResolvedClassType).Name)
+      else
+        Sym := ClassPrefixOwner(
+          TRecordTypeDesc(AExpr.ResolvedClassType).OwningUnit) +
+          CodegenMangle(TRecordTypeDesc(AExpr.ResolvedClassType).Name);
+    end;
     if Sym = '' then
       NotYet('constructor for class ''' + AExpr.ObjectName + '''', AExpr);
     Self.Emit(Format(#9'adrp x0, typeinfo_%s@PAGE', [Sym]));
     Self.Emit(Format(#9'add x0, x0, typeinfo_%s@PAGEOFF', [Sym]));
     Self.Emit(#9'bl _ClassCreate');
     MD := TMethodDecl(AExpr.ResolvedMethod);
-    if (MD <> nil) and (MD.Body <> nil) then
+    { called even when Body = nil — imported unit interfaces carry
+      declaration stubs; the body lives in the owning unit's object }
+    if MD <> nil then
     begin
       EmitPushX0();               { keep the result across the ctor call }
       EmitMethodCallCommon(MD, 'Create', AExpr.Args);
       EmitPopTo('x0');
-    end
-    else if AExpr.Args.Count > 0 then
-      NotYet('constructor arguments without a declared constructor', AExpr);
+    end;
+    { MD = nil with args: undeclared Create* variant (CreateFmt on
+      Exception) — QBE and x86-64 both skip the ctor call and drop the
+      args; mirrored for parity (see bugs.txt BUG: CreateFmt) }
     Exit;
   end;
   if AExpr.IsBuiltinToString then
@@ -6797,13 +7779,23 @@ var
     UDef: TClassTypeDef;
     MDcl: TMethodDecl;
   begin
+    { pass 1: REGISTER every class/interface decl before any method body
+      is emitted — a body may reference a class declared later in the
+      same unit (constructor sites resolve through FClassDecls) }
+    for K := 0 to ATypeDecls.Count - 1 do
+    begin
+      UDcl := TTypeDecl(ATypeDecls.Items[K]);
+      if UDcl.Def is TClassTypeDef then
+        FClassDecls.Add(UDcl)
+      else if UDcl.Def is TInterfaceTypeDef then
+        FIntfDecls.Add(UDcl);
+    end;
     for K := 0 to ATypeDecls.Count - 1 do
     begin
       UDcl := TTypeDecl(ATypeDecls.Items[K]);
       if UDcl.Def is TClassTypeDef then
       begin
         UDef := TClassTypeDef(UDcl.Def);
-        FClassDecls.Add(UDcl);
         for M := 0 to UDef.Methods.Count - 1 do
         begin
           MDcl := TMethodDecl(UDef.Methods.Items[M]);
@@ -6815,12 +7807,8 @@ var
         Continue;
       end;
       if UDcl.Def is TInterfaceTypeDef then
-      begin
-        { unit interfaces get their typeinfo via EmitIntfMetaSections,
-          same as the program path }
-        FIntfDecls.Add(UDcl);
+        { registered in pass 1; typeinfo arrives via EmitIntfMetaSections }
         Continue;
-      end;
       if (UDcl.Def is TTypeAliasDef) or (UDcl.Def is TEnumTypeDef) or
          (UDcl.Def is TSetTypeDef) or (UDcl.Def is TProceduralTypeDef) or
          (UDcl.Def is TGenericTypeDef) or

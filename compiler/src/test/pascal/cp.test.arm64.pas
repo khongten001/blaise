@@ -146,6 +146,12 @@ type
     procedure TestExternalCall_NarrowsIntReturn;
     { slice 11: string parameters (by-value retained, const borrowed) }
     procedure TestStringParams_ValueRetainsConstBorrows;
+    { self-cross-compile: open-array parameters — (ptr, high) pair ABI,
+      High/Low/Length, element reads, all four caller arg forms }
+    procedure TestOpenArrayParams_PtrHighPair;
+    procedure TestOpenArrayParams_StringElems;
+    { self-cross-compile: Obj.Free() — release AND nil the slot }
+    procedure TestFree_ReleasesAndNilsSlot;
   end;
 
 implementation
@@ -2742,6 +2748,138 @@ begin
   AssertTrue('return narrowed right after the call', SxtwPos >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64ext.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestOpenArrayParams_PtrHighPair;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { the four caller arg forms: array literal, static array, dynamic
+    array, and open-array forwarding — plus High/Low/Length and an
+    element read in the callee }
+  AsmT := GenAsm(
+    '''
+    program P;
+    function Sum(const A: array of Integer): Int64;
+    var
+      I: Integer;
+      T: Int64;
+    begin
+      T := 0;
+      for I := 0 to High(A) do
+        T := T + A[I];
+      Result := T + Low(A) + Length(A)
+    end;
+    function Fwd(const A: array of Integer): Int64;
+    begin
+      Result := Sum(A)
+    end;
+    var
+      S: array[0..2] of Integer;
+      D: array of Integer;
+    begin
+      S[0] := 1; S[1] := 2; S[2] := 3;
+      SetLength(D, 2);
+      D[0] := 10; D[1] := 20;
+      WriteLn(Sum([7, 8]));
+      WriteLn(Sum(S));
+      WriteLn(Sum(D));
+      WriteLn(Fwd(S))
+    end.
+    ''');
+  { a dyn array coerced to an open array computes high = length - 1 }
+  AssertTrue('dyn arg high via _DynArrayLength',
+    Pos(#9'bl _DynArrayLength', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64oa.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestOpenArrayParams_StringElems;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { the strutils shape that blocked the self-cross-compile: const
+    array of string with High + element read + string compare.
+    Elements are BORROWED (const) — no retain/release on the read. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    function IndexOf(const S: string; const Arr: array of string): Integer;
+    var
+      I: Integer;
+    begin
+      for I := 0 to High(Arr) do
+        if Arr[I] = S then
+        begin
+          Exit(I);
+        end;
+      Result := -1
+    end;
+    begin
+      WriteLn(IndexOf('b', ['a', 'b', 'c']))
+    end.
+    ''');
+  AssertTrue('string compare emitted',
+    Pos(#9'bl _StringEquals', AsmT) >= 0);
+  { the const element read must not retain what it merely borrows }
+  AssertTrue('no retain on borrowed element',
+    Pos('_StringAddRef', AsmT) <= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64oas.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestFree_ReleasesAndNilsSlot;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+  RelPos: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBox = class
+      public
+        V: Int64;
+      end;
+    var
+      B: TBox;
+    begin
+      B := TBox.Create();
+      B.V := 7;
+      B.Free();
+      WriteLn(1)
+    end.
+    ''');
+  { Free = release, then NIL the slot — a stale pointer here aliases the
+    next same-size allocation and a later ARC store double-releases it }
+  RelPos := Pos(#9'bl _ClassRelease' + LF + #9'movz x0, #0', AsmT);
+  AssertTrue('Free releases then nils the slot', RelPos >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64free.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
