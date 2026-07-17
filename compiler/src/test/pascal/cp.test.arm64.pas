@@ -152,6 +152,12 @@ type
     procedure TestOpenArrayParams_StringElems;
     { self-cross-compile: Obj.Free() — release AND nil the slot }
     procedure TestFree_ReleasesAndNilsSlot;
+    { self-cross-compile: Obj.ClassName / Obj.ClassType via typeinfo }
+    procedure TestClassNameAccess_ViaTypeinfo;
+    { self-cross-compile: jumbo (>64-member) set membership via _SetIn }
+    procedure TestJumboSetMembership_ViaSetIn;
+    { self-cross-compile: Inc/Dec on an implicit-Self field }
+    procedure TestIncDecImplicitSelfField;
   end;
 
 implementation
@@ -2880,6 +2886,131 @@ begin
   AssertTrue('Free releases then nils the slot', RelPos >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64free.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestClassNameAccess_ViaTypeinfo;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+  DerefPos: Integer;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TAnimal = class
+      public
+        Legs: Integer;
+      end;
+      TDog = class(TAnimal)
+      end;
+    var
+      A: TAnimal;
+    begin
+      A := TDog.Create();
+      WriteLn(A.ClassName);
+      A.Free()
+    end.
+    ''');
+  { ClassName walks instance[0]=vtable, vtable[0]=typeinfo, name at +16 —
+    the +16 load is the tell }
+  DerefPos := Pos(#9'ldr x0, [x0, #16]', AsmT);
+  AssertTrue('name loaded from typeinfo+16', DerefPos >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64cn.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestJumboSetMembership_ViaSetIn;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { an 80-member enum makes 'set of' jumbo; membership against a literal
+    lowers to a stack bitmap (memset + _SetInclude) tested via _SetIn }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBig = (b00,b01,b02,b03,b04,b05,b06,b07,b08,b09,
+              b10,b11,b12,b13,b14,b15,b16,b17,b18,b19,
+              b20,b21,b22,b23,b24,b25,b26,b27,b28,b29,
+              b30,b31,b32,b33,b34,b35,b36,b37,b38,b39,
+              b40,b41,b42,b43,b44,b45,b46,b47,b48,b49,
+              b50,b51,b52,b53,b54,b55,b56,b57,b58,b59,
+              b60,b61,b62,b63,b64,b65,b66,b67,b68,b69,
+              b70,b71,b72,b73,b74,b75,b76,b77,b78,b79);
+    var
+      x: TBig;
+      r: Boolean;
+    begin
+      x := b70;
+      r := x in [b00, b70, b79];
+      WriteLn(r)
+    end.
+    ''');
+  AssertTrue('membership via _SetIn', Pos(#9'bl _SetIn', AsmT) >= 0);
+  AssertTrue('bitmap built via _SetInclude',
+    Pos(#9'bl _SetInclude', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64js.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestIncDecImplicitSelfField;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TCounter = class
+      private
+        FN: Integer;
+      public
+        procedure Step;
+      end;
+    procedure TCounter.Step;
+    begin
+      Inc(FN);
+      Dec(FN, 2)
+    end;
+    var
+      C: TCounter;
+    begin
+      C := TCounter.Create();
+      C.Step();
+      C.Free()
+    end.
+    ''');
+  { Inc/Dec(FN) load-adjust-store through Self+offset: the field address is
+    parked in x9, then stored back with str w0 — never loaded as a bare
+    variable (that path would emit 'load of variable FN') }
+  AssertTrue('field address parked in x9', Pos(#9'mov x9, x0', AsmT) >= 0);
+  AssertTrue('adjusted value stored back', Pos(#9'str w0, [x9]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64id.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

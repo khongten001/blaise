@@ -59,6 +59,11 @@ type
       disturb normal division.  Catchable-EDivByZero behaviour needs the
       stdlib loaded + linked, which the in-process harness cannot do; that
       is covered by the shell-out test in cp.test.cli.pas. }
+    { A for-loop INSIDE a finally body is emitted twice (normal + exception
+      path).  Both emissions must reuse the same hidden __for_end slot, and
+      the loop must run correctly when reached via the exception path. }
+    procedure TestRun_ForLoopInFinally_BothPaths;
+
     procedure TestRun_DivNonZero_StillWorks;
 
     { BUG-046: Exception.CreateFmt(fmt, [args]) with no declared CreateFmt
@@ -199,6 +204,36 @@ const
         end
       end;
       WriteLn('done')
+    end.
+    ''';
+
+  { A for-loop in a finally body must run on BOTH exit paths.  DoIt(False)
+    exits the try normally; DoIt(True) raises, so the finally's loop runs on
+    the EXCEPTION path (its second emission).  Both sum 0+1+2 = 3.  With the
+    slot-reuse bug the exception-path loop stored to an unregistered hidden
+    bound slot (codegen error) — this pins the fix. }
+  SrcForLoopInFinally = '''
+    program P;
+    type Exception = class FMessage: string; end;
+    procedure DoIt(Boom: Boolean);
+    var Acc, I: Integer;
+    begin
+      Acc := 0;
+      try
+        if Boom then raise Exception.Create()
+      finally
+        for I := 0 to 2 do
+          Acc := Acc + I;
+        WriteLn(Acc)
+      end
+    end;
+    begin
+      DoIt(False);
+      try
+        DoIt(True)
+      except
+        on E: Exception do WriteLn('caught')
+      end
     end.
     ''';
 
@@ -574,6 +609,14 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcExitInSecondTry,
     '100' + LE + '50' + LE + 'caught' + LE + 'done' + LE, 0);
+end;
+
+procedure TE2EExceptionTests.TestRun_ForLoopInFinally_BothPaths;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { normal-path loop prints 3; exception-path loop prints 3, then 'caught' }
+  AssertRunsOnAll(SrcForLoopInFinally,
+    '3' + LE + '3' + LE + 'caught' + LE, 0);
 end;
 
 procedure TE2EExceptionTests.TestRun_DivNonZero_StillWorks;

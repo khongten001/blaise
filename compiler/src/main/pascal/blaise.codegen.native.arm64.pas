@@ -209,6 +209,8 @@ type
     procedure EmitAttrTables(ACD: TClassTypeDef; const ACSym: string;
       out AAttrsRef, AMethAttrsRef: string);
     procedure EmitSmallSetLiteral(AExpr: TArrayLiteralExpr);
+    procedure EmitJumboSetLiteral(AExpr: TArrayLiteralExpr);
+    function  JumboSetLiteralBytes(AExpr: TASTExpr): Integer;
     procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitDynElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitElemLoad(AElem: TTypeDesc);
@@ -914,12 +916,22 @@ begin
   end;
   if AStmt.ObjExpr <> nil then
   begin
-    { chained base: A.B.C := v — the base expression yields the instance }
+    { chained base: A.B.C := v — the base expression yields the instance.
+      An OWNED transient base (a call result, +1) is kept in a second slot
+      and released after the field store, so the object survives the write
+      but its temporary +1 does not leak. }
     if AStmt.FieldInfo = nil then
       NotYet('unresolved field assignment', AStmt);
-    if ArcExprOwnsRef(AStmt.ObjExpr) then
-      NotYet('field store on an owned transient base', AStmt);
     Self.EmitExprToX0(AStmt.ObjExpr);
+    if ArcExprOwnsRef(AStmt.ObjExpr) then
+    begin
+      EmitPushX0();                 { [obj] — the +1 copy, released below }
+      EmitPushX0();                 { [obj][obj] — consumed by the store }
+      EmitInstanceFieldStoreStacked(AStmt.FieldInfo, AStmt.Expr);
+      EmitPopTo('x0');              { the retained copy }
+      Self.Emit(#9'bl _ClassRelease');
+      Exit;
+    end;
     EmitPushX0();
     EmitInstanceFieldStoreStacked(AStmt.FieldInfo, AStmt.Expr);
     Exit;
@@ -1763,10 +1775,35 @@ begin
       range guard forces 0 for ordinals past the set width (a shift past
       the register width is undefined) }
     if (BE.Op = boIn) and (BE.Right.ResolvedType <> nil) and
+       (BE.Right.ResolvedType.Kind = tySet) and
+       TSetTypeDesc(BE.Right.ResolvedType).IsJumbo() then
+    begin
+      { jumbo membership: _SetIn(bitmap, ord) → 0/1.  A jumbo LITERAL RHS
+        materialises a stack bitmap (EmitJumboSetLiteral lowers sp); a
+        non-literal RHS (a set variable) evaluates to its bitmap address
+        directly.  The ordinal is parked across the RHS eval. }
+      Self.EmitExprToX0(BE.Left);         { ordinal }
+      EmitPushX0();                       { [ord] — survives the RHS eval }
+      if (BE.Right is TArrayLiteralExpr) then
+      begin
+        EmitJumboSetLiteral(TArrayLiteralExpr(BE.Right));  { x0 = bitmap, sp lowered }
+        Self.Emit(Format(#9'ldr x1, [sp, #%d]',
+          [JumboSetLiteralBytes(BE.Right)]));              { the parked ord }
+        Self.Emit(#9'bl _SetIn');
+        EmitAddSubImm('add', 'sp', 'sp', JumboSetLiteralBytes(BE.Right));
+        Self.Emit(#9'add sp, sp, #16');   { drop the parked ord }
+      end
+      else
+      begin
+        Self.EmitExprToX0(BE.Right);      { bitmap address }
+        EmitPopTo('x1');                  { the parked ord }
+        Self.Emit(#9'bl _SetIn');
+      end;
+      Exit;
+    end;
+    if (BE.Op = boIn) and (BE.Right.ResolvedType <> nil) and
        (BE.Right.ResolvedType.Kind = tySet) then
     begin
-      if TSetTypeDesc(BE.Right.ResolvedType).IsJumbo() then
-        NotYet('jumbo set membership', AExpr);
       Self.EmitExprToX0(BE.Right);
       EmitPushX0();
       Self.EmitExprToX0(BE.Left);
@@ -2071,6 +2108,30 @@ begin
        (AExpr.ResolvedType.Kind = tyRecord) then
       NotYet('record-returning method call', AExpr);
     EmitMethodCallExpr(TMethodCallExpr(AExpr));
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).IsClassNameAccess or
+      TFieldAccessExpr(AExpr).IsClassTypeAccess) then
+  begin
+    { Obj.ClassName / Obj.ClassType — instance[0] = vtable, vtable[0] =
+      typeinfo; ClassName reads the name string ptr at typeinfo+16,
+      ClassType returns the typeinfo pointer itself.  An owned transient
+      base is released after the read. }
+    if TFieldAccessExpr(AExpr).Base <> nil then
+    begin
+      if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
+        NotYet('ClassName/ClassType on an owned transient base', AExpr);
+      Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
+    end
+    else if TFieldAccessExpr(AExpr).IsImplicitSelf then
+      EmitLoadSlot('x0', 'Self')
+    else
+      EmitLoadSlot('x0', TFieldAccessExpr(AExpr).RecordName);
+    Self.Emit(#9'ldr x0, [x0]');    { vtable }
+    Self.Emit(#9'ldr x0, [x0]');    { typeinfo }
+    if TFieldAccessExpr(AExpr).IsClassNameAccess then
+      Self.Emit(#9'ldr x0, [x0, #16]');   { name string ptr }
     Exit;
   end;
   if (AExpr is TFieldAccessExpr) and
@@ -3415,6 +3476,47 @@ begin
   if (SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec')) and
      (ACall.ResolvedDecl = nil) and
      ((ACall.Args.Count = 1) or (ACall.Args.Count = 2)) and
+     (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) and
+     TIdentExpr(TASTExpr(ACall.Args.Items[0])).IsImplicitSelf and
+     (TIdentExpr(TASTExpr(ACall.Args.Items[0])).ImplicitFieldInfo <> nil) then
+  begin
+    { Inc/Dec(FField[, N]) on an implicit-Self field: field address is
+      Self + offset; width-keyed load-adjust-store there }
+    if ACall.Args.Count = 2 then
+    begin
+      Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+      EmitPushX0();
+    end;
+    EmitLoadSlot('x0', 'Self');
+    if TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+         .ImplicitFieldInfo).Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0',
+        TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+          .ImplicitFieldInfo).Offset);
+    Self.Emit(#9'mov x9, x0');
+    if ACall.Args.Count = 2 then
+      EmitPopTo('x2')
+    else
+      Self.Emit(#9'movz x2, #1');
+    EmitElemLoad(TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+      .ImplicitFieldInfo).TypeDesc);
+    if SameText(ACall.Name, 'Inc') then
+      Self.Emit(#9'add x0, x0, x2')
+    else
+      Self.Emit(#9'sub x0, x0, x2');
+    case TFieldInfo(TIdentExpr(TASTExpr(ACall.Args.Items[0]))
+           .ImplicitFieldInfo).TypeDesc.RawSize() of
+      1: Self.Emit(#9'strb w0, [x9]');
+      2: Self.Emit(#9'strh w0, [x9]');
+      4: Self.Emit(#9'str w0, [x9]');
+    else
+      Self.Emit(#9'str x0, [x9]');
+    end;
+    Exit;
+  end;
+  if (SameText(ACall.Name, 'Inc') or SameText(ACall.Name, 'Dec')) and
+     (ACall.ResolvedDecl = nil) and
+     ((ACall.Args.Count = 1) or (ACall.Args.Count = 2)) and
      (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) then
   begin
     { Inc/Dec(X[, N]) on a plain ident lvalue: load, adjust, store.
@@ -3668,7 +3770,7 @@ end;
 
 procedure TArm64Backend.EmitTryFinally(AStmt: TTryFinallyStmt);
 var
-  I: Integer;
+  I, FinForN: Integer;
   FrameSlot, ExcL, TryL, EndL: string;
 begin
   FrameSlot := NewExcFrameSlot();
@@ -3683,6 +3785,15 @@ begin
   Self.Emit(#9'bl _PopExcFrame');
   FExcDepth := FExcDepth - 1;
   FFinallyBodies.Delete(FFinallyBodies.Count - 1);
+  { the finally body is emitted TWICE — normal path here, exception path
+    below.  Both emissions of a for-loop inside the finally must consume
+    the SAME hidden __for_end slot (registration allocated only one per
+    for statement).  Save the for-slot counter before the normal-path
+    finally and rewind to it before the exception-path finally, so the two
+    emissions reuse the same slots (they are mutually exclusive at run
+    time).  Without this the second emission runs off the end of the
+    registered slots — an unregistered-slot store (BUG). }
+  FinForN := FForN;
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
     EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   Self.Emit(Format(#9'b %s', [EndL]));
@@ -3696,6 +3807,7 @@ begin
   Self.Emit(#9'bl _PopExcFrame');
   FExcDepth := FExcDepth - 1;
   FFinallyBodies.Delete(FFinallyBodies.Count - 1);
+  FForN := FinForN;   { reuse the normal-path finally's for-slot numbers }
   for I := 0 to AStmt.FinallyBody.Stmts.Count - 1 do
     EmitStmt(TASTStmt(AStmt.FinallyBody.Stmts.Items[I]));
   Self.Emit(#9'ldr x0, [sp], #16');
@@ -4799,6 +4911,48 @@ begin
     Self.Emit(#9'lsl x2, x2, x1');
     Self.Emit(#9'orr x0, x0, x2');
   end;
+end;
+
+procedure TArm64Backend.EmitJumboSetLiteral(AExpr: TArrayLiteralExpr);
+var
+  I, NBytes: Integer;
+  Elem: TASTExpr;
+begin
+  { jumbo set literal (>64 members): materialise the bitmap in a fresh
+    16-byte-aligned stack buffer at [sp], memset 0, then _SetInclude each
+    member's ordinal.  On return x0 = the bitmap address and sp has been
+    LOWERED by NBytes — the CALLER owns the buffer and MUST restore sp
+    (add sp, sp, #NBytes) once it has consumed the address.  This keeps
+    the buffer alive across the membership/assignment read without leaking
+    the frame.  Element evaluation must not itself move sp permanently
+    (guaranteed: EmitExprToX0 balances its own brackets). }
+  NBytes := (TSetTypeDesc(AExpr.ResolvedType).RawByteSize() + 15)
+            and (not 15);
+  EmitAddSubImm('sub', 'sp', 'sp', NBytes);
+  Self.Emit(#9'mov x0, sp');
+  Self.Emit(#9'movz x1, #0');
+  EmitIntLiteral('x2', NBytes);
+  Self.Emit(#9'bl memset');
+  for I := 0 to AExpr.Elements.Count - 1 do
+  begin
+    Elem := TASTExpr(AExpr.Elements.Items[I]);
+    Self.EmitExprToX0(Elem);       { ordinal in x0 }
+    Self.Emit(#9'mov x1, x0');
+    Self.Emit(#9'mov x0, sp');     { bitmap address (sp unmoved by eval) }
+    Self.Emit(#9'bl _SetInclude');
+  end;
+  Self.Emit(#9'mov x0, sp');       { return the bitmap address }
+end;
+
+function TArm64Backend.JumboSetLiteralBytes(AExpr: TASTExpr): Integer;
+begin
+  { the sp delta EmitJumboSetLiteral consumed, for the caller's restore }
+  Result := 0;
+  if (AExpr is TArrayLiteralExpr) and (AExpr.ResolvedType <> nil) and
+     (AExpr.ResolvedType.Kind = tySet) and
+     TSetTypeDesc(AExpr.ResolvedType).IsJumbo() then
+    Result := (TSetTypeDesc(AExpr.ResolvedType).RawByteSize() + 15)
+              and (not 15);
 end;
 
 procedure TArm64Backend.EmitStaticElemAddr(ASub: TStringSubscriptExpr);
@@ -6017,13 +6171,24 @@ begin
       begin
         { var/out param: pass the lvalue's address.  A var param handed
           straight through to another var param forwards the address it
-          already holds. }
-        if not (Arg is TIdentExpr) then
-          NotYet('var argument from this expression', Arg);
-        if TIdentExpr(Arg).ParamMode = pmVar then
-          EmitLoadSlot('x0', TIdentExpr(Arg).Name)
+          already holds; a field lvalue (CD.Field) passes the field's
+          address computed from its owning record/instance. }
+        if Arg is TIdentExpr then
+        begin
+          if TIdentExpr(Arg).ParamMode = pmVar then
+            EmitLoadSlot('x0', TIdentExpr(Arg).Name)
+          else
+            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+        end
+        else if (Arg is TFieldAccessExpr) and
+                (TFieldAccessExpr(Arg).FieldInfo <> nil) then
+        begin
+          if ArcExprOwnsRef(TFieldAccessExpr(Arg).Base) then
+            NotYet('var field argument on an owned transient base', Arg);
+          EmitRecFieldAddrToX0(TFieldAccessExpr(Arg));
+        end
         else
-          EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+          NotYet('var argument from this expression', Arg);
         EmitPushX0();
         if NInt >= 8 then
         begin
