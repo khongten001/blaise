@@ -1085,8 +1085,9 @@ const
     + 48(dyld-info) + 24(symtab) + 80(dysymtab) + 32(dylinker)
     + 24(build-version) + 56(dylib) + 24(main) — the Finish size check
     guards this precomputed literal. }
-  EXEC_SIZEOFCMDS = 1152;   { 1136 + 16 (LC_CODE_SIGNATURE) }
-  EXEC_NCMDS = 12;
+  EXEC_SIZEOFCMDS = 1176;   { 1136 + 16 (LC_CODE_SIGNATURE) + 24 (LC_UUID) }
+  EXEC_NCMDS = 13;
+  LC_UUID = $1B;
   MH_HAS_TLV_DESCRIPTORS = $800000;
 
   { ad-hoc code signature (Phase 4).  All signature-blob fields are
@@ -1580,6 +1581,17 @@ begin
     Head.PushU32(MAIN_CMD_SIZE);
     Head.PushU64(TextOff + FEntryTextOff);   { entryoff (file offset) }
     Head.PushU64(0);                         { stacksize: default }
+
+    { ---- LC_UUID ----
+      Content-derived (first 16 bytes of SHA-256 over the payloads +
+      identifier) so builds stay reproducible.  Without it, lldb and
+      the crash reporter cannot identify the image — crash reports
+      showed uuid 00000000-... and lldb could not dedupe section
+      mappings (M1 feedback). }
+    Head.PushU32(LC_UUID);
+    Head.PushU32(24);
+    Head.AppendBytes(Copy(
+      Sha256(FText + FConst + FData + FTvars + FTdata + FIdent), 0, 16));
 
     { ---- LC_CODE_SIGNATURE (must stay the LAST command) ---- }
     Head.PushU32(LC_CODE_SIGNATURE);

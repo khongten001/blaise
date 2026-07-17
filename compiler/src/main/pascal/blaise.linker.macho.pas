@@ -354,7 +354,8 @@ var
   I: Integer;
 begin
   if (AName = '_tlv_bootstrap') or (AName = '__cxa_atexit') or
-     (AName = '__error') or (AName = 'timegm') or (AName = 'write') then
+     (AName = '__error') or (AName = 'timegm') or (AName = 'write') or
+     (AName = 'getrusage') then
     Exit(True);
   for I := 0 to 44 do
     if AName = KNOWN[I] then
