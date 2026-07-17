@@ -162,6 +162,10 @@ type
     procedure TestVarClassParam_ArcThroughAddress;
     { self-cross-compile: scalar field read on an owned transient base }
     procedure TestFieldReadOnTransientBase;
+    { self-cross-compile: record-returning call passed by value as an arg }
+    procedure TestRecordCallArg_MaterialisedInBuffer;
+    { self-cross-compile: field read on a record-returning call }
+    procedure TestRecordCallFieldRead_ViaRret;
   end;
 
 implementation
@@ -536,10 +540,12 @@ var
   AsmT: string;
 begin
   AsmT := GenAsm(SrcForLoop);
-  { the loop bound lives in a hidden frame slot, compared each iteration }
-  { offset-agnostic: the __iret scratch shifts hidden-slot offsets }
-  AssertTrue('bound stored to the hidden slot',
-    Pos(#9'stur x0, [x29, #-24]', AsmT) >= 0);
+  { the loop bound lives in a hidden frame slot, compared each iteration.
+    Offset-agnostic: the __iret/__rret scratch slots shift hidden-slot
+    offsets, so match the store shape (stur to an x29-negative slot) not a
+    specific offset. }
+  AssertTrue('bound stored to a hidden x29 slot',
+    Pos(#9'stur x0, [x29, #-', AsmT) >= 0);
   AssertTrue('signed compare against the bound', Pos(#9'cmp x0, x1', AsmT) >= 0);
   AssertTrue('exit branch on greater', Pos(#9'b.gt Lfend', AsmT) >= 0);
 end;
@@ -3095,6 +3101,90 @@ begin
     Pos(#9'bl _ClassRelease', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64ft.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRecordCallArg_MaterialisedInBuffer;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { SumPair(MakePair(5)) — MakePair's result is materialised into a scratch
+    buffer (add x9, sp, ...; str x0) then passed by value to SumPair }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPair = record
+        A: Integer;
+        B: Integer;
+      end;
+    function MakePair(X: Integer): TPair;
+    begin
+      Result.A := X;
+      Result.B := X * 2
+    end;
+    function SumPair(const P: TPair): Integer;
+    begin
+      Result := P.A + P.B
+    end;
+    begin
+      WriteLn(SumPair(MakePair(5)))
+    end.
+    ''');
+  AssertTrue('MakePair evaluated', Pos(#9'bl MakePair', AsmT) >= 0);
+  AssertTrue('result stored into a scratch buffer',
+    Pos(#9'str x0, [x9]', AsmT) >= 0);
+  AssertTrue('SumPair receives the materialised record',
+    Pos(#9'bl SumPair', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64rca.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRecordCallFieldRead_ViaRret;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { MakePair(7).A — the record lands in __rret, the field loads at offset 0 }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPair = record
+        A: Integer;
+        B: Integer;
+      end;
+    function MakePair(X: Integer): TPair;
+    begin
+      Result.A := X;
+      Result.B := X * 2
+    end;
+    begin
+      WriteLn(MakePair(7).A);
+      WriteLn(MakePair(7).B)
+    end.
+    ''');
+  AssertTrue('MakePair evaluated', Pos(#9'bl MakePair', AsmT) >= 0);
+  { the field is read from the __rret scratch (an x29-relative address then a
+    load) — the store-into-scratch then load-field shape }
+  AssertTrue('field loaded after materialisation',
+    Pos(#9'ldrsw x0', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64rcf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

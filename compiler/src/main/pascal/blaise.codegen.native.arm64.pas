@@ -125,6 +125,7 @@ type
     procedure EmitRecIdentAddr(const AReg: string; AE: TIdentExpr);
     procedure EmitRecFieldAddrToX0(AFA: TFieldAccessExpr);
     procedure EmitRecAddrToX0(AExpr: TASTExpr);
+    procedure EmitRecCallToRret(AExpr: TASTExpr);
     procedure EmitPropRecvToX0(AStmt: TFieldAssignment);
     procedure EmitFieldAssign(AStmt: TFieldAssignment);
 
@@ -187,7 +188,8 @@ type
       ASelfPushed: Boolean): Integer;
     function  ComputeStackArgAreaEx(ADecl: TMethodDecl; AArgs: TObjectList;
       ASelfPushed: Boolean; out ALitBase: Integer;
-      out ATransBase: Integer): Integer;
+      out ATransBase: Integer; out ARecBase: Integer): Integer;
+    function  IsRecordCallArg(AArg: TASTExpr): Boolean;
     procedure DecodeMemArg(const AEntry: string; out AOff, ASize: Integer);
     procedure EmitCall(ADecl: TMethodDecl; const AName: string;
       AArgs: TObjectList; const ASretDest: string = '';
@@ -816,6 +818,39 @@ begin
   NotYet('record address of this expression', AExpr);
 end;
 
+procedure TArm64Backend.EmitRecCallToRret(AExpr: TASTExpr);
+var
+  Shape, K: Integer;
+begin
+  { materialise a record-returning call into the __rret scratch and leave
+    the __rret ADDRESS in x0.  Shape 0 (>16B) sret's straight into __rret;
+    the register-returned shapes store x0/x0:x1/d0.. into __rret. }
+  Shape := RecReturnShape(TRecordTypeDesc(AExpr.ResolvedType));
+  if Shape = 0 then
+    { >16B (sret): the callee writes straight into __rret.  __rret is sized
+      by MaxManagedRecRet, which covers record field-assigns and managed
+      record-assigns; a shape-0 field-READ on a bare call in a routine with
+      no such sizing site would under-size __rret — see the min-16 default. }
+    EmitRecCallDispatch(AExpr, '__rret')
+  else
+  begin
+    EmitRecCallDispatch(AExpr, '');
+    EmitSlotAddr('x9', '__rret');
+    case Shape of
+      1: Self.Emit(#9'str x0, [x9]');
+      2:
+      begin
+        Self.Emit(#9'str x0, [x9]');
+        Self.Emit(#9'str x1, [x9, #8]');
+      end;
+    else
+      for K := 0 to (Shape - 100) - 1 do
+        Self.Emit(Format(#9'str d%d, [x9, #%d]', [K, K * 8]));
+    end;
+  end;
+  EmitSlotAddr('x0', '__rret');
+end;
+
 procedure TArm64Backend.EmitPropRecvToX0(AStmt: TFieldAssignment);
 begin
   { property-write receiver: a plain slot, a var param's pointee, or a
@@ -949,6 +984,46 @@ begin
   begin
     { Obj.Field := value — the instance pointer lives in Obj's slot }
     EmitInstanceFieldStore(AStmt.FieldInfo, AStmt.Expr, AStmt.RecordName);
+    Exit;
+  end;
+  if AStmt.FieldInfo.TypeDesc.Kind = tyRecord then
+  begin
+    { Rec.Field := <record> — memcpy from the source's address (a record
+      lvalue) or from __rret (a record-returning call). }
+    if IsRecordCallArg(AStmt.Expr) then
+      EmitRecCallToRret(AStmt.Expr)   { x0 = __rret address; +1 refs transfer }
+    else
+    begin
+      { a record LVALUE source with managed fields needs the retain-source-
+        then-release-dest discipline (not just a raw memcpy) — keep honest }
+      if not RecretManagedClean(TRecordTypeDesc(AStmt.FieldInfo.TypeDesc)) then
+        NotYet('managed-record lvalue field store', AStmt);
+      EmitRecAddrToX0(AStmt.Expr);    { x0 = source record address }
+    end;
+    EmitPushX0();                     { [srcaddr] }
+    { the destination field's OLD managed refs must be released before a
+      call-source transfers its +1 refs in (dest may hold stale values) }
+    if IsRecordCallArg(AStmt.Expr) and
+       not RecretManagedClean(TRecordTypeDesc(AStmt.FieldInfo.TypeDesc)) then
+    begin
+      if AStmt.IsVarParam then
+        EmitLoadSlot('x0', AStmt.RecordName)
+      else
+        EmitSlotAddr('x0', AStmt.RecordName);
+      if AStmt.FieldInfo.Offset <> 0 then
+        EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(AStmt.FieldInfo.TypeDesc), 'x0');
+    end;
+    if AStmt.IsVarParam then
+      EmitLoadSlot('x0', AStmt.RecordName)
+    else
+      EmitSlotAddr('x0', AStmt.RecordName);
+    if AStmt.FieldInfo.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
+    EmitPopTo('x1');                  { source address }
+    EmitIntLiteral('x2', AStmt.FieldInfo.TypeDesc.RawSize());
+    Self.Emit(#9'bl memcpy');
     Exit;
   end;
   if not (IsIntFam(AStmt.FieldInfo.TypeDesc) or
@@ -2351,7 +2426,8 @@ begin
       survives the release. }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
@@ -2397,7 +2473,8 @@ begin
       Self for a bare field name inside a method }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     if TFieldAccessExpr(AExpr).IsImplicitSelf then
@@ -2435,7 +2512,8 @@ begin
     { plain Rec.Field read of a local/global/var-param record }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     if TFieldAccessExpr(AExpr).IsVarParam then
@@ -2460,10 +2538,32 @@ begin
       compute the inner record's address, then load at the outer offset }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     EmitRecFieldAddrToX0(TFieldAccessExpr(TFieldAccessExpr(AExpr).Base));
+    if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
+      EmitAddSubImm('add', 'x0', 'x0',
+        TFieldAccessExpr(AExpr).FieldInfo.Offset);
+    EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).Base <> nil) and
+     IsRecordCallArg(TFieldAccessExpr(AExpr).Base) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { field of a record-RETURNING CALL (HostTarget().OS): materialise the
+      record into the __rret scratch, then load the field at its offset }
+    if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
+            (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
+            TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
+      NotYet('read of a field of this type', AExpr);
+    EmitRecCallToRret(TFieldAccessExpr(AExpr).Base);   { x0 = __rret addr }
     if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
       EmitAddSubImm('add', 'x0', 'x0',
         TFieldAccessExpr(AExpr).FieldInfo.Offset);
@@ -2481,7 +2581,8 @@ begin
       emitters yield the element address, the field loads at its offset }
     if not (IsIntFam(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc) or
             (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind in
-              [tyDouble, tySingle, tyClass, tyPointer, tyPChar]) or
+              [tyDouble, tySingle, tyClass, tyPointer, tyPChar,
+               tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
     case TStringSubscriptExpr(TFieldAccessExpr(AExpr).Base)
@@ -5230,6 +5331,17 @@ begin
       Result := TAssignment(AStmt).ResolvedLhsType.RawSize();
     Exit;
   end;
+  if AStmt is TFieldAssignment then
+  begin
+    { Rec.Field := <record-returning call> sret's the call into __rret then
+      memcpies into the field — size __rret to the field's record type }
+    if (TFieldAssignment(AStmt).FieldInfo <> nil) and
+       (TFieldAssignment(AStmt).FieldInfo.TypeDesc <> nil) and
+       (TFieldAssignment(AStmt).FieldInfo.TypeDesc.Kind = tyRecord) and
+       IsRecordCallArg(TFieldAssignment(AStmt).Expr) then
+      Result := TFieldAssignment(AStmt).FieldInfo.TypeDesc.RawSize();
+    Exit;
+  end;
   if AStmt is TCompoundStmt then
   begin
     for I := 0 to TCompoundStmt(AStmt).Stmts.Count - 1 do
@@ -5470,12 +5582,17 @@ begin
   { 16-byte scratch for interface-returning calls (sret target).  Always
     reserved — cheap, and avoids a body pre-scan. }
   AddLocal('__iret', 16);
-  J := 0;
+  { __rret: scratch for record-returning calls whose result is consumed
+    without an lvalue — the managed-record-assign path (sized by
+    MaxManagedRecRet) AND record-call field reads (HostTarget().OS, sized
+    to 16 for the register-return shapes; a >16B field-read-on-call is a
+    guarded hole).  Always reserve at least 16 — cheap, avoids an
+    expression pre-scan for the field-read case. }
+  J := 16;
   for I := 0 to ABody.Stmts.Count - 1 do
     if MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I]));
-  if J > 0 then
-    AddLocal('__rret', J);
+  AddLocal('__rret', J);
   for I := 0 to ABody.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
 end;
@@ -5925,19 +6042,33 @@ begin
   Result := (AValue + AAlign - 1) and (not (AAlign - 1));
 end;
 
+function TArm64Backend.IsRecordCallArg(AArg: TASTExpr): Boolean;
+begin
+  { a record-typed argument whose VALUE is produced by a call — it has no
+    lvalue slot, so it must be materialised into a scratch buffer before
+    it can be passed by value.  Constructors do not return records. }
+  Result := (AArg.ResolvedType <> nil) and
+            (AArg.ResolvedType.Kind = tyRecord) and
+            (((AArg is TFuncCallExpr) and
+              (TFuncCallExpr(AArg).ResolvedDecl <> nil)) or
+             ((AArg is TMethodCallExpr) and
+              (TMethodCallExpr(AArg).ResolvedMethod <> nil) and
+              not TMethodCallExpr(AArg).IsConstructorCall));
+end;
+
 function TArm64Backend.ComputeStackArgArea(ADecl: TMethodDecl;
   AArgs: TObjectList; ASelfPushed: Boolean): Integer;
 var
-  LB, TB: Integer;
+  LB, TB, RB: Integer;
 begin
-  Result := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, LB, TB);
+  Result := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, LB, TB, RB);
 end;
 
 function TArm64Backend.ComputeStackArgAreaEx(ADecl: TMethodDecl;
   AArgs: TObjectList; ASelfPushed: Boolean; out ALitBase: Integer;
-  out ATransBase: Integer): Integer;
+  out ATransBase: Integer; out ARecBase: Integer): Integer;
 var
-  I, NInt, NFloat, Off, Sz, Trans, Lit, ESz: Integer;
+  I, NInt, NFloat, Off, Sz, Trans, Lit, ESz, Rec: Integer;
   Arg: TASTExpr;
 begin
   { dry-run of the classification walk in EmitCall — must stay in
@@ -5946,6 +6077,7 @@ begin
   NFloat := 0;
   Trans := 0;
   Lit := 0;
+  Rec := 0;
   if ASelfPushed then NInt := 1;
   Off := 0;
   for I := 0 to AArgs.Count - 1 do
@@ -6002,7 +6134,11 @@ begin
     if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyRecord) then
     begin
       { record args never go to the stack in this subset (guarded in
-        EmitCall); the register consumption mirrors its classification }
+        EmitCall); the register consumption mirrors its classification.
+        A record-CALL arg additionally reserves a scratch buffer in the
+        RecBase region (materialised there before its slot is pushed). }
+      if IsRecordCallArg(Arg) then
+        Rec := Rec + AlignTo(Arg.ResolvedType.RawSize(), 16);
       case RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) of
         0, 1: Inc(NInt);
         2: NInt := NInt + 2;
@@ -6042,7 +6178,8 @@ begin
   end;
   ALitBase := AlignTo(Off, 8);
   ATransBase := ALitBase + Lit;
-  Result := AlignTo(ATransBase + Trans * 8, 16);
+  ARecBase := AlignTo(ATransBase + Trans * 8, 16);
+  Result := AlignTo(ARecBase + Rec, 16);
 end;
 
 procedure TArm64Backend.DecodeMemArg(const AEntry: string;
@@ -6070,6 +6207,7 @@ var
   TransShapes: string;
   IsVariadicArg: Boolean;
   LitBase, LitOff, ESz, N: Integer;
+  RecBase, RecOff: Integer;
 begin
   NInt := 0;
   NFloat := 0;
@@ -6088,10 +6226,11 @@ begin
     size with the C default promotions; the area is allocated BEFORE the
     argument pushes so its offsets stay fixed during the pop walk. }
   StackArea := ComputeStackArgAreaEx(ADecl, AArgs, ASelfPushed, LitBase,
-    TransBase);
+    TransBase, RecBase);
   TransN := 0;
   TransShapes := '';
   LitOff := 0;
+  RecOff := 0;
   if StackArea > 0 then
     EmitAddSubImm('sub', 'sp', 'sp', StackArea);
   { Evaluate args left-to-right onto the stack (calls inside an argument
@@ -6249,9 +6388,82 @@ begin
           { C-side small-struct marshalling needs hardware validation
             first — same honest hole as external record returns }
           NotYet('record argument to an external routine', Arg);
-        if not (Arg is TIdentExpr) then
-          NotYet('record argument from this expression', Arg);
         Shape := RecReturnShape(TRecordTypeDesc(Arg.ResolvedType));
+        if not (Arg is TIdentExpr) then
+        begin
+          { record-CALL argument (Foo(MakeRec(x))): the value has no lvalue
+            slot.  Materialise it into a scratch buffer in the RecBase
+            region — a fixed sp-relative home BELOW the arg-push slots, so
+            the nested call's stack traffic and the later arg pushes cannot
+            collide with it.  Register-returned shapes (1/2/HFA) store their
+            result into the buffer; shape 0 (>16B, x8/memory return) needs
+            an x8 destination address and stays an honest hole for now. }
+          if not IsRecordCallArg(Arg) then
+            NotYet('record argument from this expression', Arg);
+          if Shape = 0 then
+            NotYet('large (>16B) record-returning call argument', Arg);
+          EmitRecCallDispatch(Arg, '');   { result in x0 / x0:x1 / d0.. }
+          { buffer address: sp + (still-pushed eval slots) + RecBase + off }
+          EmitAddSubImm('add', 'x9', 'sp',
+            PopRegs.Count * 16 + RecBase + RecOff);
+          case Shape of
+            1: Self.Emit(#9'str x0, [x9]');
+            2:
+            begin
+              Self.Emit(#9'str x0, [x9]');
+              Self.Emit(#9'str x1, [x9, #8]');
+            end;
+          else
+            for K := 0 to (Shape - 100) - 1 do
+              Self.Emit(Format(#9'str d%d, [x9, #%d]', [K, K * 8]));
+          end;
+          { now push the buffer's contents per shape, exactly like an
+            lvalue record — the buffer address is re-derived each time
+            because intervening pushes move sp but not the buffer }
+          case Shape of
+            1:
+            begin
+              if NInt >= 8 then
+                NotYet('arguments spilling to the stack', Arg);
+              EmitAddSubImm('add', 'x0', 'sp',
+                PopRegs.Count * 16 + RecBase + RecOff);
+              Self.Emit(#9'ldr x0, [x0]');
+              EmitPushX0();
+              PopRegs.Add('x' + IntToStr(NInt));
+              Inc(NInt);
+            end;
+            2:
+            begin
+              if NInt >= 7 then
+                NotYet('arguments spilling to the stack', Arg);
+              EmitAddSubImm('add', 'x9', 'sp',
+                PopRegs.Count * 16 + RecBase + RecOff);
+              Self.Emit(#9'ldr x0, [x9]');
+              EmitPushX0();
+              PopRegs.Add('x' + IntToStr(NInt));
+              EmitAddSubImm('add', 'x9', 'sp',
+                (PopRegs.Count) * 16 + RecBase + RecOff);
+              Self.Emit(#9'ldr x0, [x9, #8]');
+              EmitPushX0();
+              PopRegs.Add('x' + IntToStr(NInt + 1));
+              NInt := NInt + 2;
+            end;
+          else
+            if NFloat + (Shape - 100) > 8 then
+              NotYet('arguments spilling to the stack', Arg);
+            for K := 0 to (Shape - 100) - 1 do
+            begin
+              EmitAddSubImm('add', 'x9', 'sp',
+                PopRegs.Count * 16 + RecBase + RecOff);
+              Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+              EmitPushX0();
+              PopRegs.Add('d' + IntToStr(NFloat + K));
+            end;
+            NFloat := NFloat + (Shape - 100);
+          end;
+          RecOff := RecOff + AlignTo(Arg.ResolvedType.RawSize(), 16);
+        end
+        else
         case Shape of
           0:
           begin
@@ -7837,12 +8049,13 @@ begin
   FFrameSize := 0;
   FForN := 0;
   AddLocal('__iret', 16);   { interface-returning call scratch }
-  J := 0;
+  { __rret: always >= 16 (register-shape record-call field reads); larger
+    if a managed-record assignment needs it }
+  J := 16;
   for I := 0 to AProg.Block.Stmts.Count - 1 do
     if MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I]));
-  if J > 0 then
-    AddLocal('__rret', J);
+  AddLocal('__rret', J);
   for I := 0 to AProg.Block.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(AProg.Block.Stmts.Items[I]));
   FForN := 0;
@@ -8115,12 +8328,12 @@ begin
   FIntfLocals.Clear();
   FForN := 0;
   AddLocal('__iret', 16);
-  J := 0;
+  { __rret: always >= 16 (register-shape record-call field reads) }
+  J := 16;
   for I := 0 to AStmts.Count - 1 do
     if MaxManagedRecRet(TASTStmt(AStmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(AStmts.Items[I]));
-  if J > 0 then
-    AddLocal('__rret', J);
+  AddLocal('__rret', J);
   for I := 0 to AStmts.Count - 1 do
     RegisterForSlots(TASTStmt(AStmts.Items[I]));
   FForN := 0;

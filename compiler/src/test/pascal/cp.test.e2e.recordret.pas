@@ -173,6 +173,12 @@ type
       each pass; the record must sret into the loop variable rather than be
       copied via a scalar-return call.  Both backends. }
     procedure TestRun_ForIn_RecordCurrent_ManagedField;
+    { A record field assigned FROM a record-returning call whose record has a
+      managed (string) field — Result.Field := MakeRec().  The callee sret's
+      into __rret and the +1 string ref transfers into the field.  This is the
+      uToolchain 'Result.QBE := ResolveQBE()' shape that blocked the arm64
+      self-cross-compile.  Both backends. }
+    procedure TestRun_ManagedRecordFieldStore_FromCall;
   end;
 
 implementation
@@ -1401,6 +1407,39 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '7' + LE + '2.5' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_ManagedRecordFieldStore_FromCall;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(
+    '''
+    program P;
+    type
+      TTool = record
+        Path: string;
+        Kind: Integer;
+      end;
+      TChain = record
+        QBE: TTool;
+      end;
+    function MakeTool: TTool;
+    begin
+      Result.Path := 'qbe';
+      Result.Kind := 5
+    end;
+    function Build: TChain;
+    begin
+      Result.QBE := MakeTool()
+    end;
+    var C: TChain;
+    begin
+      C := Build();
+      WriteLn(C.QBE.Path);
+      WriteLn(C.QBE.Kind)
+    end.
+    ''',
+    'qbe' + LE + '5' + LE, 0);
 end;
 
 initialization
