@@ -332,9 +332,45 @@ begin
   end;
 end;
 
+{ The libSystem surface the RTL legitimately imports, plus the dyld TLV
+  thunk.  NOT an allow-list — user `external name` imports may reference
+  anything — but an unknown name gets a loud build-time NOTE, because a
+  compiler-side wrong symbol otherwise surfaces only as a baffling
+  dyld abort at launch (see SMOKE_MAC_DYLD_HANDOVER.md: a mis-named RTL
+  routine was silently bound to libSystem as __UpperCase). }
+function IsKnownLibSystemImport(const AName: string): Boolean;
+const
+  KNOWN: array[0..44] of string = (
+    'abort', 'chdir', 'chmod', 'clock_gettime', 'close', 'dup2',
+    'execvp', 'exit', '_exit', 'fork', 'fstat', 'getcwd', 'getenv',
+    'getpid', 'gmtime_r', 'localtime_r', 'lseek', 'memcmp', 'memcpy',
+    'memmove', 'memset', 'mkdir', 'mkstemp', 'mmap', 'munmap',
+    'nanosleep', 'open', 'pipe', 'pthread_create', 'pthread_join',
+    'pthread_key_create', 'pthread_mutex_init', 'pthread_mutex_lock',
+    'pthread_mutex_unlock', 'pthread_setspecific', 'read', 'rename',
+    'rmdir', 'stat', 'strlen', 'sysconf', 'system', 'time', 'unlink',
+    'waitpid');
+var
+  I: Integer;
+begin
+  if (AName = '_tlv_bootstrap') or (AName = '__cxa_atexit') or
+     (AName = '__error') or (AName = 'timegm') or (AName = 'write') then
+    Exit(True);
+  for I := 0 to 44 do
+    if AName = KNOWN[I] then
+      Exit(True);
+  Result := False;
+end;
+
 function TMachOLinker.BindNameOf(const AName: string): string;
 begin
   { the underscore rule — see the unit comment }
+  if not IsKnownLibSystemImport(AName) then
+    WriteLn(StdErr, 'macho linker: note: binding ''', AName,
+      ''' from libSystem as ''_', AName,
+      ''' — if that is not a real libSystem export, dyld will abort ' +
+      'at launch (a mis-spelled RTL/external symbol looks exactly ' +
+      'like this)');
   Result := '_' + AName;
 end;
 

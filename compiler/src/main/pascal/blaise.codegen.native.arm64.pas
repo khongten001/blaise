@@ -1062,19 +1062,19 @@ begin
     if SameText(TFuncCallExpr(AExpr).Name, 'Trim') then
     begin
       EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
-        '_Trim');
+        '_StringTrim');
       Exit;
     end;
     if SameText(TFuncCallExpr(AExpr).Name, 'LowerCase') then
     begin
       EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
-        '_LowerCase');
+        '_StringLowerCase');
       Exit;
     end;
     if SameText(TFuncCallExpr(AExpr).Name, 'UpperCase') then
     begin
       EmitBuiltinStrCall1(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]),
-        '_UpperCase');
+        '_StringUpperCase');
       Exit;
     end;
     if SameText(TFuncCallExpr(AExpr).Name, 'IntToStr') then
