@@ -844,6 +844,14 @@ type
       fall through to AFalseLabel (a jmp is emitted to it). }
     procedure EmitCondBranch(AExpr: TASTExpr;
                              const ATrueLabel, AFalseLabel: string);
+    { Like EmitCondBranch, but flushes any class-field-on-transient bases the
+      condition deferred, so the borrowed field value is consumed and its
+      transient released within this evaluation (BUG-049).  Materialises the
+      condition to a 0/1 in %rax (rather than fusing compare+branch) so the
+      flush can sit between the eval and the branch; used at loop conditions
+      (per iteration) and the if condition. }
+    procedure EmitCondBranchFlushed(AExpr: TASTExpr;
+                             const ATrueLabel, AFalseLabel: string);
     { Emit a TMethodCallExpr (class method call, with explicit receiver).
       Loads Self into %rdi and evaluates scalar args; result in %rax/%xmm0. }
     procedure EmitMethodCallExpr(ACall: TMethodCallExpr);
@@ -11683,6 +11691,31 @@ begin
   Self.Emit(#9'jmp ' + AFalseLabel);
 end;
 
+procedure TX86_64Backend.EmitCondBranchFlushed(AExpr: TASTExpr;
+                             const ATrueLabel, AFalseLabel: string);
+var
+  Mark: Integer;
+begin
+  { Common case: the condition cannot defer a transient base, so use the fast
+    fused compare-branch (preserves the cmp+jcc optimisation). }
+  if not ExprMayDeferTransientBase(AExpr) then
+  begin
+    Self.EmitCondBranch(AExpr, ATrueLabel, AFalseLabel);
+    Exit;
+  end;
+  { The condition reads a class field off an owned transient — materialise it
+    to a 0/1 so the deferred base can be flushed between the eval and the
+    branch.  Preserve the boolean across the flush (which clobbers %rax/%rdi). }
+  Mark := FPendingRelCount;
+  Self.EmitExprToEax(AExpr);
+  Self.Emit(#9'pushq %rax');
+  Self.FlushNativePendingReleases(Mark);
+  Self.Emit(#9'popq %rax');
+  Self.Emit(#9'testq %rax, %rax');
+  Self.Emit(#9'jne ' + ATrueLabel);
+  Self.Emit(#9'jmp ' + AFalseLabel);
+end;
+
 { ------------------------------------------------------------------ }
 { Statement lowering                                                   }
 { ------------------------------------------------------------------ }
@@ -11823,6 +11856,7 @@ var
   VarOp, EndSlot:              string;
   LCond, LBody, LNext, LEnd:  string;
   VarType:                     TTypeDesc;
+  FForBoundMark:               Integer;
 begin
   if Self.IsLocal(AFor.VarName) then
     VarType := Self.LocalType(AFor.VarName)
@@ -11851,6 +11885,7 @@ begin
   { A captured loop counter (nested-proc or anonymous-method env) lives
     behind its '_cap_' pointer slot — route every counter access through it
     so closures and the loop agree on ONE storage location. }
+  FForBoundMark := FPendingRelCount;
   if Self.IsCaptured(AFor.VarName) then
   begin
     Self.EmitExprToEax(AFor.StartExpr);
@@ -11864,6 +11899,10 @@ begin
   end;
   Self.EmitExprToEax(AFor.EndExpr);
   Self.EmitStoreVar(EndSlot, VarType);
+  { start/end bounds may read a field off a transient; both are now stored to
+    slots (%rax free), and the per-iteration test only RELOADS the slots, so a
+    single flush of their deferred bases suffices (BUG-049). }
+  Self.FlushNativePendingReleases(FForBoundMark);
 
   { ROTATED loop: the condition sits at the BOTTOM — each iteration runs
     increment + compare + one taken branch back to the body, instead of a
@@ -12467,10 +12506,16 @@ var
   Branch:       TCaseBranch;
   I, J:         Integer;
   BranchLabels: TStringList;
+  CaseSelMark:  Integer;
 begin
   { Evaluate selector once, keep in %rax, save to %r10 (caller-saved scratch). }
+  CaseSelMark := FPendingRelCount;
   Self.EmitExprToEax(AStmt.Selector);
   Self.Emit(#9'movq %rax, %r10');
+  { the selector may read a field off a transient; it is now safe in %r10, so
+    flush its deferred base (flush clobbers %rax/%rdi, not %r10).  Evaluated
+    once (BUG-049). }
+  Self.FlushNativePendingReleases(CaseSelMark);
 
   EndLbl  := Self.NewLabel('csend');
   ElseLbl := Self.NewLabel('cselse');
@@ -12941,6 +12986,17 @@ procedure TX86_64Backend.EmitRaiseStmt(AStmt: TRaiseStmt);
 begin
   if AStmt.Expr <> nil then
   begin
+    { NOTE (BUG-049): a raise operand that reads a class field off an owned
+      transient (raise MakeFactory().ExcField) is NOT flushed here.  The
+      exception object aliases the transient's graph and ESCAPES via the
+      exception machinery, so releasing the transient would free the in-flight
+      exception (UAF) — and AddRef-pinning it to compensate then leaks it after
+      the handler (the exception system frees only its own +1).  Getting both
+      right needs the exception machinery to adopt the operand's ownership,
+      which is out of scope here.  The deferred base simply stays in its
+      _pendrel slot (leaked, as before this fix) — never a UAF.  This exotic
+      shape is the sole residual of BUG-049; the common contexts (conditions,
+      loops, call arguments) are all flushed and leak-free. }
     Self.EmitExprToEax(AStmt.Expr);
     Self.Emit(#9'movq %rax, %rdi');
     Self.Emit(#9'callq _Raise');
@@ -12986,24 +13042,23 @@ procedure TX86_64Backend.EmitStmt(AStmt: TASTStmt);
 var
   Mark: Integer;
 begin
-  { Statement-scoped deferred-release boundary (BUG-003 native half).  A LEAF
-    assignment/write whose RHS reads a class field off an owned transient base
-    spills that base to a _pendrel slot (see the field-read emitter) instead of
-    releasing it inline (use-after-free) or pinning the field (leak).  Flush
-    those deferred bases here, AFTER the store, so the field value's use has
-    completed.  Only leaf statements are bracketed: control-flow / compound
-    statements recurse into EmitStmtBody -> EmitStmt for their own leaves, each
-    of which flushes its own, so a per-iteration base is released each iteration
-    (mirrors the QBE EmitStmt bracketing). }
-  if (AStmt is TAssignment) or (AStmt is TFieldAssignment) or
-     (AStmt is TStaticSubscriptAssign) or (AStmt is TPointerWriteStmt) then
-  begin
-    Mark := FPendingRelCount;
-    Self.EmitStmtBody(AStmt);
-    Self.FlushNativePendingReleases(Mark);
-    Exit;
-  end;
+  { Statement-scoped deferred-release boundary (BUG-003/BUG-049).  A class
+    field read on an owned transient base spills that base to a _pendrel slot
+    (see the field-read emitter) instead of releasing it inline (use-after-
+    free) or pinning the field (leak).  Bracketing EVERY statement flushes
+    those deferred bases at the statement boundary, AFTER the borrowed field
+    value has been consumed — closing the leak in every statement context
+    (assignment, call argument, if-body, …), not just leaf assignments.
+    Control-flow / compound statements recurse into EmitStmtBody -> EmitStmt
+    for their child leaves, each of which flushes its own; a LOOP condition
+    additionally flushes per iteration inside its emitter (the single post-
+    body flush here would only release the last iteration's deferred base).
+    Statements whose emitter ends in a non-returning call (Raise) flush before
+    that call in their own emitter, since this post-body flush is dead code
+    there. }
+  Mark := FPendingRelCount;
   Self.EmitStmtBody(AStmt);
+  Self.FlushNativePendingReleases(Mark);
 end;
 
 procedure TX86_64Backend.EmitStmtBody(AStmt: TASTStmt);
@@ -14556,7 +14611,7 @@ begin
       LElse := Self.NewLabel('else')
     else
       LElse := LEnd;
-    Self.EmitCondBranch(IfS.Condition, LThen, LElse);
+    Self.EmitCondBranchFlushed(IfS.Condition, LThen, LElse);  { flush cond xient }
     Self.Emit(LThen + ':');
     Self.EmitStmt(IfS.ThenStmt);
     Self.Emit(#9'jmp ' + LEnd);
@@ -14609,7 +14664,7 @@ begin
     FBreakExcDepths.Pop();
     FBreakLabels.Pop();
     Self.Emit(LCond + ':');
-    Self.EmitCondBranch(WhileS.Condition, LBody, LEnd);
+    Self.EmitCondBranchFlushed(WhileS.Condition, LBody, LEnd);  { per-iter flush }
     Self.Emit(LEnd + ':');
     Exit;
   end;
@@ -14631,7 +14686,7 @@ begin
     FBreakExcDepths.Pop();
     FBreakLabels.Pop();
     Self.Emit(LCond + ':');
-    Self.EmitCondBranch(RepS.Condition, LEnd, LBody);
+    Self.EmitCondBranchFlushed(RepS.Condition, LEnd, LBody);  { per-iter flush }
     Self.Emit(LEnd + ':');
     Exit;
   end;

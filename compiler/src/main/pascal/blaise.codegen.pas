@@ -152,6 +152,16 @@ function RecretClassify(ARec: TRecordTypeDesc;
   twins ExprOwnsRef / NativeExprOwnsRef). }
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
 
+{ True if evaluating AExpr MIGHT defer a class-field-on-owned-transient base
+  release (a retained class/interface field read whose base is an owned
+  transient — MakeObj().ClassField).  The three backends use this to decide
+  whether a condition/branch site needs the flush-and-materialise path
+  (BUG-049): when it returns False the fast fused compare-branch is safe (no
+  deferred base to leak).  Conservative — a false positive only costs the
+  fused-branch optimisation; a false negative would leak, so the walk covers
+  every subexpression that EmitExpr descends into. }
+function ExprMayDeferTransientBase(AExpr: TASTExpr): Boolean;
+
 { String transients come in TWO refcount shapes, and disposing them
   differs:
 
@@ -407,6 +417,56 @@ begin
        (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead <> nil) and
        (TFieldAccessExpr(TStringSubscriptExpr(AExpr).StrExpr).PropRead.ReadMethod <> '') then
       Result := True;
+  end;
+end;
+
+function ExprMayDeferTransientBase(AExpr: TASTExpr): Boolean;
+var
+  FA: TFieldAccessExpr;
+  I: Integer;
+begin
+  Result := False;
+  if AExpr = nil then Exit;
+  { the deferring shape: a retained class/interface field read whose base is an
+    owned transient (MakeObj().ClassField).  Interface fields defer on x86-64
+    too, so include tyInterface. }
+  if AExpr is TFieldAccessExpr then
+  begin
+    FA := TFieldAccessExpr(AExpr);
+    if (FA.Base <> nil) and FA.IsClassAccess and (FA.FieldInfo <> nil) and
+       (FA.FieldInfo.TypeDesc <> nil) and
+       (FA.FieldInfo.TypeDesc.Kind in [tyClass, tyInterface]) and
+       (not FA.IsConstant) and ArcExprOwnsRef(FA.Base) then
+      Exit(True);
+    if ExprMayDeferTransientBase(FA.Base) then Exit(True);
+    Exit;
+  end;
+  { recurse through every subexpression EmitExpr descends into }
+  if AExpr is TBinaryExpr then
+    Result := ExprMayDeferTransientBase(TBinaryExpr(AExpr).Left) or
+              ExprMayDeferTransientBase(TBinaryExpr(AExpr).Right)
+  else if AExpr is TNotExpr then
+    Result := ExprMayDeferTransientBase(TNotExpr(AExpr).Expr)
+  else if AExpr is TIsExpr then
+    Result := ExprMayDeferTransientBase(TIsExpr(AExpr).Obj)
+  else if AExpr is TAsExpr then
+    Result := ExprMayDeferTransientBase(TAsExpr(AExpr).Obj)
+  else if AExpr is TMethodCallExpr then
+  begin
+    Result := ExprMayDeferTransientBase(TMethodCallExpr(AExpr).ObjExpr);
+    if not Result and (TMethodCallExpr(AExpr).Args <> nil) then
+      for I := 0 to TMethodCallExpr(AExpr).Args.Count - 1 do
+        if ExprMayDeferTransientBase(
+             TASTExpr(TMethodCallExpr(AExpr).Args.Items[I])) then
+          Exit(True);
+  end
+  else if AExpr is TFuncCallExpr then
+  begin
+    if TFuncCallExpr(AExpr).Args <> nil then
+      for I := 0 to TFuncCallExpr(AExpr).Args.Count - 1 do
+        if ExprMayDeferTransientBase(
+             TASTExpr(TFuncCallExpr(AExpr).Args.Items[I])) then
+          Exit(True);
   end;
 end;
 

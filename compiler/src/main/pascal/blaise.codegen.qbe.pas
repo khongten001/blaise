@@ -337,6 +337,7 @@ type
     procedure EmitExcPathArcCleanup(ABlock: TBlock);
     procedure EmitExcUnwind(ATargetDepth: Integer);
     procedure EmitStmt(AStmt: TASTStmt);
+    procedure EmitStmtBody(AStmt: TASTStmt);
     procedure EmitIfStmt(AStmt: TIfStmt);
     procedure EmitWhileStmt(AStmt: TWhileStmt);
     procedure EmitRepeatStmt(AStmt: TRepeatStmt);
@@ -3002,7 +3003,6 @@ end;
 
 procedure TCodeGenQBE.EmitStmt(AStmt: TASTStmt);
 var
-  DeadLbl: string;
   StmtMark: Integer;
 begin
   { An empty statement (e.g. the body of `for x := 0 to N do;`) parses to a nil
@@ -3010,36 +3010,33 @@ begin
     do-nothing body, so emit nothing rather than rejecting it. }
   if AStmt = nil then
     Exit;
-  { Statement-scoped deferred-release boundary for LEAF assignment/write
-    statements.  A `Call().ClassField` r-value must keep its owning transient
-    BASE alive until the field value has been consumed (stored), or the base's
-    release would free the field object mid-statement (a use-after-free) — so
-    the field-read emitter DEFERS the base release onto FPendingObjReleases.
-    Those must be flushed at the end of the enclosing leaf statement, AFTER the
-    store.  The call-shaped statements (TMethodCallStmt/TProcCall/etc.) and the
-    expression emitters already bracket their own work; here we cover the
-    assignment/field-write leaves, which did not.  Control-flow/compound
-    statements are NOT bracketed here — they recurse into leaf statements that
-    each flush their own, so a per-iteration base is released each iteration. }
-  if (AStmt is TAssignment) or (AStmt is TFieldAssignment) or
-     (AStmt is TStaticSubscriptAssign) or (AStmt is TPointerWriteStmt) then
-  begin
-    StmtMark := PendingReleaseMark();
-    if AStmt is TFieldAssignment then
-      EmitFieldAssignment(TFieldAssignment(AStmt))
-    else if AStmt is TStaticSubscriptAssign then
-      EmitStaticSubscriptAssign(TStaticSubscriptAssign(AStmt))
-    else if AStmt is TPointerWriteStmt then
-      EmitPointerWrite(TPointerWriteStmt(AStmt))
-    else
-      EmitAssignment(TAssignment(AStmt));
-    FlushPendingReleases(StmtMark);
-    Exit;
-  end;
   if AStmt is TAsmStmt then
     raise ECodeGenError.Create(
       'inline asm blocks require the native backend (--backend native); '
       + 'the QBE backend cannot emit assembly');
+  { Statement-scoped deferred-release boundary (BUG-049).  A `Call().ClassField`
+    r-value must keep its owning transient BASE alive until the field value has
+    been consumed, or the base's release would free the field object mid-
+    statement (use-after-free) — so the field-read emitter DEFERS the base
+    release onto FPendingObjReleases.  Bracketing EVERY statement flushes those
+    deferred bases at the statement boundary, closing the leak in every context
+    (assignment, call argument, if-body, …), not just leaf assignments.
+    Control-flow/compound statements recurse into leaf statements that each
+    flush their own; a LOOP condition additionally flushes per iteration in its
+    emitter (the post-body flush here would only release the last iteration's
+    deferred base).  Raise flushes before its non-returning call in its own
+    emitter, since this post-body flush would be dead code there. }
+  StmtMark := PendingReleaseMark();
+  EmitStmtBody(AStmt);
+  FlushPendingReleases(StmtMark);
+end;
+
+procedure TCodeGenQBE.EmitStmtBody(AStmt: TASTStmt);
+var
+  DeadLbl: string;
+begin
+  if AStmt = nil then
+    Exit;
   if AStmt is TTryFinallyStmt then
     EmitTryFinallyStmt(TTryFinallyStmt(AStmt))
   else if AStmt is TTryExceptStmt then
@@ -3130,11 +3127,16 @@ var
   LblThen:   string;
   LblElse:   string;
   LblEnd:    string;
+  IfCondMark: Integer;
 begin
   LblThen := AllocLabel('if_then');
   LblEnd  := AllocLabel('if_end');
 
+  { a transient-field read in the condition defers its base; flush it once the
+    condition value is materialised, before branching (BUG-049) }
+  IfCondMark := PendingReleaseMark();
   CondTemp := EmitExpr(AStmt.Condition);
+  FlushPendingReleases(IfCondMark);
 
   if AStmt.ElseStmt <> nil then
   begin
@@ -3429,6 +3431,7 @@ var
   StepT:    string;
   CmpOp:    string;
   StepOp:   string;
+  ForBoundMark: Integer;
 begin
   LblCond := AllocLabel('for_cond');
   LblBody := AllocLabel('for_body');
@@ -3436,6 +3439,7 @@ begin
   LblEnd  := AllocLabel('for_end');
 
   { Evaluate start and store into loop variable }
+  ForBoundMark := PendingReleaseMark();
   StartT := EmitExpr(AStmt.StartExpr);
   if not AStmt.IsGlobal and IsPromoted(AStmt.VarName) then
     EmitLine(Format('  %%_var_%s =w copy %s', [AStmt.VarName, StartT]))
@@ -3444,6 +3448,10 @@ begin
 
   { Evaluate end value once into a temp }
   EndT := EmitExpr(AStmt.EndExpr);
+  { start/end bounds may read a field off a transient; both are materialised
+    (the per-iteration test only reloads the var + EndT temp), so a single
+    flush of their deferred bases suffices (BUG-049). }
+  FlushPendingReleases(ForBoundMark);
 
   { Jump to condition (terminates current block) }
   EmitLine(Format('  jmp @%s', [LblCond]));
@@ -4246,6 +4254,7 @@ var
   LblBody: string;
   LblEnd:  string;
   CondTemp: string;
+  WhileCondMark: Integer;
 begin
   LblCond := AllocLabel('while_cond');
   LblBody := AllocLabel('while_body');
@@ -4254,9 +4263,13 @@ begin
   { Jump into the condition block (terminates current block) }
   EmitLine(Format('  jmp @%s', [LblCond]));
 
-  { Condition evaluation block }
+  { Condition evaluation block.  A transient-field read in the condition
+    defers its base; flush per iteration here (BUG-049) — the CondTemp SSA
+    value is unaffected by the release calls. }
   EmitLine('@' + LblCond);
+  WhileCondMark := PendingReleaseMark();
   CondTemp := EmitExpr(AStmt.Condition);
+  FlushPendingReleases(WhileCondMark);
   EmitLine(Format('  jnz %s, @%s, @%s', [CondTemp, LblBody, LblEnd]));
 
   { Loop body block }
@@ -4281,6 +4294,7 @@ var
   LblCond: string;
   LblEnd:  string;
   CondTemp: string;
+  RepCondMark: Integer;
 begin
   LblBody := AllocLabel('repeat_body');
   LblCond := AllocLabel('repeat_cond');
@@ -4301,9 +4315,12 @@ begin
   end;
   EmitLine(Format('  jmp @%s', [LblCond]));
 
-  { Condition block — true means exit, false means repeat }
+  { Condition block — true means exit, false means repeat.  Flush per
+    iteration (BUG-049). }
   EmitLine('@' + LblCond);
+  RepCondMark := PendingReleaseMark();
   CondTemp := EmitExpr(AStmt.Condition);
+  FlushPendingReleases(RepCondMark);
   EmitLine(Format('  jnz %s, @%s, @%s', [CondTemp, LblEnd, LblBody]));
 
   { Continuation block }
@@ -8219,8 +8236,13 @@ var
   Branch:      TCaseBranch;
   I, J:        Integer;
   BranchLabels: TStringList;
+  CaseSelMark: Integer;
 begin
+  { the selector may read a field off a transient; flush it once the value is
+    materialised in SelTemp (evaluated once, BUG-049) }
+  CaseSelMark := PendingReleaseMark();
   SelTemp  := EmitExpr(AStmt.Selector);
+  FlushPendingReleases(CaseSelMark);
   EndLbl   := AllocLabel('case_end');
   ElseLbl  := AllocLabel('case_else');
 

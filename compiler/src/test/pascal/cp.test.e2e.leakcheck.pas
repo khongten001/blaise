@@ -49,6 +49,13 @@ type
       release (QBE use-after-free before the deferred-base-release fix) and not
       leak on QBE.  Correct output (42) is asserted on BOTH backends. }
     procedure TestDebug_CallResultClassFieldRead_NoUseAfterFree;
+    { BUG-049: a class-field read off an owned transient in an UNBRACKETED
+      statement context (a call argument, an if condition, and — per iteration
+      — a loop condition) must still release the transient.  Every statement is
+      flush-bracketed, and loop conditions flush per iteration, so none leak. }
+    procedure TestDebug_TransientFieldInCallArg_NoLeak;
+    procedure TestDebug_TransientFieldInIfCond_NoLeak;
+    procedure TestDebug_TransientFieldInWhileCond_NoLeak;
     { A deep chain MakeIt().A.B.N reads a scalar off a base that is itself two
       field-reads off an owned transient.  Each intermediate owned transient's
       release must be deferred to statement end so none leak, while the value
@@ -694,6 +701,76 @@ const
     end.
     ''';
 
+  { BUG-049: transient-field read as a CALL ARGUMENT (Take(MakeBox().Inner)).
+    A statement-level call is not one of the four leaf-assignment kinds; before
+    the every-statement flush the deferred base leaked. }
+  SrcTransientFieldInCallArg = '''
+    program P;
+    type
+      TBox = class Inner: TObject; constructor Create; end;
+    constructor TBox.Create;
+    begin
+      Inner := TObject.Create();
+    end;
+    function MakeBox: TBox;
+    begin
+      Result := TBox.Create();
+    end;
+    procedure Take(O: TObject);
+    begin
+    end;
+    begin
+      Take(MakeBox().Inner);
+      WriteLn('done')
+    end.
+    ''';
+
+  { BUG-049: transient-field read in an IF CONDITION. }
+  SrcTransientFieldInIfCond = '''
+    program P;
+    type
+      TBox = class Inner: TObject; constructor Create; end;
+    constructor TBox.Create;
+    begin
+      Inner := TObject.Create();
+    end;
+    function MakeBox: TBox;
+    begin
+      Result := TBox.Create();
+    end;
+    begin
+      if MakeBox().Inner <> nil then
+        WriteLn('yes')
+      else
+        WriteLn('no')
+    end.
+    ''';
+
+  { BUG-049: transient-field read in a WHILE CONDITION, evaluated per iteration.
+    The loop runs several times; a single post-loop flush would release only
+    the last iteration's transient — the per-iteration flush releases each. }
+  SrcTransientFieldInWhileCond = '''
+    program P;
+    type
+      TBox = class Inner: TObject; Val: Integer; constructor Create(V: Integer); end;
+    constructor TBox.Create(V: Integer);
+    begin
+      Inner := TObject.Create();
+      Val := V;
+    end;
+    function MakeBox(V: Integer): TBox;
+    begin
+      Result := TBox.Create(V);
+    end;
+    var I: Integer;
+    begin
+      I := 0;
+      while (I < 5) and (MakeBox(I).Inner <> nil) do
+        I := I + 1;
+      WriteLn(I)
+    end.
+    ''';
+
   { A DEEP chain field read: MakeIt().A.B.N reads a scalar field off a base that
     is itself two field-reads-off-an-owned-transient.  EmitInstancePtr resolved
     each intermediate hop's owned transient (the MakeIt() result, then .A, .B)
@@ -825,6 +902,58 @@ begin
   { Native now defers the owned base release to statement end (BUG-003 native
     half), so the field value's +1 no longer leaks. }
   AssertTrue('no leak report (native)', Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_TransientFieldInCallArg_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcTransientFieldInCallArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcTransientFieldInCallArg, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_TransientFieldInIfCond_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcTransientFieldInIfCond, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcTransientFieldInIfCond, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_TransientFieldInWhileCond_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { the loop runs 5 iterations; per-iteration flush releases each transient —
+    a single post-loop flush would leak 4. }
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcTransientFieldInWhileCond, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertTrue('loop count (qbe)', Pos('5' + LE, Output) >= 0);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcTransientFieldInWhileCond, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertTrue('loop count (native)', Pos('5' + LE, Output) >= 0);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
 end;
 
 procedure TE2ELeakCheckTests.TestDebug_DeepChainFieldRead_NoLeak;

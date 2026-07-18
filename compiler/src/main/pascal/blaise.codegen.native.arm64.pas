@@ -119,18 +119,8 @@ type
     FFloatNames:  TStringList;   { program-level float globals (parallel
                                    subset of FGlobalNames' world) }
     FPendingRelCount: Integer;   { live statement-scoped deferred class
-                                   releases (BUG-048) — also the next free
-                                   _pendrel_N slot index }
-    FInFlushBracket: Boolean;    { emitting a leaf statement whose end runs
-                                   FlushNativePendingReleases — only then may
-                                   a class-field-on-transient read DEFER its
-                                   base release; in any other expression
-                                   context (call args, loop/if conditions,
-                                   Exit/Raise operands) no flush follows, so
-                                   the defer would leak the whole transient
-                                   graph — there we keep the leak-safe
-                                   AddRef-pin (BUG-048; unbracketed leak in
-                                   the mature backends is BUG-049). }
+                                   releases (BUG-048/BUG-049) — also the next
+                                   free _pendrel_N slot index }
 
     function  NewLabel(const APrefix: string): string;
     procedure NotYet(const AWhat: string; ANode: TASTNode);
@@ -181,9 +171,16 @@ type
       across the element evaluation (no net sp change).  Mirrors x86-64
       EmitConstArrayLiteral's per-element boxing. }
     procedure EmitConstArrayElemToVarRec(AElem: TASTExpr; AOffset: Integer);
+    { Evaluate a condition/selector/operand expression to x0 and flush any
+      class-field-on-transient bases it deferred, so the borrowed field value
+      is consumed and its transient released within this evaluation — the
+      result (in x0) is preserved across the flush.  Used at loop conditions
+      (per iteration), if/case/raise operands (BUG-049). }
+    procedure EmitCondToX0Flushed(AExpr: TASTExpr);
 
     { ---- statements ---- }
     procedure EmitStmt(AStmt: TASTStmt);
+    procedure EmitStmtBody(AStmt: TASTStmt);
     procedure EmitStmtList(AStmts: TObjectList);
     procedure EmitAssignment(AAsgn: TAssignment);
     procedure EmitProcCallStmt(ACall: TProcCall);
@@ -453,7 +450,6 @@ begin
   for I := 0 to PENDREL_SLOTS - 1 do
     AddLocal(Format('_pendrel_%d', [I]), 8);
   FPendingRelCount := 0;
-  FInFlushBracket := False;
 end;
 
 function TArm64Backend.DeferNativeClassRelease: Boolean;
@@ -1320,6 +1316,21 @@ begin
   Self.Emit(#9'strb w0, [x9]');                    { VType byte at +0 }
 end;
 
+procedure TArm64Backend.EmitCondToX0Flushed(AExpr: TASTExpr);
+var
+  Mark: Integer;
+begin
+  Mark := FPendingRelCount;
+  Self.EmitExprToX0(AExpr);
+  if FPendingRelCount > Mark then
+  begin
+    { the condition deferred a transient base — preserve the boolean result
+      across the flush (FlushNativePendingReleases clobbers x0) }
+    EmitPushX0();
+    FlushNativePendingReleases(Mark);
+    EmitPopTo('x0');
+  end;
+end;
 
 procedure TArm64Backend.EmitExprToX0(AExpr: TASTExpr);
 var
@@ -2617,15 +2628,13 @@ begin
                                          volatile register has to survive a
                                          slot spill (clobbers x9) or a call. }
         Self.Emit(#9'ldr x0, [sp, #16]'); { x0 = owned transient base }
-        { DEFER only inside a leaf statement whose end flushes pending
-          releases (FInFlushBracket).  In any other expression context —
-          call arguments, loop/if conditions, Exit/Raise operands — no flush
-          follows, so a deferred base would never be released and the whole
-          transient graph would leak (worse than the pin).  There, and when
-          all _pendrel slots are busy, fall back to the leak-safe AddRef-pin
-          (x86-64 parity).  BUG-048; the mature backends leak in the same
-          unbracketed contexts — tracked as BUG-049. }
-        if FInFlushBracket and DeferNativeClassRelease() then { spill base }
+        { DEFER the base release to the enclosing statement boundary (or, for
+          a loop/if condition, the per-iteration flush in the control-flow
+          emitter).  EVERY statement is now flush-bracketed (BUG-049), so a
+          deferred base is always released — no context leaks.  Only when all
+          _pendrel slots are busy (>8 transient-field reads nested in one
+          expression) do we fall back to the leak-safe AddRef-pin. }
+        if DeferNativeClassRelease() then { spill base -> _pendrel slot }
         begin
           EmitPopTo('x0');                { fieldval }
           Self.Emit(#9'add sp, sp, #16'); { drop base }
@@ -3010,6 +3019,25 @@ procedure TArm64Backend.EmitStmt(AStmt: TASTStmt);
 var
   Mark: Integer;
 begin
+  { Statement-scoped deferred-release boundary (BUG-048/BUG-049).  A class
+    field read on an owned transient base spills that base to a _pendrel slot
+    (see the field-read emitter) instead of releasing it inline (UAF) or
+    pinning it (leak).  Bracketing EVERY statement flushes those deferred
+    bases at the statement boundary, AFTER the borrowed field value has been
+    consumed — so the leak is closed in every statement context (assignment,
+    call argument, if-body, …), not just the four leaf-assignment kinds.
+    Control-flow / compound statements recurse into EmitStmtBody -> EmitStmt
+    for their own child leaves, each of which flushes its own; a LOOP
+    condition additionally flushes per iteration inside its emitter (the
+    single post-body flush here would only release the last iteration's
+    deferred base). }
+  Mark := FPendingRelCount;
+  Self.EmitStmtBody(AStmt);
+  Self.FlushNativePendingReleases(Mark);
+end;
+
+procedure TArm64Backend.EmitStmtBody(AStmt: TASTStmt);
+begin
   { empty statement (bare ';' bodies — `while X do ;`, `if C then ;`):
     nothing to emit.  Without this guard the fallthrough NotYet derefs
     nil for the class name and the COMPILER segfaults. }
@@ -3028,20 +3056,12 @@ begin
   end;
   if AStmt is TAssignment then
   begin
-    Mark := FPendingRelCount;
-    FInFlushBracket := True;
     EmitAssignment(TAssignment(AStmt));
-    FInFlushBracket := False;
-    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TFieldAssignment then
   begin
-    Mark := FPendingRelCount;
-    FInFlushBracket := True;
     EmitFieldAssign(TFieldAssignment(AStmt));
-    FInFlushBracket := False;
-    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TProcCall then
@@ -3105,11 +3125,7 @@ begin
   end;
   if AStmt is TStaticSubscriptAssign then
   begin
-    Mark := FPendingRelCount;
-    FInFlushBracket := True;
     EmitStaticElemAssign(TStaticSubscriptAssign(AStmt));
-    FInFlushBracket := False;
-    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TForStmt then
@@ -3124,11 +3140,7 @@ begin
   end;
   if AStmt is TPointerWriteStmt then
   begin
-    Mark := FPendingRelCount;
-    FInFlushBracket := True;
     EmitPointerWrite(TPointerWriteStmt(AStmt));
-    FInFlushBracket := False;
-    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TExitStmt then
@@ -4084,7 +4096,7 @@ var
 begin
   ElseL := NewLabel('else');
   EndL  := NewLabel('endif');
-  Self.EmitExprToX0(AStmt.Condition);
+  Self.EmitCondToX0Flushed(AStmt.Condition);
   Self.Emit(Format(#9'cbz x0, %s', [ElseL]));
   Self.EmitStmt(AStmt.ThenStmt);
   Self.Emit(Format(#9'b %s', [EndL]));
@@ -4101,7 +4113,7 @@ begin
   TopL := NewLabel('while');
   EndL := NewLabel('wend');
   Self.Emit(TopL + ':');
-  Self.EmitExprToX0(AStmt.Condition);
+  Self.EmitCondToX0Flushed(AStmt.Condition);   { flush per iteration (BUG-049) }
   Self.Emit(Format(#9'cbz x0, %s', [EndL]));
   { break/continue target this loop — without the push a break inside a
     while NESTED in a for would silently bind to the outer loop }
@@ -4456,6 +4468,14 @@ begin
     Self.Emit(#9'bl _Reraise');
     Exit;
   end;
+  { NOTE (BUG-049): a raise operand that reads a class field off an owned
+    transient (raise MakeFactory().ExcField) is NOT flushed.  The exception
+    object aliases the transient's graph and ESCAPES via the exception
+    machinery, so releasing the transient would free the in-flight exception
+    (UAF), and AddRef-pinning to compensate leaks it after the handler.  The
+    deferred base stays in its _pendrel slot (leaked, never a UAF) — the sole
+    residual of BUG-049; the common contexts are all flushed and leak-free.
+    Mirrors the x86-64 backend. }
   Self.EmitExprToX0(AStmt.Expr);
   Self.Emit(#9'bl _Raise');
 end;
@@ -4473,7 +4493,7 @@ begin
   FContLbls.Add(TopL);
   Self.Emit(TopL + ':');
   EmitStmtList(AStmt.Body.Stmts);
-  Self.EmitExprToX0(AStmt.Condition);
+  Self.EmitCondToX0Flushed(AStmt.Condition);   { flush per iteration (BUG-049) }
   Self.Emit(Format(#9'cbz x0, %s', [TopL]));
   Self.Emit(EndL + ':');
   FBreakLbls.Delete(FBreakLbls.Count - 1);
@@ -4486,14 +4506,19 @@ var
   I, J: Integer;
   Br: TCaseBranch;
   EndL, NextL, BodyL: string;
+  CaseMark: Integer;
 begin
   { chained compares — selector evaluated ONCE and kept on the stack
     across the branch tests (a value expression can be a call).  Ordinal
     labels compare registers; string labels compare content via
     _StringEquals (a pointer cmp would be silently wrong). }
   EndL := NewLabel('cend');
+  CaseMark := FPendingRelCount;
   Self.EmitExprToX0(AStmt.Selector);
   EmitPushX0();
+  { the selector may read a field off a transient; it is now safely on the
+    stack, so flush its deferred base (x0 is free).  Evaluated once (BUG-049). }
+  FlushNativePendingReleases(CaseMark);
   for I := 0 to AStmt.Branches.Count - 1 do
   begin
     Br := TCaseBranch(AStmt.Branches.Items[I]);
@@ -4588,6 +4613,7 @@ procedure TArm64Backend.EmitFor(AStmt: TForStmt);
 var
   TopL, EndL, ContL: string;
   EndSlot: string;
+  ForMark: Integer;
 begin
   { the pre-pass registered one hidden end slot per for statement, consumed
     here in the same walk order }
@@ -4596,10 +4622,15 @@ begin
   TopL  := NewLabel('for');
   EndL  := NewLabel('fend');
   ContL := NewLabel('fcont');
+  ForMark := FPendingRelCount;
   Self.EmitExprToX0(AStmt.StartExpr);
   EmitStoreSlot('x0', AStmt.VarName);
   Self.EmitExprToX0(AStmt.EndExpr);      { bound evaluated ONCE }
   EmitStoreSlot('x0', EndSlot);
+  { start/end bounds may read a field off a transient; both are now stored to
+    slots (x0 free), so flush their deferred bases once — the per-iteration
+    test only RELOADS the slots, so a single flush suffices (BUG-049). }
+  FlushNativePendingReleases(ForMark);
   Self.Emit(TopL + ':');
   EmitLoadSlot('x0', AStmt.VarName);
   EmitLoadSlot('x1', EndSlot);
