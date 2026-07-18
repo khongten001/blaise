@@ -72,6 +72,11 @@ type
       new one with no extra retain.  Must be leak-free and double-free-free —
       the transfer has to balance exactly. }
     procedure TestRun_DynArrayFunctionReturn_NoLeak_Valgrind;
+    { A record-returning call stored into an array element where the element
+      is a MANAGED record (string field): Arr[I] := MakeSpec().  The dest
+      element's old managed refs are released and the callee's +1 refs
+      transfer in — must be leak-free and double-free-free. }
+    procedure TestRun_ManagedRecordCallIntoElement_NoLeak_Valgrind;
   end;
 
 implementation
@@ -772,6 +777,49 @@ begin
   AssertTrue(CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('0+10+20+30', '60' + LE, Output);
+  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
+  if not RunUnderValgrind(Src, Log) then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
+  end;
+end;
+
+procedure TE2EArcTests.TestRun_ManagedRecordCallIntoElement_NoLeak_Valgrind;
+const
+  Src = '''
+    program P;
+    type
+      TSpec = record
+        Name: string;
+        Kind: Integer;
+      end;
+      TArr = array of TSpec;
+    function MakeSpec(N: Integer): TSpec;
+    begin
+      Result.Name := 'tool';
+      Result.Kind := N
+    end;
+    var
+      Arr: TArr;
+      I, Sum: Integer;
+    begin
+      SetLength(Arr, 3);
+      for I := 0 to 2 do
+        Arr[I] := MakeSpec(I * 10);
+      Sum := 0;
+      for I := 0 to 2 do
+        Sum := Sum + Arr[I].Kind;
+      WriteLn(Arr[0].Name);
+      WriteLn(Sum)
+    end.
+    ''';
+var Output: string; RCode: Integer; Log: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('name + 0+10+20', 'tool' + LE + '30' + LE, Output);
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   if not RunUnderValgrind(Src, Log) then
   begin

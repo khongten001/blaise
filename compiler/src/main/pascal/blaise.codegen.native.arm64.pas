@@ -4226,7 +4226,26 @@ begin
   else if Elem.Kind = tyRecord then
   begin
     { record element: memcpy from the source record's address — managed
-      fields follow the retain-source-then-release-dest discipline }
+      fields follow the retain-source-then-release-dest discipline.
+      A record-returning CALL source has no lvalue: materialise it into the
+      __rret scratch first (its +1 field refs transfer), release the dest
+      element's old managed refs, then memcpy __rret -> element (no source
+      retain — the transfer is exact).  Mirrors the field-store leg. }
+    if IsRecordCallArg(AStmt.ValueExpr) then
+    begin
+      EmitRecCallToRret(AStmt.ValueExpr);   { x0 = __rret addr; +1 transfers }
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      Self.Emit(#9'ldr x22, [sp, #16]');    { the parked element address }
+      if not RecretManagedClean(TRecordTypeDesc(Elem)) then
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(Elem), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      EmitSlotAddr('x1', '__rret');
+      EmitIntLiteral('x2', Elem.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Self.Emit(#9'add sp, sp, #16');        { drop the element address }
+      Exit;
+    end;
     if not RecretManagedClean(TRecordTypeDesc(Elem)) then
     begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
@@ -5406,6 +5425,7 @@ end;
 function TArm64Backend.MaxManagedRecRet(AStmt: TASTStmt): Integer;
 var
   I, N: Integer;
+  Elem: TTypeDesc;
 begin
   { largest RawSize among managed-record-returning call assignments — the
     caller routes those through a __rret scratch so the LHS's old field
@@ -5433,6 +5453,27 @@ begin
        (TFieldAssignment(AStmt).FieldInfo.TypeDesc.Kind = tyRecord) and
        IsRecordCallArg(TFieldAssignment(AStmt).Expr) then
       Result := TFieldAssignment(AStmt).FieldInfo.TypeDesc.RawSize();
+    Exit;
+  end;
+  if AStmt is TStaticSubscriptAssign then
+  begin
+    { Arr[I] := <record-returning call> sret's the call into __rret then
+      memcpies into the element — size __rret to the element's record type }
+    if (TStaticSubscriptAssign(AStmt).ResolvedArrayType <> nil) and
+       (TStaticSubscriptAssign(AStmt).ResolvedArrayType.Kind in
+         [tyStaticArray, tyDynArray]) and
+       IsRecordCallArg(TStaticSubscriptAssign(AStmt).ValueExpr) then
+    begin
+      if TStaticSubscriptAssign(AStmt).ResolvedArrayType.Kind =
+           tyStaticArray then
+        Elem := TStaticArrayTypeDesc(
+          TStaticSubscriptAssign(AStmt).ResolvedArrayType).ElementType
+      else
+        Elem := TDynArrayTypeDesc(
+          TStaticSubscriptAssign(AStmt).ResolvedArrayType).ElementType;
+      if (Elem <> nil) and (Elem.Kind = tyRecord) then
+        Result := Elem.RawSize();
+    end;
     Exit;
   end;
   if AStmt is TCompoundStmt then
@@ -6483,7 +6524,7 @@ begin
             first — same honest hole as external record returns }
           NotYet('record argument to an external routine', Arg);
         Shape := RecReturnShape(TRecordTypeDesc(Arg.ResolvedType));
-        if not (Arg is TIdentExpr) then
+        if IsRecordCallArg(Arg) then
         begin
           { record-CALL argument (Foo(MakeRec(x))): the value has no lvalue
             slot.  Materialise it into a scratch buffer in the RecBase
@@ -6492,8 +6533,6 @@ begin
             collide with it.  Register-returned shapes (1/2/HFA) store their
             result into the buffer; shape 0 (>16B, x8/memory return) needs
             an x8 destination address and stays an honest hole for now. }
-          if not IsRecordCallArg(Arg) then
-            NotYet('record argument from this expression', Arg);
           if Shape = 0 then
             NotYet('large (>16B) record-returning call argument', Arg);
           EmitRecCallDispatch(Arg, '');   { result in x0 / x0:x1 / d0.. }
@@ -6561,12 +6600,11 @@ begin
         case Shape of
           0:
           begin
-            { >16B: pass the lvalue address.  AAPCS64 wants a caller-side
-              copy, but our callees memcpy the bytes into their own slot
-              at entry (before any user code runs), which yields identical
-              by-value semantics — and external callees are rejected above }
+            { >16B: pass the lvalue address (the callee memcpies into its own
+              slot at entry).  EmitRecAddrToX0 handles ident/subscript/field
+              lvalues uniformly — Specs[I] included. }
             if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
-            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+            EmitRecAddrToX0(Arg);
             EmitPushX0();
             PopRegs.Add('x' + IntToStr(NInt));
             Inc(NInt);
@@ -6574,7 +6612,7 @@ begin
           1:
           begin
             if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
-            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
+            EmitRecAddrToX0(Arg);
             Self.Emit(#9'ldr x0, [x0]');
             EmitPushX0();
             PopRegs.Add('x' + IntToStr(NInt));
@@ -6583,23 +6621,25 @@ begin
           2:
           begin
             if NInt >= 7 then NotYet('arguments spilling to the stack', Arg);
-            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
+            EmitRecAddrToX0(Arg);
+            Self.Emit(#9'mov x9, x0');
             Self.Emit(#9'ldr x0, [x9]');
             EmitPushX0();
             PopRegs.Add('x' + IntToStr(NInt));
-            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
             Self.Emit(#9'ldr x0, [x9, #8]');
             EmitPushX0();
             PopRegs.Add('x' + IntToStr(NInt + 1));
             NInt := NInt + 2;
           end;
         else
-          { HFA of (Shape - 100) Doubles in d(NFloat).. }
+          { HFA of (Shape - 100) Doubles in d(NFloat).. — address computed
+            once into x9 (a subscript index is not re-evaluated) }
           if NFloat + (Shape - 100) > 8 then
             NotYet('arguments spilling to the stack', Arg);
+          EmitRecAddrToX0(Arg);
+          Self.Emit(#9'mov x9, x0');
           for K := 0 to (Shape - 100) - 1 do
           begin
-            EmitSlotAddr('x9', TIdentExpr(Arg).Name);
             Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
             EmitPushX0();
             PopRegs.Add('d' + IntToStr(NFloat + K));

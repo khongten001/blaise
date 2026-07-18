@@ -175,6 +175,10 @@ type
     procedure TestRetainedFieldReadOnTransientBase;
     { self-cross-compile: dynamic-array function return (+1 transfers) }
     procedure TestDynArrayFunctionReturn_TransfersOwnership;
+    { self-cross-compile: record-returning call stored into an array element,
+      and a subscripted record element passed as a by-value argument }
+    procedure TestRecordCallIntoArrayElement;
+    procedure TestSubscriptRecordAsArgument;
   end;
 
 implementation
@@ -3416,6 +3420,91 @@ begin
     Pos(#9'bl _DynArrayRelease', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64dar.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRecordCallIntoArrayElement;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Arr[0] := MakeSpec(5) with a MANAGED element (string field): the call
+    sret's into __rret, the dest element's old string ref is released, then
+    __rret is memcpy'd in (the +1 transfers) }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TSpec = record
+        Name: string;
+        Kind: Integer;
+      end;
+      TArr = array of TSpec;
+    function MakeSpec(N: Integer): TSpec;
+    begin
+      Result.Name := 'tool';
+      Result.Kind := N
+    end;
+    var Arr: TArr;
+    begin
+      SetLength(Arr, 1);
+      Arr[0] := MakeSpec(5);
+      WriteLn(Arr[0].Kind)
+    end.
+    ''');
+  { the element store releases the dest's old string field before the memcpy
+    transfer — a _StringRelease then a memcpy from the __rret scratch }
+  AssertTrue('dest old ref released', Pos(#9'bl _StringRelease', AsmT) >= 0);
+  AssertTrue('transfer via memcpy', Pos(#9'bl memcpy', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64rce.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSubscriptRecordAsArgument;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { DescribeKind(Arr[I]) — a subscripted record element passed by value:
+    EmitRecAddrToX0 computes the element address (subscript lvalue), then the
+    shape's registers/address are loaded from it }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TPair = record
+        A: Integer;
+        B: Integer;
+      end;
+      TArr = array of TPair;
+    function SumPair(const P: TPair): Integer;
+    begin
+      Result := P.A + P.B
+    end;
+    var Arr: TArr;
+    begin
+      SetLength(Arr, 1);
+      Arr[0].A := 3;
+      Arr[0].B := 4;
+      WriteLn(SumPair(Arr[0]))
+    end.
+    ''');
+  AssertTrue('SumPair called with the element', Pos(#9'bl SumPair', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64sra.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
