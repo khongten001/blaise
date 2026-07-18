@@ -67,6 +67,11 @@ type
       pins on arm64 — see BUG-048 — and this test targets value correctness,
       which is what the compiler's own Sections.Get(I).Name relies on.) }
     procedure TestRun_RetainedFieldReadOnTransient_Correct;
+    { A dynamic-array function return (function MakeArr: TArr): the Result's
+      +1 transfers to the caller, which releases the old value and stores the
+      new one with no extra retain.  Must be leak-free and double-free-free —
+      the transfer has to balance exactly. }
+    procedure TestRun_DynArrayFunctionReturn_NoLeak_Valgrind;
   end;
 
 implementation
@@ -736,6 +741,43 @@ begin
     end.
     ''',
     '7' + LE, 0);
+end;
+
+procedure TE2EArcTests.TestRun_DynArrayFunctionReturn_NoLeak_Valgrind;
+const
+  Src = '''
+    program P;
+    type TArr = array of Integer;
+    function MakeArr(N: Integer): TArr;
+    var I: Integer;
+    begin
+      SetLength(Result, N);
+      for I := 0 to N - 1 do
+        Result[I] := I * 10
+    end;
+    var
+      A: TArr;
+      I, Sum: Integer;
+    begin
+      A := MakeArr(4);
+      Sum := 0;
+      for I := 0 to 3 do
+        Sum := Sum + A[I];
+      WriteLn(Sum)
+    end.
+    ''';
+var Output: string; RCode: Integer; Log: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertTrue(CompileAndRun(Src, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('0+10+20+30', '60' + LE, Output);
+  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
+  if not RunUnderValgrind(Src, Log) then
+  begin
+    if Log = '' then Log := '(valgrind produced no output)';
+    Fail('valgrind reported errors or leaks:' + LE + Log);
+  end;
 end;
 
 initialization

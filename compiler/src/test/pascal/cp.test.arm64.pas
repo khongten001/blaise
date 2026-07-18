@@ -173,6 +173,8 @@ type
     { self-cross-compile: retained managed field read on an owned transient
       base — string field (inline release) vs class field (AddRef-pin) }
     procedure TestRetainedFieldReadOnTransientBase;
+    { self-cross-compile: dynamic-array function return (+1 transfers) }
+    procedure TestDynArrayFunctionReturn_TransfersOwnership;
   end;
 
 implementation
@@ -3368,6 +3370,52 @@ begin
 
   Obj := AssembleArm64ToBytes(AsmCls);
   F := ParseMachO(Obj, 'arm64rmf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestDynArrayFunctionReturn_TransfersOwnership;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+  MakeEnd, RelInMake: Integer;
+begin
+  { function MakeArr: TArr — the dyn-array Result is an 8-byte pointer whose
+    +1 transfers to the caller: MakeArr does NOT release Result, the caller's
+    assignment consumes the owned result (releases old, stores new, no extra
+    AddRef) }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TArr = array of Integer;
+    function MakeArr: TArr;
+    begin
+      SetLength(Result, 2);
+      Result[0] := 10;
+      Result[1] := 20
+    end;
+    var A: TArr;
+    begin
+      A := MakeArr();
+      WriteLn(A[0] + A[1])
+    end.
+    ''');
+  { the Result +1 transfers — MakeArr's body must NOT _DynArrayRelease its
+    Result before returning it (that would drop the transferred ref) }
+  MakeEnd := Pos(#9'bl MakeArr', AsmT);
+  AssertTrue('MakeArr called', MakeEnd >= 0);
+  RelInMake := Pos('MakeArr:', AsmT);
+  AssertTrue('MakeArr emitted', RelInMake >= 0);
+  { caller consumes the owned result: releases the OLD A then stores }
+  AssertTrue('caller releases old A on assign',
+    Pos(#9'bl _DynArrayRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64dar.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

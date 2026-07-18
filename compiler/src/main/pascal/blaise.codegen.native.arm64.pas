@@ -5620,14 +5620,15 @@ begin
       else if not (IsIntFam(ADecl.ResolvedReturnType) or
                    (ADecl.ResolvedReturnType.Kind in [tyDouble, tySingle]) or
                    (ADecl.ResolvedReturnType.Kind in [tyString, tyClass,
-                                                      tyPointer,
-                                                      tyPChar])) then
+                                                      tyPointer, tyPChar,
+                                                      tyDynArray])) then
         NotYet('function result of this type', ADecl)
       else
-        { a string/class Result is a plain pointer slot.  It is deliberately
-          NOT in FStrLocals/FObjLocals: the +1 it holds transfers to the
-          caller at return (ArcExprOwnsRef treats call results as owned),
-          so the scope-exit release must skip it. }
+        { a string/class/dyn-array Result is a plain 8-byte pointer slot.
+          It is deliberately NOT in FStrLocals/FObjLocals/FDynLocals: the +1
+          it holds transfers to the caller at return (ArcExprOwnsRef treats
+          call results as owned), so the scope-exit release must skip it.
+          Nil-inited (5977) and returned via the generic x0 load (6085). }
         AddLocal('Result', 8);
     end;
   end;
