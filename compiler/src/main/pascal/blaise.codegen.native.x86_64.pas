@@ -20137,6 +20137,38 @@ var
   ArrLit:    TArrayLiteralExpr;
   UseArray:  Boolean;
 begin
+  { Forwarded 'array of const' param (BUG-047): Format(fmt, ArgsParam) where
+    ArgsParam is a plain open-array-of-TVarRec reference, not a bracket
+    literal.  The runtime holds real 16-byte TVarRecs; _StringFormatVarRecs
+    translates them to the 3-tag block.  Count = high + 1 from the companion
+    _high slot. }
+  if (AArgs.Count = 2) and (TASTExpr(AArgs.Items[1]) is TIdentExpr) and
+     (TASTExpr(AArgs.Items[1]).ResolvedType <> nil) and
+     (TASTExpr(AArgs.Items[1]).ResolvedType is TOpenArrayTypeDesc) and
+     (TOpenArrayTypeDesc(
+        TASTExpr(AArgs.Items[1]).ResolvedType).ElementType <> nil) and
+     SameText(TOpenArrayTypeDesc(
+        TASTExpr(AArgs.Items[1]).ResolvedType).ElementType.Name, 'TVarRec') then
+  begin
+    { The _high companion must be a slot of the CURRENT frame.  A captured
+      array-of-const param (referenced from a nested routine) does not forward
+      its _high companion, and VarOperand would silently fall back to a
+      module-global operand — a wrong count read.  Keep it honest. }
+    if not Self.IsLocal(TIdentExpr(AArgs.Items[1]).Name + '_high') then
+      raise ENativeCodeGenError.Create(
+        'native backend: Format over a captured array-of-const parameter ' +
+        'not supported at line ' + IntToStr(TASTExpr(AArgs.Items[1]).Line));
+    Self.EmitExprToEax(TASTExpr(AArgs.Items[0]));   { %rdi = fmt }
+    Self.Emit(#9'pushq %rax');
+    Self.EmitExprToEax(TASTExpr(AArgs.Items[1]));   { %rsi = data ptr }
+    Self.Emit(#9'movq %rax, %rsi');
+    Self.Emit(Format(#9'movq %s, %%rdx',
+      [Self.VarOperand(TIdentExpr(AArgs.Items[1]).Name + '_high')]));
+    Self.Emit(#9'incl %edx');                        { count = high + 1 }
+    Self.Emit(#9'popq %rdi');
+    Self.Emit(#9'callq _StringFormatVarRecs');
+    Exit;
+  end;
   UseArray := (AArgs.Count = 2) and (AArgs.Items[1] is TArrayLiteralExpr);
   if UseArray then
   begin

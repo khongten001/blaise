@@ -35,6 +35,13 @@ type
       via movsd (garbage double); QBE emitted 'stored' on an 's' temp, which
       qbe rejected outright. }
     procedure TestRun_SingleElement_BoxedAsDouble;
+    { BUG-047: Format(fmt, ArgsParam) where ArgsParam is a FORWARDED
+      'array of const' param (not a bracket literal).  EmitFormatCall must
+      read the runtime open-array (ptr + _high companion) and route it
+      through _StringFormatVarRecs, which translates the real TVarRecs into
+      the reduced Format tag block.  Runs on QBE + native (arm64 lacks
+      array-of-const params, so it is not in AllBackends). }
+    procedure TestRun_ForwardedArrayToFormat;
   end;
 
 implementation
@@ -196,6 +203,32 @@ const Src =
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
   AssertRunsOnAll(Src, '2.5' + LineEnding, 0);
+end;
+
+procedure TE2EArrayOfConstTests.TestRun_ForwardedArrayToFormat;
+const Src =
+  '''
+  program P;
+  procedure Report(const AFmt: string; const AArgs: array of const);
+  var S: string;
+  begin
+    S := Format(AFmt, AArgs);
+    WriteLn(S)
+  end;
+  begin
+    Report('int=%d str=%s float=%.2f', [42, 'hi', 3.5]);
+    Report('just one: %d', [7]);
+    Report('two strings %s and %s', ['a', 'b'])
+  end.
+  ''';
+var LE: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  LE := LineEnding;
+  AssertRunsOnAll(Src,
+    'int=42 str=hi float=3.50' + LE +
+    'just one: 7' + LE +
+    'two strings a and b' + LE, 0);
 end;
 
 initialization

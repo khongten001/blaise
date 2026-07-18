@@ -12190,6 +12190,33 @@ begin
       if SameText(FC.Name,'Format') then
       begin
         L := EmitExpr(TASTExpr(FC.Args.Items[0]));
+        { Forwarded 'array of const' param (BUG-047): Format(fmt, ArgsParam)
+          where ArgsParam is a plain open-array-of-TVarRec reference, not a
+          bracket literal.  The runtime holds real 16-byte TVarRecs; translate
+          them to the 3-tag block in _StringFormatVarRecs.  Length = high + 1
+          from the companion _high slot. }
+        if (FC.Args.Count = 2) and
+           (TASTExpr(FC.Args.Items[1]) is TIdentExpr) and
+           (TASTExpr(FC.Args.Items[1]).ResolvedType <> nil) and
+           (TASTExpr(FC.Args.Items[1]).ResolvedType is TOpenArrayTypeDesc) and
+           (TOpenArrayTypeDesc(
+              TASTExpr(FC.Args.Items[1]).ResolvedType).ElementType <> nil) and
+           SameText(TOpenArrayTypeDesc(
+              TASTExpr(FC.Args.Items[1]).ResolvedType).ElementType.Name,
+              'TVarRec') then
+        begin
+          R := EmitExpr(TASTExpr(FC.Args.Items[1]));   { data ptr }
+          FmtSlotTemp := AllocTemp();                   { high index (l) }
+          EmitLine(Format('  %s =l loadl %%_var_%s_high',
+            [FmtSlotTemp, TIdentExpr(FC.Args.Items[1]).Name]));
+          FmtValTemp := AllocTemp();                     { count = high + 1 (w) }
+          EmitLine(Format('  %s =w add %s, 1',
+            [FmtValTemp, FmtSlotTemp]));   { l truncates to w on the add }
+          T := AllocTemp();
+          EmitLine(Format('  %s =l call $_StringFormatVarRecs(l %s, l %s, w %s)',
+            [T, L, R, FmtValTemp]));
+          Exit(T);
+        end;
         { Collect format arguments into a list of (expr, isInt) pairs }
         if (FC.Args.Count = 2) and (FC.Args.Items[1] is TArrayLiteralExpr) then
           FmtArgCount := TArrayLiteralExpr(FC.Args.Items[1]).Elements.Count

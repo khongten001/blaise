@@ -41,6 +41,14 @@ type
     procedure TestCodegen_DoubleElement_HeapBoxed;
     procedure TestCodegen_SingleElement_WidenedBeforeBox;
     procedure TestCodegen_SixteenByteStride;
+    { BUG-047: Format(fmt, forwarded array-of-const param) routes through
+      _StringFormatVarRecs (reads the runtime ptr + _high companion), NOT
+      the per-element boxing used for a bracket literal. }
+    procedure TestCodegen_ForwardedArrayToFormat_UsesVarRecsHelper;
+    { BUG-047 gate: a forwarded open array whose element is NOT TVarRec
+      (e.g. array of Integer) must NOT route through _StringFormatVarRecs —
+      reinterpreting raw elements as TVarRecs would be a wild pointer deref. }
+    procedure TestCodegen_ForwardedNonVarRecArray_NotVarRecsHelper;
   end;
 
 implementation
@@ -211,6 +219,34 @@ begin
     'program X; procedure Foo(args: array of const); begin end; ' +
     'begin Foo([1, 2]) end.');
   AssertTrue('alloc 32 bytes for 2 elements', IRHas(IR, 'alloc8 32'));
+end;
+
+procedure TArrayOfConstTests.TestCodegen_ForwardedArrayToFormat_UsesVarRecsHelper;
+var IR: string;
+begin
+  { A forwarded array-of-const param passed to Format calls the runtime
+    translator _StringFormatVarRecs and reads the _high companion slot —
+    it does NOT box per element (no alloc8 for a fresh TVarRec block). }
+  IR := GenIR(
+    'program X; ' +
+    'procedure Rep(const F: string; const A: array of const); ' +
+    'var S: string; begin S := Format(F, A); WriteLn(S) end; ' +
+    'begin Rep(''%d'', [1]) end.');
+  AssertTrue('calls _StringFormatVarRecs', IRHas(IR, '_StringFormatVarRecs'));
+  AssertTrue('reads the _high companion of the forwarded param',
+    IRHas(IR, '_var_A_high'));
+end;
+
+procedure TArrayOfConstTests.TestCodegen_ForwardedNonVarRecArray_NotVarRecsHelper;
+var IR: string;
+begin
+  IR := GenIR(
+    'program X; ' +
+    'procedure P(const A: array of Integer); ' +
+    'var S: string; begin S := Format(''%d'', A); WriteLn(S) end; ' +
+    'begin P([5, 6]) end.');
+  AssertTrue('array-of-Integer is NOT routed through the TVarRec translator',
+    not IRHas(IR, '_StringFormatVarRecs'));
 end;
 
 initialization

@@ -4896,6 +4896,34 @@ begin
     Block layout mirrors x86-64: 16-byte entries, tag at +0 (0 = int,
     1 = string/pointer, 2 = raw binary64 float bits), value at +8.
     Elements are BORROWED — same convention as the x86 lowering. }
+  { Forwarded 'array of const' param (BUG-047): Format(fmt, ArgsParam) where
+    ArgsParam is a plain open-array-of-TVarRec reference, not a bracket
+    literal.  The runtime holds real 16-byte TVarRecs; _StringFormatVarRecs
+    translates them to the 3-tag block.  Count = high + 1 from the companion
+    _high slot. }
+  if (AArgs.Count = 2) and (TASTExpr(AArgs.Items[1]) is TIdentExpr) and
+     (TASTExpr(AArgs.Items[1]).ResolvedType <> nil) and
+     (TASTExpr(AArgs.Items[1]).ResolvedType is TOpenArrayTypeDesc) and
+     (TOpenArrayTypeDesc(
+        TASTExpr(AArgs.Items[1]).ResolvedType).ElementType <> nil) and
+     SameText(TOpenArrayTypeDesc(
+        TASTExpr(AArgs.Items[1]).ResolvedType).ElementType.Name, 'TVarRec') then
+  begin
+    { the _high companion must be a slot of the CURRENT frame; a captured
+      array-of-const param does not forward it (parity with x86-64) }
+    if not IsLocal(TIdentExpr(AArgs.Items[1]).Name + '_high') then
+      NotYet('Format over a captured array-of-const parameter',
+        TASTExpr(AArgs.Items[1]));
+    Self.EmitExprToX0(TASTExpr(AArgs.Items[0]));   { fmt }
+    EmitPushX0();                                   { [fmt] }
+    Self.EmitExprToX0(TASTExpr(AArgs.Items[1]));   { data ptr }
+    Self.Emit(#9'mov x1, x0');
+    EmitLoadSlot('x2', TIdentExpr(AArgs.Items[1]).Name + '_high');
+    Self.Emit(#9'add x2, x2, #1');                  { count = high + 1 }
+    EmitPopTo('x0');                                { fmt }
+    Self.Emit(#9'bl _StringFormatVarRecs');
+    Exit;
+  end;
   if not (TASTExpr(AArgs.Items[1]) is TArrayLiteralExpr) then
     NotYet('Format without an array literal', TASTExpr(AArgs.Items[0]));
   ArrLit := TArrayLiteralExpr(AArgs.Items[1]);

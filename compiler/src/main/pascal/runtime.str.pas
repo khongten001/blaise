@@ -129,6 +129,17 @@ function _ExcludeTrailingPathDelimiter(Path: Pointer): Pointer;
   Conversions: d (integer), s (string), f/F/e/E/g/G (float), %% (literal %). }
 function _StringFormatN(Fmt: Pointer; Args: Pointer; Count: Integer): Pointer;
 
+{ _StringFormatVarRecs — Format() over a FORWARDED 'array of const' parameter
+  (BUG-047).  VarRecs points to Count real 16-byte TVarRecs ([VType:Byte@0,
+  VValue:Pointer@8], vt* discriminants).  This translates them into the
+  reduced [Tag:Int64, Value:Int64] block _StringFormatN consumes (Tag 0=int,
+  1=string/ptr, 2=raw binary64 bits) and calls it.  The temporary block is
+  freed before return — no leak.  Used when the Format argument is a plain
+  open-array reference rather than a bracket literal (the literal case boxes
+  directly at the call site). }
+function _StringFormatVarRecs(Fmt: Pointer; VarRecs: Pointer;
+  Count: Integer): Pointer;
+
 implementation
 
 const
@@ -1204,6 +1215,59 @@ begin
   end;
   _BlaiseFreeMem(OutB);
   Result := Pointer(Dst);
+end;
+
+function _StringFormatVarRecs(Fmt: Pointer; VarRecs: Pointer;
+  Count: Integer): Pointer;
+var
+  Block: Pointer;
+  I: Integer;
+  VRec: Pointer;
+  VType: Integer;
+  VTypePtr: ^Byte;
+  VValPtr: ^Int64;
+  VVal: Int64;
+  TagPtr, ValPtr: ^Int64;
+  DPtr: ^Int64;
+begin
+  { Translate Count real TVarRecs -> the [Tag:8][Val:8] block. }
+  if Count < 0 then
+    Count := 0;
+  Block := _BlaiseGetMem(Count * 16 + 16);   { +16: never GetMem(0) }
+  for I := 0 to Count - 1 do
+  begin
+    VRec := VarRecs + I * 16;      { real TVarRec: VType@0 (byte), VValue@8 }
+    VTypePtr := VRec;
+    VType := Integer(VTypePtr^);
+    VValPtr := VRec + 8;
+    VVal := VValPtr^;
+    TagPtr := Block + I * 16;
+    ValPtr := Block + I * 16 + 8;
+    { vt* -> Format 3-tag.  vtInteger(0)/vtBoolean(1)/vtInt64(16)/vtEnum(24)
+      are integers; vtAnsiString(20)/vtPointer(5)/vtObject(7) pass a pointer;
+      vtExtended(3) is a HEAP-BOXED double — deref VValue for the raw bits. }
+    if VType = 3 then             { vtExtended }
+    begin
+      TagPtr^ := 2;               { raw binary64 bits }
+      DPtr := Pointer(VVal);      { VValue points at the boxed double }
+      if DPtr <> nil then
+        ValPtr^ := DPtr^
+      else
+        ValPtr^ := 0;
+    end
+    else if (VType = 20) or (VType = 5) or (VType = 7) then
+    begin
+      TagPtr^ := 1;               { string data ptr / pointer / object }
+      ValPtr^ := VVal;
+    end
+    else
+    begin
+      TagPtr^ := 0;               { integer family }
+      ValPtr^ := VVal;
+    end;
+  end;
+  Result := _StringFormatN(Fmt, Block, Count);
+  _BlaiseFreeMem(Block);
 end;
 
 { ------------------------------------------------------------------ }
