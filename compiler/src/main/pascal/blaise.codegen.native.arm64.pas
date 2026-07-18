@@ -2459,16 +2459,43 @@ begin
       NotYet('read of a field of this type', AExpr);
     if ArcExprOwnsRef(TFieldAccessExpr(AExpr).Base) then
     begin
-      { A RETAINED managed field value could be freed when the base is
-        released — that shape needs pinning first, still a hole.  An
-        [Unretained] class field (a back-reference) is owned elsewhere and
-        survives the base's release, so it reads safely; scalar fields are
-        values and are trivially safe. }
-      if (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString() or
-          (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyClass)) and
+      { The base is an owned +1 transient; releasing it runs its
+        _FieldCleanup, which releases the base's own fields.  Discipline by
+        field kind (mirrors x86-64 field-read-on-owned-transient, 9134+):
+
+        - A retained CLASS field aliases INTO the base's object graph — the
+          base cleanup would free the very object we loaded.  arm64 has no
+          _pendrel defer machinery (x86-64's PRIMARY, leak-free strategy),
+          so we take x86-64's leak-safe FALLBACK: AddRef-pin the field value
+          BEFORE releasing the base.  The read result is borrowed
+          (ArcExprOwnsRef is False for a plain field read), so this pin LEAKS
+          one ref (no UAF, but the pinned +1 is never dropped).  See BUG-048:
+          porting _pendrel defer to arm64 would make this leak-free like
+          x86-64.  Only class-field reads on transients hit this; the string
+          arm below is leak-free.
+
+        - A STRING field, an [Unretained] class field, and scalar fields all
+          flow through the inline-release template below: x86-64 releases the
+          base inline for these (a string data pointer / a back-reference /
+          a value are not freed out from under the read in the common case —
+          string fields are typically immortal literals). }
+      if (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyClass) and
          not TFieldAccessExpr(AExpr).FieldInfo.IsUnretained then
-        NotYet('retained managed field read on an owned transient base',
-          AExpr);
+      begin
+        Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
+        EmitPushX0();                  { [base] }
+        if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
+          Self.Emit(Format(#9'add x0, x0, #%d',
+            [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
+        EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+        EmitPushX0();                  { [base][fieldval] }
+        Self.Emit(#9'bl _ClassAddRef');   { pin the field value (x0=fieldval) }
+        Self.Emit(#9'ldr x0, [sp, #16]'); { reload base }
+        Self.Emit(#9'bl _ClassRelease');  { release base — field is pinned }
+        EmitPopTo('x0');               { pinned field value }
+        Self.Emit(#9'add sp, sp, #16');   { drop base }
+        Exit;
+      end;
       Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
       EmitPushX0();                    { [base] — released after the load }
       if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then

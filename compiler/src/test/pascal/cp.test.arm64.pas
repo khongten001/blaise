@@ -170,6 +170,9 @@ type
     procedure TestProcessBuiltins_LowerToRtlCalls;
     { self-cross-compile: Free on a method-call-result receiver }
     procedure TestFreeOnCallResult_ReleasesOwnedTemporary;
+    { self-cross-compile: retained managed field read on an owned transient
+      base — string field (inline release) vs class field (AddRef-pin) }
+    procedure TestRetainedFieldReadOnTransientBase;
   end;
 
 implementation
@@ -3285,6 +3288,86 @@ begin
   AssertTrue('call result released with no slot nil', GrabPos >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64frc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRetainedFieldReadOnTransientBase;
+var
+  AsmStr, AsmCls: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { STRING field on an owned transient base (MakeThing().Name): the base is
+    released INLINE after the load — the string data pointer survives (the
+    common case is an immortal literal); mirrors x86-64's string discipline.
+    No _StringAddRef pin. }
+  AsmStr := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class
+      public
+        Name: string;
+      end;
+    function MakeThing: TThing;
+    begin
+      Result := TThing.Create();
+      Result.Name := 'hi'
+    end;
+    var
+      S: string;
+    begin
+      S := MakeThing().Name;
+      WriteLn(S)
+    end.
+    ''');
+  { the field-read region is after 'bl MakeThing' in $main: the base is
+    loaded, field read, base released inline — NO AddRef between the call
+    and the release (contrast the class arm, which pins) }
+  AssertTrue('string field: base released inline after the call',
+    Pos(#9'bl MakeThing' + LF + #9'str x0, [sp, #-16]!' + LF +
+        #9'add x0, x0, #8' + LF + #9'ldr x0, [x0]' + LF +
+        #9'str x0, [sp, #-16]!' + LF + #9'ldr x0, [sp, #16]' + LF +
+        #9'bl _ClassRelease', AsmStr) >= 0);
+
+  { CLASS field on an owned transient base (MakeThing().Obj): the field value
+    aliases into the base's graph, so it is _ClassAddRef-PINNED before the
+    base is released — the leak-safe fallback (arm64 has no _pendrel defer). }
+  AsmCls := GenAsm(
+    '''
+    program P;
+    type
+      TInner = class
+      public
+        N: Integer;
+      end;
+      TThing = class
+      public
+        Obj: TInner;
+      end;
+    function MakeThing: TThing;
+    begin
+      Result := TThing.Create();
+      Result.Obj := TInner.Create()
+    end;
+    var
+      X: TInner;
+    begin
+      X := MakeThing().Obj;
+      WriteLn(X.N)
+    end.
+    ''');
+  AssertTrue('class field: value pinned before base release',
+    Pos(#9'bl _ClassAddRef' + LF + #9'ldr x0, [sp, #16]' + LF +
+        #9'bl _ClassRelease', AsmCls) >= 0);
+
+  Obj := AssembleArm64ToBytes(AsmCls);
+  F := ParseMachO(Obj, 'arm64rmf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

@@ -60,6 +60,13 @@ type
       release — no leak, no double-free.  Guards the arm64 general-
       expression Free branch (mirrors x86-64). }
     procedure TestRun_FreeOnCallResult_NoLeak_Valgrind;
+    { A retained managed field read off an owned-transient base:
+      MakeThing().Name (string field) and MakeThing().Obj (class field).
+      The base is released as part of the read; the loaded value must still
+      be correct.  Both backends.  (No valgrind: the class arm intentionally
+      pins on arm64 — see BUG-048 — and this test targets value correctness,
+      which is what the compiler's own Sections.Get(I).Name relies on.) }
+    procedure TestRun_RetainedFieldReadOnTransient_Correct;
   end;
 
 implementation
@@ -676,6 +683,59 @@ begin
     if Log = '' then Log := '(valgrind produced no output)';
     Fail('valgrind reported errors or leaks:' + LE + Log);
   end;
+end;
+
+procedure TE2EArcTests.TestRun_RetainedFieldReadOnTransient_Correct;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { string field off a transient base: base released inline, string survives }
+  AssertRunsOnAll(
+    '''
+    program P;
+    type
+      TThing = class
+      public
+        Name: string;
+      end;
+    function MakeThing: TThing;
+    begin
+      Result := TThing.Create();
+      Result.Name := 'hello'
+    end;
+    var S: string;
+    begin
+      S := MakeThing().Name;
+      WriteLn(S)
+    end.
+    ''',
+    'hello' + LE, 0);
+  { class field off a transient base: field value pinned (arm64) / deferred
+    (x86-64) so it outlives the base release — the loaded object is valid }
+  AssertRunsOnAll(
+    '''
+    program P;
+    type
+      TInner = class
+      public
+        N: Integer;
+      end;
+      TThing = class
+      public
+        Obj: TInner;
+      end;
+    function MakeThing: TThing;
+    begin
+      Result := TThing.Create();
+      Result.Obj := TInner.Create();
+      Result.Obj.N := 7
+    end;
+    var X: TInner;
+    begin
+      X := MakeThing().Obj;
+      WriteLn(X.N)
+    end.
+    ''',
+    '7' + LE, 0);
 end;
 
 initialization
