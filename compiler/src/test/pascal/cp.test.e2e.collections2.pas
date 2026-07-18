@@ -255,6 +255,8 @@ procedure TE2ECollections2Tests.TestRun_Collections_Valgrind;
 var OK: Boolean; Log: string;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcCollectionsValgrind, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcCollectionsValgrind, Log);
   if not OK then

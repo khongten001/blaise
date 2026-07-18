@@ -283,6 +283,8 @@ begin
   AssertTrue(CompileAndRun(SrcClassArcNoFree, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('field reread', '42' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcClassArcNoFree, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcClassArcNoFree, Log);
   if not OK then
@@ -299,6 +301,8 @@ begin
   AssertTrue(CompileAndRun(SrcInterfaceArcLifetime, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('interface method result', '17' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcInterfaceArcLifetime, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcInterfaceArcLifetime, Log);
   if not OK then
@@ -315,6 +319,8 @@ begin
   AssertTrue(CompileAndRun(SrcWeakCycle, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('values printed via A/B', '1' + LE + '2' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcWeakCycle, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcWeakCycle, Log);
   if not OK then
@@ -331,6 +337,8 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcDestroyFreesBuffer, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('stdout', 'ok' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcDestroyFreesBuffer, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcDestroyFreesBuffer, Log);
   if not OK then
@@ -348,6 +356,8 @@ begin
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('stdout',
     '10' + LE + '20' + LE + '30' + LE + '3' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcTListARCValgrind, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcTListARCValgrind, Log);
   if not OK then
@@ -447,6 +457,8 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcIntfValueParamRetained, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('stdout', '55' + LE + '55' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcIntfValueParamRetained, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcIntfValueParamRetained, Log);
   if not OK then
@@ -485,6 +497,8 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcConstStringTemp, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('stdout', 'hello world' + LE + '11' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcConstStringTemp, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcConstStringTemp, Log);
   if not OK then
@@ -529,6 +543,8 @@ begin
   AssertTrue('compile+run', CompileAndRun(SrcConstStrTransient, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('stdout', 'foobar' + LE + 'foobar' + LE + 'foobar' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcConstStrTransient, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcConstStrTransient, Log);
   if not OK then
@@ -697,6 +713,8 @@ begin
   AssertTrue(CompileAndRun(SrcFreeOnCallResult, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('ran', '1' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(SrcFreeOnCallResult, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   OK := RunUnderValgrind(SrcFreeOnCallResult, Log);
   if not OK then
@@ -788,6 +806,8 @@ begin
   AssertTrue(CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('0+10+20+30', '60' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(Src, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   if not RunUnderValgrind(Src, Log) then
   begin
@@ -831,6 +851,8 @@ begin
   AssertTrue(CompileAndRun(Src, Output, RCode));
   AssertEquals('exit 0', 0, RCode);
   AssertEquals('name + 0+10+20', 'tool' + LE + '30' + LE, Output);
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) }
+  AssertLeakFreeOnAll(Src, '');
   if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   if not RunUnderValgrind(Src, Log) then
   begin

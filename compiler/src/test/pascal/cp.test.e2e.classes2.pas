@@ -1033,7 +1033,6 @@ var
   Path, Src, Log: string;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   Path := GetCurrentDir();
   while (Path <> '') and
         (not FileExists(Path + '/tests/phase2_milestone.pas')) and
@@ -1045,6 +1044,10 @@ begin
     Ignore('phase2_milestone.pas not found');
     Exit;
   end;
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) — runs
+    regardless of valgrind availability }
+  AssertLeakFreeOnAll(Src, '');
+  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   if not RunUnderValgrind(Src, Log) then
   begin
     if Log = '' then Log := '(valgrind produced no output)';
@@ -1092,7 +1095,6 @@ var
   Path, Src, Log: string;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
-  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   Path := GetCurrentDir();
   while (Path <> '') and
         (not FileExists(Path + '/tests/phase3_milestone.pas')) and
@@ -1104,6 +1106,10 @@ begin
     Ignore('phase3_milestone.pas not found');
     Exit;
   end;
+  { real ARC-leak guard (valgrind is blind to the mmap allocator) — runs
+    regardless of valgrind availability }
+  AssertLeakFreeOnAll(Src, '');
+  if not ValgrindAvailable() then begin Ignore('valgrind not installed'); Exit; end;
   if not RunUnderValgrind(Src, Log) then
   begin
     if Log = '' then Log := '(valgrind produced no output)';
