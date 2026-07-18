@@ -176,6 +176,11 @@ type
     procedure EmitFloatLitSection;
     procedure EmitStrLitAddr(AValue: string);
     function  AsmEscape(const AValue: string): string;
+    { Box one 'array of const' element as a 16-byte TVarRec (VType byte at +0,
+      VValue at +8) at [sp, #AOffset].  AOffset is sp-relative and stable
+      across the element evaluation (no net sp change).  Mirrors x86-64
+      EmitConstArrayLiteral's per-element boxing. }
+    procedure EmitConstArrayElemToVarRec(AElem: TASTExpr; AOffset: Integer);
 
     { ---- statements ---- }
     procedure EmitStmt(AStmt: TASTStmt);
@@ -1263,6 +1268,58 @@ begin
   Self.Emit(Format(#9'add x0, x0, __s%d@PAGEOFF', [Idx]));
   Self.Emit(#9'add x0, x0, #12');
 end;
+
+procedure TArm64Backend.EmitConstArrayElemToVarRec(AElem: TASTExpr;
+  AOffset: Integer);
+var
+  EK: TTypeKind;
+  Tag: Integer;
+begin
+  EK := AElem.ResolvedType.Kind;
+  if EK in [tyDouble, tySingle] then
+  begin
+    { vtExtended(3): heap-box the double.  The block address is sp-relative,
+      so build the box FIRST (which parks d0 across the _BlaiseGetMem call and
+      restores sp) and only then compute [sp,#AOffset]. }
+    Self.EmitExprToD0OrConvert(AElem);      { widens tySingle -> double in d0 }
+    Self.Emit(#9'str d0, [sp, #-16]!');     { park the double across the call }
+    EmitIntLiteral('x0', 8);
+    Self.Emit(#9'bl _BlaiseGetMem');        { x0 = box ptr }
+    Self.Emit(#9'ldr d0, [sp], #16');       { restore double (sp back to base) }
+    Self.Emit(#9'str d0, [x0]');            { *box = double }
+    { x0 = box ptr; store as VValue, tag 3 as VType }
+    EmitAddSubImm('add', 'x9', 'sp', AOffset);
+    Self.Emit(#9'str x0, [x9, #8]');
+    Self.Emit(#9'mov w0, #3');
+    Self.Emit(#9'strb w0, [x9]');
+    Exit;
+  end;
+  { integer/string/object families: evaluate to x0, then box. }
+  case EK of
+    tyBoolean:
+      begin Tag := 1; Self.EmitExprToX0(AElem);
+        Self.Emit(#9'and x0, x0, #0xff'); end;   { zero-extend the byte }
+    tyInteger, tyUInt32, tyByte, tySmallInt, tyWord:
+      begin Tag := 0; Self.EmitExprToX0(AElem);
+        Self.Emit(#9'sxtw x0, w0'); end;          { sign-extend to 64 bits }
+    tyEnum:
+      begin Tag := 24; Self.EmitExprToX0(AElem);
+        Self.Emit(#9'sxtw x0, w0'); end;
+    tyInt64, tyUInt64:
+      begin Tag := 16; Self.EmitExprToX0(AElem); end;
+    tyString:
+      begin Tag := 20; Self.EmitExprToX0(AElem); end;  { borrow the data ptr }
+    tyClass, tyMetaClass:
+      begin Tag := 7; Self.EmitExprToX0(AElem); end;    { borrow the obj ptr }
+  else
+    Tag := 5; Self.EmitExprToX0(AElem);                 { vtPointer }
+  end;
+  EmitAddSubImm('add', 'x9', 'sp', AOffset);
+  Self.Emit(#9'str x0, [x9, #8]');                 { VValue at +8 }
+  Self.Emit(Format(#9'mov w0, #%d', [Tag]));
+  Self.Emit(#9'strb w0, [x9]');                    { VType byte at +0 }
+end;
+
 
 procedure TArm64Backend.EmitExprToX0(AExpr: TASTExpr);
 var
@@ -5697,14 +5754,12 @@ begin
       Par := TMethodParam(ADecl.Params.Items[I]);
       if Par.IsOpenArray then
       begin
-        { open array: (data ptr, high index) pair — two 8-byte slots.
-          Elements are read through the pointer; the callee BORROWS the
-          caller's storage (x86 parity — no copy, no ARC on the slots). }
-        if (Par.ResolvedType is TOpenArrayTypeDesc) and
-           (TOpenArrayTypeDesc(Par.ResolvedType).ElementType <> nil) and
-           (TOpenArrayTypeDesc(Par.ResolvedType).ElementType.Name =
-             'TVarRec') then
-          NotYet('array of const parameters', ADecl);
+        { open array (incl. 'array of const' = open array of TVarRec): the
+          (data ptr, high index) pair is two 8-byte slots.  Elements are read
+          through the pointer; the callee BORROWS the caller's storage (x86
+          parity — no copy, no ARC on the slots).  TVarRec elements have a
+          16-byte stride, which the subscript path derives from the record
+          type, so no const-specific param setup is needed. }
         AddLocal(Par.ParamName, 8);
         AddLocal(Par.ParamName + '_high', 8);
         Continue;
@@ -6521,13 +6576,6 @@ begin
         { open array: push (data ptr, high) as two int-class values }
         if NInt >= 7 then
           NotYet('open-array arguments spilling to the stack', Arg);
-        if (TMethodParam(ADecl.Params.Items[I]).ResolvedType is
-              TOpenArrayTypeDesc) and
-           (TOpenArrayTypeDesc(TMethodParam(ADecl.Params.Items[I])
-              .ResolvedType).ElementType <> nil) and
-           (TOpenArrayTypeDesc(TMethodParam(ADecl.Params.Items[I])
-              .ResolvedType).ElementType.Name = 'TVarRec') then
-          NotYet('array of const arguments', Arg);
         if Arg is TArrayLiteralExpr then
         begin
           { materialise the element block in the pre-reserved literal
@@ -6538,6 +6586,19 @@ begin
             TMethodParam(ADecl.Params.Items[I]).ResolvedType)
             .ElementType.RawSize();
           N := TArrayLiteralExpr(Arg).Elements.Count;
+          if TArrayLiteralExpr(Arg).IsConstArray then
+          begin
+            { 'array of const': each element is a 16-byte TVarRec (VType byte
+              at +0, VValue at +8).  Borrow semantics — strings/objects stored
+              without an AddRef; a double is heap-boxed (a PDouble in the slot)
+              since it does not fit the integer value slot.  Mirrors x86-64
+              EmitConstArrayLiteral. }
+            for K := 0 to N - 1 do
+              EmitConstArrayElemToVarRec(
+                TASTExpr(TArrayLiteralExpr(Arg).Elements.Items[K]),
+                PopRegs.Count * 16 + LitBase + LitOff + K * 16);
+          end
+          else
           for K := 0 to N - 1 do
           begin
             if ArcExprOwnsRef(
