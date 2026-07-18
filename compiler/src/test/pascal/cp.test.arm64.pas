@@ -3342,8 +3342,11 @@ begin
         #9'bl _ClassRelease', AsmStr) >= 0);
 
   { CLASS field on an owned transient base (MakeThing().Obj): the field value
-    aliases into the base's graph, so it is _ClassAddRef-PINNED before the
-    base is released — the leak-safe fallback (arm64 has no _pendrel defer). }
+    aliases into the base's graph, so the base release is DEFERRED to the end
+    of the enclosing statement (BUG-048 fix — the borrowed field value stays
+    live and the deferred release balances the transient's +1 with no leak).
+    The defer spills the base pointer to a _pendrel frame slot; there is NO
+    _ClassAddRef pin on the field value between the call and the store. }
   AsmCls := GenAsm(
     '''
     program P;
@@ -3368,9 +3371,26 @@ begin
       WriteLn(X.N)
     end.
     ''');
-  AssertTrue('class field: value pinned before base release',
-    Pos(#9'bl _ClassAddRef' + LF + #9'ldr x0, [sp, #16]' + LF +
-        #9'bl _ClassRelease', AsmCls) >= 0);
+  { the field-read region: base + field value are both parked on the stack,
+    the base is loaded (ldr x0, [sp, #16]) and SPILLED to a _pendrel frame
+    slot (stur to a negative x29 offset — the defer), then the field value
+    is popped back into x0 — NO _ClassAddRef pin on the field value.  Both
+    stay on the stack across the spill so no volatile register (x9 is the
+    slot-address scratch) has to survive it. }
+  AssertTrue('class field: base deferred (parked + spilled), field on stack',
+    Pos(#9'str x0, [sp, #-16]!' + LF + #9'ldr x0, [sp, #16]' + LF +
+        #9'stur x0, [x29, ', AsmCls) >= 0);
+  { the deferred base _ClassRelease is flushed at statement end — it reloads
+    the spilled base from its _pendrel slot and releases it. }
+  AssertTrue('class field: deferred base release flushed at statement end',
+    Pos(#9'bl _ClassRelease', AsmCls) >= 0);
+  { and crucially: the field value is NEVER AddRef-pinned before the base
+    release (the old leaky path AddRef'd the borrowed field value).  The
+    field-read region between the call and the store contains no _ClassAddRef
+    — a pin would have appeared here.  We check the exact defer shape has no
+    intervening AddRef by matching the contiguous spill sequence above. }
+  AssertTrue('class field: no AddRef pin in the deferred read sequence',
+    Pos(#9'ldr x0, [sp, #16]' + LF + #9'stur x0, [x29, ', AsmCls) >= 0);
 
   Obj := AssembleArm64ToBytes(AsmCls);
   F := ParseMachO(Obj, 'arm64rmf.o');

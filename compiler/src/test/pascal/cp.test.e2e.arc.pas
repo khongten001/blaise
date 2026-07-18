@@ -9,7 +9,11 @@
 unit cp.test.e2e.arc;
 
 { E2E tests for ARC (Automatic Reference Counting) — class and interface
-  lifetime, weak references, and valgrind-clean leak-freedom. }
+  lifetime, weak references, and leak-freedom.  Leak-freedom is checked two
+  ways: valgrind (catches native-level UAF / invalid access — but NOT ARC
+  refcount leaks, since the Blaise allocator is mmap-backed and invisible to
+  valgrind's malloc interception) and the --debug ARC leak tracker (reports
+  Blaise objects still live at exit — the true refcount-leak signal). }
 
 interface
 
@@ -63,10 +67,17 @@ type
     { A retained managed field read off an owned-transient base:
       MakeThing().Name (string field) and MakeThing().Obj (class field).
       The base is released as part of the read; the loaded value must still
-      be correct.  Both backends.  (No valgrind: the class arm intentionally
-      pins on arm64 — see BUG-048 — and this test targets value correctness,
-      which is what the compiler's own Sections.Get(I).Name relies on.) }
+      be correct.  Both backends.  (Value correctness — the leak-freedom of
+      the class arm is guarded separately by the valgrind test below.) }
     procedure TestRun_RetainedFieldReadOnTransient_Correct;
+    { The class-field-on-transient read must be LEAK-FREE (BUG-048): both
+      backends defer the transient's release to statement end rather than
+      AddRef-pinning the borrowed field value.  Uses the --debug ARC leak
+      tracker (NOT valgrind — the Blaise allocator is mmap-backed, so
+      valgrind sees zero malloc traffic and cannot observe an ARC leak; the
+      tracker reports surviving objects at exit).  The pre-fix pin left one
+      TOuter + one TInner unreleased per such read on arm64. }
+    procedure TestRun_ClassFieldReadOnTransient_NoLeak_Debug;
     { A dynamic-array function return (function MakeArr: TArr): the Result's
       +1 transfers to the caller, which releases the old value and stores the
       new one with no extra retain.  Must be leak-free and double-free-free —
@@ -719,8 +730,8 @@ begin
     end.
     ''',
     'hello' + LE, 0);
-  { class field off a transient base: field value pinned (arm64) / deferred
-    (x86-64) so it outlives the base release — the loaded object is valid }
+  { class field off a transient base: the base release is DEFERRED (both
+    backends, BUG-048) so the loaded object outlives the transient — valid }
   AssertRunsOnAll(
     '''
     program P;
@@ -826,6 +837,39 @@ begin
     if Log = '' then Log := '(valgrind produced no output)';
     Fail('valgrind reported errors or leaks:' + LE + Log);
   end;
+end;
+
+procedure TE2EArcTests.TestRun_ClassFieldReadOnTransient_NoLeak_Debug;
+const
+  Src = '''
+    program P;
+    type
+      TInner = class
+      public
+        N: Integer;
+      end;
+      TThing = class
+      public
+        Obj: TInner;
+      end;
+    function MakeThing: TThing;
+    begin
+      Result := TThing.Create();
+      Result.Obj := TInner.Create();
+      Result.Obj.N := 7
+    end;
+    var X: TInner;
+    begin
+      X := MakeThing().Obj;
+      WriteLn(X.N)
+    end.
+    ''';
+begin
+  { The transient TThing's release is deferred to the assignment's end,
+    balancing its +1 — the leak tracker must report nothing on either
+    backend.  Native is the arm regression path: the pre-fix AddRef-pin left
+    the transient graph unreleased here. }
+  AssertLeakFreeOnAll(Src, '7');
 end;
 
 initialization

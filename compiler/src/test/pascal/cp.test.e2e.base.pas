@@ -113,6 +113,14 @@ type
       has no nested procedures). }
     procedure AssertRunsOnOne(ABackend: TBackend; const AName, ASrc,
                             AExpectedOut: string; AExpectedCode: Integer);
+    { Assert ASrc runs with NO ARC leak on both backends under the --debug
+      leak tracker.  Complements RunUnderValgrind: valgrind catches native
+      UAF / invalid access but is BLIND to ARC refcount leaks (the Blaise
+      allocator is mmap-backed, so valgrind sees zero malloc traffic); the
+      --debug tracker reports Blaise objects still live at exit — the true
+      leak signal.  Runs QBE and native, asserts exit 0 and no 'leak' in
+      stdout.  AExpectSubstr, when non-empty, must appear in stdout too. }
+    procedure AssertLeakFreeOnAll(const ASrc: string; const AExpectSubstr: string);
     function  RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;
     { Native-backend twin of RunUnderValgrind: compile ASrc with the NATIVE
       codegen, link, and run under valgrind.  Needed to detect native-only
@@ -532,6 +540,31 @@ begin
   if Rc <> 0 then begin AStdout := 'cc failed: ' + ToolOut; AExitCode := Rc; Exit end;
   AExitCode := RunProc(BinFile, AExtraArgs, AStdout);
   Result := True
+end;
+
+procedure TE2ETestCase.AssertLeakFreeOnAll(const ASrc: string;
+  const AExpectSubstr: string);
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { QBE, --debug }
+  AssertTrue('qbe compile+run (--debug)',
+    CompileAndRunWithRTLDebugOn(beQBE, ASrc, Output, ExitCode, True));
+  AssertEquals('qbe exit 0', 0, ExitCode);
+  if AExpectSubstr <> '' then
+    AssertTrue('qbe stdout contains ''' + AExpectSubstr + ''', got: ' + Output,
+      Pos(AExpectSubstr, Output) >= 0);
+  AssertTrue('qbe no leak report, got: ' + Output, Pos('leak', Output) < 0);
+  { native, --debug }
+  AssertTrue('native compile+run (--debug)',
+    CompileAndRunWithRTLDebugOn(beNative, ASrc, Output, ExitCode, True));
+  AssertEquals('native exit 0', 0, ExitCode);
+  if AExpectSubstr <> '' then
+    AssertTrue('native stdout contains ''' + AExpectSubstr + ''', got: ' + Output,
+      Pos(AExpectSubstr, Output) >= 0);
+  AssertTrue('native no leak report, got: ' + Output, Pos('leak', Output) < 0);
 end;
 
 function TE2ETestCase.RunUnderValgrind(const ASrc: string; out ALog: string): Boolean;

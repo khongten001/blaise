@@ -51,6 +51,14 @@ uses
 
 const
   VIRT_NONE = -1;   { EmitCall: no virtual dispatch — direct bl }
+  { Statement-scoped deferred class-release frame slots (BUG-048 arm64 half —
+    mirrors x86-64's PENDREL_SLOTS).  A retained class field read on an owned
+    transient base defers the base release to the end of the enclosing leaf
+    statement instead of AddRef-pinning the borrowed field value (which
+    leaked one ref).  Overflow past this count falls back to the AddRef-pin
+    (safe leak).  Unlike x86-64, arm64's _main has a real frame, so these are
+    ordinary AddLocal slots in every frame — no .bss dual path. }
+  PENDREL_SLOTS = 8;
 
 type
   TArm64Backend = class(TNativeBackend)
@@ -110,6 +118,19 @@ type
     FGlobalSize:  TDictionary<string, Integer>;  { bss size per global }
     FFloatNames:  TStringList;   { program-level float globals (parallel
                                    subset of FGlobalNames' world) }
+    FPendingRelCount: Integer;   { live statement-scoped deferred class
+                                   releases (BUG-048) — also the next free
+                                   _pendrel_N slot index }
+    FInFlushBracket: Boolean;    { emitting a leaf statement whose end runs
+                                   FlushNativePendingReleases — only then may
+                                   a class-field-on-transient read DEFER its
+                                   base release; in any other expression
+                                   context (call args, loop/if conditions,
+                                   Exit/Raise operands) no flush follows, so
+                                   the defer would leak the whole transient
+                                   graph — there we keep the leak-safe
+                                   AddRef-pin (BUG-048; unbracketed leak in
+                                   the mature backends is BUG-049). }
 
     function  NewLabel(const APrefix: string): string;
     procedure NotYet(const AWhat: string; ANode: TASTNode);
@@ -117,6 +138,12 @@ type
     { ---- frame + operands ---- }
     procedure AddLocal(const AName: string; ASize: Integer);
     function  IsLocal(const AName: string): Boolean;
+    { Deferred class-release (BUG-048): reserve the PENDREL_SLOTS frame slots,
+      record a base pointer (in x0) for release at statement end, and flush
+      the pending releases back down to a saved mark. }
+    procedure ReservePendRelSlots;
+    function  DeferNativeClassRelease: Boolean;
+    procedure FlushNativePendingReleases(AMark: Integer);
     { Load/store x-register <-> local slot / global (int-family only). }
     procedure EmitLoadSlot(const AReg, AName: string);
     procedure EmitStoreSlot(const AReg, AName: string);
@@ -409,6 +436,46 @@ var
   Off: Integer;
 begin
   Result := FFrame.TryGetValue(AName, Off);
+end;
+
+procedure TArm64Backend.ReservePendRelSlots;
+var
+  I: Integer;
+begin
+  { one 8-byte frame slot per PENDREL_SLOTS, reserved in every frame.  Called
+    from RegisterFrameSlots and the _main/init/final frame setup so the
+    deferred-release slots exist wherever a leaf statement might defer. }
+  for I := 0 to PENDREL_SLOTS - 1 do
+    AddLocal(Format('_pendrel_%d', [I]), 8);
+  FPendingRelCount := 0;
+  FInFlushBracket := False;
+end;
+
+function TArm64Backend.DeferNativeClassRelease: Boolean;
+begin
+  { record the owned-transient base pointer (in x0) into the next free
+    _pendrel slot; the caller keeps the borrowed field value.  Returns False
+    when all slots are in use — the caller then falls back to the AddRef-pin. }
+  if FPendingRelCount >= PENDREL_SLOTS then
+  begin
+    Result := False;
+    Exit;
+  end;
+  EmitStoreSlot('x0', Format('_pendrel_%d', [FPendingRelCount]));
+  FPendingRelCount := FPendingRelCount + 1;
+  Result := True;
+end;
+
+procedure TArm64Backend.FlushNativePendingReleases(AMark: Integer);
+begin
+  { LIFO-release every base deferred since the mark, resetting the count.
+    Emitted at the leaf-statement boundary where x0 is free. }
+  while FPendingRelCount > AMark do
+  begin
+    FPendingRelCount := FPendingRelCount - 1;
+    EmitLoadSlot('x0', Format('_pendrel_%d', [FPendingRelCount]));
+    Self.Emit(#9'bl _ClassRelease');
+  end;
 end;
 
 procedure TArm64Backend.EmitTlvAddr(const ASym: string);
@@ -2464,15 +2531,15 @@ begin
         field kind (mirrors x86-64 field-read-on-owned-transient, 9134+):
 
         - A retained CLASS field aliases INTO the base's object graph — the
-          base cleanup would free the very object we loaded.  arm64 has no
-          _pendrel defer machinery (x86-64's PRIMARY, leak-free strategy),
-          so we take x86-64's leak-safe FALLBACK: AddRef-pin the field value
-          BEFORE releasing the base.  The read result is borrowed
-          (ArcExprOwnsRef is False for a plain field read), so this pin LEAKS
-          one ref (no UAF, but the pinned +1 is never dropped).  See BUG-048:
-          porting _pendrel defer to arm64 would make this leak-free like
-          x86-64.  Only class-field reads on transients hit this; the string
-          arm below is leak-free.
+          base cleanup would free the very object we loaded.  DEFER the base
+          release to the end of the enclosing leaf statement (BUG-048 fix):
+          the borrowed field value stays live until the statement's store /
+          use has run, and the deferred release then balances the transient's
+          +1 with NO leak (the read result is borrowed — ArcExprOwnsRef is
+          False for a plain field read — so pinning it would leak).  If all
+          _pendrel slots are in use we fall back to x86-64's leak-safe
+          AddRef-pin (safe, one-ref leak; only when >8 transient-field reads
+          nest in one statement).  The string arm below is leak-free.
 
         - A STRING field, an [Unretained] class field, and scalar fields all
           flow through the inline-release template below: x86-64 releases the
@@ -2488,12 +2555,33 @@ begin
           Self.Emit(Format(#9'add x0, x0, #%d',
             [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
         EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
-        EmitPushX0();                  { [base][fieldval] }
-        Self.Emit(#9'bl _ClassAddRef');   { pin the field value (x0=fieldval) }
-        Self.Emit(#9'ldr x0, [sp, #16]'); { reload base }
-        Self.Emit(#9'bl _ClassRelease');  { release base — field is pinned }
-        EmitPopTo('x0');               { pinned field value }
-        Self.Emit(#9'add sp, sp, #16');   { drop base }
+        EmitPushX0();                  { [base][fieldval] — both parked on the
+                                         stack across the defer/release so no
+                                         volatile register has to survive a
+                                         slot spill (clobbers x9) or a call. }
+        Self.Emit(#9'ldr x0, [sp, #16]'); { x0 = owned transient base }
+        { DEFER only inside a leaf statement whose end flushes pending
+          releases (FInFlushBracket).  In any other expression context —
+          call arguments, loop/if conditions, Exit/Raise operands — no flush
+          follows, so a deferred base would never be released and the whole
+          transient graph would leak (worse than the pin).  There, and when
+          all _pendrel slots are busy, fall back to the leak-safe AddRef-pin
+          (x86-64 parity).  BUG-048; the mature backends leak in the same
+          unbracketed contexts — tracked as BUG-049. }
+        if FInFlushBracket and DeferNativeClassRelease() then { spill base }
+        begin
+          EmitPopTo('x0');                { fieldval }
+          Self.Emit(#9'add sp, sp, #16'); { drop base }
+        end
+        else
+        begin
+          Self.Emit(#9'ldr x0, [sp]');     { fieldval }
+          Self.Emit(#9'bl _ClassAddRef');  { pin it across the base release }
+          Self.Emit(#9'ldr x0, [sp, #16]'); { base }
+          Self.Emit(#9'bl _ClassRelease'); { release base — field pinned }
+          EmitPopTo('x0');                 { fieldval }
+          Self.Emit(#9'add sp, sp, #16');  { drop base }
+        end;
         Exit;
       end;
       Self.EmitExprToX0(TFieldAccessExpr(AExpr).Base);
@@ -2862,6 +2950,8 @@ begin
 end;
 
 procedure TArm64Backend.EmitStmt(AStmt: TASTStmt);
+var
+  Mark: Integer;
 begin
   { empty statement (bare ';' bodies — `while X do ;`, `if C then ;`):
     nothing to emit.  Without this guard the fallthrough NotYet derefs
@@ -2881,12 +2971,20 @@ begin
   end;
   if AStmt is TAssignment then
   begin
+    Mark := FPendingRelCount;
+    FInFlushBracket := True;
     EmitAssignment(TAssignment(AStmt));
+    FInFlushBracket := False;
+    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TFieldAssignment then
   begin
+    Mark := FPendingRelCount;
+    FInFlushBracket := True;
     EmitFieldAssign(TFieldAssignment(AStmt));
+    FInFlushBracket := False;
+    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TProcCall then
@@ -2950,7 +3048,11 @@ begin
   end;
   if AStmt is TStaticSubscriptAssign then
   begin
+    Mark := FPendingRelCount;
+    FInFlushBracket := True;
     EmitStaticElemAssign(TStaticSubscriptAssign(AStmt));
+    FInFlushBracket := False;
+    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TForStmt then
@@ -2965,7 +3067,11 @@ begin
   end;
   if AStmt is TPointerWriteStmt then
   begin
+    Mark := FPendingRelCount;
+    FInFlushBracket := True;
     EmitPointerWrite(TPointerWriteStmt(AStmt));
+    FInFlushBracket := False;
+    FlushNativePendingReleases(Mark);
     Exit;
   end;
   if AStmt is TExitStmt then
@@ -5728,6 +5834,7 @@ begin
     if MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(ABody.Stmts.Items[I]));
   AddLocal('__rret', J);
+  ReservePendRelSlots();   { BUG-048: statement-scoped deferred class releases }
   for I := 0 to ABody.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(ABody.Stmts.Items[I]));
 end;
@@ -8200,6 +8307,7 @@ begin
     if MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(AProg.Block.Stmts.Items[I]));
   AddLocal('__rret', J);
+  ReservePendRelSlots();   { BUG-048: statement-scoped deferred class releases }
   for I := 0 to AProg.Block.Stmts.Count - 1 do
     RegisterForSlots(TASTStmt(AProg.Block.Stmts.Items[I]));
   FForN := 0;
@@ -8478,6 +8586,7 @@ begin
     if MaxManagedRecRet(TASTStmt(AStmts.Items[I])) > J then
       J := MaxManagedRecRet(TASTStmt(AStmts.Items[I]));
   AddLocal('__rret', J);
+  ReservePendRelSlots();   { BUG-048: statement-scoped deferred class releases }
   for I := 0 to AStmts.Count - 1 do
     RegisterForSlots(TASTStmt(AStmts.Items[I]));
   FForN := 0;
