@@ -44,6 +44,13 @@ type
     procedure TestRun_PointerRead_Interface_RetainsAndReleases;
     procedure TestRun_PointerFill_Interface_OutlivesCallee;
 
+    { TList<IFoo> end-to-end.  Monomorphising TList<T> at an interface makes
+      `Result := Src^` in TList<T>.Get an sret-Result read through a ^IFoo,
+      which was unsupported — the container could not be instantiated at all.
+      The list must OWN its elements: they stay alive while stored and are
+      released on Free. }
+    procedure TestRun_TListOfInterface_RetainsElementsUntilFree;
+
     { Deref-dispatch `P^.Method()` is NOT covered here: the parser shapes
       `P^.Name` as a TFieldAccessExpr unconditionally and never checks for a
       following '(', so the form is rejected at PARSE time for classes and
@@ -611,6 +618,60 @@ begin
     callee's local took the object with it and the caller's slot dangles. }
   AssertRTLRunsOnAll(SrcPointerFillIntf,
     'start' + #10 + 'filled' + #10 + 'after fill' + #10 + 'destroyed' + #10 +
+    'done' + #10, 0);
+end;
+
+const
+  { TList<IFoo>: the container fills its element slots with `Dest^ := Value`
+    and reads them back with `Result := Src^` (an sret-Result read through a
+    ^IFoo).  G takes its own reference, so clearing G must NOT destroy either
+    element — both die only when the list is freed, proving the list owns
+    them.  `L.Get(0)` is used rather than `L[0]`: the default-property
+    subscript on an interface-typed element is still unsupported on both
+    backends (it fails loud). }
+  SrcTListOfInterface = '''
+    program P;
+    uses generics.collections;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      L: TList<IFoo>;
+      G: IFoo;
+    begin
+      L := TList<IFoo>.Create();
+      L.Add(TFoo.Create(1));
+      L.Add(TFoo.Create(2));
+      WriteLn(L.Count);
+      G := L.Get(0);
+      WriteLn(G.Value());
+      G := nil;
+      WriteLn('cleared g');
+      L.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_TListOfInterface_RetainsElementsUntilFree;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 'd1'/'d2' MUST come after 'cleared g' — if an element dies earlier the
+    list was not retaining it and the slot dangles. }
+  AssertRTLRunsOnAll(SrcTListOfInterface,
+    '2' + #10 + '1' + #10 + 'cleared g' + #10 + 'd1' + #10 + 'd2' + #10 +
     'done' + #10, 0);
 end;
 

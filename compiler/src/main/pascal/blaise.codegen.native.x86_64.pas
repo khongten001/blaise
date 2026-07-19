@@ -3525,10 +3525,15 @@ begin
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
   end
-  else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) then
+  else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) and
+          (TStringSubscriptExpr(AObjExpr).StrExpr.ResolvedType <> nil) and
+          (TStringSubscriptExpr(AObjExpr).StrExpr.ResolvedType.Kind = tyStaticArray) then
   begin
     { Static-array interface element receiver (Arr[I].M()): the element is a
-      contiguous fat pointer (obj at the element address, itab at +8). }
+      contiguous fat pointer (obj at the element address, itab at +8).  The
+      static-array guard keeps a class default-property subscript out — it is
+      subscript-shaped but has no array base, and would crash the compiler
+      inside EmitIntfStaticElemAddr. }
     Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AObjExpr), '%r10');
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
@@ -4264,6 +4269,32 @@ begin
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'movq %rax, 8(%r15)');
     end
+    else if (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
+            (AAsgn.Expr is TDerefExpr) then
+    begin
+      { Result := Src^ where Src: ^IFoo — exactly the body of TList<T>.Get
+        monomorphised at T = an interface, which is what made TList<IFoo>
+        uninstantiable.  The pointee is a contiguous fat pointer; load both
+        words from it before storing into the sret destination.  %r14 is
+        callee-saved so the source address survives the ARC calls, and %r15
+        (the sret destination) must not be disturbed. }
+      Self.Emit(#9'pushq %r14');
+      Self.EmitExprToEax(TDerefExpr(AAsgn.Expr).Expr);
+      Self.Emit(#9'movq %rax, %r14');
+      Self.Emit(#9'movq 8(%r14), %rax');
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq (%r14), %rax');
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'movq (%r15), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, (%r15)');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, 8(%r15)');
+      Self.Emit(#9'popq %r14');
+    end
     else if (AAsgn.Expr is TFuncCallExpr) and
             (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) and
             (TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
@@ -4484,9 +4515,17 @@ begin
     element is a contiguous fat pointer (obj at the element address, itab at +8)
     — compute the element address into %r15 and copy obj+itab with ARC, mirroring
     the field-access case above. }
+  { The StrExpr guard is load-bearing: a class default-property subscript
+    (L[0], which desugars to the Items getter) is ALSO a TStringSubscriptExpr,
+    but it has no static-array base and no evaluated index.  Without the check
+    it fell in here and EmitIntfStaticElemAddr cast the class type to
+    TStaticArrayTypeDesc and dereferenced a nil index expression — segfaulting
+    the COMPILER rather than reporting anything. }
   if (AAsgn.Expr.ResolvedType <> nil) and
      (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
-     (AAsgn.Expr is TStringSubscriptExpr) then
+     (AAsgn.Expr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AAsgn.Expr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AAsgn.Expr).StrExpr.ResolvedType.Kind = tyStaticArray) then
   begin
     Self.Emit(#9'pushq %r15');
     Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AAsgn.Expr), '%r15');
@@ -4652,9 +4691,15 @@ begin
       Self.Emit(#9'movq (%rax), %rcx');
       Self.Emit(#9'pushq %rcx');           { obj on top }
     end
-    else if AExpr is TStringSubscriptExpr then
+    else if (AExpr is TStringSubscriptExpr) and
+            (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+            (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyStaticArray) then
     begin
-      { Static-array interface element source (Arr[I]): contiguous fat pointer. }
+      { Static-array interface element source (Arr[I]): contiguous fat pointer.
+        The static-array guard keeps a class default-property subscript (L[0])
+        out — it is subscript-shaped but has no array base and no evaluated
+        index, and would crash EmitIntfStaticElemAddr.  It falls through to the
+        fail-loud else below instead. }
       Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AExpr), '%rax');
       Self.Emit(#9'movq 8(%rax), %rcx');
       Self.Emit(#9'pushq %rcx');           { itab }
