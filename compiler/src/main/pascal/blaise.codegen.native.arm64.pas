@@ -4516,6 +4516,20 @@ begin
   else
     Elem := TStaticArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
   Self.EmitExprToX0(AStmt.IndexExpr);
+  { static array with a non-zero LowBound: rebase the index to 0 before
+    scaling (BUG-050) — a[5] of array[5..9] is element 0.  Dyn arrays are
+    always 0-based.  A negative low bound rebases via `add` (subtracting a
+    negative) to avoid an invalid `sub #-N` immediate. }
+  if (AStmt.ResolvedArrayType.Kind = tyStaticArray) and
+     (TStaticArrayTypeDesc(AStmt.ResolvedArrayType).LowBound <> 0) then
+  begin
+    if TStaticArrayTypeDesc(AStmt.ResolvedArrayType).LowBound > 0 then
+      EmitAddSubImm('sub', 'x0', 'x0',
+        TStaticArrayTypeDesc(AStmt.ResolvedArrayType).LowBound)
+    else
+      EmitAddSubImm('add', 'x0', 'x0',
+        -TStaticArrayTypeDesc(AStmt.ResolvedArrayType).LowBound);
+  end;
   EmitPushX0();
   if AStmt.IsImplicitSelf then
   begin

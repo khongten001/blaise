@@ -28,6 +28,10 @@ type
     procedure TestRun_AnonymousDecl_ReadWrite;
     procedure TestRun_AnonymousDecl_NonZeroBase;
     procedure TestRun_AnonymousDecl_LowHighLength;
+    { BUG-050: a non-zero-LowBound static array WRITE must rebase the index on
+      EVERY backend (the existing NonZeroBase test runs QBE-only; the native
+      write path ignored the low bound). Runs on all backends. }
+    procedure TestRun_NonZeroBase_Write_AllBackends;
 
     { Named type alias: type TArr = array[L..H] of T }
     procedure TestRun_TypeAlias_BasicReadWrite;
@@ -306,6 +310,25 @@ begin
     AssertEquals('High=4',   '4', Lines.Strings[1]);
     AssertEquals('Length=5', '5', Lines.Strings[2]);
   finally Lines.Free() end
+end;
+
+procedure TE2EStaticArrayTests.TestRun_NonZeroBase_Write_AllBackends;
+const
+  Src = '''
+    program P;
+    var
+      A: array[5..9] of Integer;
+      I: Integer;
+    begin
+      for I := 5 to 9 do
+        A[I] := I * 10;
+      WriteLn(A[5], ' ', A[9])
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Fail('<toolchain-missing>'); Exit end;
+  { A[5]=50, A[9]=90 — the write must rebase index 5→0 on every backend }
+  AssertRunsOnAll(Src, '50 90' + Chr(10), 0);
 end;
 
 { ------------------------------------------------------------------ }

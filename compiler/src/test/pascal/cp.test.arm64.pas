@@ -181,6 +181,10 @@ type
     { self-cross-compile leg 12: assignment to an ELEMENT of a dyn-array field
       (Result.Cands[0] := 'cc') — element address + ARC element store }
     procedure TestFieldElementAssign;
+    { BUG-050: a static array with a non-zero LowBound must rebase the index
+      on the WRITE side (A[5] of array[5..9] is element 0), matching the read
+      side — else the write is off by LowBound (out-of-bounds). }
+    procedure TestStaticArrayLowBoundWrite;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2376,6 +2380,38 @@ begin
     Pos(#9'ldr x0, [x0]' + LF + #9'bl _StringRelease', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64fea.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestStaticArrayLowBoundWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A[5] := v on a var A: array[5..9] of Integer — the WRITE must rebase the
+    index by the low bound (sub #5) before scaling, so A[5] is element 0
+    (BUG-050).  The read side already did this; the write did not. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    var A: array[5..9] of Integer;
+    begin
+      A[5] := 50;
+      A[9] := 90;
+      WriteLn(A[5], A[9])
+    end.
+    ''');
+  { the index is rebased by the low bound before the element scale }
+  AssertTrue('write rebases the low bound (sub #5)',
+    Pos(#9'sub x0, x0, #5', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64lbw.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
