@@ -82,11 +82,11 @@ implementation
 
   The options are passed as BOOLEANS rather than as a TRegexOptions set
   because a set literal does not match a set-typed parameter whose type came
-  from a cached unit interface (BUG-059) — and TRegexOptions is imported from
+  from a cached unit interface (BUG-20260719-set-literal-vs-cached-bif) — and TRegexOptions is imported from
   Text.Regex, so even a set-typed parameter on a LOCAL helper cannot be called
   with '[roIgnoreCase]' on an incremental rebuild.  Building the set here,
   where each element is added individually, avoids constructing a set literal
-  of the imported type entirely.  Simplify once BUG-059 is fixed. }
+  of the imported type entirely.  Simplify once BUG-20260719-set-literal-vs-cached-bif is fixed. }
 function MakeRegex(const APattern: string;
   AIgnoreCase, AMultiLine, ADotAll: Boolean): TRegex;
 var
