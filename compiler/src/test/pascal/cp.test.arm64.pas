@@ -175,6 +175,9 @@ type
     procedure TestRetainedFieldReadOnTransientBase;
     { self-cross-compile: dynamic-array function return (+1 transfers) }
     procedure TestDynArrayFunctionReturn_TransfersOwnership;
+    { self-cross-compile leg 11: SetLength on a dyn-array FIELD lvalue
+      (SetLength(Result.Cands, N)) — works through the field's address }
+    procedure TestSetLengthOnFieldLvalue;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2268,6 +2271,58 @@ begin
   AssertTrue('scaled elem', Pos(#9'mul x1, x1, x2', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64dyn.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSetLengthOnFieldLvalue;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { SetLength on a dyn-array FIELD of an explicit record (Result.Cands): the
+    field's ADDRESS is computed (base slot + field offset), the old data
+    pointer is loaded THROUGH it, _DynArraySetLength is called, and the new
+    pointer is stored back through the address — no ARC (the RTL frees the
+    old block and returns a fresh rc=1 block). }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TStrArr = array of string;
+      TSpec = record
+        Name: string;
+        Cands: TStrArr;
+      end;
+    function MakeSpec: TSpec;
+    begin
+      Result.Name := 'linker';
+      SetLength(Result.Cands, 2)
+    end;
+    var S: TSpec;
+    begin
+      S := MakeSpec();
+      WriteLn(Length(S.Cands))
+    end.
+    ''');
+  { the SetLength routes through _DynArraySetLength via the field address:
+    compute &field, load old ptr, call, store new ptr back — NO plain-ident
+    slot store and NO extra _DynArrayRelease (the RTL moved ownership). }
+  AssertTrue('field-lvalue setlength',
+    Pos(#9'add x0, x0, #8' + LF + #9'str x0, [sp, #-16]!' + LF +
+        #9'ldr x0, [x0]' + LF + #9'ldr x1, [sp, #16]', AsmT) >= 0);
+  AssertTrue('calls _DynArraySetLength',
+    Pos(#9'bl _DynArraySetLength', AsmT) >= 0);
+  { the new pointer is stored back through the saved field address }
+  AssertTrue('stores new ptr through field addr',
+    Pos(#9'ldr x9, [sp]' + LF + #9'str x0, [x9]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64slf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

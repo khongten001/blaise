@@ -38,6 +38,10 @@ type
     procedure TestRun_Record_AddrOfImplicitSelf;
     procedure TestRun_Record_PointerDerefFieldAccess;
     procedure TestRun_Record_DynArrayField_ReturnByValue_NoLeak;
+    { self-cross-compile leg 11: SetLength on a dyn-array field of an explicit
+      record (SetLength(Result.Cands, N)) — works through the field address;
+      correct output + leak-free (the RTL moves ownership on resize). }
+    procedure TestRun_Record_SetLengthOnDynArrayField;
     procedure TestRun_Class_RecordField_NestedClass_FullCleanup;
     procedure TestRun_Record_InterfaceField_AssignCallAndCopy;
     procedure TestRun_Record_ByValParam_StringField_HeapARC;
@@ -1288,6 +1292,37 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '42' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_SetLengthOnDynArrayField;
+const
+  Src = '''
+    program P;
+    type
+      TStrArr = array of string;
+      TSpec = record
+        Name: string;
+        Cands: TStrArr;
+      end;
+    function MakeSpec: TSpec;
+    begin
+      Result.Name := 'linker';
+      SetLength(Result.Cands, 2);
+      Result.Cands[0] := 'cc';
+      Result.Cands[1] := 'clang'
+    end;
+    var S: TSpec;
+    begin
+      S := MakeSpec();
+      WriteLn(S.Name, ' ', Length(S.Cands), ' ', S.Cands[0], ' ', S.Cands[1])
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'linker 2 cc clang' + LE, 0);
+  { SetLength on a dyn-array field must be leak-free (the RTL frees the old
+    block and returns a fresh rc=1 block; the field store moves ownership) }
+  AssertLeakFreeOnAll(Src, 'linker 2 cc clang');
 end;
 
 initialization

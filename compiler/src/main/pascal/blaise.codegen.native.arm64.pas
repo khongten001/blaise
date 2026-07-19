@@ -3671,7 +3671,47 @@ begin
      (TASTExpr(ACall.Args.Items[0]).ResolvedType <> nil) and
      (TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tyDynArray) then
   begin
-    { arr := _DynArraySetLength(arr, n, elemsize) — plain ident lvalue }
+    { arr := _DynArraySetLength(arr, n, elemsize) }
+    if TASTExpr(ACall.Args.Items[0]) is TFieldAccessExpr then
+    begin
+      { dyn-array FIELD of an explicit record/class (Rec.Field / Result.Cands):
+        work through the field's address, exactly like the implicit-Self arm
+        but sourcing the address from EmitRecFieldAddrToX0 (which applies the
+        field offset).  _DynArraySetLength frees the old block and returns a
+        fresh rc=1 block, so the new pointer is just stored back — no ARC.
+
+        Restrict to the lvalue shapes EmitRecFieldAddrToX0 addresses correctly:
+        - a var-param record field: its slot holds the caller's ADDRESS, not
+          the record — EmitRecFieldAddrToX0 has no IsVarParam arm (unlike the
+          field READ path) and would treat the pointer slot as the record.
+        - an implicit-Self record-field base (SetLength(FRec.Arr, N)): the
+          helper adds only FieldInfo.Offset, never ImplicitBaseInfo.Offset,
+          so it would address the wrong field of Self.
+        - a subscripted array field (SetLength(R.Matrix[I], N)): the helper
+          ignores PropIndexExpr and would resize the OUTER array.
+        These stay NotYet (clean, as before this leg) rather than miscompile. }
+      if TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])).IsVarParam or
+         (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])).IsImplicitSelf and
+          (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0]))
+             .ImplicitBaseInfo <> nil)) or
+         (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0]))
+            .PropIndexExpr <> nil) then
+        NotYet('SetLength on this field-lvalue form', ACall);
+      Self.EmitExprToX0(TASTExpr(ACall.Args.Items[1]));
+      EmitPushX0();                                       { [N] }
+      EmitRecFieldAddrToX0(TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])));
+      EmitPushX0();                                       { [N][addr] }
+      Self.Emit(#9'ldr x0, [x0]');                        { old array }
+      Self.Emit(#9'ldr x1, [sp, #16]');                   { N }
+      EmitIntLiteral('x2', TDynArrayTypeDesc(
+        TASTExpr(ACall.Args.Items[0]).ResolvedType).ElementType.RawSize());
+      Self.Emit(#9'bl _DynArraySetLength');
+      Self.Emit(#9'ldr x9, [sp]');                        { addr }
+      Self.Emit(#9'str x0, [x9]');
+      Self.Emit(#9'add sp, sp, #32');
+      Exit;
+    end;
+    { plain ident lvalue }
     if not (TASTExpr(ACall.Args.Items[0]) is TIdentExpr) then
       NotYet('SetLength on this lvalue form', ACall);
     if TIdentExpr(TASTExpr(ACall.Args.Items[0])).ParamMode = pmVar then
