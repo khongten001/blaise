@@ -178,6 +178,9 @@ type
     { self-cross-compile leg 11: SetLength on a dyn-array FIELD lvalue
       (SetLength(Result.Cands, N)) — works through the field's address }
     procedure TestSetLengthOnFieldLvalue;
+    { self-cross-compile leg 12: assignment to an ELEMENT of a dyn-array field
+      (Result.Cands[0] := 'cc') — element address + ARC element store }
+    procedure TestFieldElementAssign;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2323,6 +2326,56 @@ begin
     Pos(#9'ldr x9, [sp]' + LF + #9'str x0, [x9]', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64slf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestFieldElementAssign;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Result.Cands[0] := 'cc' — assign a STRING into an element of a dyn-array
+    field.  The element ADDRESS is computed (field data pointer + index*8),
+    then the ARC element store runs: retain the new value (a literal is
+    borrowed → AddRef), release the OLD element string, store the new. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TStrArr = array of string;
+      TSpec = record
+        Cands: TStrArr;
+      end;
+    function MakeSpec: TSpec;
+    begin
+      SetLength(Result.Cands, 1);
+      Result.Cands[0] := 'cc'
+    end;
+    var S: TSpec;
+    begin
+      S := MakeSpec();
+      WriteLn(S.Cands[0])
+    end.
+    ''');
+  { the element store scales the index by the element size and computes the
+    element address off the field's data pointer — the value is materialised
+    FIRST, then the data pointer is derefed (so a reallocating RHS is safe). }
+  AssertTrue('scales index by element size',
+    Pos(#9'mul x1, x1, x2' + LF + #9'add x0, x0, x1', AsmT) >= 0);
+  { string element ARC store: retain new, then release the OLD element (read
+    through the freshly-computed element address), then store the new }
+  AssertTrue('retains the new element value',
+    Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('releases the old element string via the element address',
+    Pos(#9'ldr x0, [x0]' + LF + #9'bl _StringRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64fea.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

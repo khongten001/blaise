@@ -42,6 +42,10 @@ type
       record (SetLength(Result.Cands, N)) — works through the field address;
       correct output + leak-free (the RTL moves ownership on resize). }
     procedure TestRun_Record_SetLengthOnDynArrayField;
+    { self-cross-compile leg 12: assignment to an element of a dyn-array field,
+      both a STRING element (ARC store) and an INTEGER element (plain store);
+      correct values + leak-free. }
+    procedure TestRun_Record_DynArrayFieldElementAssign;
     procedure TestRun_Class_RecordField_NestedClass_FullCleanup;
     procedure TestRun_Record_InterfaceField_AssignCallAndCopy;
     procedure TestRun_Record_ByValParam_StringField_HeapARC;
@@ -1323,6 +1327,39 @@ begin
   { SetLength on a dyn-array field must be leak-free (the RTL frees the old
     block and returns a fresh rc=1 block; the field store moves ownership) }
   AssertLeakFreeOnAll(Src, 'linker 2 cc clang');
+end;
+
+procedure TE2ERecordsTests.TestRun_Record_DynArrayFieldElementAssign;
+const
+  Src = '''
+    program P;
+    type
+      TStrArr = array of string;
+      TIntArr = array of Integer;
+      TSpec = record
+        Cands: TStrArr;
+        Nums: TIntArr;
+      end;
+    function MakeSpec: TSpec;
+    begin
+      SetLength(Result.Cands, 2);
+      SetLength(Result.Nums, 2);
+      Result.Cands[0] := 'cc';
+      Result.Cands[1] := 'clang';
+      Result.Nums[0] := 42;
+      Result.Nums[1] := 7
+    end;
+    var S: TSpec;
+    begin
+      S := MakeSpec();
+      WriteLn(S.Cands[0], ' ', S.Cands[1], ' ', S.Nums[0] + S.Nums[1])
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, 'cc clang 49' + LE, 0);
+  { string element writes retain/release correctly; no leak }
+  AssertLeakFreeOnAll(Src, 'cc clang 49');
 end;
 
 initialization

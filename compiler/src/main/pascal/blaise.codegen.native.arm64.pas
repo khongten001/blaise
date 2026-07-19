@@ -145,6 +145,17 @@ type
     procedure EmitRecCallToRret(AExpr: TASTExpr);
     procedure EmitPropRecvToX0(AStmt: TFieldAssignment);
     procedure EmitFieldAssign(AStmt: TFieldAssignment);
+    { Rec.Field[Index] := value where Field is an array-typed field (leg 12).
+      Computes the element address (field data pointer + index*elemsize) and
+      stores the value with the ARC discipline of the element type — the same
+      element-store logic as EmitStaticElemAssign, sourcing the array from a
+      record field slot instead of a plain variable. }
+    procedure EmitFieldElemAssign(AStmt: TFieldAssignment);
+    { Compute the address of Rec.Field[Index] into x0 — called AFTER the value
+      expression is materialised so a value that reallocates the field's
+      dyn-array cannot leave a stale data pointer. }
+    procedure EmitFieldElemAddrToX0(AStmt: TFieldAssignment; AElem: TTypeDesc;
+      AIsDyn: Boolean; ALow: Integer);
 
     { ---- expression lowering (result in x0) ---- }
     procedure EmitExprToX0(AExpr: TASTExpr);
@@ -1017,12 +1028,14 @@ begin
           TPropertyInfo(AStmt.PropWriteInfo).WriteMethod)]));
     Exit;
   end;
-  if AStmt.ObjExpr <> nil then
+  if (AStmt.ObjExpr <> nil) and not AStmt.IsElemWrite then
   begin
     { chained base: A.B.C := v — the base expression yields the instance.
       An OWNED transient base (a call result, +1) is kept in a second slot
       and released after the field store, so the object survives the write
-      but its temporary +1 does not leak. }
+      but its temporary +1 does not leak.  An element write (A.B.Arr[i] := v)
+      is routed to EmitFieldElemAssign instead — the field-store machinery
+      here would drop the index and write the value over the array slot. }
     if AStmt.FieldInfo = nil then
       NotYet('unresolved field assignment', AStmt);
     Self.EmitExprToX0(AStmt.ObjExpr);
@@ -1037,6 +1050,11 @@ begin
     end;
     EmitPushX0();
     EmitInstanceFieldStoreStacked(AStmt.FieldInfo, AStmt.Expr);
+    Exit;
+  end;
+  if AStmt.IsElemWrite then
+  begin
+    EmitFieldElemAssign(AStmt);
     Exit;
   end;
   if AStmt.PropIndexExpr <> nil then
@@ -1167,6 +1185,122 @@ begin
   else
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
   end;
+end;
+
+procedure TArm64Backend.EmitFieldElemAssign(AStmt: TFieldAssignment);
+var
+  Elem: TTypeDesc;
+  IsDyn: Boolean;
+  Low: Integer;
+begin
+  { Rec.Field[Index] := value.  Restrict to the leaf base shapes whose field
+    address is a plain slot+offset (like leg 11's SetLength-on-field): an
+    ObjExpr / implicit-Self / var-param base needs different address logic and
+    stays NotYet.  Element container: dyn-array (field slot holds the data
+    pointer — deref) or static array (the field storage IS the array). }
+  if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf or AStmt.IsVarParam then
+    NotYet('array-field element write on this base form', AStmt);
+  if AStmt.FieldInfo = nil then
+    NotYet('unresolved field element write', AStmt);
+  if AStmt.FieldInfo.TypeDesc.Kind = tyDynArray then
+    Elem := TDynArrayTypeDesc(AStmt.FieldInfo.TypeDesc).ElementType
+  else if AStmt.FieldInfo.TypeDesc.Kind = tyStaticArray then
+    Elem := TStaticArrayTypeDesc(AStmt.FieldInfo.TypeDesc).ElementType
+  else
+    NotYet('field element write on this field type', AStmt);
+  IsDyn := AStmt.FieldInfo.TypeDesc.Kind = tyDynArray;
+  Low := 0;
+  if not IsDyn then
+    Low := TStaticArrayTypeDesc(AStmt.FieldInfo.TypeDesc).LowBound;
+
+  { Evaluate the VALUE FIRST (and complete its AddRef), THEN compute the
+    element address — a value expression that reassigns/grows the SAME
+    dyn-array field (R.Arr[i] := F() where F does SetLength(R.Arr,...)) would
+    otherwise leave a stale/freed data pointer.  Matches the x86-64 order. }
+  if Elem.IsString() or (Elem.Kind = tyClass) then
+  begin
+    Self.EmitExprToX0(AStmt.Expr);
+    if not ArcExprOwnsRef(AStmt.Expr) then
+    begin
+      EmitPushX0();
+      if Elem.IsString() then
+        Self.Emit(#9'bl _StringAddRef')
+      else
+        Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();                              { [val] }
+    EmitFieldElemAddrToX0(AStmt, Elem, IsDyn, Low);  { x0 = &element (fresh) }
+    EmitPushX0();                              { [val][elemaddr] }
+    Self.Emit(#9'ldr x0, [x0]');               { old element value }
+    if Elem.IsString() then
+      Self.Emit(#9'bl _StringRelease')
+    else
+      Self.Emit(#9'bl _ClassRelease');
+    Self.Emit(#9'ldr x9, [sp]');               { elem address }
+    Self.Emit(#9'ldr x0, [sp, #16]');          { new value }
+    Self.Emit(#9'str x0, [x9]');
+    Self.Emit(#9'add sp, sp, #32');            { drop [val][elemaddr] }
+    Exit;
+  end;
+  if Elem.Kind in [tyDouble, tySingle] then
+  begin
+    Self.EmitExprToD0OrConvert(AStmt.Expr);
+    Self.Emit(#9'str d0, [sp, #-16]!');        { park the value }
+    EmitFieldElemAddrToX0(AStmt, Elem, IsDyn, Low);
+    Self.Emit(#9'ldr d0, [sp], #16');          { restore value }
+    if Elem.Kind = tySingle then
+    begin
+      Self.Emit(#9'fcvt s0, d0');
+      Self.Emit(#9'str s0, [x0]');
+    end
+    else
+      Self.Emit(#9'str d0, [x0]');
+    Exit;
+  end;
+  if not IsIntFam(Elem) and (Elem.Kind <> tyPointer) and
+     (Elem.Kind <> tyPChar) then
+    NotYet('field array element of this type', AStmt);
+  { integer-family element: value first, then address, then store by width }
+  Self.EmitExprToX0(AStmt.Expr);
+  EmitPushX0();                                { [val] }
+  EmitFieldElemAddrToX0(AStmt, Elem, IsDyn, Low);
+  Self.Emit(#9'mov x9, x0');                   { x9 = elem address }
+  EmitPopTo('x0');                             { value }
+  case Elem.RawSize() of
+    1: Self.Emit(#9'strb w0, [x9]');
+    2: Self.Emit(#9'strh w0, [x9]');
+    4: Self.Emit(#9'str w0, [x9]');
+  else
+    Self.Emit(#9'str x0, [x9]');
+  end;
+end;
+
+procedure TArm64Backend.EmitFieldElemAddrToX0(AStmt: TFieldAssignment;
+  AElem: TTypeDesc; AIsDyn: Boolean; ALow: Integer);
+begin
+  { x0 := address of Rec.Field[Index].  Evaluated AFTER the value expression
+    (its caller parks the value), so a value that reallocates the dyn-array
+    field cannot leave a stale data pointer.  Index → scaled offset, parked;
+    field data pointer (deref for dyn-array) + scaled index. }
+  Self.EmitExprToX0(AStmt.PropIndexExpr);
+  if ALow > 0 then
+    EmitAddSubImm('sub', 'x0', 'x0', ALow)
+  else if ALow < 0 then
+    EmitAddSubImm('add', 'x0', 'x0', -ALow);   { subtracting a negative low }
+  EmitPushX0();                                { [index] }
+  if AStmt.IsClassAccess then
+    EmitLoadSlot('x0', AStmt.RecordName)       { class inst: slot holds pointer }
+  else
+    EmitSlotAddr('x0', AStmt.RecordName);      { record: address of the slot }
+  if AStmt.FieldInfo.Offset <> 0 then
+    EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
+  if AIsDyn then
+    Self.Emit(#9'ldr x0, [x0]');               { dyn-array: slot holds data ptr }
+  EmitPopTo('x1');                             { index }
+  EmitIntLiteral('x2', AElem.RawSize());
+  Self.Emit(#9'mul x1, x1, x2');
+  Self.Emit(#9'add x0, x0, x1');               { x0 = element address }
 end;
 
 { ---- expressions --------------------------------------------------------- }
