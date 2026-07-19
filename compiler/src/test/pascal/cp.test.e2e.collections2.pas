@@ -27,6 +27,14 @@ type
     procedure TestRun_TwoDictInstancesInUnit_BothLink;
     procedure TestRun_IntfFreeFunc_GenericReturn_Compiles;
     procedure TestRun_DefaultProp_StringList_And_ObjectList;
+
+    { Pointer-write ARC for interface and dyn-array pointees (BUG-012 part 2).
+      `P^ := V` is the primitive every generic container uses for its element
+      slots.  It retained strings and class refs but silently dropped
+      interfaces and dyn-arrays, so the element died with its source variable
+      and the slot dangled — a use-after-free, not merely a leak. }
+    procedure TestRun_PointerWrite_Interface_RetainsAndReleases;
+    procedure TestRun_PointerWrite_DynArray_RetainsAndReleases;
   end;
 
 implementation
@@ -404,6 +412,94 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('default-property output',
     'alpha' + #10 + 'beta' + #10 + 'ALPHA' + #10 + 'beta' + #10, Output);
+end;
+
+const
+  { The interface is stored into the slot inside Fill and its only other
+    reference (the local A) dies at Fill's exit.  If the pointer write does
+    not retain, the destructor fires BEFORE 'filled' and the slot dangles. }
+  SrcPointerWriteIntf = '''
+    program P;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      Slot: ^IFoo;
+    procedure Fill;
+    var
+      A: IFoo;
+    begin
+      A := TFoo.Create(41);
+      Slot^ := A
+    end;
+    begin
+      Slot := GetMem(16);
+      ZeroMem(Slot, 16);
+      Fill();
+      WriteLn('filled');
+      Slot^ := nil;
+      WriteLn('cleared');
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+  { Same shape for a dynamic array: the buffer must outlive the local that
+    built it, and still hold its contents when read back. }
+  SrcPointerWriteDynArray = '''
+    program P;
+    type
+      TArr = array of Integer;
+    var
+      Slot: ^TArr;
+    procedure Fill;
+    var
+      A: TArr;
+    begin
+      SetLength(A, 3);
+      A[0] := 77;
+      Slot^ := A
+    end;
+    var
+      B: TArr;
+    begin
+      Slot := GetMem(8);
+      ZeroMem(Slot, 8);
+      Fill();
+      B := Slot^;
+      WriteLn(B[0]);
+      WriteLn(Length(B));
+      SetLength(B, 0);
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_PointerWrite_Interface_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerWriteIntf,
+    'filled' + #10 + 'd41' + #10 + 'cleared' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ECollections2Tests.TestRun_PointerWrite_DynArray_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerWriteDynArray,
+    '77' + #10 + '3' + #10 + 'done' + #10, 0);
 end;
 
 initialization

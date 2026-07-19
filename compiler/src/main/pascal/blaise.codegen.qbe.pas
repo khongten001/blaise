@@ -11176,6 +11176,8 @@ var
   ValTemp:    string;
   OldTemp:    string;
   ExtTemp:    string;
+  ItabTemp:   string;
+  ItabAddr:   string;
   StoreInstr: string;
 begin
   PtrTemp := EmitExpr(AStmt.PtrExpr);
@@ -11200,6 +11202,48 @@ begin
     ValTemp := EmitExpr(AStmt.ValExpr);
     EmitLine(Format('  call $_ClassAddRef(l %s)', [ValTemp]));
     EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+    EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    Exit;
+  end;
+  { ARC: interface stored through a typed pointer.  The slot is a 16-byte fat
+    pointer — obj at +0 (refcounted) and itab at +8 (static rodata, copied
+    raw).  Without this arm the store fell through to the scalar path, which
+    wrote only the obj word with NO retain: TList<IFoo> was silently
+    NON-OWNING, so the element died with its original variable and the slot
+    was left dangling (use-after-free, not merely a leak).  Models the
+    interface field arm of EmitRecordCopy. }
+  if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tyInterface) then
+  begin
+    OldTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+    if AStmt.ValExpr is TNilLiteral then
+    begin
+      { P^ := nil — release the prior obj and zero both slots.  A nil literal
+        has no interface pair to resolve. }
+      ValTemp  := AllocTemp();
+      EmitLine(Format('  %s =l copy 0', [ValTemp]));
+      ItabTemp := ValTemp;
+    end
+    else
+      EmitInterfaceExprPair(AStmt.ValExpr, ValTemp, ItabTemp, AStmt.BaseTy);
+    EmitLine(Format('  call $_ClassAddRef(l %s)',  [ValTemp]));
+    EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
+    EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
+    ItabAddr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ItabAddr, PtrTemp]));
+    EmitLine(Format('  storel %s, %s', [ItabTemp, ItabAddr]));
+    Exit;
+  end;
+  { ARC: dynamic array stored through a typed pointer.  Same retain/release
+    discipline as the string and class arms, via the dyn-array RTL entry
+    points — without it TList<TSomeDynArray> element slots were non-owning. }
+  if (AStmt.BaseTy <> nil) and (AStmt.BaseTy.Kind = tyDynArray) then
+  begin
+    OldTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [OldTemp, PtrTemp]));
+    ValTemp := EmitExpr(AStmt.ValExpr);
+    EmitLine(Format('  call $_DynArrayAddRef(l %s)',  [ValTemp]));
+    EmitLine(Format('  call $_DynArrayRelease(l %s)', [OldTemp]));
     EmitLine(Format('  storel %s, %s', [ValTemp, PtrTemp]));
     Exit;
   end;

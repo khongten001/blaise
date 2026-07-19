@@ -99,6 +99,14 @@ type
     procedure TestARC_StringAssignFromVar_StillAddRef;
     procedure TestARC_DynArrayAssignFromCall_NoSpuriousAddRef;
     procedure TestARC_DynArrayAssignFromVar_StillAddRef;
+
+    { Pointer-write ARC (BUG-012 part 2): storing through a typed pointer
+      (`P^ := V`) is the primitive every generic container uses for its
+      element slots.  It retained strings and class refs but silently
+      dropped interfaces and dyn-arrays, making TList<IFoo> NON-OWNING —
+      a use-after-free hazard, not merely a leak. }
+    procedure TestARC_PointerWrite_Interface_RetainsAndStoresItab;
+    procedure TestARC_PointerWrite_DynArray_RetainsAndReleases;
   end;
 
 implementation
@@ -939,6 +947,91 @@ begin
   Body := CallerBody(GenIR(SrcDynArrayAssignFromVar));
   AssertTrue('borrowed dyn-array variable assignment still AddRefs',
     Pos('call $_DynArrayAddRef', Body) > 0);
+end;
+
+const
+  { `P^ := V` through a ^IFoo — the shape generic containers use for an
+    interface element slot. }
+  SrcPointerWriteIntf = '''
+      program P;
+      type
+        IFoo = interface
+          procedure Bar;
+        end;
+        TFoo = class(IFoo)
+          procedure Bar; begin end;
+        end;
+      procedure DoIt;
+      var
+        P: ^IFoo;
+        V: IFoo;
+      begin
+        P := GetMem(16);
+        V := TFoo.Create();
+        P^ := V;
+        FreeMem(P)
+      end;
+      begin
+        DoIt()
+      end.
+      ''';
+
+  SrcPointerWriteDynArray = '''
+      program P;
+      type
+        TArr = array of Integer;
+      procedure DoIt;
+      var
+        P: ^TArr;
+        V: TArr;
+      begin
+        P := GetMem(8);
+        SetLength(V, 3);
+        P^ := V;
+        FreeMem(P)
+      end;
+      begin
+        DoIt()
+      end.
+      ''';
+
+procedure TARCTests.TestARC_PointerWrite_Interface_RetainsAndStoresItab;
+var
+  IR:     string;
+  FnPos:  Integer;
+  FnBody: string;
+begin
+  IR     := GenIR(SrcPointerWriteIntf);
+  FnPos  := Pos('function $DoIt', IR);
+  AssertTrue('DoIt function emitted', FnPos > 0);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  { The interface fat pointer is 16 bytes: obj at +0 (refcounted through
+    _ClassAddRef/_ClassRelease) and itab at +8 (static rodata, copied raw).
+    Two AddRef/Release pairs appear in the body: one for `V := TFoo.Create()`
+    and one for the pointer write, so require at least two of each. }
+  AssertTrue('pointer write retains the interface obj',
+    CountSubstring(FnBody, 'call $_ClassAddRef') >= 2);
+  AssertTrue('pointer write releases the old interface obj',
+    CountSubstring(FnBody, 'call $_ClassRelease') >= 2);
+  AssertTrue('pointer write stores the itab slot at +8',
+    Pos('add %_t', FnBody) > 0);
+end;
+
+procedure TARCTests.TestARC_PointerWrite_DynArray_RetainsAndReleases;
+var
+  IR:     string;
+  FnPos:  Integer;
+  FnBody: string;
+begin
+  IR     := GenIR(SrcPointerWriteDynArray);
+  FnPos  := Pos('function $DoIt', IR);
+  AssertTrue('DoIt function emitted', FnPos > 0);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  AssertTrue('pointer write retains the dyn-array',
+    Pos('call $_DynArrayAddRef', FnBody) > 0);
+  { One release for the pointer write's old slot, one at scope exit for V. }
+  AssertTrue('pointer write releases the old dyn-array',
+    CountSubstring(FnBody, 'call $_DynArrayRelease') >= 2);
 end;
 
 initialization

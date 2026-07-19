@@ -16102,6 +16102,42 @@ begin
       Self.Emit(#9'movq %rax, (%rcx)');
     end
     else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyInterface) then
+    begin
+      { P^ := V through a ^IFoo — the slot is a contiguous 16-byte fat pointer
+        (obj at +0, itab at +8).  Without this arm the store fell through to
+        the scalar path, which wrote only the 8-byte obj with NO retain and
+        left the itab stale: TList<IFoo> was silently non-owning and the slot
+        dangled once the source variable died.  Compute the destination into
+        the callee-saved %r14 (it must survive the helper's ARC calls) and
+        delegate to EmitInterfaceToFieldSlotsAt, exactly as the static-array
+        interface element write does. }
+      Self.Emit(#9'pushq %r14');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %r14');
+      Self.EmitInterfaceToFieldSlotsAt(TPointerWriteStmt(AStmt).ValExpr,
+        '%r14', 0, TPointerWriteStmt(AStmt).BaseTy);
+      Self.Emit(#9'popq %r14');
+    end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyDynArray) then
+    begin
+      { Dynamic array through a typed pointer: same retain/release discipline
+        as the string and class arms, via the dyn-array RTL entry points. }
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %rcx');
+      Self.Emit(#9'movq (%rcx), %rdi');
+      Self.Emit(#9'pushq %rcx');
+      Self.Emit(#9'callq _DynArrayRelease');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _DynArrayAddRef');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'popq %rcx');
+      Self.Emit(#9'movq %rax, (%rcx)');
+    end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
             (TPointerWriteStmt(AStmt).BaseTy.Kind = tyDouble) then
     begin
       Self.EmitExprToXmm0(TPointerWriteStmt(AStmt).ValExpr);
