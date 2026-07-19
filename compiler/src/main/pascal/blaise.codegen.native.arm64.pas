@@ -294,6 +294,17 @@ type
     procedure EmitIntfMetaSections;
     function  FindClassMethodImpl(ATD: TTypeDecl;
       const AName: string): TMethodDecl;
+    { True if AMethName maps to an ABSTRACT vtable slot on AClassRT (an
+      interface method with no implementation) — the itab slot then points at
+      _AbstractMethodError.  Mirrors x86-64 IsAbstractClassMethod. }
+    function  IsAbstractClassMethod(AClassRT: TRecordTypeDesc;
+      const AMethName: string): Boolean;
+    { Symbol the itab entry for AMethName on AClassRT/ATD should point at:
+      the method's vtable-slot ImplName (correct across units + for inherited /
+      generic-instance methods), falling back to the AST class chain for a
+      non-virtual interface method.  Mirrors x86-64 ItabMethodRefNative. }
+    function  ItabMethodRefArm64(AClassRT: TRecordTypeDesc; ATD: TTypeDecl;
+      const AMethName: string): string;
     function  ClassImplementsAny(ATD: TTypeDecl): Boolean;
     procedure EmitInstanceFieldStoreStacked(AFld: TFieldInfo;
       AValueExpr: TASTExpr);
@@ -7959,11 +7970,11 @@ procedure TArm64Backend.EmitIntfMetaSections;
 var
   I, J, K: Integer;
   ITD, TD: TTypeDecl;
-  CDef, Walk: TClassTypeDef;
   ID: TInterfaceTypeDesc;
-  MD, Impl: TMethodDecl;
-  Names: TStringList;
-  Sym, ISym, WalkName: string;
+  Intfs: TObjectList;                    { collected TInterfaceTypeDesc; not owned }
+  ClassRT, RTWalk: TRecordTypeDesc;
+  IntfWalk: TInterfaceTypeDesc;
+  Sym, ISym: string;
   IsGen: Boolean;
 begin
   if (FIntfDecls.Count = 0) and (FClassDecls.Count = 0) then Exit;
@@ -7977,76 +7988,84 @@ begin
     Self.Emit(Format('typeinfo_%s:', [CodegenMangle(ITD.Name)]));
     Self.Emit(#9'.quad 0');
   end;
-  { itab + impllist per implementing class.  Interface names are collected
-    across the class's ancestor chain — a descendant inherits its parent's
-    interfaces and still needs its own itab (method lookup starts at the
-    most-derived class). }
+  { itab + impllist per implementing class.  DESCRIPTOR-driven (mirrors
+    x86-64/QBE): the implemented-interface set is collected over TWO nested
+    dimensions of the resolved type graph — (1) up the CLASS ancestor chain via
+    RT.Parent (crosses unit boundaries, unlike a name lookup in FClassDecls;
+    BUG-052 F3), and (2) for each implemented interface, up its OWN ancestor
+    chain via IntfWalk.Parent (so a base interface of an implemented derived
+    interface gets its own itab + impllist entry; BUG-052 F4).  Each collected
+    interface — including each inherited base — gets a SEPARATE itab; a base's
+    itab is the leading prefix of the derived's (same impl pointers). }
   for I := 0 to FClassDecls.Count - 1 do
   begin
     TD := TTypeDecl(FClassDecls.Items[I]);
-    CDef := TClassTypeDef(TD.Def);
-    Names := TStringList.Create();
+    ClassRT := ClassDescOf(TD);
+    Intfs := TObjectList.Create(False);   { not owned — descriptors live in the graph }
     try
-      Walk := CDef;
-      WalkName := TD.Name;
-      while Walk <> nil do
+      RTWalk := ClassRT;
+      while RTWalk <> nil do
       begin
-        for J := 0 to Walk.ImplementsNames.Count - 1 do
-          if Names.IndexOf(Walk.ImplementsNames.Strings[J]) < 0 then
-            Names.Add(Walk.ImplementsNames.Strings[J]);
-        WalkName := Walk.ParentName;
-        Walk := nil;
-        for J := 0 to FClassDecls.Count - 1 do
-          if SameText(TTypeDecl(FClassDecls.Items[J]).Name, WalkName) then
+        for J := 0 to RTWalk.ImplementsCount() - 1 do
+        begin
+          IntfWalk := RTWalk.ImplementsIntfAt(J);
+          while IntfWalk <> nil do
           begin
-            Walk := TClassTypeDef(TTypeDecl(FClassDecls.Items[J]).Def);
-            Break;
+            if Intfs.IndexOf(IntfWalk) < 0 then
+              Intfs.Add(IntfWalk);
+            IntfWalk := IntfWalk.Parent;
           end;
+        end;
+        RTWalk := RTWalk.Parent;
       end;
-      if Names.Count = 0 then Continue;
+      if Intfs.Count = 0 then Continue;
       Sym := ClassSym(TD);
       { A GENERIC INSTANCE (name carries '<') is materialised by every unit
-        that touches it, so its itab + impllist must be WEAK bare symbols for
-        the linker to dedup the copies (BUG-004) — matching how typeinfo and
-        vtable are already weak-bound for generics, and the x86-64/QBE
-        dedicated generic-instance itab loops.  Its method pointers already
-        bind to the CLONE's own methods (TD.Def = GI.ClassDef, so
-        FindClassMethodImpl + RoutineSym resolve the instance-mangled body). }
+        that touches it, so its itab + impllist must be WEAK bare symbols so
+        the linker dedups the copies (BUG-004) — matching how typeinfo/vtable
+        are already weak-bound for generics and the x86-64/QBE generic loops. }
       IsGen := Pos('<', TD.Name) >= 0;
-      for J := 0 to Names.Count - 1 do
+      for J := 0 to Intfs.Count - 1 do
       begin
-        ID := TInterfaceTypeDesc(FSymTable.FindType(Names.Strings[J]));
-        if (ID = nil) or not (ID is TInterfaceTypeDesc) then
-          NotYet('unresolved interface ''' + Names.Strings[J] + '''', nil);
-        ISym := IntfItabSym(TD.Name, Names.Strings[J]);
+        ID := TInterfaceTypeDesc(Intfs.Items[J]);
+        { a GENERIC INTERFACE instance (name carries '<') has no typeinfo
+          emitted by the FIntfDecls loop (arm64 lacks the x86-64 dedicated
+          generic-interface typeinfo loop), so the impllist's typeinfo_<inst>
+          reference would dangle.  Keep it an honest NotYet rather than emit a
+          dangling symbol — a pre-existing arm64 gap the interface-parent walk
+          can newly reach (BUG-052 F4 residual). }
+        if Pos('<', ID.Name) >= 0 then
+          NotYet('generic interface instance in an itab', nil);
+        ISym := IntfItabSym(TD.Name, ID.Name);
         Self.Emit('.balign 8');
         if IsGen then
           Self.Emit(Format('.weak %s', [ISym]));
         Self.Emit(Format('%s:', [ISym]));
         for K := 0 to ID.MethodCount() - 1 do
         begin
-          Impl := FindClassMethodImpl(TD, ID.MethodName(K));
-          if Impl = nil then
-            NotYet('implementation of interface method ''' +
-              ID.MethodName(K) + '''', nil);
-          Self.Emit(Format(#9'.quad %s',
-            [RoutineSym(Impl, ID.MethodName(K))]));
+          { an ABSTRACT interface method (no implementation) points at the
+            abort stub; otherwise the vtable-slot ImplName (correct across
+            units and for generic-instance clones). }
+          if IsAbstractClassMethod(ClassRT, ID.MethodName(K)) then
+            Self.Emit(#9'.quad _AbstractMethodError')
+          else
+            Self.Emit(Format(#9'.quad %s',
+              [ItabMethodRefArm64(ClassRT, TD, ID.MethodName(K))]));
         end;
       end;
       Self.Emit('.balign 8');
       if IsGen then
         Self.Emit(Format('.weak impllist_%s', [Sym]));
       Self.Emit(Format('impllist_%s:', [Sym]));
-      for J := 0 to Names.Count - 1 do
+      for J := 0 to Intfs.Count - 1 do
       begin
-        Self.Emit(Format(#9'.quad typeinfo_%s',
-          [CodegenMangle(Names.Strings[J])]));
-        Self.Emit(Format(#9'.quad %s', [IntfItabSym(TD.Name,
-          Names.Strings[J])]));
+        ID := TInterfaceTypeDesc(Intfs.Items[J]);
+        Self.Emit(Format(#9'.quad typeinfo_%s', [CodegenMangle(ID.Name)]));
+        Self.Emit(Format(#9'.quad %s', [IntfItabSym(TD.Name, ID.Name)]));
       end;
       Self.Emit(#9'.quad 0');
     finally
-      Names.Free();
+      Intfs.Free();
     end;
   end;
 end;
@@ -8110,6 +8129,57 @@ begin
         Break;
       end;
   end;
+end;
+
+function TArm64Backend.IsAbstractClassMethod(AClassRT: TRecordTypeDesc;
+  const AMethName: string): Boolean;
+var
+  Slot: Integer;
+begin
+  Result := False;
+  if AClassRT = nil then Exit;
+  Slot := AClassRT.FindVTableSlot(AMethName);
+  if Slot < 0 then Exit;
+  Result := AClassRT.VTableEntryAt(Slot).IsAbstract;
+end;
+
+function TArm64Backend.ItabMethodRefArm64(AClassRT: TRecordTypeDesc;
+  ATD: TTypeDecl; const AMethName: string): string;
+var
+  Slot: Integer;
+  E: TVTableEntry;
+  Impl: TMethodDecl;
+begin
+  { Prefer the vtable slot's ImplName — it is the fully-qualified label of the
+    nearest implementation, correct for a method INHERITED from a (possibly
+    cross-unit) ancestor and for a generic-instance clone (CopyVTableFrom
+    carries the ImplName down across units).  The QBE ImplName may carry a '$'
+    sigil to strip. }
+  if AClassRT <> nil then
+  begin
+    Slot := AClassRT.FindVTableSlot(AMethName);
+    if Slot >= 0 then
+    begin
+      E := AClassRT.VTableEntryAt(Slot);
+      if (E <> nil) and (E.ImplName <> '') then
+      begin
+        if StrAt(E.ImplName, 0) = 36 then   { 36 = '$' }
+          Exit(CodegenMangle(StrCopyTail(E.ImplName, 1)))
+        else
+          Exit(CodegenMangle(E.ImplName));
+      end;
+    end;
+  end;
+  { No vtable slot (a non-virtual interface method): fall back to the AST class
+    chain for the nearest declaring class + its instance-mangled symbol.  A nil
+    result means the implementation is not in this compilation (a non-virtual
+    method inherited from a cross-unit ancestor, or an external method with no
+    body) — bind it to a bare name would dangle or mis-bind to an unrelated
+    global, so keep it an honest error (matching the pre-rewrite behaviour). }
+  Impl := FindClassMethodImpl(ATD, AMethName);
+  if Impl = nil then
+    NotYet('implementation of interface method ''' + AMethName + '''', nil);
+  Result := RoutineSym(Impl, AMethName);
 end;
 
 procedure TArm64Backend.EmitMethodCallCommon(AMethod: TMethodDecl;

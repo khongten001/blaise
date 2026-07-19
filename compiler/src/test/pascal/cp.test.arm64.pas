@@ -197,6 +197,12 @@ type
       interface — its itab + impllist are emitted WEAK (bare, instance-mangled)
       so cross-unit copies dedup, and the itab binds the clone's own methods. }
     procedure TestGenericInstanceImplementsInterface;
+    { BUG-052 F2: an abstract interface method's itab slot points at the abort
+      stub (_AbstractMethodError); the concrete override's itab dispatches. }
+    procedure TestAbstractInterfaceMethodItab;
+    { BUG-052 F4: a class implementing a DERIVED interface must emit a separate
+      itab + impllist entry for each BASE interface (so narrowing works). }
+    procedure TestInterfaceParentChainItab;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2559,6 +2565,106 @@ begin
         AsmStr) >= 0);
   Obj := AssembleArm64ToBytes(AsmStr);
   F := ParseMachO(Obj, 'arm64gii.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestAbstractInterfaceMethodItab;
+var
+  AsmStr: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { TBase declares IShape.Area virtual;abstract; TSquare overrides it.  The
+    abstract base's itab slot points at _AbstractMethodError; the concrete
+    class's itab points at its own override (BUG-052 F2). }
+  AsmStr := GenAsm(
+    '''
+    program P;
+    type
+      IShape = interface
+        function Area: Integer;
+      end;
+      TBase = class(TObject, IShape)
+        function Area: Integer; virtual; abstract;
+      end;
+      TSquare = class(TBase)
+        Side: Integer;
+        function Area: Integer; override;
+      end;
+    function TSquare.Area: Integer;
+    begin Result := Side * Side end;
+    var S: TSquare; Sh: IShape;
+    begin
+      S := TSquare.Create();
+      S.Side := 4;
+      Sh := S;
+      WriteLn(Sh.Area())
+    end.
+    ''');
+  AssertTrue('abstract base itab slot is the abort stub',
+    Pos('itab_TBase_IShape:' + LF + #9'.quad _AbstractMethodError',
+        AsmStr) >= 0);
+  AssertTrue('concrete override itab binds the override',
+    Pos('itab_TSquare_IShape:' + LF + #9'.quad TSquare_Area', AsmStr) >= 0);
+  Obj := AssembleArm64ToBytes(AsmStr);
+  F := ParseMachO(Obj, 'arm64abs.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestInterfaceParentChainItab;
+var
+  AsmStr: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { TImpl implements IDerived (= interface(IBase)).  The impllist must carry a
+    (typeinfo, itab) pair for BOTH IDerived and IBase, and itab_TImpl_IBase is
+    the leading prefix of itab_TImpl_IDerived (BUG-052 F4). }
+  AsmStr := GenAsm(
+    '''
+    program P;
+    type
+      IBase = interface
+        function BaseVal: Integer;
+      end;
+      IDerived = interface(IBase)
+        function DerivedVal: Integer;
+      end;
+      TImpl = class(TObject, IDerived)
+        function BaseVal: Integer;
+        function DerivedVal: Integer;
+      end;
+    function TImpl.BaseVal: Integer;
+    begin Result := 10 end;
+    function TImpl.DerivedVal: Integer;
+    begin Result := 20 end;
+    var T: TImpl; D: IDerived; B: IBase;
+    begin
+      T := TImpl.Create();
+      D := T;
+      B := D;
+      WriteLn(B.BaseVal())
+    end.
+    ''');
+  { the impllist includes the BASE interface as its own pair }
+  AssertTrue('impllist includes the base interface',
+    Pos(#9'.quad typeinfo_IBase' + LF + #9'.quad itab_TImpl_IBase',
+        AsmStr) >= 0);
+  { the base itab is the leading prefix (BaseVal) of the derived itab }
+  AssertTrue('base itab binds the base method',
+    Pos('itab_TImpl_IBase:' + LF + #9'.quad TImpl_BaseVal', AsmStr) >= 0);
+  Obj := AssembleArm64ToBytes(AsmStr);
+  F := ParseMachO(Obj, 'arm64ipc.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

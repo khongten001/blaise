@@ -90,6 +90,10 @@ type
       compile), and forwarding the captured interface as an argument. }
     procedure TestRun_NestedProc_DispatchOnCapturedInterface;
     procedure TestRun_NestedProc_PassesCapturedInterfaceOn;
+    { BUG-052 F2: a class declares an interface method as virtual;abstract and a
+      descendant overrides it.  The abstract class's itab slot points at the
+      abort stub; the concrete descendant's itab dispatches to its override. }
+    procedure TestRun_AbstractInterfaceMethod_ConcreteOverride;
   end;
 
 implementation
@@ -870,6 +874,39 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '7' + LE, 0);
+end;
+
+procedure TE2EInterfaceTests.TestRun_AbstractInterfaceMethod_ConcreteOverride;
+const Src = '''
+    program P;
+    type
+      IShape = interface
+        function Area: Integer;
+      end;
+      TBase = class(TObject, IShape)
+        function Area: Integer; virtual; abstract;
+      end;
+      TSquare = class(TBase)
+        Side: Integer;
+        function Area: Integer; override;
+      end;
+    function TSquare.Area: Integer;
+    begin Result := Side * Side end;
+    var
+      S: TSquare;
+      Sh: IShape;
+    begin
+      S := TSquare.Create();
+      S.Side := 4;
+      Sh := S;
+      WriteLn(Sh.Area())
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { the abstract base's IShape itab slot points at the abort stub; the concrete
+    TSquare's dispatches to its override — 4*4=16 }
+  AssertRunsOnAll(Src, '16' + LE, 0);
 end;
 
 initialization
