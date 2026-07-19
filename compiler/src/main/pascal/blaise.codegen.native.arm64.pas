@@ -3926,6 +3926,14 @@ begin
     EmitBuiltinStrCall1(TASTExpr(ACall.Args.Items[0]), '_RemoveDir');
     Exit;
   end;
+  if SameText(ACall.Name, 'ForceDirectories') and (ACall.ResolvedDecl = nil) and
+     (ACall.Args.Count = 1) then
+  begin
+    { statement-context ForceDirectories (return value discarded) — the
+      expression path is already handled in EmitExprToX0.  Mirrors x86-64. }
+    EmitBuiltinStrCall1(TASTExpr(ACall.Args.Items[0]), '_ForceDirectories');
+    Exit;
+  end;
   if SameText(ACall.Name, 'AppendFile') and (ACall.ResolvedDecl = nil) and
      (ACall.Args.Count = 2) then
   begin

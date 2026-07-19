@@ -185,6 +185,10 @@ type
       on the WRITE side (A[5] of array[5..9] is element 0), matching the read
       side — else the write is off by LowBound (out-of-bounds). }
     procedure TestStaticArrayLowBoundWrite;
+    { self-cross-compile leg 13: ForceDirectories called as a bare STATEMENT
+      (return discarded) — the statement-context dispatch was missing on arm64
+      (only the expression context was handled). }
+    procedure TestForceDirectoriesStatement;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2412,6 +2416,35 @@ begin
     Pos(#9'sub x0, x0, #5', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64lbw.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestForceDirectoriesStatement;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { ForceDirectories('...') as a bare statement — the return value is
+    discarded, so it lowers via EmitProcCallStmt (statement context), which
+    was missing the case on arm64.  Emits a call to the RTL _ForceDirectories. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    begin
+      ForceDirectories('/tmp/blaise_leg13/x');
+      WriteLn('done')
+    end.
+    ''');
+  AssertTrue('statement-context ForceDirectories calls the RTL',
+    Pos(#9'bl _ForceDirectories', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64fd.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

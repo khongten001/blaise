@@ -36,6 +36,10 @@ type
     procedure TestRun_DirectoryExists_TrueAndFalse;
     procedure TestRun_GetTempDir_ReturnsPath;
     procedure TestRun_ForceDirectories_CreatesTree;
+    { leg 13: ForceDirectories called as a bare STATEMENT (return discarded),
+      then DirectoryExists confirms the tree was created.  Exercises the
+      statement-context lowering (distinct from the expression form above). }
+    procedure TestRun_ForceDirectories_Statement_CreatesTree;
     procedure TestRun_Sleep_DoesNotCrash;
     procedure TestRun_ProcessBuiltins_CapturesOutput;
     procedure TestRun_ProcessBuiltins_ExitCode;
@@ -188,6 +192,18 @@ const
         begin
           Dir := ParamStr(1);
           WriteLn(ForceDirectories(Dir));
+          WriteLn(DirectoryExists(Dir))
+        end.
+        ''';
+
+  { statement-context ForceDirectories: the result is discarded (leg 13) }
+  SrcForceDirectoriesStmt =
+    '''
+        program P;
+        var Dir: string;
+        begin
+          Dir := ParamStr(1);
+          ForceDirectories(Dir);
           WriteLn(DirectoryExists(Dir))
         end.
         ''';
@@ -455,6 +471,28 @@ begin
     RemoveDir(ExtractFilePath(ExcludeTrailingPathDelimiter(
       ExtractFilePath(ExcludeTrailingPathDelimiter(
         ExtractFilePath(ExcludeTrailingPathDelimiter(Dir)))))));
+  end;
+end;
+
+procedure TE2ESysUtilsTests.TestRun_ForceDirectories_Statement_CreatesTree;
+var
+  Output: string;
+  RCode: Integer;
+  Dir: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  Dir := IncludeTrailingPathDelimiter(GetTempDir()) +
+         'blaise_leg13_' + IntToStr(GetProcessID()) + '/p/q';
+  try
+    AssertTrue('compile+run',
+      CompileAndRun(SrcForceDirectoriesStmt, Output, RCode, [Dir]));
+    AssertEquals('exit code 0', 0, RCode);
+    AssertEquals('DirectoryExists after statement-call', 'True', Trim(Output));
+  finally
+    RemoveDir(Dir);
+    RemoveDir(ExtractFilePath(ExcludeTrailingPathDelimiter(Dir)));
+    RemoveDir(ExtractFilePath(ExcludeTrailingPathDelimiter(
+      ExtractFilePath(ExcludeTrailingPathDelimiter(Dir)))));
   end;
 end;
 
