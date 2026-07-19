@@ -53,6 +53,17 @@ type
     procedure TestParse_OperatorInGenericRecord_Rejected;
     procedure TestParse_OperatorInGenericClass_Rejected;
     procedure TestParse_FieldNamedOperator_StillParses;
+    { --- Phase 2: semantic resolution --- }
+    procedure TestSem_RecordAdd_Resolves;
+    procedure TestSem_RecordAdd_LoweredCallSet;
+    procedure TestSem_NoOperator_StillErrors;
+    procedure TestSem_BuiltinString_Unaffected;
+    procedure TestSem_BuiltinInteger_Unaffected;
+    procedure TestSem_BuiltinSet_Unaffected;
+    procedure TestSem_ClassIdentityEqual_Preserved;
+    { --- Phase 2: IR --- }
+    procedure TestIR_RecordAdd_EmitsOperatorCall;
+    procedure TestIR_ManagedRecordAdd_EmitsOperatorCall;
   end;
 
 implementation
@@ -505,6 +516,250 @@ var
 begin
   Prog := Self.ParseSrc(Src);
   Prog.Free();
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 2 — semantic resolution                                       }
+{ ------------------------------------------------------------------ }
+
+const
+  RectSrc = '''
+      program P;
+      type
+        TRect = record
+          L, T, R, B: Integer;
+          class operator Add(const A, C: TRect): TRect;
+        end;
+      class operator TRect.Add(const A, C: TRect): TRect;
+      begin
+        Result.L := A.L + C.L;
+        Result.T := A.T + C.T;
+        Result.R := A.R + C.R;
+        Result.B := A.B + C.B
+      end;
+      var X, Y, Z: TRect;
+      begin
+        X.L := 1; Y.L := 2;
+        Z := X + Y;
+        WriteLn(Z.L)
+      end.
+      ''';
+
+procedure TOperatorTests.TestSem_RecordAdd_Resolves;
+var
+  Prog: TProgram;
+begin
+  Prog := Self.AnalyseSrc(RectSrc);
+  Prog.Free();
+end;
+
+{ The resolved operator must be LOWERED into a TMethodCallExpr: the record /
+  sret / ARC machinery in all three backends keys on NODE CLASS
+  (`Asgn.Expr is TMethodCallExpr`, EmitRecordCallSretAt's dispatch, ...), not
+  on a flag, so the binary wrapper is dropped and the owning slot is rebound
+  to the synthesised static call. }
+procedure TOperatorTests.TestSem_RecordAdd_LoweredCallSet;
+var
+  Prog:  TProgram;
+  I:     Integer;
+  Asgn:  TAssignment;
+  Call:  TMethodCallExpr;
+  MD:    TMethodDecl;
+  Found: Boolean;
+begin
+  Prog := Self.AnalyseSrc(RectSrc);
+  try
+    Found := False;
+    for I := 0 to Prog.Block.Stmts.Count - 1 do
+    begin
+      if not (TObject(Prog.Block.Stmts.Items[I]) is TAssignment) then Continue;
+      Asgn := TAssignment(Prog.Block.Stmts.Items[I]);
+      if not SameText(Asgn.Name, 'Z') then Continue;
+      AssertTrue('operator lowered to a method call', Asgn.Expr is TMethodCallExpr);
+      Call := TMethodCallExpr(Asgn.Expr);
+      AssertEquals('receiver is the owner type', 'TRect', Call.ObjectName);
+      AssertEquals('method is the operator name', 'Add', Call.Name);
+      AssertTrue('static call (no Self)', Call.IsStaticCall);
+      AssertEquals('two arguments', 2, Call.Args.Count);
+      AssertNotNull('resolved method', TObject(Call.ResolvedMethod));
+      MD := TMethodDecl(Call.ResolvedMethod);
+      AssertTrue('resolved to an operator', MD.IsOperator);
+      AssertTrue('resolved to okAdd', MD.OperatorKind = okAdd);
+      AssertNotNull('result type', Call.ResolvedType);
+      AssertEquals('result type', 'TRect', Call.ResolvedType.Name);
+      Found := True;
+    end;
+    AssertTrue('lowered assignment found', Found);
+  finally
+    Prog.Free();
+  end;
+end;
+
+procedure TOperatorTests.TestSem_NoOperator_StillErrors;
+const
+  Src = '''
+      program P;
+      type
+        TRect = record
+          L: Integer;
+        end;
+      var X, Y, Z: TRect;
+      begin
+        Z := X + Y
+      end.
+      ''';
+begin
+  Self.AnalyseExpectError(Src);
+end;
+
+procedure TOperatorTests.TestSem_BuiltinString_Unaffected;
+const
+  Src = '''
+      program P;
+      var A, B, C: string;
+      begin
+        A := 'x'; B := 'y';
+        C := A + B;
+        WriteLn(C)
+      end.
+      ''';
+var
+  IR: string;
+begin
+  IR := Self.GenIR(Src);
+  AssertTrue('string concat still uses the RTL helper',
+    (StrPos('_StringConcat', IR) >= 0) or (StrPos('StringConcat', IR) >= 0));
+end;
+
+procedure TOperatorTests.TestSem_BuiltinInteger_Unaffected;
+const
+  Src = '''
+      program P;
+      var A, B, C: Integer;
+      begin
+        A := 1; B := 2;
+        C := A + B;
+        WriteLn(C)
+      end.
+      ''';
+var
+  IR: string;
+begin
+  IR := Self.GenIR(Src);
+  AssertTrue('integer + lowers to an add instruction', StrPos('add ', IR) >= 0);
+end;
+
+procedure TOperatorTests.TestSem_BuiltinSet_Unaffected;
+const
+  Src = '''
+      program P;
+      type
+        TCol = (cRed, cGreen, cBlue);
+        TCols = set of TCol;
+      var A, B, C: TCols;
+      begin
+        A := [cRed];
+        B := [cBlue];
+        C := A + B;
+        if cRed in C then WriteLn('yes')
+      end.
+      ''';
+var
+  Prog: TProgram;
+begin
+  Prog := Self.AnalyseSrc(Src);
+  Prog.Free();
+end;
+
+{ Blaise keeps reference identity for class '=' — the built-in rule is tried
+  first, so declaring an Equal operator does not silently change identity
+  comparisons (a deliberate divergence from Delphi). }
+procedure TOperatorTests.TestSem_ClassIdentityEqual_Preserved;
+const
+  Src = '''
+      program P;
+      type
+        TBar = class
+          X: Integer;
+          class operator Equal(const A, B: TBar): Boolean;
+        end;
+      class operator TBar.Equal(const A, B: TBar): Boolean;
+      begin
+        Result := A.X = B.X
+      end;
+      var P1, P2: TBar;
+      begin
+        P1 := TBar.Create();
+        P2 := P1;
+        if P1 = P2 then WriteLn('same')
+      end.
+      ''';
+var
+  Prog: TProgram;
+  I:    Integer;
+  Stmt: TObject;
+  Bin:  TBinaryExpr;
+  Checked: Boolean;
+begin
+  Prog := Self.AnalyseSrc(Src);
+  try
+    Checked := False;
+    for I := 0 to Prog.Block.Stmts.Count - 1 do
+    begin
+      Stmt := TObject(Prog.Block.Stmts.Items[I]);
+      if not (Stmt is TIfStmt) then Continue;
+      if not (TIfStmt(Stmt).Condition is TBinaryExpr) then Continue;
+      Bin := TBinaryExpr(TIfStmt(Stmt).Condition);
+      AssertNull('class = keeps identity (no operator lowering)', Bin.LoweredCall);
+      Checked := True;
+    end;
+    AssertTrue('identity comparison found', Checked);
+  finally
+    Prog.Free();
+  end;
+end;
+
+{ ------------------------------------------------------------------ }
+{ Phase 2 — IR                                                        }
+{ ------------------------------------------------------------------ }
+
+procedure TOperatorTests.TestIR_RecordAdd_EmitsOperatorCall;
+var
+  IR: string;
+begin
+  IR := Self.GenIR(RectSrc);
+  AssertTrue('operator body emitted', StrPos('TRect_Add', IR) >= 0);
+  { the use site must CALL it, not fall through to an integer add }
+  AssertTrue('operator call emitted', StrPos('call $TRect_Add', IR) >= 0);
+end;
+
+procedure TOperatorTests.TestIR_ManagedRecordAdd_EmitsOperatorCall;
+const
+  Src = '''
+      program P;
+      type
+        TTag = record
+          Name: string;
+          N: Integer;
+          class operator Add(const A, C: TTag): TTag;
+        end;
+      class operator TTag.Add(const A, C: TTag): TTag;
+      begin
+        Result.Name := A.Name + C.Name;
+        Result.N := A.N + C.N
+      end;
+      var X, Y, Z: TTag;
+      begin
+        X.Name := 'a'; Y.Name := 'b';
+        Z := X + Y;
+        WriteLn(Z.Name)
+      end.
+      ''';
+var
+  IR: string;
+begin
+  IR := Self.GenIR(Src);
+  AssertTrue('managed-record operator call emitted', StrPos('call $TTag_Add', IR) >= 0);
 end;
 
 initialization

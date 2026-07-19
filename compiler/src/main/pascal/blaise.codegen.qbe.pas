@@ -11469,6 +11469,30 @@ var
   BaseReleaseTemp: string;
 begin
   PMark := PendingReleaseMark();
+  { Record- (or static-array-) returning call used directly as a SUB-EXPRESSION
+    — a call argument, a nested operand, an index.  A record-typed assignment
+    RHS is intercepted earlier (IsRecordCall, direct sret into the destination)
+    and record-returning property reads have their own path, so what reaches
+    here is exactly the sub-expression form.  Materialise the result into a
+    fresh zeroed stack temp through the record-return ABI and yield its
+    ADDRESS: every consumer of a record-typed expression (the `:_ffi_<Name>`
+    aggregate argument form, EmitRecordCopy, EmitOwnedArgReleases' sret-temp
+    cleanup) expects an address.  Without this the general scalar path below
+    emitted `%t =l call $F(...)` and passed the returned VALUE where a pointer
+    was required — a SIGSEGV on both the register-return and sret shapes
+    (BUG-051).  EmitInheritedFuncCall already did exactly this for the
+    `inherited` form; the other call shapes were missing it. }
+  if (AExpr.ResolvedType <> nil) and
+     (AExpr.ResolvedType.Kind in [tyRecord, tyStaticArray]) and
+     IsRecordCall(AExpr) then
+  begin
+    T := AllocTemp();
+    EmitLine(Format('  %s =l alloc8 %d', [T, AExpr.ResolvedType.ByteSize()]));
+    EmitLine(Format('  call $memset(l %s, w 0, l %d)',
+      [T, AExpr.ResolvedType.ByteSize()]));
+    EmitRecordCallSret(AExpr, T);
+    Exit(T);
+  end;
   if AExpr is TFuncCallExpr then
   begin
     { Standalone function call expression }
@@ -14728,6 +14752,14 @@ begin
     end;
     Result := T;
   end
+  { Operator overloading: uSemantic normally REBINDS the owning slot to the
+    synthesised call (AnalyseExprSlot), so a lowered operator reaches codegen
+    as a plain TMethodCallExpr and every record/sret/ARC node-class test
+    matches.  This guard is the belt-and-braces path for any slot not yet
+    converted to the slot form — delegate to the general emitter rather than
+    re-implementing the call here. }
+  else if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+    Result := EmitExpr(TBinaryExpr(AExpr).LoweredCall)
   else if AExpr is TBinaryExpr then
   begin
     BinExpr := TBinaryExpr(AExpr);

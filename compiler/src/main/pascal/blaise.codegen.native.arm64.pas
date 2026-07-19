@@ -2139,6 +2139,17 @@ begin
       TFuncCallExpr(AExpr).Name, TFuncCallExpr(AExpr).Args);
     Exit;
   end;
+  { Operator overloading: uSemantic normally REBINDS the owning slot to the
+    synthesised call (AnalyseExprSlot), so a lowered operator reaches codegen
+    as a plain TMethodCallExpr and every record/sret/ARC node-class test
+    matches.  This guard is the belt-and-braces path for any slot not yet
+    converted to the slot form — delegate to the general emitter rather than
+    re-implementing the call here. }
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+  begin
+    Self.EmitExprToX0(TBinaryExpr(AExpr).LoweredCall);
+    Exit;
+  end;
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
@@ -3090,6 +3101,17 @@ begin
        (AExpr.ResolvedType.Kind = tySingle) then
       Self.Emit(#9'fcvt d0, s0');   { Single returns in s0 — widen }
     { a Double-returning call leaves its result in d0 already }
+    Exit;
+  end;
+  { Operator overloading: uSemantic normally REBINDS the owning slot to the
+    synthesised call (AnalyseExprSlot), so a lowered operator reaches codegen
+    as a plain TMethodCallExpr and every record/sret/ARC node-class test
+    matches.  This guard is the belt-and-braces path for any slot not yet
+    converted to the slot form — delegate to the general emitter rather than
+    re-implementing the call here. }
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+  begin
+    Self.EmitExprToD0(TBinaryExpr(AExpr).LoweredCall);
     Exit;
   end;
   if AExpr is TBinaryExpr then
