@@ -5,7 +5,9 @@
   <build>
     <packaging>library</packaging>
     <unitPaths>
-      <path>../runtime/src/main/pascal</path>
+      <!-- The RTL units (runtime.*.pas) live in the compiler's own source
+           tree; runtime/src/main/pascal no longer exists. -->
+      <path>../compiler/src/main/pascal</path>
     </unitPaths>
     <bootstrapExclude>
       <unit>Net.Tls.Provider</unit>
