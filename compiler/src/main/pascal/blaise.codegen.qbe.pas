@@ -4910,6 +4910,7 @@ begin
      (AAssign.Expr.ResolvedType.Kind = tyInterface) and
      ((AAssign.Expr is TIdentExpr) or
       (AAssign.Expr is TFieldAccessExpr) or
+      (AAssign.Expr is TDerefExpr) or
       (AAssign.Expr is TStringSubscriptExpr)) then
   begin
     EmitInterfaceExprPair(AAssign.Expr, ObjTemp, ItabTemp);
@@ -15628,6 +15629,22 @@ begin
       interface locals/globals use split _obj/_itab slots, handled above; a
       record field never does.)  EmitLValueAddr resolves the field address. }
     ObjT := EmitLValueAddr(AExpr);
+    AObjTemp  := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [AObjTemp, ObjT]));
+    ItabT := AllocTemp();
+    EmitLine(Format('  %s =l add %s, 8', [ItabT, ObjT]));
+    AItabTemp := AllocTemp();
+    EmitLine(Format('  %s =l loadl %s', [AItabTemp, ItabT]));
+  end
+  else if AExpr is TDerefExpr then
+  begin
+    { Interface read through a typed pointer (P^ where P: ^IFoo).  The
+      pointee is a contiguous fat pointer — obj at +0, itab at +8 — so this
+      is the field-access arm above with the pointer VALUE standing in for
+      the field address.  Without this arm `G := P^` fell through to the
+      fail-loud else (native) or to the scalar load path (QBE), which
+      produced a dangling reference to the destination symbol. }
+    ObjT := EmitExpr(TDerefExpr(AExpr).Expr);
     AObjTemp  := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [AObjTemp, ObjT]));
     ItabT := AllocTemp();

@@ -107,6 +107,12 @@ type
       a use-after-free hazard, not merely a leak. }
     procedure TestARC_PointerWrite_Interface_RetainsAndStoresItab;
     procedure TestARC_PointerWrite_DynArray_RetainsAndReleases;
+
+    { Pointer-READ ARC (BUG-012 part 3): `G := P^` through a ^IFoo is the
+      counterpart of the write above — the read side of every generic
+      container's element slot.  The slot is a 16-byte fat pointer, so both
+      words must be loaded from the address and the obj half retained. }
+    procedure TestARC_PointerRead_Interface_LoadsBothSlotsAndRetains;
   end;
 
 implementation
@@ -1032,6 +1038,55 @@ begin
   { One release for the pointer write's old slot, one at scope exit for V. }
   AssertTrue('pointer write releases the old dyn-array',
     CountSubstring(FnBody, 'call $_DynArrayRelease') >= 2);
+end;
+
+const
+  { `G := P^` through a ^IFoo — the read counterpart of SrcPointerWriteIntf. }
+  SrcPointerReadIntf = '''
+      program P;
+      type
+        IFoo = interface
+          procedure Bar;
+        end;
+        TFoo = class(IFoo)
+          procedure Bar; begin end;
+        end;
+      procedure DoIt;
+      var
+        P: ^IFoo;
+        V: IFoo;
+        G: IFoo;
+      begin
+        P := GetMem(16);
+        ZeroMem(P, 16);
+        V := TFoo.Create();
+        P^ := V;
+        G := P^;
+        FreeMem(P)
+      end;
+      begin
+        DoIt()
+      end.
+      ''';
+
+procedure TARCTests.TestARC_PointerRead_Interface_LoadsBothSlotsAndRetains;
+var
+  IR:     string;
+  FnPos:  Integer;
+  FnBody: string;
+begin
+  IR     := GenIR(SrcPointerReadIntf);
+  FnPos  := Pos('function $DoIt', IR);
+  AssertTrue('DoIt function emitted', FnPos > 0);
+  FnBody := Copy(IR, FnPos, Length(IR) - FnPos + 1);
+  { Three AddRef sites now: `V := TFoo.Create()`, the pointer write `P^ := V`
+    and the pointer read `G := P^`.  Before the fix the read emitted a bare
+    scalar load with no retain (and on the QBE side a dangling reference to
+    the destination symbol), so requiring three pins the new arm. }
+  AssertTrue('pointer read retains the interface obj it loaded',
+    CountSubstring(FnBody, 'call $_ClassAddRef') >= 3);
+  AssertTrue('pointer read releases the destination''s prior obj',
+    CountSubstring(FnBody, 'call $_ClassRelease') >= 3);
 end;
 
 initialization

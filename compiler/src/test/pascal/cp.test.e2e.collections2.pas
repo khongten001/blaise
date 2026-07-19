@@ -35,6 +35,21 @@ type
       and the slot dangled — a use-after-free, not merely a leak. }
     procedure TestRun_PointerWrite_Interface_RetainsAndReleases;
     procedure TestRun_PointerWrite_DynArray_RetainsAndReleases;
+
+    { Pointer-READ ARC for interfaces (BUG-012 part 3).  The read counterpart
+      of the write tests above: `G := P^` and `P^.Method()` through a ^IFoo.
+      The native backend could not address an interface through a pointer at
+      all — its interface handling is named-slot based — so the read was a
+      hard codegen error and `@Slot`-style out-parameter fills segfaulted. }
+    procedure TestRun_PointerRead_Interface_RetainsAndReleases;
+    procedure TestRun_PointerFill_Interface_OutlivesCallee;
+
+    { Deref-dispatch `P^.Method()` is NOT covered here: the parser shapes
+      `P^.Name` as a TFieldAccessExpr unconditionally and never checks for a
+      following '(', so the form is rejected at PARSE time for classes and
+      records too — it is a general postfix-parse gap, not an interface or
+      codegen one.  Copying the fat pointer into a local first
+      (`G := P^; G.Method()`) is covered by the read test above. }
   end;
 
 implementation
@@ -500,6 +515,103 @@ begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRTLRunsOnAll(SrcPointerWriteDynArray,
     '77' + #10 + '3' + #10 + 'done' + #10, 0);
+end;
+
+const
+  { `G := P^` — reading an interface back out of a pointer slot.  G must own
+    its own reference: clearing the original slot first must NOT destroy the
+    object, and the destructor must fire only when G itself is cleared. }
+  SrcPointerReadIntf = '''
+    program P;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      Slot: ^IFoo;
+      G: IFoo;
+    begin
+      Slot := GetMem(16);
+      ZeroMem(Slot, 16);
+      Slot^ := TFoo.Create(41);
+      G := Slot^;
+      WriteLn(G.Value());
+      Slot^ := nil;
+      WriteLn('slot cleared');
+      G := nil;
+      WriteLn('g cleared');
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+  { The out-parameter fill shape: Fill stores into the caller's interface
+    variable through a ^IFoo and its own local reference then dies.  If the
+    pointer write does not retain, or the caller's slot is not treated as an
+    owning interface, the object is destroyed at Fill's exit and the caller
+    holds a dangling fat pointer — a use-after-free, which is what made this
+    program segfault on the native backend. }
+  SrcPointerFillIntf = '''
+    program P;
+    type
+      IFoo = interface
+        procedure Ping;
+      end;
+      TFoo = class(IFoo)
+        procedure Ping;
+        destructor Destroy; override;
+      end;
+    procedure TFoo.Ping;
+    begin WriteLn('ping') end;
+    destructor TFoo.Destroy;
+    begin WriteLn('destroyed') end;
+    procedure Fill(P: ^IFoo);
+    var
+      F: IFoo;
+    begin
+      F := TFoo.Create();
+      P^ := F;
+      WriteLn('filled')
+    end;
+    var
+      Slot: IFoo;
+    begin
+      WriteLn('start');
+      Fill(@Slot);
+      WriteLn('after fill');
+      Slot := nil;
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_PointerRead_Interface_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerReadIntf,
+    '41' + #10 + 'slot cleared' + #10 + 'd41' + #10 + 'g cleared' + #10 +
+    'done' + #10, 0);
+end;
+
+procedure TE2ECollections2Tests.TestRun_PointerFill_Interface_OutlivesCallee;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 'destroyed' MUST come after 'after fill' — if it appears earlier the
+    callee's local took the object with it and the caller's slot dangles. }
+  AssertRTLRunsOnAll(SrcPointerFillIntf,
+    'start' + #10 + 'filled' + #10 + 'after fill' + #10 + 'destroyed' + #10 +
+    'done' + #10, 0);
 end;
 
 initialization

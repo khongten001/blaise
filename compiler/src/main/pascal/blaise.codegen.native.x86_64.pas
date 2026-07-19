@@ -4451,6 +4451,35 @@ begin
     Exit;
   end;
 
+  { F := P^ where the RHS is an interface read through a typed pointer.  The
+    pointee is a contiguous fat pointer (obj at the pointer value, itab at +8)
+    — the same shape as the field-access case above, with the pointer VALUE
+    standing in for the field address.  Without this arm the read hit the
+    fail-loud else: the native backend addresses interfaces by NAMED SLOT
+    (X_obj / X_itab), so no address-based read path existed at all. }
+  if (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
+     (AAsgn.Expr is TDerefExpr) then
+  begin
+    Self.Emit(#9'pushq %r15');
+    Self.EmitExprToEax(TDerefExpr(AAsgn.Expr).Expr);
+    Self.Emit(#9'movq %rax, %r15');
+    Self.Emit(#9'movq 8(%r15), %rax');     { src itab }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq (%r15), %rax');      { src obj }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rdi', [ObjOp]));   { old obj }
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(#9'popq %rax');              { new obj }
+    Self.Emit(Format(#9'movq %%rax, %s', [ObjOp]));
+    Self.Emit(#9'popq %rax');              { itab }
+    Self.Emit(Format(#9'movq %%rax, %s', [ItabOp]));
+    Self.Emit(#9'popq %r15');
+    Exit;
+  end;
+
   { F := Arr[I] where the RHS is an interface element of a static array.  The
     element is a contiguous fat pointer (obj at the element address, itab at +8)
     — compute the element address into %r15 and copy obj+itab with ARC, mirroring
@@ -4612,6 +4641,16 @@ begin
       Self.Emit(#9'pushq %rcx');
       Self.Emit(#9'movq (%rax), %rcx');
       Self.Emit(#9'pushq %rcx');
+    end
+    else if AExpr is TDerefExpr then
+    begin
+      { Interface read through a typed pointer (P^): the pointer VALUE is the
+        address of the contiguous fat pointer. }
+      Self.EmitExprToEax(TDerefExpr(AExpr).Expr);
+      Self.Emit(#9'movq 8(%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { itab }
+      Self.Emit(#9'movq (%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { obj on top }
     end
     else if AExpr is TStringSubscriptExpr then
     begin
@@ -6936,6 +6975,7 @@ var
   IMD: TMethodDecl;
   Unsigned: Boolean;
   AOE: TAddrOfExpr;
+  IE:  TIdentExpr;
   SetMask: Int64;
   SetI: Integer;
   I:   Integer;
@@ -9425,6 +9465,30 @@ begin
       static leaq Name(%rip) — the bare rip-relative form made every
       thread's @TV identical, silently breaking any code that keys
       identity off a threadvar address (runtime.mem's MyTid). }
+    { @IntfVar — an interface variable's storage is a 16-byte fat pointer, but
+      the native backend addresses it by NAMED SLOT: a local occupies its frame
+      slot (obj) plus the 8 bytes above it (itab), and a global emits adjacent
+      <Name>_obj / <Name>_itab labels.  There is no symbol under the bare name,
+      so EmitVarAddr below would emit `leaq Slot(%rip)` against an UNDEFINED
+      symbol — the linker bound it to a garbage address and `Fill(@Slot)`
+      segfaulted.  Take the address of the obj slot, which is the base of the
+      contiguous fat pointer. }
+    if (AOE.Expr is TIdentExpr) and
+       (AOE.Expr.ResolvedType <> nil) and
+       (AOE.Expr.ResolvedType.Kind = tyInterface) then
+    begin
+      IE := TIdentExpr(AOE.Expr);
+      if (not IE.IsGlobal) and Self.IsLocal(IE.Name) then
+        Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(IE.Name)]))
+      else
+      begin
+        Self.AddGlobal(IE.Name, IE.ResolvedType);
+        Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax',
+          [Self.GlobalSymName(IE.Name)]));
+      end;
+      Exit;
+    end;
+
     if AOE.Expr is TIdentExpr then
     begin
       Self.EmitVarAddr(TIdentExpr(AOE.Expr).Name, '%rax');

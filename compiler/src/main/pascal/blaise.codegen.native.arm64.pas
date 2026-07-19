@@ -2589,6 +2589,15 @@ begin
     if (TAddrOfExpr(AExpr).Expr is TIdentExpr) and
        (TIdentExpr(TAddrOfExpr(AExpr).Expr).ParamMode <> pmVar) then
     begin
+      { @IntfVar: an interface variable is a 16-byte fat pointer held in named
+        slots (obj / itab), not a single addressable word.  EmitSlotAddr works
+        off the bare name, which for an interface resolves to no symbol at all —
+        it would yield a garbage address and segfault at the first use.  arm64's
+        interface support is entirely named-slot based and is being built out
+        separately, so refuse rather than emit a wrong address. }
+      if (TAddrOfExpr(AExpr).Expr.ResolvedType <> nil) and
+         (TAddrOfExpr(AExpr).Expr.ResolvedType.Kind = tyInterface) then
+        NotYet('address-of an interface variable (fat pointer)', AExpr);
       EmitSlotAddr('x0', TIdentExpr(TAddrOfExpr(AExpr).Expr).Name);
       Exit;
     end;
