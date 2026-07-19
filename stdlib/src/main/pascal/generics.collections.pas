@@ -91,6 +91,7 @@ type
     FHead:     Integer;
     FTail:     Integer;
     procedure Grow;
+    procedure ReleaseElements;
     procedure Enqueue(Value: T);
     function  Dequeue: T;
     function  Peek: T;
@@ -149,6 +150,7 @@ type
     procedure HashInsertIdx(AIdx: Integer);
     procedure HashRebuild;
     function  FindKey(Key: K): Integer;
+    procedure ReleaseEntries;
     procedure Add(Key: K; Value: V);
     function  GetItem(Key: K): V;
     procedure SetItem(Key: K; Value: V);
@@ -180,6 +182,7 @@ type
     procedure HashInsertIdx(AIdx: Integer);
     procedure HashRebuild;
     function  FindKey(Key: K): Integer;
+    procedure ReleaseEntries;
     procedure Add(Key: K; Value: V);
     function  GetItem(Key: K): V;
     procedure SetItem(Key: K; Value: V);
@@ -559,11 +562,15 @@ end;
 
 function TStack<T>.Pop: T;
 var
-  Src: ^T;
+  Src:   ^T;
+  Empty: T;
 begin
   Self.FCount := Self.FCount - 1;
   Src         := Self.FData + Self.FCount * SizeOf(T);
-  Result      := Src^
+  Result      := Src^;
+  { Ownership moves to the caller; clear the vacated slot so its managed ref
+    is released rather than stranded (see TList<T>.Delete). }
+  Src^        := Empty
 end;
 
 function TStack<T>.Peek: T;
@@ -575,12 +582,36 @@ begin
 end;
 
 procedure TStack<T>.Clear;
+var
+  I:     Integer;
+  Slot:  ^T;
+  Empty: T;
 begin
+  { Release each managed element before dropping the count (see
+    TList<T>.Destroy for why the zero-store is the release primitive). }
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Slot  := Self.FData + I * SizeOf(T);
+    Slot^ := Empty;
+    I     := I + 1
+  end;
   Self.FCount := 0
 end;
 
 procedure TStack<T>.Destroy;
+var
+  I:     Integer;
+  Slot:  ^T;
+  Empty: T;
 begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Slot  := Self.FData + I * SizeOf(T);
+    Slot^ := Empty;
+    I     := I + 1
+  end;
   FreeMem(Self.FData);
   Self.FData     := nil;
   Self.FCount    := 0;
@@ -599,6 +630,7 @@ var
   I: Integer;
   Src: ^T;
   Dst: ^T;
+  Empty: T;
 begin
   OldCap  := Self.FCapacity;
   if OldCap = 0 then
@@ -613,6 +645,9 @@ begin
     Src  := Self.FData + ((Self.FHead + I) mod OldCap) * SizeOf(T);
     Dst  := NewData + I * SizeOf(T);
     Dst^ := Src^;
+    { The copy retained a second managed ref; release the old slot before the
+      buffer is freed, or every surviving element leaks a +1. }
+    Src^ := Empty;
     I    := I + 1
   end;
   FreeMem(Self.FData);
@@ -636,10 +671,14 @@ end;
 
 function TQueue<T>.Dequeue: T;
 var
-  Src: ^T;
+  Src:   ^T;
+  Empty: T;
 begin
   Src         := Self.FData + Self.FHead * SizeOf(T);
   Result      := Src^;
+  { Ownership moves to the caller; clear the vacated slot (see
+    TStack<T>.Pop). }
+  Src^        := Empty;
   Self.FHead  := (Self.FHead + 1) mod Self.FCapacity;
   Self.FCount := Self.FCount - 1
 end;
@@ -652,8 +691,28 @@ begin
   Result := Src^
 end;
 
+{ Release every live element.  The storage is circular, so the live slots are
+  (FHead + I) mod FCapacity for I in 0..FCount-1 — not 0..FCount-1. }
+procedure TQueue<T>.ReleaseElements;
+var
+  I:     Integer;
+  Slot:  ^T;
+  Empty: T;
+begin
+  if Self.FCapacity = 0 then
+    Exit;
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Slot  := Self.FData + ((Self.FHead + I) mod Self.FCapacity) * SizeOf(T);
+    Slot^ := Empty;
+    I     := I + 1
+  end
+end;
+
 procedure TQueue<T>.Clear;
 begin
+  Self.ReleaseElements();
   Self.FCount := 0;
   Self.FHead  := 0;
   Self.FTail  := 0
@@ -661,6 +720,7 @@ end;
 
 procedure TQueue<T>.Destroy;
 begin
+  Self.ReleaseElements();
   FreeMem(Self.FData);
   Self.FData     := nil;
   Self.FCount    := 0;
@@ -799,10 +859,11 @@ end;
 
 procedure TSet<T>.Exclude(Value: T);
 var
-  Idx: Integer;
-  I:   Integer;
-  Dst: ^T;
-  Src: ^T;
+  Idx:   Integer;
+  I:     Integer;
+  Dst:   ^T;
+  Src:   ^T;
+  Empty: T;
 begin
   Idx := Self.IndexOf(Value);
   if Idx < 0 then
@@ -816,6 +877,10 @@ begin
     I    := I + 1
   end;
   Self.FCount := Self.FCount - 1;
+  { The shift leaves the vacated tail slot holding a duplicate of the last
+    element; clear it so its managed ref is released (see TList<T>.Delete). }
+  Dst  := Self.FData + Self.FCount * SizeOf(T);
+  Dst^ := Empty;
   { Indexes shifted — rebuild lazily on the next lookup. }
   Self.HashInvalidate()
 end;
@@ -826,13 +891,35 @@ begin
 end;
 
 procedure TSet<T>.Clear;
+var
+  I:     Integer;
+  Slot:  ^T;
+  Empty: T;
 begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Slot  := Self.FData + I * SizeOf(T);
+    Slot^ := Empty;
+    I     := I + 1
+  end;
   Self.FCount := 0;
   Self.HashInvalidate()
 end;
 
 procedure TSet<T>.Destroy;
+var
+  I:     Integer;
+  Slot:  ^T;
+  Empty: T;
 begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    Slot  := Self.FData + I * SizeOf(T);
+    Slot^ := Empty;
+    I     := I + 1
+  end;
   Self.HashInvalidate();
   FreeMem(Self.FData);
   Self.FData     := nil;
@@ -1010,12 +1097,14 @@ end;
 
 procedure TDictionary<K, V>.Remove(Key: K);
 var
-  Idx:  Integer;
-  I:    Integer;
-  KDst: ^K;
-  KSrc: ^K;
-  VDst: ^V;
-  VSrc: ^V;
+  Idx:      Integer;
+  I:        Integer;
+  KDst:     ^K;
+  KSrc:     ^K;
+  VDst:     ^V;
+  VSrc:     ^V;
+  EmptyKey: K;
+  EmptyVal: V;
 begin
   Idx := Self.FindKey(Key);
   if Idx >= 0 then
@@ -1033,6 +1122,12 @@ begin
       I     := I + 1
     end;
     Self.FCount := Self.FCount - 1;
+    { The shift leaves the vacated tail slots holding duplicates of the last
+      entry; clear both axes so their managed refs are released. }
+    KDst  := Self.FKeys   + Self.FCount * SizeOf(K);
+    VDst  := Self.FValues + Self.FCount * SizeOf(V);
+    KDst^ := EmptyKey;
+    VDst^ := EmptyVal;
     { Indexes shifted — rebuild lazily on the next lookup. }
     Self.HashInvalidate()
   end
@@ -1040,7 +1135,8 @@ end;
 
 procedure TDictionary<K, V>.Clear;
 begin
-  FCount := 0;
+  Self.ReleaseEntries();
+  Self.FCount := 0;
   Self.HashInvalidate();
 end;
 
@@ -1069,8 +1165,30 @@ begin
   Result := Self.FCount
 end;
 
+{ Release every live key AND value.  Both axes matter — a
+  TDictionary<String, TFoo> holds a managed ref on each side. }
+procedure TDictionary<K, V>.ReleaseEntries;
+var
+  I:        Integer;
+  KSlot:    ^K;
+  VSlot:    ^V;
+  EmptyKey: K;
+  EmptyVal: V;
+begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    KSlot  := Self.FKeys   + I * SizeOf(K);
+    VSlot  := Self.FValues + I * SizeOf(V);
+    KSlot^ := EmptyKey;
+    VSlot^ := EmptyVal;
+    I      := I + 1
+  end
+end;
+
 procedure TDictionary<K, V>.Destroy;
 begin
+  Self.ReleaseEntries();
   Self.HashInvalidate();
   FreeMem(Self.FKeys);
   FreeMem(Self.FValues);
@@ -1244,12 +1362,14 @@ end;
 
 procedure TOrderedDictionary<K, V>.Remove(Key: K);
 var
-  Idx:  Integer;
-  I:    Integer;
-  KDst: ^K;
-  KSrc: ^K;
-  VDst: ^V;
-  VSrc: ^V;
+  Idx:      Integer;
+  I:        Integer;
+  KDst:     ^K;
+  KSrc:     ^K;
+  VDst:     ^V;
+  VSrc:     ^V;
+  EmptyKey: K;
+  EmptyVal: V;
 begin
   Idx := Self.FindKey(Key);
   if Idx >= 0 then
@@ -1266,6 +1386,12 @@ begin
       I     := I + 1
     end;
     Self.FCount := Self.FCount - 1;
+    { The shift leaves the vacated tail slots holding duplicates of the last
+      entry; clear both axes so their managed refs are released. }
+    KDst  := Self.FKeys   + Self.FCount * SizeOf(K);
+    VDst  := Self.FValues + Self.FCount * SizeOf(V);
+    KDst^ := EmptyKey;
+    VDst^ := EmptyVal;
     { Indexes shifted — rebuild lazily on the next lookup. }
     Self.HashInvalidate()
   end
@@ -1312,8 +1438,29 @@ begin
   Result := Self.FCount
 end;
 
+{ Release every live key AND value (see TDictionary<K,V>.ReleaseEntries). }
+procedure TOrderedDictionary<K, V>.ReleaseEntries;
+var
+  I:        Integer;
+  KSlot:    ^K;
+  VSlot:    ^V;
+  EmptyKey: K;
+  EmptyVal: V;
+begin
+  I := 0;
+  while I < Self.FCount do
+  begin
+    KSlot  := Self.FKeys   + I * SizeOf(K);
+    VSlot  := Self.FValues + I * SizeOf(V);
+    KSlot^ := EmptyKey;
+    VSlot^ := EmptyVal;
+    I      := I + 1
+  end
+end;
+
 procedure TOrderedDictionary<K, V>.Destroy;
 begin
+  Self.ReleaseEntries();
   Self.HashInvalidate();
   FreeMem(Self.FKeys);
   FreeMem(Self.FValues);
