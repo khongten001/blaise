@@ -53,7 +53,8 @@ uses
   Pop3.Tests,
   Imap.Tests,
   Ftp.Tests,
-  Nntp.Tests;
+  Nntp.Tests,
+  Regex.Tests;
 
 implementation
 
