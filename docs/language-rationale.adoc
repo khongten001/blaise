@@ -6072,3 +6072,98 @@ Rules:
 * *Silently passing extras without a directive* — arity checking is a load-
   bearing part of the type system; opting out must be explicit and visible
   in the declaration.
+
+== Operator Overloading — Delphi-style `class operator`
+
+=== Decision
+
+A record or class may declare overloaded operators using the Delphi
+`class operator` form, inside the type body:
+
+[source,pascal]
+----
+type
+  TRect = record
+    L, T, R, B: Integer;
+    class operator Add(const A, C: TRect): TRect;
+    class operator Equal(const A, C: TRect): Boolean;
+  end;
+
+class operator TRect.Add(const A, C: TRect): TRect;
+begin
+  Result.L := A.L + C.L;
+  { ... }
+end;
+----
+
+The reserved operator names are `Add`, `Subtract`, `Multiply`, `Divide`,
+`Equal`, `NotEqual`, `LessThan`, `GreaterThan`, `LessThanOrEqual`,
+`GreaterThanOrEqual` and `Negative` (unary minus).  They are *contextual*
+identifiers, recognised only after `class operator`; a field or method named
+`Operator` or `Add` is unaffected.  `Implicit` and `Explicit` conversion
+operators are deliberately *not* accepted.
+
+An operator declaration is a *static method* declaration: it receives no
+implicit `Self` and takes its operands as explicit parameters.
+
+=== Rationale
+
+* *Reuses the existing method machinery.* The operator name is an ordinary
+  identifier where a method name goes, so the existing method-declaration
+  parser, the `'Type.Method'` method-group index, `MangleTypeCode`-based link
+  symbols, overload scoring and the record-return (sret) / ARC codegen paths
+  all apply verbatim.  The FPC standalone form (`operator + (A, B: TFoo)`)
+  would put a *symbol* token where a method name belongs, requiring a separate
+  operator-name table and raising unit-visibility questions the type-scoped
+  form sidesteps entirely.
+* *Type-scoped visibility.* An operator belongs to a type, and a type is
+  already resolved through the `uses` chain — so operator visibility is
+  exactly type visibility, with no new lookup rule and no `uses`-order
+  sensitivity.
+* *Built-in operators always win.* Operator resolution is a *fallback*: it is
+  consulted only after every built-in rule (set algebra, `in`, logical ops,
+  comparisons, string `+`, pointer arithmetic, shifts, numeric arithmetic)
+  has declined.  `string + string`, `Integer + Integer` and set algebra are
+  therefore untouched by definition, not by careful ordering.
+* *Class `=` keeps reference identity.* Because the built-in class-identity
+  comparison is tried first, declaring `class operator Equal` on a *class*
+  does **not** change the meaning of `Obj1 = Obj2` — it stays pointer
+  equality.  This is a deliberate divergence from Delphi: silently converting
+  identity comparisons to value comparisons would break identity-based
+  collection lookups in existing code.  Records have no built-in `=`, so for
+  a record the declared `Equal` operator is the only meaning of `=` and there
+  is no conflict.  A class author who wants value equality should expose an
+  `Equals` method or an `IEqualityComparer<T>`.
+* *`<>` is not derived from `=`.* "You wrote it, it exists" — a type must
+  declare `NotEqual` explicitly.  Auto-derivation is a possible later
+  convenience; synthesising behaviour nobody wrote is the surprising default.
+* *Resolution is lowered, not special-cased in the backends.* When an operator
+  resolves, the semantic pass rewrites the binary expression into a
+  synthesised static method call (`TBinaryExpr.LoweredCall`).  Codegen then
+  emits an ordinary method call, so record sret returns, managed-field ARC and
+  the calling convention are inherited rather than reimplemented three times
+  (QBE, x86-64, arm64).  The correctness argument is equivalence: `A + B`
+  emits the same code the explicit call `TRect.Add(A, B)` would.
+
+=== Alternatives considered
+
+* *FPC standalone `operator + (A, B: TFoo): TFoo;`* — rejected: symbol-token
+  method names, a separate name table, and unresolved unit-visibility
+  semantics.  It could later be added as alternative syntax mapping onto the
+  same declaration node.
+* *Full Delphi semantics for class `Equal`* (operator overrides identity) —
+  rejected as a silent behaviour change for existing code; see above.
+* *`Implicit` / `Explicit` conversion operators* — deferred.  They perturb the
+  whole type-compatibility surface (assignment checking, argument binding,
+  casts) and can create conversion ambiguities.  The operator-kind enum
+  reserves both values so adding them later needs no `.bif` format bump.
+* *Operators on generic types* — rejected for now: candidate gathering would
+  need per-instantiation keying of the method-group index and a
+  generic-template `.bif` round-trip for the operator fields.  Declaring a
+  `class operator` inside a generic record or class is a parse error.
+  Operator *use* inside a generic body is unaffected and resolves per
+  monomorphised instantiation, exactly as method calls on `T` already do.
+* *A dedicated unary-negation AST node* — the parser currently desugars `-A`
+  into `0 - A`, so a `Negative` operator must be recognised from that shape.
+  The name is reserved and the arity enforced; wiring the recognition is
+  deferred with the rest of the unary work.

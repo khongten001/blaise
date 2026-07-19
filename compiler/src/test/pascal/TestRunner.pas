@@ -70,6 +70,7 @@ uses
   cp.test.stringlistfind,
   cp.test.maphash,
   cp.test.constarg,
+  cp.test.operators,
   cp.test.nativeconstarg,
   cp.test.nativealign,
   cp.test.nativeopt,

@@ -58,6 +58,12 @@ type
     FLinkLibs:   TObjectList; { non-owning ref to the current TUnit/TProgram.LinkLibs;
                                 external 'lib' decls append a TLinkLibDecl here as they
                                 are parsed (any section). nil outside a unit/program. }
+    FGenericTypeDepth: Integer; { > 0 while parsing the body of a generic record /
+                                  class template.  `class operator` declarations
+                                  are rejected there: operator resolution would
+                                  need per-instantiation FMethodGroups keying and
+                                  a generic-template .bif round-trip, neither of
+                                  which is designed yet. }
 
     { Record a 'link library X' dependency on the unit/program being parsed. }
     procedure AddLinkLib(const ALibName: string; ALine, ACol: Integer);
@@ -117,7 +123,15 @@ type
     procedure ParseFieldDecl(AFields: TObjectList);
     procedure ParseAttributeList(AAttrs: TStringList; AUses: TObjectList = nil);
     function  ParsePropertyDecl: TPropertyDecl;
-    function  ParseMethodDecl(IsFunction: Boolean; ACanHaveNestedProcs: Boolean = False): TMethodDecl;
+    function  ParseMethodDecl(IsFunction: Boolean; ACanHaveNestedProcs: Boolean = False;
+                              AIsOperator: Boolean = False): TMethodDecl;
+    { True when the token stream is at `class operator` — the only position in
+      which the operator NAME identifiers (Add, Equal, ...) are special. }
+    function  AtClassOperator: Boolean;
+    { Consume `class operator`, parse the decl through ParseMethodDecl, then
+      validate the operator name and arity.  ACanHaveNestedProcs is passed
+      through for out-of-line bodies. }
+    function  ParseClassOperatorDecl(ACanHaveNestedProcs: Boolean = False): TMethodDecl;
     procedure ParseParamList(AParams: TObjectList);
     procedure ParseStandaloneDecl(ABlock: TBlock);
     procedure ParseVarBlock(ABlock: TBlock);
@@ -892,6 +906,7 @@ begin
     while Check(tkType) or Check(tkVar) or Check(tkThreadVar) or
           Check(tkProcedure) or Check(tkFunction) or Check(tkConst) or
           Check(tkConstructor) or Check(tkDestructor) or
+          AtClassOperator() or
           (Check(tkIdent) and SameText(FCurrent.Value, 'static') and
            (PeekKind() in [tkFunction, tkProcedure])) do
     begin
@@ -1031,7 +1046,12 @@ begin
           GRD.Col        := TD.Col;
           GRD.ParamNames.AddStrings(ParamNames);
           GRD.ParamConstraints.AddStrings(ParamConstraints);
-          GRD.RecordDef := ParseRecordDef();
+          Inc(FGenericTypeDepth);
+          try
+            GRD.RecordDef := ParseRecordDef();
+          finally
+            Dec(FGenericTypeDepth);
+          end;
           TD.Def := GRD;
         end
         else if Check(tkClass) then
@@ -1041,7 +1061,12 @@ begin
           GD.Col        := TD.Col;
           GD.ParamNames.AddStrings(ParamNames);
           GD.ParamConstraints.AddStrings(ParamConstraints);
-          GD.ClassDef := ParseClassDef();
+          Inc(FGenericTypeDepth);
+          try
+            GD.ClassDef := ParseClassDef();
+          finally
+            Dec(FGenericTypeDepth);
+          end;
           GD.ClassDef.Attributes.AddStrings(ClassAttrs);
           for AUIdx := 0 to ClassAttrUses.Count - 1 do
             GD.ClassDef.AttrUses.Add(ClassAttrUses.Get(AUIdx));
@@ -2127,6 +2152,14 @@ begin
         ParseConstBlock(Result.ConstDecls)
       else if Check(tkVar) then
         Advance()  { optional `var` keyword before field declarations }
+      { `class operator Add(const A, B: TFoo): TFoo;` — a static method whose
+        name is a reserved operator name. }
+      else if AtClassOperator() then
+      begin
+        MethDecl := ParseClassOperatorDecl();
+        MethDecl.Visibility := CurrVisibility;
+        Result.Methods.Add(MethDecl);
+      end
       { Method declarations — before the field branch so a leading `static`
         prefix is not mistaken for a field name. }
       else if Check(tkFunction) or Check(tkProcedure) or
@@ -2396,6 +2429,14 @@ begin
         PropDecl.Visibility := CurrVisibility;
         Result.Properties.Add(PropDecl);
       end
+      { `class operator Add(const A, B: TFoo): TFoo;` — a static method whose
+        name is a reserved operator name. }
+      else if AtClassOperator() then
+      begin
+        MethDecl := ParseClassOperatorDecl();
+        MethDecl.Visibility := CurrVisibility;
+        Result.Methods.Add(MethDecl);
+      end
       { Method declarations — checked BEFORE the generic field branch so that a
         leading `static` prefix on a method is not mistaken for a field name. }
       else if Check(tkFunction) or Check(tkProcedure) or
@@ -2524,7 +2565,64 @@ begin
   end;
 end;
 
-function TParser.ParseMethodDecl(IsFunction: Boolean; ACanHaveNestedProcs: Boolean): TMethodDecl;
+function TParser.AtClassOperator: Boolean;
+begin
+  { `operator` is a CONTEXTUAL identifier — special only directly after
+    `class` and followed by the operator name.  A field or method named
+    `Operator` still parses normally. }
+  Result := Check(tkClass) and (PeekKind() = tkIdent) and
+            SameText(PeekValueAt(1), 'operator') and
+            (PeekKind2() = tkIdent);
+end;
+
+function TParser.ParseClassOperatorDecl(ACanHaveNestedProcs: Boolean): TMethodDecl;
+var
+  OpLine, OpCol: Integer;
+  OpName:        string;
+  Kind:          TOperatorKind;
+  WantArity:     Integer;
+  GotArity:      Integer;
+begin
+  OpLine := FCurrent.Line;
+  OpCol  := FCurrent.Col;
+  if FGenericTypeDepth > 0 then
+    raise EParseError.Create(Format(
+      'A ''class operator'' cannot be declared inside a generic type at line %d col %d in %s'
+      + ' — operators on generic types are deferred',
+      [OpLine, OpCol, FLexer.Filename]));
+  Expect(tkClass);
+  Advance();   { consume the contextual `operator` identifier }
+  { The operator NAME is validated AFTER parsing, off Result.Name: for an
+    out-of-line body (`class operator TFoo.Add(...)`) the identifier here is
+    the OWNER type, and ParseMethodDecl moves the post-dot name into Name. }
+  Result := ParseMethodDecl(True, ACanHaveNestedProcs, True);
+  OpName := Result.Name;
+  Kind   := OperatorKindFromName(OpName);
+  if Kind = okNone then
+  begin
+    Result.Free();
+    Result := nil;
+    raise EParseError.Create(Format(
+      'Unknown operator name ''%s'' at line %d col %d in %s — expected one of'
+      + ' Add, Subtract, Multiply, Divide, Equal, NotEqual, LessThan, GreaterThan,'
+      + ' LessThanOrEqual, GreaterThanOrEqual, Negative',
+      [OpName, OpLine, OpCol, FLexer.Filename]));
+  end;
+  Result.OperatorKind := Kind;
+  WantArity := OperatorKindArity(Kind);
+  GotArity  := Result.Params.Count;
+  if GotArity <> WantArity then
+  begin
+    Result.Free();
+    Result := nil;
+    raise EParseError.Create(Format(
+      'Operator ''%s'' must take exactly %d parameter(s), got %d, at line %d col %d in %s',
+      [OpName, WantArity, GotArity, OpLine, OpCol, FLexer.Filename]));
+  end;
+end;
+
+function TParser.ParseMethodDecl(IsFunction: Boolean; ACanHaveNestedProcs: Boolean;
+  AIsOperator: Boolean): TMethodDecl;
 var
   TempParams:       TStringList;
   TempConstraints:  TStringList;
@@ -2538,7 +2636,17 @@ begin
   try
     Result.Line := FCurrent.Line;
     Result.Col  := FCurrent.Col;
-    if IsFunction then
+    { An operator declaration has no `function` keyword — the caller has
+      already consumed `class operator` and the operator NAME is current.
+      Everything after the name (type params, qualified name, params, `:`
+      return type, directives, body) is identical to a function. }
+    if AIsOperator then
+    begin
+      Result.IsOperator := True;
+      Result.IsStatic   := True;   { operators receive no Self }
+      IsFunction        := True;   { a return type is mandatory }
+    end
+    else if IsFunction then
       Expect(tkFunction)
     else if Check(tkProcedure) then
       Advance()
@@ -2933,6 +3041,15 @@ begin
   { Leading `static` on an out-of-line implementation: `static function T.M ...`.
     Consume it and record the static-ness on the parsed decl, where it is later
     reconciled against the in-class declaration. }
+  { Out-of-line operator body: `class operator TFoo.Add(...): TFoo; begin ... end;`
+    Parsed by the same path as an in-type declaration, so the impl carries
+    IsOperator/OperatorKind/IsStatic and reconciles against the declaration
+    exactly as an overloaded static method does. }
+  if AtClassOperator() then
+  begin
+    ABlock.ProcDecls.Add(ParseClassOperatorDecl(True));
+    Exit;
+  end;
   IsStat := False;
   if Check(tkIdent) and SameText(FCurrent.Value, 'static') and
      (PeekKind() in [tkFunction, tkProcedure]) then
@@ -4876,10 +4993,14 @@ begin
     while Check(tkProcedure) or Check(tkFunction) or
           Check(tkConstructor) or Check(tkDestructor) or
           Check(tkVar) or Check(tkThreadVar) or Check(tkConst) or Check(tkType) or
+          AtClassOperator() or
           (Check(tkIdent) and SameText(FCurrent.Value, 'static') and
            (PeekKind() in [tkFunction, tkProcedure])) do
     begin
-      if Check(tkIdent) and SameText(FCurrent.Value, 'static') and
+      if AtClassOperator() then
+        { Out-of-line operator body in the implementation section. }
+        ParseStandaloneDecl(Result.ImplBlock)
+      else if Check(tkIdent) and SameText(FCurrent.Value, 'static') and
          (PeekKind() in [tkFunction, tkProcedure]) then
         { Out-of-line static-method body in the implementation section:
           `static function T.M ...`.  Mirror the program-level standalone path

@@ -231,11 +231,31 @@ type
                boEQ, boNE, boLT, boGT, boLE, boGE,
                boAnd, boOr, boXor, boIn, boShl, boShr, boSar);
 
+  { Overloadable operator kinds.  The enum is the full v1+v2 set: okImplicit
+    and okExplicit are RESERVED (parsed as unknown names today) so a later
+    conversion-operator release needs no .bif format bump. }
+  TOperatorKind = (
+    okNone,            { not an operator method }
+    okAdd, okSubtract, okMultiply, okDivide,
+    okEqual, okNotEqual, okLessThan, okGreaterThan,
+    okLessThanOrEqual, okGreaterThanOrEqual,
+    okNegative,
+    okImplicit, okExplicit);   { reserved — not implemented }
+
   TBinaryExpr = class(TASTExpr)
   public
     Op:    TBinaryOp;
     Left:  TASTExpr;  { owned }
     Right: TASTExpr;  { owned }
+    { Operator overloading.  When the built-in rules do not apply and an
+      operand is a record or class, uSemantic resolves a `class operator`
+      method and LOWERS the expression into a synthesised TMethodCallExpr
+      held in LoweredCall (which takes ownership of Left/Right, moved into
+      its Args).  Codegen delegates to LoweredCall, so the record/sret/ARC
+      machinery is reached through the ordinary method-call path rather than
+      being reimplemented per backend. }
+    [Unretained] ResolvedOperator: TObject;  { TMethodDecl — not owned }
+    LoweredCall: TASTExpr;                   { owned — nil for built-in operators }
     destructor Destroy; override;
   end;
 
@@ -983,6 +1003,13 @@ type
                                        Distinct from VTableSlot's "static dispatch"
                                        (= non-virtual); a static method also never
                                        receives a Self pointer. }
+    IsOperator:         Boolean;     { set by uParser — declared `class operator`.
+                                       An operator method IS a static method
+                                       (IsStatic is set too), so mangling, .bif
+                                       and codegen treat it as one; the flag only
+                                       marks it as a candidate for operator
+                                       resolution in AnalyseBinaryExpr. }
+    OperatorKind:       TOperatorKind; { okNone unless IsOperator }
     VTableSlot:         Integer;     { -1 = static; >=0 = vtable index (set by uSemantic) }
     TypeParams:         TStringList; { non-nil = generic function template; owns param names }
     TypeParamConstraints: TStringList; { parallel to TypeParams; '' = unconstrained,
@@ -1343,6 +1370,17 @@ type
 function BinaryOpName(AOp: TBinaryOp): string;
 function IsComparisonOp(AOp: TBinaryOp): Boolean;
 
+{ Operator-overloading name mapping.  The operator NAME is a contextual
+  identifier recognised only after `class operator`; these two helpers are
+  the single source of truth for the reserved set.
+    OperatorKindFromName  — 'Add' → okAdd; okNone for an unknown name.
+    OperatorKindName      — okAdd → 'Add'; '' for okNone.
+    OperatorKindArity     — 2 for binary, 1 for unary/conversion. }
+function OperatorKindFromName(const AName: string): TOperatorKind;
+function OperatorKindName(AKind: TOperatorKind): string;
+function OperatorKindArity(AKind: TOperatorKind): Integer;
+function BinaryOpToOperatorKind(AOp: TBinaryOp): TOperatorKind;
+
 { Deep-clone helpers for generic-instance method body re-analysis.
   Clones structure + raw textual fields (names, type names, operators).
   Resolved* / FieldInfo / IsXxx semantic annotations are NOT copied: each
@@ -1396,6 +1434,72 @@ end;
 function IsComparisonOp(AOp: TBinaryOp): Boolean;
 begin
   Result := AOp in [boEQ, boNE, boLT, boGT, boLE, boGE];
+end;
+
+function OperatorKindFromName(const AName: string): TOperatorKind;
+begin
+  if      SameText(AName, 'Add')                then Result := okAdd
+  else if SameText(AName, 'Subtract')           then Result := okSubtract
+  else if SameText(AName, 'Multiply')           then Result := okMultiply
+  else if SameText(AName, 'Divide')             then Result := okDivide
+  else if SameText(AName, 'Equal')              then Result := okEqual
+  else if SameText(AName, 'NotEqual')           then Result := okNotEqual
+  else if SameText(AName, 'LessThan')           then Result := okLessThan
+  else if SameText(AName, 'GreaterThan')        then Result := okGreaterThan
+  else if SameText(AName, 'LessThanOrEqual')    then Result := okLessThanOrEqual
+  else if SameText(AName, 'GreaterThanOrEqual') then Result := okGreaterThanOrEqual
+  else if SameText(AName, 'Negative')           then Result := okNegative
+  else Result := okNone;
+  { okImplicit / okExplicit are deliberately NOT recognised: the enum values
+    are reserved for a future release, but `class operator Implicit` must be
+    rejected today rather than silently accepted and ignored. }
+end;
+
+function OperatorKindName(AKind: TOperatorKind): string;
+begin
+  case AKind of
+    okAdd:                Result := 'Add';
+    okSubtract:           Result := 'Subtract';
+    okMultiply:           Result := 'Multiply';
+    okDivide:             Result := 'Divide';
+    okEqual:              Result := 'Equal';
+    okNotEqual:           Result := 'NotEqual';
+    okLessThan:           Result := 'LessThan';
+    okGreaterThan:        Result := 'GreaterThan';
+    okLessThanOrEqual:    Result := 'LessThanOrEqual';
+    okGreaterThanOrEqual: Result := 'GreaterThanOrEqual';
+    okNegative:           Result := 'Negative';
+    okImplicit:           Result := 'Implicit';
+    okExplicit:           Result := 'Explicit';
+  else
+    Result := '';
+  end;
+end;
+
+function OperatorKindArity(AKind: TOperatorKind): Integer;
+begin
+  if AKind in [okNegative, okImplicit, okExplicit] then
+    Result := 1
+  else
+    Result := 2;
+end;
+
+function BinaryOpToOperatorKind(AOp: TBinaryOp): TOperatorKind;
+begin
+  case AOp of
+    boAdd:   Result := okAdd;
+    boSub:   Result := okSubtract;
+    boMul:   Result := okMultiply;
+    boSlash: Result := okDivide;
+    boEQ:    Result := okEqual;
+    boNE:    Result := okNotEqual;
+    boLT:    Result := okLessThan;
+    boGT:    Result := okGreaterThan;
+    boLE:    Result := okLessThanOrEqual;
+    boGE:    Result := okGreaterThanOrEqual;
+  else
+    Result := okNone;
+  end;
 end;
 
 { TIfStmt }
@@ -2771,6 +2875,8 @@ begin
     export clone made every cross-unit static method look like a normal
     instance method, so TypeName.StaticMethod() resolution failed. }
   Result.IsStatic       := ASrc.IsStatic;
+  Result.IsOperator     := ASrc.IsOperator;
+  Result.OperatorKind   := ASrc.OperatorKind;
   Result.Visibility     := ASrc.Visibility;
   for I := 0 to ASrc.Params.Count - 1 do
     Result.Params.Add(CloneMethodParam(TMethodParam(ASrc.Params.Items[I])));
