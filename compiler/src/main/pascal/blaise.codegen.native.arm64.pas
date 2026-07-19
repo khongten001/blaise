@@ -7450,6 +7450,13 @@ var
   D: TTypeDesc;
   Pfx: string;
 begin
+  { A GENERIC INSTANCE's itab is ALWAYS bare (like ClassSym / impllist) — its
+    OwningUnit is the analysing compilation, not stable across units, so a
+    unit prefix would give the emission site and the use site DIFFERENT itab
+    names and defeat the weak cross-unit dedup (BUG-004).  Keep it bare so the
+    weak itab matches the bare impllist and the H:=B assignment reference. }
+  if Pos('<', AClassName) >= 0 then
+    Exit('itab_' + CodegenMangle(AClassName) + '_' + CodegenMangle(AIntfName));
   Pfx := '';
   if FSymTable <> nil then
   begin
@@ -7957,6 +7964,7 @@ var
   MD, Impl: TMethodDecl;
   Names: TStringList;
   Sym, ISym, WalkName: string;
+  IsGen: Boolean;
 begin
   if (FIntfDecls.Count = 0) and (FClassDecls.Count = 0) then Exit;
   Self.Emit('.section .data');
@@ -7997,6 +8005,14 @@ begin
       end;
       if Names.Count = 0 then Continue;
       Sym := ClassSym(TD);
+      { A GENERIC INSTANCE (name carries '<') is materialised by every unit
+        that touches it, so its itab + impllist must be WEAK bare symbols for
+        the linker to dedup the copies (BUG-004) — matching how typeinfo and
+        vtable are already weak-bound for generics, and the x86-64/QBE
+        dedicated generic-instance itab loops.  Its method pointers already
+        bind to the CLONE's own methods (TD.Def = GI.ClassDef, so
+        FindClassMethodImpl + RoutineSym resolve the instance-mangled body). }
+      IsGen := Pos('<', TD.Name) >= 0;
       for J := 0 to Names.Count - 1 do
       begin
         ID := TInterfaceTypeDesc(FSymTable.FindType(Names.Strings[J]));
@@ -8004,6 +8020,8 @@ begin
           NotYet('unresolved interface ''' + Names.Strings[J] + '''', nil);
         ISym := IntfItabSym(TD.Name, Names.Strings[J]);
         Self.Emit('.balign 8');
+        if IsGen then
+          Self.Emit(Format('.weak %s', [ISym]));
         Self.Emit(Format('%s:', [ISym]));
         for K := 0 to ID.MethodCount() - 1 do
         begin
@@ -8016,6 +8034,8 @@ begin
         end;
       end;
       Self.Emit('.balign 8');
+      if IsGen then
+        Self.Emit(Format('.weak impllist_%s', [Sym]));
       Self.Emit(Format('impllist_%s:', [Sym]));
       for J := 0 to Names.Count - 1 do
       begin
@@ -8560,8 +8580,9 @@ begin
   for I := 0 to AProg.GenericInstances.Count - 1 do
   begin
     GI := TGenericInstance(AProg.GenericInstances.Items[I]);
-    if GI.ClassDef.ImplementsNames.Count > 0 then
-      NotYet('generic instance implementing interfaces', nil);
+    { instances that implement interfaces flow through the ordinary class
+      machinery too — EmitIntfMetaSections weak-binds their itab + impllist
+      (leg 15); the method pointers bind to the clone's own bodies. }
     TDcl := TTypeDecl.Create();
     TDcl.Name := GI.TypeName;
     TDcl.Def := GI.ClassDef;
@@ -8828,9 +8849,8 @@ begin
       nil);
   for I := 0 to AUnit.GenericInstances.Count - 1 do
   begin
-    if TGenericInstance(AUnit.GenericInstances.Items[I])
-         .ClassDef.ImplementsNames.Count > 0 then
-      NotYet('generic instance implementing interfaces', nil);
+    { interface-implementing instances flow through too — their itab +
+      impllist are weak-bound in EmitIntfMetaSections (leg 15). }
     UTD := TTypeDecl.Create();
     UTD.Name := TGenericInstance(AUnit.GenericInstances.Items[I]).TypeName;
     UTD.Def := TGenericInstance(AUnit.GenericInstances.Items[I]).ClassDef;

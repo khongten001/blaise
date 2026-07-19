@@ -36,6 +36,15 @@ type
     procedure TestRun_GenericIntf_StringTypeArg;
     { Polymorphic: two classes implementing same generic interface }
     procedure TestRun_GenericIntf_PolymorphicDispatch;
+    { leg 15: a GENERIC CLASS implementing a (non-generic) interface —
+      TBox<T> = class(TObject, IHolder).  The instance's own itab + impllist
+      are emitted (weak, instance-mangled) and dispatch through the interface
+      resolves to the clone's method. }
+    procedure TestRun_GenericClass_ImplementsInterface;
+    { leg 15 F1: the SAME generic-class-interface instance materialised inside
+      a USED UNIT — the itab must be bare (not unit-prefixed), so the unit's
+      weak itab and the program's use-site reference resolve to one symbol. }
+    procedure TestRun_GenericClass_ImplementsInterface_CrossUnit;
   end;
 
 implementation
@@ -247,6 +256,84 @@ const Src = '''
     ''';
 begin
   AssertRunsOnAll(Src, '10' + Chr(10) + '15' + Chr(10), 0);
+end;
+
+procedure TE2EGenericIntfTests.TestRun_GenericClass_ImplementsInterface;
+const Src = '''
+    program T;
+    type
+      IHolder = interface
+        function Get: Integer;
+      end;
+      TBox<T> = class(TObject, IHolder)
+        FVal: Integer;
+        function Get: Integer;
+      end;
+      function TBox<T>.Get: Integer;
+      begin Result := FVal end;
+    var
+      B: TBox<Integer>;
+      H: IHolder;
+    begin
+      B := TBox<Integer>.Create();
+      B.FVal := 42;
+      H := B;
+      WriteLn(H.Get())
+    end.
+    ''';
+begin
+  AssertRunsOnAll(Src, '42' + Chr(10), 0);
+  { dispatch through the generic instance's own itab must be leak-free }
+  AssertLeakFreeOnAll(Src, '42');
+end;
+
+procedure TE2EGenericIntfTests.TestRun_GenericClass_ImplementsInterface_CrossUnit;
+const
+  UnitSrc = '''
+    unit boxu;
+    interface
+    type
+      IHolder = interface
+        function Get: Integer;
+      end;
+      TBox<T> = class(TObject, IHolder)
+        FVal: Integer;
+        function Get: Integer;
+      end;
+    function MakeHolder(V: Integer): IHolder;
+    implementation
+    function TBox<T>.Get: Integer;
+    begin Result := FVal end;
+    function MakeHolder(V: Integer): IHolder;
+    var B: TBox<Integer>;
+    begin
+      B := TBox<Integer>.Create();
+      B.FVal := V;
+      Result := B
+    end;
+    end.
+    ''';
+  ProgSrc = '''
+    program T;
+    uses boxu;
+    var H: IHolder;
+    begin
+      H := MakeHolder(42);
+      WriteLn(H.Get())
+    end.
+    ''';
+var
+  Output: string;
+  RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { the generic instance is materialised inside boxu (OwningUnit=boxu) — its
+    itab must be bare so the unit's weak definition and the program's use-site
+    reference are the same symbol.  A unit-prefixed itab would fail to link. }
+  AssertTrue('cross-unit compile+run',
+    CompileAndRunWithUnit('boxu', UnitSrc, ProgSrc, Output, RCode));
+  AssertEquals('exit 0', 0, RCode);
+  AssertEquals('interface dispatch across unit', '42' + Chr(10), Output);
 end;
 
 initialization

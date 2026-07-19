@@ -193,6 +193,10 @@ type
       var-parameter (AppendTo(FField, ...)) — the field's address is Self +
       offset, routed through EmitRecIdentAddr. }
     procedure TestSelfFieldAsVarParam;
+    { self-cross-compile leg 15: a generic class instance implementing an
+      interface — its itab + impllist are emitted WEAK (bare, instance-mangled)
+      so cross-unit copies dedup, and the itab binds the clone's own methods. }
+    procedure TestGenericInstanceImplementsInterface;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2501,6 +2505,60 @@ begin
     Pos(#9'add x0, x0, #8', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64svp.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestGenericInstanceImplementsInterface;
+var
+  AsmStr: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { TBox<Integer> implements IHolder — the instance's itab and impllist must
+    be emitted WEAK (so multiple units materialising the same instance dedup),
+    and the itab entry must point at the CLONE's own method (instance-mangled
+    TBox_Integer_Get), not the template. }
+  AsmStr := GenAsm(
+    '''
+    program P;
+    type
+      IHolder = interface
+        function Get: Integer;
+      end;
+      TBox<T> = class(TObject, IHolder)
+        FVal: Integer;
+        function Get: Integer;
+      end;
+    function TBox<T>.Get: Integer;
+    begin
+      Result := FVal
+    end;
+    var
+      B: TBox<Integer>;
+      H: IHolder;
+    begin
+      B := TBox<Integer>.Create();
+      B.FVal := 42;
+      H := B;
+      WriteLn(H.Get())
+    end.
+    ''');
+  { the itab and impllist are weak-bound for the generic instance }
+  AssertTrue('itab weak-bound',
+    Pos('.weak itab_TBox_Integer_IHolder', AsmStr) >= 0);
+  AssertTrue('impllist weak-bound',
+    Pos('.weak impllist_TBox_Integer', AsmStr) >= 0);
+  { the itab entry points at the clone's own instance-mangled method }
+  AssertTrue('itab binds the clone method',
+    Pos('itab_TBox_Integer_IHolder:' + LF + #9'.quad TBox_Integer_Get',
+        AsmStr) >= 0);
+  Obj := AssembleArm64ToBytes(AsmStr);
+  F := ParseMachO(Obj, 'arm64gii.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
