@@ -29,6 +29,10 @@ type
     procedure TestRun_VarRecord;
     procedure TestRun_VarNestedCall;
     procedure TestRun_VarClassField;
+    { leg 14: an implicit-Self field (bare FField inside a method, referencing
+      Self.FField) passed as a var-parameter — its address is Self + offset,
+      distinct from the explicit external-object c.FX form above. }
+    procedure TestRun_ImplicitSelfFieldVarArg;
     { Array element as a var/out actual. }
     procedure TestRun_StaticArrayElemVarArg;
     procedure TestRun_DynArrayElemVarArg;
@@ -103,6 +107,32 @@ const
     procedure Set5(var X: Integer); begin X := 5 end;
     var c: TC;
     begin c := TC.Create(); Set5(c.FX); WriteLn(c.FX); c.Free() end.
+    ''';
+
+  { leg 14: an implicit-Self STRING field passed as a var-param (bare FTab
+    inside a method) — its address is Self + offset. }
+  SrcImplicitSelfFieldVarArg = '''
+    program Prg;
+    procedure AppendTo(var S: string; const E: string);
+    begin S := S + E end;
+    type
+      TThing = class
+        FTab: string;
+        procedure Build;
+      end;
+    procedure TThing.Build;
+    begin
+      FTab := 'a';
+      AppendTo(FTab, 'bc');
+      AppendTo(Self.FTab, 'd')
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create();
+      T.Build();
+      WriteLn(T.FTab);
+      T.Free()
+    end.
     ''';
 
   SrcStaticArrElem = '''
@@ -199,6 +229,14 @@ procedure TE2EVarParamTests.TestRun_VarClassField;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcVarField, '5' + LE, 0);
+end;
+
+procedure TE2EVarParamTests.TestRun_ImplicitSelfFieldVarArg;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcImplicitSelfFieldVarArg, 'abcd' + LE, 0);
+  { the string field is grown through the var-param — no leak }
+  AssertLeakFreeOnAll(SrcImplicitSelfFieldVarArg, 'abcd');
 end;
 
 procedure TE2EVarParamTests.TestRun_StaticArrayElemVarArg;

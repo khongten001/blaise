@@ -6909,12 +6909,11 @@ begin
           already holds; a field lvalue (CD.Field) passes the field's
           address computed from its owning record/instance. }
         if Arg is TIdentExpr then
-        begin
-          if TIdentExpr(Arg).ParamMode = pmVar then
-            EmitLoadSlot('x0', TIdentExpr(Arg).Name)
-          else
-            EmitSlotAddr('x0', TIdentExpr(Arg).Name);
-        end
+          { EmitRecIdentAddr handles all three: a var-param forward (slot
+            holds the caller's address), an implicit-Self FIELD (Self + field
+            offset — the leg-14 case, e.g. LkAddStr(var ..., FDynStrTab)), and
+            a plain local/global slot.  Mirrors x86-64 EmitVarArgAddrToRax. }
+          EmitRecIdentAddr('x0', TIdentExpr(Arg))
         else if (Arg is TFieldAccessExpr) and
                 (TFieldAccessExpr(Arg).FieldInfo <> nil) then
         begin

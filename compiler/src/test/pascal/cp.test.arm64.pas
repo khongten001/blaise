@@ -189,6 +189,10 @@ type
       (return discarded) — the statement-context dispatch was missing on arm64
       (only the expression context was handled). }
     procedure TestForceDirectoriesStatement;
+    { self-cross-compile leg 14: an implicit-Self class field passed as a
+      var-parameter (AppendTo(FField, ...)) — the field's address is Self +
+      offset, routed through EmitRecIdentAddr. }
+    procedure TestSelfFieldAsVarParam;
     { self-cross-compile: record-returning call stored into an array element,
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
@@ -2445,6 +2449,58 @@ begin
     Pos(#9'bl _ForceDirectories', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64fd.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSelfFieldAsVarParam;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { AppendTo(FTab, ...) inside a method — FTab is an implicit-Self field, so
+    its address passed as a var-param is Self + field offset (loaded via
+    EmitRecIdentAddr), not a frame-slot address.  Both the bare-field and the
+    explicit Self.field forms must compile. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure AppendTo(var S: string; const E: string);
+    begin
+      S := S + E
+    end;
+    type
+      TThing = class
+        FTab: string;
+        procedure Build;
+      end;
+    procedure TThing.Build;
+    begin
+      FTab := 'a';
+      AppendTo(FTab, 'bc');
+      AppendTo(Self.FTab, 'd')
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create();
+      T.Build();
+      WriteLn(T.FTab)
+    end.
+    ''');
+  { the var-param field address is Self + the field offset (#8): a plain
+    EmitSlotAddr on the field name would have hit NotYet, so successful
+    compilation to a call already proves the field-address path. }
+  AssertTrue('calls AppendTo with the field lvalue',
+    Pos(#9'bl AppendTo', AsmT) >= 0);
+  AssertTrue('adds the FTab field offset (#8) to form the field address',
+    Pos(#9'add x0, x0, #8', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64svp.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
