@@ -145,6 +145,10 @@ type
     procedure ReservePendRelSlots;
     function  DeferNativeClassRelease: Boolean;
     procedure FlushNativePendingReleases(AMark: Integer);
+    { Load a captured var's field-access base / method receiver through its
+      hidden '_cap_' slot (leg 19).  Returns True when AName was captured. }
+    function  EmitCapturedBase(const AReg, AName: string;
+      AWantValue, AIsVarParam: Boolean): Boolean;
     { Load/store x-register <-> local slot / global (int-family only). }
     procedure EmitLoadSlot(const AReg, AName: string);
     procedure EmitStoreSlot(const AReg, AName: string);
@@ -293,7 +297,11 @@ type
     procedure EmitMethodCallStmt(AStmt: TMethodCallStmt);
     procedure EmitMethodCallExpr(AExpr: TMethodCallExpr);
     procedure EmitInstanceFieldStore(AFld: TFieldInfo;
-      AValueExpr: TASTExpr; const AInstSlot: string);
+      AValueExpr: TASTExpr; const AInstSlot: string; AInstVarParam: Boolean);
+    { Load the instance-pointer base for a field store into AReg — captured
+      (via '_cap_') or a plain slot ('Self' / a class var).  leg 19. }
+    procedure EmitInstBase(const AReg, AInstSlot: string;
+      AInstVarParam: Boolean);
     procedure EmitImplicitSelfStore(AAsgn: TAssignment);
     procedure EmitInterfaceAssign(AAsgn: TAssignment);
     procedure EmitPropReadCall(AFld: TFieldAccessExpr);
@@ -539,6 +547,36 @@ begin
   Self.Emit(#9'blr x9');
 end;
 
+function TArm64Backend.EmitCapturedBase(const AReg, AName: string;
+  AWantValue, AIsVarParam: Boolean): Boolean;
+{ leg 19: when AName is a variable CAPTURED from an enclosing routine and used
+  as a field-access base / method-call receiver, load it through its hidden
+  '_cap_<Name>' pointer slot instead of the (non-existent) bare frame slot.
+  The '_cap_' slot holds &<Name>.
+    AWantValue=True  -> AReg receives the VALUE stored in <Name> (one deref) —
+                        e.g. a class instance pointer held by a class-typed
+                        capture.  A captured var-param needs a further deref
+                        (its storage holds the caller's address).
+    AWantValue=False -> AReg receives the ADDRESS of <Name>'s storage (the
+                        '_cap_' value itself) — e.g. a captured RECORD base;
+                        a captured var-param derefs once to the caller's addr.
+  Returns True when it handled the load (AName was captured), False otherwise
+  so the caller runs its normal bare path.  Mirrors x86-64 EmitVarBaseToReg. }
+begin
+  Result := False;
+  if not IsCaptured(AName) then Exit;
+  EmitLoadSlot(AReg, '_cap_' + AName);
+  if AWantValue then
+  begin
+    Self.Emit(Format(#9'ldr %s, [%s]', [AReg, AReg]));
+    if AIsVarParam then
+      Self.Emit(Format(#9'ldr %s, [%s]', [AReg, AReg]));
+  end
+  else if AIsVarParam then
+    Self.Emit(Format(#9'ldr %s, [%s]', [AReg, AReg]));
+  Result := True;
+end;
+
 procedure TArm64Backend.EmitLoadSlot(const AReg, AName: string);
 var
   Off: Integer;
@@ -696,8 +734,22 @@ begin
     EmitAddSubImm('add', 'x0', 'x0', AFA.FieldInfo.Offset);
 end;
 
+procedure TArm64Backend.EmitInstBase(const AReg, AInstSlot: string;
+  AInstVarParam: Boolean);
+begin
+  { the instance pointer for a field store lives in AInstSlot ('Self' or a
+    class var).  When that var is CAPTURED from an enclosing routine (leg 19),
+    it has no bare frame slot — go through '_cap_' and deref to the pointer.
+    A captured VAR-PARAM class base needs a further deref (its storage holds
+    the caller's address), so AInstVarParam is threaded into the capture path.
+    The non-captured fallthrough keeps its original behaviour (the bare slot
+    already holds the instance pointer for the forms that reach here). }
+  if not EmitCapturedBase(AReg, AInstSlot, True, AInstVarParam) then
+    EmitLoadSlot(AReg, AInstSlot);
+end;
+
 procedure TArm64Backend.EmitInstanceFieldStore(AFld: TFieldInfo;
-  AValueExpr: TASTExpr; const AInstSlot: string);
+  AValueExpr: TASTExpr; const AInstSlot: string; AInstVarParam: Boolean);
 var
   I, Shape: Integer;
 begin
@@ -720,13 +772,13 @@ begin
       EmitPopTo('x0');
     end;
     EmitPushX0();
-    EmitLoadSlot('x9', AInstSlot);
+    EmitInstBase('x9', AInstSlot, AInstVarParam);
     Self.Emit(Format(#9'ldr x0, [x9, #%d]', [AFld.Offset]));
     if AFld.TypeDesc.IsString() then
       Self.Emit(#9'bl _StringRelease')
     else
       Self.Emit(#9'bl _ClassRelease');
-    EmitLoadSlot('x9', AInstSlot);
+    EmitInstBase('x9', AInstSlot, AInstVarParam);
     EmitPopTo('x0');
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AFld.Offset]));
     Exit;
@@ -762,7 +814,7 @@ begin
         end;
       end;
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
-      EmitLoadSlot('x22', AInstSlot);
+      EmitInstBase('x22', AInstSlot, AInstVarParam);
       if AFld.Offset <> 0 then
         EmitAddSubImm('add', 'x22', 'x22', AFld.Offset);
       if not RecretManagedClean(TRecordTypeDesc(AFld.TypeDesc)) then
@@ -781,7 +833,7 @@ begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
       EmitRecAddrToX0(AValueExpr);
       Self.Emit(#9'mov x19, x0');
-      EmitLoadSlot('x22', AInstSlot);
+      EmitInstBase('x22', AInstSlot, AInstVarParam);
       if AFld.Offset <> 0 then
         EmitAddSubImm('add', 'x22', 'x22', AFld.Offset);
       Self.EmitRecordFieldRetains(TRecordTypeDesc(AFld.TypeDesc), 'x19');
@@ -795,7 +847,7 @@ begin
     end;
     EmitRecAddrToX0(AValueExpr);
     EmitPushX0();
-    EmitLoadSlot('x0', AInstSlot);
+    EmitInstBase('x0', AInstSlot, AInstVarParam);
     if AFld.Offset <> 0 then
       EmitAddSubImm('add', 'x0', 'x0', AFld.Offset);
     EmitPopTo('x1');
@@ -807,7 +859,7 @@ begin
   begin
     Self.EmitExprToD0OrConvert(AValueExpr);
     Self.Emit(#9'fcvt s0, d0');
-    EmitLoadSlot('x9', AInstSlot);
+    EmitInstBase('x9', AInstSlot, AInstVarParam);
     Self.Emit(Format(#9'str s0, [x9, #%d]', [AFld.Offset]));
     Exit;
   end;
@@ -822,7 +874,7 @@ begin
   else
     NotYet('store to a field of this type', AValueExpr);
   EmitPushX0();
-  EmitLoadSlot('x9', AInstSlot);
+  EmitInstBase('x9', AInstSlot, AInstVarParam);
   EmitPopTo('x0');
   { width-keyed store: a 4-byte field at a 4-aligned offset would fault
     the scaled 8-byte form, and an 8-byte store would trash the neighbour }
@@ -899,7 +951,7 @@ end;
 procedure TArm64Backend.EmitImplicitSelfStore(AAsgn: TAssignment);
 begin
   EmitInstanceFieldStore(TFieldInfo(AAsgn.ImplicitSelfField), AAsgn.Expr,
-    'Self');
+    'Self', False);
 end;
 
 procedure TArm64Backend.EmitRecAddrToX0(AExpr: TASTExpr);
@@ -1117,13 +1169,15 @@ begin
     NotYet('unresolved field assignment', AStmt);
   if AStmt.IsImplicitSelf then
   begin
-    EmitInstanceFieldStore(AStmt.FieldInfo, AStmt.Expr, 'Self');
+    EmitInstanceFieldStore(AStmt.FieldInfo, AStmt.Expr, 'Self', False);
     Exit;
   end;
   if AStmt.IsClassAccess then
   begin
-    { Obj.Field := value — the instance pointer lives in Obj's slot }
-    EmitInstanceFieldStore(AStmt.FieldInfo, AStmt.Expr, AStmt.RecordName);
+    { Obj.Field := value — the instance pointer lives in Obj's slot (a captured
+      var-param class base needs the extra deref, threaded via IsVarParam) }
+    EmitInstanceFieldStore(AStmt.FieldInfo, AStmt.Expr, AStmt.RecordName,
+      AStmt.IsVarParam);
     Exit;
   end;
   if AStmt.FieldInfo.TypeDesc.Kind = tyRecord then
@@ -2907,7 +2961,8 @@ begin
       NotYet('read of a field of this type', AExpr);
     if TFieldAccessExpr(AExpr).IsImplicitSelf then
       EmitLoadSlot('x0', 'Self')
-    else
+    else if not EmitCapturedBase('x0', TFieldAccessExpr(AExpr).RecordName,
+                 True, TFieldAccessExpr(AExpr).IsVarParam) then
       EmitLoadSlot('x0', TFieldAccessExpr(AExpr).RecordName);
     if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
       Self.Emit(Format(#9'add x0, x0, #%d',
@@ -2944,7 +2999,15 @@ begin
                tyDynArray]) or
             TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.IsString()) then
       NotYet('read of a field of this type', AExpr);
-    if TFieldAccessExpr(AExpr).IsVarParam then
+    { captured record base (leg 19): a captured VALUE record's '_cap_' holds
+      its address directly (no deref); a captured VAR-PARAM record's '_cap_'
+      holds &(the var-param slot), and that slot holds the caller's record
+      address — so one deref yields the base.  Both cases: want the record
+      ADDRESS, driven by IsVarParam. }
+    if IsCaptured(TFieldAccessExpr(AExpr).RecordName) then
+      EmitCapturedBase('x9', TFieldAccessExpr(AExpr).RecordName,
+        TFieldAccessExpr(AExpr).IsVarParam, False)
+    else if TFieldAccessExpr(AExpr).IsVarParam then
       EmitLoadSlot('x9', TFieldAccessExpr(AExpr).RecordName)
     else
       EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
@@ -8675,9 +8738,12 @@ begin
     EmitMethodCallOnExpr(MD, AStmt.Name, AStmt.Args, AStmt.ObjExpr)
   else
   begin
-    EmitLoadSlot('x0', AStmt.ObjectName);
-    if AStmt.IsVarParam then
-      Self.Emit(#9'ldr x0, [x0]');
+    if not EmitCapturedBase('x0', AStmt.ObjectName, True, AStmt.IsVarParam) then
+    begin
+      EmitLoadSlot('x0', AStmt.ObjectName);
+      if AStmt.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');
+    end;
     EmitMethodCallCommon(MD, AStmt.Name, AStmt.Args);
   end;
   { a discarded owned result (class-typed) must be released }
@@ -8833,9 +8899,12 @@ begin
     EmitMethodCallOnExpr(MD, AExpr.Name, AExpr.Args, AExpr.ObjExpr);
     Exit;
   end;
-  EmitLoadSlot('x0', AExpr.ObjectName);
-  if AExpr.IsVarParam then
-    Self.Emit(#9'ldr x0, [x0]');
+  if not EmitCapturedBase('x0', AExpr.ObjectName, True, AExpr.IsVarParam) then
+  begin
+    EmitLoadSlot('x0', AExpr.ObjectName);
+    if AExpr.IsVarParam then
+      Self.Emit(#9'ldr x0, [x0]');
+  end;
   EmitMethodCallCommon(MD, AExpr.Name, AExpr.Args);
 end;
 

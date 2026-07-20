@@ -234,6 +234,17 @@ type
       key is a single pointer-sized register value passed BORROWED (no caller
       AddRef); setter is called as SetItem(self=x0, key=x1, value=x2). }
     procedure TestStringIndexedProperty_WriteRead;
+    { self-cross-compile leg 19: a nested proc that captures an enclosing
+      routine's CLASS or RECORD variable and uses it as a field-access base or
+      method-call receiver.  The base must be materialised through the '_cap_'
+      pointer (load _cap_, deref to the instance), not a bare frame slot. }
+    procedure TestCapturedClassBase_FieldRead;
+    procedure TestCapturedClassBase_MethodCall;
+    procedure TestCapturedClassBase_FieldWrite;
+    { leg 19 review regression: a captured VAR-PARAM class field write must
+      deref the capture pointer TWICE (the base slot holds the caller's
+      address), matching the read/method-call paths. }
+    procedure TestCapturedVarParamClassBase_FieldWrite;
   end;
 
 implementation
@@ -4311,6 +4322,148 @@ begin
         #9'bl TBox_SetItem', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64sip.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestCapturedClassBase_FieldRead;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A method takes a class parameter; a nested proc reads a FIELD of it
+    (AThing.FName).  AThing is captured — its instance pointer must be loaded
+    through _cap_AThing (load the _cap_ slot, deref to the instance) before the
+    field offset is applied.  Previously NotYet'd as 'load of variable AThing'. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class FName: string; end;
+      TProc = class procedure Run(AThing: TThing); end;
+    procedure TProc.Run(AThing: TThing);
+      procedure Inner;
+      begin WriteLn(AThing.FName) end;
+    begin Inner() end;
+    begin end.
+    ''');
+  AssertTrue('Inner is emitted as a sibling symbol',
+    Pos('TProc_Run_Inner:', AsmT) >= 0);
+  { the captured base is loaded through _cap_ then derefed to the instance:
+    two consecutive ldr forms materialise the pointer before the field access }
+  AssertTrue('captured class base derefs the capture pointer to the instance',
+    Pos('ldr x0, [x0]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ccf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestCapturedClassBase_MethodCall;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A nested proc calls a METHOD on the captured class parameter (AThing.Show).
+    The receiver must be materialised from _cap_AThing before the dispatch. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class procedure Show; end;
+      TProc = class procedure Run(AThing: TThing); end;
+    procedure TThing.Show;
+    begin end;
+    procedure TProc.Run(AThing: TThing);
+      procedure Inner;
+      begin AThing.Show() end;
+    begin Inner() end;
+    begin end.
+    ''');
+  AssertTrue('the receiver is loaded through the capture pointer',
+    Pos('ldr x0, [x0]', AsmT) >= 0);
+  AssertTrue('the method is dispatched',
+    Pos(#9'bl TThing_Show', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ccm.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestCapturedClassBase_FieldWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A nested proc WRITES a field of the captured class parameter (AThing.FN :=
+    5).  The instance base for the store must come through _cap_AThing. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class FN: Integer; end;
+      TProc = class procedure Run(AThing: TThing); end;
+    procedure TProc.Run(AThing: TThing);
+      procedure Inner;
+      begin AThing.FN := 5 end;
+    begin Inner() end;
+    begin end.
+    ''');
+  AssertTrue('Inner is emitted', Pos('TProc_Run_Inner:', AsmT) >= 0);
+  { the store base is materialised from _cap_ (deref to instance), then the
+    value is stored at the field offset }
+  AssertTrue('captured store base derefs the capture pointer',
+    Pos('ldr x9, [x9]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64ccw.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestCapturedVarParamClassBase_FieldWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A nested proc writes a field of a captured VAR-PARAM class base.  The base
+    must deref the capture pointer TWICE (load _cap_, deref to the var-param
+    slot, deref again to the instance) before the field store — a single deref
+    corrupts memory (the review-found bug). }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TThing = class FN: Integer; end;
+    procedure Run(var T: TThing);
+      procedure Inner;
+      begin T.FN := 5 end;
+    begin Inner() end;
+    begin end.
+    ''');
+  { two consecutive derefs of the base register before the field store }
+  AssertTrue('captured var-param class write derefs twice',
+    Pos('ldr x9, [x9]' + LF + #9'ldr x9, [x9]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64vpw.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

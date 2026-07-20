@@ -305,6 +305,13 @@ type
     procedure TestRun_Native_NestedProc_GrandparentCapture_Read;
     procedure TestRun_Native_NestedProc_GrandparentCapture_Write;
     procedure TestRun_Native_NestedProc_GreatGrandparentCapture;
+    { leg 19: a nested proc captures an enclosing routine's CLASS or RECORD
+      variable and uses it as a field-access base / method receiver. }
+    procedure TestRun_Native_NestedProc_CaptureClassBase_ReadWriteCall;
+    procedure TestRun_Native_NestedProc_CaptureRecordBase;
+    { leg 19 review regression: a captured VAR-PARAM class base needs a second
+      deref on the WRITE path too (its slot holds the caller's address). }
+    procedure TestRun_Native_NestedProc_CaptureVarParamClass_FieldWrite;
     { BUG-20260720-method-nested-proc-mangle: two classes each with a method
       DoIt containing a nested Inner must link (distinct symbols) and each DoIt
       must call its OWN Inner.  Plus a multi-level chain.  All backends. }
@@ -5247,6 +5254,82 @@ begin
     begin L2() end;
     begin L1() end.
     ''', 'deep' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureClassBase_ReadWriteCall;
+begin
+  { A method takes a class parameter; a nested proc reads a field of it, writes
+    a field of it, and calls a method on it — all through the captured base.
+    Expect the written value then the method's output. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TThing = class FName: string; FN: Integer; procedure Show; end;
+      TProc = class procedure Run(AThing: TThing); end;
+    procedure TThing.Show; begin WriteLn(FName) end;
+    procedure TProc.Run(AThing: TThing);
+      procedure Inner;
+      begin
+        AThing.FN := 7;
+        WriteLn(AThing.FN);
+        AThing.Show()
+      end;
+    begin Inner() end;
+    var P: TProc; T: TThing;
+    begin
+      T := TThing.Create(); T.FName := 'hi';
+      P := TProc.Create(); P.Run(T);
+      P.Free(); T.Free()
+    end.
+    ''', '7' + LE + 'hi' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureVarParamClass_FieldWrite;
+begin
+  { A nested proc writes a field of a captured VAR-PARAM class base.  The base
+    slot holds the caller's address, so the store must deref twice through
+    _cap_ to reach the instance — a single deref (the review-found bug) would
+    corrupt memory and lose the write.  Expect 42 then 'set'. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TThing = class FName: string; FN: Integer; end;
+    procedure Run(var T: TThing);
+      procedure Inner;
+      begin T.FN := 42; T.FName := 'set' end;
+    begin Inner() end;
+    var Tv: TThing;
+    begin
+      Tv := TThing.Create();
+      Run(Tv);
+      WriteLn(Tv.FN);
+      WriteLn(Tv.FName);
+      Tv.Free()
+    end.
+    ''', '42' + LE + 'set' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureRecordBase;
+begin
+  { A nested proc reads a field of a captured RECORD var-param and of a
+    captured value record local.  Expect both values. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TRec = record X: Integer; end;
+    procedure UseVarParam(var R: TRec);
+      procedure Inner;
+      begin WriteLn(R.X) end;
+    begin Inner() end;
+    procedure UseLocal;
+    var L: TRec;
+      procedure Inner;
+      begin WriteLn(L.X) end;
+    begin L.X := 44; Inner() end;
+    var Rr: TRec;
+    begin
+      Rr.X := 33; UseVarParam(Rr);
+      UseLocal()
+    end.
+    ''', '33' + LE + '44' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_Builtin_SinCos;
