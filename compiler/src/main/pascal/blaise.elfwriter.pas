@@ -1129,8 +1129,11 @@ begin
     Strtab.Free();
     Shstrtab.Free();
     SymtabBuf.Free();
-    for I := 0 to MaxSecOrder do
-      RelaBuf[I].Free();
+    { RelaBuf elements are ARC-owned: the scope-exit walk releases each
+      element of the static-array local (BUG-016), so no manual per-element
+      Free here — that would be the second decrement of the same reference.
+      (A[I].Free() nils the slot since the BUG-016 groundwork, so a manual
+      loop would be a safe no-op for the walk — but redundant.) }
     LocalSyms.Free();
     GlobalSyms.Free();
   end;
