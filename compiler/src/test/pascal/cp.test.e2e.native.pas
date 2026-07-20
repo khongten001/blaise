@@ -288,6 +288,17 @@ type
     { Gap #5 — nested (local) procedures }
     procedure TestRun_Native_NestedProc_ReadCapture;
     procedure TestRun_Native_NestedProc_WriteCapture;
+    { leg 17 — a captured STRING var written inside a nested proc runs the ARC
+      store through the capture pointer; must stay leak-free (retain-new /
+      release-old).  Two locals captured (the compiler's own PromoRewrite
+      shape) plus repeated reassignment to exercise release-old. }
+    procedure TestRun_Native_NestedProc_CaptureString_LeakFree;
+    procedure TestRun_Native_NestedProc_CaptureTwoLocals;
+    { leg 17 Finding-1 regression: captures + register args exceed 8, forcing
+      stack-passed args.  The outgoing stack area must be reserved (the capture
+      pointer args are counted), else the overflow args clobber the caller's
+      frame.  Runs on both backends. }
+    procedure TestRun_Native_NestedProc_CaptureArgsOverflowToStack;
 
     { Trig / math builtins with Single dispatch }
     procedure TestRun_Native_Builtin_SinCos;
@@ -5060,6 +5071,75 @@ begin
     end.
     ''',
     '99' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureString_LeakFree;
+begin
+  { A captured string local written inside a nested proc, then read by the
+    outer.  The nested store retains the new value and releases the old through
+    the capture pointer — must be leak-free on both backends. }
+  AssertLeakFreeOnAll('''
+    program Prg;
+    procedure Outer;
+    var S: string;
+      procedure SetIt;
+      begin S := 'hello ' + 'world' end;
+    begin
+      S := 'initial';
+      SetIt();
+      WriteLn(S)
+    end;
+    begin
+      Outer()
+    end.
+    ''', 'hello world');
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureTwoLocals;
+begin
+  { Two outer vars captured by a nested proc that both reads (base) and writes
+    (acc) them — the PromoRewrite shape from the compiler's own backend that
+    leg 17 unblocks.  Repeated calls exercise write-back accumulation. }
+  AssertRunsOnAll('''
+    program Prg;
+    function Outer(base: Integer): Integer;
+    var acc: Integer;
+      procedure Add;
+      begin acc := acc + base end;
+    begin
+      acc := 0;
+      Add(); Add(); Add();
+      Result := acc
+    end;
+    begin
+      WriteLn(Outer(10))
+    end.
+    ''', '30' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_CaptureArgsOverflowToStack;
+begin
+  { Inner captures 2 outer locals AND takes 8 int params — captures take the
+    first two int registers, so two params spill to the outgoing stack area.
+    The area must be reserved (Finding 1): if the capture args were not counted
+    in the sizing walk, the overflow stores would corrupt the caller's frame
+    and the sum would be wrong (or crash). Expect 10+20+(1..8)=66. }
+  AssertRunsOnAll('''
+    program Prg;
+    procedure Outer;
+    var A, B: Integer;
+      procedure Inner(p1, p2, p3, p4, p5, p6, p7, p8: Integer);
+      begin
+        WriteLn(A + B + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8)
+      end;
+    begin
+      A := 10; B := 20;
+      Inner(1, 2, 3, 4, 5, 6, 7, 8)
+    end;
+    begin
+      Outer()
+    end.
+    ''', '66' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_Builtin_SinCos;

@@ -121,8 +121,19 @@ type
     FPendingRelCount: Integer;   { live statement-scoped deferred class
                                    releases (BUG-048/BUG-049) — also the next
                                    free _pendrel_N slot index }
+    FCapturedVars: TStringList;  { names captured from an enclosing routine
+                                   while emitting a nested routine (leg 17).
+                                   Each captured var V has a hidden leading
+                                   pointer param spilled to a '_cap_V' frame
+                                   slot holding &V; reads/writes/address-of of
+                                   V redirect through that slot.  Nil outside a
+                                   capturing nested routine.  Mirrors the x86-64
+                                   backend's FCapturedVars. }
 
     function  NewLabel(const APrefix: string): string;
+    { True when AName is captured from an enclosing routine in the current
+      nested routine (accessed via its hidden '_cap_<Name>' pointer slot). }
+    function  IsCaptured(const AName: string): Boolean;
     procedure NotYet(const AWhat: string; ANode: TASTNode);
 
     { ---- frame + operands ---- }
@@ -384,6 +395,7 @@ begin
   FFrameSize   := 0;
   FLabelN      := 0;
   FForN        := 0;
+  FCapturedVars := nil;   { borrowed ref to ADecl.CapturedVars; not owned }
 end;
 
 destructor TArm64Backend.Destroy;
@@ -427,6 +439,11 @@ function TArm64Backend.NewLabel(const APrefix: string): string;
 begin
   Result := 'L' + APrefix + IntToStr(FLabelN);
   FLabelN := FLabelN + 1;
+end;
+
+function TArm64Backend.IsCaptured(const AName: string): Boolean;
+begin
+  Result := (FCapturedVars <> nil) and (FCapturedVars.IndexOf(AName) >= 0);
 end;
 
 procedure TArm64Backend.NotYet(const AWhat: string; ANode: TASTNode);
@@ -627,9 +644,17 @@ end;
 
 procedure TArm64Backend.EmitRecIdentAddr(const AReg: string; AE: TIdentExpr);
 begin
-  { address of a record-valued identifier: an implicit-Self FIELD lives
-    at Self + field offset (no frame slot exists for it); a var param's
-    slot holds the caller's address; everything else is a frame slot }
+  { address of a record-valued identifier: a captured outer var's '_cap_'
+    slot IS its address (leg 17); an implicit-Self FIELD lives at Self +
+    field offset (no frame slot exists for it); a var param's slot holds the
+    caller's address; everything else is a frame slot }
+  if IsCaptured(AE.Name) then
+  begin
+    EmitLoadSlot(AReg, '_cap_' + AE.Name);
+    if AE.ParamMode = pmVar then
+      Self.Emit(Format(#9'ldr %s, [%s]', [AReg, AReg]));
+    Exit;
+  end;
   if AE.IsImplicitSelf and (AE.ImplicitFieldInfo <> nil) then
   begin
     EmitLoadSlot(AReg, 'Self');
@@ -1548,6 +1573,18 @@ begin
   end;
   if AExpr is TIdentExpr then
   begin
+    if IsCaptured(TIdentExpr(AExpr).Name) then
+    begin
+      { captured outer var (leg 17): '_cap_<Name>' holds &<Name>, so deref
+        once for the value.  A captured var-param's outer storage itself
+        holds the caller's address, so a var-param capture needs a second
+        deref — matching the direct-var path below. }
+      EmitLoadSlot('x0', '_cap_' + TIdentExpr(AExpr).Name);
+      Self.Emit(#9'ldr x0, [x0]');
+      if TIdentExpr(AExpr).ParamMode = pmVar then
+        Self.Emit(#9'ldr x0, [x0]');
+      Exit;
+    end;
     EmitLoadSlot('x0', TIdentExpr(AExpr).Name);
     if TIdentExpr(AExpr).ParamMode = pmVar then
       Self.Emit(#9'ldr x0, [x0]');   { var param: slot holds the address }
@@ -3539,6 +3576,61 @@ var
   I, Shape: Integer;
   RD: TMethodDecl;
 begin
+  { Captured managed writes (leg 17).  '_cap_<Name>' holds &<Name>, so the ARC
+    store runs retain-new / release-old THROUGH that address — the same
+    discipline as a var-param managed target, but the address is the capture
+    pointer (one indirection to the outer storage).  String and class are
+    wired here; interface/dyn-array/record captured writes stay an honest hole
+    (their ARC-through-indirection arms are not yet split out). }
+  if IsCaptured(AAsgn.Name) and (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyString) then
+  begin
+    Self.EmitExprToX0(AAsgn.Expr);
+    if not ArcExprOwnsRef(AAsgn.Expr) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'bl _StringAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();                       { [newval] }
+    EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+    if AAsgn.IsVarParam then
+      Self.Emit(#9'ldr x9, [x9]');      { captured var-param: extra deref }
+    Self.Emit(#9'ldr x0, [x9]');        { old string }
+    Self.Emit(#9'bl _StringRelease');
+    EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+    if AAsgn.IsVarParam then
+      Self.Emit(#9'ldr x9, [x9]');
+    EmitPopTo('x0');                    { newval }
+    Self.Emit(#9'str x0, [x9]');
+    Exit;
+  end;
+  if IsCaptured(AAsgn.Name) and (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind = tyClass) and not AAsgn.IsWeakLhs then
+  begin
+    Self.EmitExprToX0(AAsgn.Expr);
+    if not ArcExprOwnsRef(AAsgn.Expr) then
+    begin
+      EmitPushX0();
+      Self.Emit(#9'bl _ClassAddRef');
+      EmitPopTo('x0');
+    end;
+    EmitPushX0();
+    EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+    if AAsgn.IsVarParam then
+      Self.Emit(#9'ldr x9, [x9]');
+    Self.Emit(#9'ldr x0, [x9]');
+    Self.Emit(#9'bl _ClassRelease');
+    EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+    if AAsgn.IsVarParam then
+      Self.Emit(#9'ldr x9, [x9]');
+    EmitPopTo('x0');
+    Self.Emit(#9'str x0, [x9]');
+    Exit;
+  end;
+  if IsCaptured(AAsgn.Name) and (AAsgn.ResolvedLhsType <> nil) and
+     (AAsgn.ResolvedLhsType.Kind in [tyInterface, tyDynArray, tyRecord]) then
+    NotYet('assignment to a captured managed variable of this type', AAsgn);
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind in [tyString, tyClass]) and
      (AAsgn.ImplicitSelfField <> nil) and not AAsgn.IsWeakLhs then
@@ -3783,7 +3875,14 @@ begin
     end;
     Self.EmitExprToD0OrConvert(AAsgn.Expr);
     Self.Emit(#9'fmov x0, d0');
-    if AAsgn.IsVarParam then
+    if IsCaptured(AAsgn.Name) then
+    begin
+      EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+      if AAsgn.IsVarParam then
+        Self.Emit(#9'ldr x9, [x9]');
+      Self.Emit(#9'str x0, [x9]');
+    end
+    else if AAsgn.IsVarParam then
     begin
       EmitLoadSlot('x9', AAsgn.Name);
       Self.Emit(#9'str x0, [x9]');
@@ -3799,7 +3898,18 @@ begin
                                          tyProcedural]) then
     NotYet('assignment to non-integer variable', AAsgn);
   Self.EmitExprToX0(AAsgn.Expr);
-  if AAsgn.IsVarParam then
+  if IsCaptured(AAsgn.Name) then
+  begin
+    { captured scalar (leg 17): '_cap_' holds &<Name> — store through it.
+      A captured var-param needs a further deref to the caller's storage. }
+    EmitPushX0();
+    EmitLoadSlot('x9', '_cap_' + AAsgn.Name);
+    if AAsgn.IsVarParam then
+      Self.Emit(#9'ldr x9, [x9]');
+    EmitPopTo('x0');
+    Self.Emit(#9'str x0, [x9]');
+  end
+  else if AAsgn.IsVarParam then
   begin
     EmitLoadSlot('x9', AAsgn.Name);
     Self.Emit(#9'str x0, [x9]');
@@ -6033,6 +6143,20 @@ begin
   FDynLocals.Clear();
   if ADecl <> nil then
   begin
+    { Captured outer-scope vars (leg 17): each gets a pointer-size '_cap_<Name>'
+      slot holding &<Name>, filled from a hidden leading register param in the
+      prologue.  A nested routine that captured the enclosing METHOD's Self also
+      gets a REAL 'Self' slot (BUG-008 parity), filled by loading through
+      _cap_Self, so every hardcoded implicit-Self path works unchanged.
+      Mirrors x86-64 BuildFrame (:5502-5516). }
+    if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
+    begin
+      for I := 0 to ADecl.CapturedVars.Count - 1 do
+        AddLocal('_cap_' + ADecl.CapturedVars.Strings[I], 8);
+      if (ADecl.OwnerTypeName = '') and
+         (ADecl.CapturedVars.IndexOf('Self') >= 0) then
+        AddLocal('Self', 8);
+    end;
     if (ADecl.OwnerTypeName <> '') and not ADecl.IsStatic then
       AddLocal('Self', 8);
     for I := 0 to ADecl.Params.Count - 1 do
@@ -6219,8 +6343,6 @@ var
   RecShape, ParShape: Integer;
   Par: TMethodParam;
 begin
-  if ADecl.Body.ProcDecls.Count > 0 then
-    NotYet('nested routines', ADecl);
   Sym := RoutineSym(ADecl, ADecl.Name);
   { nostackframe: the body is an inline-asm block that owns the entire
     frame (prologue, args-from-registers, ret).  No compiler prologue/
@@ -6244,6 +6366,27 @@ begin
     EmitStmtList(ADecl.Body.Stmts);
     Exit;
   end;
+  { Emit nested routines declared inside this body FIRST, as sibling
+    top-level symbols mangled OuterName_InnerName (leg 17).  This runs
+    before any of THIS routine's frame state is built, and each recursive
+    call fully saves/restores the per-routine slot state at its own
+    boundaries, so the outer emission that follows is unaffected.  The
+    recursion handles multi-level nesting.  FCapturedVars is saved across
+    the loop and re-pointed at THIS routine's own captures for the body
+    emission below.  Mirrors x86-64 EmitFunctionDef (:20800-20812/:20841). }
+  if ADecl.Body <> nil then
+  begin
+    for I := 0 to ADecl.Body.ProcDecls.Count - 1 do
+    begin
+      if TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Body = nil then
+        Continue;
+      TMethodDecl(ADecl.Body.ProcDecls.Items[I]).ResolvedQbeName :=
+        ADecl.Name + '_' + TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Name;
+      Self.EmitFunctionDef(
+        TMethodDecl(ADecl.Body.ProcDecls.Items[I]), AWeakBind);
+    end;
+  end;
+  FCapturedVars := ADecl.CapturedVars;
   FIsFunction := ADecl.ResolvedReturnType <> nil;
   FResultFloat := FIsFunction and
     (ADecl.ResolvedReturnType.Kind = tyDouble);
@@ -6284,11 +6427,37 @@ begin
   J := 0;      { int register index }
   FIdx := 0;   { float register index }
   SPOff := 0;  { caller outgoing-area offset for stack params }
+  { Captured-var pointer params arrive FIRST in x0.. (leg 17): spill each into
+    its '_cap_<Name>' slot, then a captured method Self is loaded through
+    _cap_Self into the real 'Self' slot.  Captures precede sret/Self/normal
+    params, shifting them right — mirrors x86-64 EmitFunctionCore (:21005-21025).
+    A leg-17 nested routine never also has fewer than 8 captures+params spilling
+    past x7 in the compiler's own source; guard it if that ever changes. }
+  if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
+  begin
+    for I := 0 to ADecl.CapturedVars.Count - 1 do
+    begin
+      if J >= 8 then
+        NotYet('captured var spilling past x7', ADecl);
+      EmitStoreSlot('x' + IntToStr(J),
+        '_cap_' + ADecl.CapturedVars.Strings[I]);
+      Inc(J);
+    end;
+    if (ADecl.OwnerTypeName = '') and
+       (ADecl.CapturedVars.IndexOf('Self') >= 0) then
+    begin
+      { _cap_Self holds &(enclosing method's Self slot) — deref to the
+        receiver and store into this frame's real Self slot }
+      EmitLoadSlot('x9', '_cap_Self');
+      Self.Emit(#9'ldr x0, [x9]');
+      EmitStoreSlot('x0', 'Self');
+    end;
+  end;
   if (ADecl.OwnerTypeName <> '') and not ADecl.IsStatic then
   begin
-    { method: Self arrives first in x0 }
-    EmitStoreSlot('x0', 'Self');
-    J := 1;
+    { method: Self arrives after any captures }
+    EmitStoreSlot('x' + IntToStr(J), 'Self');
+    Inc(J);
   end;
   for I := 0 to ADecl.Params.Count - 1 do
   begin
@@ -6617,6 +6786,7 @@ begin
   BodyBuf.Free();
   FFrame.Clear();
   FFrameSize := 0;
+  FCapturedVars := nil;   { leg 17: end the capture window for this routine }
 end;
 
 function TArm64Backend.StackArgSize(AArg: TASTExpr): Integer;
@@ -6690,6 +6860,12 @@ begin
   Lit := 0;
   Rec := 0;
   if ASelfPushed then NInt := 1;
+  { leg 17: captured-var pointer args occupy leading integer registers before
+    the normal args — count them here or the register-vs-stack decision below
+    drifts from EmitCall by CapturedVars.Count, under-reserving the outgoing
+    stack area (mirrors x86-64 :18220-18221). }
+  if (ADecl <> nil) and (ADecl.CapturedVars <> nil) then
+    NInt := NInt + ADecl.CapturedVars.Count;
   Off := 0;
   for I := 0 to AArgs.Count - 1 do
   begin
@@ -6853,6 +7029,32 @@ begin
   try
     if ASelfPushed then
       PopRegs.Add('x0');
+    { Nested-routine capture args (leg 17): prepend one pointer arg per var the
+      callee captures, BEFORE the normal args, so they occupy the leading
+      integer registers (x0..).  For each captured name — if it is itself
+      captured in THIS (caller) frame, forward the caller's '_cap_' pointer;
+      else if a caller local, take its slot address; else a global address.
+      A captured method Self forwards the caller's Self address.  Mirrors x86-64
+      EmitCall (:18243-18264). }
+    if (ADecl.CapturedVars <> nil) and (ADecl.CapturedVars.Count > 0) then
+    begin
+      if ASelfPushed then
+        NotYet('capture args on a receiver call', nil);
+      for I := 0 to ADecl.CapturedVars.Count - 1 do
+      begin
+        if NInt >= 8 then
+          NotYet('capture argument spilling to the stack', nil);
+        if IsCaptured(ADecl.CapturedVars.Strings[I]) then
+          EmitLoadSlot('x0', '_cap_' + ADecl.CapturedVars.Strings[I])
+        else if SameText(ADecl.CapturedVars.Strings[I], 'Self') then
+          EmitSlotAddr('x0', 'Self')
+        else
+          EmitSlotAddr('x0', ADecl.CapturedVars.Strings[I]);
+        EmitPushX0();
+        PopRegs.Add('x' + IntToStr(NInt));
+        Inc(NInt);
+      end;
+    end;
     for I := 0 to AArgs.Count - 1 do
     begin
       Arg := TASTExpr(AArgs.Items[I]);

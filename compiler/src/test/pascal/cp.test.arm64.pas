@@ -212,6 +212,18 @@ type
       Self+offset, so the base is an ADDRESS (add), not a deref (ldr) — unlike
       the dyn-array field case which loads the data pointer. }
     procedure TestStaticArrayFieldElementReadWrite;
+    { self-cross-compile leg 17: nested routines + captured outer vars.  A
+      nested proc is emitted as a sibling Outer_Inner symbol; each captured
+      outer var arrives as a leading '_cap_' pointer arg, spilled in the
+      prologue, and reads/writes redirect through that pointer. }
+    procedure TestNestedRoutine_NoCapture_SiblingSymbol;
+    procedure TestNestedRoutine_CaptureScalar_ReadWrite;
+    procedure TestNestedRoutine_CaptureString_ARCThroughCap;
+    { leg 17 regression: when captures + register args exceed 8, the outgoing
+      stack area MUST be reserved — ComputeStackArgAreaEx counts the capture
+      pointer args (in lockstep with EmitCall) so the caller reserves a region
+      for the stack-passed args rather than clobbering its own frame. }
+    procedure TestNestedRoutine_CaptureArgsForceStackSpill_ReservesArea;
   end;
 
 implementation
@@ -3985,6 +3997,187 @@ begin
     Pos(#9'ldr x0, [x0]', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64safe.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedRoutine_NoCapture_SiblingSymbol;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A capture-free nested proc is emitted as a sibling top-level symbol named
+    Outer_Inner, and the outer calls it with 'bl Outer_Inner'. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure Outer;
+      procedure Inner;
+      begin
+        WriteLn('x')
+      end;
+    begin
+      Inner()
+    end;
+    begin
+      Outer()
+    end.
+    ''');
+  AssertTrue('nested body emitted as sibling Outer_Inner symbol',
+    Pos('Outer_Inner:', AsmT) >= 0);
+  AssertTrue('outer calls the mangled nested symbol',
+    Pos(#9'bl Outer_Inner', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64nc.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedRoutine_CaptureScalar_ReadWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Outer has a local 'n' captured by Inner, which does n := n + 1.  Inner
+    receives &n as a leading pointer arg spilled to _cap_n; the body reads n by
+    derefing _cap_n and writes back through it.  The call site materialises &n
+    (sub x0, x29, #off) before the branch. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure Outer;
+    var
+      n: Integer;
+      procedure Inner;
+      begin
+        n := n + 1
+      end;
+    begin
+      n := 41;
+      Inner();
+      WriteLn(n)
+    end;
+    begin
+      Outer()
+    end.
+    ''');
+  { Inner spills the leading capture pointer arg into _cap_n (first store of
+    x0 to a frame slot) and reads the captured var by derefing that pointer:
+    load the _cap_ slot into x0, then ldr x0, [x0]. }
+  AssertTrue('Inner spills the leading capture pointer to its _cap_ slot',
+    Pos(#9'stur x0, [x29, #-8]', AsmT) >= 0);
+  AssertTrue('Inner reads the captured var by derefing the capture pointer',
+    Pos(#9'ldur x0, [x29, #-8]' + LF + #9'ldr x0, [x0]', AsmT) >= 0);
+  { the write-back stores through the reloaded capture pointer (x9) }
+  AssertTrue('Inner writes the captured var back through the capture pointer',
+    Pos(#9'str x0, [x9]', AsmT) >= 0);
+  { the call site passes the address of the outer local as the leading arg }
+  AssertTrue('call site materialises the captured var address',
+    Pos(#9'sub x0, x29, #', AsmT) >= 0);
+  AssertTrue('outer calls the nested symbol', Pos(#9'bl Outer_Inner', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64cs.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedRoutine_CaptureString_ARCThroughCap;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A captured STRING var written inside a nested proc runs the ARC store —
+    retain the new value, release the OLD string read THROUGH the capture
+    pointer, store the new — mirroring the x86-64 backend exactly. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure Outer;
+    var
+      s: string;
+      procedure SetIt;
+      begin
+        s := 'a'
+      end;
+    begin
+      s := 'b';
+      SetIt();
+      WriteLn(s)
+    end;
+    begin
+      Outer()
+    end.
+    ''');
+  AssertTrue('captured string store retains the new value',
+    Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('captured string store releases the old value',
+    Pos(#9'bl _StringRelease', AsmT) >= 0);
+  AssertTrue('the old string is read through the capture pointer',
+    Pos(#9'ldr x0, [x9]' + LF + #9'bl _StringRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64cstr.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedRoutine_CaptureArgsForceStackSpill_ReservesArea;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Inner captures 2 outer locals AND takes 8 int params.  Captures occupy
+    x0..x1, params p1..p6 take x2..x7, and p7/p8 spill to the outgoing stack
+    area.  ComputeStackArgAreaEx must include the 2 capture args in its NInt
+    count so it reserves that area — otherwise the p7/p8 stores land in the
+    caller's own frame (Finding 1).  Assert the store-to-stack instructions
+    appear (proving the spill happened) inside a routine that ALSO reserved a
+    second sp adjustment for the outgoing area. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure Outer;
+    var
+      a, b: Integer;
+      procedure Inner(p1, p2, p3, p4, p5, p6, p7, p8: Integer);
+      begin
+        WriteLn(a + b + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8)
+      end;
+    begin
+      a := 10;
+      b := 20;
+      Inner(1, 2, 3, 4, 5, 6, 7, 8)
+    end;
+    begin
+      Outer()
+    end.
+    ''');
+  { the two overflow args are stored to the reserved outgoing area via w9 }
+  AssertTrue('overflow args spill to the outgoing stack area',
+    Pos(#9'str w9, [sp, #', AsmT) >= 0);
+  { the nested body still links correctly }
+  AssertTrue('outer calls the nested symbol', Pos(#9'bl Outer_Inner', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64csp.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
