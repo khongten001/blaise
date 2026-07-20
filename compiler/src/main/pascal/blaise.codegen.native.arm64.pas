@@ -1372,6 +1372,54 @@ begin
       Self.Emit(#9'str d0, [x0]');
     Exit;
   end;
+  if Elem.Kind = tyRecord then
+  begin
+    { record element store: memcpy from the source record's address, with the
+      retain-source-then-release-dest discipline for MANAGED records (a plain
+      memcpy for clean ones).  Mirrors the local-array record-element store
+      (EmitStaticElemAssign) and the field-store leg.  A record-returning CALL
+      source has no lvalue — materialise it into __rret (its +1 field refs
+      transfer, so release the dest's old refs, no source retain).  Element
+      address is computed AFTER the source per the value-first rule above. }
+    if IsRecordCallArg(AStmt.Expr) then
+    begin
+      { Materialise the CALL into __rret FIRST (a stable frame slot), THEN
+        compute the element address fresh — a call that reallocates the SAME
+        dyn-array field (Box.Recs[i] := F() where F does SetLength(Box.Recs,…))
+        must not leave a stale element pointer into the freed old block.
+        Mirrors the x86-64 field path's value-first ordering. }
+      EmitRecCallToRret(AStmt.Expr);   { __rret := call result; +1 transfers }
+      EmitFieldElemAddrToX0(AStmt, Elem, IsDyn, Low);  { x0 = &element (fresh) }
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      Self.Emit(#9'mov x22, x0');                      { x22 = element addr }
+      if not RecretManagedClean(TRecordTypeDesc(Elem)) then
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(Elem), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      EmitSlotAddr('x1', '__rret');
+      EmitIntLiteral('x2', Elem.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Exit;
+    end;
+    EmitRecAddrToX0(AStmt.Expr);       { x0 = source record address }
+    EmitPushX0();                                      { park [srcaddr] }
+    EmitFieldElemAddrToX0(AStmt, Elem, IsDyn, Low);    { x0 = &element (fresh) }
+    Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+    Self.Emit(#9'mov x22, x0');                        { x22 = dest element }
+    Self.Emit(#9'ldr x19, [sp, #16]');                 { x19 = source addr }
+    if not RecretManagedClean(TRecordTypeDesc(Elem)) then
+    begin
+      Self.EmitRecordFieldRetains(TRecordTypeDesc(Elem), 'x19');
+      Self.EmitRecordFieldReleases(TRecordTypeDesc(Elem), 'x22');
+    end;
+    Self.Emit(#9'mov x0, x22');
+    Self.Emit(#9'mov x1, x19');
+    EmitIntLiteral('x2', Elem.RawSize());
+    Self.Emit(#9'bl memcpy');
+    Self.Emit(#9'ldp x19, x22, [sp], #16');
+    Self.Emit(#9'add sp, sp, #16');                    { drop srcaddr }
+    Exit;
+  end;
   if not IsIntFam(Elem) and (Elem.Kind <> tyPointer) and
      (Elem.Kind <> tyPChar) then
     NotYet('field array element of this type', AStmt);

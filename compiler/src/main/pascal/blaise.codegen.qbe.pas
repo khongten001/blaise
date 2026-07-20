@@ -7140,6 +7140,36 @@ begin
     BaseT := AFieldPtr;  { inline storage starts at the field slot }
   end;
   ElemSize := ElemT.RawSize();
+  { record element: evaluate the RHS record VALUE address FIRST, then compute
+    the element pointer — a RHS that reallocates the SAME dyn-array field
+    (Box.Recs[i] := F() where F does SetLength(Box.Recs,…)) would otherwise
+    leave BaseT/ElemPtr pointing into the freed old data block.  Matches the
+    native backends' value-first ordering.  For a dyn-array field the data
+    pointer must therefore be re-loaded AFTER the RHS, so defer the loadl. }
+  if ElemT.Kind = tyRecord then
+  begin
+    ValTemp := EmitExpr(AAssign.Expr);
+    if ArrT.Kind = tyDynArray then
+    begin
+      BaseT := AllocTemp();
+      EmitLine(Format('  %s =l loadl %s', [BaseT, AFieldPtr]));  { fresh data ptr }
+    end;
+    IdxW := EmitExpr(AAssign.PropIndexExpr);
+    IdxL := AllocTemp();
+    EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
+    if LowBnd <> 0 then
+    begin
+      Adj := AllocTemp();
+      EmitLine(Format('  %s =l sub %s, %d', [Adj, IdxL, LowBnd]));
+      IdxL := Adj;
+    end;
+    Offset := AllocTemp();
+    EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
+    ElemPtr := AllocTemp();
+    EmitLine(Format('  %s =l add %s, %s', [ElemPtr, BaseT, Offset]));
+    EmitRecordCopy(TRecordTypeDesc(ElemT), ElemPtr, ValTemp);
+    Exit;
+  end;
   IdxW := EmitExpr(AAssign.PropIndexExpr);
   IdxL := AllocTemp();
   EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
@@ -7153,13 +7183,6 @@ begin
   EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
   ElemPtr := AllocTemp();
   EmitLine(Format('  %s =l add %s, %s', [ElemPtr, BaseT, Offset]));
-
-  if ElemT.Kind = tyRecord then
-  begin
-    ValTemp := EmitExpr(AAssign.Expr);
-    EmitRecordCopy(TRecordTypeDesc(ElemT), ElemPtr, ValTemp);
-    Exit;
-  end;
   if ElemT.Kind in [tyByte, tyBoolean] then
     ValTemp := EmitByteRhs(AAssign.Expr)
   else

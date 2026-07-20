@@ -256,6 +256,11 @@ type
       an immediate.  High(TEnum) = Members.Count-1; Low(TEnum) = 0. }
     procedure TestHighLowEnum_FoldsToLiteral;
     procedure TestLengthStaticArray_FoldsToLiteral;
+    { self-cross-compile leg 22: store a whole RECORD value into an element of
+      a dyn-array (or static-array) FIELD of a class instance —
+      ClassObj.ArrayField[I] := RecordValue.  memcpy of the record bytes, with
+      the retain-source/release-dest discipline for a managed record. }
+    procedure TestRecordIntoClassDynArrayField;
   end;
 
 implementation
@@ -4620,6 +4625,49 @@ begin
     Pos(#9'movz x0, #7', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64lsa.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRecordIntoClassDynArrayField;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Box.Recs[1] := R where Recs is a `array of TRec` field of the class Box and
+    TRec is a plain 16-byte record.  The element address is computed (instance
+    ptr -> field data pointer deref -> +index*16), the source record address is
+    taken, and the 16 bytes are memcpy'd (clean record, no ARC). }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TRec = record A: Integer; B: Integer; C: Int64; end;
+      TBox = class Recs: array of TRec; end;
+    var Box: TBox; R: TRec;
+    begin
+      Box := TBox.Create();
+      SetLength(Box.Recs, 3);
+      R.A := 10; R.B := 20; R.C := 30;
+      Box.Recs[1] := R;
+      Box.Free()
+    end.
+    ''');
+  AssertTrue('the record element store memcpys the record',
+    Pos(#9'bl memcpy', AsmT) >= 0);
+  AssertTrue('the memcpy length is the record size (16)',
+    Pos(#9'movz x2, #16', AsmT) >= 0);
+  { the source and dest addresses are parked in callee-saved x19/x22 across the
+    memcpy (which clobbers x0-x18) }
+  AssertTrue('addresses parked in x19/x22 across the memcpy',
+    Pos(#9'stp x19, x22, [sp, #-16]!', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64rda.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

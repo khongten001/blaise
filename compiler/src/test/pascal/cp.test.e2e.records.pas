@@ -84,6 +84,16 @@ type
       (TVal.Make(1).GetX()): QBE typed the receiver call `l` and passed half
       the record VALUE as Self for register-class returns (SIGSEGV). }
     procedure TestRun_ChainedMethodOnRecordReturn;
+    { leg 22: store a whole RECORD value into an element of a dyn-array (and
+      static-array) FIELD of a class instance — ClassObj.ArrayField[I] := R.
+      Clean record (plain memcpy) and managed record (retain/release, leak-free). }
+    procedure TestRun_RecordIntoClassDynArrayField;
+    procedure TestRun_RecordIntoClassStaticArrayField;
+    procedure TestRun_RecordIntoClassDynArrayField_Managed_LeakFree;
+    { leg 22 review regression: a record-RETURNING call that reallocates the
+      SAME dyn-array field must be materialised before the element address is
+      computed, else the store lands in the freed old block. }
+    procedure TestRun_RecordIntoClassDynArrayField_ReallocatingCall;
   end;
 
 implementation
@@ -1360,6 +1370,103 @@ begin
   AssertRunsOnAll(Src, 'cc clang 49' + LE, 0);
   { string element writes retain/release correctly; no leak }
   AssertLeakFreeOnAll(Src, 'cc clang 49');
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordIntoClassDynArrayField;
+begin
+  { Box.Recs[1] := R where Recs is a `array of TRec` field of the class Box.
+    The whole record is copied into the element; all fields must survive. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TRec = record A: Integer; B: Integer; C: Int64; end;
+      TBox = class Recs: array of TRec; end;
+    var Box: TBox; R: TRec;
+    begin
+      Box := TBox.Create();
+      SetLength(Box.Recs, 3);
+      R.A := 10; R.B := 20; R.C := 30;
+      Box.Recs[1] := R;
+      WriteLn(Box.Recs[1].A);
+      WriteLn(Box.Recs[1].B);
+      WriteLn(Box.Recs[1].C);
+      Box.Free()
+    end.
+    ''', '10' + LE + '20' + LE + '30' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordIntoClassStaticArrayField;
+begin
+  { same, but the array field is a STATIC array (inline storage, no data-ptr
+    deref) — Box.Recs[2] := R. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TRec = record A: Integer; B: Int64; end;
+      TBox = class Recs: array[0..3] of TRec; end;
+    var Box: TBox; R: TRec;
+    begin
+      Box := TBox.Create();
+      R.A := 7; R.B := 99;
+      Box.Recs[2] := R;
+      WriteLn(Box.Recs[2].A);
+      WriteLn(Box.Recs[2].B);
+      Box.Free()
+    end.
+    ''', '7' + LE + '99' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordIntoClassDynArrayField_Managed_LeakFree;
+begin
+  { a MANAGED record (string field) stored into a class dyn-array field element
+    must retain the source's fields and release the dest's old fields — a
+    self-ish A.Arr[I] := A.Arr[J] exercises retain-before-release.  Leak-free. }
+  AssertLeakFreeOnAll('''
+    program Prg;
+    type
+      TRec = record Name: string; N: Integer; end;
+      TBox = class Recs: array of TRec; end;
+    var Box: TBox; R: TRec;
+    begin
+      Box := TBox.Create();
+      SetLength(Box.Recs, 2);
+      R.Name := 'hello'; R.N := 7;
+      Box.Recs[0] := R;
+      Box.Recs[1] := R;
+      Box.Recs[0] := Box.Recs[1];
+      WriteLn(Box.Recs[0].Name);
+      Box.Free()
+    end.
+    ''', 'hello');
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordIntoClassDynArrayField_ReallocatingCall;
+begin
+  { Box.Recs[0] := F() where F does SetLength(Box.Recs, 8) — reallocating the
+    same field the store targets.  The call must be materialised (into __rret)
+    BEFORE the element address is computed, so the store lands in the fresh
+    block, not the freed old one.  Expect 555 / 777 / 8. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TRec = record A: Integer; B: Int64; end;
+      TBox = class Recs: array of TRec; end;
+    var Box: TBox;
+    function MakeAndGrow: TRec;
+    begin
+      SetLength(Box.Recs, 8);
+      Result.A := 555; Result.B := 777
+    end;
+    begin
+      Box := TBox.Create();
+      SetLength(Box.Recs, 1);
+      Box.Recs[0] := MakeAndGrow();
+      WriteLn(Box.Recs[0].A);
+      WriteLn(Box.Recs[0].B);
+      WriteLn(Length(Box.Recs));
+      Box.Free()
+    end.
+    ''', '555' + LE + '777' + LE + '8' + LE, 0);
 end;
 
 initialization
