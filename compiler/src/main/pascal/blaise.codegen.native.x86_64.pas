@@ -706,6 +706,21 @@ type
     function  RecordCallReceiverIsVar(AExpr: TASTExpr;
                                       const AName: string;
                                       AIsGlobal: Boolean): Boolean;
+    { True when a call's sret destination variable AName/AIsGlobal is also read
+      by the call itself — as the receiver of a record method
+      (M := M.Method(...)) or as any bare-identifier ARGUMENT
+      (X := F(X), X := F(N, X), X := Obj.M(X)).  EmitSretCall zeroes the
+      destination BEFORE evaluating the argument list, so an aliased argument
+      reaches the callee already cleared; such an assignment must route the
+      result through a fresh stack temporary and memcpy it in afterwards.
+
+      Matching is by NAME + SCOPE only — deliberately conservative, no alias
+      analysis.  Biasing towards True is always correct (the temp path is
+      merely slower), so an ambiguous case such as a local shadowing a global
+      of the same name reports True. }
+    function  CallAliasesDestVar(AExpr: TASTExpr;
+                                 const AName: string;
+                                 AIsGlobal: Boolean): Boolean;
     { Sret a record-returning call (function or method) into ADest. }
     procedure EmitRecordCallSretAt(AExpr: TASTExpr; const ADest: string;
       AIndirect: Boolean = False);
@@ -6151,6 +6166,35 @@ begin
   { Only a bare variable receiver (M.Method) can alias the destination var. }
   if MCall.ObjExpr <> nil then Exit;
   Result := (MCall.ObjectName = AName) and (MCall.IsGlobal = AIsGlobal);
+end;
+
+function TX86_64Backend.CallAliasesDestVar(AExpr: TASTExpr;
+  const AName: string; AIsGlobal: Boolean): Boolean;
+var
+  Args: TObjectList;
+  I:    Integer;
+  Arg:  TASTExpr;
+begin
+  Result := False;
+  { receiver alias — M := M.Method(...) }
+  if Self.RecordCallReceiverIsVar(AExpr, AName, AIsGlobal) then Exit(True);
+  { argument alias — X := F(X) / X := F(N, X) / X := Obj.M(X).  Only a bare
+    identifier is matched: a subscript, field access or expression is not a
+    whole-variable alias of the destination var. }
+  Args := nil;
+  if AExpr is TFuncCallExpr then
+    Args := TFuncCallExpr(AExpr).Args
+  else if AExpr is TMethodCallExpr then
+    Args := TMethodCallExpr(AExpr).Args;
+  if Args = nil then Exit;
+  for I := 0 to Args.Count - 1 do
+  begin
+    Arg := TASTExpr(Args.Items[I]);
+    if not (Arg is TIdentExpr) then Continue;
+    if TIdentExpr(Arg).Name <> AName then Continue;
+    if TIdentExpr(Arg).IsGlobal <> AIsGlobal then Continue;
+    Exit(True);
+  end;
 end;
 
 { Emit an sret (record/jumbo-set/static-array-returning) call for a
@@ -13270,6 +13314,7 @@ var
   PCHD, PCHK: TList<Integer>;
   PCHTotal: Integer;
   AliasBuf: Integer;
+  AliasSz:  Integer;
 begin
   { An empty statement (e.g. the body of `for x := 0 to N do;`) parses to a nil
     statement — the parser's convention for "no statement here".  It is a valid,
@@ -13833,6 +13878,50 @@ begin
           [tyRecord, tyStaticArray]) or
         IsJumboSet(TMethodDecl(TFuncCallExpr(Asgn.Expr).ResolvedDecl).ResolvedReturnType)) then
     begin
+      { The call reads the destination variable as one of its ARGUMENTS
+        (R := CompR(R), S := Comp(N, S)).  EmitSretCall memsets the sret
+        destination to zero BEFORE evaluating the argument list, so passing the
+        destination straight in hands the callee an already-cleared value.
+        Route the call through a fresh zeroed stack buffer (address held in
+        callee-saved %r14), then move the result into the destination — release
+        the old managed fields first (records only), then raw memcpy so the
+        constructed +1 field refs transfer.  Mirrors the record-method arm
+        below and the QBE backend's fresh-temp path. }
+      if Self.CallAliasesDestVar(Asgn.Expr, Asgn.Name, Asgn.IsGlobal) then
+      begin
+        { RawSize is valid for a record (delegates to TotalSize), a jumbo set
+          (bitmap byte count) and a static array alike — TotalSize would fault
+          on the non-record kinds this branch also serves. }
+        AliasSz := Asgn.ResolvedLhsType.RawSize();
+        AliasBuf := (AliasSz + 15) and (-16);
+        Self.Emit(#9'pushq %r14');
+        Self.Emit(Format(#9'subq $%d, %%rsp', [AliasBuf]));
+        Self.Emit(#9'movq %rsp, %r14');
+        Self.Emit(#9'movq %r14, %rdi');
+        Self.Emit(#9'xorl %esi, %esi');
+        Self.Emit(Format(#9'movq $%d, %%rdx', [AliasSz]));
+        Self.Emit(#9'callq memset');
+        Self.EmitFuncCallSret(TFuncCallExpr(Asgn.Expr), '(%r14)', False);
+        { %r14 still holds the temp buffer address (callee-saved across the
+          call).  Resolve the destination address into %rbx, release its old
+          managed fields, then memcpy the constructed result over it. }
+        Self.Emit(#9'pushq %rbx');
+        if Asgn.IsVarParam then
+          Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(Asgn.Name)]))
+        else
+          Self.EmitVarAddr(Asgn.Name, '%rbx');
+        if Asgn.ResolvedLhsType.Kind = tyRecord then
+          Self.EmitRecordFieldReleases(
+            TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
+        Self.Emit(#9'movq %rbx, %rdi');
+        Self.Emit(#9'movq %r14, %rsi');
+        Self.Emit(Format(#9'movq $%d, %%rdx', [AliasSz]));
+        Self.Emit(#9'callq memcpy');
+        Self.Emit(#9'popq %rbx');
+        Self.Emit(Format(#9'addq $%d, %%rsp', [AliasBuf]));
+        Self.Emit(#9'popq %r14');
+        Exit;
+      end;
       { For a local jumbo set the dest is leaq'd; EmitSretCall's caller passes
         the operand and a 'by-ref' flag.  Mirror the record dispatch below. }
       if FSretFunc and SameText(Asgn.Name, 'Result') then
@@ -13934,17 +14023,21 @@ begin
         held in callee-saved %r14), then move the result into the destination
         (release old fields, raw memcpy — ownership of the constructed managed
         fields transfers). }
-      if (Asgn.ResolvedLhsType.Kind = tyRecord) and
-         Self.RecordCallReceiverIsVar(Asgn.Expr, Asgn.Name, Asgn.IsGlobal) then
+      if ((Asgn.ResolvedLhsType.Kind = tyRecord) or
+          IsJumboSet(Asgn.ResolvedLhsType)) and
+         Self.CallAliasesDestVar(Asgn.Expr, Asgn.Name, Asgn.IsGlobal) then
       begin
-        AliasBuf := (TRecordTypeDesc(Asgn.ResolvedLhsType).TotalSize() + 15) and (-16);
+        { RawSize is valid for a record (delegates to TotalSize) and for a
+          jumbo set (bitmap byte count) alike — TotalSize would fault on a set
+          type, which this arm now also serves. }
+        AliasSz := Asgn.ResolvedLhsType.RawSize();
+        AliasBuf := (AliasSz + 15) and (-16);
         Self.Emit(#9'pushq %r14');
         Self.Emit(Format(#9'subq $%d, %%rsp', [AliasBuf]));
         Self.Emit(#9'movq %rsp, %r14');
         Self.Emit(#9'movq %r14, %rdi');
         Self.Emit(#9'xorl %esi, %esi');
-        Self.Emit(Format(#9'movq $%d, %%rdx',
-          [TRecordTypeDesc(Asgn.ResolvedLhsType).TotalSize()]));
+        Self.Emit(Format(#9'movq $%d, %%rdx', [AliasSz]));
         Self.Emit(#9'callq memset');
         Self.EmitMethodSretCall(TMethodCallExpr(Asgn.Expr), '(%r14)', False);
         { %r14 still holds the temp buffer address (callee-saved across the call).
@@ -13955,11 +14048,12 @@ begin
           Self.Emit(Format(#9'movq %s, %%rbx', [Self.VarOperand(Asgn.Name)]))
         else
           Self.EmitVarAddr(Asgn.Name, '%rbx');
-        Self.EmitRecordFieldReleases(TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
+        if Asgn.ResolvedLhsType.Kind = tyRecord then
+          Self.EmitRecordFieldReleases(
+            TRecordTypeDesc(Asgn.ResolvedLhsType), '%rbx');
         Self.Emit(#9'movq %rbx, %rdi');
         Self.Emit(#9'movq %r14, %rsi');
-        Self.Emit(Format(#9'movq $%d, %%rdx',
-          [TRecordTypeDesc(Asgn.ResolvedLhsType).TotalSize()]));
+        Self.Emit(Format(#9'movq $%d, %%rdx', [AliasSz]));
         Self.Emit(#9'callq memcpy');
         Self.Emit(#9'popq %rbx');
         Self.Emit(Format(#9'addq $%d, %%rsp', [AliasBuf]));

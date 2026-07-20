@@ -34,6 +34,17 @@ type
     procedure TestRun_ClassField_RoundTrips;
     procedure TestRun_VarParam_RoundTrips;
     procedure TestRun_Constant;
+    { Regression: a jumbo-set-returning call whose result is assigned back over
+      a variable that is ALSO one of its arguments (s := Comp(s)).  The native
+      caller memset the sret destination before evaluating the argument list,
+      so the callee saw an empty set.  The distinct-destination control in the
+      same program pins the non-aliasing path. }
+    procedure TestRun_SelfAssignedSretReturn_NotAliased;
+    { Same, with the aliased set in NON-FIRST argument position. }
+    procedure TestRun_SelfAssignedSret_NonFirstArgPosition;
+    { Same, where the alias is an ARGUMENT of a record-method call whose
+      receiver is a different variable. }
+    procedure TestRun_SelfAssignedSret_MethodArgument;
   end;
 
 implementation
@@ -233,6 +244,80 @@ begin
          '  WriteLn(b65 in s, b70 in s, b79 in s, b00 in s)' + LE +  { True True True False }
          'end.';
   AssertRunsOnAll(Src, 'TrueTrueTrueFalse' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_SelfAssignedSretReturn_NotAliased;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { Comp keeps b70 (which IS in the source) and adds b03 (which is NOT).
+    s := Comp(s) must observe s's live value; the trailing t := Comp(s) is the
+    non-aliasing control. }
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'function Comp(const x: TBigSet): TBigSet;' + LE +
+         'begin' + LE +
+         '  Result := [];' + LE +
+         '  if b70 in x then Include(Result, b70);' + LE +
+         '  if b05 in x then Include(Result, b03);' + LE +
+         'end;' + LE +
+         'var s, t: TBigSet;' + LE +
+         'begin' + LE +
+         '  s := [b70, b05];' + LE +
+         '  s := Comp(s);' + LE +
+         '  WriteLn(b70 in s, b03 in s, b05 in s);' + LE +
+         '  t := [b70, b05];' + LE +
+         '  t := Comp(t);' + LE +
+         '  WriteLn(b70 in t, b03 in t, b05 in t)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE + 'TrueTrueFalse' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_SelfAssignedSret_NonFirstArgPosition;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'function Pick(const n: Integer; const x: TBigSet): TBigSet;' + LE +
+         'begin' + LE +
+         '  Result := [];' + LE +
+         '  if b70 in x then Include(Result, b70);' + LE +
+         '  if n > 0 then Include(Result, b01);' + LE +
+         'end;' + LE +
+         'var s: TBigSet;' + LE +
+         'begin' + LE +
+         '  s := [b70, b05];' + LE +
+         '  s := Pick(1, s);' + LE +
+         '  WriteLn(b70 in s, b01 in s, b05 in s)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_SelfAssignedSret_MethodArgument;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { The receiver R is a different variable — the alias sits in the argument
+    list only, which the old receiver-only guard never inspected. }
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'type TH = record' + LE +
+         '  Tag: Integer;' + LE +
+         '  function Comp(const x: TBigSet): TBigSet;' + LE +
+         'end;' + LE +
+         'function TH.Comp(const x: TBigSet): TBigSet;' + LE +
+         'begin' + LE +
+         '  Result := [];' + LE +
+         '  if b70 in x then Include(Result, b70);' + LE +
+         '  if Self.Tag > 0 then Include(Result, b02);' + LE +
+         'end;' + LE +
+         'var s: TBigSet;' + LE +
+         '    R: TH;' + LE +
+         'begin' + LE +
+         '  R.Tag := 1;' + LE +
+         '  s := [b70, b05];' + LE +
+         '  s := R.Comp(s);' + LE +
+         '  WriteLn(b70 in s, b02 in s, b05 in s)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE, 0);
 end;
 
 initialization

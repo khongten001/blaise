@@ -15,12 +15,14 @@ interface
 
 uses
   Classes, SysUtils, blaise.testing,
-  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe;
+  uLexer, uParser, uAST, uSymbolTable, uSemantic, blaise.codegen.qbe,
+  blaise.codegen.native, blaise.codegen.target;
 
 type
   TSetTests = class(TTestCase)
   private
     function GenIR(const ASrc: string): string;
+    function GenAsm(const ASrc: string): string;
     function AnalyseSrc(const ASrc: string): TProgram;
     procedure SemanticOK(const ASrc: string);
     procedure SemanticFail(const ASrc: string);
@@ -139,6 +141,25 @@ type
     procedure TestSemantic_SetOfSubrange_TypeDecl_OK;
     procedure TestSemantic_SetOfSubrange_OverBound_Fails;
     procedure TestSemantic_SetOfSubrange_Descending_Fails;
+
+    { ------------------------------------------------------------------ }
+    { self-assigned sret call: X := F(X) must not wipe X before the call   }
+    { ------------------------------------------------------------------ }
+    { A record-returning call assigned back over one of its own arguments:
+      the destination must NOT be memset before the argument list is
+      evaluated.  Instead the call sret's into a fresh temp and the result
+      is memcpy'd into the destination afterwards. }
+    procedure TestCodegen_SelfAssignedRecordCall_NoDestMemset;
+    { The NON-aliasing control: a distinct destination must keep the direct
+      form — memset straight into the destination, no temp, no memcpy.
+      Guards against the aliasing predicate over-firing. }
+    procedure TestCodegen_DistinctDestRecordCall_KeepsDirectForm;
+    { Native x86-64: a jumbo-set-returning call assigned back over one of its
+      own arguments routes through a stack temp + memcpy. }
+    procedure TestNative_SelfAssignedJumboSetCall_UsesTemp;
+    { Native x86-64 control: a distinct destination keeps the direct sret
+      form (no aliasing temp memcpy). }
+    procedure TestNative_DistinctDestJumboSetCall_KeepsDirectForm;
 
     { ------------------------------------------------------------------ }
     { 64-bit sets (>32 members)                                            }
@@ -718,6 +739,29 @@ begin
   SA.Analyse(Prog);
   SA.Free();
   CG   := TCodeGenQBE.Create();
+  CG.Generate(Prog);
+  Result := CG.GetOutput();
+  CG.Free();
+  Prog.Free();
+end;
+
+function TSetTests.GenAsm(const ASrc: string): string;
+var
+  Lex:  TLexer;
+  Par:  TParser;
+  SA:   TSemanticAnalyser;
+  CG:   TCodeGenNative;
+  Prog: TProgram;
+begin
+  Lex  := TLexer.Create(ASrc);
+  Par  := TParser.Create(Lex);
+  Prog := Par.Parse();
+  Par.Free(); Lex.Free();
+  SA   := TSemanticAnalyser.Create();
+  SA.Analyse(Prog);
+  SA.Free();
+  CG   := TCodeGenNative.Create();
+  CG.SetTarget(HostTarget());
   CG.Generate(Prog);
   Result := CG.GetOutput();
   CG.Free();
@@ -1742,6 +1786,107 @@ procedure TSetTests.TestSemantic_SetOfSubrange_Descending_Fails;
 begin
   { A descending subrange (5..3) is a mistake, not a silent empty set. }
   SemanticFail(SrcSetOfSubrangeDescending);
+end;
+
+{ ------------------------------------------------------------------ }
+{ self-assigned sret call: X := F(X)                                   }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcSelfAssignRecordCall =
+    '''
+    program P;
+    type TR = record A, B: Integer; end;
+    function CompR(const S: TR): TR;
+    begin Result.A := S.B; Result.B := S.A end;
+    var R: TR;
+    begin R.A := 1; R := CompR(R) end.
+    ''';
+
+  SrcDistinctDestRecordCall =
+    '''
+    program P;
+    type TR = record A, B: Integer; end;
+    function CompR(const S: TR): TR;
+    begin Result.A := S.B; Result.B := S.A end;
+    var R, T: TR;
+    begin R.A := 1; T := CompR(R) end.
+    ''';
+
+  SrcSelfAssignJumboSetCall =
+    '''
+    program P;
+    type TBig = (b00,b01,b02,b03,b04,b05,b06,b07,b08,b09,b10,b11,b12,b13,b14,b15,
+                 b16,b17,b18,b19,b20,b21,b22,b23,b24,b25,b26,b27,b28,b29,b30,b31,
+                 b32,b33,b34,b35,b36,b37,b38,b39,b40,b41,b42,b43,b44,b45,b46,b47,
+                 b48,b49,b50,b51,b52,b53,b54,b55,b56,b57,b58,b59,b60,b61,b62,b63,
+                 b64,b65,b66,b67,b68,b69,b70,b71,b72,b73,b74,b75,b76,b77,b78,b79);
+         TBigSet = set of TBig;
+    function Comp(const X: TBigSet): TBigSet;
+    begin Result := X end;
+    var S: TBigSet;
+    begin S := [b70]; S := Comp(S) end.
+    ''';
+
+  SrcDistinctDestJumboSetCall =
+    '''
+    program P;
+    type TBig = (b00,b01,b02,b03,b04,b05,b06,b07,b08,b09,b10,b11,b12,b13,b14,b15,
+                 b16,b17,b18,b19,b20,b21,b22,b23,b24,b25,b26,b27,b28,b29,b30,b31,
+                 b32,b33,b34,b35,b36,b37,b38,b39,b40,b41,b42,b43,b44,b45,b46,b47,
+                 b48,b49,b50,b51,b52,b53,b54,b55,b56,b57,b58,b59,b60,b61,b62,b63,
+                 b64,b65,b66,b67,b68,b69,b70,b71,b72,b73,b74,b75,b76,b77,b78,b79);
+         TBigSet = set of TBig;
+    function Comp(const X: TBigSet): TBigSet;
+    begin Result := X end;
+    var S, T: TBigSet;
+    begin S := [b70]; T := Comp(S) end.
+    ''';
+
+procedure TSetTests.TestCodegen_SelfAssignedRecordCall_NoDestMemset;
+var IR: string;
+begin
+  IR := GenIR(SrcSelfAssignRecordCall);
+  { The destination global $R must NOT be zeroed before the call: doing so
+    handed the callee an already-cleared argument. }
+  AssertTrue('destination must not be memset before the aliased call',
+    Pos('call $memset(l $R,', IR) < 0);
+  { It routes through a fresh temp and memcpy's into $R afterwards. }
+  AssertTrue('aliased call must memcpy the temp into the destination',
+    Pos('call $memcpy(l $R,', IR) >= 0);
+end;
+
+procedure TSetTests.TestCodegen_DistinctDestRecordCall_KeepsDirectForm;
+var IR: string;
+begin
+  IR := GenIR(SrcDistinctDestRecordCall);
+  { Non-aliasing: still the direct form — zero $T, then sret straight into it.
+    No temp, no trailing memcpy into $T. }
+  AssertTrue('non-aliasing call must still memset the destination directly',
+    Pos('call $memset(l $T,', IR) >= 0);
+  AssertTrue('non-aliasing call must not memcpy into the destination',
+    Pos('call $memcpy(l $T,', IR) < 0);
+end;
+
+procedure TSetTests.TestNative_SelfAssignedJumboSetCall_UsesTemp;
+var Asm_: string;
+begin
+  Asm_ := GenAsm(SrcSelfAssignJumboSetCall);
+  { The aliasing arm parks the temp address in %r14 and memcpy's into the
+    destination after the call. }
+  AssertTrue('aliased jumbo-set call must stage through %r14',
+    Pos('movq %rsp, %r14', Asm_) >= 0);
+  AssertTrue('aliased jumbo-set call must memcpy into the destination',
+    Pos('callq memcpy', Asm_) >= 0);
+end;
+
+procedure TSetTests.TestNative_DistinctDestJumboSetCall_KeepsDirectForm;
+var Asm_: string;
+begin
+  Asm_ := GenAsm(SrcDistinctDestJumboSetCall);
+  { Non-aliasing: no aliasing temp is staged. }
+  AssertTrue('non-aliasing jumbo-set call must not stage an aliasing temp',
+    Pos('movq %rsp, %r14', Asm_) < 0);
 end;
 
 initialization
