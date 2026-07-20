@@ -72,6 +72,7 @@ uses
   cp.test.constarg,
   cp.test.operators,
   cp.test.nativeconstarg,
+  cp.test.nativearc,
   cp.test.nativealign,
   cp.test.nativeopt,
   cp.test.nativepromo,

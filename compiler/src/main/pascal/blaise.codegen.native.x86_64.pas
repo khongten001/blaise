@@ -2042,13 +2042,37 @@ begin
         Self.Emit(#9'callq _ClassRelease');
       end;
     end
-    else if Ty.Kind = tyRecord then
+    else if Ty.Kind in [tyRecord, tyStaticArray] then
     begin
-      { Record global with managed fields: release each at exit. }
-      Self.Emit(#9'pushq %rbx');
-      Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [Name]));
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(Ty), '%rbx');
-      Self.Emit(#9'popq %rbx');
+      { Aggregate global with managed content: walk it at program exit.
+        EmitManagedReleaseAt dispatches record fields (recursing into
+        static-array fields) and static-array elements (recursing into
+        record elements) — the same shared helper the arm64 backend's
+        main epilogue uses, so both architectures release program-level
+        aggregates through one code path.
+
+        Before this, the kind chain covered string/class/dyn-array/
+        interface/record only: a PROGRAM-level `array[0..N] of TFoo`
+        is registered as a GLOBAL (EmitProgram accepts tyStaticArray),
+        so it fell off the end of the chain and every element leaked.
+        The identical array inside a procedure was fine — that goes
+        through the separate procedure-frame walk, which grew its
+        tyStaticArray arm in the BUG-016 stage-2 work.  QBE never had
+        the gap: it has one cleanup routine for both cases.
+
+        Guarded by ArcTypeHasManagedContent so an unmanaged aggregate
+        emits nothing at all (the record arm used to emit a bare
+        pushq/leaq/popq trio for a record with no managed fields).
+
+        Safe against manual element lifetimes: A[I].Free() nils the
+        element slot, so this walk is a no-op on already-freed elements. }
+      if ArcTypeHasManagedContent(Ty) then
+      begin
+        Self.Emit(#9'pushq %rbx');
+        Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [Name]));
+        Self.EmitManagedReleaseAt(Ty, '%rbx', False);
+        Self.Emit(#9'popq %rbx');
+      end;
     end;
   end;
 end;
