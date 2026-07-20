@@ -6894,43 +6894,106 @@ begin
       case ParShape of
         0:
         begin
-          { >16B: pointer in one x reg — park it, copy bytes in pass 2 }
-          if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
-          EmitStoreSlot('x' + IntToStr(J), '__pptr_' + Par.ParamName);
-          J := J + 1;
+          { >16B: pointer in one x reg — park it, copy bytes in pass 2.  When
+            the int bank is full the caller passed the pointer on the stack
+            (leg 29); read it from the outgoing area.  Pass 2 is unchanged: it
+            memcpys from '__pptr_' regardless of how the pointer arrived. }
+          if J >= 8 then
+          begin
+            SPOff := AlignTo(SPOff, 8);
+            Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+            EmitStoreSlot('x9', '__pptr_' + Par.ParamName);
+            SPOff := SPOff + 8;
+          end
+          else
+          begin
+            EmitStoreSlot('x' + IntToStr(J), '__pptr_' + Par.ParamName);
+            J := J + 1;
+          end;
         end;
         1:
         begin
-          if J >= 8 then NotYet('parameters spilling to the stack', ADecl);
-          EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
-          J := J + 1;
+          { <=8B record: one x reg holding the packed value (leg 29 overflow) }
+          if J >= 8 then
+          begin
+            SPOff := AlignTo(SPOff, 8);
+            Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+            EmitStoreSlot('x9', Par.ParamName);
+            SPOff := SPOff + 8;
+          end
+          else
+          begin
+            EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+            J := J + 1;
+          end;
         end;
         2:
         begin
-          if J >= 7 then NotYet('parameters spilling to the stack', ADecl);
-          EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
-          EmitSlotAddr('x9', Par.ParamName);
-          Self.Emit(Format(#9'str x%d, [x9, #8]', [J + 1]));
-          J := J + 2;
+          { 9..16B record: two consecutive eightbytes.  AAPCS64 does not split
+            an aggregate across registers and the stack — if it does not fit
+            entirely in the remaining int registers it goes wholly on the stack
+            (leg 29). }
+          if J >= 7 then
+          begin
+            SPOff := AlignTo(SPOff, 8);
+            EmitSlotAddr('x9', Par.ParamName);
+            Self.Emit(Format(#9'ldr x10, [x29, #%d]', [16 + SPOff]));
+            Self.Emit(#9'str x10, [x9]');
+            Self.Emit(Format(#9'ldr x10, [x29, #%d]', [16 + SPOff + 8]));
+            Self.Emit(#9'str x10, [x9, #8]');
+            SPOff := SPOff + 16;
+          end
+          else
+          begin
+            EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+            EmitSlotAddr('x9', Par.ParamName);
+            Self.Emit(Format(#9'str x%d, [x9, #8]', [J + 1]));
+            J := J + 2;
+          end;
         end;
       else
-        { HFA of (ParShape - 100) Doubles in d(FIdx).. }
+        { HFA of (ParShape - 100) Doubles in d(FIdx).. — spills wholly to the
+          stack when the fp bank cannot hold every lane (leg 29) }
         if FIdx + (ParShape - 100) > 8 then
-          NotYet('parameters spilling to the stack', ADecl);
-        EmitSlotAddr('x9', Par.ParamName);
-        for K := 0 to (ParShape - 100) - 1 do
-          Self.Emit(Format(#9'str d%d, [x9, #%d]', [FIdx + K, K * 8]));
-        FIdx := FIdx + (ParShape - 100);
+        begin
+          SPOff := AlignTo(SPOff, 8);
+          EmitSlotAddr('x9', Par.ParamName);
+          for K := 0 to (ParShape - 100) - 1 do
+          begin
+            Self.Emit(Format(#9'ldr x10, [x29, #%d]', [16 + SPOff + K * 8]));
+            Self.Emit(Format(#9'str x10, [x9, #%d]', [K * 8]));
+          end;
+          SPOff := SPOff + (ParShape - 100) * 8;
+        end
+        else
+        begin
+          EmitSlotAddr('x9', Par.ParamName);
+          for K := 0 to (ParShape - 100) - 1 do
+            Self.Emit(Format(#9'str d%d, [x9, #%d]', [FIdx + K, K * 8]));
+          FIdx := FIdx + (ParShape - 100);
+        end;
       end;
     end
     else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tyInterface) then
     begin
-      { fat pointer in two consecutive x registers }
-      if J >= 7 then NotYet('interface parameters spilling to the stack', ADecl);
-      EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
-      EmitStoreSlot('x' + IntToStr(J + 1), Par.ParamName + '_itab');
-      J := J + 2;
+      { fat pointer in two consecutive x registers; spills as two eightbytes
+        when the int bank cannot hold both (leg 29) }
+      if J >= 7 then
+      begin
+        SPOff := AlignTo(SPOff, 8);
+        Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff]));
+        EmitStoreSlot('x9', Par.ParamName);
+        Self.Emit(Format(#9'ldr x9, [x29, #%d]', [16 + SPOff + 8]));
+        EmitStoreSlot('x9', Par.ParamName + '_itab');
+        SPOff := SPOff + 16;
+      end
+      else
+      begin
+        EmitStoreSlot('x' + IntToStr(J), Par.ParamName);
+        EmitStoreSlot('x' + IntToStr(J + 1), Par.ParamName + '_itab');
+        J := J + 2;
+      end;
     end
     else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tyDouble) then
@@ -6952,11 +7015,28 @@ begin
     else if (Par.ResolvedType <> nil) and
             (Par.ResolvedType.Kind = tySingle) then
     begin
-      { Single arrives in s(FIdx); its slot holds the 4-byte value }
-      if FIdx >= 8 then NotYet('parameters spilling to the stack', ADecl);
-      EmitSlotAddr('x9', Par.ParamName);
-      Self.Emit(Format(#9'str s%d, [x9]', [FIdx]));
-      FIdx := FIdx + 1;
+      { Single arrives in s(FIdx); its slot holds the 4-byte value.  On overflow
+        (leg 29) the caller pushed it through the float path as a PROMOTED
+        DOUBLE (fmov x0, d0 of the widened value — see the IsFloatExpr push
+        arm), occupying an 8-byte stack slot.  So the callee reads the 8-byte
+        double from the outgoing area, narrows it back to Single with fcvt, and
+        stores the 4-byte value — the two sides must agree on the double
+        encoding, not a raw 32-bit single. }
+      if FIdx >= 8 then
+      begin
+        SPOff := AlignTo(SPOff, 8);
+        Self.Emit(Format(#9'ldr d0, [x29, #%d]', [16 + SPOff]));
+        Self.Emit(#9'fcvt s0, d0');
+        EmitSlotAddr('x10', Par.ParamName);
+        Self.Emit(#9'str s0, [x10]');
+        SPOff := SPOff + 8;
+      end
+      else
+      begin
+        EmitSlotAddr('x9', Par.ParamName);
+        Self.Emit(Format(#9'str s%d, [x9]', [FIdx]));
+        FIdx := FIdx + 1;
+      end;
     end
     else
     begin
@@ -7310,25 +7390,35 @@ begin
     end;
     if (Arg.ResolvedType <> nil) and (Arg.ResolvedType.Kind = tyRecord) then
     begin
-      { record args never go to the stack in this subset (guarded in
-        EmitCall); the register consumption mirrors its classification.
-        A record-CALL arg additionally reserves a scratch buffer in the
-        RecBase region (materialised there before its slot is pushed). }
+      { a record-CALL arg additionally reserves a scratch buffer in the RecBase
+        region (materialised there before its slot is pushed).  Overflow (leg
+        29): AAPCS64 does not split an aggregate across registers and the stack
+        — if the whole record does not fit in the remaining int/fp registers it
+        goes wholly on the stack.  Must stay in lockstep with EmitCall. }
       if IsRecordCallArg(Arg) then
         Rec := Rec + AlignTo(Arg.ResolvedType.RawSize(), 16);
       case RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) of
-        0, 1: Inc(NInt);
-        2: NInt := NInt + 2;
+        0, 1:
+          if NInt >= 8 then Off := AlignTo(Off, 8) + 8
+          else Inc(NInt);
+        2:
+          if NInt >= 7 then Off := AlignTo(Off, 8) + 16
+          else NInt := NInt + 2;
       else
-        NFloat := NFloat +
-          (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100);
+        if NFloat + (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100) > 8 then
+          Off := AlignTo(Off, 8) +
+            (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100) * 8
+        else
+          NFloat := NFloat +
+            (RecReturnShape(TRecordTypeDesc(Arg.ResolvedType)) - 100);
       end;
       Continue;
     end;
     if (Arg.ResolvedType <> nil) and
        (Arg.ResolvedType.Kind = tyInterface) then
     begin
-      NInt := NInt + 2;
+      if NInt >= 7 then Off := AlignTo(Off, 8) + 16
+      else NInt := NInt + 2;
       Continue;
     end;
     if IsFloatExpr(Arg) then
@@ -7629,43 +7719,79 @@ begin
           case Shape of
             1:
             begin
-              if NInt >= 8 then
-                NotYet('arguments spilling to the stack', Arg);
               EmitAddSubImm('add', 'x0', 'sp',
                 PopRegs.Count * 16 + RecBase + RecOff);
               Self.Emit(#9'ldr x0, [x0]');
               EmitPushX0();
-              PopRegs.Add('x' + IntToStr(NInt));
-              Inc(NInt);
+              if NInt >= 8 then
+              begin
+                StackOff := AlignTo(StackOff, 8);
+                PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+                StackOff := StackOff + 8;
+              end
+              else
+              begin
+                PopRegs.Add('x' + IntToStr(NInt));
+                Inc(NInt);
+              end;
             end;
             2:
             begin
               if NInt >= 7 then
-                NotYet('arguments spilling to the stack', Arg);
-              EmitAddSubImm('add', 'x9', 'sp',
-                PopRegs.Count * 16 + RecBase + RecOff);
-              Self.Emit(#9'ldr x0, [x9]');
-              EmitPushX0();
-              PopRegs.Add('x' + IntToStr(NInt));
-              EmitAddSubImm('add', 'x9', 'sp',
-                (PopRegs.Count) * 16 + RecBase + RecOff);
-              Self.Emit(#9'ldr x0, [x9, #8]');
-              EmitPushX0();
-              PopRegs.Add('x' + IntToStr(NInt + 1));
-              NInt := NInt + 2;
+              begin
+                EmitAddSubImm('add', 'x9', 'sp',
+                  PopRegs.Count * 16 + RecBase + RecOff);
+                StackOff := AlignTo(StackOff, 8);
+                Self.Emit(#9'ldr x0, [x9]');
+                EmitPushX0();
+                PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+                StackOff := StackOff + 8;
+                EmitAddSubImm('add', 'x9', 'sp',
+                  (PopRegs.Count) * 16 + RecBase + RecOff);
+                Self.Emit(#9'ldr x0, [x9, #8]');
+                EmitPushX0();
+                PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+                StackOff := StackOff + 8;
+              end
+              else
+              begin
+                EmitAddSubImm('add', 'x9', 'sp',
+                  PopRegs.Count * 16 + RecBase + RecOff);
+                Self.Emit(#9'ldr x0, [x9]');
+                EmitPushX0();
+                PopRegs.Add('x' + IntToStr(NInt));
+                EmitAddSubImm('add', 'x9', 'sp',
+                  (PopRegs.Count) * 16 + RecBase + RecOff);
+                Self.Emit(#9'ldr x0, [x9, #8]');
+                EmitPushX0();
+                PopRegs.Add('x' + IntToStr(NInt + 1));
+                NInt := NInt + 2;
+              end;
             end;
           else
             if NFloat + (Shape - 100) > 8 then
-              NotYet('arguments spilling to the stack', Arg);
-            for K := 0 to (Shape - 100) - 1 do
+              for K := 0 to (Shape - 100) - 1 do
+              begin
+                EmitAddSubImm('add', 'x9', 'sp',
+                  PopRegs.Count * 16 + RecBase + RecOff);
+                StackOff := AlignTo(StackOff, 8);
+                Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+                EmitPushX0();
+                PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+                StackOff := StackOff + 8;
+              end
+            else
             begin
-              EmitAddSubImm('add', 'x9', 'sp',
-                PopRegs.Count * 16 + RecBase + RecOff);
-              Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
-              EmitPushX0();
-              PopRegs.Add('d' + IntToStr(NFloat + K));
+              for K := 0 to (Shape - 100) - 1 do
+              begin
+                EmitAddSubImm('add', 'x9', 'sp',
+                  PopRegs.Count * 16 + RecBase + RecOff);
+                Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+                EmitPushX0();
+                PopRegs.Add('d' + IntToStr(NFloat + K));
+              end;
+              NFloat := NFloat + (Shape - 100);
             end;
-            NFloat := NFloat + (Shape - 100);
           end;
           RecOff := RecOff + AlignTo(Arg.ResolvedType.RawSize(), 16);
         end
@@ -7675,49 +7801,92 @@ begin
           begin
             { >16B: pass the lvalue address (the callee memcpies into its own
               slot at entry).  EmitRecAddrToX0 handles ident/subscript/field
-              lvalues uniformly — Specs[I] included. }
-            if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
+              lvalues uniformly — Specs[I] included.  Overflow (leg 29): the
+              address travels in an 8-byte stack slot. }
             EmitRecAddrToX0(Arg);
             EmitPushX0();
-            PopRegs.Add('x' + IntToStr(NInt));
-            Inc(NInt);
+            if NInt >= 8 then
+            begin
+              StackOff := AlignTo(StackOff, 8);
+              PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+              StackOff := StackOff + 8;
+            end
+            else
+            begin
+              PopRegs.Add('x' + IntToStr(NInt));
+              Inc(NInt);
+            end;
           end;
           1:
           begin
-            if NInt >= 8 then NotYet('arguments spilling to the stack', Arg);
             EmitRecAddrToX0(Arg);
             Self.Emit(#9'ldr x0, [x0]');
             EmitPushX0();
-            PopRegs.Add('x' + IntToStr(NInt));
-            Inc(NInt);
+            if NInt >= 8 then
+            begin
+              StackOff := AlignTo(StackOff, 8);
+              PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+              StackOff := StackOff + 8;
+            end
+            else
+            begin
+              PopRegs.Add('x' + IntToStr(NInt));
+              Inc(NInt);
+            end;
           end;
           2:
           begin
-            if NInt >= 7 then NotYet('arguments spilling to the stack', Arg);
             EmitRecAddrToX0(Arg);
             Self.Emit(#9'mov x9, x0');
-            Self.Emit(#9'ldr x0, [x9]');
-            EmitPushX0();
-            PopRegs.Add('x' + IntToStr(NInt));
-            Self.Emit(#9'ldr x0, [x9, #8]');
-            EmitPushX0();
-            PopRegs.Add('x' + IntToStr(NInt + 1));
-            NInt := NInt + 2;
+            if NInt >= 7 then
+            begin
+              { whole 16B aggregate on the stack — two eightbytes }
+              StackOff := AlignTo(StackOff, 8);
+              Self.Emit(#9'ldr x0, [x9]');
+              EmitPushX0();
+              PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+              StackOff := StackOff + 8;
+              Self.Emit(#9'ldr x0, [x9, #8]');
+              EmitPushX0();
+              PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+              StackOff := StackOff + 8;
+            end
+            else
+            begin
+              Self.Emit(#9'ldr x0, [x9]');
+              EmitPushX0();
+              PopRegs.Add('x' + IntToStr(NInt));
+              Self.Emit(#9'ldr x0, [x9, #8]');
+              EmitPushX0();
+              PopRegs.Add('x' + IntToStr(NInt + 1));
+              NInt := NInt + 2;
+            end;
           end;
         else
           { HFA of (Shape - 100) Doubles in d(NFloat).. — address computed
-            once into x9 (a subscript index is not re-evaluated) }
-          if NFloat + (Shape - 100) > 8 then
-            NotYet('arguments spilling to the stack', Arg);
+            once into x9 (a subscript index is not re-evaluated).  Overflow
+            (leg 29): all lanes travel as consecutive 8-byte stack slots. }
           EmitRecAddrToX0(Arg);
           Self.Emit(#9'mov x9, x0');
-          for K := 0 to (Shape - 100) - 1 do
+          if NFloat + (Shape - 100) > 8 then
+            for K := 0 to (Shape - 100) - 1 do
+            begin
+              StackOff := AlignTo(StackOff, 8);
+              Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+              EmitPushX0();
+              PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+              StackOff := StackOff + 8;
+            end
+          else
           begin
-            Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
-            EmitPushX0();
-            PopRegs.Add('d' + IntToStr(NFloat + K));
+            for K := 0 to (Shape - 100) - 1 do
+            begin
+              Self.Emit(Format(#9'ldr x0, [x9, #%d]', [K * 8]));
+              EmitPushX0();
+              PopRegs.Add('d' + IntToStr(NFloat + K));
+            end;
+            NFloat := NFloat + (Shape - 100);
           end;
-          NFloat := NFloat + (Shape - 100);
         end;
       end
       else if (Arg.ResolvedType <> nil) and
@@ -7730,14 +7899,27 @@ begin
           NotYet('interface argument from this expression', Arg);
         if TIdentExpr(Arg).ParamMode = pmVar then
           NotYet('var interface parameter', Arg);
-        if NInt >= 7 then NotYet('interface arguments spilling to the stack', Arg);
         EmitLoadSlot('x0', TIdentExpr(Arg).Name);
         EmitPushX0();
-        PopRegs.Add('x' + IntToStr(NInt));
-        EmitLoadSlot('x0', TIdentExpr(Arg).Name + '_itab');
-        EmitPushX0();
-        PopRegs.Add('x' + IntToStr(NInt + 1));
-        NInt := NInt + 2;
+        if NInt >= 7 then
+        begin
+          { whole fat pointer on the stack — obj then itab, two eightbytes }
+          StackOff := AlignTo(StackOff, 8);
+          PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+          StackOff := StackOff + 8;
+          EmitLoadSlot('x0', TIdentExpr(Arg).Name + '_itab');
+          EmitPushX0();
+          PopRegs.Add(Format('m%d_%d', [StackOff, 8]));
+          StackOff := StackOff + 8;
+        end
+        else
+        begin
+          PopRegs.Add('x' + IntToStr(NInt));
+          EmitLoadSlot('x0', TIdentExpr(Arg).Name + '_itab');
+          EmitPushX0();
+          PopRegs.Add('x' + IntToStr(NInt + 1));
+          NInt := NInt + 2;
+        end;
       end
       else if (Arg.ResolvedType <> nil) and
               (Arg.ResolvedType.Kind = tyString) then

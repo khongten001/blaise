@@ -112,6 +112,7 @@ type
       var-param record (its address is the caller's, no __pptr copy). }
     procedure TestRun_ManagedRecordParam_VarAndByValue_LeakFree;
     procedure TestRun_ByValueRecordParam_FieldReadWrite;
+    procedure TestRun_RecordParamOverflowToStack;
   end;
 
 implementation
@@ -1608,6 +1609,27 @@ begin
       WriteLn(Ctx.Tag)         { still 77 — by-value mutation did not leak }
     end.
     ''', '77' + LE + '12' + LE + '999' + LE + '77' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordParamOverflowToStack;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { A routine with 9 integer params (filling the arg registers, the 9th
+    overflowing) followed by a >16B record param whose hidden pointer also
+    overflows to the caller's outgoing stack area (leg 29 — the compiler's own
+    EmitVexRM shape).  The overflow int and the record's fields must all arrive
+    intact through the stack-passed slots. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TBig = record A, B, C: Int64; S: string; end;
+    function F(a, b, c, d, e, f, g, h, i: Int64; const R: TBig): Int64;
+    begin Result := i + a + R.A + R.B + R.C + Length(R.S) end;
+    var R: TBig;
+    begin
+      R.A := 100; R.B := 200; R.C := 300; R.S := 'abcd';
+      WriteLn(F(1, 2, 3, 4, 5, 6, 7, 8, 9, R))
+    end.
+    ''', '614' + LE, 0);
 end;
 
 initialization

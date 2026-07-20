@@ -95,6 +95,7 @@ type
     procedure TestThreadvar_TlvDescriptorsAndAccess;
     { slice 21: Apple stack args (>8) + variadic calls }
     procedure TestStackArgs_VariadicAndOverflow;
+    procedure TestStackArgs_RecordParamOverflow;
     { slice 22: interfaces — itab dispatch, fat-pointer ARC, metadata }
     procedure TestInterfaces_DispatchAndMetadata;
     procedure TestInterfaces_AsCast;
@@ -1791,6 +1792,48 @@ begin
       F.FindSection('__TEXT', '__text') <> nil);
   finally
     F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestStackArgs_RecordParamOverflow;
+var
+  AsmT: string;
+  Obj: string;
+  MF: TMachOFile;
+begin
+  { leg 29: a routine whose 10th parameter is a >16B record (shape 0) after 9
+    integer params fills x0-x7, spills the 9th int to the stack, then spills the
+    record's hidden pointer to the stack too.  This is the compiler's own
+    EmitVexRM shape (blaise.assembler.x86_64.pas:2531).  The callee must read
+    the overflow record pointer from the outgoing area and park it in
+    '__pptr_R'; the caller must reserve the area and push both overflow args. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TBig = record A, B, C: Int64; S: string; end;
+    function F(a, b, c, d, e, f, g, h, i: Int64; const R: TBig): Int64;
+    begin Result := i + R.A end;
+    var R: TBig;
+    begin
+      R.A := 100; R.B := 200; R.C := 300; R.S := 'abcd';
+      WriteLn(F(1, 2, 3, 4, 5, 6, 7, 8, 9, R))
+    end.
+    ''');
+  { callee: the 9th int arrives at [x29,#16] and the record pointer at
+    [x29,#24], the latter parked in the __pptr_ slot for pass-2 memcpy }
+  AssertTrue('9th int read from the overflow area',
+    Pos(#9'ldr x9, [x29, #16]', AsmT) >= 0);
+  AssertTrue('overflow record pointer read from the outgoing area',
+    Pos(#9'ldr x9, [x29, #24]', AsmT) >= 0);
+  { caller: an outgoing area is reserved and the call is emitted }
+  AssertTrue('call to F', Pos(#9'bl F', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  MF := ParseMachO(Obj, 'arm64recovf.o');
+  try
+    AssertTrue('has a text section',
+      MF.FindSection('__TEXT', '__text') <> nil);
+  finally
+    MF.Free();
   end;
 end;
 
