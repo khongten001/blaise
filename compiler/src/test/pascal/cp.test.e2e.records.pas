@@ -111,6 +111,7 @@ type
       field read/write on arm64.  The pass-2 prologue memcpy must skip a
       var-param record (its address is the caller's, no __pptr copy). }
     procedure TestRun_ManagedRecordParam_VarAndByValue_LeakFree;
+    procedure TestRun_ByValueRecordParam_FieldReadWrite;
   end;
 
 implementation
@@ -1579,6 +1580,34 @@ begin
       Show(CB)
     end.
     ''', 'AB');
+end;
+
+procedure TE2ERecordsTests.TestRun_ByValueRecordParam_FieldReadWrite;
+begin
+  { A BY-VALUE record param's fields must be read/written on the callee's INLINE
+    copy, and mutations must NOT reach the caller.  The semantic pass marks such
+    a param IsVarParam=True (records pass by reference in the ABI), so a backend
+    that treats every IsVarParam base as address-in-slot double-derefs the inline
+    copy on arm64.  The '__pptr_' discriminator (EmitRecordBaseAddr) keeps a
+    by-value param on EmitSlotAddr.  Read C.Tag / C.Sum, mutate the copy, and
+    prove the caller's record is unchanged. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TCtx = record Tag: Integer; Sum: Integer; end;
+    procedure Use(C: TCtx);
+    begin
+      WriteLn(C.Tag);          { read inline copy }
+      WriteLn(C.Sum);
+      C.Tag := 999;            { mutate inline copy — caller must be isolated }
+      WriteLn(C.Tag)
+    end;
+    var Ctx: TCtx;
+    begin
+      Ctx.Tag := 77; Ctx.Sum := 12;
+      Use(Ctx);
+      WriteLn(Ctx.Tag)         { still 77 — by-value mutation did not leak }
+    end.
+    ''', '77' + LE + '12' + LE + '999' + LE + '77' + LE, 0);
 end;
 
 initialization

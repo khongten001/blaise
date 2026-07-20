@@ -134,6 +134,22 @@ type
     { True when AName is captured from an enclosing routine in the current
       nested routine (accessed via its hidden '_cap_<Name>' pointer slot). }
     function  IsCaptured(const AName: string): Boolean;
+    { True when RecordName is a BY-VALUE record param (its inline copy lives in
+      the ParamName slot, so its address is EmitSlotAddr, NOT EmitLoadSlot).
+      The semantic pass flags such a param IsVarParam=True (records pass by
+      reference in the ABI), but arm64 lays the copy INLINE in the frame and
+      parks the caller's address in a companion '__pptr_<Name>' slot.  So the
+      presence of that '__pptr_' slot is the discriminator between a by-value
+      record param (inline value here → EmitSlotAddr) and a true var/out param
+      (slot holds the caller's address → EmitLoadSlot). }
+    function  IsByValueRecordParam(const AName: string): Boolean;
+    { Load into AReg the ADDRESS of a plain (Base=nil) record lvalue named
+      AName, given its resolved IsVarParam flag.  A TRUE var/out record param's
+      slot holds the caller's address (one deref → EmitLoadSlot); a by-value
+      record param and a local/global record hold the value inline (address is
+      EmitSlotAddr).  Centralises the '__pptr_' discriminator so every
+      field-store/read arm agrees. }
+    procedure EmitRecordBaseAddr(const AReg, AName: string; AIsVarParam: Boolean);
     procedure NotYet(const AWhat: string; ANode: TASTNode);
 
     { ---- frame + operands ---- }
@@ -491,6 +507,23 @@ var
   Off: Integer;
 begin
   Result := FFrame.TryGetValue(AName, Off);
+end;
+
+function TArm64Backend.IsByValueRecordParam(const AName: string): Boolean;
+begin
+  { see the interface-section comment: a by-value record param has a companion
+    '__pptr_<Name>' slot holding the caller's address, and the inline copy in
+    its own ParamName slot; a true var/out param has NO '__pptr_' slot. }
+  Result := Self.IsLocal('__pptr_' + AName);
+end;
+
+procedure TArm64Backend.EmitRecordBaseAddr(const AReg, AName: string;
+  AIsVarParam: Boolean);
+begin
+  if AIsVarParam and not Self.IsByValueRecordParam(AName) then
+    EmitLoadSlot(AReg, AName)          { true var/out: slot holds caller addr }
+  else
+    EmitSlotAddr(AReg, AName);         { inline value: local/global/by-value }
 end;
 
 procedure TArm64Backend.ReservePendRelSlots;
@@ -1212,10 +1245,7 @@ begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
       EmitRecAddrToX0(AStmt.Expr);
       Self.Emit(#9'mov x19, x0');                   { x19 = source addr }
-      if AStmt.IsVarParam then
-        EmitLoadSlot('x22', AStmt.RecordName)
-      else
-        EmitSlotAddr('x22', AStmt.RecordName);
+      EmitRecordBaseAddr('x22', AStmt.RecordName, AStmt.IsVarParam);
       if AStmt.FieldInfo.Offset <> 0 then
         EmitAddSubImm('add', 'x22', 'x22', AStmt.FieldInfo.Offset);  { dest field }
       Self.EmitRecordFieldRetains(
@@ -1239,19 +1269,13 @@ begin
     if IsRecordCallArg(AStmt.Expr) and
        not RecretManagedClean(TRecordTypeDesc(AStmt.FieldInfo.TypeDesc)) then
     begin
-      if AStmt.IsVarParam then
-        EmitLoadSlot('x0', AStmt.RecordName)
-      else
-        EmitSlotAddr('x0', AStmt.RecordName);
+      EmitRecordBaseAddr('x0', AStmt.RecordName, AStmt.IsVarParam);
       if AStmt.FieldInfo.Offset <> 0 then
         EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
       Self.EmitRecordFieldReleases(
         TRecordTypeDesc(AStmt.FieldInfo.TypeDesc), 'x0');
     end;
-    if AStmt.IsVarParam then
-      EmitLoadSlot('x0', AStmt.RecordName)
-    else
-      EmitSlotAddr('x0', AStmt.RecordName);
+    EmitRecordBaseAddr('x0', AStmt.RecordName, AStmt.IsVarParam);
     if AStmt.FieldInfo.Offset <> 0 then
       EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
     EmitPopTo('x1');                  { source address }
@@ -1268,10 +1292,7 @@ begin
   begin
     Self.EmitExprToD0OrConvert(AStmt.Expr);
     Self.Emit(#9'fcvt s0, d0');
-    if AStmt.IsVarParam then
-      EmitLoadSlot('x9', AStmt.RecordName)
-    else
-      EmitSlotAddr('x9', AStmt.RecordName);
+    EmitRecordBaseAddr('x9', AStmt.RecordName, AStmt.IsVarParam);
     Self.Emit(Format(#9'str s0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     Exit;
   end;
@@ -1295,19 +1316,13 @@ begin
       EmitPopTo('x0');
     end;
     EmitPushX0();
-    if AStmt.IsVarParam then
-      EmitLoadSlot('x9', AStmt.RecordName)
-    else
-      EmitSlotAddr('x9', AStmt.RecordName);
+    EmitRecordBaseAddr('x9', AStmt.RecordName, AStmt.IsVarParam);
     Self.Emit(Format(#9'ldr x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     if AStmt.FieldInfo.TypeDesc.IsString() then
       Self.Emit(#9'bl _StringRelease')
     else
       Self.Emit(#9'bl _ClassRelease');
-    if AStmt.IsVarParam then
-      EmitLoadSlot('x9', AStmt.RecordName)
-    else
-      EmitSlotAddr('x9', AStmt.RecordName);
+    EmitRecordBaseAddr('x9', AStmt.RecordName, AStmt.IsVarParam);
     EmitPopTo('x0');
     Self.Emit(Format(#9'str x0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
     Exit;
@@ -1320,10 +1335,7 @@ begin
   else
     Self.EmitExprToX0(AStmt.Expr);
   EmitPushX0();
-  if AStmt.IsVarParam then
-    EmitLoadSlot('x9', AStmt.RecordName)
-  else
-    EmitSlotAddr('x9', AStmt.RecordName);
+  EmitRecordBaseAddr('x9', AStmt.RecordName, AStmt.IsVarParam);
   EmitPopTo('x0');
   case AStmt.FieldInfo.TypeDesc.RawSize() of
     1: Self.Emit(Format(#9'strb w0, [x9, #%d]', [AStmt.FieldInfo.Offset]));
@@ -3158,10 +3170,13 @@ begin
     if IsCaptured(TFieldAccessExpr(AExpr).RecordName) then
       EmitCapturedBase('x9', TFieldAccessExpr(AExpr).RecordName,
         TFieldAccessExpr(AExpr).IsVarParam, False)
-    else if TFieldAccessExpr(AExpr).IsVarParam then
-      EmitLoadSlot('x9', TFieldAccessExpr(AExpr).RecordName)
     else
-      EmitSlotAddr('x9', TFieldAccessExpr(AExpr).RecordName);
+      { TRUE var/out record → one deref; by-value record param / local / global
+        → EmitSlotAddr.  A by-value record param is IsVarParam=True too (records
+        pass by reference), so the '__pptr_' discriminator in EmitRecordBaseAddr
+        keeps them apart (was a double-deref that mis-read the first word). }
+      EmitRecordBaseAddr('x9', TFieldAccessExpr(AExpr).RecordName,
+        TFieldAccessExpr(AExpr).IsVarParam);
     if TFieldAccessExpr(AExpr).FieldInfo.Offset <> 0 then
       Self.Emit(Format(#9'add x9, x9, #%d',
         [TFieldAccessExpr(AExpr).FieldInfo.Offset]));
@@ -4101,12 +4116,10 @@ begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
       EmitRecAddrToX0(AAsgn.Expr);
       Self.Emit(#9'mov x19, x0');
-      { dest = the record's address: a var-param slot holds the caller's
-        ADDRESS (deref it); a local/global's slot IS the record (its address) }
-      if AAsgn.IsVarParam then
-        EmitLoadSlot('x22', AAsgn.Name)
-      else
-        EmitSlotAddr('x22', AAsgn.Name);
+      { dest = the record's address: a TRUE var-param slot holds the caller's
+        ADDRESS (deref it); a local/global/by-value-param slot IS the record
+        (its address). }
+      EmitRecordBaseAddr('x22', AAsgn.Name, AAsgn.IsVarParam);
       Self.EmitRecordFieldRetains(
         TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x19');
       Self.EmitRecordFieldReleases(
@@ -4118,10 +4131,7 @@ begin
       Self.Emit(#9'ldp x19, x22, [sp], #16');
       Exit;
     end;
-    if AAsgn.IsVarParam then
-      EmitLoadSlot('x0', AAsgn.Name)   { deref the var-param slot to the dest }
-    else
-      EmitSlotAddr('x0', AAsgn.Name);
+    EmitRecordBaseAddr('x0', AAsgn.Name, AAsgn.IsVarParam);
     EmitPushX0();
     EmitRecAddrToX0(AAsgn.Expr);
     Self.Emit(#9'mov x1, x0');
@@ -6174,10 +6184,11 @@ begin
         Self.Emit(#9'ldr x0, [x0]');   { var-param class: slot -> instance }
     end;
   end
-  else if AFAE.IsVarParam then
-    EmitLoadSlot('x0', AFAE.RecordName)            { var record: slot = addr }
   else
-    EmitSlotAddr('x0', AFAE.RecordName);           { local/global record addr }
+    { TRUE var record → deref slot to caller addr; by-value/local/global record
+      → EmitSlotAddr (the '__pptr_' discriminator keeps a by-value param off the
+      double-deref path). }
+    EmitRecordBaseAddr('x0', AFAE.RecordName, AFAE.IsVarParam);
   { --- add field offset --- }
   if AFAE.FieldInfo.Offset <> 0 then
     EmitAddSubImm('add', 'x0', 'x0', AFAE.FieldInfo.Offset);
@@ -8925,10 +8936,9 @@ begin
         if TFieldAccessExpr(AStmt.ObjExpr).IsVarParam then
           Self.Emit(#9'ldr x9, [x9]');
       end
-      else if TFieldAccessExpr(AStmt.ObjExpr).IsVarParam then
-        EmitLoadSlot('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName)
       else
-        EmitSlotAddr('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName);
+        EmitRecordBaseAddr('x9', TFieldAccessExpr(AStmt.ObjExpr).RecordName,
+          TFieldAccessExpr(AStmt.ObjExpr).IsVarParam);
       if TFieldAccessExpr(AStmt.ObjExpr).FieldInfo.Offset <> 0 then
         EmitAddSubImm('add', 'x9', 'x9',
           TFieldAccessExpr(AStmt.ObjExpr).FieldInfo.Offset);
