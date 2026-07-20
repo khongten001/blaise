@@ -161,6 +161,17 @@ function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
   store) releases it again (BUG-016). }
 function ArcIsArrayElemSlot(AExpr: TASTExpr): Boolean;
 
+{ True when AType transitively contains any ARC-managed leaf: a managed
+  scalar (string / class / interface / dynamic array), a static array of
+  managed elements (at any nesting depth), or a record with such content.
+  Both the QBE and x86-64 backends gate the scope-exit release of
+  static-array LOCALS on this (BUG-016 stage 2) so unmanaged arrays emit no
+  dead walk code.  Unlike RecretManagedClean (the register-return ABI
+  predicate, which deliberately ignores static-array fields), this walk
+  descends into static-array fields — it answers the ARC question, not the
+  ABI one. }
+function ArcTypeHasManagedContent(AType: TTypeDesc): Boolean;
+
 { True if evaluating AExpr MIGHT defer a class-field-on-owned-transient base
   release (a retained class/interface field read whose base is an owned
   transient — MakeObj().ClassField).  The three backends use this to decide
@@ -364,6 +375,27 @@ begin
         if      (not Eb0SSE) and Eb1SSE then Result := rcIntSSE
         else if Eb0SSE and (not Eb1SSE) then Result := rcSSEInt;
       end;
+  end;
+end;
+
+function ArcTypeHasManagedContent(AType: TTypeDesc): Boolean;
+var
+  I:  Integer;
+  RT: TRecordTypeDesc;
+begin
+  Result := False;
+  if AType = nil then Exit;
+  if AType.IsString() or
+     (AType.Kind in [tyClass, tyInterface, tyDynArray]) then
+    Exit(True);
+  if AType.Kind = tyStaticArray then
+    Exit(ArcTypeHasManagedContent(TStaticArrayTypeDesc(AType).ElementType));
+  if AType.Kind = tyRecord then
+  begin
+    RT := TRecordTypeDesc(AType);
+    for I := 0 to RT.Fields.Count - 1 do
+      if ArcTypeHasManagedContent(TFieldInfo(RT.Fields.Items[I]).TypeDesc) then
+        Exit(True);
   end;
 end;
 

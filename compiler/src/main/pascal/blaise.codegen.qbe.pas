@@ -2754,21 +2754,19 @@ begin
       Continue;
     end
     else if (Decl.ResolvedType.Kind = tyStaticArray)
-      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType <> nil)
-      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType.Kind = tyInterface) then
+      and ArcTypeHasManagedContent(Decl.ResolvedType) then
     begin
-      { Static-array-of-INTERFACE local (array[0..N] of IFoo): release each
-        fat-pointer element's obj slot at scope exit.  VarRef gives the inline
-        storage base.
-
-        Scope: ONLY interface elements — kept in lockstep with the native
-        backend.  Static-array-of-class/string/record locals are excluded
-        because the element store's unconditional retain plus manual `.Free`/
-        aliasing in the owning code would double-free; reconciling that is
-        tracked separately. }
+      { Static-array-of-managed local (class, string, interface, dyn-array,
+        or record with managed content): release each element at scope exit
+        (BUG-016 stage 2 — previously interface elements only).  VarRef
+        gives the inline storage base.  Safe against manual element
+        lifetimes because A[I].Free() nils the slot and the element store's
+        retain is conditional on RHS ownership (stage 1).  AZero=False: the
+        normal path does not zero the slots. }
       for J := 0 to Decl.Names.Count - 1 do
       begin
         VarName := Decl.Names.Strings[J];
+        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
         EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal), False);
       end;
@@ -2940,15 +2938,16 @@ begin
       Continue;
     end
     else if (Decl.ResolvedType.Kind = tyStaticArray)
-      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType <> nil)
-      and (TStaticArrayTypeDesc(Decl.ResolvedType).ElementType.Kind = tyInterface) then
+      and ArcTypeHasManagedContent(Decl.ResolvedType) then
     begin
-      { Static-array-of-interface local on exception path: release each element's
-        obj slot and zero it so an outer handler's cleanup is a safe no-op.
-        (Same interface-only scope as the normal path.) }
+      { Static-array-of-managed local on exception path: release each
+        element and ZERO it (AZero=True) so an outer handler's cleanup is a
+        safe no-op.  (Same managed-content scope as the normal path, which
+        passes AZero=False.) }
       for J := 0 to Decl.Names.Count - 1 do
       begin
         VarName := Decl.Names.Strings[J];
+        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
         EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
           VarRef(VarName, Decl.IsGlobal), True);
       end;

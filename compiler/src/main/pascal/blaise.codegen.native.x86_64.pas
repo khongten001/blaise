@@ -21254,23 +21254,19 @@ begin
             TRecordTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType), '%rbx');
           Self.Emit(#9'popq %rbx');
         end
-      { Static-array-of-INTERFACE locals (array[0..N] of IFoo): release each
-        fat-pointer element's obj slot at scope exit.  The inline storage base
-        goes into %rbx (callee-saved).
+      { Static-array-of-managed locals (class, string, interface, dyn-array,
+        or record with managed content): release each element at scope exit
+        (BUG-016 stage 2 — previously interface elements only).  The inline
+        storage base goes into %rbx (callee-saved).
 
-        Scope: ONLY interface elements.  The interface element store routes
-        through EmitInterfaceToFieldSlotsAt, whose retain/release is balanced by
-        this scope-exit release.  Static-array-of-CLASS/STRING/record locals are
-        deliberately excluded: the existing element store retains unconditionally
-        while `.Free`/aliasing in the owning code (e.g. the ELF writer's
-        `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6) already
-        manages those lifetimes, so a
-        blanket scope-exit release double-frees and corrupts the heap.  Closing
-        that gap requires reconciling the element store's ARC with the manual
-        management first; it is tracked separately. }
+        Safe against manual element lifetimes (e.g. the ELF writer's
+        `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6):
+        A[I].Free() nils the element slot, making this walk a no-op on
+        manually-freed elements, and the element store's retain is
+        conditional on RHS ownership (stage 1), so each live slot holds
+        exactly one reference for this walk to balance. }
       else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyStaticArray)
-        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType <> nil)
-        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType.Kind = tyInterface) then
+        and ArcTypeHasManagedContent(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType) then
         for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
         begin
           Self.Emit(#9'pushq %rbx');
