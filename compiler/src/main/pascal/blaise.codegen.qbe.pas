@@ -334,7 +334,6 @@ type
     procedure EmitParamAllocs(AMethod: TMethodDecl; AClassType: TRecordTypeDesc);
     procedure EmitArcCleanup(ABlock: TBlock);
     procedure EmitStaticVarReleases(ABlock: TBlock);
-    procedure EmitExcPathArcCleanup(ABlock: TBlock);
     procedure EmitExcUnwind(ATargetDepth: Integer);
     procedure EmitStmt(AStmt: TASTStmt);
     procedure EmitStmtBody(AStmt: TASTStmt);
@@ -2908,94 +2907,6 @@ begin
     EmitLine(Format('  %%_exc_frame_%d =l alloc16 512', [I]));
   FOutput.AppendBuffer(Body);
   Body.Free();
-end;
-
-procedure TCodeGenQBE.EmitExcPathArcCleanup(ABlock: TBlock);
-var
-  I, J:    Integer;
-  Decl:    TVarDecl;
-  VarName: string;
-  ValTemp: string;
-  RelFn:   string;
-  IsIntf:  Boolean;
-begin
-  if ABlock = nil then Exit;
-  for I := 0 to ABlock.Decls.Count - 1 do
-  begin
-    Decl := TVarDecl(ABlock.Decls.Items[I]);
-    if Decl.ResolvedType = nil then Continue;
-    IsIntf := Decl.ResolvedType.Kind = tyInterface;
-    if Decl.IsWeak then
-    begin
-      { Weak locals on an exception path: unregister and zero the slot
-        so a subsequent nested handler's cleanup sees nil. }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsIntf then
-          EmitLine(Format('  call $_WeakClear(l %s_obj)', [VarRef(VarName, Decl.IsGlobal)]))
-        else
-          EmitLine(Format('  call $_WeakClear(l %s)', [VarRef(VarName, Decl.IsGlobal)]));
-      end;
-      Continue;
-    end;
-    if Decl.ResolvedType.IsString() then
-      RelFn := '$_StringRelease'
-    else if Decl.ResolvedType.Kind = tyClass then
-      RelFn := '$_ClassRelease'
-    else if IsIntf then
-      RelFn := '$_ClassRelease'
-    else if Decl.ResolvedType.Kind = tyDynArray then
-      RelFn := '$_DynArrayRelease'
-    else if Decl.ResolvedType.Kind = tyRecord then
-    begin
-      { Record local on exception path: release ARC fields }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
-        EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
-          VarRef(VarName, Decl.IsGlobal));
-      end;
-      Continue;
-    end
-    else if (Decl.ResolvedType.Kind = tyStaticArray)
-      and ArcTypeHasManagedContent(Decl.ResolvedType) then
-    begin
-      { Static-array-of-managed local on exception path: release each
-        element and ZERO it (AZero=True) so an outer handler's cleanup is a
-        safe no-op.  (Same managed-content scope as the normal path, which
-        passes AZero=False.) }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
-        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
-          VarRef(VarName, Decl.IsGlobal), True);
-      end;
-      Continue;
-    end
-    else
-      Continue;
-    for J := 0 to Decl.Names.Count - 1 do
-    begin
-      VarName := Decl.Names.Strings[J];
-      if IsEnvField(VarName) then Continue;  { env cleanup owns the field }
-      ValTemp := AllocTemp();
-      if IsIntf then
-      begin
-        EmitLine(Format('  %s =l loadl %s_obj', [ValTemp, VarRef(VarName, Decl.IsGlobal)]));
-        EmitLine(Format('  call %s(l %s)', [RelFn, ValTemp]));
-        EmitLine(Format('  storel 0, %s_obj', [VarRef(VarName, Decl.IsGlobal)]));
-      end
-      else
-      begin
-        EmitLine(Format('  %s =l loadl %s', [ValTemp, VarRef(VarName, Decl.IsGlobal)]));
-        EmitLine(Format('  call %s(l %s)', [RelFn, ValTemp]));
-        EmitLine(Format('  storel 0, %s', [VarRef(VarName, Decl.IsGlobal)]));
-      end;
-    end;
-  end;
 end;
 
 procedure TCodeGenQBE.EmitExcUnwind(ATargetDepth: Integer);
