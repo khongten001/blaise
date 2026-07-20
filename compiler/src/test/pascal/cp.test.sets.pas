@@ -145,6 +145,11 @@ type
     { ------------------------------------------------------------------ }
     procedure TestSemantic_Set64_TypeRegistered;
     procedure TestSemantic_Set_Over256Members_Fails;
+    { An empty '[]' has no element type of its own and must take it from the
+      assignment LHS.  The bare (implicit-Self) field form did not supply it,
+      so a valid 'Field := []' inside a method was rejected with "Expression
+      has no value type" — on EVERY set type, not just jumbo ones. }
+    procedure TestSemantic_ImplicitSelfSetField_EmptyLiteral;
     procedure TestCodegen_Set64_VarAllocsEmitsLongZero;
     procedure TestCodegen_Set64_LiteralEmitsLongMask;
     procedure TestCodegen_Set64_InOperatorUsesLong;
@@ -1336,6 +1341,32 @@ begin
   { 257 members exceeds the 256 ceiling — the largest set Blaise supports
     (a jumbo byte-array bitmap of up to 32 bytes). }
   SemanticFail(SrcSetTooManyMembers);
+end;
+
+procedure TSetTests.TestSemantic_ImplicitSelfSetField_EmptyLiteral;
+begin
+  { Both a jumbo (set of Byte) and a small (enum) set field, assigned '[]'
+    through the bare implicit-Self form.  The qualified 'Self.Field := []'
+    and plain-variable forms already worked; only the bare one was rejected. }
+  SemanticOK(
+    'program P;'                                            + #10 +
+    'type'                                                  + #10 +
+    '  TE = (sA, sB, sC);'                                  + #10 +
+    '  TSmall = set of TE;'                                 + #10 +
+    '  TBig = set of Byte;'                                 + #10 +
+    '  TNode = class'                                       + #10 +
+    '    Small: TSmall;'                                    + #10 +
+    '    Big: TBig;'                                        + #10 +
+    '    procedure Reset();'                                + #10 +
+    '  end;'                                                + #10 +
+    'procedure TNode.Reset();'                              + #10 +
+    'begin'                                                 + #10 +
+    '  Small := [];'                                        + #10 +
+    '  Big := [];'                                          + #10 +
+    '  Big := Big + [65];'                                  + #10 +
+    'end;'                                                  + #10 +
+    'begin'                                                 + #10 +
+    'end.');
 end;
 
 procedure TSetTests.TestCodegen_Set64_VarAllocsEmitsLongZero;

@@ -9810,6 +9810,19 @@ begin
       AAssign.ResolvedLhsType   := FldInfo.TypeDesc;
       InferArrowFromTarget(AAssign.Expr, FldInfo.TypeDesc);
       ResolveDiamond(AAssign.Expr, FldInfo.TypeDesc);
+      { Set-literal RHS into a tySet field via the bare (implicit-Self) form:
+        analyse with the field's set type as context, exactly as the plain
+        variable and qualified 'obj.Field' paths do.  Without this an empty
+        '[]' has no element type of its own and stays untyped, so the
+        CheckTypesMatch below reports "Expression has no value type" for the
+        valid 'Field := []'.  Affects every set type, not just jumbo ones. }
+      if (FldInfo.TypeDesc <> nil) and (FldInfo.TypeDesc.Kind = tySet) and
+         (AAssign.Expr is TArrayLiteralExpr) then
+      begin
+        AnalyseSetLiteralExpr(TArrayLiteralExpr(AAssign.Expr),
+          TSetTypeDesc(FldInfo.TypeDesc));
+        Exit;
+      end;
       { Bare enum member on the RHS resolves against the field's type. }
       if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
         ExprType := AAssign.Expr.ResolvedType
