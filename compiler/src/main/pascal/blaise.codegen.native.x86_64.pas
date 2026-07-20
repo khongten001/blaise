@@ -1260,6 +1260,17 @@ begin
   Result := TSetTypeDesc(AType).RawByteSize();
 end;
 
+{ Byte size of an sret return buffer: a record's full layout size, or a jumbo
+  set's 8-byte-rounded bitmap slot.  Both are returned through the hidden
+  first-argument pointer, so both need a caller-allocated buffer of this size. }
+function SretRetSize(AType: TTypeDesc): Integer;
+begin
+  if IsJumboSet(AType) then
+    Result := TSetTypeDesc(AType).RawSize()
+  else
+    Result := TRecordTypeDesc(AType).TotalSize();
+end;
+
 { SysV AMD64 XMM argument registers, in order. }
 const
   SysVXmmArgRegs: array[0..7] of string =
@@ -8129,20 +8140,26 @@ begin
       Self.EmitNarrowToType(FC.ResolvedType);
       Exit;
     end;
-    if (FC.ResolvedType <> nil) and (FC.ResolvedType.Kind = tyRecord) and
+    { A jumbo-set return uses the same hidden-sret convention as a record
+      (BuildFrame sets FSretFunc for it).  Without this the call site emitted a
+      plain call and read %eax as if the bitmap were a scalar, so an operand
+      like `MakeSet() + [x]` dereferenced a truncated garbage address. }
+    if (FC.ResolvedType <> nil) and
+       ((FC.ResolvedType.Kind = tyRecord) or IsJumboSet(FC.ResolvedType)) and
        (TMethodDecl(FC.ResolvedDecl).ResolvedReturnType <> nil) and
-       (TMethodDecl(FC.ResolvedDecl).ResolvedReturnType.Kind = tyRecord) then
+       ((TMethodDecl(FC.ResolvedDecl).ResolvedReturnType.Kind = tyRecord) or
+        IsJumboSet(TMethodDecl(FC.ResolvedDecl).ResolvedReturnType)) then
     begin
       MD := TMethodDecl(FC.ResolvedDecl);
       Self.Emit(Format(#9'subq $%d, %%rsp',
-        [(TRecordTypeDesc(MD.ResolvedReturnType).TotalSize() + 15) and (-16)]));
+        [(SretRetSize(MD.ResolvedReturnType) + 15) and (-16)]));
       if FC.IsImplicitSelfMethod then
       begin
         Self.Emit(#9'leaq (%rsp), %r10');
         Self.Emit(#9'movq %r10, %rdi');
         Self.Emit(#9'xorl %esi, %esi');
         Self.Emit(Format(#9'movq $%d, %%rdx',
-          [TRecordTypeDesc(MD.ResolvedReturnType).TotalSize()]));
+          [SretRetSize(MD.ResolvedReturnType)]));
         Self.Emit(#9'callq memset');
         Self.Emit(#9'leaq (%rsp), %r10');
         Self.BeginCallArgs(MD.Params, FC.Args);
