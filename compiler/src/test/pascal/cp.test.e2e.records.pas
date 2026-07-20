@@ -98,6 +98,11 @@ type
       must reach the CALLER's record (the dereferenced var-param address).  The
       TryGetValue out-param shape. }
     procedure TestRun_RecordStoreToVarParam;
+    { leg 24: nested record-field access — scalar read/write through a
+      record-typed field (Rec.RecField.Scalar), via a plain var and an sret
+      Result, with a non-zero intermediate offset; plus whole-record-field
+      read/store as regression guards. }
+    procedure TestRun_NestedRecordFieldAccess;
   end;
 
 implementation
@@ -1490,6 +1495,35 @@ begin
       WriteLn(R.A); WriteLn(R.B); WriteLn(R.C)
     end.
     ''', '10' + LE + '20' + LE + '30' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_NestedRecordFieldAccess;
+begin
+  { Nested records with a non-zero intermediate offset (Pad before I).  Covers
+    the leg-24 fix (scalar write/read through a record field, plain var + sret
+    Result) plus the already-working whole-record-field read/store.  Expect
+    5 / 7 / 5. }
+  AssertRunsOnAll('''
+    program N;
+    type
+      TInner = record K: Integer; end;
+      TOuter = record Pad: Integer; I: TInner; end;
+    function Make: TOuter;
+    begin
+      Result.I.K := 5;
+      if Result.I.K <> 0 then Result.Pad := Result.I.K
+    end;
+    var O, R: TOuter; L: TInner;
+    begin
+      R := Make();
+      O.I.K := 7;
+      L := O.I;
+      O.I := L;
+      WriteLn(R.I.K);
+      WriteLn(O.I.K);
+      WriteLn(R.Pad)
+    end.
+    ''', '5' + LE + '7' + LE + '5' + LE, 0);
 end;
 
 initialization

@@ -724,11 +724,21 @@ begin
     NotYet('address of an unresolved field', AFA);
   if AFA.Base <> nil then
   begin
-    if not AFA.IsClassAccess then
+    if AFA.IsClassAccess then
+    begin
+      { chained CLASS base: the base expression yields the instance pointer }
+      if ArcExprOwnsRef(AFA.Base) then
+        NotYet('record address on an owned transient base', AFA);
+      Self.EmitExprToX0(AFA.Base);
+    end
+    else if (AFA.Base.ResolvedType <> nil) and
+            (AFA.Base.ResolvedType.Kind = tyRecord) then
+      { chained RECORD-field base (leg 24): the base is itself a record-typed
+        field/ident/element — recurse to its ADDRESS (no deref), then add this
+        field's offset.  Handles Rec.RecField.Field / A.B.C. }
+      EmitRecAddrToX0(AFA.Base)
+    else
       NotYet('record address through this base form', AFA);
-    if ArcExprOwnsRef(AFA.Base) then
-      NotYet('record address on an owned transient base', AFA);
-    Self.EmitExprToX0(AFA.Base);
   end
   else if AFA.IsImplicitSelf then
     EmitLoadSlot('x0', 'Self')
@@ -3209,6 +3219,21 @@ begin
       EmitAddSubImm('add', 'x0', 'x0',
         TFieldAccessExpr(AExpr).FieldInfo.Offset);
     EmitElemLoad(TFieldAccessExpr(AExpr).FieldInfo.TypeDesc);
+    Exit;
+  end;
+  if (AExpr is TFieldAccessExpr) and
+     (TFieldAccessExpr(AExpr).FieldInfo <> nil) and
+     (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc <> nil) and
+     (TFieldAccessExpr(AExpr).FieldInfo.TypeDesc.Kind = tyRecord) and
+     (not TFieldAccessExpr(AExpr).IsClassAccess) and
+     (not TFieldAccessExpr(AExpr).IsConstant) then
+  begin
+    { a RECORD-typed field access yields the ADDRESS of the sub-record (leg 24)
+      — Rec.RecField / A.B where B is a record field.  This is what a further
+      access (A.B.C) or a whole-record copy needs; the value of a record IS its
+      address.  EmitRecFieldAddrToX0 recurses through a record intermediate
+      base and adds the field offset. }
+    EmitRecFieldAddrToX0(TFieldAccessExpr(AExpr));
     Exit;
   end;
   NotYet('expression ' + AExpr.ClassName, AExpr);

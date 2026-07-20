@@ -265,6 +265,11 @@ type
       record PARAMETER — the dest is the DEREFERENCED var-param slot (the
       caller's record address), not the slot's own address. }
     procedure TestRecordStoreToVarParam;
+    { self-cross-compile leg 24: nested record-field access — a scalar (or
+      whole-record) field reached through a RECORD-typed field of a record
+      (Rec.RecField.Field).  The intermediate record field yields the ADDRESS
+      of the sub-record; the outer field adds its offset. }
+    procedure TestNestedRecordFieldAccess;
   end;
 
 implementation
@@ -4715,6 +4720,46 @@ begin
     Pos(#9'ldur x0, [x29,', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64vrp.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedRecordFieldAccess;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { O.I.K := 7 where I is a record-typed field of O and K a scalar field of I.
+    The intermediate O.I yields &O + offsetof(I); the outer .K store lands at
+    +offsetof(K).  A non-zero intermediate offset (Pad before I) exercises the
+    offset accumulation.  Previously the intermediate O.I record-field read hit
+    the generic 'expression TFieldAccessExpr' NotYet. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TInner = record K: Integer; end;
+      TOuter = record Pad: Integer; I: TInner; end;
+    var O: TOuter;
+    begin
+      O.I.K := 7;
+      if O.I.K <> 0 then WriteLn(O.I.K)
+    end.
+    ''');
+  { the intermediate record-field address adds the I field offset (#4) to O's
+    base before the scalar store/load at K's offset }
+  AssertTrue('intermediate record-field offset is added to the base',
+    Pos(#9'add x0, x0, #4', AsmT) >= 0);
+  { the scalar field is stored (write) and loaded (read) — no NotYet }
+  AssertTrue('the nested scalar field is stored',
+    Pos(#9'str w0, [x9', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64nrf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
