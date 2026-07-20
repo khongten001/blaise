@@ -6621,6 +6621,17 @@ begin
     Exit;
   end;
 
+  { Operator overloading: uSemantic normally REBINDS the owning slot to the
+    synthesised call (AnalyseExprSlot), so a lowered operator reaches codegen
+    as a plain TMethodCallExpr and every record/sret/ARC node-class test
+    matches.  This guard is the belt-and-braces path for any slot not yet
+    converted to the slot form — delegate to the general emitter rather than
+    re-implementing the call here. }
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+  begin
+    Self.EmitExprToXmm0(TBinaryExpr(AExpr).LoweredCall);
+    Exit;
+  end;
   if AExpr is TBinaryExpr then
   begin
     BE  := TBinaryExpr(AExpr);
@@ -8307,6 +8318,17 @@ begin
     Exit;
   end;
 
+  { Operator overloading: uSemantic normally REBINDS the owning slot to the
+    synthesised call (AnalyseExprSlot), so a lowered operator reaches codegen
+    as a plain TMethodCallExpr and every record/sret/ARC node-class test
+    matches.  This guard is the belt-and-braces path for any slot not yet
+    converted to the slot form — delegate to the general emitter rather than
+    re-implementing the call here. }
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+  begin
+    Self.EmitExprToEax(TBinaryExpr(AExpr).LoweredCall);
+    Exit;
+  end;
   if AExpr is TBinaryExpr then
   begin
     BE := TBinaryExpr(AExpr);
@@ -11682,6 +11704,17 @@ var
   ImmV: Int64;
   Unsigned: Boolean;
 begin
+  { Operator overloading (see EmitExprToEax): a lowered operator is not a
+    comparison shape either fused path can handle — materialise it through
+    the general expression emitter and test the 0/1. }
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+  begin
+    Self.EmitExprToEax(AExpr);
+    Self.Emit(#9'testq %rax, %rax');
+    Self.Emit(#9'jne ' + ATrueLabel);
+    Self.Emit(#9'jmp ' + AFalseLabel);
+    Exit;
+  end;
   { Float comparison: ucomisd/ucomiss sets CF/ZF directly; use conditional
     jumps that map CF/ZF to the comparison operator.  The result is a direct
     branch without materialising a 0/1 in %rax. }
@@ -16959,7 +16992,11 @@ begin
     end;
     Exit;
   end;
-  if AExpr is TBinaryExpr then
+  if (AExpr is TBinaryExpr) and (TBinaryExpr(AExpr).LoweredCall <> nil) then
+    { Lowered operator: Left/Right were MOVED into the call's arg list and are
+      nil here, so walk the call instead. }
+    Result := InlineNeedExprD(TBinaryExpr(AExpr).LoweredCall, ADepth)
+  else if AExpr is TBinaryExpr then
   begin
     Result := InlineNeedExprD(TBinaryExpr(AExpr).Left, ADepth);
     N := InlineNeedExprD(TBinaryExpr(AExpr).Right, ADepth);

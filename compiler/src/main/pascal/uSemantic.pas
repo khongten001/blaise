@@ -365,6 +365,52 @@ type
       are analysed, e.g. zero-arg lookups). }
     function  ResolveMethodOverload(const ATypeName, AMethodName: string;
       AArgs: TObjectList; ALine, ACol: Integer): TMethodDecl;
+    { Score a pre-gathered arity-matched candidate list against AArgs and
+      apply the tie-breakers (highest summed score, then fewer defaulted
+      slots, then more exact matches).  Shared by ResolveMethodOverload and
+      ResolveOperatorOverload: the two differ ONLY in how candidates are
+      gathered (a single inheritance chain vs the union of both operand
+      types' chains); scoring must stay identical and in one place.
+      Returns nil when nothing scores; AAmbiguous is set when two or more
+      candidates tie exactly. }
+    function  PickBestCandidate(ACandidates, AArgs: TObjectList;
+                out AAmbiguous: Boolean): TMethodDecl;
+    { Operator-overload resolution.  Gathers `class operator` candidates of
+      the given kind from BOTH operand types' inheritance chains (de-duped by
+      node identity), then scores them with PickBestCandidate.  Returns nil
+      when the operand types declare no such operator. }
+    function  ResolveOperatorOverload(AKind: TOperatorKind;
+      ALType, ARType: TTypeDesc; AArgs: TObjectList;
+      ALine, ACol: Integer): TMethodDecl;
+    { Append every `class operator` of AKind declared on ATypeName or an
+      ancestor to ACandidates, skipping nodes already present. }
+    procedure GatherOperatorCandidates(const ATypeName: string;
+      AKind: TOperatorKind; ACandidates: TObjectList);
+    { Operator fallback for AnalyseBinaryExpr.  Runs only after every built-in
+      rule has declined and at least one operand is a record or class.  On a
+      match the binary expression is LOWERED: a TMethodCallExpr calling the
+      resolved static operator is synthesised, takes ownership of Left/Right
+      (moved into its Args) and is stored in ABin.LoweredCall.  Codegen then
+      emits an ordinary method call, so record sret returns, managed-field ARC
+      and the calling convention are inherited rather than reimplemented per
+      backend.  Returns the result type, or nil when no operator applies (the
+      caller then raises its normal built-in error). }
+    function  TryLowerOperator(ABin: TBinaryExpr;
+      ALType, ARType: TTypeDesc): TTypeDesc;
+    { AnalyseExpr for a slot the CALLER owns.  When analysis lowered an
+      overloaded operator, the TBinaryExpr wrapper is dropped and the slot is
+      rebound to the synthesised call, so every downstream consumer — codegen
+      included — sees a plain TMethodCallExpr.  This matters because the
+      record/sret/ARC machinery keys on NODE CLASS (`Asgn.Expr is
+      TMethodCallExpr`, EmitRecordCallSretAt's dispatch, ...), not on a flag:
+      a TBinaryExpr in those slots would match none of it.  Use this wherever
+      an expression slot can hold a record- or class-valued expression. }
+    function  AnalyseExprSlot(var ASlot: TASTExpr): TTypeDesc;
+    { Rebind ASlot if it is a lowered TBinaryExpr; no-op otherwise. }
+    procedure UnwrapLoweredOperator(var ASlot: TASTExpr);
+    { AnalyseExprSlot for an element of an owned expression list (argument
+      lists, array literals): the list slot cannot be passed as `var`. }
+    function  AnalyseListSlot(AList: TObjectList; AIdx: Integer): TTypeDesc;
     { Type-code suffix for a single parameter.  Phase B mangling. }
     function  MangleTypeCode(AType: TTypeDesc; AVarParam: Boolean): string;
     { Full mangled signature for a TMethodDecl: '$<code1><code2>…'.
@@ -449,6 +495,9 @@ type
       analysed after the winning candidate's parameter types are known. }
     function  IsPendingArrow(AExpr: TASTExpr): Boolean;
     procedure AnalyseArgOrDeferArrow(AExpr: TASTExpr);
+    { AnalyseArgOrDeferArrow for an owned argument-list slot: rebinds the slot
+      when the argument was a lowered overloaded operator. }
+    procedure AnalyseArgSlot(AList: TObjectList; AIdx: Integer);
     procedure ResolveDeferredArrowArgs(AArgs: TObjectList; AMDecl: TMethodDecl);
     function  AnalyseAnonMethodExpr(AExpr: TAnonMethodExpr): TTypeDesc;
     procedure AnalyseVarDeclStmt(AStmt: TVarDeclStmt);
@@ -7379,18 +7428,11 @@ var
   Cand:        TMethodDecl;
   Grp:         TObjectList;
   ArityMatch:  TObjectList;
-  J, K, Score: Integer;
-  ArgScore:    Integer;
-  Par:         TMethodParam;
-  Arg:         TASTExpr;
-  BestScore:   Integer;
-  BestCount:   Integer;
+  K:           Integer;
   Best:        TMethodDecl;
+  Ambiguous:   Boolean;
   TotalCnt:    Integer;
   Arity:       Integer;
-  ExactNew:    Integer;
-  ExactBest:   Integer;
-  S1, S2:      Integer;
   SawHiding:   Boolean;
 begin
   Result    := nil;
@@ -7464,68 +7506,14 @@ begin
       Exit;  { ambiguous-by-arity-only — caller must score with args }
     end;
 
-    BestScore := -1;
-    BestCount := 0;
-    Best      := nil;
-    for K := 0 to ArityMatch.Count - 1 do
-    begin
-      Cand  := TMethodDecl(ArityMatch.Items[K]);
-      Score := 0;
-      for J := 0 to Arity - 1 do
-      begin
-        Par      := TMethodParam(Cand.Params.Items[J]);
-        Arg      := TASTExpr(AArgs.Items[J]);
-        ArgScore := ArgMatchScore(Par.ResolvedType, Arg.ResolvedType, Arg);
-        if ArgScore = 0 then
-        begin
-          Score := -1;
-          Break;
-        end;
-        Score := Score + ArgScore;
-      end;
-      if Score < 0 then Continue;
-      { Primary tie-break: prefer fewer defaulted slots. }
-      Score := (Score * 16) - (Cand.Params.Count - Arity);
-      if Score > BestScore then
-      begin
-        BestScore := Score;
-        BestCount := 1;
-        Best      := Cand;
-      end
-      else if Score = BestScore then
-      begin
-        { Secondary tie-break: count exact matches (score=2) per argument.
-          More exact matches = better candidate. }
-        ExactNew  := 0;
-        ExactBest := 0;
-        for J := 0 to Arity - 1 do
-        begin
-          S1 := ArgMatchScore(TMethodParam(Cand.Params.Items[J]).ResolvedType,
-                              TASTExpr(AArgs.Items[J]).ResolvedType,
-                              TASTExpr(AArgs.Items[J]));
-          S2 := ArgMatchScore(TMethodParam(Best.Params.Items[J]).ResolvedType,
-                              TASTExpr(AArgs.Items[J]).ResolvedType,
-                              TASTExpr(AArgs.Items[J]));
-          if S1 = 2 then Inc(ExactNew);
-          if S2 = 2 then Inc(ExactBest);
-        end;
-        if ExactNew > ExactBest then
-        begin
-          Best      := Cand;
-          BestCount := 1;
-        end
-        else if ExactNew = ExactBest then
-          Inc(BestCount);
-        { ExactNew < ExactBest: keep current Best, don't increment BestCount }
-      end;
-    end;
+    Best := Self.PickBestCandidate(ArityMatch, AArgs, Ambiguous);
 
-    if BestScore < 0 then
+    if Best = nil then
       SemanticError(
         Format('No matching overload for ''%s.%s'' with %d argument(s)',
           [ATypeName, AMethodName, Arity]),
         ALine, ACol);
-    if BestCount > 1 then
+    if Ambiguous then
       SemanticError(
         Format('Ambiguous overload of ''%s.%s'' — multiple candidates match equally',
           [ATypeName, AMethodName]),
@@ -7534,6 +7522,254 @@ begin
   finally
     ArityMatch.Free();
   end;
+end;
+
+{ Scoring + tie-breaking, shared by ordinary method-overload resolution and
+  operator-overload resolution (see the declaration comment).  ACandidates
+  must already be filtered to the right arity. }
+function TSemanticAnalyser.PickBestCandidate(ACandidates, AArgs: TObjectList;
+  out AAmbiguous: Boolean): TMethodDecl;
+var
+  J, K:      Integer;
+  Arity:     Integer;
+  Cand:      TMethodDecl;
+  Par:       TMethodParam;
+  Arg:       TASTExpr;
+  Score:     Integer;
+  ArgScore:  Integer;
+  BestScore: Integer;
+  BestCount: Integer;
+  Best:      TMethodDecl;
+  ExactNew:  Integer;
+  ExactBest: Integer;
+  S1, S2:    Integer;
+begin
+  AAmbiguous := False;
+  Result     := nil;
+  Arity      := AArgs.Count;
+  BestScore  := -1;
+  BestCount  := 0;
+  Best       := nil;
+  for K := 0 to ACandidates.Count - 1 do
+  begin
+    Cand  := TMethodDecl(ACandidates.Items[K]);
+    Score := 0;
+    for J := 0 to Arity - 1 do
+    begin
+      Par      := TMethodParam(Cand.Params.Items[J]);
+      Arg      := TASTExpr(AArgs.Items[J]);
+      ArgScore := ArgMatchScore(Par.ResolvedType, Arg.ResolvedType, Arg);
+      if ArgScore = 0 then
+      begin
+        Score := -1;
+        Break;
+      end;
+      Score := Score + ArgScore;
+    end;
+    if Score < 0 then Continue;
+    { Primary tie-break: prefer fewer defaulted slots. }
+    Score := (Score * 16) - (Cand.Params.Count - Arity);
+    if Score > BestScore then
+    begin
+      BestScore := Score;
+      BestCount := 1;
+      Best      := Cand;
+    end
+    else if Score = BestScore then
+    begin
+      { Secondary tie-break: count exact matches (score=2) per argument.
+        More exact matches = better candidate. }
+      ExactNew  := 0;
+      ExactBest := 0;
+      for J := 0 to Arity - 1 do
+      begin
+        S1 := ArgMatchScore(TMethodParam(Cand.Params.Items[J]).ResolvedType,
+                            TASTExpr(AArgs.Items[J]).ResolvedType,
+                            TASTExpr(AArgs.Items[J]));
+        S2 := ArgMatchScore(TMethodParam(Best.Params.Items[J]).ResolvedType,
+                            TASTExpr(AArgs.Items[J]).ResolvedType,
+                            TASTExpr(AArgs.Items[J]));
+        if S1 = 2 then Inc(ExactNew);
+        if S2 = 2 then Inc(ExactBest);
+      end;
+      if ExactNew > ExactBest then
+      begin
+        Best      := Cand;
+        BestCount := 1;
+      end
+      else if ExactNew = ExactBest then
+        Inc(BestCount);
+      { ExactNew < ExactBest: keep current Best, don't increment BestCount }
+    end;
+  end;
+  if BestScore < 0 then Exit;
+  AAmbiguous := BestCount > 1;
+  Result     := Best;
+end;
+
+procedure TSemanticAnalyser.GatherOperatorCandidates(const ATypeName: string;
+  AKind: TOperatorKind; ACandidates: TObjectList);
+var
+  CurrName: string;
+  Key:      string;
+  Grp:      TObjectList;
+  Sym:      TSymbol;
+  RT:       TRecordTypeDesc;
+  Cand:     TMethodDecl;
+  I, K:     Integer;
+  Dup:      Boolean;
+begin
+  CurrName := ATypeName;
+  while CurrName <> '' do
+  begin
+    Key := CurrName + '.' + OperatorKindName(AKind);
+    Grp := GroupOf(FMethodGroups, Key);
+    if Grp <> nil then
+      for K := 0 to Grp.Count - 1 do
+      begin
+        Cand := TMethodDecl(Grp.Items[K]);
+        if not (Cand.IsOperator and (Cand.OperatorKind = AKind)) then Continue;
+        if Cand.Params.Count <> OperatorKindArity(AKind) then Continue;
+        { De-dup by node identity: a same-type binary operator is reachable
+          from both operand types. }
+        Dup := False;
+        for I := 0 to ACandidates.Count - 1 do
+          if TObject(ACandidates.Items[I]) = TObject(Cand) then
+          begin
+            Dup := True;
+            Break;
+          end;
+        if not Dup then ACandidates.Add(Cand);
+      end;
+    { Walk the inheritance chain — an operator declared on a base record or
+      class applies to its descendants. }
+    Sym := FTable.Lookup(CurrName);
+    if (Sym <> nil) and (Sym.TypeDesc is TRecordTypeDesc) then
+    begin
+      RT := TRecordTypeDesc(Sym.TypeDesc);
+      if RT.Parent <> nil then
+        CurrName := RT.Parent.Name
+      else
+        Break;
+    end
+    else
+      Break;
+  end;
+end;
+
+function TSemanticAnalyser.ResolveOperatorOverload(AKind: TOperatorKind;
+  ALType, ARType: TTypeDesc; AArgs: TObjectList;
+  ALine, ACol: Integer): TMethodDecl;
+var
+  Cands:     TObjectList;
+  Ambiguous: Boolean;
+  LName:     string;
+  RName:     string;
+begin
+  Result := nil;
+  if AKind = okNone then Exit;
+  if ALType <> nil then LName := ALType.Name else LName := '<nil>';
+  if ARType <> nil then RName := ARType.Name else RName := '<nil>';
+  Cands := TObjectList.Create(False);
+  try
+    if (ALType <> nil) and (ALType.Kind in [tyRecord, tyClass]) then
+      Self.GatherOperatorCandidates(ALType.Name, AKind, Cands);
+    if (ARType <> nil) and (ARType.Kind in [tyRecord, tyClass]) and
+       ((ALType = nil) or not SameText(ALType.Name, ARType.Name)) then
+      Self.GatherOperatorCandidates(ARType.Name, AKind, Cands);
+    if Cands.Count = 0 then Exit;
+    Result := Self.PickBestCandidate(Cands, AArgs, Ambiguous);
+    if Ambiguous then
+      SemanticError(
+        Format('Ambiguous operator ''%s'' for ''%s'' and ''%s'' — multiple candidates match equally',
+          [OperatorKindName(AKind), LName, RName]),
+        ALine, ACol);
+  finally
+    Cands.Free();
+  end;
+end;
+
+procedure TSemanticAnalyser.UnwrapLoweredOperator(var ASlot: TASTExpr);
+var
+  Bin:  TBinaryExpr;
+  Call: TASTExpr;
+begin
+  if not (ASlot is TBinaryExpr) then Exit;
+  Bin := TBinaryExpr(ASlot);
+  if Bin.LoweredCall = nil then Exit;
+  Call := Bin.LoweredCall;
+  Bin.LoweredCall := nil;   { ownership moves to the slot }
+  ASlot := Call;
+  Bin.Free();
+end;
+
+function TSemanticAnalyser.AnalyseExprSlot(var ASlot: TASTExpr): TTypeDesc;
+begin
+  Result := AnalyseExpr(ASlot);
+  Self.UnwrapLoweredOperator(ASlot);
+end;
+
+function TSemanticAnalyser.AnalyseListSlot(AList: TObjectList;
+  AIdx: Integer): TTypeDesc;
+var
+  Slot: TASTExpr;
+begin
+  Slot   := TASTExpr(AList.Items[AIdx]);
+  Result := AnalyseExpr(Slot);
+  Self.UnwrapLoweredOperator(Slot);
+  AList.Items[AIdx] := Slot;
+end;
+
+function TSemanticAnalyser.TryLowerOperator(ABin: TBinaryExpr;
+  ALType, ARType: TTypeDesc): TTypeDesc;
+var
+  Kind:  TOperatorKind;
+  Args:  TObjectList;
+  MDecl: TMethodDecl;
+  Call:  TMethodCallExpr;
+begin
+  Result := nil;
+  if ABin.LoweredCall <> nil then
+  begin
+    { Already lowered (a re-analysed generic body may revisit the node). }
+    Exit(ABin.LoweredCall.ResolvedType);
+  end;
+  Kind := BinaryOpToOperatorKind(ABin.Op);
+  if Kind = okNone then Exit;
+  { Only record / class operands can carry operators. }
+  if not (((ALType <> nil) and (ALType.Kind in [tyRecord, tyClass])) or
+          ((ARType <> nil) and (ARType.Kind in [tyRecord, tyClass]))) then Exit;
+
+  { Score against the already-analysed operand expressions. }
+  Args := TObjectList.Create(False);
+  try
+    Args.Add(ABin.Left);
+    Args.Add(ABin.Right);
+    MDecl := Self.ResolveOperatorOverload(Kind, ALType, ARType, Args,
+      ABin.Line, ABin.Col);
+  finally
+    Args.Free();
+  end;
+  if MDecl = nil then Exit;
+
+  { Lower to `OwnerType.OperatorName(Left, Right)`.  Analysing the synthesised
+    node re-runs the ordinary static-method-call path, which fills
+    ResolvedMethod / IsStaticCall / ResolvedType and performs the usual
+    argument checks — no call-shape logic is duplicated here. }
+  Call            := TMethodCallExpr.Create();
+  Call.Line       := ABin.Line;
+  Call.Col        := ABin.Col;
+  Call.ObjectName := MDecl.OwnerTypeName;
+  Call.Name       := MDecl.Name;
+  Call.Args.Add(ABin.Left);
+  Call.Args.Add(ABin.Right);
+  { Ownership of both operands moves into the call's arg list. }
+  ABin.Left  := nil;
+  ABin.Right := nil;
+  ABin.LoweredCall     := Call;
+  ABin.ResolvedOperator := MDecl;
+  Result := AnalyseExpr(Call);
+  ABin.ResolvedType := Result;
 end;
 
 procedure TSemanticAnalyser.AnalyseStandaloneDecls(ABlock: TBlock);
@@ -8679,13 +8915,13 @@ begin
     if TryResolveBareEnumIdent(ForS.StartExpr, VarSym.TypeDesc) then
       StartType := ForS.StartExpr.ResolvedType
     else
-      StartType := AnalyseExpr(ForS.StartExpr);
+      StartType := Self.AnalyseExprSlot(ForS.StartExpr);
     CheckTypesMatch(VarSym.TypeDesc, StartType,
       'for-loop start expression', ForS.Line, ForS.Col);
     if TryResolveBareEnumIdent(ForS.EndExpr, VarSym.TypeDesc) then
       EndType := ForS.EndExpr.ResolvedType
     else
-      EndType := AnalyseExpr(ForS.EndExpr);
+      EndType := Self.AnalyseExprSlot(ForS.EndExpr);
     CheckTypesMatch(VarSym.TypeDesc, EndType,
       'for-loop end expression', ForS.Line, ForS.Col);
     Inc(FLoopDepth);
@@ -8700,7 +8936,7 @@ begin
     ForInS := TForInStmt(AStmt);
 
     { 1. Analyse the collection expression }
-    CollType := AnalyseExpr(ForInS.CollExpr);
+    CollType := Self.AnalyseExprSlot(ForInS.CollExpr);
     if CollType = nil then
       SemanticError('for-in collection has unknown type',
         ForInS.Line, ForInS.Col);
@@ -9005,7 +9241,7 @@ begin
   else if AStmt is TWhileStmt then
   begin
     WS := TWhileStmt(AStmt);
-    CondType := AnalyseExpr(WS.Condition);
+    CondType := Self.AnalyseExprSlot(WS.Condition);
     if CondType.Kind <> tyBoolean then
       SemanticError(
         Format('while condition must be Boolean, got ''%s''', [CondType.Name]),
@@ -9026,7 +9262,7 @@ begin
     finally
       Dec(FLoopDepth);
     end;
-    CondType := AnalyseExpr(RS.Condition);
+    CondType := Self.AnalyseExprSlot(RS.Condition);
     if CondType.Kind <> tyBoolean then
       SemanticError(
         Format('repeat condition must be Boolean, got ''%s''', [CondType.Name]),
@@ -9070,7 +9306,7 @@ begin
   else if AStmt is TIfStmt then
   begin
     IfS      := TIfStmt(AStmt);
-    CondType := AnalyseExpr(IfS.Condition);
+    CondType := Self.AnalyseExprSlot(IfS.Condition);
     if CondType.Kind <> tyBoolean then
       SemanticError(
         Format('if condition must be Boolean, got ''%s''', [CondType.Name]),
@@ -9172,7 +9408,7 @@ begin
     RaiseS := TRaiseStmt(AStmt);
     if RaiseS.Expr <> nil then
     begin
-      CondType := AnalyseExpr(RaiseS.Expr);
+      CondType := Self.AnalyseExprSlot(RaiseS.Expr);
       if CondType.Kind <> tyClass then
         SemanticError(
           Format('raise expression must be a class instance, got ''%s''',
@@ -9223,7 +9459,7 @@ begin
   { Call on a receiver expression: AProg.UsedUnits.Add(UName) }
   if ACall.ObjExpr <> nil then
   begin
-    ObjType := AnalyseExpr(ACall.ObjExpr);
+    ObjType := Self.AnalyseExprSlot(ACall.ObjExpr);
     if not (ObjType.Kind in [tyClass, tyInterface]) then
       SemanticError(
         Format('Receiver of ''.%s'' must be a class or interface', [ACall.Name]),
@@ -9240,7 +9476,7 @@ begin
             [ObjType.Name, ACall.Name]),
           ACall.Line, ACall.Col);
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        Self.AnalyseListSlot(ACall.Args, I);
       ValidateIntfMethodVarArgs(ACall.Args, TInterfaceTypeDesc(ObjType),
         ACall.Name, ACall.Line, ACall.Col);
       ACall.ResolvedClassType := ObjType;
@@ -9259,7 +9495,7 @@ begin
     end;
     HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseArgSlot(ACall.Args, I);
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
     ResolveDeferredArrowArgs(ACall.Args, MDecl);
@@ -9301,7 +9537,7 @@ begin
   begin
     RT := TRecordTypeDesc(ObjSym.TypeDesc);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseArgSlot(ACall.Args, I);
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
     ResolveDeferredArrowArgs(ACall.Args, MDecl);
@@ -9347,7 +9583,7 @@ begin
               [ACall.ImplicitBaseInfo.TypeDesc.Name, ACall.Name]),
             ACall.Line, ACall.Col);
         for I := 0 to ACall.Args.Count - 1 do
-          AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+          Self.AnalyseListSlot(ACall.Args, I);
         ValidateIntfMethodVarArgs(ACall.Args,
           TInterfaceTypeDesc(ACall.ImplicitBaseInfo.TypeDesc),
           ACall.Name, ACall.Line, ACall.Col);
@@ -9367,7 +9603,7 @@ begin
       end;
       HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+        Self.AnalyseArgSlot(ACall.Args, I);
       MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
         ACall.Line, ACall.Col);
       ResolveDeferredArrowArgs(ACall.Args, MDecl);
@@ -9403,7 +9639,7 @@ begin
     RT := TRecordTypeDesc(TMetaClassTypeDesc(ObjSym.TypeDesc).BaseClass);
     HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseArgSlot(ACall.Args, I);
     MDecl := ResolveMethodOverload(RT.Name, ACall.Name, ACall.Args,
       ACall.Line, ACall.Col);
     ResolveDeferredArrowArgs(ACall.Args, MDecl);
@@ -9440,7 +9676,7 @@ begin
       EmitAddrOfExpr crashes on a nil ResolvedType when emitting the
       argument. }
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseListSlot(ACall.Args, I);
     ValidateIntfMethodVarArgs(ACall.Args, TInterfaceTypeDesc(ObjSym.TypeDesc),
       ACall.Name, ACall.Line, ACall.Col);
     ACall.ResolvedClassType := ObjSym.TypeDesc;
@@ -9466,7 +9702,7 @@ begin
 
   HintBareEnumMethodArgs(RT.Name, ACall.Name, ACall.Args);
   for I := 0 to ACall.Args.Count - 1 do
-    AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+    Self.AnalyseArgSlot(ACall.Args, I);
 
   { Direct invocation of a procedural-typed field (e.g. an event-handler
     field): F.Handler; or F.Handler();.  Resolve this before reporting a
@@ -9578,7 +9814,7 @@ begin
       if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
         ExprType := AAssign.Expr.ResolvedType
       else
-        ExprType := AnalyseExpr(AAssign.Expr);
+        ExprType := Self.AnalyseExprSlot(AAssign.Expr);
       CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'assignment', AAssign.Line, AAssign.Col);
       Exit;
     end;
@@ -9658,7 +9894,7 @@ begin
   if TryResolveBareEnumIdent(AAssign.Expr, VarSym.TypeDesc) then
     ExprType := AAssign.Expr.ResolvedType
   else
-    ExprType := AnalyseExpr(AAssign.Expr);
+    ExprType := Self.AnalyseExprSlot(AAssign.Expr);
   { Method-pointer → 'reference to' coercion (Phase 3): an 'of object'
     value of matching callable signature becomes a closure whose Env is
     the strong-retained receiver (uniform closure ABI: code(env, args) is
@@ -9736,7 +9972,7 @@ begin
 
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    ArgType := Self.AnalyseListSlot(ACall.Args, I);
     Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of inherited ''%s''', [I + 1, ACall.Name]),
@@ -9885,7 +10121,7 @@ begin
 
   for I := 0 to ACall.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+    ArgType := Self.AnalyseListSlot(ACall.Args, I);
     Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of inherited ''%s''', [I + 1, ACall.Name]),
@@ -9954,10 +10190,10 @@ begin
       AAssign.Line, AAssign.Col);
     Exit;
   end;
-  IdxType := AnalyseExpr(AAssign.PropIndexExpr);
+  IdxType := Self.AnalyseExprSlot(AAssign.PropIndexExpr);
   if not IdxType.IsArrayIndex() then
     SemanticError('Array index must be an ordinal type', AAssign.Line, AAssign.Col);
-  ExprType := AnalyseExpr(AAssign.Expr);
+  ExprType := Self.AnalyseExprSlot(AAssign.Expr);
   CheckTypesMatch(ElemT, ExprType,
     Format('''%s'' element', [AAssign.FieldName]), AAssign.Line, AAssign.Col);
   AAssign.IsElemWrite := True;
@@ -10008,11 +10244,11 @@ begin
   AAssign.PropWriteInfo     := DefProp;
   AAssign.PropOwnerType     := PropAccessorOwner(DefRT.Name, DefProp.WriteMethod);
   AAssign.PropAccessorVSlot := PropAccessorVSlot(DefRT.Name, DefProp.WriteMethod);
-  IdxType := AnalyseExpr(AAssign.PropIndexExpr);
+  IdxType := Self.AnalyseExprSlot(AAssign.PropIndexExpr);
   if DefProp.IndexTypeDesc <> nil then
     CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
       AAssign.Line, AAssign.Col);
-  ValType := AnalyseExpr(AAssign.Expr);
+  ValType := Self.AnalyseExprSlot(AAssign.Expr);
   CheckTypesMatch(DefProp.TypeDesc, ValType, 'default property assignment',
     AAssign.Line, AAssign.Col);
   Result := True;
@@ -10035,7 +10271,7 @@ begin
   { ObjExpr path: receiver is an arbitrary expression (e.g. typecast result) }
   if AAssign.ObjExpr <> nil then
   begin
-    ObjType := AnalyseExpr(AAssign.ObjExpr);
+    ObjType := Self.AnalyseExprSlot(AAssign.ObjExpr);
     if not (ObjType.Kind in [tyRecord, tyClass]) then
       SemanticError(
         Format('Field assignment: expression is not a record or class (got %s)',
@@ -10104,7 +10340,7 @@ begin
     { Phase 9a: a '->' lambda RHS takes its types from the field's
       'reference to' type. }
     InferArrowFromTarget(AAssign.Expr, FldInfo.TypeDesc);
-    ExprType := AnalyseExpr(AAssign.Expr);
+    ExprType := Self.AnalyseExprSlot(AAssign.Expr);
     CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
       AAssign.Line, AAssign.Col);
     Exit;
@@ -10156,14 +10392,14 @@ begin
                   Format('Indexed property ''%s'' requires an index expression',
                     [AAssign.FieldName]),
                   AAssign.Line, AAssign.Col);
-              AnalyseExpr(AAssign.PropIndexExpr);
+              Self.AnalyseExprSlot(AAssign.PropIndexExpr);
             end;
             AAssign.PropWriteInfo := PropInfo;
             AAssign.PropOwnerType :=
               PropAccessorOwner(RT.Name, PropInfo.WriteMethod);
             AAssign.PropAccessorVSlot :=
               PropAccessorVSlot(RT.Name, PropInfo.WriteMethod);
-            ExprType := AnalyseExpr(AAssign.Expr);
+            ExprType := Self.AnalyseExprSlot(AAssign.Expr);
             CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
               AAssign.Line, AAssign.Col);
             Exit;
@@ -10177,7 +10413,7 @@ begin
         AAssign.FieldInfo := FldInfo;
         if TryAnalyseFieldElemWrite(AAssign, FldInfo) then
           Exit;
-        ExprType := AnalyseExpr(AAssign.Expr);
+        ExprType := Self.AnalyseExprSlot(AAssign.Expr);
         CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
           AAssign.Line, AAssign.Col);
         Exit;
@@ -10213,7 +10449,7 @@ begin
         Exit;
       end;
       ResolveDiamond(AAssign.Expr, VarSym.TypeDesc);
-      ExprType := AnalyseExpr(AAssign.Expr);
+      ExprType := Self.AnalyseExprSlot(AAssign.Expr);
       CheckTypesMatch(VarSym.TypeDesc, ExprType, 'static var assignment',
         AAssign.Line, AAssign.Col);
       Exit;
@@ -10248,7 +10484,7 @@ begin
     if TryResolveBareEnumIdent(AAssign.Expr, PropInfo.TypeDesc) then
       ExprType := AAssign.Expr.ResolvedType
     else
-      ExprType := AnalyseExpr(AAssign.Expr);
+      ExprType := Self.AnalyseExprSlot(AAssign.Expr);
     CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
       AAssign.Line, AAssign.Col);
     Exit;
@@ -10294,14 +10530,14 @@ begin
               Format('Indexed property ''%s'' requires an index expression',
                 [AAssign.FieldName]),
               AAssign.Line, AAssign.Col);
-          AnalyseExpr(AAssign.PropIndexExpr);
+          Self.AnalyseExprSlot(AAssign.PropIndexExpr);
         end;
         AAssign.PropWriteInfo := PropInfo;
         AAssign.PropOwnerType :=
           PropAccessorOwner(RT.Name, PropInfo.WriteMethod);
         AAssign.PropAccessorVSlot :=
           PropAccessorVSlot(RT.Name, PropInfo.WriteMethod);
-        ExprType := AnalyseExpr(AAssign.Expr);
+        ExprType := Self.AnalyseExprSlot(AAssign.Expr);
         CheckTypesMatch(PropInfo.TypeDesc, ExprType, 'property assignment',
           AAssign.Line, AAssign.Col);
         Exit;
@@ -10338,7 +10574,7 @@ begin
   if TryResolveBareEnumIdent(AAssign.Expr, FldInfo.TypeDesc) then
     ExprType := AAssign.Expr.ResolvedType
   else
-    ExprType := AnalyseExpr(AAssign.Expr);
+    ExprType := Self.AnalyseExprSlot(AAssign.Expr);
   CheckTypesMatch(FldInfo.TypeDesc, ExprType, 'field assignment',
     AAssign.Line, AAssign.Col);
 end;
@@ -10456,7 +10692,7 @@ begin
       Format('Default value for parameter ''%s'' must be a literal or named constant',
         [APar.ParamName]),
       ALine, ACol);
-  T := AnalyseExpr(APar.DefaultValue);
+  T := Self.AnalyseExprSlot(APar.DefaultValue);
   if APar.DefaultValue is TIdentExpr then
     if not TIdentExpr(APar.DefaultValue).IsConstant then
       SemanticError(
@@ -11018,7 +11254,7 @@ begin
         ('->' lambda args are deferred and scored by shape — Phase 9b). }
       HintBareEnumMethodArgs(FCurrentClass.Name, ACall.Name, ACall.Args);
       for I := 0 to ACall.Args.Count - 1 do
-        AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+        Self.AnalyseArgSlot(ACall.Args, I);
       { Use overload resolution so the correct variant is chosen when
         multiple overloads exist (e.g. AssertEquals(string,string,string)
         vs AssertEquals(string,Integer,Integer)). }
@@ -11154,7 +11390,7 @@ begin
           [ACall.Name, MDecl.Params.Count, ACall.Args.Count]),
         ACall.Line, ACall.Col);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseArgSlot(ACall.Args, I);
     ResolveDeferredArrowArgs(ACall.Args, MDecl);
     ACall.ResolvedDecl := MDecl;
     Exit;
@@ -11171,7 +11407,7 @@ begin
       bottom-up analysis pins it by last-wins. }
     HintBareEnumArgs(ACall.Name, ACall.Args);
     for I := 0 to ACall.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(ACall.Args.Items[I]));
+      Self.AnalyseArgSlot(ACall.Args, I);
 
     MDecl := ResolveStandaloneOverload(ACall.Name, ACall.Args.Count,
       ACall.Args, ACall.Line, ACall.Col);
@@ -11236,10 +11472,10 @@ begin
         SemanticError(
           Format('''%s'' requires 1 or 2 arguments', [ACall.Name]),
           ACall.Line, ACall.Col);
-      AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      Self.AnalyseListSlot(ACall.Args, 0);
       WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       if ACall.Args.Count = 2 then
-        AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
+        Self.AnalyseListSlot(ACall.Args, 1);
     end
     else
     { Include(S, elem) / Exclude(S, elem): validate arg count and types }
@@ -11249,7 +11485,7 @@ begin
         SemanticError(
           Format('''%s'' requires exactly 2 arguments', [ACall.Name]),
           ACall.Line, ACall.Col);
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      ArgType := Self.AnalyseListSlot(ACall.Args, 0);
       if ArgType.Kind <> tySet then
         SemanticError(
           Format('First argument of ''%s'' must be a set variable, got ''%s''',
@@ -11258,7 +11494,7 @@ begin
       WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
       if ACall.Args.Count >= 2 then
       begin
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
+        ArgType := Self.AnalyseListSlot(ACall.Args, 1);
         if TASTExpr(ACall.Args.Items[0]).ResolvedType.Kind = tySet then
         begin
           if TSetTypeDesc(TASTExpr(ACall.Args.Items[0]).ResolvedType).BaseType.Kind
@@ -11293,7 +11529,7 @@ begin
       if ACall.Args.Count <> 3 then
         SemanticError('Delete requires exactly 3 arguments',
           ACall.Line, ACall.Col);
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      ArgType := Self.AnalyseListSlot(ACall.Args, 0);
       if (ArgType = nil) or (ArgType.Kind <> tyString) then
         SemanticError('First argument of ''Delete'' must be a string variable',
           ACall.Line, ACall.Col);
@@ -11302,8 +11538,8 @@ begin
         SemanticError('First argument of ''Delete'' must be an assignable string',
           ACall.Line, ACall.Col);
       WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
-      AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
-      AnalyseExpr(TASTExpr(ACall.Args.Items[2]));
+      Self.AnalyseListSlot(ACall.Args, 1);
+      Self.AnalyseListSlot(ACall.Args, 2);
     end
     else
     if SameText(ACall.Name, 'SetLength') then
@@ -11313,7 +11549,7 @@ begin
       if ACall.Args.Count <> 2 then
         SemanticError('SetLength requires exactly 2 arguments',
           ACall.Line, ACall.Col);
-      ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      ArgType := Self.AnalyseListSlot(ACall.Args, 0);
       if (ArgType = nil) or not (ArgType.Kind in [tyString, tyDynArray]) then
         SemanticError('First argument of ''SetLength'' must be a string or dynamic array variable',
           ACall.Line, ACall.Col);
@@ -11324,14 +11560,14 @@ begin
         SemanticError('First argument of ''SetLength'' must be an assignable variable',
           ACall.Line, ACall.Col);
       WarnIfVarArgIsForInLoopVar(TASTExpr(ACall.Args.Items[0]));
-      AnalyseExpr(TASTExpr(ACall.Args.Items[1]));
+      Self.AnalyseListSlot(ACall.Args, 1);
     end
     else
     if SameText(ACall.Name, 'Sleep') then
     begin
       if ACall.Args.Count <> 1 then
         SemanticError('Sleep requires exactly 1 argument', ACall.Line, ACall.Col);
-      AnalyseExpr(TASTExpr(ACall.Args.Items[0]));
+      Self.AnalyseListSlot(ACall.Args, 0);
     end
     else
     begin
@@ -11339,7 +11575,7 @@ begin
         Write/WriteLn specifically reject types that have no text representation. }
       for I := 0 to ACall.Args.Count - 1 do
       begin
-        ArgType := AnalyseExpr(TASTExpr(ACall.Args.Items[I]));
+        ArgType := Self.AnalyseListSlot(ACall.Args, I);
         if SameText(ACall.Name, 'WriteLn') or SameText(ACall.Name, 'Write') then
         begin
           if (ArgType = nil) or (ArgType.Kind = tyVoid) then
@@ -11382,8 +11618,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('HasClassAttribute requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     if (TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil) or
        not (TASTExpr(AExpr.Args.Items[0]).ResolvedType.Kind in [tyClass, tyMetaClass]) then
       SemanticError('HasClassAttribute: first argument must be a class type reference',
@@ -11428,7 +11664,7 @@ begin
       SemanticError(Format('%s requires exactly %d arguments',
         [AExpr.Name, Idx]), AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     { Arg 0 is always the queried class. }
     if (TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil) or
        not (TASTExpr(AExpr.Args.Items[0]).ResolvedType.Kind in [tyClass, tyMetaClass]) then
@@ -11504,7 +11740,7 @@ begin
     if (Sym <> nil) and (Sym.Kind = skType) then
       TIdentExpr(AExpr.Args.Items[0]).ResolvedType := Sym.TypeDesc
     else
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+      Self.AnalyseListSlot(AExpr.Args, 0);
     if TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil then
       SemanticError('SizeOf argument must be a type or typed expression',
         AExpr.Line, AExpr.Col);
@@ -11517,7 +11753,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('PChar requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if not (ArgType.Kind in [tyString, tyPChar, tyPointer]) then
       SemanticError(
         Format('PChar cast requires a string, PChar, or Pointer expression, got ''%s''',
@@ -11535,7 +11771,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Pointer cast requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if not (ArgType.Kind in [tyInteger, tyInt64, tyUInt64, tyUInt32, tyByte,
                               tySmallInt, tyWord, tyPointer, tyPChar, tyString,
                               tyClass, tyMetaClass, tyProcedural, tyNil]) then
@@ -11555,7 +11791,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('PtrUInt cast requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if not (ArgType.Kind in [tyInteger, tyInt64, tyUInt64, tyUInt32, tyByte,
                               tySmallInt, tyWord, tyPointer, tyPChar, tyString,
                               tyClass, tyNil]) then
@@ -11572,7 +11808,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('string() requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if ArgType.Kind <> tyPChar then
       SemanticError(
         Format('string() cast requires a PChar expression, got ''%s''',
@@ -11600,7 +11836,7 @@ begin
       TIdentExpr(AExpr.Args.Items[0]).ResolvedType := ArgType;
     end
     else
-      ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+      ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if ArgType = nil then
       SemanticError(AExpr.Name + ' argument has no resolved type',
         AExpr.Line, AExpr.Col);
@@ -11636,7 +11872,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('%s requires exactly 1 argument', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
-    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := Self.AnalyseListSlot(AExpr.Args, 0);
     if (Result = nil) or
        not ((Result.Kind = tyEnum) or Result.IsNumeric()) then
       SemanticError(
@@ -11664,7 +11900,7 @@ begin
         ('->' lambda args are deferred and scored by shape — Phase 9b). }
       HintBareEnumMethodArgs(FCurrentClass.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
-        AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
+        Self.AnalyseArgSlot(AExpr.Args, I);
       MDecl := ResolveMethodOverload(FCurrentClass.Name, AExpr.Name,
         AExpr.Args, AExpr.Line, AExpr.Col);
       if MDecl = nil then
@@ -11752,7 +11988,7 @@ begin
       SemanticError(
         Format('Type cast ''%s'' expects exactly one argument', [AExpr.Name]),
         AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     { Byte(','), Word('A'), ...: an integer cast of a string LITERAL
       means the character code (Ord semantics).  Without this fold the
       backends reinterpret the literal's pointer — silent garbage.
@@ -11824,7 +12060,7 @@ begin
         'ReallocMem requires exactly 2 arguments (pointer, new byte count)',
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     Result := FTable.TypePointer;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11836,7 +12072,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Length requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if not (ArgType.Kind in [tyString, tyOpenArray, tyStaticArray, tyDynArray]) then
       SemanticError('Length argument must be a string or array', AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
@@ -11848,8 +12084,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('Pos requires exactly two arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11859,9 +12095,9 @@ begin
   begin
     if AExpr.Args.Count <> 3 then
       SemanticError('PosEx requires exactly three arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[2]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
+    Self.AnalyseListSlot(AExpr.Args, 2);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11871,9 +12107,9 @@ begin
   begin
     if AExpr.Args.Count <> 3 then
       SemanticError('Copy requires exactly three arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[2]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
+    Self.AnalyseListSlot(AExpr.Args, 2);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11884,7 +12120,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11894,8 +12130,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('SameText requires exactly two arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11905,7 +12141,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('IntToStr requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11916,7 +12152,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Assigned requires exactly one argument',
         AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     if (ArgType = nil) or
        not (ArgType.Kind in [tyPointer, tyPChar, tyClass, tyInterface,
                              tyString, tyProcedural]) then
@@ -11933,7 +12169,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Int64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11943,7 +12179,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('UInt64ToStr requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11953,7 +12189,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11963,7 +12199,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToDouble requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeDouble;
     AExpr.ResolvedType := Result;
     Exit;
@@ -11973,7 +12209,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Abs requires exactly one argument', AExpr.Line, AExpr.Col);
-    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := Self.AnalyseListSlot(AExpr.Args, 0);
     if not Result.IsNumeric() then
       SemanticError(Format('Abs requires a numeric argument, got ''%s''', [Result.Name]),
         AExpr.Line, AExpr.Col);
@@ -11997,7 +12233,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Sqrt requires exactly one argument', AExpr.Line, AExpr.Col);
-    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FloatBuiltinArgType(AExpr.Name, Result, AExpr.Line, AExpr.Col);
     AExpr.ResolvedType := Result;
     Exit;
@@ -12008,7 +12244,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
@@ -12020,7 +12256,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
     Result := FTable.TypeDouble;
     AExpr.ResolvedType := Result;
@@ -12031,9 +12267,9 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('Power requires exactly two arguments', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 1);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
     Result := FTable.TypeDouble;
     AExpr.ResolvedType := Result;
@@ -12048,7 +12284,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := Self.AnalyseListSlot(AExpr.Args, 0);
     { Return type matches argument type — Single→Single, Double→Double,
       integer→Double. }
     Result := FloatBuiltinArgType(AExpr.Name, Result, AExpr.Line, AExpr.Col);
@@ -12060,9 +12296,9 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('ArcTan2 requires exactly two arguments', AExpr.Line, AExpr.Col);
-    Result := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Result := Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FloatBuiltinArgType(AExpr.Name, Result, AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 1);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
     AExpr.ResolvedType := Result;  { return type matches first argument type }
     Exit;
@@ -12072,7 +12308,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError(AExpr.Name + ' requires exactly one argument', AExpr.Line, AExpr.Col);
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, 0);
     FloatBuiltinArgType(AExpr.Name, ArgType, AExpr.Line, AExpr.Col);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
@@ -12083,7 +12319,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12097,8 +12333,8 @@ begin
     if AExpr.Args.Count <> 2 then
       SemanticError('MethodAddress requires exactly two arguments (Obj, Name)',
         AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     if (TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil) or
        (TASTExpr(AExpr.Args.Items[0]).ResolvedType.Kind <> tyClass) then
       SemanticError('MethodAddress: first argument must be a class instance',
@@ -12116,7 +12352,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('StrToInt64 requires exactly one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInt64;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12133,7 +12369,7 @@ begin
     if AExpr.Args.Count < 1 then
       SemanticError('ClassCreate requires a metaclass as the first argument',
         AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     if (TASTExpr(AExpr.Args.Items[0]).ResolvedType = nil) or
        (TASTExpr(AExpr.Args.Items[0]).ResolvedType.Kind <> tyMetaClass) then
       SemanticError('ClassCreate: first argument must be a metaclass (class of T) value',
@@ -12142,7 +12378,7 @@ begin
       types feed FindMethodDecl when we add overload resolution; for v0
       we look up 'Create' by name and trust uniqueness. }
     for I := 1 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     Result := TMetaClassTypeDesc(TASTExpr(AExpr.Args.Items[0]).ResolvedType).BaseClass;
     AExpr.ResolvedType := Result;
     AExpr.ResolvedDecl := FindMethodDecl(Result.Name, 'Create');
@@ -12153,7 +12389,7 @@ begin
   begin
     if AExpr.Args.Count < 1 then
       SemanticError('Format requires at least one argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     { When the second arg is an array literal (Pascal 'array of const' notation),
       analyse each element individually — types need not be homogeneous. }
     if (AExpr.Args.Count = 2) and (AExpr.Args.Items[1] is TArrayLiteralExpr) then
@@ -12164,7 +12400,7 @@ begin
     end
     else
       for I := 1 to AExpr.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        Self.AnalyseListSlot(AExpr.Args, I);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12174,8 +12410,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('OrdAt requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12185,7 +12421,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Ord requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12195,7 +12431,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Chr requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12205,7 +12441,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('UpCase requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12215,8 +12451,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError(AExpr.Name + ' requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12256,8 +12492,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('GetTempFileName requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12267,7 +12503,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ParamStr requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12278,7 +12514,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ReadFile requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12290,7 +12526,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('''%s'' requires exactly 1 argument', [AExpr.Name]),
                     AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12300,7 +12536,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('FileAge requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInt64;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12310,7 +12546,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ForceDirectories requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12323,7 +12559,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('''%s'' requires exactly 1 argument', [AExpr.Name]),
                     AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12333,7 +12569,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('Exec requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12344,8 +12580,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('ChangeFileExt requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12361,7 +12597,7 @@ begin
     if AExpr.Args.Count <> 1 then
       SemanticError(Format('''%s'' requires exactly 1 argument', [AExpr.Name]),
                     AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12371,8 +12607,8 @@ begin
   begin
     if AExpr.Args.Count <> 2 then
       SemanticError('RenameFile requires exactly 2 arguments', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[1]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
+    Self.AnalyseListSlot(AExpr.Args, 1);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12382,7 +12618,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('SetCurrentDir requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12402,7 +12638,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessRunning requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeBoolean;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12412,7 +12648,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessReadOutput requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeString;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12422,7 +12658,7 @@ begin
   begin
     if AExpr.Args.Count <> 1 then
       SemanticError('ProcessExitCode requires exactly 1 argument', AExpr.Line, AExpr.Col);
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     Result := FTable.TypeInteger;
     AExpr.ResolvedType := Result;
     Exit;
@@ -12440,7 +12676,7 @@ begin
     MDecl := TMethodDecl(Sym.Decl);
     HintBareEnumArgs(AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     if (AExpr.Args.Count < MinArity(MDecl)) or
        (AExpr.Args.Count > MDecl.Params.Count) then
       SemanticError(
@@ -12482,7 +12718,7 @@ begin
     at its position, so the right ordinal is pinned before bottom-up analysis. }
   HintBareEnumArgs(AExpr.Name, AExpr.Args);
   for I := 0 to AExpr.Args.Count - 1 do
-    AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
+    Self.AnalyseArgSlot(AExpr.Args, I);
 
   MDecl := ResolveStandaloneOverload(AExpr.Name, AExpr.Args.Count,
     AExpr.Args, AExpr.Line, AExpr.Col);
@@ -12540,13 +12776,13 @@ begin
   { Call on an arbitrary expression (e.g. TCast(x).Method(y)) }
   if AExpr.ObjExpr <> nil then
   begin
-    ObjType := AnalyseExpr(AExpr.ObjExpr);
+    ObjType := Self.AnalyseExprSlot(AExpr.ObjExpr);
 
     { Built-in InheritsFrom on a Pointer/metaclass/class ObjExpr receiver. }
     if SameText(AExpr.Name, 'InheritsFrom') and (AExpr.Args.Count = 1) and
        (ObjType.Kind in [tyPointer, tyMetaClass, tyClass]) then
     begin
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+      Self.AnalyseListSlot(AExpr.Args, 0);
       AExpr.IsBuiltinInheritsFrom := True;
       Result := FTable.TypeBoolean;
       AExpr.ResolvedType := Result;
@@ -12566,7 +12802,7 @@ begin
             [ObjType.Name, AExpr.Name]),
           AExpr.Line, AExpr.Col);
       for I := 0 to AExpr.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        Self.AnalyseListSlot(AExpr.Args, I);
       ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
         AExpr.Name, AExpr.Line, AExpr.Col);
       AExpr.ResolvedClassType := ObjType;
@@ -12582,7 +12818,7 @@ begin
       ('->' lambda args are deferred and scored by shape — Phase 9b). }
     HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseArgSlot(AExpr.Args, I);
     { Built-in TObject.ToString: virtual dispatch via vtable slot 1.
       Only applies to class receivers — record methods named ToString are
       resolved normally and dispatched statically. }
@@ -12668,7 +12904,7 @@ begin
         TIdentExpr(AExpr.ObjExpr).Line := AExpr.Line;
         TIdentExpr(AExpr.ObjExpr).Col  := AExpr.Col;
         try
-          ObjType := AnalyseExpr(AExpr.ObjExpr);
+          ObjType := Self.AnalyseExprSlot(AExpr.ObjExpr);
         except
           AExpr.ObjExpr := nil;
           SemanticError(
@@ -12693,7 +12929,7 @@ begin
               [ObjType.Name, AExpr.Name]),
             AExpr.Line, AExpr.Col);
         for I := 0 to AExpr.Args.Count - 1 do
-          AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+          Self.AnalyseListSlot(AExpr.Args, I);
         ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
           AExpr.Name, AExpr.Line, AExpr.Col);
         AExpr.ResolvedClassType := ObjType;
@@ -12708,7 +12944,7 @@ begin
       { Analyse args first so overload resolution can score by type. }
       HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
       for I := 0 to AExpr.Args.Count - 1 do
-        AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+        Self.AnalyseListSlot(AExpr.Args, I);
       FMethodOwnerHint := RT.OwningUnit;
         MDecl := ResolveMethodOverload(RT.Name, AExpr.Name, AExpr.Args,
           AExpr.Line, AExpr.Col);
@@ -12782,7 +13018,7 @@ begin
      not (SameText(AExpr.Name, 'Create') or (StrPos('Create', AExpr.Name) = 0)) then
   begin
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     MDecl := ResolveMethodOverload(ObjSym.Name, AExpr.Name, AExpr.Args,
       AExpr.Line, AExpr.Col);
     if MDecl = nil then
@@ -12823,7 +13059,7 @@ begin
         AExpr.Line, AExpr.Col);
     HintBareEnumMethodArgs(ObjSym.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     { Try to find a user-defined constructor method for type checking.
       Use overload resolution so the correct variant is chosen when multiple
       constructors with the same name (e.g. Create) are declared.  Look up
@@ -12898,7 +13134,7 @@ begin
   if SameText(AExpr.Name, 'InheritsFrom') and (AExpr.Args.Count = 1) and
      (ObjSym.TypeDesc.Kind in [tyPointer, tyMetaClass, tyClass]) then
   begin
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[0]));
+    Self.AnalyseListSlot(AExpr.Args, 0);
     AExpr.IsBuiltinInheritsFrom := True;
     AExpr.IsGlobal  := ObjSym.IsGlobal;
     AExpr.IsVarParam :=
@@ -12919,7 +13155,7 @@ begin
     RT := TRecordTypeDesc(TMetaClassTypeDesc(ObjSym.TypeDesc).BaseClass);
     HintBareEnumMethodArgs(RT.Name, AExpr.Name, AExpr.Args);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     MDecl := ResolveMethodOverload(RT.Name, AExpr.Name,
       AExpr.Args, AExpr.Line, AExpr.Col);
     if MDecl = nil then
@@ -12954,7 +13190,7 @@ begin
           [ObjSym.TypeDesc.Name, AExpr.Name]),
         AExpr.Line, AExpr.Col);
     for I := 0 to AExpr.Args.Count - 1 do
-      AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+      Self.AnalyseListSlot(AExpr.Args, I);
     ValidateIntfMethodVarArgs(AExpr.Args, IntfDesc,
       AExpr.Name, AExpr.Line, AExpr.Col);
     AExpr.ResolvedClassType := ObjSym.TypeDesc;
@@ -12980,7 +13216,7 @@ begin
     ('->' lambda args are deferred and scored by shape — Phase 9b).
     Fall back to a plain chain lookup for the no-overload / single case. }
   for I := 0 to AExpr.Args.Count - 1 do
-    AnalyseArgOrDeferArrow(TASTExpr(AExpr.Args.Items[I]));
+    Self.AnalyseArgSlot(AExpr.Args, I);
   { Generic method call obj.Pick<Integer>(...): the parser folded the explicit
     type args into AExpr.Name.  Instantiate the monomorphised method and use it
     directly (it is not part of the overload set). }
@@ -13078,7 +13314,7 @@ begin
 
   for I := 0 to AExpr.Args.Count - 1 do
   begin
-    ArgType := AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    ArgType := Self.AnalyseListSlot(AExpr.Args, I);
     Par     := TMethodParam(MDecl.Params.Items[I]);
     CheckTypesMatch(Par.ResolvedType, ArgType,
       Format('argument %d of ''%s''', [I + 1, AExpr.Name]),
@@ -13432,7 +13668,7 @@ begin
     (no Base) is used only for the simple IDENT.IDENT form. }
   if AAccess.Base <> nil then
   begin
-    BaseType := AnalyseExpr(AAccess.Base);
+    BaseType := Self.AnalyseExprSlot(AAccess.Base);
     { Metaclass base: 'TypeName.StaticVar' or 'TypeName.StaticProp' arriving as
       a chained access (Base is the bare class-name ident resolving to
       'class of TypeName') rather than the simple RecordName form.  This is how
@@ -13532,7 +13768,7 @@ begin
               Format('Indexed property ''%s'' requires an index expression',
                 [AAccess.FieldName]),
               AAccess.Line, AAccess.Col);
-          AnalyseExpr(AAccess.PropIndexExpr);
+          Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         end;
         AAccess.PropRead := PropInfo;
         AAccess.PropOwnerType :=
@@ -13590,7 +13826,7 @@ begin
       { Subscript on a string field: Rec.Field[N] — emit char access. }
       if FldInfo.TypeDesc.IsString() then
       begin
-        AnalyseExpr(AAccess.PropIndexExpr);
+        Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         AAccess.IsCharAccess := True;
         Result := FTable.TypeInteger;
         AAccess.ResolvedType := Result;
@@ -13601,7 +13837,7 @@ begin
         PropInfo := TRecordTypeDesc(FldInfo.TypeDesc).FindIndexedProperty();
         if PropInfo <> nil then
         begin
-          AnalyseExpr(AAccess.PropIndexExpr);
+          Self.AnalyseExprSlot(AAccess.PropIndexExpr);
           AAccess.PropRead      := PropInfo;
           AAccess.PropOwnerType := PropAccessorOwner(
             TRecordTypeDesc(FldInfo.TypeDesc).Name, PropInfo.ReadMethod);
@@ -13613,21 +13849,21 @@ begin
       end
       else if FldInfo.TypeDesc.Kind = tyDynArray then
       begin
-        AnalyseExpr(AAccess.PropIndexExpr);
+        Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         AAccess.IsArrayAccess := True;
         Result := TDynArrayTypeDesc(FldInfo.TypeDesc).ElementType;
         AAccess.ResolvedType := Result;
       end
       else if FldInfo.TypeDesc.Kind = tyStaticArray then
       begin
-        AnalyseExpr(AAccess.PropIndexExpr);
+        Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         AAccess.IsArrayAccess := True;
         Result := TStaticArrayTypeDesc(FldInfo.TypeDesc).ElementType;
         AAccess.ResolvedType := Result;
       end
       else if FldInfo.TypeDesc.Kind = tyOpenArray then
       begin
-        AnalyseExpr(AAccess.PropIndexExpr);
+        Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         AAccess.IsArrayAccess := True;
         Result := TOpenArrayTypeDesc(FldInfo.TypeDesc).ElementType;
         AAccess.ResolvedType := Result;
@@ -13698,7 +13934,7 @@ begin
                     Format('Indexed property ''%s'' requires an index expression',
                       [AAccess.FieldName]),
                     AAccess.Line, AAccess.Col);
-                AnalyseExpr(AAccess.PropIndexExpr);
+                Self.AnalyseExprSlot(AAccess.PropIndexExpr);
               end;
               AAccess.PropRead := PropInfo;
               AAccess.PropOwnerType :=
@@ -13726,7 +13962,7 @@ begin
         begin
           if AAccess.FieldInfo.TypeDesc.IsString() then
           begin
-            AnalyseExpr(AAccess.PropIndexExpr);
+            Self.AnalyseExprSlot(AAccess.PropIndexExpr);
             AAccess.IsCharAccess := True;
             Result := FTable.TypeInteger;
             AAccess.ResolvedType := Result;
@@ -13736,7 +13972,7 @@ begin
             PropInfo := TRecordTypeDesc(AAccess.FieldInfo.TypeDesc).FindIndexedProperty();
             if PropInfo <> nil then
             begin
-              AnalyseExpr(AAccess.PropIndexExpr);
+              Self.AnalyseExprSlot(AAccess.PropIndexExpr);
               AAccess.PropRead      := PropInfo;
               AAccess.PropOwnerType := PropAccessorOwner(
                 TRecordTypeDesc(AAccess.FieldInfo.TypeDesc).Name,
@@ -13750,21 +13986,21 @@ begin
           end
           else if AAccess.FieldInfo.TypeDesc.Kind = tyDynArray then
           begin
-            AnalyseExpr(AAccess.PropIndexExpr);
+            Self.AnalyseExprSlot(AAccess.PropIndexExpr);
             AAccess.IsArrayAccess := True;
             Result := TDynArrayTypeDesc(AAccess.FieldInfo.TypeDesc).ElementType;
             AAccess.ResolvedType := Result;
           end
           else if AAccess.FieldInfo.TypeDesc.Kind = tyStaticArray then
           begin
-            AnalyseExpr(AAccess.PropIndexExpr);
+            Self.AnalyseExprSlot(AAccess.PropIndexExpr);
             AAccess.IsArrayAccess := True;
             Result := TStaticArrayTypeDesc(AAccess.FieldInfo.TypeDesc).ElementType;
             AAccess.ResolvedType := Result;
           end
           else if AAccess.FieldInfo.TypeDesc.Kind = tyOpenArray then
           begin
-            AnalyseExpr(AAccess.PropIndexExpr);
+            Self.AnalyseExprSlot(AAccess.PropIndexExpr);
             AAccess.IsArrayAccess := True;
             Result := TOpenArrayTypeDesc(AAccess.FieldInfo.TypeDesc).ElementType;
             AAccess.ResolvedType := Result;
@@ -13823,7 +14059,7 @@ begin
           AAccess.ConstArrayType := Sym.TypeDesc;
           if AAccess.PropIndexExpr <> nil then
           begin
-            AnalyseExpr(AAccess.PropIndexExpr);
+            Self.AnalyseExprSlot(AAccess.PropIndexExpr);
             AAccess.ResolvedType := TStaticArrayTypeDesc(Sym.TypeDesc).ElementType;
             Exit(AAccess.ResolvedType);
           end;
@@ -14024,7 +14260,7 @@ begin
               Format('Indexed property ''%s'' requires an index expression',
                 [AAccess.FieldName]),
               AAccess.Line, AAccess.Col);
-          AnalyseExpr(AAccess.PropIndexExpr);
+          Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         end;
         AAccess.PropRead := PropInfo;
         AAccess.PropOwnerType :=
@@ -14050,7 +14286,7 @@ begin
         AAccess.ConstArrayType := Sym.TypeDesc;
         if AAccess.PropIndexExpr <> nil then
         begin
-          AnalyseExpr(AAccess.PropIndexExpr);
+          Self.AnalyseExprSlot(AAccess.PropIndexExpr);
           AAccess.ResolvedType := TStaticArrayTypeDesc(Sym.TypeDesc).ElementType;
           Exit(AAccess.ResolvedType);
         end;
@@ -14076,7 +14312,7 @@ begin
   begin
     if FldInfo.TypeDesc.IsString() then
     begin
-      AnalyseExpr(AAccess.PropIndexExpr);
+      Self.AnalyseExprSlot(AAccess.PropIndexExpr);
       AAccess.IsCharAccess := True;
       Result := FTable.TypeInteger;
       AAccess.ResolvedType := Result;
@@ -14086,7 +14322,7 @@ begin
       PropInfo := TRecordTypeDesc(FldInfo.TypeDesc).FindIndexedProperty();
       if PropInfo <> nil then
       begin
-        AnalyseExpr(AAccess.PropIndexExpr);
+        Self.AnalyseExprSlot(AAccess.PropIndexExpr);
         AAccess.PropRead      := PropInfo;
         AAccess.PropOwnerType := PropAccessorOwner(
           TRecordTypeDesc(FldInfo.TypeDesc).Name, PropInfo.ReadMethod);
@@ -14098,21 +14334,21 @@ begin
     end
     else if FldInfo.TypeDesc.Kind = tyDynArray then
     begin
-      AnalyseExpr(AAccess.PropIndexExpr);
+      Self.AnalyseExprSlot(AAccess.PropIndexExpr);
       AAccess.IsArrayAccess := True;
       Result := TDynArrayTypeDesc(FldInfo.TypeDesc).ElementType;
       AAccess.ResolvedType := Result;
     end
     else if FldInfo.TypeDesc.Kind = tyStaticArray then
     begin
-      AnalyseExpr(AAccess.PropIndexExpr);
+      Self.AnalyseExprSlot(AAccess.PropIndexExpr);
       AAccess.IsArrayAccess := True;
       Result := TStaticArrayTypeDesc(FldInfo.TypeDesc).ElementType;
       AAccess.ResolvedType := Result;
     end
     else if FldInfo.TypeDesc.Kind = tyOpenArray then
     begin
-      AnalyseExpr(AAccess.PropIndexExpr);
+      Self.AnalyseExprSlot(AAccess.PropIndexExpr);
       AAccess.IsArrayAccess := True;
       Result := TOpenArrayTypeDesc(FldInfo.TypeDesc).ElementType;
       AAccess.ResolvedType := Result;
@@ -14124,6 +14360,7 @@ function TSemanticAnalyser.AnalyseBinaryExpr(ABin: TBinaryExpr): TTypeDesc;
 var
   LType, RType: TTypeDesc;
   TmpSet: TSetTypeDesc;
+  OpType: TTypeDesc;
 begin
   { Set membership with a bare enum-member left operand and a real set (not a
     literal) on the right: the set's element type disambiguates the member, so
@@ -14134,15 +14371,17 @@ begin
      not TIdentExpr(ABin.Left).IsConstant and
      not (ABin.Right is TArrayLiteralExpr) then
   begin
-    RType := AnalyseExpr(ABin.Right);
+    RType := Self.AnalyseExprSlot(ABin.Right);
     if (RType <> nil) and (RType.Kind = tySet) then
       TryResolveBareEnumIdent(ABin.Left, TSetTypeDesc(RType).BaseType);
-    LType := AnalyseExpr(ABin.Left);
+    LType := Self.AnalyseExprSlot(ABin.Left);
   end
   else
   begin
-    LType := AnalyseExpr(ABin.Left);
-    RType := AnalyseExpr(ABin.Right);
+    { Slot form: a nested operator expression (A + B + C) is lowered in place,
+      so the outer node sees a plain call where its operand used to be. }
+    LType := Self.AnalyseExprSlot(ABin.Left);
+    RType := Self.AnalyseExprSlot(ABin.Right);
   end;
 
   { Set membership: elem in SetVar — left is base enum, right is set type }
@@ -14345,6 +14584,16 @@ begin
       Exit;
     end;
 
+    { Operator overloading — the FALLBACK.  Every built-in rule above Exits on
+      a match, so reaching here means no built-in applies; `string + string`,
+      `Integer + Integer`, set algebra, pointer arithmetic and the shifts are
+      structurally unreachable from this point and therefore always win.
+      Only now do we look for a user-declared `class operator`.  See
+      docs/language-rationale.adoc, "Operator Overloading". }
+    OpType := Self.TryLowerOperator(ABin, LType, RType);
+    if OpType <> nil then
+      Exit(OpType);
+
     if not LType.IsNumeric() then
       SemanticError(
         Format('Left operand of ''%s'' must be numeric, got ''%s''',
@@ -14405,7 +14654,7 @@ var
   ObjType:    TTypeDesc;
   TargetType: TTypeDesc;
 begin
-  ObjType := AnalyseExpr(AExpr.Obj);
+  ObjType := Self.AnalyseExprSlot(AExpr.Obj);
   { Allow untyped Pointer on left — GetObject/Get return Pointer, used with 'is' }
   if not ((ObjType.Kind = tyClass) or (ObjType.Kind = tyPointer) or
           (ObjType.Kind = tyInterface)) then
@@ -14431,7 +14680,7 @@ var
   ObjType:    TTypeDesc;
   TargetType: TTypeDesc;
 begin
-  ObjType := AnalyseExpr(AExpr.Obj);
+  ObjType := Self.AnalyseExprSlot(AExpr.Obj);
   if ObjType.Kind <> tyClass then
     SemanticError(
       Format('''as'' requires a class instance on the left, got ''%s''',
@@ -14455,7 +14704,7 @@ var
   IntfType:  TTypeDesc;
   OutSym:    TSymbol;
 begin
-  ObjType := AnalyseExpr(AExpr.Obj);
+  ObjType := Self.AnalyseExprSlot(AExpr.Obj);
   if not (ObjType.Kind in [tyClass, tyInterface, tyPointer]) then
     SemanticError(
       Format('Supports() requires a class or interface instance as first argument, got ''%s''',
@@ -14492,7 +14741,7 @@ function TSemanticAnalyser.AnalyseDerefExpr(AExpr: TDerefExpr): TTypeDesc;
 var
   PtrType: TTypeDesc;
 begin
-  PtrType := AnalyseExpr(AExpr.Expr);
+  PtrType := Self.AnalyseExprSlot(AExpr.Expr);
   if PtrType.Kind <> tyPointer then
     SemanticError(
       Format('Dereference operator ''%s^'' requires a pointer type',
@@ -14584,6 +14833,16 @@ function TSemanticAnalyser.IsPendingArrow(AExpr: TASTExpr): Boolean;
 begin
   Result := (AExpr is TAnonMethodExpr) and TAnonMethodExpr(AExpr).IsArrow and
             (AExpr.ResolvedType = nil);
+end;
+
+procedure TSemanticAnalyser.AnalyseArgSlot(AList: TObjectList; AIdx: Integer);
+var
+  Slot: TASTExpr;
+begin
+  Slot := TASTExpr(AList.Items[AIdx]);
+  Self.AnalyseArgOrDeferArrow(Slot);
+  Self.UnwrapLoweredOperator(Slot);
+  AList.Items[AIdx] := Slot;
 end;
 
 procedure TSemanticAnalyser.AnalyseArgOrDeferArrow(AExpr: TASTExpr);
@@ -15362,7 +15621,7 @@ begin
       end;
     end
     else
-      BaseType := AnalyseExpr(FldExpr.Base);
+      BaseType := Self.AnalyseExprSlot(FldExpr.Base);
     if (BaseType <> nil) and (BaseType.Kind = tyClass) then
     begin
       MD := FindMethodDecl(TRecordTypeDesc(BaseType).Name, FldExpr.FieldName);
@@ -15390,7 +15649,7 @@ begin
       end;
     end;
   end;
-  InnerType := AnalyseExpr(AExpr.Expr);
+  InnerType := Self.AnalyseExprSlot(AExpr.Expr);
   PtrName := '^' + InnerType.Name;
   Result := FindTypeOrInstantiate(PtrName);
   if Result = nil then
@@ -15464,14 +15723,14 @@ begin
     which re-analyses the inner OL[0]).  Once resolved, return the cached type. }
   if AExpr.ResolvedType <> nil then
     Exit(AExpr.ResolvedType);
-  StrType := AnalyseExpr(AExpr.StrExpr);
+  StrType := Self.AnalyseExprSlot(AExpr.StrExpr);
   { Indexed property read: Obj.Prop[I] where Prop is a method-backed indexed property }
   if AExpr.StrExpr is TFieldAccessExpr then
   begin
     FldAccess := TFieldAccessExpr(AExpr.StrExpr);
     if (FldAccess.PropRead <> nil) and (FldAccess.PropRead.IndexParamName <> '') then
     begin
-      IdxType := AnalyseExpr(AExpr.IndexExpr);
+      IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
       FldAccess.PropIndexExpr := AExpr.IndexExpr;
       AExpr.IndexExpr := nil;
       Result := FldAccess.PropRead.TypeDesc;
@@ -15482,7 +15741,7 @@ begin
   { Static array element access: A[I] where A is a static array local }
   if StrType.Kind = tyStaticArray then
   begin
-    IdxType := AnalyseExpr(AExpr.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
     if not IdxType.IsArrayIndex() then
       SemanticError(
         Format('Static array index must be an ordinal type, got ''%s''', [IdxType.Name]),
@@ -15494,7 +15753,7 @@ begin
   { Open-array element access: A[I] where A is an open-array parameter }
   if StrType.Kind = tyOpenArray then
   begin
-    IdxType := AnalyseExpr(AExpr.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError(
         Format('Open-array index must be numeric, got ''%s''', [IdxType.Name]),
@@ -15506,7 +15765,7 @@ begin
   { Dynamic array element access: A[I] — 0-based, returns element type }
   if StrType.Kind = tyDynArray then
   begin
-    IdxType := AnalyseExpr(AExpr.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError(
         Format('Dynamic array index must be numeric, got ''%s''', [IdxType.Name]),
@@ -15518,7 +15777,7 @@ begin
   { PChar byte access: P[I] — 0-based, reads one byte as Integer }
   if StrType.Kind = tyPChar then
   begin
-    IdxType := AnalyseExpr(AExpr.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError(
         Format('PChar subscript index must be numeric, got ''%s''', [IdxType.Name]),
@@ -15557,7 +15816,7 @@ begin
       Format('String subscript ''[]'' requires a string expression, got ''%s''',
         [StrType.Name]),
       AExpr.Line, AExpr.Col);
-  IdxType := AnalyseExpr(AExpr.IndexExpr);
+  IdxType := Self.AnalyseExprSlot(AExpr.IndexExpr);
   if not IdxType.IsNumeric() then
     SemanticError(
       Format('String subscript index must be numeric, got ''%s''', [IdxType.Name]),
@@ -15572,7 +15831,7 @@ var
   ProcDesc:   TProceduralTypeDesc;
   I:          Integer;
 begin
-  CalleeType := AnalyseExpr(AExpr.CalleeExpr);
+  CalleeType := Self.AnalyseExprSlot(AExpr.CalleeExpr);
   if (CalleeType = nil) or (CalleeType.Kind <> tyProcedural) then
   begin
     SemanticError(
@@ -15583,7 +15842,7 @@ begin
   ProcDesc := TProceduralTypeDesc(CalleeType);
   AExpr.ResolvedProcType := ProcDesc;
   for I := 0 to AExpr.Args.Count - 1 do
-    AnalyseExpr(TASTExpr(AExpr.Args.Items[I]));
+    Self.AnalyseListSlot(AExpr.Args, I);
   if ProcDesc.ReturnType <> nil then
     Result := ProcDesc.ReturnType
   else
@@ -15611,7 +15870,7 @@ var
   ValType:  TTypeDesc;
   I, J:     Integer;
 begin
-  SelType := AnalyseExpr(AStmt.Selector);
+  SelType := Self.AnalyseExprSlot(AStmt.Selector);
   AStmt.IsStringCase := SelType.IsString();
   if not (SelType.IsOrdinal() or AStmt.IsStringCase) then
     SemanticError(
@@ -15661,7 +15920,7 @@ var
   PtrType: TTypeDesc;
   ValType: TTypeDesc;
 begin
-  PtrType := AnalyseExpr(AStmt.PtrExpr);
+  PtrType := Self.AnalyseExprSlot(AStmt.PtrExpr);
   if PtrType.Kind <> tyPointer then
     SemanticError(
       Format('Pointer write requires a pointer type, got ''%s''', [PtrType.Name]),
@@ -15691,7 +15950,7 @@ begin
     static-array result. }
   if AStmt.BaseExpr <> nil then
   begin
-    AStmt.ResolvedArrayType := AnalyseExpr(AStmt.BaseExpr);
+    AStmt.ResolvedArrayType := Self.AnalyseExprSlot(AStmt.BaseExpr);
     if (AStmt.ResolvedArrayType = nil) or
        not (AStmt.ResolvedArrayType.Kind in [tyStaticArray, tyDynArray]) then
       SemanticError(
@@ -15701,7 +15960,7 @@ begin
       ElemT := TDynArrayTypeDesc(AStmt.ResolvedArrayType).ElementType
     else
       ElemT := TStaticArrayTypeDesc(AStmt.ResolvedArrayType).ElementType;
-    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
     if not IdxType.IsArrayIndex() then
       SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
     ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
@@ -15728,7 +15987,7 @@ begin
           ElemT := TDynArrayTypeDesc(BaseInfo.TypeDesc).ElementType
         else
           ElemT := TStaticArrayTypeDesc(BaseInfo.TypeDesc).ElementType;
-        IdxType := AnalyseExpr(AStmt.IndexExpr);
+        IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
         if not IdxType.IsArrayIndex() then
           SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
         ValType := AnalyseExprHinted(AStmt.ValueExpr, ElemT);
@@ -15751,7 +16010,7 @@ begin
             TRecordTypeDesc(BaseInfo.TypeDesc).Name, DefProp.WriteMethod);
           AStmt.PropAccessorVSlot := PropAccessorVSlot(
             TRecordTypeDesc(BaseInfo.TypeDesc).Name, DefProp.WriteMethod);
-          IdxType := AnalyseExpr(AStmt.IndexExpr);
+          IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
           if DefProp.IndexTypeDesc <> nil then
             CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
               AStmt.Line, AStmt.Col);
@@ -15781,7 +16040,7 @@ begin
         PropAccessorOwner(TRecordTypeDesc(Sym.TypeDesc).Name, DefProp.WriteMethod);
       AStmt.PropAccessorVSlot :=
         PropAccessorVSlot(TRecordTypeDesc(Sym.TypeDesc).Name, DefProp.WriteMethod);
-      IdxType := AnalyseExpr(AStmt.IndexExpr);
+      IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
       if (DefProp.IndexTypeDesc <> nil) then
         CheckTypesMatch(DefProp.IndexTypeDesc, IdxType, 'default property index',
           AStmt.Line, AStmt.Col);
@@ -15797,10 +16056,10 @@ begin
     AStmt.IsGlobal := Sym.IsGlobal;
     AStmt.IsVarParam := Sym.Kind = skVarParameter;
     AStmt.ResolvedArrayType := FTable.TypePChar;
-    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('PChar subscript index must be numeric', AStmt.Line, AStmt.Col);
-    AnalyseExpr(AStmt.ValueExpr);
+    Self.AnalyseExprSlot(AStmt.ValueExpr);
     Exit;
   end;
   { String subscript write: S[I] := <byte> — storeb at data_ptr + I.
@@ -15814,7 +16073,7 @@ begin
     AStmt.IsGlobal := Sym.IsGlobal;
     AStmt.IsVarParam := Sym.Kind = skVarParameter;
     AStmt.ResolvedArrayType := FTable.TypeString;
-    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('String subscript index must be numeric',
         AStmt.Line, AStmt.Col);
@@ -15823,7 +16082,7 @@ begin
       and single-character string literals (the codegen's byte-RHS path
       stores their first byte).  Mirrors the read side, where S[I] yields a
       byte ordinal. }
-    ValType := AnalyseExpr(AStmt.ValueExpr);
+    ValType := Self.AnalyseExprSlot(AStmt.ValueExpr);
     if not (ValType.IsNumeric() or (ValType.Kind = tyString)) then
       SemanticError(
         'String element assignment requires a byte, Chr(...), or ' +
@@ -15836,7 +16095,7 @@ begin
     AStmt.IsGlobal          := Sym.IsGlobal;
     AStmt.IsVarParam        := Sym.Kind = skVarParameter;
     AStmt.ResolvedArrayType := Sym.TypeDesc;
-    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('Dynamic array index must be numeric', AStmt.Line, AStmt.Col);
     ValType := AnalyseExprHinted(AStmt.ValueExpr,
@@ -15859,7 +16118,7 @@ begin
     AStmt.IsGlobal          := False;
     AStmt.IsVarParam        := True;
     AStmt.ResolvedArrayType := Sym.TypeDesc;
-    IdxType := AnalyseExpr(AStmt.IndexExpr);
+    IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
     if not IdxType.IsNumeric() then
       SemanticError('Open array index must be numeric', AStmt.Line, AStmt.Col);
     ValType := AnalyseExprHinted(AStmt.ValueExpr,
@@ -15876,7 +16135,7 @@ begin
   AStmt.IsGlobal := Sym.IsGlobal;
   AStmt.IsVarParam := Sym.Kind = skVarParameter;
   AStmt.ResolvedArrayType := ArrType;
-  IdxType := AnalyseExpr(AStmt.IndexExpr);
+  IdxType := Self.AnalyseExprSlot(AStmt.IndexExpr);
   if not IdxType.IsArrayIndex() then
     SemanticError('Array index must be an ordinal type', AStmt.Line, AStmt.Col);
   ValType := AnalyseExprHinted(AStmt.ValueExpr, ArrType.ElementType);
@@ -15901,10 +16160,10 @@ begin
     AExpr.ResolvedType := nil;
     Exit(nil);
   end;
-  ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[0]));
+  ElemType := Self.AnalyseListSlot(AExpr.Elements, 0);
   for I := 1 to AExpr.Elements.Count - 1 do
   begin
-    ActType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
+    ActType := Self.AnalyseListSlot(AExpr.Elements, I);
     if (ActType <> ElemType) and not AExpr.IsConstArray then
     begin
       { A heterogeneous bracket literal is only valid as an 'array of const'
@@ -16140,7 +16399,7 @@ begin
     if TryResolveBareEnumIdent(TASTExpr(AExpr.Elements.Items[I]), ASetType.BaseType) then
       ElemType := TASTExpr(AExpr.Elements.Items[I]).ResolvedType
     else
-      ElemType := AnalyseExpr(TASTExpr(AExpr.Elements.Items[I]));
+      ElemType := Self.AnalyseListSlot(AExpr.Elements, I);
     if IsOrdBase then
     begin
       if (not ElemType.IsNumeric()) and (ElemType <> ASetType.BaseType) then

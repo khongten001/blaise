@@ -289,7 +289,9 @@ IntSubrange
  * enum-bounded subranges (TLow..THigh, red..blue) are not a named-type form. *)
 
 RecordDef
-    = [ PACKED ] RECORD { VisibilitySection | FieldDecl | MethodDecl | ConstSection } END
+    = [ PACKED ] RECORD
+      { VisibilitySection | FieldDecl | MethodDecl | ClassOperatorDecl | ConstSection }
+      END
     ;
 
 (* Records may declare methods alongside fields.  Method bodies are written
@@ -414,7 +416,38 @@ FieldDecl
     ;
 
 MethodDeclList
-    = { MethodDecl | PropertyDecl }
+    = { MethodDecl | PropertyDecl | ClassOperatorDecl }
+    ;
+
+(* Operator overloading — Delphi-style `class operator`, declared inside the
+ * record or class body.  An operator declaration IS a static method
+ * declaration: it receives no implicit Self and takes its operands as
+ * explicit parameters, so mangling, .bif serialisation and codegen reuse the
+ * static-method paths unchanged.
+ *
+ * OperatorName is a CONTEXTUAL identifier set, recognised only in this
+ * position — `operator`, `Add`, `Equal` etc. remain ordinary identifiers
+ * everywhere else (a field named `Operator` still parses).
+ *
+ * Binary operators take exactly two parameters; NEGATIVE (unary minus) takes
+ * exactly one.  A `class operator` may NOT be declared inside a generic
+ * record or class in this release.  IMPLICIT / EXPLICIT conversion operators
+ * are reserved but not accepted.  See docs/language-rationale.adoc and
+ * docs/operator-overloading-design.adoc. *)
+ClassOperatorDecl
+    = CLASS "operator" OperatorName
+      [ LPAREN ParamList RPAREN ]
+      COLON TypeName
+      SEMICOLON
+      { MethodDirective SEMICOLON }
+      [ Block SEMICOLON ]                 (* body absent for the in-type declaration *)
+    ;
+
+OperatorName
+    = "Add" | "Subtract" | "Multiply" | "Divide"
+    | "Equal" | "NotEqual"
+    | "LessThan" | "GreaterThan" | "LessThanOrEqual" | "GreaterThanOrEqual"
+    | "Negative"
     ;
 
 MethodDecl
@@ -470,8 +503,13 @@ ExternalDirective
  * A leading STATIC marks an out-of-line static-method implementation
  * (`static function TName.Method ...`); it must agree with the in-class
  * declaration's static-ness and takes no implicit Self. *)
+(* An out-of-line operator body repeats the `class operator` prefix:
+ *   class operator TFoo.Add(const A, B: TFoo): TFoo; begin ... end;
+ * It is matched to its in-type declaration by full signature, exactly as an
+ * overloaded static method is. *)
 StandaloneDecl
-    = [ STATIC ]
+    = ClassOperatorDecl
+    | [ STATIC ]
       ( PROCEDURE | FUNCTION | CONSTRUCTOR | DESTRUCTOR ) IDENT
       [ DOT IDENT ]                                          (* TTypeName.MethodName — non-generic class impl *)
       [ LESS TypeParamList GREATER DOT IDENT ]               (* TName<T>.MethodName  — generic class impl    *)
