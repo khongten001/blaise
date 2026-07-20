@@ -37,6 +37,7 @@ type
   TSepCompileTests = class(TE2ETestCase)
   private
     procedure RunRecordMethodsAndClosuresWarmCache(const ABackend: string);
+    procedure RunWarmSetLibProgram(const ATag, AProgSrc, AExpected: string);
   protected
     procedure SetUp; override;
   private
@@ -134,6 +135,33 @@ type
       intermediate class's Parent pointer nil — so the leaf's inherited-method
       walk dead-ended and reported "Undeclared procedure". }
     procedure TestIncrementalRebuild_QualifiedGrandparentMethod;
+    { Regression (warm --unit-cache set-of-enum literal): the cached-.bif
+      importer registered an enum's members as symbols but never populated the
+      analyser's enum-member reverse index (FEnumMemberIndex).  ArgMatchScore
+      is the one argument-matching path with no target type in hand: it must
+      INFER a bracket literal's base enum from its elements, via
+      SetLiteralBaseEnum -> ResolveEnumMember, which reads ONLY that index.
+      Warm, the index was empty, so [oA] scored 0 against a `set of TOpt`
+      parameter and the call was rejected with "No matching overload".  Cold
+      builds passed because the source-visible path does register members. }
+    procedure TestIncrementalRebuild_SetLiteralArg_EnumBase;
+    procedure TestIncrementalRebuild_SetLiteralArg_OverloadedEnumBase;
+    { The other two ArgMatchScore set arms — empty literal and a Byte-based
+      set — never consulted the reverse index and passed warm even before the
+      fix.  Locked in here so the index fix cannot regress them. }
+    procedure TestIncrementalRebuild_SetLiteralArg_EmptyAndByteBase;
+    { Two enums in a cached unit sharing a member name.  The source-visible
+      path deliberately does NOT define enum members as bare global skConstant
+      symbols (so names may be shared and resolved by context); the importer
+      used to, which made a warm build hard-error where a cold build compiled. }
+    procedure TestIncrementalRebuild_SharedEnumMemberName_Warm;
+    { The same asymmetry seen through a BARE member reference rather than a
+      set literal.  The importer's global skConstant for a shared name shadowed
+      the reverse-index lookup (TryResolveBareEnumIdent bails to a real symbol
+      of that name), so a warm build bound `S := cShared` to the FIRST enum's
+      member and silently assigned the wrong ordinal — 1 instead of 3.  Wrong
+      code, not a diagnostic, which is why this needs an execution check. }
+    procedure TestIncrementalRebuild_SharedEnumMemberName_BareRef_Warm;
     procedure TestDebugOpdf_PerUnitSection_InDependencyObject;
     { Regression (F1-followup cross-unit static members): a class with `static`
       members — a static var, a static method, and a static const — declared in
@@ -1761,6 +1789,291 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('build2 run exit code', 0, Rc);
   AssertEquals('build2 stdout (cached ctor slot)', '7' + #10, Captured)
+end;
+
+{ Compile AProgSrc twice into the SAME unit cache alongside a shared SetLib
+  unit (a set-of-enum type, a Byte-based set type, a plain non-overloaded
+  taker, and an overloaded pair), and assert both builds succeed and print
+  AExpected.  A cold-only test cannot see the bug — the second build is the
+  one that imports SetLib from its .bif. }
+procedure TSepCompileTests.RunWarmSetLibProgram(const ATag, AProgSrc,
+  AExpected: string);
+const
+  SetLibSrc =
+    '''
+    unit SetLib;
+    interface
+    type
+      TOpt = (oA, oB, oC);
+      TOpts = set of TOpt;
+      TByteSet = set of Byte;
+    function PlainEnum(const O: TOpts): Integer;
+    function CountBytes(const B: TByteSet): Integer;
+    function Pick(const O: TOpts): Integer; overload;
+    function Pick(const O: TOpts; AExtra: Integer): Integer; overload;
+    implementation
+    function PlainEnum(const O: TOpts): Integer;
+    var
+      E: TOpt;
+    begin
+      Result := 0;
+      for E := oA to oC do
+        if E in O then Inc(Result)
+    end;
+    function CountBytes(const B: TByteSet): Integer;
+    var
+      I: Integer;
+    begin
+      Result := 0;
+      for I := 0 to 255 do
+        if I in B then Inc(Result)
+    end;
+    function Pick(const O: TOpts): Integer;
+    begin
+      Result := 1
+    end;
+    function Pick(const O: TOpts; AExtra: Integer): Integer;
+    begin
+      Result := 2 + AExtra
+    end;
+    end.
+    ''';
+var
+  LibPas, ProgPas, ProgBin, CacheDir, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  LibPas   := FScratch + '/SetLib.pas';
+  ProgPas  := FScratch + '/use_setlib_' + ATag + '.pas';
+  ProgBin  := FScratch + '/use_setlib_' + ATag;
+  CacheDir := FScratch + '/units-setlit-' + ATag;
+
+  WriteFile(LibPas, SetLibSrc);
+  WriteFile(ProgPas, AProgSrc);
+  ForceDirectories(CacheDir);
+
+  { Build 1 (clean cache): SetLib is parsed from source. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  AssertEquals('build1 stdout', AExpected, Captured);
+
+  { Build 2 (populated cache): SetLib is imported from its cached .bif. }
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout (cached enum members)', AExpected, Captured)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SetLiteralArg_EnumBase;
+const
+  ProgSrc =
+    '''
+    program UseSetLib;
+    uses SetLib;
+    begin
+      WriteLn(PlainEnum([oA]));
+      WriteLn(PlainEnum([oA, oC]))
+    end.
+    ''';
+begin
+  RunWarmSetLibProgram('plain', ProgSrc, '1' + #10 + '2' + #10)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SetLiteralArg_OverloadedEnumBase;
+const
+  ProgSrc =
+    '''
+    program UseSetLibOvl;
+    uses SetLib;
+    begin
+      WriteLn(Pick([oB]));
+      WriteLn(Pick([oB], 5))
+    end.
+    ''';
+begin
+  { 1 = the 1-arg overload, 7 = the 2-arg overload (2 + 5). }
+  RunWarmSetLibProgram('ovl', ProgSrc, '1' + #10 + '7' + #10)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SetLiteralArg_EmptyAndByteBase;
+const
+  ProgSrc =
+    '''
+    program UseSetLibEmpty;
+    uses SetLib;
+    begin
+      WriteLn(PlainEnum([]));
+      WriteLn(CountBytes([]));
+      WriteLn(CountBytes([3, 9, 200]))
+    end.
+    ''';
+begin
+  RunWarmSetLibProgram('empty', ProgSrc, '0' + #10 + '0' + #10 + '3' + #10)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SharedEnumMemberName_Warm;
+const
+  DualSrc =
+    '''
+    unit DualEnum;
+    interface
+    type
+      TColour = (cRed, cShared, cBlue);
+      TShape = (sBox, sShared, sDot);
+      TColours = set of TColour;
+      TShapes = set of TShape;
+    function CountColours(const C: TColours): Integer;
+    function CountShapes(const S: TShapes): Integer;
+    implementation
+    function CountColours(const C: TColours): Integer;
+    var
+      E: TColour;
+    begin
+      Result := 0;
+      for E := cRed to cBlue do
+        if E in C then Inc(Result)
+    end;
+    function CountShapes(const S: TShapes): Integer;
+    var
+      E: TShape;
+    begin
+      Result := 0;
+      for E := sBox to sDot do
+        if E in S then Inc(Result)
+    end;
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseDualEnum;
+    uses DualEnum;
+    begin
+      WriteLn(CountColours([cRed, cShared]));
+      WriteLn(CountShapes([sShared, sDot]))
+    end.
+    ''';
+var
+  LibPas, ProgPas, ProgBin, CacheDir, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  LibPas   := FScratch + '/DualEnum.pas';
+  ProgPas  := FScratch + '/use_dualenum.pas';
+  ProgBin  := FScratch + '/use_dualenum';
+  CacheDir := FScratch + '/units-dualenum';
+
+  WriteFile(LibPas, DualSrc);
+  WriteFile(ProgPas, ProgSrc);
+  ForceDirectories(CacheDir);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  AssertEquals('build1 stdout', '2' + #10 + '2' + #10, Captured);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout (shared member name)', '2' + #10 + '2' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SharedEnumMemberName_BareRef_Warm;
+const
+  DualSrc =
+    '''
+    unit BareDual;
+    interface
+    type
+      TColour = (cRed, cShared, cBlue);
+      TShape = (sBox, sMid, sPad, cShared);
+    implementation
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseBareDual;
+    uses BareDual;
+    var
+      S: TShape;
+    begin
+      S := cShared;
+      WriteLn(Ord(S))
+    end.
+    ''';
+var
+  LibPas, ProgPas, ProgBin, CacheDir, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  LibPas   := FScratch + '/BareDual.pas';
+  ProgPas  := FScratch + '/use_baredual.pas';
+  ProgBin  := FScratch + '/use_baredual';
+  CacheDir := FScratch + '/units-baredual';
+
+  WriteFile(LibPas, DualSrc);
+  WriteFile(ProgPas, ProgSrc);
+  ForceDirectories(CacheDir);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  { The declared type TShape narrows the shared name to its own member. }
+  AssertEquals('build1 stdout (Ord(TShape.cShared))', '3' + #10, Captured);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout (cached shared name, same ordinal)',
+               '3' + #10, Captured)
 end;
 
 procedure TSepCompileTests.TestDebugOpdf_PerUnitSection_InDependencyObject;
