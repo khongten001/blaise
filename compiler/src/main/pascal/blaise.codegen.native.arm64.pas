@@ -1200,16 +1200,39 @@ begin
   begin
     { Rec.Field := <record> — memcpy from the source's address (a record
       lvalue) or from __rret (a record-returning call). }
+    if (not IsRecordCallArg(AStmt.Expr)) and
+       (not RecretManagedClean(TRecordTypeDesc(AStmt.FieldInfo.TypeDesc))) then
+    begin
+      { managed record LVALUE source (leg 25): retain the source's managed
+        fields, release the dest FIELD's old ones, then memcpy — the same
+        discipline as EmitInstanceFieldStore's managed tyRecord arm, but the
+        dest is a record-field address (RecordName slot + field offset).
+        Source and dest live in callee-saved x19/x22 across the ARC walks and
+        the memcpy.  Retain-before-release keeps a self-assign exact. }
+      Self.Emit(#9'stp x19, x22, [sp, #-16]!');
+      EmitRecAddrToX0(AStmt.Expr);
+      Self.Emit(#9'mov x19, x0');                   { x19 = source addr }
+      if AStmt.IsVarParam then
+        EmitLoadSlot('x22', AStmt.RecordName)
+      else
+        EmitSlotAddr('x22', AStmt.RecordName);
+      if AStmt.FieldInfo.Offset <> 0 then
+        EmitAddSubImm('add', 'x22', 'x22', AStmt.FieldInfo.Offset);  { dest field }
+      Self.EmitRecordFieldRetains(
+        TRecordTypeDesc(AStmt.FieldInfo.TypeDesc), 'x19');
+      Self.EmitRecordFieldReleases(
+        TRecordTypeDesc(AStmt.FieldInfo.TypeDesc), 'x22');
+      Self.Emit(#9'mov x0, x22');
+      Self.Emit(#9'mov x1, x19');
+      EmitIntLiteral('x2', AStmt.FieldInfo.TypeDesc.RawSize());
+      Self.Emit(#9'bl memcpy');
+      Self.Emit(#9'ldp x19, x22, [sp], #16');
+      Exit;
+    end;
     if IsRecordCallArg(AStmt.Expr) then
       EmitRecCallToRret(AStmt.Expr)   { x0 = __rret address; +1 refs transfer }
     else
-    begin
-      { a record LVALUE source with managed fields needs the retain-source-
-        then-release-dest discipline (not just a raw memcpy) — keep honest }
-      if not RecretManagedClean(TRecordTypeDesc(AStmt.FieldInfo.TypeDesc)) then
-        NotYet('managed-record lvalue field store', AStmt);
-      EmitRecAddrToX0(AStmt.Expr);    { x0 = source record address }
-    end;
+      EmitRecAddrToX0(AStmt.Expr);    { x0 = source record address (clean) }
     EmitPushX0();                     { [srcaddr] }
     { the destination field's OLD managed refs must be released before a
       call-source transfers its +1 refs in (dest may hold stale values) }

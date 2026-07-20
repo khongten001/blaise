@@ -103,6 +103,10 @@ type
       Result, with a non-zero intermediate offset; plus whole-record-field
       read/store as regression guards. }
     procedure TestRun_NestedRecordFieldAccess;
+    { leg 25: store a whole MANAGED record lvalue into a record-typed field of
+      a record (Rec.Field := managedRecordVar) — retain source / release dest,
+      leak-free, including an overwrite that must release the dest's old value. }
+    procedure TestRun_ManagedRecordLvalueFieldStore_LeakFree;
   end;
 
 implementation
@@ -1524,6 +1528,29 @@ begin
       WriteLn(R.Pad)
     end.
     ''', '5' + LE + '7' + LE + '5' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_ManagedRecordLvalueFieldStore_LeakFree;
+begin
+  { L.Op := O where Op is a managed-record field and O a managed-record lvalue.
+    The first store into a pre-set L.Op.S must release the old 'old' string; a
+    second store must release 'hi'.  All balanced — leak-free. }
+  AssertLeakFreeOnAll('''
+    program Prg;
+    type
+      TOp = record S: string; N: Integer; end;
+      TLine = record Op: TOp; end;
+    var L: TLine; O: TOp;
+    begin
+      O.S := 'hi'; O.N := 7;
+      L.Op.S := 'old';
+      L.Op := O;
+      WriteLn(L.Op.S); WriteLn(L.Op.N);
+      O.S := 'second';
+      L.Op := O;
+      WriteLn(L.Op.S)
+    end.
+    ''', 'hi');
 end;
 
 initialization

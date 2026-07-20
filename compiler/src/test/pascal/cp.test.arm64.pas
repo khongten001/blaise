@@ -270,6 +270,10 @@ type
       (Rec.RecField.Field).  The intermediate record field yields the ADDRESS
       of the sub-record; the outer field adds its offset. }
     procedure TestNestedRecordFieldAccess;
+    { self-cross-compile leg 25: store a whole MANAGED record LVALUE into a
+      record-typed field of a record (Rec.Field := managedRecordVar).  Runs the
+      retain-source / release-dest ARC discipline (not a raw memcpy). }
+    procedure TestManagedRecordLvalueFieldStore;
   end;
 
 implementation
@@ -4760,6 +4764,48 @@ begin
     Pos(#9'str w0, [x9', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64nrf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestManagedRecordLvalueFieldStore;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { L.Op := O where Op is a managed-record (has a string) field of L and O is a
+    managed-record lvalue.  The store retains O's managed fields, releases L.Op's
+    old ones, then memcpys — the addresses parked in callee-saved x19/x22.
+    Previously NotYet'd as 'managed-record lvalue field store'. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TOp = record S: string; N: Integer; end;
+      TLine = record Op: TOp; end;
+    var L: TLine; O: TOp;
+    begin
+      O.S := 'hi'; O.N := 7;
+      L.Op := O;
+      WriteLn(L.Op.S)
+    end.
+    ''');
+  AssertTrue('the managed record field store memcpys the record',
+    Pos(#9'bl memcpy', AsmT) >= 0);
+  AssertTrue('source/dest parked in callee-saved x19/x22',
+    Pos(#9'stp x19, x22, [sp, #-16]!', AsmT) >= 0);
+  { the retain-source / release-dest ARC discipline runs on the string field }
+  AssertTrue('retains the source managed field',
+    Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('releases the destination''s old managed field',
+    Pos(#9'bl _StringRelease', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64mrf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
