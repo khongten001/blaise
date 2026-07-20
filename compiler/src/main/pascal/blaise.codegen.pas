@@ -152,6 +152,15 @@ function RecretClassify(ARec: TRecordTypeDesc;
   twins ExprOwnsRef / NativeExprOwnsRef). }
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;
 
+{ True when AExpr is an ARRAY-ELEMENT l-value — a subscript whose base is a
+  static, dynamic, or open array — i.e. a slot with a stable address that a
+  consuming site (notably the Free lowering) can write through.  All three
+  backends use this so `A[I].Free()` releases AND nils the element slot,
+  exactly like the identifier/field receiver forms: a stale pointer left in
+  the slot double-frees when the scope-exit ARC walk (or a later element
+  store) releases it again (BUG-016). }
+function ArcIsArrayElemSlot(AExpr: TASTExpr): Boolean;
+
 { True if evaluating AExpr MIGHT defer a class-field-on-owned-transient base
   release (a retained class/interface field read whose base is an owned
   transient — MakeObj().ClassField).  The three backends use this to decide
@@ -356,6 +365,15 @@ begin
         else if Eb0SSE and (not Eb1SSE) then Result := rcSSEInt;
       end;
   end;
+end;
+
+function ArcIsArrayElemSlot(AExpr: TASTExpr): Boolean;
+begin
+  Result := (AExpr is TStringSubscriptExpr) and
+    (TStringSubscriptExpr(AExpr).StrExpr <> nil) and
+    (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+    (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind in
+      [tyStaticArray, tyDynArray, tyOpenArray]);
 end;
 
 function ArcExprOwnsRef(AExpr: TASTExpr): Boolean;

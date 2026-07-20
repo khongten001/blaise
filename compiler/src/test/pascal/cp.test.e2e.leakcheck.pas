@@ -87,6 +87,27 @@ type
       locals entirely, so every stored element leaked on BOTH backends.  The
       fix releases each element at scope exit. }
     procedure TestDebug_StaticArrayOfInterface_NoLeak;
+    { BUG-016 stage 2: static-array-of-CLASS/STRING/RECORD locals are
+      released at scope exit (previously only interface elements were). }
+    procedure TestDebug_StaticArrayOfClass_NoLeak;
+    procedure TestDebug_StaticArrayOfString_NoLeak;
+    procedure TestDebug_StaticArrayOfRecord_NoLeak;
+    { Same, when the block is left via an exception caught in-function:
+      the handler completes, the epilogue walk must still release. }
+    procedure TestDebug_StaticArrayOfClass_ExceptionExit_NoLeak;
+    { THE double-free guard for BUG-016: a static array whose elements are
+      constructed and then MANUALLY .Free'd (the elfwriter RelaBuf shape),
+      freed a second time (simulating the scope-exit release landing on top
+      of a manual free), then 16 further allocations churned through the
+      free list writing/reading a sentinel.  Without the allocation churn a
+      double-free passes vacuously.  Requires A[I].Free() to NIL the element
+      slot; must pass at EVERY stage of the BUG-016/017 work. }
+    procedure TestDebug_StaticArrayManualFree_NoDoubleFree;
+    { BUG-017: static-array-of-managed FIELDS — record local, by-value
+      record param (copy must retain), and class field (cleanup fn). }
+    procedure TestDebug_RecordStaticArrayField_NoLeak;
+    procedure TestDebug_RecordStaticArrayField_ByValueParam_NoLeak;
+    procedure TestDebug_ClassStaticArrayField_NoLeak;
     { A string-returning call result passed DIRECTLY to a BY-VALUE string
       parameter — SinkVal(MakeStr(I)) — hands the callee an owned (+1) temp it
       only co-owns (entry retain / exit release nets to zero); the CALLER must
@@ -1183,6 +1204,364 @@ begin
     CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfInterface, Output, ExitCode, True));
   AssertEquals('exit 0 (native)', 0, ExitCode);
   AssertEquals('stdout (native)', 'abc' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+const
+  SrcStaticArrayOfClass = '''
+    program P;
+    type
+      TObjX = class
+      public
+        Tag: Integer;
+        constructor Create(ATag: Integer);
+      end;
+    constructor TObjX.Create(ATag: Integer);
+    begin
+      Tag := ATag;
+    end;
+    procedure Run();
+    var
+      A: array[0..2] of TObjX;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+        A[I] := TObjX.Create(I * 10);
+      WriteLn(A[2].Tag);
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcStaticArrayOfString = '''
+    program P;
+    procedure Run();
+    var
+      A: array[0..2] of string;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+        A[I] := 'val' + IntToStr(I);
+      WriteLn(A[2]);
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcStaticArrayOfRecord = '''
+    program P;
+    type
+      TRecX = record
+        Name: string;
+      end;
+    procedure Run();
+    var
+      A: array[0..2] of TRecX;
+      R: TRecX;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+      begin
+        R.Name := 'val' + IntToStr(I);
+        A[I] := R;
+      end;
+      WriteLn(A[2].Name);
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcStaticArrayOfClassExcExit = '''
+    program P;
+    uses SysUtils;
+    type
+      TObjX = class
+      public
+        Tag: Integer;
+        constructor Create(ATag: Integer);
+      end;
+    constructor TObjX.Create(ATag: Integer);
+    begin
+      Tag := ATag;
+    end;
+    procedure Run();
+    var
+      A: array[0..2] of TObjX;
+      I: Integer;
+    begin
+      try
+        for I := 0 to 2 do
+          A[I] := TObjX.Create(I);
+        raise Exception.Create('boom');
+      except
+        on E: Exception do
+          WriteLn('caught');
+      end;
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcStaticArrayManualFree = '''
+    program P;
+    type
+      TBuf = class
+      public
+        Tag: Integer;
+        constructor Create(ATag: Integer);
+      end;
+    constructor TBuf.Create(ATag: Integer);
+    begin
+      Tag := ATag;
+    end;
+    procedure Run();
+    var
+      A: array[0..3] of TBuf;
+      B: array[0..15] of TBuf;
+      I: Integer;
+      Bad: Boolean;
+    begin
+      for I := 0 to 3 do
+        A[I] := TBuf.Create(100 + I);
+      for I := 0 to 3 do
+        A[I].Free();
+      { second round simulates a scope-exit release on top of a manual
+        free: it MUST be a nil no-op, not a second decrement }
+      for I := 0 to 3 do
+        A[I].Free();
+      Bad := False;
+      for I := 0 to 15 do
+      begin
+        B[I] := TBuf.Create(1000 + I);
+        B[I].Tag := 2000 + I;
+      end;
+      for I := 0 to 15 do
+        if B[I].Tag <> 2000 + I then
+          Bad := True;
+      for I := 0 to 15 do
+        B[I].Free();
+      if Bad then
+        WriteLn('CORRUPT')
+      else
+        WriteLn('CLEAN');
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcRecordStaticArrayField = '''
+    program P;
+    type
+      TRecX = record
+        Names: array[0..2] of string;
+      end;
+    procedure Run();
+    var
+      R: TRecX;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+        R.Names[I] := 'val' + IntToStr(I);
+      WriteLn(R.Names[2]);
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcRecordStaticArrayFieldByVal = '''
+    program P;
+    type
+      TRecX = record
+        Names: array[0..2] of string;
+      end;
+    procedure Show(R: TRecX);
+    begin
+      WriteLn(R.Names[1]);
+    end;
+    procedure Run();
+    var
+      R: TRecX;
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+        R.Names[I] := 'val' + IntToStr(I);
+      Show(R);
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+  SrcClassStaticArrayField = '''
+    program P;
+    type
+      TBox = class
+      public
+        Names: array[0..2] of string;
+      end;
+    procedure Run();
+    var
+      B: TBox;
+      I: Integer;
+    begin
+      B := TBox.Create();
+      for I := 0 to 2 do
+        B.Names[I] := 'val' + IntToStr(I);
+      WriteLn(B.Names[2]);
+      B.Free();
+    end;
+    begin
+      Run();
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_StaticArrayOfClass_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStaticArrayOfClass, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', '20' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfClass, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', '20' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_StaticArrayOfString_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStaticArrayOfString, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'val2' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfString, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'val2' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_StaticArrayOfRecord_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStaticArrayOfRecord, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'val2' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfRecord, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'val2' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_StaticArrayOfClass_ExceptionExit_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStaticArrayOfClassExcExit, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'caught' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayOfClassExcExit, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'caught' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_StaticArrayManualFree_NoDoubleFree;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcStaticArrayManualFree, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'CLEAN' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcStaticArrayManualFree, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'CLEAN' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_RecordStaticArrayField_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcRecordStaticArrayField, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'val2' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcRecordStaticArrayField, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'val2' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_RecordStaticArrayField_ByValueParam_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcRecordStaticArrayFieldByVal, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'val1' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcRecordStaticArrayFieldByVal, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'val1' + LE, Output);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_ClassStaticArrayField_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  AssertTrue('compile+run (qbe)',
+    CompileAndRunWithRTLDebugOn(beQBE, SrcClassStaticArrayField, Output, ExitCode, True));
+  AssertEquals('exit 0 (qbe)', 0, ExitCode);
+  AssertEquals('stdout (qbe)', 'val2' + LE, Output);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  AssertTrue('compile+run (native)',
+    CompileAndRunWithRTLDebugOn(beNative, SrcClassStaticArrayField, Output, ExitCode, True));
+  AssertEquals('exit 0 (native)', 0, ExitCode);
+  AssertEquals('stdout (native)', 'val2' + LE, Output);
   AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
 end;
 

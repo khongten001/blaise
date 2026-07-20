@@ -8372,6 +8372,25 @@ begin
       Self.Emit(#9'str xzr, [x9]');
       Exit;
     end;
+    if ArcIsArrayElemSlot(AStmt.ObjExpr) then
+    begin
+      { array-element receiver (A[I].Free()): release AND nil the element
+        slot — parity with the QBE/x86-64 lowerings.  A stale element
+        pointer double-frees when the scope-exit ARC walk releases the
+        array's elements again (BUG-016). }
+      case TStringSubscriptExpr(AStmt.ObjExpr).StrExpr.ResolvedType.Kind of
+        tyStaticArray:
+          EmitStaticElemAddr(TStringSubscriptExpr(AStmt.ObjExpr));
+      else
+        EmitDynElemAddr(TStringSubscriptExpr(AStmt.ObjExpr));
+      end;
+      EmitPushX0();
+      Self.Emit(#9'ldr x0, [x0]');
+      Self.Emit(#9'bl _ClassRelease');
+      EmitPopTo('x9');
+      Self.Emit(#9'str xzr, [x9]');
+      Exit;
+    end;
     if AStmt.ObjExpr <> nil then
     begin
       { general-expression receiver (Sections.Get(I).Free()): the receiver

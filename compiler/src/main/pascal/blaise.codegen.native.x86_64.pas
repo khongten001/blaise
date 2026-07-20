@@ -11348,12 +11348,14 @@ begin
     end
     else if ACall.ObjExpr <> nil then
     begin
-      if (ACall.ObjExpr is TFieldAccessExpr) or (ACall.ObjExpr is TIdentExpr) then
+      if (ACall.ObjExpr is TFieldAccessExpr) or (ACall.ObjExpr is TIdentExpr) or
+         ArcIsArrayElemSlot(ACall.ObjExpr) then
       begin
-        { L-value receiver (Def.ClassDef.Free()): release AND nil the slot.
-          A stale pointer left here aliases the next allocation of the same
-          size class, and the following ARC field store double-releases it —
-          the QBE lowering nils the slot, so must we. }
+        { L-value receiver (Def.ClassDef.Free(), A[I].Free()): release AND nil
+          the slot.  A stale pointer left here aliases the next allocation of
+          the same size class, and the following ARC field store or scope-exit
+          walk double-releases it — the QBE lowering nils the slot, so must
+          we. }
         Self.EmitLValueSlotAddr(ACall.ObjExpr);
         Self.Emit(#9'pushq %rdx');
         Self.Emit(#9'movq (%rdx), %rdi');
@@ -21234,7 +21236,8 @@ begin
         this scope-exit release.  Static-array-of-CLASS/STRING/record locals are
         deliberately excluded: the existing element store retains unconditionally
         while `.Free`/aliasing in the owning code (e.g. the ELF writer's
-        `RelaBuf: array[0..5] of TByteBuf`) already manages those lifetimes, so a
+        `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6) already
+        manages those lifetimes, so a
         blanket scope-exit release double-frees and corrupts the heap.  Closing
         that gap requires reconciling the element store's ARC with the manual
         management first; it is tracked separately. }

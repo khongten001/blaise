@@ -7891,8 +7891,12 @@ begin
     if (MDecl = nil) and SameText(ACall.Name, 'Free') then
     begin
       if (ACall.ObjExpr is TFieldAccessExpr) or
-         (ACall.ObjExpr is TIdentExpr) then
+         (ACall.ObjExpr is TIdentExpr) or
+         ArcIsArrayElemSlot(ACall.ObjExpr) then
       begin
+        { L-value receiver — identifier, field, or array element (A[I].Free()):
+          release AND nil the slot.  A stale element pointer double-frees when
+          the scope-exit ARC walk or a later element store releases it again. }
         FPtrTemp := EmitLValueAddr(ACall.ObjExpr);
         SelfTemp := AllocTemp();
         EmitLine(Format('  %s =l loadl %s', [SelfTemp, FPtrTemp]));
