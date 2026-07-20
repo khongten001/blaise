@@ -42,6 +42,23 @@ type
     rcWin64Agg
   );
 
+  { How a scope-exit ARC teardown walk must dispose of one variable, keyed on
+    its type alone.  See ArcScopeExitReleaseKind. }
+  TArcReleaseKind = (
+    arkNone,        { no ARC content — emit nothing }
+    arkString,      { _StringRelease on the slot value }
+    arkClass,       { _ClassRelease on the slot value (or _WeakClear on the
+                      slot ADDRESS when the decl is [Weak]) }
+    arkIntf,        { _ClassRelease on the _obj half (or _WeakClear on its
+                      address when [Weak]); the itab half is static rodata }
+    arkDynArray,    { _DynArrayRelease on the slot value }
+    arkRefEnv,      { 'reference to' fat value: _ClassRelease the env pointer
+                      in the Data half at offset +8 }
+    arkAggregate    { record or static array with managed content — walk it
+                      via the shared EmitManagedReleaseAt/EmitRecordFieldReleases
+                      helpers rather than a direct release call }
+  );
+
   ICodeGen = interface
     { Single-file program compilation: reset output and emit all IR. }
     procedure Generate(AProg: TProgram);
@@ -171,6 +188,35 @@ function ArcIsArrayElemSlot(AExpr: TASTExpr): Boolean;
   descends into static-array fields — it answers the ARC question, not the
   ABI one. }
 function ArcTypeHasManagedContent(AType: TTypeDesc): Boolean;
+
+{ Classify how a scope-exit ARC teardown walk must dispose of a variable of
+  AType.  This is the SHARED dispatch key for every such walk in the compiler:
+  the QBE backend's EmitArcCleanup, and on x86-64 both the procedure-epilogue
+  decl walk and EmitGlobalReleases (the program-exit global walk).
+
+  Those walks were three independently hand-maintained if/else-if chains over
+  the same TTypeKind values, and they drifted: the x86-64 global walk lacked
+  the tyStaticArray arm the procedure walk had, so a program-level
+  `array[0..N] of TFoo` leaked every element while the identical array inside
+  a procedure was released correctly.  Routing all three through one
+  classifier makes such a gap a MISSING CASE ARM in every driver at once
+  rather than a silent omission in one.
+
+  The result depends on the TYPE only.  Two orthogonal facts stay with the
+  caller because they are properties of the DECLARATION, not the type:
+
+    * [Weak] — modifies how arkClass/arkIntf are emitted (_WeakClear against
+      the slot address instead of a strong release of the slot value).
+    * storage/addressing — frame offset vs <name>(%rip) vs QBE VarRef, and
+      whether the slot is skipped entirely (env fields, thread-vars).
+
+  arkAggregate deliberately merges tyRecord and tyStaticArray: both are walked
+  through the shared EmitManagedReleaseAt family, which already dispatches
+  record fields and array elements and recurses between them.  Adding a new
+  managed AGGREGATE shape is therefore a change inside that helper which every
+  driver inherits; only a new managed SCALAR needs a new TArcReleaseKind and,
+  with it, a compiler-visible gap in each driver's case statement. }
+function ArcScopeExitReleaseKind(AType: TTypeDesc): TArcReleaseKind;
 
 { True if evaluating AExpr MIGHT defer a class-field-on-owned-transient base
   release (a retained class/interface field read whose base is an owned
@@ -396,6 +442,35 @@ begin
     for I := 0 to RT.Fields.Count - 1 do
       if ArcTypeHasManagedContent(TFieldInfo(RT.Fields.Items[I]).TypeDesc) then
         Exit(True);
+  end;
+end;
+
+function ArcScopeExitReleaseKind(AType: TTypeDesc): TArcReleaseKind;
+begin
+  Result := arkNone;
+  if AType = nil then Exit;
+  { Scalars first — each is a single direct release call in every driver.
+    IsString() is Kind = tyString; both spellings appear in the drivers this
+    replaces and they are equivalent. }
+  if AType.IsString() then Exit(arkString);
+  if AType.Kind = tyClass then Exit(arkClass);
+  if AType.Kind = tyInterface then Exit(arkIntf);
+  if AType.Kind = tyDynArray then Exit(arkDynArray);
+  { 'reference to' procedurals carry a strong env reference in the Data half.
+    A plain (non-reference) procedural type is a bare code pointer with no
+    ARC content, so it stays arkNone. }
+  if AType.Kind = tyProcedural then
+  begin
+    if TProceduralTypeDesc(AType).IsReference then Exit(arkRefEnv);
+    Exit(arkNone);
+  end;
+  { Aggregates: only worth walking when something managed is actually in
+    there.  This guard is what keeps an unmanaged record or an
+    array[0..N] of Integer from emitting a dead walk. }
+  if AType.Kind in [tyRecord, tyStaticArray] then
+  begin
+    if ArcTypeHasManagedContent(AType) then Exit(arkAggregate);
+    Exit(arkNone);
   end;
 end;
 
