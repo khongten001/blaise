@@ -557,6 +557,21 @@ type
     function  RecordCallReceiverIsVar(AExpr: TASTExpr;
                                       const AName: string;
                                       AIsGlobal: Boolean): Boolean;
+    { Returns True when a call's sret destination variable AName/AIsGlobal is
+      also read by the call itself — as the receiver of a record method
+      (M := M.Method(...)) or as any bare-identifier ARGUMENT
+      (X := F(X), X := F(N, X), X := Obj.M(X)).  In both shapes the caller
+      would zero the destination before the callee reads it, so the assignment
+      must route the result through a fresh temporary and move it in
+      afterwards.
+
+      Matching is by NAME + SCOPE only — deliberately conservative, no alias
+      analysis.  Biasing towards True is always correct (the temp path is
+      merely slower), so an ambiguous case such as a local shadowing a global
+      of the same name reports True. }
+    function  CallAliasesDestVar(AExpr: TASTExpr;
+                                 const AName: string;
+                                 AIsGlobal: Boolean): Boolean;
     { Returns True if AExpr is a function or method call that returns an
       interface.  Used in EmitAssignment to choose the sret path. }
     function  IsInterfaceCall(AExpr: TASTExpr): Boolean;
@@ -5057,12 +5072,18 @@ begin
   begin
     ClassRT := TRecordTypeDesc(AAssign.ResolvedLhsType);
     if IsRecordCall(AAssign.Expr) and
-       RecordCallReceiverIsVar(AAssign.Expr, AAssign.Name, AAssign.IsGlobal) then
+       CallAliasesDestVar(AAssign.Expr, AAssign.Name, AAssign.IsGlobal) then
     begin
-      { Self-assigned record method (M := M.Method(...)): the sret destination
-        would alias the receiver, so the callee would clobber Self while still
-        reading it.  Route the call through a fresh zeroed temporary, then move
-        the constructed result into the destination (release old fields, raw
+      { The call reads the destination variable — either as its receiver
+        (M := M.Method(...)) or as one of its arguments (R := CompR(R)).
+        Writing the sret result straight into the destination would clobber
+        the value the callee still has to read: the receiver case corrupts
+        Self mid-flight, and the argument case is worse still because the
+        destination is ZEROED before the argument list is even evaluated, so
+        the callee computes from an empty value.
+
+        Route the call through a fresh zeroed temporary, then move the
+        constructed result into the destination (release old fields, raw
         memcpy — ownership of the constructed managed fields transfers). }
       SretBuf := AllocTemp();
       if ClassRT.MaxAlign() >= 8 then
@@ -5980,6 +6001,35 @@ begin
     as non-aliasing here; the explicit-var case is the documented bug. }
   if MCall.ObjExpr <> nil then Exit;
   Result := (MCall.ObjectName = AName) and (MCall.IsGlobal = AIsGlobal);
+end;
+
+function TCodeGenQBE.CallAliasesDestVar(AExpr: TASTExpr;
+  const AName: string; AIsGlobal: Boolean): Boolean;
+var
+  Args: TObjectList;
+  I:    Integer;
+  Arg:  TASTExpr;
+begin
+  Result := False;
+  { receiver alias — M := M.Method(...) }
+  if Self.RecordCallReceiverIsVar(AExpr, AName, AIsGlobal) then Exit(True);
+  { argument alias — X := F(X) / X := F(N, X) / X := Obj.M(X).  Only a bare
+    identifier is matched: a subscript, field access or expression is not a
+    whole-variable alias of the destination var. }
+  Args := nil;
+  if AExpr is TFuncCallExpr then
+    Args := TFuncCallExpr(AExpr).Args
+  else if AExpr is TMethodCallExpr then
+    Args := TMethodCallExpr(AExpr).Args;
+  if Args = nil then Exit;
+  for I := 0 to Args.Count - 1 do
+  begin
+    Arg := TASTExpr(Args.Items[I]);
+    if not (Arg is TIdentExpr) then Continue;
+    if TIdentExpr(Arg).Name <> AName then Continue;
+    if TIdentExpr(Arg).IsGlobal <> AIsGlobal then Continue;
+    Exit(True);
+  end;
 end;
 
 function TCodeGenQBE.IsInterfaceCall(AExpr: TASTExpr): Boolean;
