@@ -14885,7 +14885,7 @@ begin
       Self.Emit(#9'popq %rax');            { scaled offset }
       Self.Emit(#9'addq %rax, %rdx');
       Self.Emit(#9'movq %rdx, %rcx');      { element address }
-      if DAElemType.Kind = tyRecord then
+      if (DAElemType.Kind = tyRecord) or IsJumboSet(DAElemType) then
       begin
         { Record element: ARC-aware copy (retain src fields, release dest
           fields, memcpy).  Source record address is on the stack. }
@@ -14894,8 +14894,12 @@ begin
         Self.Emit(#9'subq $8, %rsp');
         Self.Emit(#9'movq %rcx, %r15');      { dest element addr }
         Self.Emit(#9'movq 24(%rsp), %rbx');  { src record addr }
-        Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
-        Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+        { A jumbo set is a plain byte bitmap — no managed fields to ARC. }
+        if DAElemType.Kind = tyRecord then
+        begin
+          Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
+          Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+        end;
         Self.Emit(#9'movq %r15, %rdi');
         Self.Emit(#9'movq %rbx, %rsi');
         Self.Emit(Format(#9'movq $%d, %%rdx', [DAElemType.RawSize()]));
@@ -15281,9 +15285,10 @@ begin
       source's managed fields, release the destination's, then memcpy).
       The scalar tail below would store just the source ADDRESS — an
       8-byte pointer write masquerading as a record copy. }
-    if FA.FieldInfo.TypeDesc.Kind = tyRecord then
+    if (FA.FieldInfo.TypeDesc.Kind = tyRecord) or
+       IsJumboSet(FA.FieldInfo.TypeDesc) then
     begin
-      Self.EmitExprToEax(FA.Expr);       { source record address }
+      Self.EmitExprToEax(FA.Expr);       { source record / bitmap address }
       Self.Emit(#9'pushq %rax');
       { Destination field address -> %rcx per receiver shape. }
       if FA.ObjExpr <> nil then
@@ -15316,8 +15321,13 @@ begin
       Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'movq %rcx, %r15');      { dest field addr }
       Self.Emit(#9'movq 24(%rsp), %rbx');  { src record addr }
-      Self.EmitRecordFieldRetains(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%r15');
+      { A jumbo set is a plain byte bitmap with no managed fields — only a
+        record carries per-field ARC. }
+      if FA.FieldInfo.TypeDesc.Kind = tyRecord then
+      begin
+        Self.EmitRecordFieldRetains(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%rbx');
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(FA.FieldInfo.TypeDesc), '%r15');
+      end;
       Self.Emit(#9'movq %r15, %rdi');
       Self.Emit(#9'movq %rbx, %rsi');
       Self.Emit(Format(#9'movq $%d, %%rdx',
@@ -15831,7 +15841,7 @@ begin
           Self.Emit(#9'addq $8, %rsp');         { drop stashed base ptr }
         Exit;
       end;
-      if DAElemType.Kind = tyRecord then
+      if (DAElemType.Kind = tyRecord) or IsJumboSet(DAElemType) then
       begin
         { Record element: ARC-aware copy of the record contents (retain the
           source's managed fields, release the destination's, then memcpy).
@@ -15842,8 +15852,12 @@ begin
         Self.Emit(#9'subq $8, %rsp');
         Self.Emit(#9'movq %rcx, %r15');        { dest element addr }
         Self.Emit(#9'movq 24(%rsp), %rbx');    { src record addr }
-        Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
-        Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+        { A jumbo set is a plain byte bitmap — no managed fields to ARC. }
+        if DAElemType.Kind = tyRecord then
+        begin
+          Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
+          Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+        end;
         Self.Emit(#9'movq %r15, %rdi');
         Self.Emit(#9'movq %rbx, %rsi');
         Self.Emit(Format(#9'movq $%d, %%rdx', [DAElemType.RawSize()]));
@@ -16015,7 +16029,7 @@ begin
         Self.Emit(#9'addq $8, %rsp');           { drop stashed base address }
       Exit;
     end;
-    if DAElemType.Kind = tyRecord then
+    if (DAElemType.Kind = tyRecord) or IsJumboSet(DAElemType) then
     begin
       { Record element: ARC-aware copy — same scheme as the dyn-array
         record branch above. }
@@ -16024,8 +16038,12 @@ begin
       Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'movq %rcx, %r15');        { dest element addr }
       Self.Emit(#9'movq 24(%rsp), %rbx');    { src record addr }
-      Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
-      Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+      { A jumbo set is a plain byte bitmap — no managed fields to ARC. }
+      if DAElemType.Kind = tyRecord then
+      begin
+        Self.EmitRecordFieldRetains(TRecordTypeDesc(DAElemType), '%rbx');
+        Self.EmitRecordFieldReleases(TRecordTypeDesc(DAElemType), '%r15');
+      end;
       Self.Emit(#9'movq %r15, %rdi');
       Self.Emit(#9'movq %rbx, %rsi');
       Self.Emit(Format(#9'movq $%d, %%rdx', [DAElemType.RawSize()]));
@@ -16135,12 +16153,14 @@ begin
       Self.Emit(#9'movss %xmm0, (%rcx)');
     end
     else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
-            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyRecord) then
+            ((TPointerWriteStmt(AStmt).BaseTy.Kind = tyRecord) or
+             IsJumboSet(TPointerWriteStmt(AStmt).BaseTy)) then
     begin
-      { Whole-RECORD store through a typed pointer: ARC-aware copy (retain
-        source fields, release dest fields, memcpy) — the scalar fallback
-        below would store the record's ADDRESS instead of its bytes
-        (BUG-039).  Same sequence as the array-element record write. }
+      { Whole-RECORD (or whole jumbo-set bitmap) store through a typed pointer:
+        ARC-aware copy (retain source fields, release dest fields, memcpy) —
+        the scalar fallback below would store the aggregate's ADDRESS instead
+        of its bytes (BUG-039).  Same sequence as the array-element record
+        write.  A jumbo set carries no managed fields, so it skips the ARC. }
       Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
       Self.Emit(#9'pushq %rax');           { source record address }
       Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
@@ -16149,10 +16169,13 @@ begin
       Self.Emit(#9'subq $8, %rsp');
       Self.Emit(#9'movq %rax, %r15');      { dest address }
       Self.Emit(#9'movq 24(%rsp), %rbx');  { source record address }
-      Self.EmitRecordFieldRetains(
-        TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%rbx');
-      Self.EmitRecordFieldReleases(
-        TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%r15');
+      if TPointerWriteStmt(AStmt).BaseTy.Kind = tyRecord then
+      begin
+        Self.EmitRecordFieldRetains(
+          TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%rbx');
+        Self.EmitRecordFieldReleases(
+          TRecordTypeDesc(TPointerWriteStmt(AStmt).BaseTy), '%r15');
+      end;
       Self.Emit(#9'movq %r15, %rdi');
       Self.Emit(#9'movq %rbx, %rsi');
       Self.Emit(Format(#9'movq $%d, %%rdx',
