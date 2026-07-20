@@ -53,6 +53,10 @@ type
       other rcx-using index expression clobbered the base -> garbage deref
       (segfault).  Static-array fields already push/popped the base. }
     procedure TestRun_FieldElemRead_CompoundIndex;
+    { leg 27: SetLength on a dyn-array FIELD of a VAR-PARAM record — the resize
+      must reach the CALLER's record (the dereferenced var-param address), so
+      the caller sees the resized array after the call. }
+    procedure TestRun_SetLengthOnVarParamRecordField;
   end;
 
 implementation
@@ -381,6 +385,26 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'True' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_SetLengthOnVarParamRecordField;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Grow(var C: TCtx) does SetLength(C.Arr, N) then C.Arr[0] := 42.  The resize
+    and the element write must reach the CALLER's record (through the derefed
+    var-param address), so after the call Length(Ctx.Arr)=3 and Ctx.Arr[0]=42. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TCtx = record Arr: array of Integer; end;
+    procedure Grow(var C: TCtx; N: Integer);
+    begin SetLength(C.Arr, N); C.Arr[0] := 42 end;
+    var Ctx: TCtx;
+    begin
+      Grow(Ctx, 3);
+      WriteLn(Length(Ctx.Arr));
+      WriteLn(Ctx.Arr[0])
+    end.
+    ''', '3' + LE + '42' + LE, 0);
 end;
 
 initialization

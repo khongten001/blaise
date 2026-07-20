@@ -274,6 +274,10 @@ type
       record-typed field of a record (Rec.Field := managedRecordVar).  Runs the
       retain-source / release-dest ARC discipline (not a raw memcpy). }
     procedure TestManagedRecordLvalueFieldStore;
+    { self-cross-compile leg 27: SetLength on a dyn-array FIELD of a VAR-PARAM
+      record — the field address must DEREF the var-param slot (caller's record
+      address) before adding the field offset, not take the slot's own address. }
+    procedure TestSetLengthOnVarParamRecordField;
   end;
 
 implementation
@@ -4806,6 +4810,41 @@ begin
     Pos(#9'bl _StringRelease', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64mrf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestSetLengthOnVarParamRecordField;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { SetLength(C.Arr, N) where C is a var-param record and Arr a dyn-array field.
+    The var-param slot holds the CALLER's record address, so the field address
+    must LOAD the slot (deref) then add the Arr offset — NOT take the slot's own
+    address.  Then _DynArraySetLength resizes and the fresh pointer is stored
+    back.  Previously NotYet'd as 'SetLength on this field-lvalue form'. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TCtx = record Arr: array of Integer; end;
+    procedure Grow(var C: TCtx; N: Integer);
+    begin SetLength(C.Arr, N) end;
+    var Ctx: TCtx;
+    begin Grow(Ctx, 3); WriteLn(Length(Ctx.Arr)) end.
+    ''');
+  AssertTrue('the dyn-array field is resized',
+    Pos(#9'bl _DynArraySetLength', AsmT) >= 0);
+  { the var-param base is derefed (ldur the slot value), not slot-addressed }
+  AssertTrue('the var-param record slot is dereferenced for the field address',
+    Pos(#9'ldur x0, [x29,', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64slv.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

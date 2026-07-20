@@ -778,7 +778,12 @@ begin
   else if AFA.IsClassAccess then
     EmitLoadSlot('x0', AFA.RecordName)
   else
-    EmitSlotAddr('x0', AFA.RecordName);
+    { TRUE var/out record: slot holds the CALLER's record ADDRESS — deref it
+      (leg 27), then add the field offset.  A BY-VALUE record param also has
+      IsVarParam=True (records pass by reference in the ABI) but its inline copy
+      lives in the ParamName slot — the '__pptr_' discriminator in
+      EmitRecordBaseAddr keeps the two apart (was a double-deref). }
+    EmitRecordBaseAddr('x0', AFA.RecordName, AFA.IsVarParam);
   if AFA.FieldInfo.Offset <> 0 then
     EmitAddSubImm('add', 'x0', 'x0', AFA.FieldInfo.Offset);
 end;
@@ -4245,18 +4250,15 @@ begin
         field offset).  _DynArraySetLength frees the old block and returns a
         fresh rc=1 block, so the new pointer is just stored back — no ARC.
 
-        Restrict to the lvalue shapes EmitRecFieldAddrToX0 addresses correctly:
-        - a var-param record field: its slot holds the caller's ADDRESS, not
-          the record — EmitRecFieldAddrToX0 has no IsVarParam arm (unlike the
-          field READ path) and would treat the pointer slot as the record.
+        A var-param record field is now addressed correctly by
+        EmitRecFieldAddrToX0 (its var-param arm derefs the slot — leg 27).
+        These other lvalue shapes still stay NotYet rather than miscompile:
         - an implicit-Self record-field base (SetLength(FRec.Arr, N)): the
           helper adds only FieldInfo.Offset, never ImplicitBaseInfo.Offset,
           so it would address the wrong field of Self.
         - a subscripted array field (SetLength(R.Matrix[I], N)): the helper
-          ignores PropIndexExpr and would resize the OUTER array.
-        These stay NotYet (clean, as before this leg) rather than miscompile. }
-      if TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])).IsVarParam or
-         (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])).IsImplicitSelf and
+          ignores PropIndexExpr and would resize the OUTER array. }
+      if (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0])).IsImplicitSelf and
           (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0]))
              .ImplicitBaseInfo <> nil)) or
          (TFieldAccessExpr(TASTExpr(ACall.Args.Items[0]))
