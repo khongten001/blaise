@@ -47,6 +47,10 @@ type
       must retain/release like any record copy. }
     procedure TestRun_PointerWrite_WholeRecord;
     procedure TestRun_PointerWrite_RecordWithString;
+    { leg 20: @Obj.ArrayField[I] — address of an element of a static-array
+      field of a class instance.  memcpy from that address proves the base
+      (instance ptr + field offset + index*elemsize) is computed correctly. }
+    procedure TestRun_AddrOfClassArrayFieldElement;
   end;
 
 implementation
@@ -527,6 +531,28 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, 'hello 7' + LE, 0);
+end;
+
+procedure TE2EPointersTests.TestRun_AddrOfClassArrayFieldElement;
+const
+  Src = '''
+    program P;
+    type TBox = class Bytes: array[0..7] of Byte; end;
+    procedure Copy8(Dst, Src: Pointer; N: Integer); external name 'memcpy';
+    var B: TBox; L: array[0..7] of Byte; I: Integer;
+    begin
+      B := TBox.Create();
+      for I := 0 to 7 do B.Bytes[I] := I + 10;
+      { @B.Bytes[0] is the address of the first element of the static-array
+        field — instance ptr + field offset.  memcpy copies all 8 bytes. }
+      Copy8(@L[0], @B.Bytes[0], 8);
+      WriteLn(L[0]); WriteLn(L[3]); WriteLn(L[7]);
+      B.Free()
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '10' + LE + '13' + LE + '17' + LE, 0);
 end;
 
 initialization

@@ -270,6 +270,12 @@ type
     function  JumboSetLiteralBytes(AExpr: TASTExpr): Integer;
     procedure EmitStaticElemAddr(ASub: TStringSubscriptExpr);
     procedure EmitDynElemAddr(ASub: TStringSubscriptExpr);
+    { x0 := address of an ELEMENT of an array-typed FIELD (leg 20):
+      @Obj.Arr[I] / @Self.Arr[I] / @Rec.Arr[I].  The field access carries
+      IsArrayAccess with the index in PropIndexExpr.  A static-array field is
+      inline at base+offset (no deref); dyn/open-array fields deref the data
+      pointer first. }
+    procedure EmitFieldElemAddr(AFAE: TFieldAccessExpr);
     procedure EmitElemLoad(AElem: TTypeDesc);
     function  AggHasManaged(AType: TTypeDesc): Boolean;
     function  RecReturnShape(ARec: TRecordTypeDesc): Integer;
@@ -2730,6 +2736,15 @@ begin
          (TAddrOfExpr(AExpr).Expr.ResolvedType.Kind = tyInterface) then
         NotYet('address-of an interface variable (fat pointer)', AExpr);
       EmitSlotAddr('x0', TIdentExpr(TAddrOfExpr(AExpr).Expr).Name);
+      Exit;
+    end;
+    if (TAddrOfExpr(AExpr).Expr is TFieldAccessExpr) and
+       (TFieldAccessExpr(TAddrOfExpr(AExpr).Expr).FieldInfo <> nil) and
+       TFieldAccessExpr(TAddrOfExpr(AExpr).Expr).IsArrayAccess then
+    begin
+      { @Obj.Arr[I] / @Self.Arr[I] / @Rec.Arr[I] — address of an array-field
+        ELEMENT (the field access carries IsArrayAccess + PropIndexExpr) }
+      EmitFieldElemAddr(TFieldAccessExpr(TAddrOfExpr(AExpr).Expr));
       Exit;
     end;
     if (TAddrOfExpr(AExpr).Expr is TFieldAccessExpr) and
@@ -5953,6 +5968,81 @@ begin
   EmitPopTo('x1');
   EmitIntLiteral('x2', ESz);
   Self.Emit(#9'mul x1, x1, x2');
+  Self.Emit(#9'add x0, x0, x1');
+end;
+
+procedure TArm64Backend.EmitFieldElemAddr(AFAE: TFieldAccessExpr);
+var
+  ESz, LowB: Integer;
+begin
+  { x0 := address of AFAE (an array-typed field element: Obj.Arr[I]).
+    Mirrors x86-64 @Rec.Arr[I] (:9765-9827).  First materialise the record/
+    instance BASE into x0, then add the field offset, then add the scaled
+    (low-bound-adjusted) index.  A CLASS base must be DEREFED to the instance
+    pointer BEFORE adding the field offset (the QBE trap: adding the offset to
+    the slot address yields a garbage pointer). }
+  if AFAE.FieldInfo = nil then
+    NotYet('address of an array-field element with no field info', AFAE);
+  { --- base into x0 --- }
+  if AFAE.Base <> nil then
+    Self.EmitExprToX0(AFAE.Base)                 { chained receiver }
+  else if AFAE.IsImplicitSelf then
+  begin
+    EmitLoadSlot('x0', 'Self');
+    if (AFAE.ImplicitBaseInfo <> nil) and
+       (TFieldInfo(AFAE.ImplicitBaseInfo).Offset > 0) then
+      EmitAddSubImm('add', 'x0', 'x0', TFieldInfo(AFAE.ImplicitBaseInfo).Offset);
+    if AFAE.IsClassAccess then
+      Self.Emit(#9'ldr x0, [x0]');
+  end
+  else if AFAE.IsClassAccess then
+  begin
+    { the instance POINTER lives in the field's owner slot (captured -> _cap_,
+      var-param -> extra deref); EmitCapturedBase handles both, else bare load }
+    if not EmitCapturedBase('x0', AFAE.RecordName, True, AFAE.IsVarParam) then
+    begin
+      EmitLoadSlot('x0', AFAE.RecordName);
+      if AFAE.IsVarParam then
+        Self.Emit(#9'ldr x0, [x0]');   { var-param class: slot -> instance }
+    end;
+  end
+  else if AFAE.IsVarParam then
+    EmitLoadSlot('x0', AFAE.RecordName)            { var record: slot = addr }
+  else
+    EmitSlotAddr('x0', AFAE.RecordName);           { local/global record addr }
+  { --- add field offset --- }
+  if AFAE.FieldInfo.Offset <> 0 then
+    EmitAddSubImm('add', 'x0', 'x0', AFAE.FieldInfo.Offset);
+  { --- scale + add index (park base across index eval, which may clobber x0) --- }
+  if AFAE.FieldInfo.TypeDesc.Kind = tyStaticArray then
+  begin
+    ESz := TStaticArrayTypeDesc(AFAE.FieldInfo.TypeDesc).ElementType.RawSize();
+    LowB := TStaticArrayTypeDesc(AFAE.FieldInfo.TypeDesc).LowBound;
+  end
+  else if AFAE.FieldInfo.TypeDesc.Kind = tyDynArray then
+  begin
+    Self.Emit(#9'ldr x0, [x0]');   { dyn-array field: deref the data pointer }
+    ESz := TDynArrayTypeDesc(AFAE.FieldInfo.TypeDesc).ElementType.RawSize();
+    LowB := 0;
+  end
+  else if AFAE.FieldInfo.TypeDesc.Kind = tyOpenArray then
+  begin
+    Self.Emit(#9'ldr x0, [x0]');
+    ESz := TOpenArrayTypeDesc(AFAE.FieldInfo.TypeDesc).ElementType.RawSize();
+    LowB := 0;
+  end
+  else
+    NotYet('address of a non-array field element', AFAE);
+  EmitPushX0();                                    { park base }
+  Self.EmitExprToX0(AFAE.PropIndexExpr);           { index -> x0 }
+  if LowB <> 0 then
+  begin
+    EmitIntLiteral('x1', LowB);
+    Self.Emit(#9'sub x0, x0, x1');
+  end;
+  EmitIntLiteral('x2', ESz);
+  Self.Emit(#9'mul x0, x0, x2');
+  EmitPopTo('x1');                                 { base }
   Self.Emit(#9'add x0, x0, x1');
 end;
 

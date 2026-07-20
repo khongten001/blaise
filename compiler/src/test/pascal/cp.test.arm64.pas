@@ -245,6 +245,12 @@ type
       deref the capture pointer TWICE (the base slot holds the caller's
       address), matching the read/method-call paths. }
     procedure TestCapturedVarParamClassBase_FieldWrite;
+    { self-cross-compile leg 20: address of an ELEMENT of an array-typed FIELD
+      of a class instance / Self — @Obj.Arr[I] / @Self.Arr[I].  The class base
+      must be DEREFED to the instance pointer before the field offset is added
+      (the missing-deref trap yields a garbage address). }
+    procedure TestAddrOfClassArrayFieldElement;
+    procedure TestAddrOfImplicitSelfArrayFieldElement;
   end;
 
 implementation
@@ -4464,6 +4470,89 @@ begin
     Pos('ldr x9, [x9]' + LF + #9'ldr x9, [x9]', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64vpw.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestAddrOfClassArrayFieldElement;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { @B.Bytes[0] where Bytes is a static-array field of the class B.  The
+    instance pointer must be LOADED from B's slot (ldr), then the field offset
+    added, then the scaled index — NOT the slot address (which would be a
+    garbage pointer).  A non-zero index (@B.Bytes[3]) must scale. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TBox = class Bytes: array[0..7] of Byte; end;
+    procedure Take(P: Pointer); begin end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      Take(@B.Bytes[0]);
+      Take(@B.Bytes[3]);
+      B.Free()
+    end.
+    ''');
+  { the class instance pointer is loaded from the global slot (a ldr of the
+    slot VALUE), then the field offset #8 is added to that instance pointer }
+  AssertTrue('the field offset is added to the loaded instance pointer',
+    Pos(#9'add x0, x0, #8', AsmT) >= 0);
+  { the element index is scaled (mul) and added to the base }
+  AssertTrue('the index is scaled and added',
+    Pos(#9'mul x0, x0, x2' + LF + #9'ldr x1, [sp], #16' + LF +
+        #9'add x0, x0, x1', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64afe.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestAddrOfImplicitSelfArrayFieldElement;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { @FMtx[0] inside a method — the implicit-Self static-array field element
+    address: base is Self + field offset (inline storage, no deref), then the
+    scaled index. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TBox = class
+      FMtx: array[0..3] of Integer;
+      procedure Fill;
+    end;
+    procedure Take(P: Pointer); begin end;
+    procedure TBox.Fill;
+    begin Take(@FMtx[0]) end;
+    var B: TBox;
+    begin B := TBox.Create(); B.Fill(); B.Free() end.
+    ''');
+  { Self is loaded, the field offset added, and the index scaled+added.
+    (The implicit-Self static-array field element goes through the leg-16
+    EmitStaticElemAddr path, which scales via x1; the class-access form goes
+    through leg-20's EmitFieldElemAddr — both compute base+offset+index*size.) }
+  AssertTrue('implicit-Self base is loaded',
+    Pos(#9'ldur x0, [x29,', AsmT) >= 0);
+  AssertTrue('the field offset is added to the Self base',
+    Pos(#9'add x0, x0, #8', AsmT) >= 0);
+  AssertTrue('the index is scaled and added',
+    Pos(#9'mul x1, x1, x2' + LF + #9'add x0, x0, x1', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64asf.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);
