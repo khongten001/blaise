@@ -230,6 +230,10 @@ type
       composes (L1_L2_L3), avoiding cross-class / cross-scope collisions. }
     procedure TestNestedProc_MethodMangle_IncludesClass;
     procedure TestNestedProc_MultiLevelMangle_FullChain;
+    { self-cross-compile leg 18: a STRING-indexed property write and read.  The
+      key is a single pointer-sized register value passed BORROWED (no caller
+      AddRef); setter is called as SetItem(self=x0, key=x1, value=x2). }
+    procedure TestStringIndexedProperty_WriteRead;
   end;
 
 implementation
@@ -4262,6 +4266,57 @@ begin
     Pos(#9'bl L1_L2_L3', AsmT) >= 0);
   AssertTrue('the parent-only L2_L3 symbol is gone',
     Pos(LF + 'L2_L3:', AsmT) < 0);
+end;
+
+procedure TArm64BackendTests.TestStringIndexedProperty_WriteRead;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { A class with a string-indexed property (Items[Key: string]: Integer).  The
+    write B.Items['k'] := 7 must lower (previously NotYet'd as a non-integer
+    index): the key string pointer goes to x1, the value to x2, receiver x0,
+    then bl SetItem.  The key is BORROWED — no _StringAddRef before the setter
+    (matching x86-64/QBE).  A read then dispatches the getter. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TBox = class
+        FVal: Integer;
+        function GetItem(const Key: string): Integer;
+        procedure SetItem(const Key: string; V: Integer);
+        property Items[Key: string]: Integer read GetItem write SetItem;
+      end;
+    function TBox.GetItem(const Key: string): Integer;
+    begin Result := FVal end;
+    procedure TBox.SetItem(const Key: string; V: Integer);
+    begin FVal := V end;
+    var B: TBox;
+    begin
+      B := TBox.Create();
+      B.Items['k'] := 7;
+      WriteLn(B.Items['k']);
+      B.Free()
+    end.
+    ''');
+  AssertTrue('the string-indexed setter is called',
+    Pos(#9'bl TBox_SetItem', AsmT) >= 0);
+  AssertTrue('the string-indexed getter is called',
+    Pos(#9'bl TBox_GetItem', AsmT) >= 0);
+  { the setter receives value in x2 and key in x1 (popped in that order) }
+  AssertTrue('value -> x2, key -> x1 before the setter call',
+    Pos(#9'ldr x2, [sp], #16' + LF + #9'ldr x1, [sp], #16' + LF +
+        #9'bl TBox_SetItem', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64sip.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
 end;
 
 initialization

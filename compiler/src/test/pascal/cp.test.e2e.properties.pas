@@ -30,6 +30,9 @@ type
     procedure TestRun_DefaultValueIsZero;
     procedure TestRun_InheritedProperty;
     procedure TestRun_IndexedProperty;
+    { leg 18: a STRING-indexed property (key is a string, not an integer).  The
+      key is passed borrowed in one register, exactly like an integer index. }
+    procedure TestRun_StringIndexedProperty;
     { Default array property: Obj[I] sugar (read + write), string element, and
       inheritance of the default property from a base class. }
     procedure TestRun_DefaultProperty_ReadWrite;
@@ -125,6 +128,18 @@ const
     begin c := TC.Create(); c.Items[3] := 99; WriteLn(c.Items[3]); c.Free() end.
     ''';
 
+  SrcStringIndexed = '''
+    program Prg;
+    type TC = class
+      FVal: Integer;
+      function GetItem(const Key: string): Integer; begin Result := FVal end;
+      procedure SetItem(const Key: string; V: Integer); begin FVal := V end;
+      property Items[Key: string]: Integer read GetItem write SetItem;
+    end;
+    var c: TC;
+    begin c := TC.Create(); c.Items['k'] := 88; WriteLn(c.Items['k']); c.Free() end.
+    ''';
+
   SrcArrFieldRead = '''
     program Prg;
     type TC = class FD: array[0..4] of Integer; function At(i: Integer): Integer; begin Result := FD[i] end; end;
@@ -205,6 +220,12 @@ procedure TE2EPropertyTests.TestRun_IndexedProperty;
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(SrcIndexed, '99' + LE, 0);
+end;
+
+procedure TE2EPropertyTests.TestRun_StringIndexedProperty;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(SrcStringIndexed, '88' + LE, 0);
 end;
 
 procedure TE2EPropertyTests.TestRun_StaticArrayField_ReadInMethod;

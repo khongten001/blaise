@@ -999,9 +999,27 @@ begin
         NotYet('static indexed property write', AStmt);
       if TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsFloat() then
         NotYet('float indexed property write', AStmt);
+      { The index rides in one integer register — an int OR a string (a
+        pointer) fits identically (leg 18).  A string KEY is passed BORROWED:
+        the by-value setter param retains its own copy only if it stores the
+        key, so the caller adds no ref — matching the x86-64 (:15211) and QBE
+        (:7310) reference backends, which have no index-type guard and no key
+        AddRef.  Other non-integer index kinds (float/record/managed-non-string)
+        stay an honest hole. }
       if not (IsIntFam(AStmt.PropIndexExpr.ResolvedType) or
-              (AStmt.PropIndexExpr is TIntLiteral)) then
+              (AStmt.PropIndexExpr is TIntLiteral) or
+              ((AStmt.PropIndexExpr.ResolvedType <> nil) and
+               (AStmt.PropIndexExpr.ResolvedType.Kind = tyString))) then
         NotYet('indexed property with a non-integer index', AStmt);
+      { An OWNED managed VALUE (string/class transient) on the indexed path
+        would need the +1 handover discipline EmitCall applies; this arm passes
+        the value borrowed, so keep it an honest hole (self-host only needs an
+        Integer value here).  Mirrors the non-indexed guard below. }
+      if (TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.IsString() and
+          ArcBuiltinStrArgOwnsRef(AStmt.Expr)) or
+         ((TPropertyInfo(AStmt.PropWriteInfo).TypeDesc.Kind = tyClass) and
+          ArcExprOwnsRef(AStmt.Expr)) then
+        NotYet('owned transient as indexed-property value', AStmt);
       Self.EmitExprToX0(AStmt.PropIndexExpr);
       EmitPushX0();
       Self.EmitExprToX0(AStmt.Expr);
@@ -3403,8 +3421,13 @@ begin
   end;
   if AFld.PropIndexExpr <> nil then
   begin
+    { a string index is a single pointer-sized register value, passed borrowed
+      like any string arg (leg 18) — same relaxation as the write path, mirrors
+      x86-64 (:9256) / QBE which have no index-type guard. }
     if not (IsIntFam(AFld.PropIndexExpr.ResolvedType) or
-            (AFld.PropIndexExpr is TIntLiteral)) then
+            (AFld.PropIndexExpr is TIntLiteral) or
+            ((AFld.PropIndexExpr.ResolvedType <> nil) and
+             (AFld.PropIndexExpr.ResolvedType.Kind = tyString))) then
       NotYet('indexed property with a non-integer index', AFld);
     Self.EmitExprToX0(AFld.PropIndexExpr);
     EmitPushX0();
