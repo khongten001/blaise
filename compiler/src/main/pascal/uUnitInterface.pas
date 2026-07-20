@@ -225,6 +225,14 @@ type
                                     unit from its cached .bif and must still
                                     emit a call to <Unit>_init at program
                                     startup, or the init section never runs. }
+    HasFinalization: Boolean;     { unit exports a <Unit>_fini procedure
+                                    (user finalization section and/or managed
+                                    module globals released per-unit — the
+                                    shared UnitNeedsFini predicate).  The
+                                    incremental rebuild must emit a call to
+                                    <Unit>_fini at main_exit, or the unit's
+                                    finalization never runs and its globals
+                                    leak. }
 
     { The owning-collection containers below are populated on decode via
       the Add* mutators, not by name; their element data round-trips

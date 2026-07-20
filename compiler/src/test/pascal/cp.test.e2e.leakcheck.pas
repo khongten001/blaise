@@ -194,9 +194,51 @@ type
       proc must release it, and closure-body reassignment must go through the
       string retain/release store path. }
     procedure TestDebug_ClosureCapturedString_NoLeak;
+
+    { ---- Per-unit ARC teardown (<Unit>_fini) ----
+      Managed UNIT-scope globals must be released at program exit.  These
+      tests shell out to the REAL compiler binary and build with the DEFAULT
+      incremental separate-compilation path (`--output`, no --no-incremental):
+      that is the path where unit globals never reach the program TU's data
+      globals, so main used to emit no release walk for them (and QBE emitted
+      none in any mode).  The in-process harnesses (CompileAndRunWithRTLDebugOn)
+      take the whole-program path, where native looked correct — verifying
+      there would pass vacuously.  Allocation happens in a procedure called
+      from main, never in an initialization section (_LeakTrackerEnable runs
+      after unit inits, so init-time allocations are invisible to the
+      tracker). }
+    procedure TestDebug_UnitGlobalStaticArrayOfString_NoLeak;
+    procedure TestDebug_UnitGlobalScalarString_NoLeak;
+    procedure TestDebug_UnitGlobalClass_NoLeak;
+    { Implementation-section private global: invisible to main's TU even in
+      whole-program mode — only the unit's own <Unit>_fini can reach it.
+      This is the case that justifies the per-unit fini design. }
+    procedure TestDebug_UnitImplementationGlobal_NoLeak;
+    { Two units, each holding a global object whose destructor prints:
+      finalisation must run in REVERSE init order (last initialised, first
+      finalised). }
+    procedure TestDebug_TwoUnits_FiniReverseOrder;
+    { A unit's user `finalization` block must run at exit — before the unit's
+      globals are released, so it can still read them. }
+    procedure TestDebug_FinalizationSection_RunsBeforeRelease;
+  protected
+    { Compile AUnit1Src/AUnit2Src (either may be '') + AProgSrc with the real
+      compiler binary on the DEFAULT incremental path (--debug --output),
+      run the binary, and return its exit code (or the compiler's exit code,
+      negated, on compile failure).  AOutput carries the binary's stdout
+      (or the compiler diagnostics on compile failure).  ABackend is the
+      --backend argument: 'qbe' or 'native'.  A fresh scratch subdirectory is
+      used per call so the unit cache is always cold (avoids the separate
+      warm-rebuild .bif round-trip bug for unit-interface static arrays). }
+    function RunUnitFiniDebug(const ABackend, AUnit1Src, AUnit2Src,
+                              AProgSrc: string;
+                              out AOutput: string): Integer;
   end;
 
 implementation
+
+uses
+  classes, sysutils, process;
 
 procedure TE2ELeakCheckTests.SetUp;
 begin
@@ -2461,6 +2503,453 @@ begin
   AssertEquals('exit 0', 0, ExitCode);
   AssertEquals('stdout', 'alpha-beta' + LE + 'done' + LE, Output);
   AssertTrue('no leak report, got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+{ ---- Per-unit ARC teardown (<Unit>_fini) ---- }
+
+{ Local copy of the base unit's implementation-private UnitNameOf: extract the
+  unit name from a 'unit <name>;' header so the source can be written to the
+  matching <name>.pas the unit loader expects. }
+function FiniUnitNameOf(const ASrc: string): string;
+var
+  P, Q: Integer;
+begin
+  P := Pos('unit ', ASrc);
+  if P < 0 then begin Result := ''; Exit; end;
+  P := P + 5;
+  Q := P;
+  while (Q < Length(ASrc)) and (ASrc[Q] <> Ord(';')) and (ASrc[Q] <> Ord(' '))
+        and (ASrc[Q] <> 10) and (ASrc[Q] <> 13) do
+    Q := Q + 1;
+  Result := Copy(ASrc, P, Q - P);
+end;
+
+procedure FiniWriteFile(const APath, AContent: string);
+var
+  SL: TStringList;
+begin
+  SL := TStringList.Create();
+  try
+    SL.Text := AContent;
+    SL.SaveToFile(APath);
+  finally
+    SL.Free();
+  end;
+end;
+
+{ Delete a stale per-unit artefact set so every compile is COLD-cache. }
+procedure FiniDeleteUnitArtefacts(const ADir, AUnitName: string);
+begin
+  if AUnitName = '' then Exit;
+  DeleteFile(ADir + '/' + LowerCase(AUnitName) + '.pas');
+  DeleteFile(ADir + '/' + LowerCase(AUnitName) + '.o');
+  DeleteFile(ADir + '/' + LowerCase(AUnitName) + '.bif');
+end;
+
+function FiniRunProc(const AExe: string; AArgs: TStringList;
+                     out AStdout: string): Integer;
+var
+  Proc:  TProcess;
+  I:     Integer;
+  Chunk: string;
+begin
+  Proc := TProcess.Create(nil);
+  try
+    Proc.Executable := AExe;
+    if AArgs <> nil then
+      for I := 0 to AArgs.Count - 1 do
+        Proc.Parameters.Add(AArgs.Strings[I]);
+    Proc.Execute();
+    AStdout := '';
+    repeat
+      Chunk := Proc.ReadOutput();
+      AStdout := AStdout + Chunk
+    until (Chunk = '') and not Proc.Running;
+    Proc.WaitOnExit();
+    Result := Proc.ExitCode
+  finally
+    Proc.Free()
+  end
+end;
+
+function TE2ELeakCheckTests.RunUnitFiniDebug(const ABackend, AUnit1Src,
+  AUnit2Src, AProgSrc: string; out AOutput: string): Integer;
+var
+  Dir, ProgPas, BinPath, CompOut: string;
+  Args: TStringList;
+  Rc: Integer;
+  NoArgs: TStringList;
+begin
+  Inc(FCounter);
+  Dir := FScratch + '/unitfini' + IntToStr(FCounter) + '_' + ABackend;
+  ForceDirectories(Dir);
+  { Stale artefacts from a previous TestRunner invocation would warm the unit
+    cache — delete them so the compile is cold and deterministic. }
+  FiniDeleteUnitArtefacts(Dir, FiniUnitNameOf(AUnit1Src));
+  FiniDeleteUnitArtefacts(Dir, FiniUnitNameOf(AUnit2Src));
+  ProgPas := Dir + '/prog.pas';
+  BinPath := Dir + '/prog';
+  DeleteFile(ProgPas);
+  DeleteFile(BinPath);
+  if AUnit1Src <> '' then
+    FiniWriteFile(Dir + '/' + LowerCase(FiniUnitNameOf(AUnit1Src)) + '.pas',
+      AUnit1Src);
+  if AUnit2Src <> '' then
+    FiniWriteFile(Dir + '/' + LowerCase(FiniUnitNameOf(AUnit2Src)) + '.pas',
+      AUnit2Src);
+  FiniWriteFile(ProgPas, AProgSrc);
+  Args := TStringList.Create();
+  try
+    Args.Add('--source');
+    Args.Add(ProgPas);
+    Args.Add('--unit-path');
+    Args.Add(Dir);
+    Args.Add('--unit-path');
+    Args.Add(FRTLUnitPath);
+    Args.Add('--unit-path');
+    Args.Add(FStdlibUnitPath);
+    Args.Add('--debug');
+    Args.Add('--backend');
+    Args.Add(ABackend);
+    Args.Add('--output');
+    Args.Add(BinPath);
+    Rc := FiniRunProc(ProjectRoot() + 'compiler/target/blaise', Args, CompOut);
+  finally
+    Args.Free();
+  end;
+  if Rc <> 0 then
+  begin
+    AOutput := 'COMPILE FAILED (' + ABackend + '): ' + CompOut;
+    Result := -Rc;
+    if Result = 0 then Result := -1;
+    Exit;
+  end;
+  NoArgs := TStringList.Create();
+  try
+    Result := FiniRunProc(BinPath, NoArgs, AOutput);
+  finally
+    NoArgs.Free();
+  end;
+end;
+
+const
+  SrcUnitFiniArrayUnit = '''
+    unit UFinA;
+    interface
+    var
+      UA: array[0..2] of string;
+    procedure Fill();
+    implementation
+    procedure Fill();
+    var
+      I: Integer;
+    begin
+      for I := 0 to 2 do
+        UA[I] := 'u' + IntToStr(I);
+    end;
+    end.
+    ''';
+  SrcUnitFiniArrayProg = '''
+    program P;
+    uses UFinA;
+    begin
+      Fill();
+      WriteLn(UA[1]);
+    end.
+    ''';
+
+  SrcUnitFiniScalarUnit = '''
+    unit UFinS;
+    interface
+    var
+      US: string;
+    procedure SetIt();
+    implementation
+    procedure SetIt();
+    begin
+      US := 'sca' + 'lar';
+    end;
+    end.
+    ''';
+  SrcUnitFiniScalarProg = '''
+    program P;
+    uses UFinS;
+    begin
+      SetIt();
+      WriteLn(US);
+    end.
+    ''';
+
+  SrcUnitFiniClassUnit = '''
+    unit UFinC;
+    interface
+    type
+      TThing = class
+        Name: string;
+        destructor Destroy; override;
+      end;
+    var
+      GT: TThing;
+    procedure MakeIt();
+    implementation
+    destructor TThing.Destroy;
+    begin
+      WriteLn('down ', Name);
+      inherited Destroy();
+    end;
+    procedure MakeIt();
+    begin
+      GT := TThing.Create();
+      GT.Name := 'thing';
+    end;
+    end.
+    ''';
+  SrcUnitFiniClassProg = '''
+    program P;
+    uses UFinC;
+    begin
+      MakeIt();
+      WriteLn('run');
+    end.
+    ''';
+
+  SrcUnitFiniImplUnit = '''
+    unit UFinP;
+    interface
+    procedure Bump();
+    function Get(): string;
+    implementation
+    var
+      Hidden: string;
+    procedure Bump();
+    begin
+      Hidden := Hidden + 'x';
+    end;
+    function Get(): string;
+    begin
+      Result := Hidden;
+    end;
+    end.
+    ''';
+  SrcUnitFiniImplProg = '''
+    program P;
+    uses UFinP;
+    begin
+      Bump();
+      Bump();
+      Bump();
+      WriteLn(Get());
+    end.
+    ''';
+
+  SrcUnitFiniOrderUnitX = '''
+    unit UFinX;
+    interface
+    type
+      TX = class
+        Tag: string;
+        destructor Destroy; override;
+      end;
+    var
+      GX: TX;
+    procedure MakeX();
+    implementation
+    destructor TX.Destroy;
+    begin
+      WriteLn('down ', Tag);
+      inherited Destroy();
+    end;
+    procedure MakeX();
+    begin
+      GX := TX.Create();
+      GX.Tag := 'X';
+    end;
+    end.
+    ''';
+  SrcUnitFiniOrderUnitY = '''
+    unit UFinY;
+    interface
+    type
+      TY = class
+        Tag: string;
+        destructor Destroy; override;
+      end;
+    var
+      GY: TY;
+    procedure MakeY();
+    implementation
+    destructor TY.Destroy;
+    begin
+      WriteLn('down ', Tag);
+      inherited Destroy();
+    end;
+    procedure MakeY();
+    begin
+      GY := TY.Create();
+      GY.Tag := 'Y';
+    end;
+    end.
+    ''';
+  SrcUnitFiniOrderProg = '''
+    program P;
+    uses UFinX, UFinY;
+    begin
+      MakeX();
+      MakeY();
+      WriteLn('run');
+    end.
+    ''';
+
+  SrcUnitFiniFinalUnit = '''
+    unit UFinF;
+    interface
+    var
+      FS: string;
+    procedure SetF();
+    implementation
+    procedure SetF();
+    begin
+      FS := 'fin-' + 'live';
+    end;
+    finalization
+      WriteLn('final sees ', FS);
+    end.
+    ''';
+  SrcUnitFiniFinalProg = '''
+    program P;
+    uses UFinF;
+    begin
+      SetF();
+      WriteLn('run');
+    end.
+    ''';
+
+procedure TE2ELeakCheckTests.TestDebug_UnitGlobalStaticArrayOfString_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniArrayUnit, '',
+    SrcUnitFiniArrayProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has u1 (qbe), got: ' + Output, Pos('u1', Output) >= 0);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniArrayUnit, '',
+    SrcUnitFiniArrayProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has u1 (native), got: ' + Output, Pos('u1', Output) >= 0);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_UnitGlobalScalarString_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniScalarUnit, '',
+    SrcUnitFiniScalarProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has scalar (qbe), got: ' + Output,
+    Pos('scalar', Output) >= 0);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniScalarUnit, '',
+    SrcUnitFiniScalarProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has scalar (native), got: ' + Output,
+    Pos('scalar', Output) >= 0);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_UnitGlobalClass_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniClassUnit, '',
+    SrcUnitFiniClassProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  { The destructor firing at teardown is the proof the release actually ran. }
+  AssertTrue('destructor ran at exit (qbe), got: ' + Output,
+    Pos('down thing', Output) >= 0);
+  AssertTrue('run before down (qbe), got: ' + Output,
+    Pos('run', Output) < Pos('down thing', Output));
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniClassUnit, '',
+    SrcUnitFiniClassProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('destructor ran at exit (native), got: ' + Output,
+    Pos('down thing', Output) >= 0);
+  AssertTrue('run before down (native), got: ' + Output,
+    Pos('run', Output) < Pos('down thing', Output));
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_UnitImplementationGlobal_NoLeak;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniImplUnit, '',
+    SrcUnitFiniImplProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has xxx (qbe), got: ' + Output, Pos('xxx', Output) >= 0);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniImplUnit, '',
+    SrcUnitFiniImplProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('stdout has xxx (native), got: ' + Output, Pos('xxx', Output) >= 0);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_TwoUnits_FiniReverseOrder;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniOrderUnitX,
+    SrcUnitFiniOrderUnitY, SrcUnitFiniOrderProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  AssertTrue('Y destroyed (qbe), got: ' + Output, Pos('down Y', Output) >= 0);
+  AssertTrue('X destroyed (qbe), got: ' + Output, Pos('down X', Output) >= 0);
+  { Reverse init order: UFinY initialised last, so it finalises first. }
+  AssertTrue('Y down before X down (qbe), got: ' + Output,
+    Pos('down Y', Output) < Pos('down X', Output));
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniOrderUnitX,
+    SrcUnitFiniOrderUnitY, SrcUnitFiniOrderProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('Y destroyed (native), got: ' + Output, Pos('down Y', Output) >= 0);
+  AssertTrue('X destroyed (native), got: ' + Output, Pos('down X', Output) >= 0);
+  AssertTrue('Y down before X down (native), got: ' + Output,
+    Pos('down Y', Output) < Pos('down X', Output));
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
+end;
+
+procedure TE2ELeakCheckTests.TestDebug_FinalizationSection_RunsBeforeRelease;
+var
+  Output: string;
+  ExitCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  ExitCode := RunUnitFiniDebug('qbe', SrcUnitFiniFinalUnit, '',
+    SrcUnitFiniFinalProg, Output);
+  AssertEquals('exit 0 (qbe), got: ' + Output, 0, ExitCode);
+  { The finalization block runs at exit and can still read the unit global —
+    its ARC release happens only AFTER the user code. }
+  AssertTrue('finalization ran and saw the global (qbe), got: ' + Output,
+    Pos('final sees fin-live', Output) >= 0);
+  AssertTrue('no leak report (qbe), got: ' + Output, Pos('leak', Output) < 0);
+  ExitCode := RunUnitFiniDebug('native', SrcUnitFiniFinalUnit, '',
+    SrcUnitFiniFinalProg, Output);
+  AssertEquals('exit 0 (native), got: ' + Output, 0, ExitCode);
+  AssertTrue('finalization ran and saw the global (native), got: ' + Output,
+    Pos('final sees fin-live', Output) >= 0);
+  AssertTrue('no leak report (native), got: ' + Output, Pos('leak', Output) < 0);
 end;
 
 initialization

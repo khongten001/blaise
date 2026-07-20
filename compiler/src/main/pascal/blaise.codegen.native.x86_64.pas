@@ -300,6 +300,17 @@ type
       AppendUnit order.  $main calls <Unit>_init for each, in order, after
       _SetArgs — mirrors the QBE backend's EmitMainHeader loop. }
     FUnitInitNames: TStringList;
+    { Names of dependency units that export a <Unit>_fini (user finalization
+      section and/or managed globals to release), in AppendUnit /
+      NoteDepFiniUnit order.  $main calls <Unit>_fini for each in REVERSE
+      order at main_exit, BEFORE the program's own EmitGlobalReleases —
+      mirrors FUnitInitNames. }
+    FUnitFiniNames: TStringList;
+    { Owner-prefixed global names already released by some unit's fini walk.
+      In the whole-program model unit globals also land in FDataGlobals, so
+      EmitGlobalReleases must skip these or the slot would be released twice
+      (fini + main epilogue). }
+    FFiniReleased: TStringList;
     { Names of dependency units imported from cached .bif/.o in incremental /
       separate-compilation mode (SkipDepCodegen).  A global whose owning unit
       is in this set is DEFINED by that unit's own object — this program/unit
@@ -374,6 +385,17 @@ type
       backend's @main_exit release pass.  Called from EmitProgram after the
       exit label. }
     procedure EmitGlobalReleases;
+    { Release ONE ARC-managed global slot (owner-prefixed name AName of type
+      ATy) via the shared ArcScopeExitReleaseKind dispatch.  The single walk
+      body behind BOTH program-exit teardown (EmitGlobalReleases) and the
+      per-unit <Unit>_fini walk (EmitUnit), so they cannot drift apart. }
+    procedure EmitGlobalReleaseOne(const AName: string; ATy: TTypeDesc);
+    { The <Unit>_fini release walk over one unit block's module-level var
+      decls: releases every managed, non-threadvar, non-[Unretained] global
+      via EmitGlobalReleaseOne and records the owner-prefixed name in
+      FFiniReleased so the whole-program EmitGlobalReleases does not release
+      the same slot a second time. }
+    procedure EmitUnitGlobalReleases(ABlock: TBlock);
     { Emit all class-related data: class-name strings, published-method tables,
       typeinfo blocks, vtables, itab/impllist blocks.  Mirrors QBE backend's
       EmitTypeInfoDefs + EmitVTableDefs.  Called from EmitProgram (program type
@@ -598,6 +620,8 @@ type
     procedure EmitUnit(AUnit: TUnit); override;
     procedure NoteDepInitUnit(const AUnitName: string;
       AHasInit: Boolean); override;
+    procedure NoteDepFiniUnit(const AUnitName: string;
+      AHasFini: Boolean); override;
     procedure FinalizeEmit; override;
     { Emit a standalone procedure/function definition.  AExported controls
       whether the symbol gets .globl visibility (True by default).  In
@@ -1409,6 +1433,11 @@ begin
   FProgExcFrameCount  := 0;
   FSystemDefsEmitted  := False;
   FUnitInitNames      := TStringList.Create();
+  FUnitFiniNames      := TStringList.Create();
+  FFiniReleased       := TStringList.Create();
+  FFiniReleased.CaseSensitive := True;
+  FFiniReleased.Sorted := True;
+  FFiniReleased.Duplicates := dupIgnore;
   FImportedUnits      := TStringList.Create();
   FImportedUnits.CaseSensitive := False;
   FImportedUnits.Sorted := True;
@@ -1424,6 +1453,8 @@ begin
   Self.ClearFrame();
   FConstArgUnsafe.Free();
   FImportedUnits.Free();
+  FFiniReleased.Free();
+  FUnitFiniNames.Free();
   FUnitInitNames.Free();
   FOALFrames.Free();
   FFinallyStack.Free();
@@ -1993,13 +2024,18 @@ begin
 end;
 
 procedure TX86_64Backend.EmitGlobalReleases;
-{ Program-exit teardown of ARC-managed GLOBALS.  Addressing is <Name>(%rip);
-  the sibling procedure-epilogue walk in EmitProcDecl does the same job for
-  frame-resident locals via VarOperand.  Both dispatch on the shared
-  ArcScopeExitReleaseKind classifier so they cannot drift apart on which
-  type kinds they cover — which is exactly how a program-level
-  `array[0..N] of TFoo` came to leak every element while the identical array
-  inside a procedure was released correctly. }
+{ Program-exit teardown of ARC-managed GLOBALS owned by the PROGRAM itself.
+  Addressing is <Name>(%rip); the sibling procedure-epilogue walk in
+  EmitProcDecl does the same job for frame-resident locals via VarOperand.
+  Both dispatch on the shared ArcScopeExitReleaseKind classifier (see
+  EmitGlobalReleaseOne) so they cannot drift apart on which type kinds they
+  cover.  UNIT-owned globals are NOT released here: each unit's own
+  <Unit>_fini (emitted in the unit's translation unit, where impl-section
+  privates are reachable) releases them, and $main calls the finis in
+  reverse init order just before this walk.  Hence the two skips below —
+  imported globals (incremental mode: the owning unit's object holds both
+  the slot and its fini) and FFiniReleased entries (whole-program mode:
+  unit globals share this FDataGlobals map with program globals). }
 var
   I:     Integer;
   Name:  string;
@@ -2013,40 +2049,72 @@ begin
     { Thread-var globals live in TLS and are not released here (matches the
       data-section split; their lifetime is per-thread, not program-global). }
     if Self.IsThreadVarGlobal(Name) then Continue;
-    case ArcScopeExitReleaseKind(Ty) of
+    { Unit-owned: released by the owning unit's <Unit>_fini, called above. }
+    if Self.IsImportedGlobal(Name) then Continue;
+    if FFiniReleased.IndexOf(Name) >= 0 then Continue;
+    Self.EmitGlobalReleaseOne(Name, Ty);
+  end;
+end;
+
+procedure TX86_64Backend.EmitUnitGlobalReleases(ABlock: TBlock);
+var
+  I, J: Integer;
+  VD:   TVarDecl;
+  Name: string;
+begin
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(ABlock.Decls.Items[I]);
+    if VD.ResolvedType = nil then Continue;
+    if VD.IsThreadVar then Continue;
+    if VD.IsUnretained then Continue;
+    if ArcScopeExitReleaseKind(VD.ResolvedType) = arkNone then Continue;
+    for J := 0 to VD.Names.Count - 1 do
+    begin
+      Name := Self.GlobalSymName(VD.Names.Strings[J]);
+      Self.EmitGlobalReleaseOne(Name, VD.ResolvedType);
+      FFiniReleased.Add(Name);
+    end;
+  end;
+end;
+
+procedure TX86_64Backend.EmitGlobalReleaseOne(const AName: string; ATy: TTypeDesc);
+begin
+    case ArcScopeExitReleaseKind(ATy) of
       arkString:
         begin
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [AName]));
           Self.Emit(#9'callq _StringRelease');
         end;
       arkClass:
         begin
-          if Self.IsWeakGlobal(Name) then
+          if Self.IsWeakGlobal(AName) then
           begin
-            Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Name]));
+            Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [AName]));
             Self.Emit(#9'callq _WeakClear');
           end
           else
           begin
-            Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+            Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [AName]));
             Self.Emit(#9'callq _ClassRelease');
           end;
         end;
       arkDynArray:
         begin
-          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [AName]));
           Self.Emit(#9'callq _DynArrayRelease');
         end;
       arkIntf:
         begin
-          if Self.IsWeakGlobal(Name) then
+          if Self.IsWeakGlobal(AName) then
           begin
-            Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rdi', [Name]));
+            Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rdi', [AName]));
             Self.Emit(#9'callq _WeakClear');
           end
           else
           begin
-            Self.Emit(Format(#9'movq %s_obj(%%rip), %%rdi', [Name]));
+            Self.Emit(Format(#9'movq %s_obj(%%rip), %%rdi', [AName]));
             Self.Emit(#9'callq _ClassRelease');
           end;
         end;
@@ -2065,7 +2133,7 @@ begin
             (A)/(B) drift the shared classifier exists to prevent — with the
             case statements aligned, the gap is now visible as a missing arm
             rather than an invisible fall-off-the-end. }
-          Self.Emit(Format(#9'movq %s+8(%%rip), %%rdi', [Name]));
+          Self.Emit(Format(#9'movq %s+8(%%rip), %%rdi', [AName]));
           Self.Emit(#9'callq _ClassRelease');
         end;
       arkAggregate:
@@ -2095,12 +2163,11 @@ begin
             element slot, so this walk is a no-op on already-freed
             elements. }
           Self.Emit(#9'pushq %rbx');
-          Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [Name]));
-          Self.EmitManagedReleaseAt(Ty, '%rbx', False);
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [AName]));
+          Self.EmitManagedReleaseAt(ATy, '%rbx', False);
           Self.Emit(#9'popq %rbx');
         end;
     end;
-  end;
 end;
 
 { Evaluate a string literal: register it in the pool if new, then emit
@@ -21633,6 +21700,14 @@ begin
     end. }
   Self.Emit(FExitLabel + ':');
   FExitLabel := '';
+  { Per-unit teardown first, in REVERSE init order (last initialised, first
+    finalised): each <Unit>_fini runs that unit's user finalization section
+    and releases its managed globals — including implementation-section
+    privates this translation unit cannot even name.  Then the program's own
+    globals are released (a program global may hold a back-reference into a
+    unit global's object graph, so the program-owned references go last). }
+  for I := FUnitFiniNames.Count - 1 downto 0 do
+    Self.Emit(#9'callq ' + FUnitFiniNames.Strings[I] + '_fini');
   Self.EmitGlobalReleases();
   Self.Emit(#9'movl $0, %eax');
   Self.Emit(#9'leave');
@@ -21705,6 +21780,10 @@ begin
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
         if VD.IsThreadVar then
           Self.MarkThreadVar(VD.Names.Strings[J]);
+        { Mirror EmitProgram's weak registration so the <Unit>_fini walk
+          clears a [Weak] slot instead of strong-releasing it. }
+        if VD.IsWeak then
+          Self.MarkWeakGlobal(VD.Names.Strings[J]);
         if VD.InitConst <> nil then
           FGlobalInits.Add(Self.GlobalSymName(VD.Names.Strings[J]), VD.InitConst);
       end;
@@ -21725,6 +21804,10 @@ begin
         Self.AddGlobal(VD.Names.Strings[J], VD.ResolvedType);
         if VD.IsThreadVar then
           Self.MarkThreadVar(VD.Names.Strings[J]);
+        { Mirror EmitProgram's weak registration so the <Unit>_fini walk
+          clears a [Weak] slot instead of strong-releasing it. }
+        if VD.IsWeak then
+          Self.MarkWeakGlobal(VD.Names.Strings[J]);
         if VD.InitConst <> nil then
           FGlobalInits.Add(Self.GlobalSymName(VD.Names.Strings[J]), VD.InitConst);
       end;
@@ -21817,6 +21900,45 @@ begin
     Self.Emit('.type ' + NativeMangle(AUnit.Name) + '_init, @function');
   end;
 
+  { Per-unit teardown: emit <Unit>_fini when the shared UnitNeedsFini
+    predicate holds (user finalization section and/or managed module
+    globals).  The program's $main calls every registered fini at main_exit
+    in REVERSE init order, BEFORE its own EmitGlobalReleases.  The fini
+    lives in the unit's OWN translation unit so implementation-section
+    private globals — unreachable from the program object — are released
+    too.  Order inside the fini: user finalization code FIRST (it may still
+    read the globals), then the ARC release walk. }
+  if UnitNeedsFini(AUnit) then
+  begin
+    { Re-assert the viewing context (see the init-block note above):
+      GlobalSymName and any finalization-body symbol resolution must see
+      THIS unit's own impl-section symbols. }
+    if FSymTable <> nil then
+      FSymTable.DefineOwningUnit := AUnit.Name;
+    FUnitFiniNames.Add(NativeMangle(AUnit.Name));
+    FProgHasJumboSet := True;
+    Self.ClearFrame();
+    FExitLabel := '';
+    FExcDepth := 0;
+    FExcFrameNext := 0;
+    FForEndNext := 0;
+    FFinallyStack.Free();
+    FFinallyStack := TList<TCompoundStmt>.Create();
+    Self.Emit('.text');
+    Self.Emit('.globl ' + NativeMangle(AUnit.Name) + '_fini');
+    Self.Emit(NativeMangle(AUnit.Name) + '_fini:');
+    Self.Emit(#9'pushq %rbp');
+    Self.Emit(#9'movq %rsp, %rbp');
+    if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
+      Self.EmitStmtList(AUnit.FinalStmts);
+    Self.EmitUnitGlobalReleases(AUnit.IntfBlock);
+    Self.EmitUnitGlobalReleases(AUnit.ImplBlock);
+    Self.Emit(#9'movl $0, %eax');
+    Self.Emit(#9'leave');
+    Self.Emit(#9'ret');
+    Self.Emit('.type ' + NativeMangle(AUnit.Name) + '_fini, @function');
+  end;
+
   { Class data section: typeinfo, vtables, field-cleanup functions for the
     unit's classes.  System defs (TObject/TCustomAttribute) emitted once. }
   { In the whole-program multi-unit model the unit is analysed as part of the
@@ -21871,6 +21993,17 @@ begin
     EmitDataSection emits globals owned by it as references, not definitions —
     the cached object owns the definition. }
   FImportedUnits.Add(AUnitName);
+end;
+
+procedure TX86_64Backend.NoteDepFiniUnit(const AUnitName: string;
+  AHasFini: Boolean);
+begin
+  { Separate-compilation: the dep's <Unit>_fini is in its own object; record
+    the mangled name so EmitProgram's $main calls it at main_exit (in reverse
+    registration order).  Mangling matches EmitUnit's
+    FUnitFiniNames.Add(NativeMangle(AUnit.Name)). }
+  if AHasFini then
+    FUnitFiniNames.Add(NativeMangle(AUnitName));
 end;
 
 procedure TX86_64Backend.FinalizeEmit;

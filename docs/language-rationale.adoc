@@ -2947,6 +2947,61 @@ unambiguous to every reader.
 
 ---
 
+== Unit Teardown — Per-unit `finalization` and ARC Release Order
+
+=== Decision
+
+Every unit that has a `finalization` section and/or ARC-managed
+module-level variables (interface *or* implementation section) exports a
+per-unit teardown procedure, `<Unit>_fini`, emitted in the unit's own
+translation unit.  At program exit — after the program body but before the
+program's own global releases — the runtime startup code calls every
+registered `<Unit>_fini` in *reverse initialization order* (last
+initialised, first finalised).  Inside one unit's teardown the order is:
+
+1. The unit's user `finalization` statements — they may still read the
+   unit's globals.
+2. The ARC release walk over the unit's managed module globals
+   (thread-vars excluded — per-thread lifetime; `[Unretained]` excluded —
+   non-owning; `[Weak]` slots are cleared, not released).
+
+The program's own globals are released only after every unit teardown has
+run.
+
+=== Rationale
+
+* *Implementation-section privacy.*  Implementation-section globals are
+  invisible outside their unit (see "Implementation-section Declarations
+  are Unit-private"), so no other translation unit — including the
+  program's — can legally name them.  Only a teardown procedure emitted
+  *inside the unit* can release them; a centralised walk in `main` cannot.
+* *Reverse initialization order* mirrors every Pascal lineage (and C++
+  static destruction): a unit may depend on units initialised before it,
+  so it must be torn down before them.
+* *Finalization before release* — a `finalization` block exists precisely
+  to run last-minute code against the unit's state; releasing the globals
+  first would hand it dangling references.
+* *Program globals last* — a program-level variable may hold the sole
+  strong reference into an object graph that unit-level `[Unretained]`
+  back-references point into; unit teardown running first keeps those
+  reads valid, and the reference-counting balance is order-independent.
+* *No empty teardown* — a unit with neither a `finalization` section nor
+  managed globals exports no `<Unit>_fini` and costs no call; binaries do
+  not grow.
+
+=== Alternatives rejected
+
+* *Releasing unit globals from the program's exit walk* — cannot reach
+  implementation-section privates, and in separate compilation the
+  program's translation unit does not even see the unit's variable
+  declarations.  This was the shape of the historical gap in which unit
+  globals were never released at all under the default incremental build.
+* *`atexit`-style runtime registration* — dynamic registration costs
+  startup work and hides the teardown order from the emitted code; the
+  static reverse-order call list is deterministic and inspectable.
+
+---
+
 == `Supports()` — Runtime Interface Membership Test
 
 Blaise provides `Supports()` as a compiler intrinsic with two overloaded forms:

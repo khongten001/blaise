@@ -68,6 +68,7 @@ type
     procedure AppendUnit(AUnit: TUnit);
     procedure AppendProgram(AProg: TProgram);
     procedure NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);
+    procedure NoteDepFiniUnit(const AUnitName: string; AHasFini: Boolean);
     function  GetOutput: string;
     function  GetRequiredLibs: TStringList;
   end;
@@ -202,6 +203,12 @@ procedure TCodeGenNative.NoteDepInitUnit(const AUnitName: string; AHasInit: Bool
 begin
   Self.EnsureBackend();
   FBackend.NoteDepInitUnit(AUnitName, AHasInit);
+end;
+
+procedure TCodeGenNative.NoteDepFiniUnit(const AUnitName: string; AHasFini: Boolean);
+begin
+  Self.EnsureBackend();
+  FBackend.NoteDepFiniUnit(AUnitName, AHasFini);
 end;
 
 function TCodeGenNative.GetOutput: string;

@@ -188,6 +188,14 @@ type
       no-op. }
     procedure NoteDepInitUnit(const AUnitName: string;
       AHasInit: Boolean); virtual;
+    { Teardown twin of NoteDepInitUnit: register a dep unit whose
+      <Unit>_fini (user finalization + managed-global release) is compiled
+      elsewhere so $main calls it at main_exit, in reverse init order.
+      Concrete backends that maintain a fini-call list override this; the
+      default is a no-op (the arm64 backend does not emit per-unit fini
+      yet). }
+    procedure NoteDepFiniUnit(const AUnitName: string;
+      AHasFini: Boolean); virtual;
     function  GetOutput: string;
 
     procedure SetSymbolTable(ASymTable: TSymbolTable);
@@ -522,6 +530,12 @@ procedure TNativeBackend.NoteDepInitUnit(const AUnitName: string;
   AHasInit: Boolean);
 begin
   { Default: no init-call list to maintain.  The x86_64 backend overrides. }
+end;
+
+procedure TNativeBackend.NoteDepFiniUnit(const AUnitName: string;
+  AHasFini: Boolean);
+begin
+  { Default: no fini-call list to maintain.  The x86_64 backend overrides. }
 end;
 
 function TNativeBackend.GetOutput: string;

@@ -230,6 +230,10 @@ type
     procedure TestWrite_StartsWithMagicAndVersion;
     { Unit name round-trips. }
     procedure TestRoundTrip_UnitNamePreserved;
+    { HasInitialization / HasFinalization round-trip via the META block —
+      a dropped fini flag means a cached unit's <Unit>_fini is never called
+      (finalization skipped, globals leak). }
+    procedure TestRoundTrip_InitFiniFlagsPreserved;
     { External-library link deps (LinkLibs) round-trip via the META block. }
     procedure TestRoundTrip_LinkLibsPreserved;
     { Int const round-trips. }
@@ -2737,15 +2741,16 @@ begin
   Iface := TUnitInterface.Create('U');
   try
     Buf := WriteUnitInterface(Iface);
-    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 14 since
-      ROUT entries gained the IsVarArgs flag (v13 added the record method
-      list, v12 the '->' lambda facts, v11 the 'generic-proc' TYPE-block
-      kind, on top of v10's 'reference to' form, v9's free-routine
+    { Blaise Pos is 0-based; match-at-start returns 0.  Version is 15 since
+      the META block gained HasFinalization — the per-unit ARC teardown
+      (<Unit>_fini) call flag (v14 added the ROUT IsVarArgs flag, v13 the
+      record method list, v12 the '->' lambda facts, v11 the 'generic-proc'
+      TYPE-block kind, on top of v10's 'reference to' form, v9's free-routine
       external-name linkage, v8's named integer subranges, v7's LinkLibs,
       v6's `overload` directive, v5's member Visibility, v4's
       TRoutineSig.IsStatic, and v3's static-member facts). }
     AssertTrue('starts with magic',
-      Pos('BLAISE-IFACE 14', Buf) = 0);
+      Pos('BLAISE-IFACE 15', Buf) = 0);
   finally
     Iface.Free();
   end;
@@ -2762,6 +2767,28 @@ begin
     Dst := ReadUnitInterface(Buf);
     try
       AssertEquals('unit name', 'MyUnit', Dst.Name);
+    finally
+      Dst.Free();
+    end;
+  finally
+    Src.Free();
+  end;
+end;
+
+procedure TIfaceIOTests.TestRoundTrip_InitFiniFlagsPreserved;
+var
+  Src, Dst: TUnitInterface;
+  Buf:      string;
+begin
+  Src := TUnitInterface.Create('MyUnit');
+  try
+    Src.HasInitialization := True;
+    Src.HasFinalization := True;
+    Buf := WriteUnitInterface(Src);
+    Dst := ReadUnitInterface(Buf);
+    try
+      AssertTrue('HasInitialization', Dst.HasInitialization);
+      AssertTrue('HasFinalization', Dst.HasFinalization);
     finally
       Dst.Free();
     end;

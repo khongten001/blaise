@@ -37,7 +37,7 @@ interface
 
 uses
   Classes, Contnrs, uAST, uSymbolTable, uUnitInterface, uCompilerId,
-  uUnitInterfaceIO;
+  uUnitInterfaceIO, blaise.codegen;
 
 { Build a TUnitInterface from AUnit.  AUnit must have been semantically
   analysed already.  ADeps holds the already-exported interfaces of
@@ -526,6 +526,11 @@ begin
         AIface.LinkLibs.Add(TLinkLibDecl(AUnit.LinkLibs.Items[I]).LibName);
   AIface.HasInitialization :=
     (AUnit.InitStmts <> nil) and (AUnit.InitStmts.Count > 0);
+  { The fini flag mirrors the codegen-side emission predicate EXACTLY (shared
+    UnitNeedsFini): the unit's own object exports <Unit>_fini iff this is
+    True, and the driver emits the main_exit call iff this is True — one
+    predicate, no drift. }
+  AIface.HasFinalization := UnitNeedsFini(AUnit);
 end;
 
 { ----- Top-level ------------------------------------------------- }

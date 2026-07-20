@@ -1111,9 +1111,17 @@ begin
           every dep is cached, so this is the only loop that fires. }
         if Loader <> nil then
           for I := 0 to Loader.PrebuiltIfaces.Count - 1 do
+          begin
             CG.NoteDepInitUnit(
               TUnitInterface(Loader.PrebuiltIfaces.Items[I]).Name,
               TUnitInterface(Loader.PrebuiltIfaces.Items[I]).HasInitialization);
+            { Teardown twin: the cached object exports <Unit>_fini iff the
+              .bif flag is set (same UnitNeedsFini predicate the emitter
+              used) — register so main_exit calls it in reverse init order. }
+            CG.NoteDepFiniUnit(
+              TUnitInterface(Loader.PrebuiltIfaces.Items[I]).Name,
+              TUnitInterface(Loader.PrebuiltIfaces.Items[I]).HasFinalization);
+          end;
         if not SkipDepCodegen then
         begin
           { Source-loaded deps are compiled inline into this object — append
@@ -1126,12 +1134,19 @@ begin
         begin
           { Incremental / separate-compilation: source dep bodies are compiled
             into their own objects (skipped here).  Note each so $main calls its
-            <Unit>_init and the backend references its globals externally. }
+            <Unit>_init / <Unit>_fini and the backend references its globals
+            externally.  The fini predicate is the shared UnitNeedsFini — the
+            same one the worker's AppendUnit used when it emitted (or did not
+            emit) the <Unit>_fini symbol into the dep's own object. }
           if Units <> nil then
             for I := 0 to Units.Count - 1 do
+            begin
               CG.NoteDepInitUnit(TUnit(Units.Items[I]).Name,
                 (TUnit(Units.Items[I]).InitStmts <> nil) and
                 (TUnit(Units.Items[I]).InitStmts.Count > 0));
+              CG.NoteDepFiniUnit(TUnit(Units.Items[I]).Name,
+                UnitNeedsFini(TUnit(Units.Items[I])));
+            end;
         end;
         CG.AppendProgram(Prog);
       end

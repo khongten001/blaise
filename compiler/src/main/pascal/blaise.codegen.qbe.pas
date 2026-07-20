@@ -94,6 +94,10 @@ type
                                        'm' when a libm math call is emitted) —
                                        unioned into the driver's -l<name> list }
     FUnitInitNames:    TStringList;  { unit names that have initialization sections }
+    FUnitFiniNames:    TStringList;  { unit names that export a $<Unit>_fini
+                                       (user finalization section and/or managed
+                                       globals to release) — called from
+                                       @main_exit in REVERSE order }
     FCurrentUnitName:  string;
     FProgramName: string;     { set by Generate/AppendProgram — program-scope
                                 classes keep bare symbol names (no unit prefix),
@@ -710,6 +714,7 @@ type
       Emits any remaining string literals and the $main function. }
     procedure AppendProgram(AProg: TProgram);
     procedure NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);
+    procedure NoteDepFiniUnit(const AUnitName: string; AHasFini: Boolean);
     function  GetOutput: string;
     { Link libraries the emitted IR depends on (e.g. 'm' for libm math calls),
       collected during codegen.  The driver unions these into its -l<name> list
@@ -825,6 +830,7 @@ begin
   FRequiredLibs.Sorted := True;
   FRequiredLibs.Duplicates := dupIgnore;
   FUnitInitNames   := TStringList.Create();
+  FUnitFiniNames   := TStringList.Create();
   FPromotedLocals  := TStringList.Create();
   FPromotedLocals.CaseSensitive := True;
   FConstArgUnsafe  := TStringList.Create();
@@ -864,6 +870,7 @@ begin
   FThreadVarNames.Free();
   FRequiredLibs.Free();
   FUnitInitNames.Free();
+  FUnitFiniNames.Free();
   FPromotedLocals.Free();
   FConstArgUnsafe.Free();
   FPromotedTypes.Free();
@@ -2723,6 +2730,12 @@ begin
   begin
     Decl := TVarDecl(ABlock.Decls.Items[I]);
     if Decl.ResolvedType = nil then Continue;
+    { Thread-vars live in TLS with per-thread lifetime — not released here.
+      [Unretained] slots hold no owned reference — nothing to balance.
+      Both only occur on unit/program-scope decls (this walk also serves the
+      per-unit fini teardown), but the guards are correct for locals too. }
+    if Decl.IsThreadVar then Continue;
+    if Decl.IsUnretained then Continue;
     IsIntf := Decl.ResolvedType.Kind = tyInterface;
     if Decl.IsWeak then
     begin
@@ -2893,6 +2906,15 @@ begin
       EmitLine(Format('  jmp @%s', [FExitLabel]));
       EmitLine('@' + FExitLabel);
     end;
+    { Program exit: call every registered $<Unit>_fini in REVERSE init order
+      (last initialised, first finalised) BEFORE the program's own global
+      releases — a program global may hold a back-reference into a unit
+      global's object graph, and each fini runs its unit's user finalization
+      code before releasing that unit's globals.  Only the program's top
+      block carries the 'main_exit' label, so this fires exactly once. }
+    if FExitLabel = 'main_exit' then
+      for I := FUnitFiniNames.Count - 1 downto 0 do
+        EmitLine('  call $' + FUnitFiniNames.Strings[I] + '_fini()');
     EmitArcCleanup(ABlock);
     { Program exit: release class/interface-typed static (class-level) variables.
       They are shared globals not present in ABlock.Decls, so EmitArcCleanup does
@@ -16931,16 +16953,36 @@ begin
         EmitPendingStrLits();
       end;
 
-      { Finalization section: emit as export function $<Unit>_fini() }
-      if (AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0) then
+      { Per-unit teardown: emit as export function $<Unit>_fini().  Runs the
+        user finalization section first (it may still read the globals), then
+        releases THIS unit's managed module globals — interface AND
+        implementation section; the impl-section privates are invisible to
+        main's translation unit, which is why the release walk must live in
+        the unit's own object.  @main_exit calls every registered fini in
+        reverse init order (see EmitBlock).  Emitted only when the shared
+        UnitNeedsFini predicate holds, so a unit with nothing to tear down
+        exports no symbol and costs no call. }
+      if UnitNeedsFini(AUnit) then
       begin
+        { Re-assert THIS unit as the viewing context (same reason as the init
+          block above): VarRef/GlobalVarUnitPrefix must resolve this unit's
+          own module vars — including impl-section privates — to the
+          owner-prefixed symbols the data emission defined. }
+        if FSymTable <> nil then
+          FSymTable.DefineOwningUnit := AUnit.Name;
+        FUnitFiniNames.Add(AUnit.Name);
         EmitLine('');
         EmitLine('export function w $' + AUnit.Name + '_fini() {');
         EmitLine('@start');
         FTempCount  := 0;
         FLabelCount := 0;
-        for I := 0 to AUnit.FinalStmts.Count - 1 do
-          EmitStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
+        if AUnit.FinalStmts <> nil then
+          for I := 0 to AUnit.FinalStmts.Count - 1 do
+            EmitStmt(TASTStmt(AUnit.FinalStmts.Items[I]));
+        { ARC teardown of the unit's globals, via the same classifier-driven
+          walk locals use at scope exit (VarRef resolves the global symbols). }
+        EmitArcCleanup(AUnit.IntfBlock);
+        EmitArcCleanup(AUnit.ImplBlock);
         EmitLine('  ret 0');
         EmitLine('}');
         EmitPendingStrLits();
@@ -16963,6 +17005,15 @@ begin
     QBE init symbol is the bare unit name + '_init' (see AppendUnit). }
   if AHasInit then
     FUnitInitNames.Add(AUnitName);
+end;
+
+procedure TCodeGenQBE.NoteDepFiniUnit(const AUnitName: string; AHasFini: Boolean);
+begin
+  { Separate-compilation: the dep's $<Unit>_fini is emitted in its own object;
+    record the name so @main_exit calls it (in reverse registration order).
+    Symbol shape matches AppendUnit: bare unit name + '_fini'. }
+  if AHasFini then
+    FUnitFiniNames.Add(AUnitName);
 end;
 
 procedure TCodeGenQBE.AppendProgram(AProg: TProgram);

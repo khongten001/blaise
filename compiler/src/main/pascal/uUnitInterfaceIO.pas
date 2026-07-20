@@ -54,7 +54,10 @@ uses
 
 const
   IFACE_MAGIC   = 'BLAISE-IFACE';
-  IFACE_VERSION = 14; { v14: ROUT entries gain an IsVarArgs bool after
+  IFACE_VERSION = 15; { v15: META block gains HasFinalization after
+                          HasInitialization — the per-unit ARC teardown
+                          (<Unit>_fini) call flag for cached deps. }
+                      { v14: ROUT entries gain an IsVarArgs bool after
                           ExternalName (C-variadic externals).
                         v13: record payload gains a method list (record
                           methods incl. statics — TUuid.RandomUuid — used to
@@ -841,7 +844,8 @@ begin
            EncodeStringList(AIface.UsedUnits) +
            EncodeStringList(AIface.ImplUsedUnits) +
            EncodeStringList(AIface.LinkLibs) +
-           EncodeBool(AIface.HasInitialization));
+           EncodeBool(AIface.HasInitialization) +
+           EncodeBool(AIface.HasFinalization));
     SB.AppendLine('END');
     Result := SB.ToString();
   finally
@@ -2309,6 +2313,7 @@ begin
   for I := 1 to C do
     AIface.LinkLibs.Add(ReadLpstrAt(AText, APos));
   AIface.HasInitialization := ReadLpstrAt(AText, APos) = '1';
+  AIface.HasFinalization := ReadLpstrAt(AText, APos) = '1';
   if ReadTag(AText, APos) <> 'END' then
     raise EIfaceFormatError.Create('META block: missing END marker');
 end;

@@ -104,6 +104,16 @@ type
       without one are skipped (no spurious call). }
     procedure NoteDepInitUnit(const AUnitName: string; AHasInit: Boolean);
 
+    { The teardown twin of NoteDepInitUnit: when a dependency unit's body is
+      compiled elsewhere, the program epilogue must still call that unit's
+      <Unit>_fini() (user finalization section + ARC release of the unit's
+      managed globals) at main_exit.  Registration order matches the init
+      list; the emitter calls the fini list in REVERSE (last initialised,
+      first finalised).  AHasFini mirrors the shared UnitNeedsFini predicate
+      (TUnitInterface.HasFinalization for cached deps); units without a fini
+      are skipped so no dangling call is emitted. }
+    procedure NoteDepFiniUnit(const AUnitName: string; AHasFini: Boolean);
+
     { Retrieve the complete generated output (QBE IR text for the QBE
       backend; target assembly text for the native backend). }
     function GetOutput: string;
@@ -217,6 +227,23 @@ function ArcTypeHasManagedContent(AType: TTypeDesc): Boolean;
   driver inherits; only a new managed SCALAR needs a new TArcReleaseKind and,
   with it, a compiler-visible gap in each driver's case statement. }
 function ArcScopeExitReleaseKind(AType: TTypeDesc): TArcReleaseKind;
+
+{ True when ABlock (a unit's interface or implementation block) declares at
+  least one module-level variable that needs an ARC release at program exit:
+  not a thread-var (per-thread lifetime, matching the data-section split),
+  not [Unretained] (non-owning), and of a kind the scope-exit classifier
+  covers.  [Weak] declarations count — the weak slot must be _WeakClear'd. }
+function UnitBlockHasManagedGlobals(ABlock: TBlock): Boolean;
+
+{ True when AUnit must export a <Unit>_fini procedure: it has a user
+  `finalization` section and/or managed module-level globals to release.
+  This is THE shared predicate for per-unit ARC teardown — the unit's own
+  translation unit emits the fini exactly when it is True, and the driver
+  registers a fini CALL for a dependency unit under the same predicate
+  (NoteDepFiniUnit / TUnitInterface.HasFinalization), so the call list and
+  the emitted symbols can never drift apart.  Units with nothing to do get
+  NO fini and no call — binaries do not grow. }
+function UnitNeedsFini(AUnit: TUnit): Boolean;
 
 { True if evaluating AExpr MIGHT defer a class-field-on-owned-transient base
   release (a retained class/interface field read whose base is an owned
@@ -472,6 +499,30 @@ begin
     if ArcTypeHasManagedContent(AType) then Exit(arkAggregate);
     Exit(arkNone);
   end;
+end;
+
+function UnitBlockHasManagedGlobals(ABlock: TBlock): Boolean;
+var
+  I:  Integer;
+  VD: TVarDecl;
+begin
+  Result := False;
+  if ABlock = nil then Exit;
+  for I := 0 to ABlock.Decls.Count - 1 do
+  begin
+    VD := TVarDecl(ABlock.Decls.Items[I]);
+    if VD.IsThreadVar then Continue;
+    if VD.IsUnretained then Continue;
+    if ArcScopeExitReleaseKind(VD.ResolvedType) <> arkNone then
+      Exit(True);
+  end;
+end;
+
+function UnitNeedsFini(AUnit: TUnit): Boolean;
+begin
+  Result := ((AUnit.FinalStmts <> nil) and (AUnit.FinalStmts.Count > 0))
+    or UnitBlockHasManagedGlobals(AUnit.IntfBlock)
+    or UnitBlockHasManagedGlobals(AUnit.ImplBlock);
 end;
 
 function ArcIsArrayElemSlot(AExpr: TASTExpr): Boolean;
