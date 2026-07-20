@@ -3958,10 +3958,19 @@ begin
   if (AAsgn.ResolvedLhsType <> nil) and
      (AAsgn.ResolvedLhsType.Kind = tyRecord) then
   begin
-    if AAsgn.IsVarParam then
-      { the slot holds the caller's ADDRESS — the memcpy/sret paths below
-        all take the slot's own address and would clobber the pointer }
-      NotYet('whole-record store to a var record parameter', AAsgn);
+    { A var-param record LHS: the slot holds the caller's ADDRESS, so the
+      whole-record COPY path below dereferences the slot (EmitLoadSlot) for the
+      dest instead of taking the slot's own address (leg 23).  The
+      record-returning-CALL-into-var-param sub-case (which writes through an
+      sret/x8 destination) is not yet wired for the deref'd dest — keep it an
+      honest hole (self-host only needs the copy form, R := Arr[i]). }
+    if AAsgn.IsVarParam and
+       (((AAsgn.Expr is TFuncCallExpr) and
+         (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil)) or
+        ((AAsgn.Expr is TMethodCallExpr) and
+         (TMethodCallExpr(AAsgn.Expr).ResolvedMethod <> nil) and
+         not TMethodCallExpr(AAsgn.Expr).IsConstructorCall)) then
+      NotYet('record-returning call into a var record parameter', AAsgn);
     { record-returning call: classify the callee's return shape }
     if ((AAsgn.Expr is TFuncCallExpr) and
         (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil)) or
@@ -4044,7 +4053,12 @@ begin
       Self.Emit(#9'stp x19, x22, [sp, #-16]!');
       EmitRecAddrToX0(AAsgn.Expr);
       Self.Emit(#9'mov x19, x0');
-      EmitSlotAddr('x22', AAsgn.Name);
+      { dest = the record's address: a var-param slot holds the caller's
+        ADDRESS (deref it); a local/global's slot IS the record (its address) }
+      if AAsgn.IsVarParam then
+        EmitLoadSlot('x22', AAsgn.Name)
+      else
+        EmitSlotAddr('x22', AAsgn.Name);
       Self.EmitRecordFieldRetains(
         TRecordTypeDesc(AAsgn.ResolvedLhsType), 'x19');
       Self.EmitRecordFieldReleases(
@@ -4056,7 +4070,10 @@ begin
       Self.Emit(#9'ldp x19, x22, [sp], #16');
       Exit;
     end;
-    EmitSlotAddr('x0', AAsgn.Name);
+    if AAsgn.IsVarParam then
+      EmitLoadSlot('x0', AAsgn.Name)   { deref the var-param slot to the dest }
+    else
+      EmitSlotAddr('x0', AAsgn.Name);
     EmitPushX0();
     EmitRecAddrToX0(AAsgn.Expr);
     Self.Emit(#9'mov x1, x0');

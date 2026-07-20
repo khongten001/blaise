@@ -261,6 +261,10 @@ type
       ClassObj.ArrayField[I] := RecordValue.  memcpy of the record bytes, with
       the retain-source/release-dest discipline for a managed record. }
     procedure TestRecordIntoClassDynArrayField;
+    { self-cross-compile leg 23: store a whole RECORD value into a var/out
+      record PARAMETER — the dest is the DEREFERENCED var-param slot (the
+      caller's record address), not the slot's own address. }
+    procedure TestRecordStoreToVarParam;
   end;
 
 implementation
@@ -4668,6 +4672,49 @@ begin
     Pos(#9'stp x19, x22, [sp, #-16]!', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64rda.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestRecordStoreToVarParam;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Outp := Src where Outp is a `var TRec` parameter.  The var-param slot holds
+    the CALLER's record address, so the memcpy dest must be that DEREFERENCED
+    address (ldur the slot value), NOT the slot's own address (which would
+    corrupt the caller's pointer).  This is the TryGetValue out-param shape
+    (assembler.x86_64.pas: AVal := FVals[Idx]).  Clean 16-byte record. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TRec = record A: Integer; B: Integer; C: Int64; end;
+    procedure Get(var Outp: TRec; Src: TRec);
+    begin Outp := Src end;
+    var R, S: TRec;
+    begin
+      S.A := 10; S.B := 20; S.C := 30;
+      Get(R, S);
+      WriteLn(R.A)
+    end.
+    ''');
+  { the record is memcpy'd (16 bytes) — the store is a whole-record copy }
+  AssertTrue('the var-param record store memcpys the record',
+    Pos(#9'bl memcpy', AsmT) >= 0);
+  AssertTrue('the memcpy length is the record size (16)',
+    Pos(#9'movz x2, #16', AsmT) >= 0);
+  { the dest address is the slot VALUE (a load), proving the deref — the
+    Get body loads the var-param slot then memcpys into it }
+  AssertTrue('the dest is the dereferenced var-param slot into x0 before memcpy',
+    Pos(#9'ldur x0, [x29,', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64vrp.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

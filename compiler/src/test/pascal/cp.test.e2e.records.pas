@@ -94,6 +94,10 @@ type
       SAME dyn-array field must be materialised before the element address is
       computed, else the store lands in the freed old block. }
     procedure TestRun_RecordIntoClassDynArrayField_ReallocatingCall;
+    { leg 23: store a whole record into a var/out record parameter — the store
+      must reach the CALLER's record (the dereferenced var-param address).  The
+      TryGetValue out-param shape. }
+    procedure TestRun_RecordStoreToVarParam;
   end;
 
 implementation
@@ -1467,6 +1471,25 @@ begin
       Box.Free()
     end.
     ''', '555' + LE + '777' + LE + '8' + LE, 0);
+end;
+
+procedure TE2ERecordsTests.TestRun_RecordStoreToVarParam;
+begin
+  { Get(var Outp: TRec) does Outp := Src.  The store must write to the CALLER's
+    record R (through the dereferenced var-param slot), so R reads back the
+    stored values.  Expect 10 / 20 / 30. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TRec = record A: Integer; B: Integer; C: Int64; end;
+    procedure Get(var Outp: TRec; Src: TRec);
+    begin Outp := Src end;
+    var R, S: TRec;
+    begin
+      S.A := 10; S.B := 20; S.C := 30;
+      Get(R, S);
+      WriteLn(R.A); WriteLn(R.B); WriteLn(R.C)
+    end.
+    ''', '10' + LE + '20' + LE + '30' + LE, 0);
 end;
 
 initialization
