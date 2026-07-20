@@ -20804,7 +20804,16 @@ begin
     begin
       NestedDecl := TMethodDecl(ADecl.Body.ProcDecls.Items[I]);
       if NestedDecl.Body = nil then Continue;
-      NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
+      { Prefix with the outer routine's RESOLVED symbol, not its bare name
+        (BUG-20260720-method-nested-proc-mangle): a method's ResolvedQbeName
+        carries the class ('TFoo_DoIt'), so its Inner is 'TFoo_DoIt_Inner' —
+        distinct from another class's DoIt.Inner — and a multi-level chain
+        composes to 'L1_L2_L3'.  Un-mangled name-space; platform prefix added
+        downstream. }
+      if ADecl.ResolvedQbeName <> '' then
+        NestedDecl.ResolvedQbeName := ADecl.ResolvedQbeName + '_' + NestedDecl.Name
+      else
+        NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
       FDbgOuterDecl := ADecl;
       Self.EmitFunctionDef(NestedDecl, False);
     end;

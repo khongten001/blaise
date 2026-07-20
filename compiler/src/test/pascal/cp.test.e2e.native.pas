@@ -305,6 +305,11 @@ type
     procedure TestRun_Native_NestedProc_GrandparentCapture_Read;
     procedure TestRun_Native_NestedProc_GrandparentCapture_Write;
     procedure TestRun_Native_NestedProc_GreatGrandparentCapture;
+    { BUG-20260720-method-nested-proc-mangle: two classes each with a method
+      DoIt containing a nested Inner must link (distinct symbols) and each DoIt
+      must call its OWN Inner.  Plus a multi-level chain.  All backends. }
+    procedure TestRun_Native_NestedProc_MethodMangle_NoCollision;
+    procedure TestRun_Native_NestedProc_MultiLevelMangle;
 
     { Trig / math builtins with Single dispatch }
     procedure TestRun_Native_Builtin_SinCos;
@@ -5199,6 +5204,49 @@ begin
     begin V := 0; L2(); WriteLn(V) end;
     begin L1() end.
     ''', '9' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_MethodMangle_NoCollision;
+begin
+  { TFoo.DoIt and TBar.DoIt each contain a nested Inner.  If the nested symbols
+    were not class-qualified they would collide at link (one Inner would win and
+    both DoIt calls would print the same thing).  Expect foo then bar. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TFoo = class procedure DoIt; end;
+      TBar = class procedure DoIt; end;
+    procedure TFoo.DoIt;
+      procedure Inner;
+      begin WriteLn('foo') end;
+    begin Inner() end;
+    procedure TBar.DoIt;
+      procedure Inner;
+      begin WriteLn('bar') end;
+    begin Inner() end;
+    var f: TFoo; b: TBar;
+    begin
+      f := TFoo.Create(); b := TBar.Create();
+      f.DoIt(); b.DoIt();
+      f.Free(); b.Free()
+    end.
+    ''', 'foo' + LE + 'bar' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_MultiLevelMangle;
+begin
+  { A 3-level standalone nesting must mangle the innermost as the full chain so
+    calls resolve correctly and no cross-scope collision occurs.  Expect deep. }
+  AssertRunsOnAll('''
+    program Prg;
+    procedure L1;
+      procedure L2;
+        procedure L3;
+        begin WriteLn('deep') end;
+      begin L3() end;
+    begin L2() end;
+    begin L1() end.
+    ''', 'deep' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_Builtin_SinCos;

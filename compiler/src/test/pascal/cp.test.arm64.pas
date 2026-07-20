@@ -224,6 +224,12 @@ type
       pointer args (in lockstep with EmitCall) so the caller reserves a region
       for the stack-passed args rather than clobbering its own frame. }
     procedure TestNestedRoutine_CaptureArgsForceStackSpill_ReservesArea;
+    { BUG-20260720-method-nested-proc-mangle: a nested proc is symbol-mangled
+      from the outer routine's RESOLVED name, not its bare name — so a method's
+      nested proc carries the class (TFoo_DoIt_Inner) and a multi-level chain
+      composes (L1_L2_L3), avoiding cross-class / cross-scope collisions. }
+    procedure TestNestedProc_MethodMangle_IncludesClass;
+    procedure TestNestedProc_MultiLevelMangle_FullChain;
   end;
 
 implementation
@@ -4184,6 +4190,78 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestNestedProc_MethodMangle_IncludesClass;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Two classes each with a method DoIt containing a nested Inner.  The nested
+    symbols must be class-qualified (TFoo_DoIt_Inner / TBar_DoIt_Inner) so they
+    do not collide; the bare DoIt_Inner must NOT appear. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TFoo = class procedure DoIt; end;
+      TBar = class procedure DoIt; end;
+    procedure TFoo.DoIt;
+      procedure Inner;
+      begin WriteLn('foo') end;
+    begin Inner() end;
+    procedure TBar.DoIt;
+      procedure Inner;
+      begin WriteLn('bar') end;
+    begin Inner() end;
+    var f: TFoo; b: TBar;
+    begin
+      f := TFoo.Create(); b := TBar.Create();
+      f.DoIt(); b.DoIt();
+      f.Free(); b.Free()
+    end.
+    ''');
+  AssertTrue('TFoo.DoIt.Inner is class-qualified',
+    Pos('TFoo_DoIt_Inner:', AsmT) >= 0);
+  AssertTrue('TBar.DoIt.Inner is class-qualified',
+    Pos('TBar_DoIt_Inner:', AsmT) >= 0);
+  AssertTrue('the bare (colliding) DoIt_Inner symbol is gone',
+    Pos(LF + 'DoIt_Inner:', AsmT) < 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64mm.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestNestedProc_MultiLevelMangle_FullChain;
+var
+  AsmT: string;
+begin
+  { A 3-level standalone nesting mangles the innermost as the FULL chain
+    L1_L2_L3, not the parent-only L2_L3 — so two different L2s each with an L3
+    cannot collide.  The call site targets the same full-chain symbol. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    procedure L1;
+      procedure L2;
+        procedure L3;
+        begin WriteLn('deep') end;
+      begin L3() end;
+    begin L2() end;
+    begin L1() end.
+    ''');
+  AssertTrue('innermost mangles as the full chain L1_L2_L3',
+    Pos('L1_L2_L3:', AsmT) >= 0);
+  AssertTrue('the call targets the full-chain symbol',
+    Pos(#9'bl L1_L2_L3', AsmT) >= 0);
+  AssertTrue('the parent-only L2_L3 symbol is gone',
+    Pos(LF + 'L2_L3:', AsmT) < 0);
 end;
 
 initialization

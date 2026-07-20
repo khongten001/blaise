@@ -6380,8 +6380,20 @@ begin
     begin
       if TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Body = nil then
         Continue;
-      TMethodDecl(ADecl.Body.ProcDecls.Items[I]).ResolvedQbeName :=
-        ADecl.Name + '_' + TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Name;
+      { Prefix the nested name with the outer routine's RESOLVED symbol, not
+        its bare name (BUG-20260720-method-nested-proc-mangle): a method
+        TFoo.DoIt has ResolvedQbeName 'TFoo_DoIt', so its nested Inner becomes
+        'TFoo_DoIt_Inner' — distinct from TBar.DoIt's Inner — and a multi-level
+        chain composes to 'L1_L2_L3' because the parent's ResolvedQbeName is
+        already set when its children are derived.  Un-mangled name-space; the
+        platform prefix is applied downstream at label emission. }
+      if ADecl.ResolvedQbeName <> '' then
+        TMethodDecl(ADecl.Body.ProcDecls.Items[I]).ResolvedQbeName :=
+          ADecl.ResolvedQbeName + '_' +
+          TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Name
+      else
+        TMethodDecl(ADecl.Body.ProcDecls.Items[I]).ResolvedQbeName :=
+          ADecl.Name + '_' + TMethodDecl(ADecl.Body.ProcDecls.Items[I]).Name;
       Self.EmitFunctionDef(
         TMethodDecl(ADecl.Body.ProcDecls.Items[I]), AWeakBind);
     end;

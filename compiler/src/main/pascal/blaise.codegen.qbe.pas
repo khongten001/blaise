@@ -10162,10 +10162,16 @@ begin
   begin
     NestedDecl := TMethodDecl(ADecl.Body.ProcDecls.Items[I]);
     if NestedDecl.Body = nil then Continue;
-    { Assign a mangled QBE name: OuterName_InnerName.
-      Always override — the semantic pass set it to just InnerName,
-      but nested procs must be unique in the global symbol space. }
-    NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
+    { Assign a mangled QBE name from the outer routine's RESOLVED symbol, not
+      its bare name (BUG-20260720-method-nested-proc-mangle).  A method's
+      ResolvedQbeName carries the class ('TFoo_DoIt'), so its Inner becomes
+      'TFoo_DoIt_Inner' — distinct from another class's DoIt.Inner — and a
+      multi-level chain composes to 'L1_L2_L3'.  Mirrors the already-correct
+      method path in EmitMethodDef. }
+    if ADecl.ResolvedQbeName <> '' then
+      NestedDecl.ResolvedQbeName := ADecl.ResolvedQbeName + '_' + NestedDecl.Name
+    else
+      NestedDecl.ResolvedQbeName := ADecl.Name + '_' + NestedDecl.Name;
     EmitFuncDef(NestedDecl, False);
   end;
 
