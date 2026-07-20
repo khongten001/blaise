@@ -107,6 +107,10 @@ type
       a record (Rec.Field := managedRecordVar) — retain source / release dest,
       leak-free, including an overwrite that must release the dest's old value. }
     procedure TestRun_ManagedRecordLvalueFieldStore_LeakFree;
+    { leg 26 (BUG fix): a MANAGED record parameter — var/out and by-value —
+      field read/write on arm64.  The pass-2 prologue memcpy must skip a
+      var-param record (its address is the caller's, no __pptr copy). }
+    procedure TestRun_ManagedRecordParam_VarAndByValue_LeakFree;
   end;
 
 implementation
@@ -1551,6 +1555,30 @@ begin
       WriteLn(L.Op.S)
     end.
     ''', 'hi');
+end;
+
+procedure TE2ERecordsTests.TestRun_ManagedRecordParam_VarAndByValue_LeakFree;
+begin
+  { A var-param managed record (CBInit-style: field writes through the caller's
+    address) and a by-value managed record param (field reads on the callee's
+    copy).  The var-param case regressed before: the pass-2 prologue memcpy
+    tried to copy it via a never-registered __pptr slot.  Leak-free. }
+  AssertLeakFreeOnAll('''
+    program Prg;
+    type TBuf = record Data: string; Len: Integer; end;
+    procedure Init(var B: TBuf);
+    begin B.Data := ''; B.Len := 0 end;
+    procedure Emit(var B: TBuf; C: Integer);
+    begin B.Data := B.Data + Chr(C); B.Len := B.Len + 1 end;
+    procedure Show(B: TBuf);
+    begin WriteLn(B.Data); WriteLn(B.Len) end;
+    var CB: TBuf;
+    begin
+      Init(CB);
+      Emit(CB, 65); Emit(CB, 66);
+      Show(CB)
+    end.
+    ''', 'AB');
 end;
 
 initialization

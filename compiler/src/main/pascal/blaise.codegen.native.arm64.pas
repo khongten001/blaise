@@ -6994,7 +6994,14 @@ begin
   for I := 0 to ADecl.Params.Count - 1 do
   begin
     Par := TMethodParam(ADecl.Params.Items[I]);
+    { A VAR/OUT record param is NOT copied — the caller keeps ownership and
+      only its ADDRESS is passed (spilled to Par.ParamName, no __pptr_ slot).
+      The register loop's IsVarParam arm registers just the address slot, so a
+      var-param record must be skipped here too, else this loads a
+      never-registered '__pptr_<Name>' (BUG-20260720-arm64-managed-record-param
+      for the var-param form). }
     if (Par.ResolvedType <> nil) and (Par.ResolvedType.Kind = tyRecord) and
+       (not Par.IsVarParam) and
        (RecReturnShape(TRecordTypeDesc(Par.ResolvedType)) = 0) then
     begin
       EmitSlotAddr('x0', Par.ParamName);
