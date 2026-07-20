@@ -576,6 +576,13 @@ type
       safe no-op. }
     procedure EmitStaticArrayReleaseElems(AType: TStaticArrayTypeDesc;
                                           const AAddr: string; AZero: Boolean);
+    { Retain-side mirror of EmitManagedReleaseAt: scalars retain directly,
+      records recurse via EmitRecordAddRefFields, static arrays via
+      EmitStaticArrayAddRefElems (BUG-017). }
+    procedure EmitManagedAddRefAt(AType: TTypeDesc; const AAddr: string);
+    { Retain-side mirror of EmitStaticArrayReleaseElems. }
+    procedure EmitStaticArrayAddRefElems(AType: TStaticArrayTypeDesc;
+      const AAddr: string);
     { Mirror of EmitRecordReleaseFields: AddRef every ARC-managed field of a
       record at AAddr.  Used in the by-value record param prologue so the
       callee owns retains on managed-field contents, balancing the matching
@@ -6113,7 +6120,18 @@ begin
             ((F.TypeDesc.Kind = tySet) and (F.TypeDesc.RawSize() > 8)) then
     begin
       { Inline aggregate field (fixed-size array / jumbo-set bitmap): copy the
-        raw bytes — there is no single scalar load/store width. }
+        raw bytes — there is no single scalar load/store width.  A static
+        array with MANAGED elements (BUG-017) first retains the source
+        elements and releases the destination's (retain BEFORE release so a
+        self-copy stays balanced), mirroring the scalar-field ARC above;
+        the memcpy then installs the retained pointers. }
+      if (F.TypeDesc.Kind = tyStaticArray) and
+         ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        EmitStaticArrayAddRefElems(TStaticArrayTypeDesc(F.TypeDesc), SrcField);
+        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(F.TypeDesc),
+          DstField, False);
+      end;
       EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
         [DstField, SrcField, F.TypeDesc.RawSize()]));
     end
@@ -6887,13 +6905,26 @@ begin
       EmitRecordReleaseFields(TRecordTypeDesc(F.TypeDesc), FldAddr);
       Continue;
     end;
-    { NOTE: a static-array-of-managed FIELD is intentionally NOT released here.
-      EmitRecordReleaseFields must stay symmetric with EmitRecordAddRefFields /
-      EmitRecordCopy, neither of which retains static-array elements; releasing
-      them here without a matching retain over-releases on every record copy /
-      by-value param pass and corrupts the heap.  Static-array element ARC is
-      handled only for scope-exit LOCALS (the bug-#4 case).  Records with such
-      fields remain a separate, latent concern. }
+    { Static-array-of-managed field (BUG-017): release each element via the
+      array walk.  Kept symmetric with EmitRecordAddRefFields / EmitRecordCopy,
+      which retain the same elements — release-only or retain-only here would
+      over/under-release on every record copy / by-value param pass. }
+    if F.TypeDesc.Kind = tyStaticArray then
+    begin
+      if ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        if F.Offset > 0 then
+        begin
+          FldAddr := AllocTemp();
+          EmitLine(Format('  %s =l add %s, %d', [FldAddr, AAddr, F.Offset]));
+        end
+        else
+          FldAddr := AAddr;
+        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(F.TypeDesc),
+          FldAddr, False);
+      end;
+      Continue;
+    end;
     if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
             or (F.TypeDesc.Kind = tyDynArray)
             or (F.TypeDesc.Kind = tyInterface)) then Continue;
@@ -6975,6 +7006,58 @@ begin
   end;
 end;
 
+procedure TCodeGenQBE.EmitManagedAddRefAt(AType: TTypeDesc;
+  const AAddr: string);
+var
+  ValT: string;
+begin
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+  begin
+    EmitRecordAddRefFields(TRecordTypeDesc(AType), AAddr);
+    Exit;
+  end;
+  if AType.Kind = tyStaticArray then
+  begin
+    EmitStaticArrayAddRefElems(TStaticArrayTypeDesc(AType), AAddr);
+    Exit;
+  end;
+  if not (AType.IsString() or (AType.Kind = tyClass)
+          or (AType.Kind = tyDynArray) or (AType.Kind = tyInterface)) then
+    Exit;
+  ValT := AllocTemp();
+  EmitLine(Format('  %s =l loadl %s', [ValT, AAddr]));
+  if AType.IsString() then
+    EmitLine(Format('  call $_StringAddRef(l %s)', [ValT]))
+  else if AType.Kind = tyDynArray then
+    EmitLine(Format('  call $_DynArrayAddRef(l %s)', [ValT]))
+  else
+    { tyClass and tyInterface both retain the obj slot via _ClassAddRef;
+      an interface's itab slot at +8 is static rodata, no retain needed. }
+    EmitLine(Format('  call $_ClassAddRef(l %s)', [ValT]));
+end;
+
+procedure TCodeGenQBE.EmitStaticArrayAddRefElems(AType: TStaticArrayTypeDesc;
+  const AAddr: string);
+var
+  I, ElemSize: Integer;
+  ElemAddr:    string;
+begin
+  if (AType = nil) or (AType.ElementType = nil) then Exit;
+  ElemSize := AType.ElementType.RawSize();
+  for I := 0 to AType.HighBound - AType.LowBound do
+  begin
+    if I = 0 then
+      ElemAddr := AAddr
+    else
+    begin
+      ElemAddr := AllocTemp();
+      EmitLine(Format('  %s =l add %s, %d', [ElemAddr, AAddr, I * ElemSize]));
+    end;
+    EmitManagedAddRefAt(AType.ElementType, ElemAddr);
+  end;
+end;
+
 procedure TCodeGenQBE.EmitRecordAddRefFields(ARec: TRecordTypeDesc;
   const AAddr: string);
 var
@@ -6997,6 +7080,23 @@ begin
       else
         FldAddr := AAddr;
       EmitRecordAddRefFields(TRecordTypeDesc(F.TypeDesc), FldAddr);
+      Continue;
+    end;
+    { Static-array-of-managed field (BUG-017): retain each element — the
+      retain-side mirror of the release arm in EmitRecordReleaseFields. }
+    if F.TypeDesc.Kind = tyStaticArray then
+    begin
+      if ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        if F.Offset > 0 then
+        begin
+          FldAddr := AllocTemp();
+          EmitLine(Format('  %s =l add %s, %d', [FldAddr, AAddr, F.Offset]));
+        end
+        else
+          FldAddr := AAddr;
+        EmitStaticArrayAddRefElems(TStaticArrayTypeDesc(F.TypeDesc), FldAddr);
+      end;
       Continue;
     end;
     if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)
@@ -9565,6 +9665,24 @@ begin
       else
         PtrT := '%self';
       EmitRecordReleaseFields(TRecordTypeDesc(F.TypeDesc), PtrT);
+      Continue;
+    end;
+    { Static-array-of-managed field (BUG-017): release each element via the
+      array walk when the instance dies. }
+    if F.TypeDesc.Kind = tyStaticArray then
+    begin
+      if ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        if F.Offset > 0 then
+        begin
+          PtrT := AllocTemp();
+          EmitLine(Format('  %s =l add %%self, %d', [PtrT, F.Offset]));
+        end
+        else
+          PtrT := '%self';
+        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(F.TypeDesc),
+          PtrT, False);
+      end;
       Continue;
     end;
     if not (F.TypeDesc.IsString() or (F.TypeDesc.Kind = tyClass)

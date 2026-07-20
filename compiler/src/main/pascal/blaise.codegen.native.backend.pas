@@ -91,11 +91,9 @@ type
       address in ABaseReg.  Strings, classes, dyn-arrays and interface
       obj-slots are released and their slots zeroed; weak fields cleared;
       unretained fields skipped; nested record fields recursed into at their
-      offset.  A static-array-of-managed FIELD is intentionally NOT released:
-      this walk must stay symmetric with EmitRecordFieldRetains / record
-      copy, neither of which retains static-array elements — releasing them
-      here would over-release on every record copy / by-value param pass.
-      Static-array element ARC is handled only for scope-exit LOCALS. }
+      offset; static-array-of-managed fields walked element-by-element
+      (BUG-017) — kept symmetric with EmitRecordFieldRetains / record copy,
+      which retain the same elements. }
     procedure EmitRecordFieldReleases(ART: TRecordTypeDesc;
                                       const ABaseReg: string);
     { Release one ARC-managed value of type AType whose storage is at the
@@ -112,9 +110,19 @@ type
                                           AZero: Boolean);
     { Retain every ARC-managed field of ART (the copy-side twin of
       EmitRecordFieldReleases): weak and unretained fields are skipped,
-      nested records recursed, static-array fields not touched. }
+      nested records and static-array-of-managed fields recursed. }
     procedure EmitRecordFieldRetains(ART: TRecordTypeDesc;
                                      const ABaseReg: string);
+    { Retain one ARC-managed value of type AType whose storage is at the
+      address in ABaseReg — the retain-side mirror of EmitManagedReleaseAt:
+      scalars retain directly, records recurse via EmitRecordFieldRetains,
+      static arrays via EmitStaticArrayAddRefElems (BUG-017). }
+    procedure EmitManagedAddRefAt(AType: TTypeDesc; const ABaseReg: string);
+    { Retain every managed element of a static array whose inline storage
+      starts at the address in ABaseReg — the retain-side mirror of
+      EmitStaticArrayReleaseElems. }
+    procedure EmitStaticArrayAddRefElems(AType: TStaticArrayTypeDesc;
+                                         const ABaseReg: string);
 
     { ---- ARC walk primitives (abstract per-CPU leaves) ---- }
 
@@ -341,8 +349,21 @@ begin
       Self.ArcPopNestedBase();
       Continue;
     end;
-    { Static-array-of-managed fields are intentionally skipped — see the
-      interface comment (symmetry with retains/record copy). }
+    { Static-array-of-managed field (BUG-017): release each element via the
+      array walk.  Kept symmetric with EmitRecordFieldRetains and the copy
+      paths, which retain the elements — release-only or retain-only here
+      over/under-releases on every record copy / by-value param pass. }
+    if F.TypeDesc.Kind = tyStaticArray then
+    begin
+      if ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        Self.ArcPushNestedBase(F.Offset, ABaseReg);
+        Self.EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(F.TypeDesc),
+          Self.ArcNestedBaseReg(), True);
+        Self.ArcPopNestedBase();
+      end;
+      Continue;
+    end;
     if not ArcFieldIsManagedScalar(F.TypeDesc) then
       Continue;
     if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
@@ -412,6 +433,19 @@ begin
       Self.ArcPopNestedBase();
       Continue;
     end;
+    { Static-array-of-managed field (BUG-017): retain each element — the
+      retain-side mirror of the release arm in EmitRecordFieldReleases. }
+    if F.TypeDesc.Kind = tyStaticArray then
+    begin
+      if ArcTypeHasManagedContent(F.TypeDesc) then
+      begin
+        Self.ArcPushNestedBase(F.Offset, ABaseReg);
+        Self.EmitStaticArrayAddRefElems(TStaticArrayTypeDesc(F.TypeDesc),
+          Self.ArcNestedBaseReg());
+        Self.ArcPopNestedBase();
+      end;
+      Continue;
+    end;
     if not ArcFieldIsManagedScalar(F.TypeDesc) then
       Continue;
     if F.IsUnretained and (F.TypeDesc.Kind = tyClass) then
@@ -419,6 +453,41 @@ begin
     if F.IsWeak then Continue;
     Self.EmitRetainSlotAt(F.TypeDesc, F.Offset, ABaseReg);
   end;
+end;
+
+procedure TNativeBackend.EmitManagedAddRefAt(AType: TTypeDesc;
+  const ABaseReg: string);
+begin
+  if AType = nil then Exit;
+  if AType.Kind = tyRecord then
+  begin
+    Self.EmitRecordFieldRetains(TRecordTypeDesc(AType), ABaseReg);
+    Exit;
+  end;
+  if AType.Kind = tyStaticArray then
+  begin
+    Self.EmitStaticArrayAddRefElems(TStaticArrayTypeDesc(AType), ABaseReg);
+    Exit;
+  end;
+  if not ArcFieldIsManagedScalar(AType) then
+    Exit;
+  Self.EmitRetainSlotAt(AType, 0, ABaseReg);
+end;
+
+procedure TNativeBackend.EmitStaticArrayAddRefElems(
+  AType: TStaticArrayTypeDesc; const ABaseReg: string);
+var
+  I, ElemSize: Integer;
+begin
+  if (AType = nil) or (AType.ElementType = nil) then Exit;
+  ElemSize := AType.ElementType.RawSize();
+  Self.ArcEnterArrayWalk(ABaseReg);
+  for I := 0 to AType.HighBound - AType.LowBound do
+  begin
+    Self.ArcArrayElemAddr(I * ElemSize);
+    Self.EmitManagedAddRefAt(AType.ElementType, Self.ArcArrayElemReg());
+  end;
+  Self.ArcLeaveArrayWalk();
 end;
 
 function TNativeBackend.GenerateProgram(AProg: TProgram): string;
