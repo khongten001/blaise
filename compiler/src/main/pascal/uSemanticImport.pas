@@ -183,8 +183,17 @@ end;
 
 { ----- Type-entry registration ---------------------------------- }
 
+{ An imported enum must be indistinguishable from a source-visible one.  The
+  source path (TSemanticAnalyser.AnalyseTypeDecls) records every member in the
+  analyser's reverse index via RegisterEnumMember; consumers that have no
+  target type in hand — ArgMatchScore inferring a bracket literal's base enum
+  through SetLiteralBaseEnum, the ambiguity diagnostics, the inline-enum dedup
+  scan — read ONLY that index and have no symbol-table fallback.  So the
+  importer must populate it too, or a warm --unit-cache rebuild silently loses
+  every enum member the cached unit declared. }
 procedure RegisterEnum(AEntry: TTypeEntry; ATable: TSymbolTable;
-                       const AUnitName: string);
+                       const AUnitName: string;
+                       ASemantic: TSemanticAnalyser);
 var
   EnumDef:  TEnumTypeDef;
   EnumDesc: TEnumTypeDesc;
@@ -198,6 +207,8 @@ begin
   begin
     MName := EnumDef.Members.Strings[K];
     EnumDesc.Members.Add(MName);
+    if ASemantic <> nil then
+      ASemantic.RegisterEnumMember(MName, EnumDesc, EnumDef.OrdinalAt(K));
     MSym  := TSymbol.Create(MName, skConstant, EnumDesc);
     MSym.ConstValue := EnumDef.OrdinalAt(K);
     MSym.OwningUnit := AUnitName;
@@ -905,7 +916,7 @@ begin
     end;
 
     if Entry.Def is TEnumTypeDef then
-      RegisterEnum(Entry, ATable, AIface.Name)
+      RegisterEnum(Entry, ATable, AIface.Name, ASemantic)
     else if Entry.Def is TSetTypeDef then
       RegisterSet(Entry, ATable, AIface.Name)
     else if Entry.Def is TTypeAliasDef then
