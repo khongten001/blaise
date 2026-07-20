@@ -21412,6 +21412,13 @@ begin
     if FSymTable <> nil then
       FSymTable.DefineOwningUnit := AUnit.Name;
     FUnitInitNames.Add(NativeMangle(AUnit.Name));
+    { A unit's initialization block is emitted frame-less, exactly like the
+      program-main body, so a jumbo-set literal or set-op inside it resolves
+      _jset_scratch_0/1 through the global path.  Reserve the .bss buffers in
+      THIS object too — without them the init code referenced scratch symbols
+      that only the program object defined, and the link failed with an
+      undefined reference to `_jset_scratch_1'. }
+    FProgHasJumboSet := True;
     Self.ClearFrame();
     FExitLabel := '';
     FExcDepth     := 0;
