@@ -155,6 +155,13 @@ type
       symbols (so names may be shared and resolved by context); the importer
       used to, which made a warm build hard-error where a cold build compiled. }
     procedure TestIncrementalRebuild_SharedEnumMemberName_Warm;
+    { The same asymmetry seen through a BARE member reference rather than a
+      set literal.  The importer's global skConstant for a shared name shadowed
+      the reverse-index lookup (TryResolveBareEnumIdent bails to a real symbol
+      of that name), so a warm build bound `S := cShared` to the FIRST enum's
+      member and silently assigned the wrong ordinal — 1 instead of 3.  Wrong
+      code, not a diagnostic, which is why this needs an execution check. }
+    procedure TestIncrementalRebuild_SharedEnumMemberName_BareRef_Warm;
     procedure TestDebugOpdf_PerUnitSection_InDependencyObject;
     { Regression (F1-followup cross-unit static members): a class with `static`
       members — a static var, a static method, and a static const — declared in
@@ -2001,6 +2008,72 @@ begin
   Rc := RunBinary(ProgBin, Captured);
   AssertEquals('build2 run exit code', 0, Rc);
   AssertEquals('build2 stdout (shared member name)', '2' + #10 + '2' + #10, Captured)
+end;
+
+procedure TSepCompileTests.TestIncrementalRebuild_SharedEnumMemberName_BareRef_Warm;
+const
+  DualSrc =
+    '''
+    unit BareDual;
+    interface
+    type
+      TColour = (cRed, cShared, cBlue);
+      TShape = (sBox, sMid, sPad, cShared);
+    implementation
+    end.
+    ''';
+  ProgSrc =
+    '''
+    program UseBareDual;
+    uses BareDual;
+    var
+      S: TShape;
+    begin
+      S := cShared;
+      WriteLn(Ord(S))
+    end.
+    ''';
+var
+  LibPas, ProgPas, ProgBin, CacheDir, Captured: string;
+  Rc: Integer;
+begin
+  if not ToolchainAvailable() then
+  begin
+    Fail('toolchain missing — qbe or RTL not found');
+    Exit
+  end;
+  if not FileExists(BlaisePath()) then
+  begin
+    Fail('blaise binary missing at ' + BlaisePath());
+    Exit
+  end;
+
+  LibPas   := FScratch + '/BareDual.pas';
+  ProgPas  := FScratch + '/use_baredual.pas';
+  ProgBin  := FScratch + '/use_baredual';
+  CacheDir := FScratch + '/units-baredual';
+
+  WriteFile(LibPas, DualSrc);
+  WriteFile(ProgPas, ProgSrc);
+  ForceDirectories(CacheDir);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build1 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build1 run exit code', 0, Rc);
+  { The declared type TShape narrows the shared name to its own member. }
+  AssertEquals('build1 stdout (Ord(TShape.cShared))', '3' + #10, Captured);
+
+  Rc := RunBlaise(['--source', ProgPas, '--output', ProgBin,
+                   '--unit-cache', CacheDir,
+                   '--unit-path', FScratch], Captured);
+  AssertEquals('build2 exit code (out: ' + Captured + ')', 0, Rc);
+  Rc := RunBinary(ProgBin, Captured);
+  AssertEquals('build2 run exit code', 0, Rc);
+  AssertEquals('build2 stdout (cached shared name, same ordinal)',
+               '3' + #10, Captured)
 end;
 
 procedure TSepCompileTests.TestDebugOpdf_PerUnitSection_InDependencyObject;

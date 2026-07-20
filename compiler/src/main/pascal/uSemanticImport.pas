@@ -190,14 +190,20 @@ end;
   through SetLiteralBaseEnum, the ambiguity diagnostics, the inline-enum dedup
   scan — read ONLY that index and have no symbol-table fallback.  So the
   importer must populate it too, or a warm --unit-cache rebuild silently loses
-  every enum member the cached unit declared. }
+  every enum member the cached unit declared.
+
+  Members are NOT defined as bare global skConstant symbols, matching the
+  source path: a bare member name resolves through ResolveEnumMember (by
+  context type, uniqueness, or last-wins), so two enums in scope may
+  legitimately share a member name.  Defining them here made a warm build
+  hard-error on a duplicate member name where a cold build compiled. }
 procedure RegisterEnum(AEntry: TTypeEntry; ATable: TSymbolTable;
                        const AUnitName: string;
                        ASemantic: TSemanticAnalyser);
 var
   EnumDef:  TEnumTypeDef;
   EnumDesc: TEnumTypeDesc;
-  Sym, MSym: TSymbol;
+  Sym: TSymbol;
   K: Integer;
   MName: string;
 begin
@@ -209,10 +215,6 @@ begin
     EnumDesc.Members.Add(MName);
     if ASemantic <> nil then
       ASemantic.RegisterEnumMember(MName, EnumDesc, EnumDef.OrdinalAt(K));
-    MSym  := TSymbol.Create(MName, skConstant, EnumDesc);
-    MSym.ConstValue := EnumDef.OrdinalAt(K);
-    MSym.OwningUnit := AUnitName;
-    if not ATable.Define(MSym) then MSym.Free();
   end;
   Sym := TSymbol.Create(AEntry.Name, skType, EnumDesc);
   Sym.OwningUnit := AUnitName;

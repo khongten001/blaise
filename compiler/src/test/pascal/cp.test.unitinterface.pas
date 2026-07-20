@@ -296,6 +296,11 @@ type
     procedure TestImport_IntConst_DefinedWithValue;
     procedure TestImport_StringConst_DefinedWithValue;
     procedure TestImport_Enum_TypeAndMembersDefined;
+    { An imported enum must be indistinguishable from a source-visible one:
+      its members must land in the analyser's enum-member reverse index, which
+      is the only thing ResolveEnumMember (and hence ArgMatchScore's inference
+      of a bracket literal's base enum) consults. }
+    procedure TestImport_Enum_MembersInAnalyserReverseIndex;
     procedure TestImport_Set_BaseEnumLinked;
     procedure TestImport_Alias_ResolvesToBase;
     procedure TestImport_ProcedureRoutine_DefinedAsSkProcedure;
@@ -2023,12 +2028,45 @@ begin
     AssertTrue('TColor type defined', TyDesc <> nil);
     AssertTrue('TColor is enum', TyDesc is TEnumTypeDesc);
     AssertEquals('three members', 3, TEnumTypeDesc(TyDesc).Members.Count);
+    { An imported enum's members live on the descriptor and — when an analyser
+      is supplied — in its enum-member reverse index.  They are deliberately
+      NOT defined as bare global skConstant symbols, matching the
+      source-visible path, so two enums may share a member name. }
+    AssertEquals('Green ordinal', 1,
+                 TEnumTypeDesc(TyDesc).Members.IndexOf('Green'));
     Sym := Tab.Lookup('Green');
-    AssertTrue('Green defined', Sym <> nil);
-    AssertTrue('Green is skConstant', Sym.Kind = skConstant);
-    AssertEquals('Green ordinal', 1, Sym.ConstValue);
+    AssertTrue('Green is not a bare global constant', Sym = nil);
   finally
     Tab.Free();
+    Iface.Free();
+  end;
+end;
+
+procedure TImportRoundTripTests.TestImport_Enum_MembersInAnalyserReverseIndex;
+const
+  SRC =
+    'unit U;' + #10 +
+    'interface' + #10 +
+    'type TColor = (Red, Green, Blue);' + #10 +
+    'implementation' + #10 +
+    'end.' + #10;
+var
+  Iface: TUnitInterface;
+  Sem:   TSemanticAnalyser;
+  Ref:   TEnumMemberRef;
+begin
+  Iface := ParseAnalyseAndExport(SRC);
+  Sem   := TSemanticAnalyser.Create();
+  try
+    ImportUnitInterface(Iface, Sem.GetSymbolTable(), Sem);
+    { No context type: a single candidate resolves unambiguously. }
+    Ref := Sem.ResolveEnumMember('Green', nil);
+    AssertTrue('Green in reverse index', Ref <> nil);
+    AssertEquals('Green ordinal', Int64(1), Ref.Ordinal);
+    AssertTrue('Green belongs to TColor',
+      Ref.EnumDesc = TEnumTypeDesc(Sem.GetSymbolTable().FindType('TColor')));
+  finally
+    Sem.Free();
     Iface.Free();
   end;
 end;
@@ -3433,8 +3471,13 @@ begin
     AssertTrue('TColor defined', Ty <> nil);
     AssertTrue('is enum', Ty is TEnumTypeDesc);
     AssertEquals('3 members', 3, TEnumTypeDesc(Ty).Members.Count);
+    { Members live on the enum descriptor and in the analyser's reverse index,
+      NOT as bare global skConstant symbols — the same contract the
+      source-visible path follows, so two enums may share a member name.
+      (This import call passes no analyser, so only the descriptor is filled.) }
+    AssertEquals('Green ordinal', 1, TEnumTypeDesc(Ty).Members.IndexOf('Green'));
     Sym := Tab.Lookup('Green');
-    AssertEquals('Green ordinal', 1, Sym.ConstValue);
+    AssertTrue('Green is not a bare global constant', Sym = nil);
   finally
     Tab.Free();
     Iface.Free();
