@@ -113,6 +113,39 @@ type
       container's element slot.  The slot is a 16-byte fat pointer, so both
       words must be loaded from the address and the obj half retained. }
     procedure TestARC_PointerRead_Interface_LoadsBothSlotsAndRetains;
+
+    { A[I].Free() on a static-array element must release AND nil the element
+      slot, like the identifier/field receiver forms — a stale pointer left
+      in the slot double-frees under the scope-exit ARC walk (BUG-016). }
+    procedure TestARC_StaticArrayElemFree_NilsSlot;
+
+    { BUG-016 stage 1: the array element STORE's retain must be conditional
+      on RHS ownership (ArcExprOwnsRef), mirroring scalar assignment and the
+      arm64 backend.  An owned +1 RHS (call result) transfers its reference;
+      a borrowed RHS (plain variable) still retains. }
+    procedure TestARC_StaticArrayElem_OwnedClassRhs_NoRetain;
+    procedure TestARC_StaticArrayElem_BorrowedClassRhs_Retains;
+    procedure TestARC_StaticArrayElem_OwnedStringRhs_NoRetain;
+    procedure TestARC_StaticArrayElem_BorrowedStringRhs_Retains;
+    procedure TestARC_DynArrayElem_OwnedClassRhs_NoRetain;
+    procedure TestARC_DynArrayElem_BorrowedClassRhs_Retains;
+    procedure TestARC_FieldElemStore_OwnedStringRhs_NoRetain;
+
+    { BUG-016 stage 2: static-array-of-managed LOCALS are released at scope
+      exit (previously interface elements only).  The normal path must NOT
+      zero the slots (AZero=False); only the exception-path walk zeroes. }
+    procedure TestARC_StaticArrayOfClass_BlockExitRelease;
+    procedure TestARC_StaticArrayOfString_BlockExitRelease;
+    procedure TestARC_StaticArrayOfRecord_BlockExitRelease;
+    procedure TestARC_StaticArrayBlockExitRelease_DoesNotZeroSlots;
+
+    { BUG-017: a static-array-of-managed FIELD of a record must be retained
+      on record copy / value-param entry and released by the field walks —
+      retain + copy + release land together or record copies over/under-
+      release. }
+    procedure TestARC_RecordWithStaticArrayField_ReleaseFields;
+    procedure TestARC_RecordWithStaticArrayField_AddRefFields;
+    procedure TestARC_RecordCopy_StaticArrayField_RetainsElements;
   end;
 
 implementation
@@ -1087,6 +1120,416 @@ begin
     CountSubstring(FnBody, 'call $_ClassAddRef') >= 3);
   AssertTrue('pointer read releases the destination''s prior obj',
     CountSubstring(FnBody, 'call $_ClassRelease') >= 3);
+end;
+
+const
+  { Static-array element receives an OWNED +1 class RHS (user-function call
+    result).  ArcExprOwnsRef(MakeC()) is True, so the element store must NOT
+    retain — the transferred reference is consumed by the slot.  The only
+    remaining _ClassAddRef is the `Result := TC.Create()` inside MakeC. }
+  SrcSAElemOwnedClass = '''
+      program P;
+      type
+        TC = class
+        public
+          X: Integer;
+        end;
+      function MakeC(): TC;
+      begin
+        Result := TC.Create();
+      end;
+      procedure Run();
+      var
+        A: array[0..1] of TC;
+      begin
+        A[0] := MakeC();
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  { Borrowed class RHS (plain variable): the element store MUST retain.
+    Two _ClassAddRef sites: the `B := TC.Create()` constructor-assign and
+    the element store.  Also the shape for the block-exit release test:
+    after BUG-016 stage 2 the scope-exit walk releases both elements. }
+  SrcSAElemBorrowedClass = '''
+      program P;
+      type
+        TC = class
+        public
+          X: Integer;
+        end;
+      procedure Run();
+      var
+        A: array[0..1] of TC;
+        B: TC;
+      begin
+        B := TC.Create();
+        A[0] := B;
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcSAElemOwnedString = '''
+      program P;
+      function MakeS(): string;
+      begin
+        Result := 'x';
+      end;
+      procedure Run();
+      var
+        A: array[0..1] of string;
+      begin
+        A[0] := MakeS();
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcSAElemBorrowedString = '''
+      program P;
+      procedure Run();
+      var
+        A: array[0..1] of string;
+        B: string;
+      begin
+        B := 'x';
+        A[0] := B;
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcDynElemOwnedClass = '''
+      program P;
+      type
+        TC = class
+        public
+          X: Integer;
+        end;
+      function MakeC(): TC;
+      begin
+        Result := TC.Create();
+      end;
+      procedure Run();
+      var
+        D: array of TC;
+      begin
+        SetLength(D, 2);
+        D[0] := MakeC();
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcDynElemBorrowedClass = '''
+      program P;
+      type
+        TC = class
+        public
+          X: Integer;
+        end;
+      procedure Run();
+      var
+        D: array of TC;
+        B: TC;
+      begin
+        SetLength(D, 2);
+        B := TC.Create();
+        D[0] := B;
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  { Element store into an array-typed FIELD (B.Names[0] := MakeS()) routes
+    through the field-elem-store path, which must apply the same conditional
+    retain.  One _StringAddRef remains (inside MakeS). }
+  SrcFieldElemOwnedString = '''
+      program P;
+      type
+        TBox = class
+        public
+          Names: array[0..1] of string;
+        end;
+      function MakeS(): string;
+      begin
+        Result := 'x';
+      end;
+      procedure Run();
+      var
+        B: TBox;
+      begin
+        B := TBox.Create();
+        B.Names[0] := MakeS();
+        B.Free();
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  { Static-array-of-RECORD local: the scope-exit walk recurses array ->
+    record -> string field. }
+  SrcSAOfRecord = '''
+      program P;
+      type
+        TR = record
+          S: string;
+        end;
+      procedure Run();
+      var
+        A: array[0..1] of TR;
+        R: TR;
+      begin
+        R.S := 'x';
+        A[0] := R;
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  { Record with a static-array-of-string FIELD (BUG-017 shapes). }
+  SrcRecArrayField = '''
+      program P;
+      type
+        TR = record
+          Names: array[0..1] of string;
+        end;
+      procedure Run();
+      var
+        R: TR;
+      begin
+        R.Names[0] := 'x';
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcRecArrayFieldByValParam = '''
+      program P;
+      type
+        TR = record
+          Names: array[0..1] of string;
+        end;
+      procedure Show(R: TR);
+      begin
+      end;
+      procedure Run();
+      var
+        R: TR;
+      begin
+        R.Names[0] := 'x';
+        Show(R);
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcRecArrayFieldCopy = '''
+      program P;
+      type
+        TR = record
+          Names: array[0..1] of string;
+        end;
+      procedure Run();
+      var
+        R1: TR;
+        R2: TR;
+      begin
+        R1.Names[0] := 'x';
+        R2 := R1;
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+  SrcSAElemFree = '''
+      program P;
+      type
+        TC = class
+        public
+          X: Integer;
+        end;
+      procedure Run();
+      var
+        A: array[0..1] of TC;
+      begin
+        A[0] := TC.Create();
+        A[0].Free();
+      end;
+      begin
+        Run();
+      end.
+      ''';
+
+procedure TARCTests.TestARC_StaticArrayElemFree_NilsSlot;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemFree);
+  { The Free lowering must nil the ELEMENT slot (a computed temp address) —
+    `storel 0, %_tN`.  Variable nil-inits go to %_var_* slots and the array
+    itself is memset, so a zero store through a temp only appears when the
+    element-receiver Free arm is present. }
+  AssertTrue('A[0].Free() nils the element slot (storel 0 through a temp)',
+    IRContains(IR, 'storel 0, %_t'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayElem_OwnedClassRhs_NoRetain;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemOwnedClass);
+  AssertEquals('only MakeC''s Result-assign retains; the element store ' +
+    'consumes the transferred +1',
+    1, CountSubstring(IR, 'call $_ClassAddRef'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayElem_BorrowedClassRhs_Retains;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemBorrowedClass);
+  AssertEquals('constructor-assign + element store both retain',
+    2, CountSubstring(IR, 'call $_ClassAddRef'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayElem_OwnedStringRhs_NoRetain;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemOwnedString);
+  AssertEquals('only MakeS''s Result-assign retains; the element store ' +
+    'consumes the transferred +1',
+    1, CountSubstring(IR, 'call $_StringAddRef'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayElem_BorrowedStringRhs_Retains;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemBorrowedString);
+  AssertEquals('B-assign + element store both retain',
+    2, CountSubstring(IR, 'call $_StringAddRef'));
+end;
+
+procedure TARCTests.TestARC_DynArrayElem_OwnedClassRhs_NoRetain;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcDynElemOwnedClass);
+  AssertEquals('only MakeC''s Result-assign retains; the dyn element store ' +
+    'consumes the transferred +1',
+    1, CountSubstring(IR, 'call $_ClassAddRef'));
+end;
+
+procedure TARCTests.TestARC_DynArrayElem_BorrowedClassRhs_Retains;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcDynElemBorrowedClass);
+  AssertEquals('constructor-assign + dyn element store both retain',
+    2, CountSubstring(IR, 'call $_ClassAddRef'));
+end;
+
+procedure TARCTests.TestARC_FieldElemStore_OwnedStringRhs_NoRetain;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcFieldElemOwnedString);
+  AssertEquals('only MakeS''s Result-assign retains; the field-array ' +
+    'element store consumes the transferred +1',
+    1, CountSubstring(IR, 'call $_StringAddRef'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayOfClass_BlockExitRelease;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemBorrowedClass);
+  { element-store old-value release + B's scope-exit release + the two
+    element slots released by the BUG-016 stage-2 scope-exit walk. }
+  AssertEquals('both elements released at block exit',
+    4, CountSubstring(IR, 'call $_ClassRelease'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayOfString_BlockExitRelease;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemBorrowedString);
+  { B-assign old + element-store old + B scope-exit + 2 element slots. }
+  AssertEquals('both string elements released at block exit',
+    5, CountSubstring(IR, 'call $_StringRelease'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayOfRecord_BlockExitRelease;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAOfRecord);
+  { R.S-assign old + record-copy old + R scope-exit + 2 element records'
+    S fields via the array -> record -> string recursion. }
+  AssertEquals('array->record->string recursion releases both elements',
+    5, CountSubstring(IR, 'call $_StringRelease'));
+end;
+
+procedure TARCTests.TestARC_StaticArrayBlockExitRelease_DoesNotZeroSlots;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcSAElemBorrowedClass);
+  { Pins the AZero split: the NORMAL-path scope-exit walk passes
+    AZero=False, so the only zero store is B's nil-init.  (The exception-
+    path walk — EmitExcPathArcCleanup, currently unreferenced since
+    4fc5d2c5 — passes AZero=True for idempotency under nested handlers.) }
+  AssertEquals('normal-path element release does not zero the slots',
+    1, CountSubstring(IR, 'storel 0,'));
+end;
+
+procedure TARCTests.TestARC_RecordWithStaticArrayField_ReleaseFields;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcRecArrayField);
+  { element-store old + R's scope-exit field walk descending into the
+    2-element Names array. }
+  AssertEquals('record field walk releases the static-array elements',
+    3, CountSubstring(IR, 'call $_StringRelease'));
+end;
+
+procedure TARCTests.TestARC_RecordWithStaticArrayField_AddRefFields;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcRecArrayFieldByValParam);
+  { element-store retain in Run + Show's value-param entry retain of both
+    Names elements. }
+  AssertEquals('value-param entry retains the static-array elements',
+    3, CountSubstring(IR, 'call $_StringAddRef'));
+end;
+
+procedure TARCTests.TestARC_RecordCopy_StaticArrayField_RetainsElements;
+var
+  IR: string;
+begin
+  IR := GenIR(SrcRecArrayFieldCopy);
+  { element-store retain + the R2 := R1 record copy retaining both Names
+    elements of the source. }
+  AssertEquals('record copy retains the static-array elements',
+    3, CountSubstring(IR, 'call $_StringAddRef'));
 end;
 
 initialization

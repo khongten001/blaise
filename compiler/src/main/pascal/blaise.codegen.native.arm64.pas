@@ -5776,22 +5776,14 @@ end;
 
 function TArm64Backend.AggHasManaged(AType: TTypeDesc): Boolean;
 begin
-  { records: any managed field; static arrays: managed element kind }
-  Result := False;
-  if AType = nil then Exit;
-  if AType.Kind = tyRecord then
-    Result := not RecretManagedClean(TRecordTypeDesc(AType))
-  else if AType.Kind = tyStaticArray then
-  begin
-    if TStaticArrayTypeDesc(AType).ElementType = nil then Exit;
-    case TStaticArrayTypeDesc(AType).ElementType.Kind of
-      tyString, tyClass, tyInterface, tyDynArray: Result := True;
-      tyRecord: Result := not RecretManagedClean(
-        TRecordTypeDesc(TStaticArrayTypeDesc(AType).ElementType));
-      tyStaticArray: Result := AggHasManaged(
-        TStaticArrayTypeDesc(AType).ElementType);
-    end;
-  end;
+  { Delegates to the shared ARC content walk (records: any managed field
+    INCLUDING static-array-of-managed fields since BUG-017; static arrays:
+    managed content at any nesting depth).  The previous local version used
+    RecretManagedClean, which ignores static-array fields — that would let
+    the retain-side walks (record copy / param entry) retain elements this
+    gate then never released. }
+  Result := ArcTypeHasManagedContent(AType) and
+            (AType.Kind in [tyRecord, tyStaticArray]);
 end;
 
 function TArm64Backend.RecReturnShape(ARec: TRecordTypeDesc): Integer;
@@ -8365,6 +8357,25 @@ begin
         EmitAddSubImm('add', 'x9', 'x9',
           TFieldAccessExpr(AStmt.ObjExpr).FieldInfo.Offset);
       Self.Emit(#9'mov x0, x9');
+      EmitPushX0();
+      Self.Emit(#9'ldr x0, [x0]');
+      Self.Emit(#9'bl _ClassRelease');
+      EmitPopTo('x9');
+      Self.Emit(#9'str xzr, [x9]');
+      Exit;
+    end;
+    if ArcIsArrayElemSlot(AStmt.ObjExpr) then
+    begin
+      { array-element receiver (A[I].Free()): release AND nil the element
+        slot — parity with the QBE/x86-64 lowerings.  A stale element
+        pointer double-frees when the scope-exit ARC walk releases the
+        array's elements again (BUG-016). }
+      case TStringSubscriptExpr(AStmt.ObjExpr).StrExpr.ResolvedType.Kind of
+        tyStaticArray:
+          EmitStaticElemAddr(TStringSubscriptExpr(AStmt.ObjExpr));
+      else
+        EmitDynElemAddr(TStringSubscriptExpr(AStmt.ObjExpr));
+      end;
       EmitPushX0();
       Self.Emit(#9'ldr x0, [x0]');
       Self.Emit(#9'bl _ClassRelease');

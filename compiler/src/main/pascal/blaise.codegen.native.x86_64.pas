@@ -11392,12 +11392,14 @@ begin
     end
     else if ACall.ObjExpr <> nil then
     begin
-      if (ACall.ObjExpr is TFieldAccessExpr) or (ACall.ObjExpr is TIdentExpr) then
+      if (ACall.ObjExpr is TFieldAccessExpr) or (ACall.ObjExpr is TIdentExpr) or
+         ArcIsArrayElemSlot(ACall.ObjExpr) then
       begin
-        { L-value receiver (Def.ClassDef.Free()): release AND nil the slot.
-          A stale pointer left here aliases the next allocation of the same
-          size class, and the following ARC field store double-releases it —
-          the QBE lowering nils the slot, so must we. }
+        { L-value receiver (Def.ClassDef.Free(), A[I].Free()): release AND nil
+          the slot.  A stale pointer left here aliases the next allocation of
+          the same size class, and the following ARC field store or scope-exit
+          walk double-releases it — the QBE lowering nils the slot, so must
+          we. }
         Self.EmitLValueSlotAddr(ACall.ObjExpr);
         Self.Emit(#9'pushq %rdx');
         Self.Emit(#9'movq (%rdx), %rdi');
@@ -15185,11 +15187,17 @@ begin
         Self.Emit(#9'addq $8, %rsp');        { drop saved src addr }
         Exit;
       end;
+      { Retain the new element only when the RHS does not already own +1 —
+        an owned call result transfers its reference (mirrors the QBE and
+        arm64 element stores and scalar field assignment). }
       if DAElemType.Kind = tyString then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _StringAddRef');
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _StringRelease');
@@ -15198,8 +15206,11 @@ begin
       else if DAElemType.Kind = tyClass then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _ClassAddRef');
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _ClassRelease');
@@ -16145,11 +16156,17 @@ begin
           Self.Emit(#9'addq $8, %rsp');         { drop stashed base ptr }
         Exit;
       end;
+      { Retain the new element only when the RHS does not already own +1 —
+        an owned call result transfers its reference (mirrors the QBE and
+        arm64 element stores and scalar assignment). }
       if DAElemType.Kind = tyString then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _StringAddRef');
+        if not NativeExprOwnsRef(SSA.ValueExpr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _StringRelease');
@@ -16158,8 +16175,11 @@ begin
       else if DAElemType.Kind = tyClass then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _ClassAddRef');
+        if not NativeExprOwnsRef(SSA.ValueExpr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _ClassRelease');
@@ -16331,11 +16351,17 @@ begin
         Self.Emit(#9'addq $8, %rsp');         { drop stashed base address }
       Exit;
     end;
+    { Retain the new element only when the RHS does not already own +1 —
+      an owned call result transfers its reference (mirrors the QBE and
+      arm64 element stores and scalar assignment). }
     if DAElemType.Kind = tyString then
     begin
       Self.Emit(#9'pushq %rcx');
-      Self.Emit(#9'movq 8(%rsp), %rdi');
-      Self.Emit(#9'callq _StringAddRef');
+      if not NativeExprOwnsRef(SSA.ValueExpr) then
+      begin
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+      end;
       Self.Emit(#9'movq (%rsp), %rcx');
       Self.Emit(#9'movq (%rcx), %rdi');
       Self.Emit(#9'callq _StringRelease');
@@ -16344,8 +16370,11 @@ begin
     else if DAElemType.Kind = tyClass then
     begin
       Self.Emit(#9'pushq %rcx');
-      Self.Emit(#9'movq 8(%rsp), %rdi');
-      Self.Emit(#9'callq _ClassAddRef');
+      if not NativeExprOwnsRef(SSA.ValueExpr) then
+      begin
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+      end;
       Self.Emit(#9'movq (%rsp), %rcx');
       Self.Emit(#9'movq (%rcx), %rdi');
       Self.Emit(#9'callq _ClassRelease');
@@ -21319,22 +21348,19 @@ begin
             TRecordTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType), '%rbx');
           Self.Emit(#9'popq %rbx');
         end
-      { Static-array-of-INTERFACE locals (array[0..N] of IFoo): release each
-        fat-pointer element's obj slot at scope exit.  The inline storage base
-        goes into %rbx (callee-saved).
+      { Static-array-of-managed locals (class, string, interface, dyn-array,
+        or record with managed content): release each element at scope exit
+        (BUG-016 stage 2 — previously interface elements only).  The inline
+        storage base goes into %rbx (callee-saved).
 
-        Scope: ONLY interface elements.  The interface element store routes
-        through EmitInterfaceToFieldSlotsAt, whose retain/release is balanced by
-        this scope-exit release.  Static-array-of-CLASS/STRING/record locals are
-        deliberately excluded: the existing element store retains unconditionally
-        while `.Free`/aliasing in the owning code (e.g. the ELF writer's
-        `RelaBuf: array[0..5] of TByteBuf`) already manages those lifetimes, so a
-        blanket scope-exit release double-frees and corrupts the heap.  Closing
-        that gap requires reconciling the element store's ARC with the manual
-        management first; it is tracked separately. }
+        Safe against manual element lifetimes (e.g. the ELF writer's
+        `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6):
+        A[I].Free() nils the element slot, making this walk a no-op on
+        manually-freed elements, and the element store's retain is
+        conditional on RHS ownership (stage 1), so each live slot holds
+        exactly one reference for this walk to balance. }
       else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyStaticArray)
-        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType <> nil)
-        and (TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).ElementType.Kind = tyInterface) then
+        and ArcTypeHasManagedContent(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType) then
         for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
         begin
           Self.Emit(#9'pushq %rbx');
