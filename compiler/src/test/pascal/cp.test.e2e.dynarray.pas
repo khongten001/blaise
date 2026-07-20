@@ -57,6 +57,10 @@ type
       must reach the CALLER's record (the dereferenced var-param address), so
       the caller sees the resized array after the call. }
     procedure TestRun_SetLengthOnVarParamRecordField;
+    { leg 28: element write into a dyn-array FIELD of a VAR-PARAM record —
+      C.Arr[I] := V must reach the CALLER's array, for both an int element and
+      a managed-record element. }
+    procedure TestRun_VarParamRecordArrayFieldElemWrite;
   end;
 
 implementation
@@ -405,6 +409,38 @@ begin
       WriteLn(Ctx.Arr[0])
     end.
     ''', '3' + LE + '42' + LE, 0);
+end;
+
+procedure TE2EDynArrayTests.TestRun_VarParamRecordArrayFieldElemWrite;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { SetInt(var C) does C.Ints[I] := V; SetRec(var C) does C.Recs[I] := R with a
+    MANAGED-record element (string field).  Both writes must reach the CALLER's
+    arrays through the derefed var-param address, and the managed-record store
+    must retain/release correctly.  After the calls the caller sees the values. }
+  AssertRunsOnAll('''
+    program Prg;
+    type
+      TRec = record S: string; N: Integer; end;
+      TCtx = record Ints: array of Integer; Recs: array of TRec; end;
+    procedure SetInt(var C: TCtx; I, V: Integer);
+    begin C.Ints[I] := V end;
+    procedure SetRec(var C: TCtx; I: Integer; const R: TRec);
+    begin C.Recs[I] := R end;
+    var Ctx: TCtx; R: TRec;
+    begin
+      SetLength(Ctx.Ints, 3);
+      SetLength(Ctx.Recs, 2);
+      SetInt(Ctx, 1, 42);
+      SetInt(Ctx, 2, 99);
+      R.S := 'hello'; R.N := 7;
+      SetRec(Ctx, 0, R);
+      WriteLn(Ctx.Ints[1]);
+      WriteLn(Ctx.Ints[2]);
+      WriteLn(Ctx.Recs[0].S);
+      WriteLn(Ctx.Recs[0].N)
+    end.
+    ''', '42' + LE + '99' + LE + 'hello' + LE + '7' + LE, 0);
 end;
 
 initialization

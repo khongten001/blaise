@@ -278,6 +278,8 @@ type
       record — the field address must DEREF the var-param slot (caller's record
       address) before adding the field offset, not take the slot's own address. }
     procedure TestSetLengthOnVarParamRecordField;
+    procedure TestVarParamRecordArrayFieldElemWrite;
+    procedure TestVarParamClassArrayFieldElemWriteStillNotYet;
   end;
 
 implementation
@@ -4851,6 +4853,79 @@ begin
   finally
     F.Free();
   end;
+end;
+
+procedure TArm64BackendTests.TestVarParamRecordArrayFieldElemWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { C.Arr[I] := V where C is a var-param record and Arr a dyn-array field
+    (leg 28).  The var-param slot holds the CALLER's record address, so the
+    element address must LOAD the slot (deref), add the Arr field offset, deref
+    the dyn-array field to its data pointer, then scale the index and store —
+    so the write reaches the caller's array.  Previously NotYet'd as
+    'array-field element write on this base form'. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TCtx = record Arr: array of Integer; end;
+    procedure SetAt(var C: TCtx; I, V: Integer);
+    begin C.Arr[I] := V end;
+    var Ctx: TCtx;
+    begin SetLength(Ctx.Arr, 3); SetAt(Ctx, 1, 42); WriteLn(Ctx.Arr[1]) end.
+    ''');
+  { the var-param base is derefed (ldur the slot value), not slot-addressed }
+  AssertTrue('the var-param record slot is dereferenced for the base address',
+    Pos(#9'ldur x0, [x29,', AsmT) >= 0);
+  { the dyn-array field is derefed to its data pointer }
+  AssertTrue('the dyn-array field is dereferenced to its data pointer',
+    Pos(#9'ldr x0, [x0]', AsmT) >= 0);
+  { the index is scaled and the value stored to the computed element address }
+  AssertTrue('the index is scaled', Pos(#9'mul x1, x1, x2', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64vpe.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestVarParamClassArrayFieldElemWriteStillNotYet;
+var
+  Raised: Boolean;
+  Msg: string;
+begin
+  { An element write into an array field of a var-param CLASS receiver needs an
+    extra deref (the slot holds &instance) that the record element-write path
+    does not add.  Leg 28 lifts the guard only for a RECORD base — a var-param
+    class base must STAY NotYet, not silently mis-address (one indirection
+    short). }
+  Raised := False;
+  Msg := '';
+  try
+    GenAsm(
+      '''
+      program P;
+      type TFoo = class Arr: array of Integer; end;
+      procedure Poke(var F: TFoo);
+      begin F.Arr[0] := 5 end;
+      var F: TFoo;
+      begin F := TFoo.Create; SetLength(F.Arr, 1); Poke(F); WriteLn(F.Arr[0]) end.
+      ''');
+  except
+    on E: ENativeCodeGenError do
+    begin
+      Raised := True;
+      Msg := E.Message;
+    end;
+  end;
+  AssertTrue('var-param class array-field element write stays NotYet', Raised);
+  AssertTrue('message names the array-field element write hole',
+    Pos('array-field element write on this base form', Msg) >= 0);
 end;
 
 initialization

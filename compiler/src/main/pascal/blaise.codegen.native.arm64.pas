@@ -1357,12 +1357,24 @@ var
   IsDyn: Boolean;
   Low: Integer;
 begin
-  { Rec.Field[Index] := value.  Restrict to the leaf base shapes whose field
-    address is a plain slot+offset (like leg 11's SetLength-on-field): an
-    ObjExpr / implicit-Self / var-param base needs different address logic and
-    stays NotYet.  Element container: dyn-array (field slot holds the data
-    pointer — deref) or static array (the field storage IS the array). }
-  if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf or AStmt.IsVarParam then
+  { Rec.Field[Index] := value.  Handled leaf base shapes: a plain
+    local/global record, a by-value record param, and (leg 28) a TRUE var/out
+    record param — EmitFieldElemAddrToX0 computes the base address through
+    EmitRecordBaseAddr, so the var/out slot is derefed to the caller's record
+    while a by-value/local/global slot is addressed inline.  Element container:
+    dyn-array (field slot holds the data pointer — deref) or static array (the
+    field storage IS the array).
+    Still NotYet:
+      * ObjExpr <> nil        — a chained object base (A.B.Arr[i]) needs the
+        base expression evaluated, not a slot+offset.
+      * IsImplicitSelf        — needs Self + ImplicitBaseInfo.Offset, which the
+        plain slot+offset path does not account for.
+      * IsVarParam and IsClassAccess — a var-param CLASS receiver's element
+        write needs an extra deref (the slot holds &instance) that the
+        IsClassAccess address arm below does not add; keep it honest until a
+        var-param class base is wired end-to-end. }
+  if (AStmt.ObjExpr <> nil) or AStmt.IsImplicitSelf or
+     (AStmt.IsVarParam and AStmt.IsClassAccess) then
     NotYet('array-field element write on this base form', AStmt);
   if AStmt.FieldInfo = nil then
     NotYet('unresolved field element write', AStmt);
@@ -1504,7 +1516,9 @@ begin
   if AStmt.IsClassAccess then
     EmitLoadSlot('x0', AStmt.RecordName)       { class inst: slot holds pointer }
   else
-    EmitSlotAddr('x0', AStmt.RecordName);      { record: address of the slot }
+    { record base: a TRUE var/out param derefs the slot to the caller's record;
+      a by-value/local/global record addresses the slot inline (leg 28). }
+    EmitRecordBaseAddr('x0', AStmt.RecordName, AStmt.IsVarParam);
   if AStmt.FieldInfo.Offset <> 0 then
     EmitAddSubImm('add', 'x0', 'x0', AStmt.FieldInfo.Offset);
   if AIsDyn then
