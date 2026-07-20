@@ -7098,19 +7098,23 @@ begin
       EmitLine(Format('  %s =l extsw %s', [Adj, ValTemp]));
     ValTemp := Adj;
   end;
-  { ARC for managed element types: retain new, release old, then store. }
+  { ARC for managed element types: retain new (only when the RHS does not
+    already own +1 — an owned call result transfers its reference), release
+    old, then store. }
   if ElemT.IsString() then
   begin
     OldTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [OldTemp, ElemPtr]));
-    EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
+    if not ExprOwnsRef(AAssign.Expr) then
+      EmitLine(Format('  call $_StringAddRef(l %s)',  [ValTemp]));
     EmitLine(Format('  call $_StringRelease(l %s)', [OldTemp]));
   end
   else if ElemT.Kind = tyClass then
   begin
     OldTemp := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [OldTemp, ElemPtr]));
-    EmitLine(Format('  call $_ClassAddRef(l %s)',  [ValTemp]));
+    if not ExprOwnsRef(AAssign.Expr) then
+      EmitLine(Format('  call $_ClassAddRef(l %s)',  [ValTemp]));
     EmitLine(Format('  call $_ClassRelease(l %s)', [OldTemp]));
   end;
   EmitLine(Format('  %s %s, %s', [StoreInstrFor(ElemT), ValTemp, ElemPtr]));
@@ -17578,19 +17582,23 @@ begin
         end;
       end;
     end;
-    { ARC for managed element types: retain new, release old, then store. }
+    { ARC for managed element types: retain new (only when the RHS does not
+      already own +1 — an owned call result transfers its reference, mirroring
+      scalar assignment and the interface element arm), release old, store. }
     if ElemType.Kind = tyString then
     begin
       OldVal := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
-      EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
+      if not ExprOwnsRef(AStmt.ValueExpr) then
+        EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
       EmitLine(Format('  call $_StringRelease(l %s)', [OldVal]));
     end
     else if ElemType.Kind = tyClass then
     begin
       OldVal := AllocTemp();
       EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
-      EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
+      if not ExprOwnsRef(AStmt.ValueExpr) then
+        EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
       EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
     end;
     EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));
@@ -17752,19 +17760,24 @@ begin
   else
     StoreInstr := 'storew';
   end;
-  { ARC for managed element types: retain new, release old, then store. }
+  { ARC for managed element types: retain new (only when the RHS does not
+    already own +1 — an owned call result transfers its reference, mirroring
+    scalar assignment and the interface element arm above), release old,
+    then store. }
   if ElemType.Kind = tyString then
   begin
     OldVal := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
-    EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
+    if not ExprOwnsRef(AStmt.ValueExpr) then
+      EmitLine(Format('  call $_StringAddRef(l %s)',  [ElemVal]));
     EmitLine(Format('  call $_StringRelease(l %s)', [OldVal]));
   end
   else if ElemType.Kind = tyClass then
   begin
     OldVal := AllocTemp();
     EmitLine(Format('  %s =l loadl %s', [OldVal, ElemPtr]));
-    EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
+    if not ExprOwnsRef(AStmt.ValueExpr) then
+      EmitLine(Format('  call $_ClassAddRef(l %s)',  [ElemVal]));
     EmitLine(Format('  call $_ClassRelease(l %s)', [OldVal]));
   end;
   EmitLine(Format('  %s %s, %s', [StoreInstr, ElemVal, ElemPtr]));

@@ -15093,11 +15093,17 @@ begin
         Self.Emit(#9'addq $8, %rsp');        { drop saved src addr }
         Exit;
       end;
+      { Retain the new element only when the RHS does not already own +1 —
+        an owned call result transfers its reference (mirrors the QBE and
+        arm64 element stores and scalar field assignment). }
       if DAElemType.Kind = tyString then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _StringAddRef');
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _StringRelease');
@@ -15106,8 +15112,11 @@ begin
       else if DAElemType.Kind = tyClass then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _ClassAddRef');
+        if not NativeExprOwnsRef(FA.Expr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _ClassRelease');
@@ -16053,11 +16062,17 @@ begin
           Self.Emit(#9'addq $8, %rsp');         { drop stashed base ptr }
         Exit;
       end;
+      { Retain the new element only when the RHS does not already own +1 —
+        an owned call result transfers its reference (mirrors the QBE and
+        arm64 element stores and scalar assignment). }
       if DAElemType.Kind = tyString then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _StringAddRef');
+        if not NativeExprOwnsRef(SSA.ValueExpr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _StringAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _StringRelease');
@@ -16066,8 +16081,11 @@ begin
       else if DAElemType.Kind = tyClass then
       begin
         Self.Emit(#9'pushq %rcx');
-        Self.Emit(#9'movq 8(%rsp), %rdi');
-        Self.Emit(#9'callq _ClassAddRef');
+        if not NativeExprOwnsRef(SSA.ValueExpr) then
+        begin
+          Self.Emit(#9'movq 8(%rsp), %rdi');
+          Self.Emit(#9'callq _ClassAddRef');
+        end;
         Self.Emit(#9'movq (%rsp), %rcx');
         Self.Emit(#9'movq (%rcx), %rdi');
         Self.Emit(#9'callq _ClassRelease');
@@ -16239,11 +16257,17 @@ begin
         Self.Emit(#9'addq $8, %rsp');         { drop stashed base address }
       Exit;
     end;
+    { Retain the new element only when the RHS does not already own +1 —
+      an owned call result transfers its reference (mirrors the QBE and
+      arm64 element stores and scalar assignment). }
     if DAElemType.Kind = tyString then
     begin
       Self.Emit(#9'pushq %rcx');
-      Self.Emit(#9'movq 8(%rsp), %rdi');
-      Self.Emit(#9'callq _StringAddRef');
+      if not NativeExprOwnsRef(SSA.ValueExpr) then
+      begin
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _StringAddRef');
+      end;
       Self.Emit(#9'movq (%rsp), %rcx');
       Self.Emit(#9'movq (%rcx), %rdi');
       Self.Emit(#9'callq _StringRelease');
@@ -16252,8 +16276,11 @@ begin
     else if DAElemType.Kind = tyClass then
     begin
       Self.Emit(#9'pushq %rcx');
-      Self.Emit(#9'movq 8(%rsp), %rdi');
-      Self.Emit(#9'callq _ClassAddRef');
+      if not NativeExprOwnsRef(SSA.ValueExpr) then
+      begin
+        Self.Emit(#9'movq 8(%rsp), %rdi');
+        Self.Emit(#9'callq _ClassAddRef');
+      end;
       Self.Emit(#9'movq (%rsp), %rcx');
       Self.Emit(#9'movq (%rcx), %rdi');
       Self.Emit(#9'callq _ClassRelease');
