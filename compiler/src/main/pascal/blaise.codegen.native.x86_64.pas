@@ -1993,6 +1993,13 @@ begin
 end;
 
 procedure TX86_64Backend.EmitGlobalReleases;
+{ Program-exit teardown of ARC-managed GLOBALS.  Addressing is <Name>(%rip);
+  the sibling procedure-epilogue walk in EmitProcDecl does the same job for
+  frame-resident locals via VarOperand.  Both dispatch on the shared
+  ArcScopeExitReleaseKind classifier so they cannot drift apart on which
+  type kinds they cover — which is exactly how a program-level
+  `array[0..N] of TFoo` came to leak every element while the identical array
+  inside a procedure was released correctly. }
 var
   I:     Integer;
   Name:  string;
@@ -2006,73 +2013,74 @@ begin
     { Thread-var globals live in TLS and are not released here (matches the
       data-section split; their lifetime is per-thread, not program-global). }
     if Self.IsThreadVarGlobal(Name) then Continue;
-    if Ty.IsString() then
-    begin
-      Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
-      Self.Emit(#9'callq _StringRelease');
-    end
-    else if Ty.Kind = tyClass then
-    begin
-      if Self.IsWeakGlobal(Name) then
-      begin
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Name]));
-        Self.Emit(#9'callq _WeakClear');
-      end
-      else
-      begin
-        Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
-        Self.Emit(#9'callq _ClassRelease');
-      end;
-    end
-    else if Ty.Kind = tyDynArray then
-    begin
-      Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
-      Self.Emit(#9'callq _DynArrayRelease');
-    end
-    else if Ty.Kind = tyInterface then
-    begin
-      if Self.IsWeakGlobal(Name) then
-      begin
-        Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rdi', [Name]));
-        Self.Emit(#9'callq _WeakClear');
-      end
-      else
-      begin
-        Self.Emit(Format(#9'movq %s_obj(%%rip), %%rdi', [Name]));
-        Self.Emit(#9'callq _ClassRelease');
-      end;
-    end
-    else if Ty.Kind in [tyRecord, tyStaticArray] then
-    begin
-      { Aggregate global with managed content: walk it at program exit.
-        EmitManagedReleaseAt dispatches record fields (recursing into
-        static-array fields) and static-array elements (recursing into
-        record elements) — the same shared helper the arm64 backend's
-        main epilogue uses, so both architectures release program-level
-        aggregates through one code path.
+    case ArcScopeExitReleaseKind(Ty) of
+      arkString:
+        begin
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+          Self.Emit(#9'callq _StringRelease');
+        end;
+      arkClass:
+        begin
+          if Self.IsWeakGlobal(Name) then
+          begin
+            Self.Emit(Format(#9'leaq %s(%%rip), %%rdi', [Name]));
+            Self.Emit(#9'callq _WeakClear');
+          end
+          else
+          begin
+            Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+            Self.Emit(#9'callq _ClassRelease');
+          end;
+        end;
+      arkDynArray:
+        begin
+          Self.Emit(Format(#9'movq %s(%%rip), %%rdi', [Name]));
+          Self.Emit(#9'callq _DynArrayRelease');
+        end;
+      arkIntf:
+        begin
+          if Self.IsWeakGlobal(Name) then
+          begin
+            Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rdi', [Name]));
+            Self.Emit(#9'callq _WeakClear');
+          end
+          else
+          begin
+            Self.Emit(Format(#9'movq %s_obj(%%rip), %%rdi', [Name]));
+            Self.Emit(#9'callq _ClassRelease');
+          end;
+        end;
+      arkAggregate:
+        begin
+          { Aggregate global with managed content: walk it at program exit.
+            EmitManagedReleaseAt dispatches record fields (recursing into
+            static-array fields) and static-array elements (recursing into
+            record elements) — the same shared helper the arm64 backend's
+            main epilogue uses, so both architectures release program-level
+            aggregates through one code path.
 
-        Before this, the kind chain covered string/class/dyn-array/
-        interface/record only: a PROGRAM-level `array[0..N] of TFoo`
-        is registered as a GLOBAL (EmitProgram accepts tyStaticArray),
-        so it fell off the end of the chain and every element leaked.
-        The identical array inside a procedure was fine — that goes
-        through the separate procedure-frame walk, which grew its
-        tyStaticArray arm in the BUG-016 stage-2 work.  QBE never had
-        the gap: it has one cleanup routine for both cases.
+            Before this, the kind chain covered string/class/dyn-array/
+            interface/record only: a PROGRAM-level `array[0..N] of TFoo`
+            is registered as a GLOBAL (EmitProgram accepts tyStaticArray),
+            so it fell off the end of the chain and every element leaked.
+            The identical array inside a procedure was fine — that goes
+            through the separate procedure-frame walk, which grew its
+            tyStaticArray arm in the BUG-016 stage-2 work.  QBE never had
+            the gap: it has one cleanup routine for both cases.
 
-        Guarded by ArcTypeHasManagedContent so an unmanaged aggregate
-        emits nothing at all (the record arm used to emit a bare
-        pushq/leaq/popq trio for a record with no managed fields).
+            The arkAggregate classification already excludes an unmanaged
+            aggregate, so nothing is emitted for one (the record arm used
+            to emit a bare pushq/leaq/popq trio for a record with no
+            managed fields).
 
-        Safe against manual element lifetimes: A[I].Free() nils the
-        element slot, so this walk is a no-op on already-freed elements. }
-      if ArcTypeHasManagedContent(Ty) then
-      begin
-        Self.Emit(#9'pushq %rbx');
-        Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [Name]));
-        Self.EmitManagedReleaseAt(Ty, '%rbx', False);
-        Self.Emit(#9'popq %rbx');
-      end;
+            Safe against manual element lifetimes: A[I].Free() nils the
+            element slot, so this walk is a no-op on already-freed
+            elements. }
+          Self.Emit(#9'pushq %rbx');
+          Self.Emit(Format(#9'leaq %s(%%rip), %%rbx', [Name]));
+          Self.EmitManagedReleaseAt(Ty, '%rbx', False);
+          Self.Emit(#9'popq %rbx');
+        end;
     end;
   end;
 end;
@@ -20816,6 +20824,8 @@ var
   SlotOff: Integer;
   SavedAsm: TStringBuilder;
   BodyBuf:  TStringBuilder;
+  VD:       TVarDecl;
+  AKind:    TArcReleaseKind;
 begin
   Sym := FuncSymbolFromDecl(ADecl);
   Self.DbgBeginFunc(Sym);
@@ -21290,111 +21300,120 @@ begin
       Self.Emit(#9'callq _ClassRelease');
     end;
   { Release ARC-managed locals (not params, not Result).
-    Result is returned to the caller who owns it. }
+    Result is returned to the caller who owns it.
+
+    Addressing is VarOperand (frame offsets); the sibling EmitGlobalReleases
+    walk does the same job for program-level globals via <Name>(%rip).  Both
+    dispatch on the shared ArcScopeExitReleaseKind classifier so they cannot
+    drift apart on which type kinds they cover. }
   if ADecl.Body <> nil then
   begin
     for I := 0 to ADecl.Body.Decls.Count - 1 do
     begin
-      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType = nil then Continue;
-      { String locals: release the string. }
-      if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyString then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'movq %s, %%rdi',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.Emit(#9'callq _StringRelease');
-        end
-      { Class locals: release the object reference. }
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyClass then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          if TVarDecl(ADecl.Body.Decls.Items[I]).IsWeak then
-          begin
-            Self.Emit(Format(#9'leaq %s, %%rdi',
-              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-            Self.Emit(#9'callq _WeakClear');
-          end
-          else
+      VD := TVarDecl(ADecl.Body.Decls.Items[I]);
+      if VD.ResolvedType = nil then Continue;
+      AKind := ArcScopeExitReleaseKind(VD.ResolvedType);
+      { A record local is walked whether or not it has managed content: the
+        unguarded arm predates the classifier and emits a bare
+        pushq/leaq/popq trio for an unmanaged record.  Preserved verbatim
+        here so this commit moves no bytes; closed separately. }
+      if (AKind = arkNone) and (VD.ResolvedType.Kind = tyRecord) then
+        AKind := arkAggregate;
+      case AKind of
+        { String locals: release the string. }
+        arkString:
+          for J := 0 to VD.Names.Count - 1 do
           begin
             Self.Emit(Format(#9'movq %s, %%rdi',
-              [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-            Self.Emit(#9'callq _ClassRelease');
+              [Self.VarOperand(VD.Names.Strings[J])]));
+            Self.Emit(#9'callq _StringRelease');
           end;
-        end
-      { Interface locals: release the obj half of the fat pointer; the itab is
-        static rodata and is not refcounted. }
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyInterface then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          if TVarDecl(ADecl.Body.Decls.Items[I]).IsWeak then
+        { Class locals: release the object reference. }
+        arkClass:
+          for J := 0 to VD.Names.Count - 1 do
           begin
-            Self.Emit(Format(#9'leaq %s, %%rdi',
-              [Self.IntfObjOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
-            Self.Emit(#9'callq _WeakClear');
-          end
-          else
+            if VD.IsWeak then
+            begin
+              Self.Emit(Format(#9'leaq %s, %%rdi',
+                [Self.VarOperand(VD.Names.Strings[J])]));
+              Self.Emit(#9'callq _WeakClear');
+            end
+            else
+            begin
+              Self.Emit(Format(#9'movq %s, %%rdi',
+                [Self.VarOperand(VD.Names.Strings[J])]));
+              Self.Emit(#9'callq _ClassRelease');
+            end;
+          end;
+        { Interface locals: release the obj half of the fat pointer; the itab
+          is static rodata and is not refcounted. }
+        arkIntf:
+          for J := 0 to VD.Names.Count - 1 do
+          begin
+            if VD.IsWeak then
+            begin
+              Self.Emit(Format(#9'leaq %s, %%rdi',
+                [Self.IntfObjOperand(VD.Names.Strings[J], False)]));
+              Self.Emit(#9'callq _WeakClear');
+            end
+            else
+            begin
+              Self.Emit(Format(#9'movq %s, %%rdi',
+                [Self.IntfObjOperand(VD.Names.Strings[J], False)]));
+              Self.Emit(#9'callq _ClassRelease');
+            end;
+          end;
+        { Dyn-array locals: release the data buffer; balances the
+          first-assignment retain (a dyn-array var assignment retains the new
+          buffer). }
+        arkDynArray:
+          for J := 0 to VD.Names.Count - 1 do
           begin
             Self.Emit(Format(#9'movq %s, %%rdi',
-              [Self.IntfObjOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J], False)]));
+              [Self.VarOperand(VD.Names.Strings[J])]));
+            Self.Emit(#9'callq _DynArrayRelease');
+          end;
+        { 'reference to' locals: the Data half strong-references an ARC env
+          record (nil for capture-free closures — release is a nil-safe
+          no-op). }
+        arkRefEnv:
+          for J := 0 to VD.Names.Count - 1 do
+          begin
+            Self.Emit(Format(#9'leaq %s, %%rcx',
+              [Self.VarOperand(VD.Names.Strings[J])]));
+            Self.Emit(#9'movq 8(%rcx), %rdi');
             Self.Emit(#9'callq _ClassRelease');
           end;
-        end
-      { Dyn-array locals: release the data buffer; balances the first-assignment
-        retain (a dyn-array var assignment retains the new buffer). }
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyDynArray then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'movq %s, %%rdi',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.Emit(#9'callq _DynArrayRelease');
-        end
-      { 'reference to' locals: the Data half strong-references an ARC env
-        record (nil for capture-free closures — release is a nil-safe no-op). }
-      else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyProcedural)
-        and TProceduralTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType).IsReference then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(Format(#9'leaq %s, %%rcx',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.Emit(#9'movq 8(%rcx), %rdi');
-          Self.Emit(#9'callq _ClassRelease');
-        end
-      { Record locals with managed fields: release each ARC-managed field at
-        scope exit.  The record block lives in the frame; its address goes into
-        %rbx (callee-saved) so it survives the per-field release calls. }
-      else if TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyRecord then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(#9'pushq %rbx');
-          Self.Emit(Format(#9'leaq %s, %%rbx',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.EmitRecordFieldReleases(
-            TRecordTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType), '%rbx');
-          Self.Emit(#9'popq %rbx');
-        end
-      { Static-array-of-managed locals (class, string, interface, dyn-array,
-        or record with managed content): release each element at scope exit
-        (BUG-016 stage 2 — previously interface elements only).  The inline
-        storage base goes into %rbx (callee-saved).
+        { Record locals with managed fields: release each ARC-managed field at
+          scope exit.  The record block lives in the frame; its address goes
+          into %rbx (callee-saved) so it survives the per-field release calls.
 
-        Safe against manual element lifetimes (e.g. the ELF writer's
-        `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6):
-        A[I].Free() nils the element slot, making this walk a no-op on
-        manually-freed elements, and the element store's retain is
-        conditional on RHS ownership (stage 1), so each live slot holds
-        exactly one reference for this walk to balance. }
-      else if (TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType.Kind = tyStaticArray)
-        and ArcTypeHasManagedContent(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType) then
-        for J := 0 to TVarDecl(ADecl.Body.Decls.Items[I]).Names.Count - 1 do
-        begin
-          Self.Emit(#9'pushq %rbx');
-          Self.Emit(Format(#9'leaq %s, %%rbx',
-            [Self.VarOperand(TVarDecl(ADecl.Body.Decls.Items[I]).Names.Strings[J])]));
-          Self.EmitStaticArrayReleaseElems(
-            TStaticArrayTypeDesc(TVarDecl(ADecl.Body.Decls.Items[I]).ResolvedType),
-            '%rbx', False);
-          Self.Emit(#9'popq %rbx');
-        end;
+          Static-array-of-managed locals (class, string, interface, dyn-array,
+          or record with managed content): release each element at scope exit
+          (BUG-016 stage 2 — previously interface elements only).  The inline
+          storage base goes into %rbx (callee-saved).
+
+          Safe against manual element lifetimes (e.g. the ELF writer's
+          `RelaBuf: array[0..MaxSecOrder] of TByteBuf`, MaxSecOrder = 6):
+          A[I].Free() nils the element slot, making this walk a no-op on
+          manually-freed elements, and the element store's retain is
+          conditional on RHS ownership (stage 1), so each live slot holds
+          exactly one reference for this walk to balance. }
+        arkAggregate:
+          for J := 0 to VD.Names.Count - 1 do
+          begin
+            Self.Emit(#9'pushq %rbx');
+            Self.Emit(Format(#9'leaq %s, %%rbx',
+              [Self.VarOperand(VD.Names.Strings[J])]));
+            if VD.ResolvedType.Kind = tyRecord then
+              Self.EmitRecordFieldReleases(
+                TRecordTypeDesc(VD.ResolvedType), '%rbx')
+            else
+              Self.EmitStaticArrayReleaseElems(
+                TStaticArrayTypeDesc(VD.ResolvedType), '%rbx', False);
+            Self.Emit(#9'popq %rbx');
+          end;
+      end;
     end;
   end;
   { ARC: release string/class/interface value params on exit — matches the

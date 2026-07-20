@@ -2705,7 +2705,10 @@ procedure TCodeGenQBE.EmitArcCleanup(ABlock: TBlock);
   slot holds one retained reference from its first assignment; scope exit
   must balance that with one release.  Interface vars carry a fat pointer
   (obj + itab); only the obj slot is refcounted.  Weak vars use _WeakClear
-  against the slot address rather than a strong release on the slot value. }
+  against the slot address rather than a strong release on the slot value.
+
+  Dispatch is the shared ArcScopeExitReleaseKind classifier, so this walk and
+  the two x86-64 walks cannot drift apart on which type kinds they cover. }
 var
   I, J:    Integer;
   Decl:    TVarDecl;
@@ -2714,6 +2717,7 @@ var
   EnvValT: string;
   RelFn:   string;
   IsIntf:  Boolean;
+  Kind:    TArcReleaseKind;
 begin
   for I := 0 to ABlock.Decls.Count - 1 do
   begin
@@ -2724,7 +2728,8 @@ begin
     begin
       { Weak class or interface local — unregister from the weak table
         without touching refcounts.  The zero-out happens automatically
-        as _WeakClear writes 0 to *slot. }
+        as _WeakClear writes 0 to *slot.  [Weak] is a property of the
+        DECLARATION, so it is handled ahead of the type classification. }
       for J := 0 to Decl.Names.Count - 1 do
       begin
         VarName := Decl.Names.Strings[J];
@@ -2735,66 +2740,61 @@ begin
       end;
       Continue;
     end;
-    if Decl.ResolvedType.IsString() then
-      RelFn := '$_StringRelease'
-    else if Decl.ResolvedType.Kind = tyClass then
-      RelFn := '$_ClassRelease'
-    else if IsIntf then
-      RelFn := '$_ClassRelease'  { obj slot release; itab is static }
-    else if Decl.ResolvedType.Kind = tyDynArray then
-      RelFn := '$_DynArrayRelease'
-    else if Decl.ResolvedType.Kind = tyRecord then
-    begin
-      { Record local: release each ARC-managed field at scope exit }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
-        EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
-          VarRef(VarName, Decl.IsGlobal));
-      end;
-      Continue;
-    end
-    else if (Decl.ResolvedType.Kind = tyProcedural) and
-            TProceduralTypeDesc(Decl.ResolvedType).IsReference then
-    begin
-      { 'reference to' local: the Data half strong-references an ARC env
-        record (nil for capture-free closures — _ClassRelease is nil-safe).
-        Balance the reference the slot holds. }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsEnvField(VarName) then Continue;
-        ValTemp := AllocTemp();
-        EmitLine(Format('  %s =l add %s, 8',
-          [ValTemp, VarRef(VarName, Decl.IsGlobal)]));
-        EnvValT := AllocTemp();
-        EmitLine(Format('  %s =l loadl %s', [EnvValT, ValTemp]));
-        EmitLine(Format('  call $_ClassRelease(l %s)', [EnvValT]));
-      end;
-      Continue;
-    end
-    else if (Decl.ResolvedType.Kind = tyStaticArray)
-      and ArcTypeHasManagedContent(Decl.ResolvedType) then
-    begin
-      { Static-array-of-managed local (class, string, interface, dyn-array,
-        or record with managed content): release each element at scope exit
-        (BUG-016 stage 2 — previously interface elements only).  VarRef
-        gives the inline storage base.  Safe against manual element
-        lifetimes because A[I].Free() nils the slot and the element store's
-        retain is conditional on RHS ownership (stage 1).  AZero=False: the
-        normal path does not zero the slots. }
-      for J := 0 to Decl.Names.Count - 1 do
-      begin
-        VarName := Decl.Names.Strings[J];
-        if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
-        EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
-          VarRef(VarName, Decl.IsGlobal), False);
-      end;
-      Continue;
-    end
-    else
-      Continue;
+    Kind := ArcScopeExitReleaseKind(Decl.ResolvedType);
+    RelFn := '';
+    case Kind of
+      arkString:   RelFn := '$_StringRelease';
+      arkClass:    RelFn := '$_ClassRelease';
+      arkIntf:     RelFn := '$_ClassRelease';  { obj slot release; itab is static }
+      arkDynArray: RelFn := '$_DynArrayRelease';
+      arkRefEnv:
+        begin
+          { 'reference to' local: the Data half strong-references an ARC env
+            record (nil for capture-free closures — _ClassRelease is nil-safe).
+            Balance the reference the slot holds. }
+          for J := 0 to Decl.Names.Count - 1 do
+          begin
+            VarName := Decl.Names.Strings[J];
+            if IsEnvField(VarName) then Continue;
+            ValTemp := AllocTemp();
+            EmitLine(Format('  %s =l add %s, 8',
+              [ValTemp, VarRef(VarName, Decl.IsGlobal)]));
+            EnvValT := AllocTemp();
+            EmitLine(Format('  %s =l loadl %s', [EnvValT, ValTemp]));
+            EmitLine(Format('  call $_ClassRelease(l %s)', [EnvValT]));
+          end;
+          Continue;
+        end;
+      arkAggregate:
+        begin
+          { Record local: release each ARC-managed field at scope exit.
+
+            Static-array-of-managed local (class, string, interface,
+            dyn-array, or record with managed content): release each element
+            at scope exit (BUG-016 stage 2 — previously interface elements
+            only).  VarRef gives the inline storage base.  Safe against
+            manual element lifetimes because A[I].Free() nils the slot and
+            the element store's retain is conditional on RHS ownership
+            (stage 1).  AZero=False: the normal path does not zero the
+            slots. }
+          for J := 0 to Decl.Names.Count - 1 do
+          begin
+            VarName := Decl.Names.Strings[J];
+            if IsEnvField(VarName) then Continue;  { env cleanup owns the fields }
+            if Decl.ResolvedType.Kind = tyRecord then
+              EmitRecordReleaseFields(TRecordTypeDesc(Decl.ResolvedType),
+                VarRef(VarName, Decl.IsGlobal))
+            else
+              EmitStaticArrayReleaseElems(TStaticArrayTypeDesc(Decl.ResolvedType),
+                VarRef(VarName, Decl.IsGlobal), False);
+          end;
+          Continue;
+        end;
+      else
+        Continue;  { arkNone }
+    end;
+    { Scalar tail, shared by arkString/arkClass/arkIntf/arkDynArray: one
+      direct release call per name against the slot value. }
     for J := 0 to Decl.Names.Count - 1 do
     begin
       VarName := Decl.Names.Strings[J];
