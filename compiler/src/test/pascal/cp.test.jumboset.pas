@@ -36,6 +36,9 @@ type
     procedure TestInclude_CallsSetInclude;
     procedure TestExclude_CallsSetExclude;
     procedure TestAssignment_UsesMemcpy;
+    procedure TestFieldAssignment_UsesMemcpy;
+    procedure TestVarParamAssignment_UsesMemcpy;
+    procedure TestArrayElemAssignment_UsesMemcpy;
     procedure TestConst_EmitsByteBlob;
     procedure TestSmallSet_StillUsesRegister;
   end;
@@ -157,6 +160,46 @@ begin
   IR := GenIR('program P;' + #10 + 'type' + #10 + EnumDecl +
               'var a, b: TBigSet;' + #10 + 'begin a := b; end.');
   AssertTrue('jumbo assignment via memcpy', Pos('call $memcpy', IR) >= 0);
+end;
+
+procedure TJumboSetTests.TestFieldAssignment_UsesMemcpy;
+var IR: string;
+begin
+  { A jumbo set stored into a RECORD FIELD must copy the whole bitmap.  The old
+    codegen fell through to the generic scalar store and emitted a single
+    `storel <scratch-ptr>, <field-addr>` — the field then held the ADDRESS of a
+    stack scratch buffer instead of a copy of the bitmap, so every member was
+    silently lost. }
+  IR := GenIR('program P;' + #10 + 'type' + #10 + EnumDecl +
+              '  TRec = record S: TBigSet; end;' + #10 +
+              'var r: TRec; b: TBigSet;' + #10 + 'begin r.S := r.S + b; end.');
+  AssertTrue('jumbo field assignment via memcpy', Pos('call $memcpy', IR) >= 0);
+  AssertTrue('jumbo field assignment must not scalar-store the union result',
+    Pos('storel %_t', IR) < 0);
+end;
+
+procedure TJumboSetTests.TestVarParamAssignment_UsesMemcpy;
+var IR: string;
+begin
+  { Same bug through a var parameter: the destination is the caller's bitmap
+    address held in the pointer slot, so the store must be a memcpy into it. }
+  IR := GenIR('program P;' + #10 + 'type' + #10 + EnumDecl +
+              'procedure Q(var s: TBigSet); begin s := s + [b70]; end;' + #10 +
+              'begin end.');
+  AssertTrue('jumbo var-param assignment via memcpy', Pos('call $memcpy', IR) >= 0);
+  AssertTrue('jumbo var-param assignment must not scalar-store the union result',
+    Pos('storel %_t', IR) < 0);
+end;
+
+procedure TJumboSetTests.TestArrayElemAssignment_UsesMemcpy;
+var IR: string;
+begin
+  { And into a static-array element. }
+  IR := GenIR('program P;' + #10 + 'type' + #10 + EnumDecl +
+              'var a: array[0..1] of TBigSet; b: TBigSet;' + #10 +
+              'begin a[0] := b; end.');
+  AssertTrue('jumbo array-element assignment via memcpy',
+    Pos('call $memcpy', IR) >= 0);
 end;
 
 procedure TJumboSetTests.TestConst_EmitsByteBlob;

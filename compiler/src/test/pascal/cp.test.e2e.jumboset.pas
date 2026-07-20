@@ -30,6 +30,9 @@ type
     procedure TestRun_Equality;
     procedure TestRun_ForIn_CountsMembers;
     procedure TestRun_Param_And_Return;
+    procedure TestRun_RecordField_RoundTrips;
+    procedure TestRun_ClassField_RoundTrips;
+    procedure TestRun_VarParam_RoundTrips;
     procedure TestRun_Constant;
   end;
 
@@ -148,6 +151,74 @@ begin
          'end.';
   AssertRunsOnAll(Src,
     'True' + LE + 'False' + LE + 'TrueTrueFalse' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_RecordField_RoundTrips;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { A jumbo set stored into a record field used to lose every member silently:
+    the field received the ADDRESS of a stack scratch buffer instead of a copy
+    of the bitmap. }
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'type TRec = record S: TBigSet; N: Integer; end;' + LE +
+         'var r: TRec;' + LE +
+         'begin' + LE +
+         '  r.S := [];' + LE +
+         '  r.S := r.S + [b05];' + LE +
+         '  r.S := r.S + [b70];' + LE +
+         '  r.N := 7;' + LE +
+         '  WriteLn(b05 in r.S, b70 in r.S, b71 in r.S);' + LE +
+         '  WriteLn(r.N)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE + '7' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_ClassField_RoundTrips;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'type THolder = class' + LE +
+         '  S: TBigSet;' + LE +
+         '  procedure Fill;' + LE +
+         'end;' + LE +
+         'procedure THolder.Fill;' + LE +
+         'begin S := S + [b65]; end;' + LE +
+         'var h: THolder;' + LE +
+         'begin' + LE +
+         '  h := THolder.Create();' + LE +
+         '  h.S := [];' + LE +
+         '  h.S := h.S + [b40];' + LE +
+         '  h.Fill();' + LE +
+         '  WriteLn(b40 in h.S, b65 in h.S, b00 in h.S)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE, 0);
+end;
+
+procedure TE2EJumboSetTests.TestRun_VarParam_RoundTrips;
+var Src: string;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit end;
+  { Assigning through a var/out parameter must copy the bitmap into the
+    caller's storage, not store a pointer into the pointer slot. }
+  Src := 'program P;' + LE + ENUMHDR + LE +
+         'procedure Fill(var s: TBigSet);' + LE +
+         'begin' + LE +
+         '  s := [];' + LE +
+         '  s := s + [b05];' + LE +
+         '  s := s + [b70];' + LE +
+         'end;' + LE +
+         'procedure FillOut(out s: TBigSet);' + LE +
+         'begin s := [b79]; end;' + LE +
+         'var a, b: TBigSet;' + LE +
+         'begin' + LE +
+         '  Fill(a);' + LE +
+         '  WriteLn(b05 in a, b70 in a, b71 in a);' + LE +
+         '  FillOut(b);' + LE +
+         '  WriteLn(b79 in b, b05 in b)' + LE +
+         'end.';
+  AssertRunsOnAll(Src, 'TrueTrueFalse' + LE + 'TrueFalse' + LE, 0);
 end;
 
 procedure TE2EJumboSetTests.TestRun_Constant;

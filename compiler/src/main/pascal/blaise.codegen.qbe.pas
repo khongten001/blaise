@@ -4619,6 +4619,18 @@ begin
       end;
       Exit;
     end;
+    { Jumbo-set field via implicit Self (bare 'S := S + [x]' inside a method):
+      an inline byte-array bitmap, so copy the whole bitmap into the field.
+      The scalar store below would deposit only the 8-byte address of the
+      set-op scratch buffer, silently losing every member. }
+    if (ISFld.TypeDesc.Kind = tySet) and
+       TSetTypeDesc(ISFld.TypeDesc).IsJumbo() then
+    begin
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+        [ObjTemp, ValTemp, TSetTypeDesc(ISFld.TypeDesc).RawSize()]));
+      Exit;
+    end;
     { Interface field: fat-pointer stored as two consecutive 8-byte slots
       (obj at offset, itab at offset+8).  ObjTemp already points at the
       obj slot; the itab slot is 8 bytes further. }
@@ -5001,6 +5013,18 @@ begin
         ValTemp := EmitExpr(AAssign.Expr);
         EmitRecordCopy(ClassRT, PtrTemp, ValTemp);
       end;
+    end
+    else if (AAssign.ResolvedLhsType <> nil) and
+            (AAssign.ResolvedLhsType.Kind = tySet) and
+            TSetTypeDesc(AAssign.ResolvedLhsType).IsJumbo() then
+    begin
+      { Jumbo set through a var/out param: PtrTemp holds the caller's bitmap
+        address.  Copy the whole bitmap into it.  Storing a single word here
+        (the old default branch) wrote the source scratch-buffer ADDRESS into
+        the caller's first 8 bytes and silently lost every member. }
+      ValTemp := EmitExpr(AAssign.Expr);
+      EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+        [PtrTemp, ValTemp, TSetTypeDesc(AAssign.ResolvedLhsType).RawSize()]));
     end
     else
     begin
@@ -7348,6 +7372,22 @@ begin
     end
     else
       EmitRecordCopy(TRecordTypeDesc(AAssign.FieldInfo.TypeDesc), Ptr, ValTemp);
+    if ObjReleaseTemp <> '' then
+      EmitLine(Format('  call $_ClassRelease(l %s)', [ObjReleaseTemp]));
+    Exit;
+  end;
+
+  { Jumbo-set field: an inline byte-array bitmap, so the store is a whole-bitmap
+    copy just like a record field.  ValTemp is the source bitmap address (a set
+    variable, a set-op result buffer, or a const blob).  Falling through to the
+    generic scalar store below wrote a single 8-byte `storel <src-addr>, <field>`
+    — the field then held the ADDRESS of a stack scratch buffer rather than a
+    copy of the bitmap, so every member was silently lost. }
+  if (AAssign.FieldInfo.TypeDesc.Kind = tySet) and
+     TSetTypeDesc(AAssign.FieldInfo.TypeDesc).IsJumbo() then
+  begin
+    EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+      [Ptr, ValTemp, TSetTypeDesc(AAssign.FieldInfo.TypeDesc).RawSize()]));
     if ObjReleaseTemp <> '' then
       EmitLine(Format('  call $_ClassRelease(l %s)', [ObjReleaseTemp]));
     Exit;
@@ -17391,6 +17431,18 @@ begin
       EmitRecordCopy(TRecordTypeDesc(ElemType), ElemPtr, ElemVal);
       Exit;
     end;
+    { Jumbo-set element: an inline bitmap, so copy the whole thing rather
+      than storing the source buffer's address in the element slot. }
+    if (ElemType.Kind = tySet) and TSetTypeDesc(ElemType).IsJumbo() then
+    begin
+      EmitLine(Format('  %s =l extsw %s', [IdxL, IdxW]));
+      EmitLine(Format('  %s =l mul %s, %d', [Offset, IdxL, ElemSize]));
+      EmitLine(Format('  %s =l add %s, %s', [ElemPtr, PCharBase, Offset]));
+      ElemVal := EmitExpr(AStmt.ValueExpr);
+      EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+        [ElemPtr, ElemVal, TSetTypeDesc(ElemType).RawSize()]));
+      Exit;
+    end;
     if ElemType.Kind in [tyByte, tyBoolean] then
       ElemVal := EmitByteRhs(AStmt.ValueExpr)
     else
@@ -17505,6 +17557,15 @@ begin
   begin
     ElemVal := EmitExpr(AStmt.ValueExpr);
     EmitRecordCopy(TRecordTypeDesc(ElemType), ElemPtr, ElemVal);
+    Exit;
+  end;
+  { Jumbo-set element: inline bitmap — whole-bitmap copy, never a scalar
+    store of the source address. }
+  if (ElemType.Kind = tySet) and TSetTypeDesc(ElemType).IsJumbo() then
+  begin
+    ElemVal := EmitExpr(AStmt.ValueExpr);
+    EmitLine(Format('  call $memcpy(l %s, l %s, l %d)',
+      [ElemPtr, ElemVal, TSetTypeDesc(ElemType).RawSize()]));
     Exit;
   end;
   { Interface element: the slot is a contiguous 16-byte fat pointer

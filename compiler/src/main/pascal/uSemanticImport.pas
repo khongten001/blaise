@@ -215,15 +215,46 @@ var
   BaseSym:  TSymbol;
   SetDesc:  TSetTypeDesc;
   Sym:      TSymbol;
+  DDotPos:  Integer;
+  Hi:       Integer;
 begin
   SetDef := TSetTypeDef(AEntry.Def);
+  { Integer-subrange base ('set of lo..hi'): rebuild a Byte-backed ordinal set
+    sized by the high bound, mirroring TSemanticAnalyser.ResolveSubrangeSetType.
+    The importer must accept every base form the semantic pass accepts —
+    otherwise a named set type round-tripped through a cached .bif fails to
+    import and an incremental rebuild breaks. }
+  DDotPos := StrPos('..', SetDef.BaseTypeName);
+  if DDotPos >= 0 then
+  begin
+    Hi := StrToIntDef(StrCopyTail(SetDef.BaseTypeName, DDotPos + 2), -1);
+    if (Hi < 0) or (Hi > 255) then
+      raise EImportError.CreateFmt(
+        'Set %s subrange base ''%s'' is out of range (0..255)',
+        [AEntry.Name, SetDef.BaseTypeName]);
+    SetDesc := ATable.NewOrdinalSetType(AEntry.Name, ATable.TypeByte, Hi + 1);
+    Sym := TSymbol.Create(AEntry.Name, skType, SetDesc);
+    Sym.OwningUnit := AUnitName;
+    if not ATable.Define(Sym) then Sym.Free();
+    Exit;
+  end;
   BaseSym := ATable.Lookup(SetDef.BaseTypeName);
-  if (BaseSym = nil) or (BaseSym.Kind <> skType) or
-     not (BaseSym.TypeDesc is TEnumTypeDesc) then
+  if (BaseSym = nil) or (BaseSym.Kind <> skType) then
     raise EImportError.CreateFmt(
-      'Set %s base ''%s'' is not an enum (import order?)',
+      'Set %s base ''%s'' is not a known type (import order?)',
       [AEntry.Name, SetDef.BaseTypeName]);
-  SetDesc := ATable.NewSetType(AEntry.Name, TEnumTypeDesc(BaseSym.TypeDesc));
+  { An enum base carries its own member count; Byte and Boolean are the
+    ordinal bases the language allows (256 and 2 elements respectively). }
+  if BaseSym.TypeDesc is TEnumTypeDesc then
+    SetDesc := ATable.NewSetType(AEntry.Name, TEnumTypeDesc(BaseSym.TypeDesc))
+  else if BaseSym.TypeDesc.Kind = tyByte then
+    SetDesc := ATable.NewOrdinalSetType(AEntry.Name, BaseSym.TypeDesc, 256)
+  else if BaseSym.TypeDesc.Kind = tyBoolean then
+    SetDesc := ATable.NewOrdinalSetType(AEntry.Name, BaseSym.TypeDesc, 2)
+  else
+    raise EImportError.CreateFmt(
+      'Set %s base ''%s'' must be an enumeration, Byte, or Boolean',
+      [AEntry.Name, SetDef.BaseTypeName]);
   Sym := TSymbol.Create(AEntry.Name, skType, SetDesc);
   Sym.OwningUnit := AUnitName;
   if not ATable.Define(Sym) then Sym.Free();
