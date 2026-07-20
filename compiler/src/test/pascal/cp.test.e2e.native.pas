@@ -299,6 +299,12 @@ type
       pointer args are counted), else the overflow args clobber the caller's
       frame.  Runs on both backends. }
     procedure TestRun_Native_NestedProc_CaptureArgsOverflowToStack;
+    { BUG-20260720-grandparent-capture: a routine nested 3+ levels deep can
+      capture a variable owned two-or-more levels up.  The intermediate levels
+      forward the capture pointer.  Read, write, 4-level chain. }
+    procedure TestRun_Native_NestedProc_GrandparentCapture_Read;
+    procedure TestRun_Native_NestedProc_GrandparentCapture_Write;
+    procedure TestRun_Native_NestedProc_GreatGrandparentCapture;
 
     { Trig / math builtins with Single dispatch }
     procedure TestRun_Native_Builtin_SinCos;
@@ -5140,6 +5146,59 @@ begin
       Outer()
     end.
     ''', '66' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_GrandparentCapture_Read;
+begin
+  { L3 (nested in L2, nested in L1) reads V, which is L1's local — two levels
+    up.  L2 must forward the capture pointer down to L3.  Expect 17. }
+  AssertRunsOnAll('''
+    program Prg;
+    procedure L1;
+    var V: Integer;
+      procedure L2;
+        procedure L3;
+        begin WriteLn(V) end;
+      begin L3() end;
+    begin V := 17; L2() end;
+    begin L1() end.
+    ''', '17' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_GrandparentCapture_Write;
+begin
+  { L3 WRITES the grandparent's V; the outermost reads it after.  The write
+    must reach L1's storage through the forwarded capture pointer.  Expect 55. }
+  AssertRunsOnAll('''
+    program Prg;
+    procedure L1;
+    var V: Integer;
+      procedure L2;
+        procedure L3;
+        begin V := 55 end;
+      begin L3() end;
+    begin V := 0; L2(); WriteLn(V) end;
+    begin L1() end.
+    ''', '55' + LE, 0);
+end;
+
+procedure TE2ENativeTests.TestRun_Native_NestedProc_GreatGrandparentCapture;
+begin
+  { Four levels: L4 writes V owned by L1 (three levels up).  Every
+    intermediate level forwards the pointer.  Expect 9. }
+  AssertRunsOnAll('''
+    program Prg;
+    procedure L1;
+    var V: Integer;
+      procedure L2;
+        procedure L3;
+          procedure L4;
+          begin V := 9 end;
+        begin L4() end;
+      begin L3() end;
+    begin V := 0; L2(); WriteLn(V) end;
+    begin L1() end.
+    ''', '9' + LE, 0);
 end;
 
 procedure TE2ENativeTests.TestRun_Native_Builtin_SinCos;

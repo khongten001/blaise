@@ -8043,6 +8043,7 @@ var
   TodoStmts: TObjectList;
   CurExpr:   TASTExpr;
   CurStmt:   TASTStmt;
+  ChainDecl: TMethodDecl;
 begin
   if ADecl.Body = nil then Exit;
   if AOuterDecl = nil then Exit;
@@ -8051,25 +8052,40 @@ begin
   TodoExprs := TObjectList.Create(False);
   TodoStmts := TObjectList.Create(False);
   try
-    { Build the set of enclosing names: the outer proc's local var decls ... }
-    if AOuterDecl.Body <> nil then
-      for I := 0 to AOuterDecl.Body.Decls.Count - 1 do
-      begin
-        VDecl := TVarDecl(AOuterDecl.Body.Decls.Items[I]);
-        for J := 0 to VDecl.Names.Count - 1 do
-        begin
-          VName := VDecl.Names.Strings[J];
-          if OuterVars.IndexOf(VName) < 0 then
-            OuterVars.Add(VName);
-        end;
-      end;
-    { ... and the outer proc's PARAMETERS (value, var, out — all capturable;
-      a captured var-param carries a pointer, handled by codegen). }
-    for I := 0 to AOuterDecl.Params.Count - 1 do
+    { Build the set of enclosing names by walking the WHOLE enclosing-scope
+      chain — the immediate parent AND every grandparent up to the top-level
+      proc (BUG-20260720-grandparent-capture).  A routine nested three or more
+      levels deep may reference a variable owned two-or-more levels up; that
+      name must be capturable here so it enters CapturedVars, and the existing
+      bottom-up child-fold then propagates it up through every intermediate
+      level (each level analysed after its children).  The walk is
+      innermost-first and every add is guarded by IndexOf < 0, so a name owned
+      by a NEARER level wins — a grandparent var shadowed by an intermediate
+      level's own local/param is correctly excluded. }
+    ChainDecl := AOuterDecl;
+    while ChainDecl <> nil do
     begin
-      VName := TMethodParam(AOuterDecl.Params.Items[I]).ParamName;
-      if OuterVars.IndexOf(VName) < 0 then
-        OuterVars.Add(VName);
+      { this level's local var decls ... }
+      if ChainDecl.Body <> nil then
+        for I := 0 to ChainDecl.Body.Decls.Count - 1 do
+        begin
+          VDecl := TVarDecl(ChainDecl.Body.Decls.Items[I]);
+          for J := 0 to VDecl.Names.Count - 1 do
+          begin
+            VName := VDecl.Names.Strings[J];
+            if OuterVars.IndexOf(VName) < 0 then
+              OuterVars.Add(VName);
+          end;
+        end;
+      { ... and this level's PARAMETERS (value, var, out — all capturable;
+        a captured var-param carries a pointer, handled by codegen). }
+      for I := 0 to ChainDecl.Params.Count - 1 do
+      begin
+        VName := TMethodParam(ChainDecl.Params.Items[I]).ParamName;
+        if OuterVars.IndexOf(VName) < 0 then
+          OuterVars.Add(VName);
+      end;
+      ChainDecl := ChainDecl.EnclosingDecl;
     end;
     { Nested-of-method: the enclosing method's Self is capturable like any
       other outer name (BUG-008).  It is an implicit parameter, so it never
