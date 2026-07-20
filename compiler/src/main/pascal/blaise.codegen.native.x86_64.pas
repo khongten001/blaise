@@ -3403,6 +3403,28 @@ begin
       obj is released. }
     Self.EmitIntfSretCall(TFuncCallExpr(AObjExpr));
     RecvOnStack := True;
+  end
+  else if (AObjExpr <> nil) and (AObjExpr is TMethodCallExpr) and
+          (TMethodCallExpr(AObjExpr).ResolvedClassType <> nil) then
+  begin
+    { Method-call receiver (B.Get().Value(), L.Get(0).Value()): same shape as
+      the TFuncCallExpr case above and it must take the same sret path.  A
+      call result has no NAME, so without this arm the receiver fell through
+      to the named-slot branch below with an empty AObjName and emitted
+      `movq _obj(%rip)` / `movq _itab(%rip)` — symbols that are never
+      defined.  The linker bound them to arbitrary addresses, so the program
+      compiled clean and segfaulted at run time.  Reached most often through
+      a generic container monomorphised at an interface element type.
+
+      Which sret helper applies depends on the RECEIVER of the inner call,
+      not on its return type: a class receiver (B.Get, where B: TBox<IFoo>)
+      is a direct call, while an interface receiver dispatches through the
+      itab.  Same discrimination as the assignment paths below. }
+    if TMethodCallExpr(AObjExpr).ResolvedClassType.Kind = tyInterface then
+      Self.EmitIntfSretMethodCall(TMethodCallExpr(AObjExpr))
+    else
+      Self.EmitClassIntfSretMethodCall(TMethodCallExpr(AObjExpr));
+    RecvOnStack := True;
   end;
   DiscSz := 0;
   if ADiscardIntfRet then

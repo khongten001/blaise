@@ -51,6 +51,15 @@ type
       released on Free. }
     procedure TestRun_TListOfInterface_RetainsElementsUntilFree;
 
+    { Chained dispatch on an interface-returning METHOD result
+      (`B.Get().Val()`).  EmitInterfaceCall routed a TFuncCallExpr receiver
+      through the sret convention but not a TMethodCallExpr one, so the
+      method-call form fell through to the named-slot path with an EMPTY
+      name and emitted `movq _obj(%rip)` / `movq _itab(%rip)` — symbols that
+      are never defined.  The linker bound them to arbitrary addresses, so
+      native compiled clean and segfaulted at run time while QBE was correct. }
+    procedure TestRun_ChainedIntfMethodCall_Dispatches;
+
     { Deref-dispatch `P^.Method()` is NOT covered here: the parser shapes
       `P^.Name` as a TFieldAccessExpr unconditionally and never checks for a
       following '(', so the form is rejected at PARSE time for classes and
@@ -664,6 +673,62 @@ const
       WriteLn('done')
     end.
     ''';
+
+  { Chained dispatch on an interface-returning METHOD result.  Both the
+    generic (TBox<IFoo>.Get) and plain (Make) forms are exercised: only the
+    generic one crashed, but the plain one pins that the existing
+    TFuncCallExpr receiver path keeps working.  The two-step form is printed
+    first so a failure distinguishes "dispatch broken" from "chaining
+    broken". }
+  SrcChainedIntfCall = '''
+    program P;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        function Value: Integer;
+      end;
+      TBox<T> = class
+        FItem: T;
+        procedure Put(const A: T);
+        function Get: T;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    procedure TBox<T>.Put(const A: T);
+    begin FItem := A end;
+    function TBox<T>.Get: T;
+    begin Result := FItem end;
+    function Make: IFoo;
+    begin Result := TFoo.Create(7) end;
+    var
+      B: TBox<IFoo>;
+      G: IFoo;
+    begin
+      B := TBox<IFoo>.Create();
+      B.Put(TFoo.Create(5));
+      G := B.Get();
+      WriteLn(G.Value());
+      WriteLn(B.Get().Value());
+      WriteLn(Make().Value());
+      B.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_ChainedIntfMethodCall_Dispatches;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { Before the fix native emitted movq _obj(%rip) for the B.Get() receiver —
+    an undefined symbol — and segfaulted here while QBE printed 5. }
+  AssertRTLRunsOnAll(SrcChainedIntfCall,
+    '5' + #10 + '5' + #10 + '7' + #10 + 'done' + #10, 0);
+end;
 
 procedure TE2ECollections2Tests.TestRun_TListOfInterface_RetainsElementsUntilFree;
 begin
