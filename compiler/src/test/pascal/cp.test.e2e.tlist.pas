@@ -42,6 +42,23 @@ type
     { Clear and Free release managed elements (ARC cascade): a class element's
       destructor must run when the list is cleared or freed. }
     procedure TestRun_TList_FreeAndClear_ReleasesElements;
+
+    { The same managed-element release cascade for the other containers
+      (BUG-012): Clear/Destroy must release every live element, and the
+      element-removing operations must clear the slot they vacate. }
+    procedure TestRun_TStack_ClassElements_ReleasedOnDestroy;
+    procedure TestRun_TStack_Pop_ReleasesSlot;
+    procedure TestRun_TQueue_ClassElements_ReleasedOnDestroy;
+    procedure TestRun_TQueue_Dequeue_ReleasesSlot;
+    procedure TestRun_TSet_ClassElements_ReleasedOnClear;
+    procedure TestRun_TSet_Exclude_ReleasesSlot;
+    procedure TestRun_TDictionary_ClassValues_ReleasedOnDestroy;
+    procedure TestRun_TDictionary_Remove_ReleasesSlot;
+    procedure TestRun_TOrderedDictionary_ClassValues_ReleasedOnDestroy;
+
+    { TQueue<T>.Grow copies into a fresh buffer; the old slots must be
+      released or every surviving element leaks a +1. }
+    procedure TestRun_TQueue_Grow_ReleasesOldBuffer;
   end;
 
 implementation
@@ -313,6 +330,374 @@ begin
     destructor fires, proving the managed-element release cascade. }
   AssertRTLRunsOnAll(SrcTListFreeClear,
     'd1' + #10 + 'd2' + #10 + 'cleared' + #10 + 'd3' + #10 + 'done' + #10, 0);
+end;
+
+{ ------------------------------------------------------------------ }
+{ BUG-012 — the other containers must release managed elements too.    }
+{ Each program declares a class whose destructor prints, so the exact  }
+{ release points are visible in stdout ordering.                       }
+{ ------------------------------------------------------------------ }
+
+const
+  SrcTStackDestroy = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      S: TStack<TC>;
+    begin
+      S := TStack<TC>.Create();
+      S.Push(TC.Create(1));
+      S.Push(TC.Create(2));
+      S.Clear();
+      WriteLn('cleared');
+      S.Push(TC.Create(3));
+      S.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  { Pop hands ownership to the caller; the vacated slot must not keep a
+    second reference alive.  Freeing the popped object here must run its
+    destructor exactly once, before the stack is freed. }
+  SrcTStackPop = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      S: TStack<TC>;
+      C: TC;
+    begin
+      S := TStack<TC>.Create();
+      S.Push(TC.Create(1));
+      C := S.Pop();
+      WriteLn('popped', C.N);
+      C := nil;
+      WriteLn('nilled');
+      S.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcTQueueDestroy = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      Q: TQueue<TC>;
+    begin
+      Q := TQueue<TC>.Create();
+      Q.Enqueue(TC.Create(1));
+      Q.Enqueue(TC.Create(2));
+      Q.Clear();
+      WriteLn('cleared');
+      Q.Enqueue(TC.Create(3));
+      Q.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  { Enqueue/Dequeue past the initial capacity so FHead wraps — the release
+    walk must follow the circular layout, not slots 0..FCount-1. }
+  SrcTQueueDequeue = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      Q: TQueue<TC>;
+      C: TC;
+      I: Integer;
+    begin
+      Q := TQueue<TC>.Create();
+      for I := 1 to 3 do
+        Q.Enqueue(TC.Create(I));
+      for I := 1 to 3 do
+      begin
+        C := Q.Dequeue();
+        WriteLn('got', C.N);
+        C := nil
+      end;
+      WriteLn('drained');
+      Q.Enqueue(TC.Create(9));
+      Q.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcTSetClear = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      S: TSet<TC>;
+    begin
+      S := TSet<TC>.Create();
+      S.Include(TC.Create(1));
+      S.Include(TC.Create(2));
+      S.Clear();
+      WriteLn('cleared');
+      S.Include(TC.Create(3));
+      S.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  { Exclude shifts the tail down; the vacated slot must be cleared or the
+    excluded element stays alive through a duplicated reference. }
+  SrcTSetExclude = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      S: TSet<TC>;
+      A: TC;
+      B: TC;
+    begin
+      S := TSet<TC>.Create();
+      A := TC.Create(1);
+      B := TC.Create(2);
+      S.Include(A);
+      S.Include(B);
+      S.Exclude(A);
+      A := nil;
+      WriteLn('excluded');
+      B := nil;
+      S.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcTDictDestroy = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      D: TDictionary<String, TC>;
+    begin
+      D := TDictionary<String, TC>.Create();
+      D.Add('a', TC.Create(1));
+      D.Add('b', TC.Create(2));
+      D.Clear();
+      WriteLn('cleared');
+      D.Add('c', TC.Create(3));
+      D.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcTDictRemove = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      D: TDictionary<String, TC>;
+    begin
+      D := TDictionary<String, TC>.Create();
+      D.Add('a', TC.Create(1));
+      D.Add('b', TC.Create(2));
+      D.Remove('a');
+      WriteLn('removed');
+      D.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+  SrcTOrdDictDestroy = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      D: TOrderedDictionary<String, TC>;
+    begin
+      D := TOrderedDictionary<String, TC>.Create();
+      D.Add('a', TC.Create(1));
+      D.Add('b', TC.Create(2));
+      D.Remove('a');
+      WriteLn('removed');
+      D.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ETListTests.TestRun_TStack_ClassElements_ReleasedOnDestroy;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTStackDestroy,
+    'd1' + #10 + 'd2' + #10 + 'cleared' + #10 + 'd3' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TStack_Pop_ReleasesSlot;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTStackPop,
+    'popped1' + #10 + 'd1' + #10 + 'nilled' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TQueue_ClassElements_ReleasedOnDestroy;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTQueueDestroy,
+    'd1' + #10 + 'd2' + #10 + 'cleared' + #10 + 'd3' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TQueue_Dequeue_ReleasesSlot;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTQueueDequeue,
+    'got1' + #10 + 'd1' + #10 + 'got2' + #10 + 'd2' + #10 +
+    'got3' + #10 + 'd3' + #10 + 'drained' + #10 + 'd9' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TSet_ClassElements_ReleasedOnClear;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTSetClear,
+    'd1' + #10 + 'd2' + #10 + 'cleared' + #10 + 'd3' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TSet_Exclude_ReleasesSlot;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTSetExclude,
+    'd1' + #10 + 'excluded' + #10 + 'd2' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TDictionary_ClassValues_ReleasedOnDestroy;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTDictDestroy,
+    'd1' + #10 + 'd2' + #10 + 'cleared' + #10 + 'd3' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TDictionary_Remove_ReleasesSlot;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTDictRemove,
+    'd1' + #10 + 'removed' + #10 + 'd2' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ETListTests.TestRun_TOrderedDictionary_ClassValues_ReleasedOnDestroy;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTOrdDictDestroy,
+    'd1' + #10 + 'removed' + #10 + 'd2' + #10 + 'done' + #10, 0);
+end;
+
+const
+  { Six elements against an initial capacity of 4 forces two Grow rounds. }
+  SrcTQueueGrow = '''
+    program P;
+    uses generics.collections;
+    type
+      TC = class
+        N: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+      end;
+    constructor TC.Create(AN: Integer);
+    begin N := AN end;
+    destructor TC.Destroy;
+    begin WriteLn('d', N) end;
+    var
+      Q: TQueue<TC>;
+      I: Integer;
+    begin
+      Q := TQueue<TC>.Create();
+      for I := 1 to 6 do
+        Q.Enqueue(TC.Create(I));
+      WriteLn('filled');
+      Q.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ETListTests.TestRun_TQueue_Grow_ReleasesOldBuffer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcTQueueGrow,
+    'filled' + #10 + 'd1' + #10 + 'd2' + #10 + 'd3' + #10 +
+    'd4' + #10 + 'd5' + #10 + 'd6' + #10 + 'done' + #10, 0);
 end;
 
 initialization

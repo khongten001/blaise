@@ -2600,6 +2600,15 @@ begin
     if (TAddrOfExpr(AExpr).Expr is TIdentExpr) and
        (TIdentExpr(TAddrOfExpr(AExpr).Expr).ParamMode <> pmVar) then
     begin
+      { @IntfVar: an interface variable is a 16-byte fat pointer held in named
+        slots (obj / itab), not a single addressable word.  EmitSlotAddr works
+        off the bare name, which for an interface resolves to no symbol at all —
+        it would yield a garbage address and segfault at the first use.  arm64's
+        interface support is entirely named-slot based and is being built out
+        separately, so refuse rather than emit a wrong address. }
+      if (TAddrOfExpr(AExpr).Expr.ResolvedType <> nil) and
+         (TAddrOfExpr(AExpr).Expr.ResolvedType.Kind = tyInterface) then
+        NotYet('address-of an interface variable (fat pointer)', AExpr);
       EmitSlotAddr('x0', TIdentExpr(TAddrOfExpr(AExpr).Expr).Name);
       Exit;
     end;
@@ -5368,7 +5377,10 @@ begin
     assign through the pointer stays safe). }
   if AStmt.BaseTy = nil then
     NotYet('pointer write with unresolved base type', AStmt);
-  if AStmt.BaseTy.IsString() or (AStmt.BaseTy.Kind = tyClass) then
+  { String, class and dynamic-array pointees share one retain/release shape —
+    a single refcounted word — differing only in the RTL entry points. }
+  if AStmt.BaseTy.IsString() or (AStmt.BaseTy.Kind = tyClass) or
+     (AStmt.BaseTy.Kind = tyDynArray) then
   begin
     Self.EmitExprToX0(AStmt.ValExpr);
     if not ArcExprOwnsRef(AStmt.ValExpr) then
@@ -5376,6 +5388,8 @@ begin
       EmitPushX0();
       if AStmt.BaseTy.IsString() then
         Self.Emit(#9'bl _StringAddRef')
+      else if AStmt.BaseTy.Kind = tyDynArray then
+        Self.Emit(#9'bl _DynArrayAddRef')
       else
         Self.Emit(#9'bl _ClassAddRef');
       EmitPopTo('x0');
@@ -5386,6 +5400,8 @@ begin
     Self.Emit(#9'ldr x0, [x0]');
     if AStmt.BaseTy.IsString() then
       Self.Emit(#9'bl _StringRelease')
+    else if AStmt.BaseTy.Kind = tyDynArray then
+      Self.Emit(#9'bl _DynArrayRelease')
     else
       Self.Emit(#9'bl _ClassRelease');
     Self.Emit(#9'ldr x9, [sp]');
@@ -5394,6 +5410,13 @@ begin
     Self.Emit(#9'add sp, sp, #32');
     Exit;
   end;
+  { Interface pointee: a 16-byte fat pointer (obj at +0, itab at +8).  The
+    x86-64 backend delegates this to EmitInterfaceToFieldSlotsAt; arm64 has no
+    address-based fat-pointer store helper yet (its interface handling is all
+    named-slot based), so fail loud rather than emit a half-store that writes
+    the obj word and leaves the itab stale. }
+  if AStmt.BaseTy.Kind = tyInterface then
+    NotYet('pointer write of an interface (fat pointer)', AStmt);
   if AStmt.BaseTy.Kind in [tyDouble, tySingle] then
   begin
     Self.EmitExprToD0OrConvert(AStmt.ValExpr);

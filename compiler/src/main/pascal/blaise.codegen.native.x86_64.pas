@@ -3536,10 +3536,15 @@ begin
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
   end
-  else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) then
+  else if (AObjExpr <> nil) and (AObjExpr is TStringSubscriptExpr) and
+          (TStringSubscriptExpr(AObjExpr).StrExpr.ResolvedType <> nil) and
+          (TStringSubscriptExpr(AObjExpr).StrExpr.ResolvedType.Kind = tyStaticArray) then
   begin
     { Static-array interface element receiver (Arr[I].M()): the element is a
-      contiguous fat pointer (obj at the element address, itab at +8). }
+      contiguous fat pointer (obj at the element address, itab at +8).  The
+      static-array guard keeps a class default-property subscript out — it is
+      subscript-shaped but has no array base, and would crash the compiler
+      inside EmitIntfStaticElemAddr. }
     Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AObjExpr), '%r10');
     Self.Emit(#9'movq 8(%r10), %rax');   { itab }
     Self.Emit(#9'movq (%r10), %r10');    { obj }
@@ -4275,6 +4280,32 @@ begin
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'movq %rax, 8(%r15)');
     end
+    else if (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
+            (AAsgn.Expr is TDerefExpr) then
+    begin
+      { Result := Src^ where Src: ^IFoo — exactly the body of TList<T>.Get
+        monomorphised at T = an interface, which is what made TList<IFoo>
+        uninstantiable.  The pointee is a contiguous fat pointer; load both
+        words from it before storing into the sret destination.  %r14 is
+        callee-saved so the source address survives the ARC calls, and %r15
+        (the sret destination) must not be disturbed. }
+      Self.Emit(#9'pushq %r14');
+      Self.EmitExprToEax(TDerefExpr(AAsgn.Expr).Expr);
+      Self.Emit(#9'movq %rax, %r14');
+      Self.Emit(#9'movq 8(%r14), %rax');
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq (%r14), %rax');
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'movq (%r15), %rdi');
+      Self.Emit(#9'callq _ClassRelease');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, (%r15)');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'movq %rax, 8(%r15)');
+      Self.Emit(#9'popq %r14');
+    end
     else if (AAsgn.Expr is TFuncCallExpr) and
             (TFuncCallExpr(AAsgn.Expr).ResolvedDecl <> nil) and
             (TMethodDecl(TFuncCallExpr(AAsgn.Expr).ResolvedDecl).ResolvedReturnType <> nil) and
@@ -4462,13 +4493,50 @@ begin
     Exit;
   end;
 
+  { F := P^ where the RHS is an interface read through a typed pointer.  The
+    pointee is a contiguous fat pointer (obj at the pointer value, itab at +8)
+    — the same shape as the field-access case above, with the pointer VALUE
+    standing in for the field address.  Without this arm the read hit the
+    fail-loud else: the native backend addresses interfaces by NAMED SLOT
+    (X_obj / X_itab), so no address-based read path existed at all. }
+  if (AAsgn.Expr.ResolvedType <> nil) and
+     (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
+     (AAsgn.Expr is TDerefExpr) then
+  begin
+    Self.Emit(#9'pushq %r15');
+    Self.EmitExprToEax(TDerefExpr(AAsgn.Expr).Expr);
+    Self.Emit(#9'movq %rax, %r15');
+    Self.Emit(#9'movq 8(%r15), %rax');     { src itab }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq (%r15), %rax');      { src obj }
+    Self.Emit(#9'pushq %rax');
+    Self.Emit(#9'movq %rax, %rdi');
+    Self.Emit(#9'callq _ClassAddRef');
+    Self.Emit(Format(#9'movq %s, %%rdi', [ObjOp]));   { old obj }
+    Self.Emit(#9'callq _ClassRelease');
+    Self.Emit(#9'popq %rax');              { new obj }
+    Self.Emit(Format(#9'movq %%rax, %s', [ObjOp]));
+    Self.Emit(#9'popq %rax');              { itab }
+    Self.Emit(Format(#9'movq %%rax, %s', [ItabOp]));
+    Self.Emit(#9'popq %r15');
+    Exit;
+  end;
+
   { F := Arr[I] where the RHS is an interface element of a static array.  The
     element is a contiguous fat pointer (obj at the element address, itab at +8)
     — compute the element address into %r15 and copy obj+itab with ARC, mirroring
     the field-access case above. }
+  { The StrExpr guard is load-bearing: a class default-property subscript
+    (L[0], which desugars to the Items getter) is ALSO a TStringSubscriptExpr,
+    but it has no static-array base and no evaluated index.  Without the check
+    it fell in here and EmitIntfStaticElemAddr cast the class type to
+    TStaticArrayTypeDesc and dereferenced a nil index expression — segfaulting
+    the COMPILER rather than reporting anything. }
   if (AAsgn.Expr.ResolvedType <> nil) and
      (AAsgn.Expr.ResolvedType.Kind = tyInterface) and
-     (AAsgn.Expr is TStringSubscriptExpr) then
+     (AAsgn.Expr is TStringSubscriptExpr) and
+     (TStringSubscriptExpr(AAsgn.Expr).StrExpr.ResolvedType <> nil) and
+     (TStringSubscriptExpr(AAsgn.Expr).StrExpr.ResolvedType.Kind = tyStaticArray) then
   begin
     Self.Emit(#9'pushq %r15');
     Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AAsgn.Expr), '%r15');
@@ -4624,9 +4692,25 @@ begin
       Self.Emit(#9'movq (%rax), %rcx');
       Self.Emit(#9'pushq %rcx');
     end
-    else if AExpr is TStringSubscriptExpr then
+    else if AExpr is TDerefExpr then
     begin
-      { Static-array interface element source (Arr[I]): contiguous fat pointer. }
+      { Interface read through a typed pointer (P^): the pointer VALUE is the
+        address of the contiguous fat pointer. }
+      Self.EmitExprToEax(TDerefExpr(AExpr).Expr);
+      Self.Emit(#9'movq 8(%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { itab }
+      Self.Emit(#9'movq (%rax), %rcx');
+      Self.Emit(#9'pushq %rcx');           { obj on top }
+    end
+    else if (AExpr is TStringSubscriptExpr) and
+            (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType <> nil) and
+            (TStringSubscriptExpr(AExpr).StrExpr.ResolvedType.Kind = tyStaticArray) then
+    begin
+      { Static-array interface element source (Arr[I]): contiguous fat pointer.
+        The static-array guard keeps a class default-property subscript (L[0])
+        out — it is subscript-shaped but has no array base and no evaluated
+        index, and would crash EmitIntfStaticElemAddr.  It falls through to the
+        fail-loud else below instead. }
       Self.EmitIntfStaticElemAddr(TStringSubscriptExpr(AExpr), '%rax');
       Self.Emit(#9'movq 8(%rax), %rcx');
       Self.Emit(#9'pushq %rcx');           { itab }
@@ -6947,6 +7031,7 @@ var
   IMD: TMethodDecl;
   Unsigned: Boolean;
   AOE: TAddrOfExpr;
+  IE:  TIdentExpr;
   SetMask: Int64;
   SetI: Integer;
   I:   Integer;
@@ -9442,6 +9527,30 @@ begin
       static leaq Name(%rip) — the bare rip-relative form made every
       thread's @TV identical, silently breaking any code that keys
       identity off a threadvar address (runtime.mem's MyTid). }
+    { @IntfVar — an interface variable's storage is a 16-byte fat pointer, but
+      the native backend addresses it by NAMED SLOT: a local occupies its frame
+      slot (obj) plus the 8 bytes above it (itab), and a global emits adjacent
+      <Name>_obj / <Name>_itab labels.  There is no symbol under the bare name,
+      so EmitVarAddr below would emit `leaq Slot(%rip)` against an UNDEFINED
+      symbol — the linker bound it to a garbage address and `Fill(@Slot)`
+      segfaulted.  Take the address of the obj slot, which is the base of the
+      contiguous fat pointer. }
+    if (AOE.Expr is TIdentExpr) and
+       (AOE.Expr.ResolvedType <> nil) and
+       (AOE.Expr.ResolvedType.Kind = tyInterface) then
+    begin
+      IE := TIdentExpr(AOE.Expr);
+      if (not IE.IsGlobal) and Self.IsLocal(IE.Name) then
+        Self.Emit(Format(#9'leaq %s, %%rax', [Self.VarOperand(IE.Name)]))
+      else
+      begin
+        Self.AddGlobal(IE.Name, IE.ResolvedType);
+        Self.Emit(Format(#9'leaq %s_obj(%%rip), %%rax',
+          [Self.GlobalSymName(IE.Name)]));
+      end;
+      Exit;
+    end;
+
     if AOE.Expr is TIdentExpr then
     begin
       Self.EmitVarAddr(TIdentExpr(AOE.Expr).Name, '%rax');
@@ -16132,6 +16241,42 @@ begin
       Self.Emit(#9'pushq %rax');
       Self.Emit(#9'movq %rax, %rdi');
       Self.Emit(#9'callq _ClassAddRef');
+      Self.Emit(#9'popq %rax');
+      Self.Emit(#9'popq %rcx');
+      Self.Emit(#9'movq %rax, (%rcx)');
+    end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyInterface) then
+    begin
+      { P^ := V through a ^IFoo — the slot is a contiguous 16-byte fat pointer
+        (obj at +0, itab at +8).  Without this arm the store fell through to
+        the scalar path, which wrote only the 8-byte obj with NO retain and
+        left the itab stale: TList<IFoo> was silently non-owning and the slot
+        dangled once the source variable died.  Compute the destination into
+        the callee-saved %r14 (it must survive the helper's ARC calls) and
+        delegate to EmitInterfaceToFieldSlotsAt, exactly as the static-array
+        interface element write does. }
+      Self.Emit(#9'pushq %r14');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %r14');
+      Self.EmitInterfaceToFieldSlotsAt(TPointerWriteStmt(AStmt).ValExpr,
+        '%r14', 0, TPointerWriteStmt(AStmt).BaseTy);
+      Self.Emit(#9'popq %r14');
+    end
+    else if (TPointerWriteStmt(AStmt).BaseTy <> nil) and
+            (TPointerWriteStmt(AStmt).BaseTy.Kind = tyDynArray) then
+    begin
+      { Dynamic array through a typed pointer: same retain/release discipline
+        as the string and class arms, via the dyn-array RTL entry points. }
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).PtrExpr);
+      Self.Emit(#9'movq %rax, %rcx');
+      Self.Emit(#9'movq (%rcx), %rdi');
+      Self.Emit(#9'pushq %rcx');
+      Self.Emit(#9'callq _DynArrayRelease');
+      Self.EmitExprToEax(TPointerWriteStmt(AStmt).ValExpr);
+      Self.Emit(#9'pushq %rax');
+      Self.Emit(#9'movq %rax, %rdi');
+      Self.Emit(#9'callq _DynArrayAddRef');
       Self.Emit(#9'popq %rax');
       Self.Emit(#9'popq %rcx');
       Self.Emit(#9'movq %rax, (%rcx)');

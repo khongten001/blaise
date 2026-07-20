@@ -27,6 +27,36 @@ type
     procedure TestRun_TwoDictInstancesInUnit_BothLink;
     procedure TestRun_IntfFreeFunc_GenericReturn_Compiles;
     procedure TestRun_DefaultProp_StringList_And_ObjectList;
+
+    { Pointer-write ARC for interface and dyn-array pointees (BUG-012 part 2).
+      `P^ := V` is the primitive every generic container uses for its element
+      slots.  It retained strings and class refs but silently dropped
+      interfaces and dyn-arrays, so the element died with its source variable
+      and the slot dangled — a use-after-free, not merely a leak. }
+    procedure TestRun_PointerWrite_Interface_RetainsAndReleases;
+    procedure TestRun_PointerWrite_DynArray_RetainsAndReleases;
+
+    { Pointer-READ ARC for interfaces (BUG-012 part 3).  The read counterpart
+      of the write tests above: `G := P^` and `P^.Method()` through a ^IFoo.
+      The native backend could not address an interface through a pointer at
+      all — its interface handling is named-slot based — so the read was a
+      hard codegen error and `@Slot`-style out-parameter fills segfaulted. }
+    procedure TestRun_PointerRead_Interface_RetainsAndReleases;
+    procedure TestRun_PointerFill_Interface_OutlivesCallee;
+
+    { TList<IFoo> end-to-end.  Monomorphising TList<T> at an interface makes
+      `Result := Src^` in TList<T>.Get an sret-Result read through a ^IFoo,
+      which was unsupported — the container could not be instantiated at all.
+      The list must OWN its elements: they stay alive while stored and are
+      released on Free. }
+    procedure TestRun_TListOfInterface_RetainsElementsUntilFree;
+
+    { Deref-dispatch `P^.Method()` is NOT covered here: the parser shapes
+      `P^.Name` as a TFieldAccessExpr unconditionally and never checks for a
+      following '(', so the form is rejected at PARSE time for classes and
+      records too — it is a general postfix-parse gap, not an interface or
+      codegen one.  Copying the fat pointer into a local first
+      (`G := P^; G.Method()`) is covered by the read test above. }
   end;
 
 implementation
@@ -404,6 +434,245 @@ begin
   AssertEquals('exit code 0', 0, RCode);
   AssertEquals('default-property output',
     'alpha' + #10 + 'beta' + #10 + 'ALPHA' + #10 + 'beta' + #10, Output);
+end;
+
+const
+  { The interface is stored into the slot inside Fill and its only other
+    reference (the local A) dies at Fill's exit.  If the pointer write does
+    not retain, the destructor fires BEFORE 'filled' and the slot dangles. }
+  SrcPointerWriteIntf = '''
+    program P;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      Slot: ^IFoo;
+    procedure Fill;
+    var
+      A: IFoo;
+    begin
+      A := TFoo.Create(41);
+      Slot^ := A
+    end;
+    begin
+      Slot := GetMem(16);
+      ZeroMem(Slot, 16);
+      Fill();
+      WriteLn('filled');
+      Slot^ := nil;
+      WriteLn('cleared');
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+  { Same shape for a dynamic array: the buffer must outlive the local that
+    built it, and still hold its contents when read back. }
+  SrcPointerWriteDynArray = '''
+    program P;
+    type
+      TArr = array of Integer;
+    var
+      Slot: ^TArr;
+    procedure Fill;
+    var
+      A: TArr;
+    begin
+      SetLength(A, 3);
+      A[0] := 77;
+      Slot^ := A
+    end;
+    var
+      B: TArr;
+    begin
+      Slot := GetMem(8);
+      ZeroMem(Slot, 8);
+      Fill();
+      B := Slot^;
+      WriteLn(B[0]);
+      WriteLn(Length(B));
+      SetLength(B, 0);
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_PointerWrite_Interface_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerWriteIntf,
+    'filled' + #10 + 'd41' + #10 + 'cleared' + #10 + 'done' + #10, 0);
+end;
+
+procedure TE2ECollections2Tests.TestRun_PointerWrite_DynArray_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerWriteDynArray,
+    '77' + #10 + '3' + #10 + 'done' + #10, 0);
+end;
+
+const
+  { `G := P^` — reading an interface back out of a pointer slot.  G must own
+    its own reference: clearing the original slot first must NOT destroy the
+    object, and the destructor must fire only when G itself is cleared. }
+  SrcPointerReadIntf = '''
+    program P;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      Slot: ^IFoo;
+      G: IFoo;
+    begin
+      Slot := GetMem(16);
+      ZeroMem(Slot, 16);
+      Slot^ := TFoo.Create(41);
+      G := Slot^;
+      WriteLn(G.Value());
+      Slot^ := nil;
+      WriteLn('slot cleared');
+      G := nil;
+      WriteLn('g cleared');
+      FreeMem(Slot);
+      WriteLn('done')
+    end.
+    ''';
+
+  { The out-parameter fill shape: Fill stores into the caller's interface
+    variable through a ^IFoo and its own local reference then dies.  If the
+    pointer write does not retain, or the caller's slot is not treated as an
+    owning interface, the object is destroyed at Fill's exit and the caller
+    holds a dangling fat pointer — a use-after-free, which is what made this
+    program segfault on the native backend. }
+  SrcPointerFillIntf = '''
+    program P;
+    type
+      IFoo = interface
+        procedure Ping;
+      end;
+      TFoo = class(IFoo)
+        procedure Ping;
+        destructor Destroy; override;
+      end;
+    procedure TFoo.Ping;
+    begin WriteLn('ping') end;
+    destructor TFoo.Destroy;
+    begin WriteLn('destroyed') end;
+    procedure Fill(P: ^IFoo);
+    var
+      F: IFoo;
+    begin
+      F := TFoo.Create();
+      P^ := F;
+      WriteLn('filled')
+    end;
+    var
+      Slot: IFoo;
+    begin
+      WriteLn('start');
+      Fill(@Slot);
+      WriteLn('after fill');
+      Slot := nil;
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_PointerRead_Interface_RetainsAndReleases;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRTLRunsOnAll(SrcPointerReadIntf,
+    '41' + #10 + 'slot cleared' + #10 + 'd41' + #10 + 'g cleared' + #10 +
+    'done' + #10, 0);
+end;
+
+procedure TE2ECollections2Tests.TestRun_PointerFill_Interface_OutlivesCallee;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 'destroyed' MUST come after 'after fill' — if it appears earlier the
+    callee's local took the object with it and the caller's slot dangles. }
+  AssertRTLRunsOnAll(SrcPointerFillIntf,
+    'start' + #10 + 'filled' + #10 + 'after fill' + #10 + 'destroyed' + #10 +
+    'done' + #10, 0);
+end;
+
+const
+  { TList<IFoo>: the container fills its element slots with `Dest^ := Value`
+    and reads them back with `Result := Src^` (an sret-Result read through a
+    ^IFoo).  G takes its own reference, so clearing G must NOT destroy either
+    element — both die only when the list is freed, proving the list owns
+    them.  `L.Get(0)` is used rather than `L[0]`: the default-property
+    subscript on an interface-typed element is still unsupported on both
+    backends (it fails loud). }
+  SrcTListOfInterface = '''
+    program P;
+    uses generics.collections;
+    type
+      IFoo = interface
+        function Value: Integer;
+      end;
+      TFoo = class(IFoo)
+        FN: Integer;
+        constructor Create(AN: Integer);
+        destructor Destroy; override;
+        function Value: Integer;
+      end;
+    constructor TFoo.Create(AN: Integer);
+    begin FN := AN end;
+    destructor TFoo.Destroy;
+    begin WriteLn('d', FN) end;
+    function TFoo.Value: Integer;
+    begin Result := FN end;
+    var
+      L: TList<IFoo>;
+      G: IFoo;
+    begin
+      L := TList<IFoo>.Create();
+      L.Add(TFoo.Create(1));
+      L.Add(TFoo.Create(2));
+      WriteLn(L.Count);
+      G := L.Get(0);
+      WriteLn(G.Value());
+      G := nil;
+      WriteLn('cleared g');
+      L.Free();
+      WriteLn('done')
+    end.
+    ''';
+
+procedure TE2ECollections2Tests.TestRun_TListOfInterface_RetainsElementsUntilFree;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { 'd1'/'d2' MUST come after 'cleared g' — if an element dies earlier the
+    list was not retaining it and the slot dangles. }
+  AssertRTLRunsOnAll(SrcTListOfInterface,
+    '2' + #10 + '1' + #10 + 'cleared g' + #10 + 'd1' + #10 + 'd2' + #10 +
+    'done' + #10, 0);
 end;
 
 initialization
