@@ -21157,7 +21157,7 @@ begin
        ((VD.ResolvedType <> nil) and
         (VD.ResolvedType.Kind in [tyRecord, tyStaticArray, tyClass,
                                   tyProcedural, tyPointer, tyString, tyPChar,
-                                  tyDynArray])) then
+                                  tyDynArray, tySet])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
         { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
@@ -21317,7 +21317,7 @@ begin
        ((VD.ResolvedType <> nil) and
         (VD.ResolvedType.Kind in [tyRecord, tyStaticArray, tyClass,
                                   tyProcedural, tyPointer, tyString, tyPChar,
-                                  tyDynArray, tyInterface])) then
+                                  tyDynArray, tyInterface, tySet])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
         { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
@@ -21337,7 +21337,7 @@ begin
        ((VD.ResolvedType <> nil) and
         (VD.ResolvedType.Kind in [tyRecord, tyStaticArray, tyClass,
                                   tyProcedural, tyPointer, tyString, tyPChar,
-                                  tyDynArray, tyInterface])) then
+                                  tyDynArray, tyInterface, tySet])) then
       for J := 0 to VD.Names.Count - 1 do
       begin
         { Record as a module var FIRST so AddGlobal's GlobalSymName applies the
