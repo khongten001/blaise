@@ -4528,7 +4528,7 @@ begin
   if (AStmt.BaseExpr <> nil) or AStmt.IsVarParam or
      (AStmt.IsImplicitSelf and ((AStmt.ImplicitFieldInfo = nil) or
        (AStmt.ResolvedArrayType = nil) or
-       (AStmt.ResolvedArrayType.Kind <> tyDynArray))) then
+       not (AStmt.ResolvedArrayType.Kind in [tyDynArray, tyStaticArray]))) then
     NotYet('subscript write on this array form', AStmt);
   if (AStmt.ResolvedArrayType <> nil) and
      (AStmt.ResolvedArrayType.Kind = tyPChar) then
@@ -4583,10 +4583,16 @@ begin
   EmitPushX0();
   if AStmt.IsImplicitSelf then
   begin
-    { dyn-array FIELD of Self: the data pointer lives at Self + offset }
     EmitLoadSlot('x0', 'Self');
-    Self.Emit(Format(#9'ldr x0, [x0, #%d]',
-      [TFieldInfo(AStmt.ImplicitFieldInfo).Offset]));
+    if AStmt.ResolvedArrayType.Kind = tyDynArray then
+      { dyn-array FIELD of Self: the field slot holds a data POINTER — deref it }
+      Self.Emit(Format(#9'ldr x0, [x0, #%d]',
+        [TFieldInfo(AStmt.ImplicitFieldInfo).Offset]))
+    else if TFieldInfo(AStmt.ImplicitFieldInfo).Offset <> 0 then
+      { static-array FIELD of Self: the inline array storage IS at Self+offset
+        — the base is that ADDRESS, no deref (leg 16) }
+      EmitAddSubImm('add', 'x0', 'x0',
+        TFieldInfo(AStmt.ImplicitFieldInfo).Offset);
   end
   else if AStmt.ResolvedArrayType.Kind = tyDynArray then
     EmitLoadSlot('x0', AStmt.ArrayName)   { data pointer value }
@@ -5706,6 +5712,11 @@ begin
     Self.Emit(Format(#9'add x0, x0, %s@PAGEOFF',
       [CodegenMangle(TIdentExpr(ASub.StrExpr).ConstArraySymbol)]));
   end
+  else if TIdentExpr(ASub.StrExpr).IsImplicitSelf and
+          (TIdentExpr(ASub.StrExpr).ImplicitFieldInfo <> nil) then
+    { static-array FIELD of Self: the inline array storage is at Self+offset —
+      EmitRecIdentAddr yields that address (no deref), like leg 14 (leg 16) }
+    EmitRecIdentAddr('x0', TIdentExpr(ASub.StrExpr))
   else
     EmitSlotAddr('x0', TIdentExpr(ASub.StrExpr).Name);
   EmitPopTo('x1');

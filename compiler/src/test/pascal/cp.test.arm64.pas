@@ -207,6 +207,11 @@ type
       and a subscripted record element passed as a by-value argument }
     procedure TestRecordCallIntoArrayElement;
     procedure TestSubscriptRecordAsArgument;
+    { self-cross-compile leg 16: element read AND write of an implicit-Self
+      STATIC-array field (array[0..N] of string).  The inline storage lives at
+      Self+offset, so the base is an ADDRESS (add), not a deref (ldr) — unlike
+      the dyn-array field case which loads the data pointer. }
+    procedure TestStaticArrayFieldElementReadWrite;
   end;
 
 implementation
@@ -3922,6 +3927,64 @@ begin
   AssertTrue('SumPair called with the element', Pos(#9'bl SumPair', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64sra.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestStaticArrayFieldElementReadWrite;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { FTab is an implicit-Self field of type array[0..3] of string.  Its inline
+    storage lives AT Self+offset, so both the write (FTab[0] := 'a') and the
+    read (Result := FTab[I]) must compute the base as an ADDRESS off Self
+    (ldur Self ; add x0, x0, #offset) rather than deref a data pointer (ldr).
+    This is the static-array counterpart to TestFieldElementAssign (dyn). }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type
+      TThing = class
+        FTab: array[0..3] of string;
+        procedure Fill;
+        function Get(I: Integer): string;
+      end;
+    procedure TThing.Fill;
+    begin
+      FTab[0] := 'a'
+    end;
+    function TThing.Get(I: Integer): string;
+    begin
+      Result := FTab[I]
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create();
+      T.Fill();
+      WriteLn(T.Get(0));
+      T.Free()
+    end.
+    ''');
+  { base is Self+offset as an ADDRESS — the load of Self is followed by an
+    add of the field offset, NOT a ldr deref, before the index is scaled. }
+  AssertTrue('static-array field base is Self+offset address (add, no deref)',
+    Pos('add x0, x0, #' , AsmT) >= 0);
+  { element ARC store on the write side: retain new literal, release old }
+  AssertTrue('string element store retains the new value',
+    Pos(#9'bl _StringAddRef', AsmT) >= 0);
+  AssertTrue('string element store releases the old element',
+    Pos(#9'bl _StringRelease', AsmT) >= 0);
+  { the read loads the element string through the element address }
+  AssertTrue('read loads the element via the element address',
+    Pos(#9'ldr x0, [x0]', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64safe.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

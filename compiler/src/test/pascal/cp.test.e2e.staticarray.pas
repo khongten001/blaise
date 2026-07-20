@@ -68,6 +68,13 @@ type
     procedure TestRun_MultiDim_StringElements_ARC;
     procedure TestRun_MultiDim_MixedNotation;
 
+    { self-cross-compile leg 16: read AND write of an element of an
+      implicit-Self STATIC-array field (array[0..N] of string) — the
+      FPromoVars pattern in the compiler's own native backend.  Runs on both
+      backends AND asserts leak-freedom (the element store retains new /
+      releases old, so a mis-emitted base would over-/under-release). }
+    procedure TestRun_StaticArrayField_ImplicitSelf_ElementReadWrite;
+
     { Floating-point array elements — run on both backends (QBE + native).
       Regression: the dyn-array element store used storel/movq for any
       non-integer element, corrupting Double/Single stores. }
@@ -992,6 +999,41 @@ begin
         WriteLn(A[I > 1]);
     end.
     ''', '10' + LE + '10' + LE + '20' + LE + '20' + LE, 0);
+end;
+
+procedure TE2EStaticArrayTests.TestRun_StaticArrayField_ImplicitSelf_ElementReadWrite;
+begin
+  { A class with a static-array string field, written and read through methods
+    (so FTab is an implicit-Self field).  This is the FPromoVars shape from the
+    compiler's own native backend that leg 16 unblocks.  Leak-free on both. }
+  AssertLeakFreeOnAll('''
+    program P;
+    type
+      TThing = class
+        FTab: array[0..3] of string;
+        procedure Fill;
+        function Get(I: Integer): string;
+      end;
+    procedure TThing.Fill;
+    begin
+      FTab[0] := 'aa';
+      FTab[1] := 'bb';
+      FTab[3] := 'dd'
+    end;
+    function TThing.Get(I: Integer): string;
+    begin
+      Result := FTab[I]
+    end;
+    var T: TThing;
+    begin
+      T := TThing.Create();
+      T.Fill();
+      WriteLn(T.Get(0));
+      WriteLn(T.Get(1));
+      WriteLn(T.Get(3));
+      T.Free()
+    end.
+    ''', 'aa');
 end;
 
 initialization
