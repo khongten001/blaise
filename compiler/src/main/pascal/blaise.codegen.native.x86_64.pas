@@ -2050,6 +2050,24 @@ begin
             Self.Emit(#9'callq _ClassRelease');
           end;
         end;
+      arkRefEnv:
+        begin
+          { 'reference to' global: the fat value is a code pointer at +0 and
+            an env pointer at +8.  That Data half strong-references an ARC
+            env record (nil for
+            capture-free closures — _ClassRelease is nil-safe).  Balance the
+            reference the slot holds.
+
+            The procedure-epilogue walk has had this arm all along; this one
+            did not, so a program-level `reference to procedure` holding a
+            capturing closure leaked its env at exit while the identical
+            local inside a procedure was released correctly.  Exactly the
+            (A)/(B) drift the shared classifier exists to prevent — with the
+            case statements aligned, the gap is now visible as a missing arm
+            rather than an invisible fall-off-the-end. }
+          Self.Emit(Format(#9'movq %s+8(%%rip), %%rdi', [Name]));
+          Self.Emit(#9'callq _ClassRelease');
+        end;
       arkAggregate:
         begin
           { Aggregate global with managed content: walk it at program exit.
@@ -21313,12 +21331,6 @@ begin
       VD := TVarDecl(ADecl.Body.Decls.Items[I]);
       if VD.ResolvedType = nil then Continue;
       AKind := ArcScopeExitReleaseKind(VD.ResolvedType);
-      { A record local is walked whether or not it has managed content: the
-        unguarded arm predates the classifier and emits a bare
-        pushq/leaq/popq trio for an unmanaged record.  Preserved verbatim
-        here so this commit moves no bytes; closed separately. }
-      if (AKind = arkNone) and (VD.ResolvedType.Kind = tyRecord) then
-        AKind := arkAggregate;
       case AKind of
         { String locals: release the string. }
         arkString:
