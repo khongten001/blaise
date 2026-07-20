@@ -112,6 +112,20 @@ type
       Both backends; managed (string) and scalar fields both checked. }
     procedure TestRun_SelfAssignRecordMethod_ManagedField;
     procedure TestRun_SelfAssignRecordMethod_ScalarFields;
+    { Regression: a record-returning FREE FUNCTION whose result is assigned back
+      over a variable that is also one of its ARGUMENTS (R := CompR(R)).  The
+      caller memset the sret destination to zero BEFORE evaluating the argument
+      list, so the callee received an already-cleared value and computed from
+      zeroes.  Broke on BOTH backends.  The control assignment to a DISTINCT
+      destination in the same program pins that the non-aliasing path (which
+      must still write straight into the destination) is unaffected. }
+    procedure TestRun_RecordSelfAssign_FreeFunction;
+    { Same aliasing shape with the aliased variable in NON-FIRST argument
+      position — argument position must not matter. }
+    procedure TestRun_RecordSelfAssign_NonFirstArgPosition;
+    { Same aliasing shape where the destination is also an ARGUMENT of a record
+      METHOD call whose receiver is a different variable (A := Obj.Comp(A)). }
+    procedure TestRun_RecordSelfAssign_MethodArgument;
     { Regression: a record-returning method that takes an INTERFACE parameter.
       An interface is a fat pointer (obj + itab) occupying TWO integer-register
       slots, but the native sret/record call paths popped one register per
@@ -894,6 +908,97 @@ const
 begin
   if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
   AssertRunsOnAll(Src, '3 30' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordSelfAssign_FreeFunction;
+const
+  { CompR swaps its argument's two fields.  R := CompR(R) must see R's LIVE
+    value (1, 2) and produce (2, 1).  The last two lines are the NON-ALIASING
+    control: T := CompR(R) writes straight into T and must keep working. }
+  Src = '''
+    program P;
+    type
+      TR = record
+        A, B: Integer;
+      end;
+      TBig = record
+        A, B, C, D, E: Integer;
+      end;
+    function CompR(const S: TR): TR;
+    begin Result.A := S.B; Result.B := S.A end;
+    function CompBig(const S: TBig): TBig;
+    begin
+      Result.A := S.E; Result.B := S.D; Result.C := S.C;
+      Result.D := S.B; Result.E := S.A
+    end;
+    var R, T: TR;
+        G, H: TBig;
+    begin
+      R.A := 1; R.B := 2;
+      R := CompR(R);
+      WriteLn(R.A, ' ', R.B);
+      G.A := 1; G.B := 2; G.C := 3; G.D := 4; G.E := 5;
+      G := CompBig(G);
+      WriteLn(G.A, ' ', G.B, ' ', G.C, ' ', G.D, ' ', G.E);
+      R.A := 7; R.B := 8;
+      T := CompR(R);
+      WriteLn(T.A, ' ', T.B);
+      G.A := 1; G.B := 2; G.C := 3; G.D := 4; G.E := 5;
+      H := CompBig(G);
+      WriteLn(H.A, ' ', H.B, ' ', H.C, ' ', H.D, ' ', H.E)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src,
+    '2 1' + LE + '5 4 3 2 1' + LE + '8 7' + LE + '5 4 3 2 1' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordSelfAssign_NonFirstArgPosition;
+const
+  Src = '''
+    program P;
+    type
+      TR = record
+        A, B: Integer;
+      end;
+    function Pick(const N: Integer; const S: TR): TR;
+    begin Result.A := S.B + N; Result.B := S.A + N end;
+    var R: TR;
+    begin
+      R.A := 1; R.B := 2;
+      R := Pick(10, R);
+      WriteLn(R.A, ' ', R.B)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '12 11' + LE, 0);
+end;
+
+procedure TE2ERecordReturnTests.TestRun_RecordSelfAssign_MethodArgument;
+const
+  { The receiver (Q) is NOT the destination — the ALIAS is in the argument
+    list, which the old receiver-only guard never inspected. }
+  Src = '''
+    program P;
+    type
+      TR = record
+        A, B: Integer;
+        function Comp(const X: TR): TR;
+      end;
+    function TR.Comp(const X: TR): TR;
+    begin Result.A := X.B + Self.A; Result.B := X.A + Self.B end;
+    var R, Q: TR;
+    begin
+      R.A := 1; R.B := 2; Q.A := 100; Q.B := 200;
+      R := Q.Comp(R);
+      WriteLn(R.A, ' ', R.B)
+    end.
+    ''';
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  AssertRunsOnAll(Src, '102 201' + LE, 0);
 end;
 
 { ------------------------------------------------------------------ }
