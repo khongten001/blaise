@@ -114,37 +114,36 @@
 
   COMPILER WORKAROUNDS IN THIS UNIT
 
-  Several constructs here are written less directly than they should be, to
-  route around open compiler bugs.  Each site carries a comment naming the
-  bug; they are collected here so they can be undone together once the bugs
-  are fixed.
+  This unit was originally written against a compiler that could not store a
+  jumbo (>64-member) set in a record or class field, pass one as an out/var
+  parameter, or use one across several other shapes.  Character classes were
+  therefore held as an explicit 32-byte bitmap with hand-written
+  membership/copy helpers.  Those bugs were fixed on 2026-07-20 and the
+  workarounds have been removed: TRegexNode.Cls and TEscape.Cls are now the
+  'set of Byte' (TCharClass) they always wanted to be, and membership is the
+  'in' operator.
 
-    * BUG-20260719-jumbo-set-field -- a jumbo set (>64 members) stored in a record or class FIELD
-      silently loses every member, on BOTH backends.  So TRegexNode.Cls and
-      TEscape.Cls hold an explicit 32-byte TClassBitmap instead of the
-      'set of Byte' they want to be, and membership uses ClassHas rather than
-      'in'.  The PARSER still accumulates classes as real sets, because jumbo
-      sets are correct in locals; SetToClass/ClassToSet bridge the two.
-    * BUG-20260719-jumbo-set-var-param -- a jumbo set as an out/var PARAMETER does not round-trip.
-      ParseEscape returns a TEscape record instead of using out-parameters,
-      and FoldClass is a function taking a const set rather than a var
-      procedure.
-    * BUG-20260719-jumbo-set-call-operand -- a jumbo-set operation with a function-CALL operand segfaults
-      on the native backend.  Such calls are bound to a local first.
-    * BUG-20260719-jumbo-set-self-assign -- 'X := F(X)' on a jumbo set miscompiles on the native
-      backend.  Complement and fold results go to a distinct temporary.
-    * BUG-20260719-jumbo-set-unit-init-link -- a jumbo-set operation in a unit INITIALIZATION section fails
-      to link.  EmptyClass is a function, not an initialised global.
-    * BUG-20260719-jumbo-set-cross-unit-import -- a NAMED set type over a non-enum base does not import under
-      the QBE backend.  The byte-set type is written anonymously as
-      'set of Byte' at each use rather than exported as a named type.
-    * BUG-20260719-set-literal-vs-cached-bif -- a set LITERAL does not match a set parameter imported from a
-      cached unit interface.  Callers in other units (including this unit's
-      own tests) must bind options to a variable rather than passing
-      '[roIgnoreCase]' directly.  See the note on the constructor.
-    * BUG-20260719-native-indexed-prop-record -- an indexed property returning a record miscompiles on the
-      native backend, so 'TList<TMatch>' must be read with L.Get(I) rather
-      than L[I].  This affects CALLERS of Matches, not just this unit.
+  Three workarounds remain, each still load-bearing:
+
+    * BUG-20260719-native-indexed-prop-record -- an indexed property returning
+      a record miscompiles on the native backend, so 'TList<TMatch>' must be
+      read with L.Get(I) rather than L[I].  This affects CALLERS of Matches,
+      not just this unit.
+    * BUG-20260720-native-jumbo-set-self-assign -- 'X := F(X)' on a set
+      miscompiles on the native backend (the destination aliases the argument
+      the callee is still reading).  ParseEscape and ParseClass write every
+      complement/fold into a distinct Tmp local.  Note this one is SILENT and
+      native-only: it yields a plausible but wrong set, so it is invisible
+      unless QBE and native output are compared.
+    * BUG-20260720-set-literal-overload-cached-bif -- a bare set literal fails
+      OVERLOAD resolution against a set parameter imported from a cached
+      .bif, so callers in other units must bind options to a variable.  See
+      the note on the constructor.
+
+  ParseEscape still returns a TEscape record by value and FoldClass is still
+  a function over a const set.  Both were adopted to dodge an out/var
+  parameter bug that is now fixed, but both read better than the
+  out-parameter forms they replaced, so they stay on their own merits.
 
   SUPPORTED SYNTAX
 
@@ -244,21 +243,17 @@ type
     than a flat instruction array: the backtracking matcher recurses over the
     tree with a continuation index, which keeps quantifier give-back and the
     zero-width assertions straightforward to express. }
-  { A character class as a 256-bit bitmap: bit (V and 7) of byte (V shr 3)
-    is set when byte value V is a member.  See TRegexNode.Cls for why this
-    is not simply a 'set of Byte'. }
-  TClassBitmap = array[0..31] of Byte;
+  { A character class: one bit per byte value, giving O(1) membership via the
+    'in' operator.  There is no Char type in Blaise, so bytes are the
+    character currency throughout this unit. }
+  TCharClass = set of Byte;
 
   { Result of decoding one backslash escape.  Returned BY VALUE rather than
-    through out-parameters, because a jumbo set passed as an out/var parameter
-    does not round-trip on either backend (BUG-20260719-jumbo-set-var-param).
-
-    Cls is the BITMAP form, not a 'set of Byte', for the same reason
-    TRegexNode.Cls is: a set inside a record field is silently emptied
-    (BUG-20260719-jumbo-set-field), so a record could not carry a set across the return either. }
+    through out-parameters — the escape is a small value with no identity,
+    so a return reads more directly than an out-parameter pair. }
   TEscape = record
     IsClass: Boolean;      { True when Cls carries a shorthand class }
-    Cls: TClassBitmap;
+    Cls: TCharClass;
     Value: Integer;        { literal byte, or -(group number) for a backref }
   end;
 
@@ -286,18 +281,7 @@ type
   public
     Op: TRegexOp;
     Ch: Byte;                { opChar }
-    { Character class as a 256-bit bitmap, one bit per byte value, giving
-      O(1) membership.  There is no Char type in Blaise, so bytes are the
-      character currency throughout this unit.
-
-      This WANTS to be a 'set of Byte' -- the parser does build the class
-      that way, because jumbo sets work correctly in locals -- but a jumbo
-      set stored into a record or class FIELD silently loses every member on
-      both backends (BUG-20260719-jumbo-set-field).  So the class is converted to this explicit
-      bitmap at the point it is stored into the node, and membership is
-      tested with ClassHas rather than 'in'.  Revert to 'set of Byte' once
-      BUG-20260719-jumbo-set-field is fixed. }
-    Cls: TClassBitmap;       { opClass }
+    Cls: TCharClass;         { opClass }
     Negate: Boolean;         { opClass negation; lookaround negation }
     Kids: TList<TRegexNode>; { opConcat / opAlt children; [0] for wrappers }
     RepMin: Integer;         { opRepeat lower bound }
@@ -335,17 +319,18 @@ type
     function ParseEscape(AInClass: Boolean): TEscape;
     procedure ApplyQuantifier(var ANode: TRegexNode);
     function ParseBound(out AMin, AMax: Integer): Boolean;
-    function FoldClass(const ACls: set of Byte): set of Byte;
+    function FoldClass(const ACls: TCharClass): TCharClass;
     function GetStepLimit: Integer;
     procedure SetStepLimit(AValue: Integer);
   public
     { Compile APattern.  Raises ERegexSyntaxError if it is malformed.
 
       NOTE for callers in OTHER units: pass the options as a variable or via
-      the NoOptions helper, not as a bare set literal.  A set literal does not
-      match a set parameter imported from a cached unit interface (BUG-20260719-set-literal-vs-cached-bif),
-      so 'TRegex.Create(P, [roIgnoreCase])' compiles from source but fails on
-      an incremental rebuild.  'Opts := [roIgnoreCase]; TRegex.Create(P, Opts)'
+      the NoOptions helper, not as a bare set literal.  A set literal fails
+      OVERLOAD resolution against a set parameter imported from a cached unit
+      interface (BUG-20260720-set-literal-overload-cached-bif), so
+      'TRegex.Create(P, [roIgnoreCase])' compiles from source but fails on an
+      incremental rebuild.  'Opts := [roIgnoreCase]; TRegex.Create(P, Opts)'
       is safe. }
     constructor Create(const APattern: string); overload;
     constructor Create(const APattern: string; AOptions: TRegexOptions); overload;
@@ -459,24 +444,18 @@ const
   { Repeat bound sentinel for '*' and '+'. }
   UNBOUNDED = -1;
 
-{ A bare '[]' literal has no inferable element type in an assignment, so the
-  empty byte set comes from this helper instead.  It is a FUNCTION rather than
-  an initialization-section global on purpose: a jumbo-set operation in a
-  unit's initialization section currently fails to link on the native backend
-  (BUG-20260719-jumbo-set-unit-init-link), because the frameless init body references the _jset_scratch
-  buffers that only the program-main path defines.  Building the set inside a
-  function sidesteps that entirely, and it is trivial. }
-function EmptyClass: set of Byte;
+{ The empty byte class.  A function rather than a constant: it reads at the
+  call sites as the counterpart of FullClass, and a bare '[]' literal needs
+  an inferable element type from context, which not every position supplies. }
+function EmptyClass: TCharClass;
 begin
   Result := [];
 end;
 
-{ Complement of ASet over the full byte range.  Written as a helper taking the
-  set BY VALUE, rather than the obvious inline 'FullClass() - ASet', because a
-  jumbo-set operation with a function-call operand segfaults on the native
-  backend (BUG-20260719-jumbo-set-call-operand).  Building the complement by iteration avoids both the
-  call-as-operand and any large intermediate. }
-function ComplementClass(const ASet: set of Byte): set of Byte;
+{ Complement of ASet over the full byte range.  Built by iteration rather
+  than as 'FullClass() - ASet' so no full 256-member intermediate is
+  materialised. }
+function ComplementClass(const ASet: TCharClass): TCharClass;
 var
   I: Integer;
 begin
@@ -484,51 +463,6 @@ begin
   for I := 0 to 255 do
     if not (I in ASet) then
       Result := Result + [I];
-end;
-
-{ Convert an accumulated 'set of Byte' into the node's bitmap
-  representation.  The bounce through a bitmap exists only because a jumbo
-  set cannot be stored in a field (BUG-20260719-jumbo-set-field); the parser is free to use real
-  set operations because those work correctly in locals. }
-procedure SetToClass(const ASet: set of Byte; var ADest: TClassBitmap);
-var
-  I: Integer;
-begin
-  for I := 0 to 31 do
-    ADest[I] := 0;
-  for I := 0 to 255 do
-    if I in ASet then
-      ADest[I shr 3] := ADest[I shr 3] or (1 shl (I and 7));
-end;
-
-{ Convert a class bitmap back into a 'set of Byte', so the parser can keep
-  using real set operations while accumulating a character class. }
-function ClassToSet(const ACls: TClassBitmap): set of Byte;
-var
-  I: Integer;
-begin
-  Result := [];
-  for I := 0 to 255 do
-    if (ACls[I shr 3] and (1 shl (I and 7))) <> 0 then
-      Result := Result + [I];
-end;
-
-{ Copy one class bitmap into another. }
-procedure CopyClass(const ASrc: TClassBitmap; var ADest: TClassBitmap);
-var
-  I: Integer;
-begin
-  for I := 0 to 31 do
-    ADest[I] := ASrc[I];
-end;
-
-{ O(1) membership test against a class bitmap — the 'in' operator's stand-in. }
-function ClassHas(const ACls: TClassBitmap; AValue: Integer): Boolean;
-begin
-  if (AValue < 0) or (AValue > 255) then
-    Result := False
-  else
-    Result := (ACls[AValue shr 3] and (1 shl (AValue and 7))) <> 0;
 end;
 
 { ------------------------------------------------------------------ }
@@ -629,13 +563,10 @@ end;
 { ------------------------------------------------------------------ }
 
 constructor TRegexNode.Create(AOp: TRegexOp);
-var
-  I: Integer;
 begin
   Op := AOp;
   Ch := 0;
-  for I := 0 to 31 do
-    Cls[I] := 0;
+  Cls := [];
   Negate := False;
   Kids := TList<TRegexNode>.Create();
   RepMin := 0;
@@ -946,16 +877,16 @@ var
   B: Integer;
   I: Integer;
   EscPos: Integer;
-  Acc: set of Byte;
+  Acc: TCharClass;
   { Distinct destination for every complement/fold: 'X := F(X)' on a jumbo set
-    miscompiles on the native backend (BUG-20260719-jumbo-set-self-assign). }
-  Tmp: set of Byte;
+    miscompiles on the native backend (BUG-20260720-native-jumbo-set-self-assign). }
+  Tmp: TCharClass;
 begin
   EscPos := FPos;
   FPos := FPos + 1;              { consume '\' }
   Result.IsClass := False;
   Acc := EmptyClass();
-  SetToClass(Acc, Result.Cls);
+  Result.Cls := Acc;
   Result.Value := 0;
 
   B := Self.PeekByte();
@@ -975,7 +906,7 @@ begin
       Acc := Tmp;
     end;
     Result.IsClass := True;
-    SetToClass(Acc, Result.Cls);
+    Result.Cls := Acc;
     Exit;
   end;
   if (B = CH_LC_W) or (B = CH_UC_W) then
@@ -989,7 +920,7 @@ begin
       Acc := Tmp;
     end;
     Result.IsClass := True;
-    SetToClass(Acc, Result.Cls);
+    Result.Cls := Acc;
     Exit;
   end;
   if (B = CH_LC_S) or (B = CH_UC_S) then
@@ -1003,7 +934,7 @@ begin
       Acc := Tmp;
     end;
     Result.IsClass := True;
-    SetToClass(Acc, Result.Cls);
+    Result.Cls := Acc;
     Exit;
   end;
 
@@ -1059,17 +990,15 @@ var
   MemberPos: Integer;
   First: Boolean;
   Negated: Boolean;
-  Acc: set of Byte;
-  { Distinct destination for the fold and the complement — see BUG-20260719-jumbo-set-self-assign. }
-  Tmp: set of Byte;
+  Acc: TCharClass;
+  { Distinct destination for the fold and the complement — see BUG-20260720-native-jumbo-set-self-assign. }
+  Tmp: TCharClass;
 begin
   StartPos := FPos;
   FPos := FPos + 1;                { consume '[' }
 
   { The class is accumulated in a LOCAL and stored into the node once at the
-    end.  Besides being clearer, this keeps every jumbo-set operation off a
-    class field, which the native backend miscompiles for the
-    function-return case (BUG-20260719-jumbo-set-call-operand). }
+    end — one write to the node instead of one per class member. }
   Node := TRegexNode.Create(opClass);
   Acc := EmptyClass();
   Negated := False;
@@ -1099,10 +1028,8 @@ begin
       Esc := Self.ParseEscape(True);
       if Esc.IsClass then
       begin
-        { A shorthand class is a whole set; it cannot be a range endpoint.
-          Via a temporary: a jumbo-set operation with a function-call operand
-          segfaults on the native backend (BUG-20260719-jumbo-set-call-operand). }
-        Tmp := ClassToSet(Esc.Cls);
+        { A shorthand class is a whole set; it cannot be a range endpoint. }
+        Tmp := Esc.Cls;
         Acc := Acc + Tmp;
         Continue;
       end;
@@ -1168,15 +1095,15 @@ begin
   end;
 
   Node.Negate := False;
-  SetToClass(Acc, Node.Cls);
+  Node.Cls := Acc;
   Result := Node;
 end;
 
 { Add the opposite ASCII case of every ASCII letter already in the set. }
 { Returns ACls with the opposite ASCII case of every ASCII letter added.
-  A FUNCTION taking a const set, not a 'var' procedure: a jumbo set passed by
-  reference does not round-trip on either backend (BUG-20260719-jumbo-set-var-param). }
-function TRegex.FoldClass(const ACls: set of Byte): set of Byte;
+  A function over a const set rather than a 'var' procedure — the caller
+  always wants a new class, not an in-place edit. }
+function TRegex.FoldClass(const ACls: TCharClass): TCharClass;
 var
   I: Integer;
 begin
@@ -1336,7 +1263,7 @@ var
   Node: TRegexNode;
   Lit: Integer;
   Esc: TEscape;
-  FoldPair: set of Byte;
+  FoldPair: TCharClass;
   EscPos: Integer;
   I: Integer;
 begin
@@ -1411,7 +1338,7 @@ begin
     if Esc.IsClass then
     begin
       Node := TRegexNode.Create(opClass);
-      CopyClass(Esc.Cls, Node.Cls);
+      Node.Cls := Esc.Cls;
       { A shorthand class is already case-symmetric for \w, and folding \d or
         \s changes nothing, so no FoldClass call is needed here. }
       Result := Node;
@@ -1440,7 +1367,7 @@ begin
     begin
       Node.Op := opClass;
       FoldPair := [Byte(LowerByte(Lit)), Byte(UpperByte(Lit))];
-      SetToClass(FoldPair, Node.Cls);
+      Node.Cls := FoldPair;
     end;
     Result := Node;
     Exit;
@@ -1455,7 +1382,7 @@ begin
   begin
     Node.Op := opClass;
     FoldPair := [Byte(LowerByte(B)), Byte(UpperByte(B))];
-    SetToClass(FoldPair, Node.Cls);
+    Node.Cls := FoldPair;
   end;
   Result := Node;
 end;
@@ -1611,7 +1538,7 @@ begin
     opClass:
       begin
         B := InputByte(AState, APos);
-        if (B >= 0) and ClassHas(ANode.Cls, B) then
+        if (B >= 0) and (B in ANode.Cls) then
           Result := MatchCont(AState, ACont, APos + 1, AEnd);
       end;
 
