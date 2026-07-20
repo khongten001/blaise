@@ -39,6 +39,9 @@ type
     procedure TestRun_Enum_PointerWriteByContext;
     procedure TestRun_Enum_ProcTypeArgByContext;
     procedure TestRun_Enum_ReturnByContext;
+    { leg 21: High/Low of an enum type fold to compile-time ordinals
+      (High = last member's ordinal, Low = 0). }
+    procedure TestRun_Enum_HighLowBounds;
   end;
 
 implementation
@@ -590,6 +593,23 @@ begin
   finally
     Lines.Free();
   end;
+end;
+
+procedure TE2ECaseEnumTests.TestRun_Enum_HighLowBounds;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { High(TColor) = ordinal of the last member (Blue = 2); Low(TColor) = 0.
+    Length of a static array folds to its element count. }
+  AssertRunsOnAll('''
+    program Prg;
+    type TColor = (Red, Green, Blue);
+    var A: array[0..7] of Integer;
+    begin
+      WriteLn(Ord(High(TColor)));
+      WriteLn(Ord(Low(TColor)));
+      WriteLn(Length(A))
+    end.
+    ''', '2' + LineEnding + '0' + LineEnding + '8' + LineEnding, 0);
 end;
 
 initialization

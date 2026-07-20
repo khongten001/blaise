@@ -251,6 +251,11 @@ type
       (the missing-deref trap yields a garbage address). }
     procedure TestAddrOfClassArrayFieldElement;
     procedure TestAddrOfImplicitSelfArrayFieldElement;
+    { self-cross-compile leg 21: type-level High/Low of an ENUM (and scalar
+      int), and Length of a static array — all compile-time constants folded to
+      an immediate.  High(TEnum) = Members.Count-1; Low(TEnum) = 0. }
+    procedure TestHighLowEnum_FoldsToLiteral;
+    procedure TestLengthStaticArray_FoldsToLiteral;
   end;
 
 implementation
@@ -4553,6 +4558,68 @@ begin
     Pos(#9'mul x1, x1, x2' + LF + #9'add x0, x0, x1', AsmT) >= 0);
   Obj := AssembleArm64ToBytes(AsmT);
   F := ParseMachO(Obj, 'arm64asf.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestHighLowEnum_FoldsToLiteral;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { High(TColor)/Low(TColor) fold to compile-time immediates: a 3-member enum
+    has High=2, Low=0.  Previously High(enum) hit the generic call NotYet. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    type TColor = (Red, Green, Blue);
+    begin
+      WriteLn(Ord(High(TColor)));
+      WriteLn(Ord(Low(TColor)))
+    end.
+    ''');
+  AssertTrue('High(TColor) folds to the max ordinal 2',
+    Pos(#9'movz x0, #2', AsmT) >= 0);
+  AssertTrue('Low(TColor) folds to 0',
+    Pos(#9'movz x0, #0', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64hle.o');
+  try
+    AssertTrue('has a text section',
+      F.FindSection('__TEXT', '__text') <> nil);
+  finally
+    F.Free();
+  end;
+end;
+
+procedure TArm64BackendTests.TestLengthStaticArray_FoldsToLiteral;
+var
+  AsmT: string;
+  Obj: string;
+  F: TMachOFile;
+begin
+  { Length of a static array is a compile-time constant HighBound-LowBound+1;
+    an array[0..7] has Length 8, High 7. }
+  AsmT := GenAsm(
+    '''
+    program P;
+    var A: array[0..7] of Integer;
+    begin
+      WriteLn(Length(A));
+      WriteLn(High(A))
+    end.
+    ''');
+  AssertTrue('Length(array[0..7]) folds to 8',
+    Pos(#9'movz x0, #8', AsmT) >= 0);
+  AssertTrue('High(array[0..7]) folds to 7',
+    Pos(#9'movz x0, #7', AsmT) >= 0);
+  Obj := AssembleArm64ToBytes(AsmT);
+  F := ParseMachO(Obj, 'arm64lsa.o');
   try
     AssertTrue('has a text section',
       F.FindSection('__TEXT', '__text') <> nil);

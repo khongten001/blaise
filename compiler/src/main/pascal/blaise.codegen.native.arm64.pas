@@ -1711,6 +1711,61 @@ begin
         TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType).LowBound);
     Exit;
   end;
+  { Length(static array) = HighBound - LowBound + 1 (compile-time). }
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind =
+       tyStaticArray) and
+     SameText(TFuncCallExpr(AExpr).Name, 'Length') then
+  begin
+    EmitIntLiteral('x0',
+      TStaticArrayTypeDesc(
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType).HighBound -
+      TStaticArrayTypeDesc(
+        TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType).LowBound + 1);
+    Exit;
+  end;
+  { Type-level High/Low of an ENUM or scalar-integer argument — a compile-time
+    constant.  Enums are 0-based: Low=0, High=Members.Count-1.  Mirrors x86-64
+    (:7504-7520 / :7528-7542).  EmitIntLiteral materialises every immediate via
+    movz/movk (no sign-extension trap), so the large scalar bounds are exact. }
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType <> nil) and
+     (TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind in
+       [tyEnum, tyByte, tyBoolean, tySmallInt, tyWord, tyInteger,
+        tyUInt32, tyInt64, tyUInt64]) and
+     (SameText(TFuncCallExpr(AExpr).Name, 'High') or
+      SameText(TFuncCallExpr(AExpr).Name, 'Low')) then
+  begin
+    if SameText(TFuncCallExpr(AExpr).Name, 'High') then
+      case TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind of
+        tyEnum:     EmitIntLiteral('x0', TEnumTypeDesc(
+          TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType)
+            .Members.Count - 1);
+        tyByte:     EmitIntLiteral('x0', 255);
+        tyBoolean:  EmitIntLiteral('x0', 1);
+        tySmallInt: EmitIntLiteral('x0', 32767);
+        tyWord:     EmitIntLiteral('x0', 65535);
+        tyInteger:  EmitIntLiteral('x0', 2147483647);
+        tyUInt32:   EmitIntLiteral('x0', 4294967295);
+        tyInt64:    EmitIntLiteral('x0', 9223372036854775807);
+        tyUInt64:   EmitIntLiteral('x0', -1);   { all-ones bit pattern }
+      end
+    else
+      { Low: enum/byte/bool/word/unsigned = 0; signed ints reach their min }
+      case TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]).ResolvedType.Kind of
+        tySmallInt: EmitIntLiteral('x0', -32768);
+        tyInteger:  EmitIntLiteral('x0', -2147483648);
+        tyInt64:    EmitIntLiteral('x0', Int64($8000000000000000));
+      else
+        EmitIntLiteral('x0', 0);
+      end;
+    Exit;
+  end;
   if (AExpr is TFuncCallExpr) and
      (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
      (TFuncCallExpr(AExpr).Args.Count = 1) and
