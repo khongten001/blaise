@@ -163,6 +163,7 @@ type
     procedure TestRun_FloatConstExpr_IntSlash;
     procedure TestRun_FloatConstExpr_TypedDoubleIntExpr;
     procedure TestRun_FloatVarInit_TypedDoubleIntExpr;
+    procedure TestRun_SingleCast_RoundTripPrecision;
   end;
 
 implementation
@@ -1598,6 +1599,29 @@ begin
       WriteLn(Y)
     end.
     ''', '6' + LE, 0);
+end;
+
+procedure TE2EMathTests.TestRun_SingleCast_RoundTripPrecision;
+var Output: string; RCode: Integer;
+begin
+  if not ToolchainAvailable() then begin Ignore('toolchain unavailable'); Exit; end;
+  { A Single(X)/Double(X) numeric cast must perform a REAL conversion, not a
+    bit copy (leg 30 — the compiler's own blaise.assembler.x86_64.pas:3088
+    'FVal := Single(DVal)').  Double(Single(x)) must lose precision to 32-bit,
+    so the printed value is the single-rounded double, not the original. }
+  AssertTrue('compile+run', CompileAndRun(
+    '''
+    program P;
+    var D: Double;
+    begin
+      D := 3.14159265358979;
+      D := Double(Single(D));
+      WriteLn(DoubleToStr(D))
+    end.
+    ''', Output, RCode));
+  AssertEquals('exit code', 0, RCode);
+  AssertEquals('single round-trip loses precision to 32-bit',
+    '3.14159274101257', Trim(Output));
 end;
 
 initialization

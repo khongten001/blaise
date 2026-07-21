@@ -52,6 +52,7 @@ type
     { slice 3: Double — literals, arithmetic, comparisons, d-register
       call ABI with independent int/float sequences }
     procedure TestFloat_LiteralAndArithmetic;
+    procedure TestFloat_NumericCast_ConvertsNotBitcopy;
     procedure TestFloat_CallAbi_IndependentSequences;
     { slice 4: string variables with ARC }
     procedure TestString_AssignRetainsAndReleasesOld;
@@ -707,6 +708,39 @@ begin
   AssertTrue('float add', Pos(#9'fadd d0, d0, d1', AsmT) >= 0);
   AssertTrue('float compare', Pos(#9'fcmp d0, d1', AsmT) >= 0);
   AssertTrue('ordered greater', Pos(#9'cset x0, gt', AsmT) >= 0);
+end;
+
+procedure TArm64BackendTests.TestFloat_NumericCast_ConvertsNotBitcopy;
+var
+  AsmT: string;
+begin
+  { leg 30: a numeric type-cast Single(X)/Double(X) in a float context is a
+    TFuncCallExpr with ResolvedDecl=nil (the name resolves to a TYPE).  It must
+    lower to a REAL conversion (fcvt / scvtf), never a bl to a routine named
+    'Single'/'Double' and never a bit copy.  Was NotYet'd as 'this call form in
+    float context' (the compiler's own blaise.assembler.x86_64.pas:3088
+    'FVal := Single(DVal)'). }
+  AsmT := GenAsm(
+    '''
+    program P;
+    var D: Double; F: Single; I: Integer;
+    begin
+      D := 3.5;
+      F := Single(D);         { double -> single: narrow }
+      D := Double(F);         { single -> double: widen  }
+      I := 7;
+      D := Double(I);         { int -> double: scvtf     }
+      if D > 0.0 then WriteLn(1)
+    end.
+    ''');
+  AssertTrue('no notyet', Pos('not yet lowered', AsmT) < 0);
+  AssertTrue('single narrow (fcvt s0, d0)', Pos(#9'fcvt s0, d0', AsmT) >= 0);
+  AssertTrue('single widen (fcvt d0, s0)', Pos(#9'fcvt d0, s0', AsmT) >= 0);
+  AssertTrue('int to float (scvtf d0, x0)', Pos(#9'scvtf d0, x0', AsmT) >= 0);
+  AssertTrue('cast is not a call to Single',
+    Pos(#9'bl Single', AsmT) < 0);
+  AssertTrue('cast is not a call to Double',
+    Pos(#9'bl Double', AsmT) < 0);
 end;
 
 procedure TArm64BackendTests.TestFloat_CallAbi_IndependentSequences;

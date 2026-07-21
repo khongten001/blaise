@@ -3427,6 +3427,30 @@ begin
     EmitMethodCallExpr(TMethodCallExpr(AExpr));
     Exit;
   end;
+  { Numeric type-cast Double(X) / Single(X) in a float context (leg 30): the
+    name resolves to a TYPE, so the node is a TFuncCallExpr with ResolvedDecl
+    = nil and one argument — it is a real conversion, NEVER a call/bit copy.
+    Mirrors x86-64 (:6912) and QBE (:12964).  The D0 contract is "d0 holds a
+    double", so: a float operand is materialised into d0 (already widened by
+    EmitExprToD0OrConvert), then when the cast TARGET is Single the value is
+    round-tripped through single precision (fcvt s0,d0 / fcvt d0,s0) so the
+    32-bit rounding actually happens — Double(Single(x)) must lose precision. }
+  if (AExpr is TFuncCallExpr) and
+     (TFuncCallExpr(AExpr).ResolvedDecl = nil) and
+     (not TFuncCallExpr(AExpr).IsIndirectCall) and
+     (TFuncCallExpr(AExpr).Args.Count = 1) and
+     (FSymTable <> nil) and
+     (FSymTable.FindType(TFuncCallExpr(AExpr).Name) <> nil) and
+     (AExpr.ResolvedType <> nil) and AExpr.ResolvedType.IsFloat() then
+  begin
+    Self.EmitExprToD0OrConvert(TASTExpr(TFuncCallExpr(AExpr).Args.Items[0]));
+    if AExpr.ResolvedType.Kind = tySingle then
+    begin
+      Self.Emit(#9'fcvt s0, d0');   { round to single precision }
+      Self.Emit(#9'fcvt d0, s0');   { re-widen — the D0 contract is a double }
+    end;
+    Exit;
+  end;
   if AExpr is TFuncCallExpr then
   begin
     if TFuncCallExpr(AExpr).IsIndirectCall or
